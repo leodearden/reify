@@ -697,7 +697,7 @@ Depends on type-level property and count parameter, not instances.
 
 `connect` and `chain` are language-level statements for assembly composition. They desugar into primitive declarations that map to existing node types. No new node types or edge types are introduced.
 
-**`chain` desugars to `connect`.** `chain A -> B -> C` becomes `connect A.default_out -> B.default_in; connect B.default_out -> C.default_in`. This is a compile-time transformation before elaboration.
+**`chain` desugars to `connect`.** Each element is resolved once per role — its sole `out` port where it sources a hop, its sole `in` port where it receives one — so `chain A -> B -> C` becomes `connect A.<out> -> B.<in>; connect B.<out> -> C.<in>`. Zero or several candidate ports is a compile error for that element; the designer names the port on the element instead. This is a compile-time transformation before elaboration, shared by the `chain` member and a `forall … : chain …` body. Rule and worked example: language spec §6.2.
 
 **`connect` desugars during elaboration** into up to five artifacts, each mapping to existing evaluation graph infrastructure:
 

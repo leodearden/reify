@@ -1522,19 +1522,32 @@ Strengthened persistent naming and advanced topological queries are deferred to 
 chain casting -> machining -> heat_treat -> finishing
 ```
 
-`chain` is sugar for connecting each occurrence's default output port to the next's default input port. Uses fully implicit matching via default ports only. Non-default port mapping requires explicit `connect`.
+`chain` is sugar for connecting each occurrence's output port to the next's input port, so the designer writes N occurrence names instead of 2N port names. The port each element contributes is inferred from the element alone; anything else requires naming the port explicitly, on that element or with `connect`.
 
-**Desugaring:** `chain` is expanded to a sequence of `connect` statements before evaluation graph construction. Each element must be an occurrence with exactly one `out` port and one `in` port (or ports marked as default for their direction). The desugaring is:
+**Desugaring:** `chain` is expanded to a sequence of `connect` statements before evaluation graph construction. Each element is resolved once **per role** — as a hop's source it contributes its `out` port, as that hop's destination its `in` port — and the port it contributes must be its *only* port in that direction. Given
+
+```
+occurrence def Step {
+    port stock : in Workpiece
+    port part : out Workpiece
+}
+```
+
+the desugaring is:
 
 ```
 chain casting -> machining -> heat_treat -> finishing
 // Desugars to:
-connect casting.default_out -> machining.default_in
-connect machining.default_out -> heat_treat.default_in
-connect heat_treat.default_out -> finishing.default_in
+connect casting.part -> machining.stock
+connect machining.part -> heat_treat.stock
+connect heat_treat.part -> finishing.stock
 ```
 
-If any element has multiple `in` or `out` ports and none is marked as default, `chain` is a compile error for that element. The designer must use explicit `connect` statements instead.
+Resolving per role is what makes a chain longer than two elements direction-valid: `machining` means `machining.stock` as the first hop arrives and `machining.part` as the second leaves, so every hop is `out -> in`.
+
+If an element has several ports in the direction its role needs — or none — `chain` is a compile error for that element, naming what was found. The designer disambiguates by naming the port on that element (`chain casting.part -> machining`), which the grammar accepts for any element. A named port is taken verbatim in **both** the element's roles, so naming one on an *interior* element pins the same port for the hop arriving and the hop leaving: that resolves an ambiguous `bidi` element, and otherwise the chain is split into explicit `connect` statements. An element naming one of the *enclosing* entity's own ports is likewise taken as that port and never re-inferred, which is what lets `chain` compose an enclosing structure's own `out` → `bidi` → `in` ports.
+
+The same inference applies inside a `forall … : chain …` body, after the bound variable is substituted for each element of the collection.
 
 ### 6.3 `where` Guards and Blocks
 
@@ -2836,7 +2849,11 @@ connect_block   ::= '{' (param_assign | port_mapping)* '}'
 param_assign    ::= IDENT '=' expr
 port_mapping    ::= IDENT '->' IDENT
 
-chain_stmt      ::= 'chain' IDENT ('->' IDENT)+
+chain_stmt      ::= 'chain' port_ref ('->' port_ref)+
+
+(* Each element is a port_ref, not a bare IDENT: naming the port on an element
+   is how §6.2 inference is disambiguated, so the dotted form is load-bearing
+   rather than merely tolerated. *)
 
 port_ref        ::= path ('@' IDENT ('(' args ')')? )?
 

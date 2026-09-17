@@ -53,11 +53,20 @@ The `@` operator creates ad-hoc ports by designating geometric regions.
 
 ## Chain Statement
 
-Sugar for connecting sequential occurrences via default ports:
+Sugar for connecting sequential occurrences. Each element contributes its sole
+`out` port where it sources a hop and its sole `in` port where it receives one,
+so given `occurrence def Step { port stock : in Workpiece  port part : out Workpiece }`:
 ```reify-fragment
 chain casting -> machining -> heat_treat -> finishing
 // Desugars to:
-connect casting.default_out -> machining.default_in
-connect machining.default_out -> heat_treat.default_in
-connect heat_treat.default_out -> finishing.default_in
+connect casting.part -> machining.stock
+connect machining.part -> heat_treat.stock
+connect heat_treat.part -> finishing.stock
 ```
+
+An element with several ports in the direction its role needs — or none — is a
+compile error. Name the port on that element instead (`chain casting.part ->
+machining`); any element may be dotted, but a named port is used verbatim in
+both of that element's roles, so naming one on an interior element pins it for
+the hop arriving and the hop leaving alike. The same inference applies inside a
+`forall … : chain …` body.
