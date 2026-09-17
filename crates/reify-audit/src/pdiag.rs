@@ -1659,6 +1659,39 @@ mod tests {
     }
 
     #[test]
+    fn a_code_less_constructor_left_of_a_coded_one_on_one_line_is_counted() {
+        // The same hard-gate hole as
+        // `a_constructor_past_a_statement_end_bounds_the_code_probe`, reached
+        // with no adjacent LINE involved: the rightward probe stops an EARLIER
+        // constructor's code from marking a later one, but not the converse.
+        //
+        // Same rule, one segment instead of a window: `;` alone never bounds;
+        // an anchor alone never bounds; the ordered pair does.
+
+        // (i) THE HOLE. The first anchor's rightward slice reaches the SECOND
+        //     constructor's code, across a real statement terminator.
+        let src = "    out.push(Diagnostic::error(m)); out.push(Diagnostic::warning(m2).with_code(c));";
+        assert_eq!(
+            sites(src),
+            vec![(1, false), (1, true)],
+            "a code-less site left of a coded one on one line must still count"
+        );
+
+        // (ii) NEGATIVE CONTROL — the one-line severity dispatch, which is
+        //      `two_constructors_on_one_line_are_two_sites`' source line plus
+        //      its code. No `;` separates the constructors, so the code
+        //      attaches to BOTH and bounding at the next anchor on the line —
+        //      the naive same-line fix — would red it.
+        let src = "    let d = if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }.with_code(c);";
+        assert_eq!(sites(src), vec![(1, true), (1, true)]);
+
+        // (iii) The converse direction, already closed by probing rightwards
+        //       from the anchor rather than over the whole line, stays closed.
+        let src = "    out.push(Diagnostic::error(m).with_code(c)); out.push(Diagnostic::warning(m2));";
+        assert_eq!(sites(src), vec![(1, true), (1, false)]);
+    }
+
+    #[test]
     fn error_ref_receiver_is_not_an_anchor() {
         // `ErrorRef::with_code` (crates/reify-ir/src/value.rs:4387) is a
         // different receiver; anchoring on the `Diagnostic::` ctor token makes
