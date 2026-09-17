@@ -45,9 +45,7 @@
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 
-use clamp_probe::{
-    CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, probe_triangle_count, set_global_mesh_size_clamp,
-};
+use clamp_probe::{CLAMP_TEST_ORDER, probe_triangle_count};
 use reify_ir::{ElementOrderTag, GeometryError, Mesh};
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
 use reify_test_support::fixtures::unit_cube_mesh;
@@ -225,47 +223,38 @@ fn a_failed_mesh_to_volume_leaves_the_sibling_meshers_usable() {
     );
 }
 
+/// What [`probe_triangle_count`] reads from a gmsh sitting at its own default
+/// options — the state a `gmshFinalize`+`gmshInitialize` recycle leaves behind.
+///
+/// Measured in this binary. The same probe reads 242 under a leaked
+/// `[0.1, 0.1]` clamp, the pair `tests/mesh_to_volume_clamp_hermeticity.rs`
+/// records, so the equality below has an 80-triangle margin rather than a
+/// rounding one.
+const PROBE_TRIANGLES_AT_DEFAULT_OPTIONS: usize = 162;
+
 /// A `mesh_to_volume` that fails AT THE MESHER must leave gmsh's process-global
-/// mesh-size clamp at its defaults, exactly as a successful one does.
+/// options at their defaults, exactly as a successful one does.
 ///
-/// `tests/mesh_to_volume_clamp_hermeticity.rs` pins that for the success path
-/// (#6298). The failure path reaches the same end through a different route and
-/// was unpinned: `mesh_to_volume` writes `Mesh.MeshSizeMin`/`MeshSizeMax`
-/// BEFORE it reaches `mesh_generate`, so a call that fails there has already
-/// poisoned the table; recovery's `gmshFinalize`+`gmshInitialize` then resets
-/// the whole option table, and `MeshSizeClampReset::drop` writes the defaults
-/// into the RE-INITIALIZED library on the way out.
+/// `tests/mesh_to_volume_clamp_hermeticity.rs` pins that for the SUCCESS path
+/// (#6298). The failure path reaches the same end by a different route and was
+/// unpinned: `mesh_to_volume` writes `Mesh.MeshSizeMin`/`MeshSizeMax` BEFORE it
+/// reaches `mesh_generate`, so a call that fails there has already poisoned the
+/// table, and what clears it is recovery's `gmshFinalize`+`gmshInitialize`.
 ///
-/// What this asserts is the observable contract — a later defaults-relying
-/// caller meshes as if the failure had never happened — not either mechanism
-/// individually. Today the two are redundant, which is the posture this crate
-/// wants for its one measured cross-caller leak (#6298 / #6212) and is why the
-/// assertion is worth having even though no single deletion reds it: it is
-/// future changes to the recovery's option handling that it catches.
-///
-/// # Why it opens with a throwaway poisoning
-///
-/// Both probes must read the same option table apart from the clamp. The
-/// warm-up ends in a just-recycled gmsh, which is exactly the state the
-/// measured poisoning leaves behind, so `General.NumThreads`,
-/// `Mesh.Algorithm3D` and `Mesh.ElementOrder` — none of which
-/// `probe_triangle_count` pins — are identical across the two measurements and
-/// the clamp is the only free variable. Without it the baseline would inherit
-/// whichever sibling test won cargo's thread race.
+/// The assertion is against a RECORDED constant, not against a baseline probe,
+/// and that is what makes it discriminating. Recovery resets the whole option
+/// table, so any baseline measured after an identical recycle moves with a
+/// regression instead of catching it — the two would compare equal however
+/// badly the failure path behaved. Measured absolutely, a recovery that stops
+/// re-initializing reds here by one of two routes: the failing call's own 0.1
+/// clamp survives into the probe, or the probe's `mesh_generate(2)` meets the
+/// still-poisoned mesher and fails outright.
 #[test]
 fn a_failed_mesh_to_volume_leaves_the_default_clamp_behind() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
 
-    poison_via_mesh_to_volume();
-    set_global_mesh_size_clamp(GMSH_CLAMP_DEFAULTS);
-    let baseline = probe_triangle_count();
-
-    // 0.1 is a size this probe can see. Measured in THIS binary's state — a
-    // just-recycled gmsh, which is not the state the sibling binary measures
-    // from — the probe reads 162 triangles at gmsh's default clamp and 242
-    // under a leaked [0.1, 0.1], the same pair
-    // `mesh_to_volume_clamp_hermeticity.rs` records. So the equality below has
-    // an 80-triangle margin, not a rounding one.
+    // 0.1 is a size the probe can see, and `mesh_to_volume` writes it into the
+    // process-global table before it ever reaches the mesher.
     assert_failed_at_the_mesher(
         "mesh_to_volume",
         GmshKernel::new().mesh_to_volume(
@@ -280,9 +269,10 @@ fn a_failed_mesh_to_volume_leaves_the_default_clamp_behind() {
 
     let after = probe_triangle_count();
     assert_eq!(
-        after, baseline,
-        "a FAILED mesh_to_volume left its own 0.1 mesh-size clamp behind: a later \
-         defaults-relying call meshed to {after} triangles where gmsh's defaults \
-         give {baseline}",
+        after, PROBE_TRIANGLES_AT_DEFAULT_OPTIONS,
+        "a FAILED mesh_to_volume did not leave gmsh at its default options: a later \
+         defaults-relying call meshed to {after} triangles where a just-recycled \
+         gmsh gives {PROBE_TRIANGLES_AT_DEFAULT_OPTIONS} (242 is this probe's \
+         reading under a leaked 0.1 clamp)",
     );
 }
