@@ -142,3 +142,12 @@ mod fn_body_separator_value_faithfulness;
 // #5758's above.
 #[path = "harness_engine/polymorphic_zero_trait_eval.rs"]
 mod polymorphic_zero_trait_eval;
+// Task #7418's instance-scope param-default ordering pins land here for the same
+// anti-re-accretion reason as #5196's, #5045's and #5360's above. They are also a
+// topical fit: they drive `Engine::eval` over a `sub` instantiation to pin
+// `unfold.rs::elaborate_child_params_only`'s visit order — engine-level,
+// kernel-independent. Their template-scope counterpart,
+// `tests/param_default_sibling_let_order.rs` (task #4317), predates the C1
+// layout and stays a grandfathered top-level standalone.
+#[path = "harness_engine/instance_scope_param_default_order.rs"]
+mod instance_scope_param_default_order;
