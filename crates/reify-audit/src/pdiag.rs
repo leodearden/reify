@@ -461,17 +461,11 @@ fn scan_file(content: &str) -> Vec<Site> {
             let escaped = escaped_anchors(line, &anchors[i], || {
                 escape_in_window(&lines, &mask, &anchors, i)
             });
-            for (k, &at) in anchors[i].iter().enumerate() {
+            for k in 0..anchors[i].len() {
                 if escaped[k] {
                     continue;
                 }
-                // Probe from the anchor rightwards so a `.with_code(`
-                // belonging to an EARLIER constructor on the same line
-                // cannot code a later one. A terminator in the anchor's own
-                // tail is carried into the window as the seed, so the pair
-                // `; … <anchor>` bounds across the line break too.
-                let coded = line[at..].contains(CODE_PROBE)
-                    || code_in_window(&lines, &mask, &anchors, i, line[at..].contains(';'));
+                let coded = code_attached(&lines, &mask, &anchors, i, k);
                 out.push(Site { line: i + 1, coded });
             }
         }
@@ -485,6 +479,33 @@ fn scan_file(content: &str) -> Vec<Site> {
         }
     }
     out
+}
+
+/// `true` when the site at `anchors[anchor_line][k]` carries a code
+/// attachment.
+///
+/// One rule, two stages, both [`probe_segment`]'s: the anchor's own line from
+/// the anchor rightwards, and then — only if that segment decided nothing —
+/// the [`code_in_window`] walk below it, carrying the same terminator state.
+///
+/// Only the anchors to the RIGHT of the site are eligible to bound the first
+/// stage. A constructor to its LEFT is a different site whose own probe ran
+/// separately, and letting it bound this one would make a site's verdict
+/// depend on its neighbours' positions rather than on its own reach.
+fn code_attached(
+    lines: &[&str],
+    mask: &[bool],
+    anchors: &[Vec<usize>],
+    anchor_line: usize,
+    k: usize,
+) -> bool {
+    let at = anchors[anchor_line][k];
+    let mut past = false;
+    match probe_segment(lines[anchor_line], &anchors[anchor_line][k + 1..], at, &mut past) {
+        Probe::Attached => true,
+        Probe::Bounded => false,
+        Probe::Undecided => code_in_window(lines, mask, anchors, anchor_line, past),
+    }
 }
 
 /// One segment's verdict for the forward code probe.
