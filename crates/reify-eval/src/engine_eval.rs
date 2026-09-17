@@ -7965,10 +7965,17 @@ impl Engine {
         }
 
         // γ (task #4804), generalized to the merged problem: surface
-        // W_SOLVER_OPTIMALITY_UNPROVEN when the spanning-objective solve hit
-        // the iteration limit. Mirrors the per-template gate above verbatim.
+        // W_SOLVER_OPTIMALITY_UNPROVEN when the spanning-objective solve stopped
+        // short of a proof — reason IterationLimit (the derivative-free solver ran
+        // out of iterations) or EnumerationBudget (an exact solver hit its node cap
+        // with part of the discrete space unvisited — task #6553). ConvergedWithinBudget
+        // and Unreported do NOT match (B6 no-false-positive).
+        // Mirrors the per-template gate above verbatim.
         if let Some(OptimalityStatus::BestFound { reason }) = optimality_status
-            && matches!(reason, BestFoundReason::IterationLimit)
+            && matches!(
+                reason,
+                BestFoundReason::IterationLimit | BestFoundReason::EnumerationBudget
+            )
         {
             diagnostics.push(
                 Diagnostic::warning(format!(
