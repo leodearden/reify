@@ -380,8 +380,8 @@ pub fn mcp_tool_call_impl(
 ///
 /// A persistent lane takes `'static` closures, so the context must be MOVED into
 /// the job. `TauriToolContext: Send + 'static` auto-derives from its three
-/// fields — `Arc<Mutex<EngineSession>>`, `Option<Box<dyn Fn(&str, Value) + Send
-/// + Sync>>` and `Arc<RwLock<SelectionInfo>>` — so no caller gains a new bound
+/// fields — `Arc<Mutex<EngineSession>>`, `Option<Box<dyn Fn(&str, Value) + Send +
+/// Sync>>` and `Arc<RwLock<SelectionInfo>>` — so no caller gains a new bound
 /// from this.
 ///
 /// # The one behavioural delta callers must know
