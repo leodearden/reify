@@ -901,7 +901,15 @@ fn a_job_on_one_lane_may_submit_to_the_other_lane() {
 ///
 /// The MCP side's thread is observed through the PRODUCTION event-emitter seam
 /// (`TauriToolContext::focus_entity` fires the emitter and touches no engine),
-/// so the id recorded is the thread the dispatch itself ran on.
+/// so the id recorded is the thread the dispatch itself ran on. That is what
+/// stops this being a tautology about where a deliberately-planted probe was
+/// placed.
+///
+/// `sync_channel`, not `channel`: `with_event_emitter` requires
+/// `Fn(..) + Send + Sync + 'static`, and `mpsc::Sender` is `!Sync` while
+/// `SyncSender` is `Sync`. Capacity 1 never blocks — the emitter fires exactly
+/// once — and `mcp_tool_call_on_large_stack` blocks until the job completes, so
+/// the send has landed by the time `try_recv` runs.
 ///
 /// Non-vacuity: both ids are also asserted DIFFERENT from the caller's. A
 /// degraded lane runs its job inline and reports the caller's id, which would
