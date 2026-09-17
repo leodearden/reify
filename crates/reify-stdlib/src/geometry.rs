@@ -3736,22 +3736,78 @@ mod tests {
         assert!(eval_builtin("plane_xy", &[Value::Real(f64::INFINITY)]).is_undef());
     }
 
+    /// FLIPPING THIS ROW IS THE FIX, NOT A REGRESSION.
+    ///
+    /// Its predecessor asserted that a BARE `Real` offset built a Plane whose
+    /// origin was dimensionless, locking in an ACCIDENTAL pre-doctrine gap: git
+    /// archaeology puts that assertion roughly four months before the units
+    /// doctrine existed, so it recorded what the code happened to do, never a
+    /// sanctioned contract. `docs/prds/v0_6/units-length-gate-completion.md` task
+    /// ε (R11, decision D4) shuts that hole at the PRODUCER end — the offset is
+    /// REQUIRED to be a Length.
+    ///
+    /// Do NOT re-flip this back to an acceptance. Doing so re-opens R11 at the
+    /// producer while task δ's consumer-side gate stays shut, so the two ends of
+    /// the same rule disagree and a bare offset silently mints a dimensionless
+    /// plane origin again.
     #[test]
-    fn plane_xy_real_zero_produces_dimensionless_origin() {
-        // plane_xy(Real(0.0)) → dimensionless origin with Real(0.0) components
-        let result = eval_builtin("plane_xy", &[Value::Real(0.0)]);
-        match result {
-            Value::Plane { origin, .. } => match *origin {
-                Value::Point(ref comps) => {
-                    assert_eq!(comps.len(), 3);
-                    assert_eq!(comps[0], Value::Real(0.0));
-                    assert_eq!(comps[1], Value::Real(0.0));
-                    assert_eq!(comps[2], Value::Real(0.0));
-                }
-                other => panic!("expected Point, got {:?}", other),
-            },
-            other => panic!("expected Value::Plane, got {:?}", other),
+    fn plane_xy_real_zero_is_rejected_expects_length() {
+        assert!(eval_builtin("plane_xy", &[Value::Real(0.0)]).is_undef());
+    }
+
+    /// The whole plane family rejects a non-LENGTH offset, in every `got` shape
+    /// that can reach the gate (`as_f64` must succeed for it to fire, so only
+    /// `Real`, `Int` and `Scalar` arrive). The three names share ONE `make_plane`;
+    /// enumerating them keeps that sharing honest rather than assumed.
+    #[test]
+    fn plane_family_rejects_non_length_offsets() {
+        let mass = Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::MASS,
+        };
+        for name in ["plane_xy", "plane_xz", "plane_yz"] {
+            for offender in [Value::Real(0.0), Value::Int(0), mass.clone()] {
+                assert!(
+                    eval_builtin(name, std::slice::from_ref(&offender)).is_undef(),
+                    "{name}({offender:?}) must be Undef: the offset argument expects Length"
+                );
+            }
         }
+    }
+
+    /// The anti-vacuity partner of the two rows above: a LENGTH offset still
+    /// builds a Plane, so the gate cannot pass by rejecting everything.
+    ///
+    /// It also VERIFIES, rather than re-deriving from the code, the two dimension
+    /// claims `make_plane`'s doc makes: the offset's dimension is MIRRORED into
+    /// the whole origin triple (a zero offset yields three LENGTH zeros, never
+    /// bare `Real(0.0)`), while the synthesized normal stays DIMENSIONLESS —
+    /// decision D3's scope lock, since a unit vector legitimately has bare
+    /// components.
+    #[test]
+    fn plane_xy_length_zero_mirrors_length_into_origin_and_keeps_normal_bare() {
+        let result = eval_builtin("plane_xy", &[Value::length(0.0)]);
+        let Value::Plane { origin, normal } = result else {
+            panic!("expected Value::Plane, got {result:?}");
+        };
+        assert_eq!(
+            *origin,
+            Value::Point(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0)
+            ]),
+            "a LENGTH offset must mirror LENGTH into all three origin components"
+        );
+        assert_eq!(
+            *normal,
+            Value::Vector(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(1.0)
+            ]),
+            "the synthesized normal is a unit vector and stays dimensionless (D3)"
+        );
     }
 
     // ── η (task 4387) step-1: construction-datum constructor eval ────────────
