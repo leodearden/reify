@@ -324,3 +324,106 @@ fn medial_mask_finds_a_medial_line_whose_two_kink_axes_both_lie_on_sample_planes
         "min-wall {v} differs from the bar's {expected} cross-section"
     );
 }
+
+/// Analytic OBLIQUE slab `φ = |n̂ · p| − thickness/2`: a wall of the given
+/// thickness whose medial surface is the plane through the origin with unit
+/// normal `n̂`. `normal` is normalised here so callers pass readable integer
+/// triples.
+fn oblique_slab_field(
+    normal: [f64; 3],
+    thickness: f64,
+    h: f64,
+    voxel_count: usize,
+    bounds_min: f64,
+) -> SampledField {
+    let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+    let unit = [normal[0] / length, normal[1] / length, normal[2] / length];
+    regular3d_field(
+        &format!(
+            "oblique-slab-n{}_{}_{}-t{thickness}",
+            normal[0], normal[1], normal[2]
+        ),
+        h,
+        voxel_count,
+        bounds_min,
+        move |x, y, z| (unit[0] * x + unit[1] * y + unit[2] * z).abs() - 0.5 * thickness,
+    )
+}
+
+/// The oblique sweep's own grid: a 31³ box spanning `[−15, 15]`, wider than the
+/// axis-aligned sweep's because an oblique walk is stretched by `1/|n̂ · axis|`
+/// and must stay on-grid (the 45° walk covers `2√2 ≈ 2.83` per side).
+const OBLIQUE_N: usize = 31;
+const OBLIQUE_BOUNDS_MIN: f64 = -15.0;
+const OBLIQUE_THICKNESS: f64 = 4.0;
+
+/// Three medial-plane orientations, from shallow to the worst case. All three
+/// degenerate the central difference exactly as the axis-aligned sweep does —
+/// for `φ = |n̂ · p| − t/2` the samples at `±h` on EVERY axis are both
+/// `|n_a·h| − t/2` — so all three take the ridge-axis fallback.
+const OBLIQUE_NORMALS: [[f64; 3]; 3] = [[1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [3.0, 0.0, 1.0]];
+
+/// The walk direction the fallback returns is a grid AXIS, not the medial
+/// plane's normal, so on an oblique plane it crosses the wall diagonally and
+/// `d⁺ + d⁻` reads `t / |n̂ · axis|` — an OVER-read of up to √3×.
+///
+/// That breaks `min_wall_thickness`'s conservative-lower-bound contract, and an
+/// over-read reaches production as a too-thin wall passing a DFM constraint
+/// (`reify-eval`'s `engine_constraints.rs`). The sweep above cannot see it: it
+/// varies the medial plane's OFFSET but never its ORIENTATION.
+///
+/// The bound is deliberately TWO-SIDED rather than `v ≤ t`: an over-CORRECTION
+/// is equally wrong, and a one-sided bound would pass one (the hit-point
+/// gradient variant rejected in #7527 read `2.0` here, a 2× under-read).
+///
+/// Every contributing voxel is on the fallback path: a gradient-path voxel would
+/// contribute exactly `t`, so any pre-fix reading above `t` proves the minimum
+/// comes from the fallback and that this test pins the correction rather than
+/// passing incidentally.
+///
+/// `min_feature_size_measure` needs no obliquity correction — its `2|φ|`
+/// reduction is already perpendicular — so it is held to the same `[t − h, t]`
+/// band as the axis-aligned sweep.
+#[test]
+fn min_wall_thickness_is_not_inflated_by_an_oblique_medial_plane() {
+    for normal in OBLIQUE_NORMALS {
+        let sdf = oblique_slab_field(
+            normal,
+            OBLIQUE_THICKNESS,
+            SWEEP_H,
+            OBLIQUE_N,
+            OBLIQUE_BOUNDS_MIN,
+        );
+
+        let mask = compute_medial_mask(&sdf, &MedialOptions::default())
+            .expect("the oblique slab is a structurally valid Regular3D field");
+        assert!(
+            !mask.voxels.is_empty(),
+            "empty medial mask for a wall whose medial plane has normal {normal:?}"
+        );
+
+        let measured = min_wall_thickness(&sdf, SWEEP_H)
+            .expect("the oblique slab is a structurally valid Regular3D field");
+        let MinWallThickness::Measured(v) = measured else {
+            panic!("expected Measured min-wall for normal {normal:?}; got {measured:?}");
+        };
+        assert!(
+            (v - OBLIQUE_THICKNESS).abs() <= 1e-9,
+            "min-wall {v} differs from the true thickness {OBLIQUE_THICKNESS} for a \
+             medial plane with normal {normal:?}; the walk must measure the wall \
+             PERPENDICULARLY, not along whichever grid axis it stepped down"
+        );
+
+        let feature = min_feature_size_measure(&sdf, SWEEP_H)
+            .expect("the oblique slab is a structurally valid Regular3D field");
+        let MinFeatureSize::Measured(f) = feature else {
+            panic!("expected Measured min-feature for normal {normal:?}; got {feature:?}");
+        };
+        assert!(
+            f >= OBLIQUE_THICKNESS - SWEEP_H - 1e-9 && f <= OBLIQUE_THICKNESS + 1e-9,
+            "min-feature {f} outside [t − h, t] = [{}, {OBLIQUE_THICKNESS}] for a \
+             medial plane with normal {normal:?}",
+            OBLIQUE_THICKNESS - SWEEP_H
+        );
+    }
+}
