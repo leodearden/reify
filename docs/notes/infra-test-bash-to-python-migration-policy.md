@@ -50,10 +50,16 @@ under the TODO-citation convention.)
 That follow-up also carries the port already written for
 `test_verify_env_ambient_isolation.sh`: 540 lines, 26/26 green, validated by
 five mutants rather than RED-first. **Recover it from git history rather than
-rewriting it** — it is the commit subject *"Port the verify_env
-ambient-isolation guard to Python"* on task 7430's branch (`eac9251c59` as
-merged; note that any pre-merge SHA quoted elsewhere was invalidated by a
-rebase, so match on the subject, not on a remembered hash).
+rewriting it** — find it by **commit subject**, *"Port the verify_env
+ambient-isolation guard to Python"*, via
+`git log --all --oneline --grep='Port the verify_env'`.
+
+Match on the subject, not on a hash. Any SHA for it is branch-local and
+therefore unstable: it was `750fc72439` when task 7430's escalation quoted it,
+`eac9251c59` after that lane was rebased, and it becomes something else again
+if the branch is rebased before merge. A SHA cited in a committed doc is only
+durable when it names a **main** commit; this one never can, because the
+commit's whole purpose is to hold a file that main does not keep.
 
 ### What a port is, when the arm reopens
 
