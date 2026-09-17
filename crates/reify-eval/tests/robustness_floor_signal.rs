@@ -24,6 +24,11 @@
 //!     The `CostMinFloorInfeasible` fixture (tight box [10mm, 10.3mm]) is infeasible
 //!     under the floor; eval surfaces `RobustnessFloorInfeasible` (Error) and NO bare
 //!     `ConstraintUnsatisfiable`.
+//!
+//! (d) `floor_infeasible_message_names_the_margin_not_an_empty_region` (task #5714):
+//!     the same fixture's user-visible MESSAGE names the 2% robustness margin and does
+//!     not claim the user's own box is empty.  (c) pins the code; the code alone was
+//!     never what misled the original report.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, ValueCellId};
