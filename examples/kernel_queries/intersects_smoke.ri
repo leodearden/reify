@@ -19,7 +19,7 @@
 //   matching the shapes_intersect adapter semantics (reify-kernel-occt/src/lib.rs:770).
 //
 // Pinning test:
-//   crates/reify-eval/tests/kernel_queries_intersects_smoke.rs::
+//   crates/reify-eval/tests/harness_kernel_realization/kernel_queries_intersects_smoke.rs::
 //     intersects_smoke_evals_expected_booleans
 
 structure def IntersectsSmoke {
