@@ -4214,8 +4214,7 @@ pub(crate) fn compile_entity(
                     functions,
                     trait_registry,
                 };
-                // Desugar chain into pairwise Forward connections. `chain_hops`
-                // owns the spec §6.2 default-port rule for both desugar sites.
+                // Desugar chain into pairwise Forward connections.
                 for (source, dest) in chain_hops(&ctx, &chain_decl.elements, diagnostics) {
                     let mut acc = ConnectAccumulator {
                         constraints: &mut constraints,

@@ -307,6 +307,10 @@ fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core
 /// Desugar a `chain` statement's elements into one (source, destination)
 /// endpoint pair per hop, applying the spec §6.2 default-port rule.
 ///
+/// Both places a `chain` is desugared — an entity member, and a `forall` body
+/// after its bound variable is substituted — route through here, so the rule
+/// has one implementation rather than one per site.
+///
 /// An element plays two roles in a multi-hop chain: destination of the hop that
 /// arrives at it, and source of the hop that leaves it. Resolving it once per
 /// ROLE — `In` as a destination, `Out` as a source — is what makes a chain

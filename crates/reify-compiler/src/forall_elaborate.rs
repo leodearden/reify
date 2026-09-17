@@ -878,7 +878,7 @@ pub(crate) fn elaborate_forall_connect(
                     .map(|e| substitute_expr(e, &bindings))
                     .collect();
 
-                for pair in substituted_elements.windows(2) {
+                for (source, dest) in chain_hops(&ctx, &substituted_elements, diagnostics) {
                     let mut acc = ConnectAccumulator {
                         constraints,
                         constraint_index,
@@ -891,9 +891,9 @@ pub(crate) fn elaborate_forall_connect(
                     compile_connection(
                         &ctx,
                         &ConnectInput {
-                            left_expr: &pair[0],
+                            left_expr: &source,
                             operator: reify_ast::ConnectOp::Forward,
-                            right_expr: &pair[1],
+                            right_expr: &dest,
                             connector_type: None,
                             params: &[],
                             port_mappings: &[],
