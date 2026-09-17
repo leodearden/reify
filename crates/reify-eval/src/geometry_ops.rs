@@ -5458,6 +5458,27 @@ fn profile_ellipse(
 
 // ── Static dispatch tables ────────────────────────────────────────────────────
 
+/// Locks `$table`'s length to `$kind::VARIANT_COUNT` at compile time, so a variant
+/// added to or removed from the kind enum without a matching dispatch-table row (or
+/// vice versa) fails `cargo check` instead of only surfacing later as a `lookup_*`
+/// miss at runtime. `$kind_name` carries the short enum name for the message since
+/// this file always refers to `$kind` fully qualified (no local `use` for the
+/// `reify_compiler::*Kind` types).
+macro_rules! lock_dispatch_table {
+    ($table:ident, $kind:ty, $kind_name:literal) => {
+        const _: () = assert!(
+            $table.len() == <$kind>::VARIANT_COUNT,
+            concat!(
+                stringify!($table),
+                " / ",
+                $kind_name,
+                "::VARIANT_COUNT mismatch — a variant was added or removed without \
+                 updating this production dispatch table"
+            )
+        );
+    };
+}
+
 static PRIMITIVE_COMPILERS: &[(reify_compiler::PrimitiveKind, PrimitiveCompileFn)] = &[
     (reify_compiler::PrimitiveKind::Box, prim_box),
     (reify_compiler::PrimitiveKind::Cylinder, prim_cylinder),
@@ -5468,11 +5489,7 @@ static PRIMITIVE_COMPILERS: &[(reify_compiler::PrimitiveKind, PrimitiveCompileFn
     (reify_compiler::PrimitiveKind::Torus, prim_torus),
     (reify_compiler::PrimitiveKind::HalfSpace, prim_half_space),
 ];
-const _: () = assert!(
-    PRIMITIVE_COMPILERS.len() == reify_compiler::PrimitiveKind::VARIANT_COUNT,
-    "PRIMITIVE_COMPILERS / PrimitiveKind::VARIANT_COUNT mismatch — a variant was added \
-     or removed without updating this production dispatch table"
-);
+lock_dispatch_table!(PRIMITIVE_COMPILERS, reify_compiler::PrimitiveKind, "PrimitiveKind");
 
 static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::Fillet, modify_fillet),
@@ -5486,11 +5503,7 @@ static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::OffsetSurface, modify_offset_surface),
     (reify_compiler::ModifyKind::OffsetCurve, modify_offset_curve),
 ];
-const _: () = assert!(
-    MODIFY_COMPILERS.len() == reify_compiler::ModifyKind::VARIANT_COUNT,
-    "MODIFY_COMPILERS / ModifyKind::VARIANT_COUNT mismatch — a variant was added \
-     or removed without updating this production dispatch table"
-);
+lock_dispatch_table!(MODIFY_COMPILERS, reify_compiler::ModifyKind, "ModifyKind");
 
 static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn)] = &[
     (reify_compiler::TransformKind::Translate, transform_translate),
@@ -5501,11 +5514,7 @@ static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn
     (reify_compiler::TransformKind::AffineApply, transform_affine_apply),
     (reify_compiler::TransformKind::ScaleNonUniform, transform_scale_non_uniform),
 ];
-const _: () = assert!(
-    TRANSFORM_COMPILERS.len() == reify_compiler::TransformKind::VARIANT_COUNT,
-    "TRANSFORM_COMPILERS / TransformKind::VARIANT_COUNT mismatch — a variant was added \
-     or removed without updating this production dispatch table"
-);
+lock_dispatch_table!(TRANSFORM_COMPILERS, reify_compiler::TransformKind, "TransformKind");
 
 static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &[
     (reify_compiler::PatternKind::Linear, pattern_linear),
@@ -5514,11 +5523,7 @@ static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &
     (reify_compiler::PatternKind::Linear2D, pattern_linear2d),
     (reify_compiler::PatternKind::Arbitrary, pattern_arbitrary),
 ];
-const _: () = assert!(
-    PATTERN_COMPILERS.len() == reify_compiler::PatternKind::VARIANT_COUNT,
-    "PATTERN_COMPILERS / PatternKind::VARIANT_COUNT mismatch — a variant was added \
-     or removed without updating this production dispatch table"
-);
+lock_dispatch_table!(PATTERN_COMPILERS, reify_compiler::PatternKind, "PatternKind");
 
 static SWEEP_COMPILERS: &[(reify_compiler::SweepKind, SweepCompileFn)] = &[
     (reify_compiler::SweepKind::Loft, sweep_loft),
@@ -5531,11 +5536,7 @@ static SWEEP_COMPILERS: &[(reify_compiler::SweepKind, SweepCompileFn)] = &[
     (reify_compiler::SweepKind::LoftGuided, sweep_loft_guided),
     (reify_compiler::SweepKind::Pipe, sweep_pipe),
 ];
-const _: () = assert!(
-    SWEEP_COMPILERS.len() == reify_compiler::SweepKind::VARIANT_COUNT,
-    "SWEEP_COMPILERS / SweepKind::VARIANT_COUNT mismatch — a variant was added \
-     or removed without updating this production dispatch table"
-);
+lock_dispatch_table!(SWEEP_COMPILERS, reify_compiler::SweepKind, "SweepKind");
 
 static CURVE_COMPILERS: &[(reify_compiler::CurveKind, CurveCompileFn)] = &[
     (reify_compiler::CurveKind::LineSegment, curve_line_segment),
@@ -5545,11 +5546,7 @@ static CURVE_COMPILERS: &[(reify_compiler::CurveKind, CurveCompileFn)] = &[
     (reify_compiler::CurveKind::BezierCurve, curve_bezier_curve),
     (reify_compiler::CurveKind::NurbsCurve, curve_nurbs_curve),
 ];
-const _: () = assert!(
-    CURVE_COMPILERS.len() == reify_compiler::CurveKind::VARIANT_COUNT,
-    "CURVE_COMPILERS / CurveKind::VARIANT_COUNT mismatch — a variant was added \
-     or removed without updating this production dispatch table"
-);
+lock_dispatch_table!(CURVE_COMPILERS, reify_compiler::CurveKind, "CurveKind");
 
 static PROFILE_COMPILERS: &[(reify_compiler::ProfileKind, ProfileCompileFn)] = &[
     (reify_compiler::ProfileKind::Rectangle, profile_rectangle),
@@ -5557,11 +5554,7 @@ static PROFILE_COMPILERS: &[(reify_compiler::ProfileKind, ProfileCompileFn)] = &
     (reify_compiler::ProfileKind::Polygon, profile_polygon),
     (reify_compiler::ProfileKind::Ellipse, profile_ellipse),
 ];
-const _: () = assert!(
-    PROFILE_COMPILERS.len() == reify_compiler::ProfileKind::VARIANT_COUNT,
-    "PROFILE_COMPILERS / ProfileKind::VARIANT_COUNT mismatch — a variant was added \
-     or removed without updating this production dispatch table"
-);
+lock_dispatch_table!(PROFILE_COMPILERS, reify_compiler::ProfileKind, "ProfileKind");
 
 // ── Lookup helpers ────────────────────────────────────────────────────────────
 
