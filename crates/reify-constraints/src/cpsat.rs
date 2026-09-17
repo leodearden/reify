@@ -3766,13 +3766,16 @@ mod solve_ranked_override_tests {
             matches!(
                 optimality,
                 OptimalityStatus::BestFound {
-                    reason: BestFoundReason::IterationLimit
+                    reason: BestFoundReason::EnumerationBudget
                 }
             ),
-            "a search that stopped early cannot have proven anything global. \
-             `ProvenOptimal` here would be the loudest possible lie: it tells a \
-             user their design is optimal on the strength of a search that \
-             visited a quarter of it; got {optimality:?}",
+            "a search that stopped early must report BOTH that it proved nothing \
+             global AND why. `ProvenOptimal` would be the loud lie: it tells a user \
+             their design is optimal on the strength of a search that visited a \
+             quarter of it. `IterationLimit` would be the quiet one: an accurate \
+             `unproven` claim attached to an inaccurate ACCOUNT, since this is an \
+             exact enumeration that hit a node cap — neither derivative-free nor \
+             iteration-limited (task #6553); got {optimality:?}",
         );
     }
 
