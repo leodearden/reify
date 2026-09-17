@@ -223,21 +223,7 @@ pub fn mesh_plane_2d(
     }
     let quad_indices = remap(&quad_node_tags)?;
 
-    // The 2D form of the emptiness rejection `init::read_tet_connectivity`
-    // applies to the three tet meshers: gmsh can report a successful generate
-    // and hold no elements at all, and a `MeshPlane2dResult` with neither a
-    // triangle nor a quad in it is a silent wrong answer no caller can tell
-    // from a real mesh of a plane surface. Both buffers together, because
-    // `recombine` legitimately drives either one to empty on its own.
-    if triangle_indices.is_empty() && quad_indices.is_empty() {
-        return Err(GeometryError::OperationFailed(format!(
-            "mesh_plane_2d: gmshModelMeshGenerate reported success but the model \
-             holds neither triangles nor quads for a {}-vertex outline with {} \
-             hole(s) — returning an empty mesh would be a silent wrong answer",
-            outer.len(),
-            holes.len(),
-        )));
-    }
+    verify_plane_readback(&triangle_indices, &quad_indices, outer.len(), holes.len())?;
 
     // Note: we intentionally do NOT issue a trailing `ffi::clear()` here.
     // The leading `ffi::clear()?` at the top of every `mesh_plane_2d` call
@@ -252,6 +238,42 @@ pub fn mesh_plane_2d(
         triangle_indices,
         quad_indices,
     })
+}
+
+/// Reject a readback holding no elements at all — the 2D form of the
+/// emptiness rejection `init::read_tet_connectivity` applies to the three tet
+/// meshers.
+///
+/// Gmsh can report a successful generate and hold nothing, and a
+/// [`MeshPlane2dResult`] with neither a triangle nor a quad in it is a silent
+/// wrong answer no caller can tell from a real mesh of a plane surface. Both
+/// buffers together, because `recombine` legitimately drives either one to
+/// empty on its own: a clean recombination leaves quads and no triangles,
+/// `recombine = false` leaves triangles and no quads.
+///
+/// Split out of [`mesh_plane_2d`], as `verify_tet_readback` is out of the tet
+/// readback, so the predicate is reachable from a unit test with no live gmsh
+/// model behind it — the only coverage it has, since no cheap 2D geometry that
+/// fails `mesh_generate(2)` was identified.
+///
+/// `outer_len` and `holes_len` describe the outline that produced nothing and
+/// reach the message only.
+#[cfg(has_gmsh)]
+fn verify_plane_readback(
+    triangle_indices: &[u32],
+    quad_indices: &[u32],
+    outer_len: usize,
+    holes_len: usize,
+) -> Result<(), GeometryError> {
+    if triangle_indices.is_empty() && quad_indices.is_empty() {
+        return Err(GeometryError::OperationFailed(format!(
+            "mesh_plane_2d: gmshModelMeshGenerate reported success but the model \
+             holds neither triangles nor quads for a {outer_len}-vertex outline \
+             with {holes_len} hole(s) — returning an empty mesh would be a silent \
+             wrong answer"
+        )));
+    }
+    Ok(())
 }
 
 /// Stub-build companion: returns `GeometryError::OperationFailed` containing
@@ -271,4 +293,56 @@ pub fn mesh_plane_2d(
         "mesh_plane_2d: {STUB_UNAVAILABLE_MARKER} in this build \
          (libgmsh not detected at build time)"
     )))
+}
+
+/// Both directions of [`verify_plane_readback`]: the rejection it exists for,
+/// and the three element mixes a legitimate 2D mesh comes back as.
+///
+/// This predicate has no integration coverage — nothing cheap fails
+/// `mesh_generate(2)` — so without these, inverting the `&&` to `||` would
+/// reject every clean-recombine quad-only mesh, the whole happy case of
+/// `reify_solver_elastic::mesher::mesh_swept_profile_2d`'s HexPreferred path,
+/// and still ship green.
+#[cfg(all(test, has_gmsh))]
+mod tests {
+    use super::*;
+
+    /// One triangle's and one quad's worth of connectivity. The values are
+    /// never dereferenced — only the buffers' emptiness is under test.
+    const ONE_TRIANGLE: [u32; 3] = [0, 1, 2];
+    const ONE_QUAD: [u32; 4] = [0, 1, 2, 3];
+
+    #[test]
+    fn a_readback_with_no_elements_at_all_is_rejected() {
+        let err = verify_plane_readback(&[], &[], 3, 1)
+            .expect_err("neither triangles nor quads is never a real mesh of a surface");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("neither triangles nor quads"),
+            "the rejection must say the model came back holding nothing; got: {msg}"
+        );
+        assert!(
+            msg.contains("3-vertex outline with 1 hole(s)"),
+            "the message must describe the outline that produced nothing, outer \
+             vertices first; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn triangles_alone_are_a_real_mesh() {
+        verify_plane_readback(&ONE_TRIANGLE, &[], 3, 0)
+            .expect("recombine = false legitimately yields triangles and no quads");
+    }
+
+    #[test]
+    fn quads_alone_are_a_real_mesh() {
+        verify_plane_readback(&[], &ONE_QUAD, 4, 0)
+            .expect("a clean recombination legitimately yields quads and no triangles");
+    }
+
+    #[test]
+    fn a_partially_recombined_mesh_carrying_both_is_a_real_mesh() {
+        verify_plane_readback(&ONE_TRIANGLE, &ONE_QUAD, 4, 0)
+            .expect("recombination that cannot form every quad leaves both kinds behind");
+    }
 }
