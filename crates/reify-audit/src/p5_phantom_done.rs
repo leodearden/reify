@@ -1592,11 +1592,16 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 ///    grace-windowed domain; H2 scopes to the documented cross-crate relocation
 ///    pattern to avoid duplicating noisy P1 findings.
 /// 2. **No commit**: skipped when `done_provenance.commit` is absent.
-/// 3. **Per-symbol suppression guards** (reuses P1's opt-out set):
+/// 3. **Per-symbol locatability guard**: the declaration could not be located
+///    ([`crate::ChangedSymbol::decl_located`]), so whether its author opted out
+///    is UNKNOWN rather than "no" — SKIPPED, not stranded. Shaped identically
+///    to `p1_producer_orphan`'s so the two detectors cannot drift.
+/// 4. **Per-symbol suppression guards** (reuses P1's opt-out set):
 ///    - Symbol file starts with `crates/reify-stdlib/` (scope-exclude).
 ///    - `has_allow_dead_code` or `has_cfg_test` (intentional-orphan opt-outs).
-///    - Non-blank `// G-allow:` marker (all three via [`DeclSuppression::opts_out`]).
-/// 4. **No non-test workspace caller**: `find_references` returns only test-path
+///    - Non-blank `// G-allow:` marker (the last two via
+///      [`crate::DeclSuppression::opts_out`]).
+/// 5. **No non-test workspace caller**: `find_references` returns only test-path
 ///    refs (or none) for the symbol.
 ///
 /// Design rationale: cross-crate gate keeps H2 off of P1's single-crate turf;
@@ -1641,6 +1646,11 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     }
     let mut findings = Vec::new();
     for symbol in symbols {
+        // Same three-state reading as p1_producer_orphan: an unlocatable
+        // declaration means UNKNOWN, not "no opt-out". Skip rather than strand.
+        if !symbol.decl_located() {
+            continue;
+        }
         // Per-symbol guards: stdlib scope-exclude, intentional-orphan opt-outs
         // (#[allow(dead_code)], #[cfg(test)]), and non-blank G-allow marker.
         // Delegated to crate::is_symbol_suppressed so that P1 and P5 H2 share

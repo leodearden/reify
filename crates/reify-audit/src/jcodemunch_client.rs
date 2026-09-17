@@ -894,8 +894,8 @@ type StaleDeclLine = (String, usize, usize);
 ///
 /// [`decl_line_out_of_range`] folds two conditions into one predicate — a
 /// line past EOF and the `0` "no line reported" sentinel — which is right
-/// for `extract_suppression`'s guard (both are unlocatable, both get the
-/// neutral triple) and wrong for the operator, because the two have
+/// for `extract_suppression`'s guard (both are unlocatable, so both decline
+/// to answer) and wrong for the operator, because the two have
 /// OPPOSITE remedies. This enum is what keeps the distinction a value
 /// rather than a substring of the rendered message, so
 /// `stale_decl_line_diagnostic`'s prose can be reworded freely and a
@@ -3296,10 +3296,10 @@ mod tests {
         );
     }
 
-    /// The third way a declaration goes unlocatable, and the one #6447's
-    /// KNOWN LIMITATION did not even name: the declaring file could not be
-    /// READ at all, so `enrich_suppression_flags` never enters its `Ok` arm
-    /// and nothing was scanned.
+    /// The third way a declaration goes unlocatable, and the one that had no
+    /// test at all before this seam grew an "unknown": the declaring file
+    /// could not be READ, so `enrich_suppression_flags` never enters its `Ok`
+    /// arm and nothing was scanned.
     ///
     /// The sibling above pins the OPERATOR-facing half of this state (an
     /// unreadable file stays out of the stale-index summary because it has
@@ -4028,7 +4028,7 @@ mod tests {
             // re-derives the same neutral flags).
             let diagnostic = enrich_suppression_flags(&mut symbols, tmp.path()).expect(
                 "a past-EOF declaration line must produce a stale-index diagnostic, \
-                 not a silent neutral triple",
+                 not a silently declined answer",
             );
             assert!(
                 diagnostic.contains("a.rs"),
@@ -4045,9 +4045,9 @@ mod tests {
         /// `RealJCodemunchOps::get_changed_symbols`.
         ///
         /// Its past-EOF sibling above cannot: that test's only post-condition
-        /// on the production route is the neutral
-        /// `(false, false, None)` triple, which is byte-for-byte the default
-        /// `changed_symbols_from_wire` already sets — so deleting the
+        /// on the production route is `suppression: None`, which is
+        /// byte-for-byte the default `changed_symbols_from_wire` already
+        /// sets — so deleting the
         /// `enrich_suppression_flags` call from `get_changed_symbols`
         /// entirely would leave it, and the whole suite, green (it observes
         /// the diagnostic by calling the seam a second time itself). The

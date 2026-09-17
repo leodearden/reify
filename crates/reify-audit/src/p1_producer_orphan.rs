@@ -22,7 +22,7 @@
 //!   (foundation/scaffold task); a pending/in-progress/review consumer task
 //!   whose `consumer_ref` matches this producer's `prd`; no `done_provenance.commit`.
 //! - Per symbol: the declaration could not be located, so whether its author
-//!   opted out is UNKNOWN ([`ChangedSymbol::decl_located`]) — SKIPPED outright
+//!   opted out is UNKNOWN ([`crate::ChangedSymbol::decl_located`]) — SKIPPED outright
 //!   rather than downgraded, since unknown is not "no opt-out"; an opt-out the
 //!   located declaration carries — `#[allow(dead_code)]` / `#[cfg(test)]` /
 //!   a non-blank `// G-allow:` marker ([`DeclSuppression::opts_out`]);

@@ -1482,8 +1482,8 @@ impl DeclSuppression {
 ///
 /// Suppression is THREE-state, and [`decl_located`](Self::decl_located) is the
 /// state a consumer branches on FIRST: `None` means the declaration was never
-/// located, so no opt-out judgement was possible; `Some(DeclSuppression::
-/// default())` means it was read and carries none; `Some` with a flag set
+/// located, so no opt-out judgement was possible; a default
+/// [`DeclSuppression`] means it was read and carries none; one with a flag set
 /// means it was read and opted out. All three causes of `None` — the wire
 /// reported no `line`, the line is past the declaring file's current end
 /// (a stale index), or the declaring file could not be read — are carried
