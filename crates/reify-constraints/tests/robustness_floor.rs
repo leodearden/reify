@@ -41,6 +41,16 @@
 //!     control: genuinely empty, yet its DERIVED box is non-degenerate)
 //!   - `genuinely_unsatisfiable_constraints_keep_the_region_empty_wording` above
 //!     serves as the second pair's empty half.
+//!
+//! Task #5714 review round — a witness satisfying the originals says NOTHING
+//! about the floor, so the emit site re-checks it and words THREE classes:
+//! 1 no witness (region empty), 2 witness misses the floor (margin named, with
+//! its shortfall), 3 witness meets the floor too (a convergence limit, and none
+//! of class 2's remedies apply).  The measured 2/3 boundary on
+//! `2·x > 60mm ∧ 2·x < HI` sits between HI = 61mm and HI = 62.5mm:
+//!   - `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` (class 3,
+//!     HI = 100mm) — pairs with the class-2 `61mm` test above, which differs
+//!     ONLY in that bound, so the two pin the discriminator itself.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
