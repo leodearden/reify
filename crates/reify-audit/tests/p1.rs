@@ -17,9 +17,9 @@
 mod p1 {
 
 use reify_audit::{
-    AuditContext, ChangedSymbol, DeadSymbol, DoneProvenance, EvidenceRef, Finding, JCodemunchOps,
-    LayerViolation, MockGitOps, MockJCodemunchOps, Pattern, Severity, SymbolReference,
-    TaskMetadata, UntestedSymbol, p1_producer_orphan,
+    AuditContext, ChangedSymbol, DeadSymbol, DeclSuppression, DoneProvenance, EvidenceRef, Finding,
+    JCodemunchOps, LayerViolation, MockGitOps, MockJCodemunchOps, Pattern, Severity,
+    SymbolReference, TaskMetadata, UntestedSymbol, p1_producer_orphan,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -90,22 +90,45 @@ mod tests {
         // one test file rather than two.
         let _: Pattern = Pattern::P1ProducerOrphan;
 
-        // ChangedSymbol / SymbolReference: destructure every field by name.
+        // ChangedSymbol / DeclSuppression / SymbolReference: destructure every
+        // field by name.
         let ChangedSymbol {
             name: _,
             file: _,
             line: _,
-            has_allow_dead_code: _,
-            has_cfg_test: _,
-            g_allow_marker: _,
+            suppression: _,
         } = ChangedSymbol {
             name: "new_widget".to_string(),
             file: "crates/reify-x/src/widget.rs".to_string(),
             line: 42,
-            has_allow_dead_code: false,
-            has_cfg_test: false,
-            g_allow_marker: None,
+            suppression: Some(DeclSuppression::default()),
         };
+        let DeclSuppression {
+            has_allow_dead_code: _,
+            has_cfg_test: _,
+            g_allow_marker: _,
+        } = DeclSuppression::default();
+
+        // `suppression` is three-state, and `decl_located` is the accessor for
+        // the state a consumer must branch on BEFORE asking about opt-outs.
+        assert!(
+            !ChangedSymbol {
+                suppression: None,
+                ..changed_symbol("unlocatable", "crates/reify-x/src/widget.rs")
+            }
+            .decl_located(),
+            "`suppression: None` means the declaration was never located, so no \
+             opt-out judgement was possible",
+        );
+        assert!(
+            ChangedSymbol {
+                suppression: Some(DeclSuppression::default()),
+                ..changed_symbol("located", "crates/reify-x/src/widget.rs")
+            }
+            .decl_located(),
+            "`Some(DeclSuppression::default())` means the declaration WAS read \
+             and carries no opt-out — a different answer from `None`",
+        );
         let SymbolReference { file: _, line: _ } = SymbolReference {
             file: "crates/reify-y/src/uses_widget.rs".to_string(),
             line: 7,

@@ -1912,10 +1912,31 @@ mod tests {
         assert_eq!(row0.file, "crates/reify-ast/src/decl.rs");
         assert_eq!(row0.line, 877);
         assert!(!row0.name.is_empty(), "name should be non-empty");
-        // Suppression flags defaulted
-        assert!(!row0.has_allow_dead_code);
-        assert!(!row0.has_cfg_test);
-        assert!(row0.g_allow_marker.is_none());
+    }
+
+    /// The decode step reads no source file, so it has no basis for ANY
+    /// opt-out judgement — every decoded symbol must leave suppression
+    /// UNKNOWN rather than claim the author declined every opt-out.
+    ///
+    /// Asserted over every row of the live fixture, not just the first: a
+    /// per-row default that held for row 0 and drifted elsewhere would be
+    /// exactly the conflation `DeclSuppression` exists to make impossible.
+    #[test]
+    fn changed_symbols_from_wire_leaves_suppression_unknown() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/jcodemunch/get_changed_symbols.json"
+        ));
+        let envelope: Value = serde_json::from_str(fixture).expect("fixture is valid JSON");
+        let decoded = decode_tool_result(&envelope).expect("decode_tool_result");
+        let symbols = changed_symbols_from_wire(&decoded);
+        assert!(!symbols.is_empty(), "fixture must decode some symbols");
+        assert!(
+            symbols.iter().all(|sym| !sym.decl_located()),
+            "decoding reads no source file — suppression must stay UNKNOWN for \
+             every row until enrichment runs; got {:?}",
+            symbols.iter().find(|sym| sym.decl_located()),
+        );
     }
 
     /// A 3-segment (type-less) `__tables` spec — the grammar
@@ -2374,26 +2395,56 @@ mod tests {
             "pub fn my_fn() {}",
         ]
         .map(String::from);
-        let (allow, cfg, g) = extract_suppression(&src, 4);
-        assert!(allow, "has_allow_dead_code should be true");
-        assert!(cfg, "has_cfg_test should be true");
-        assert_eq!(g, Some("reason text".to_string()));
+        let found = extract_suppression(&src, 4)
+            .expect("line 4 is in range, so the declaration was located");
+        assert!(found.has_allow_dead_code, "has_allow_dead_code should be true");
+        assert!(found.has_cfg_test, "has_cfg_test should be true");
+        assert_eq!(found.g_allow_marker, Some("reason text".to_string()));
     }
 
+    /// The distinction this seam exists for: "the declaration was READ and
+    /// carries no opt-out" and "the declaration could not be located, so
+    /// nothing was read" must be DIFFERENT answers.
+    ///
+    /// Under the neutral `(false, false, None)` triple they were byte-identical,
+    /// and every consumer read the second as the first — reporting symbols whose
+    /// authors had in fact opted out. `Some(DeclSuppression::default())` vs
+    /// `None` is what keeps them apart, so the contrast is asserted directly
+    /// rather than as two independent equalities that could both hold of one
+    /// conflated value.
     #[test]
-    fn extract_suppression_clean_decl() {
+    fn extract_suppression_reads_a_clean_decl_but_declines_an_unlocatable_one() {
         let src = ["pub fn clean() {}"].map(String::from);
-        let (allow, cfg, g) = extract_suppression(&src, 1);
-        assert!(!allow);
-        assert!(!cfg);
-        assert!(g.is_none());
+        let clean = extract_suppression(&src, 1);
+        assert_eq!(
+            clean,
+            Some(DeclSuppression::default()),
+            "an in-range declaration carrying no opt-out was READ — a positive \
+             answer, not a declined one",
+        );
+
+        // Every way a declaration goes unlocatable, each distinct from `clean`.
+        for (answer, cause) in [
+            (extract_suppression(&src, 0), "line 0 (the wire reported none)"),
+            (extract_suppression(&src, 2), "a line past lines.len() (stale index)"),
+            (extract_suppression(&[], 1), "an empty lines slice"),
+        ] {
+            assert_eq!(answer, None, "{cause} must decline to answer");
+            assert_ne!(
+                answer, clean,
+                "{cause} must not read as \"the author declined every opt-out\"",
+            );
+        }
     }
 
     #[test]
     fn extract_suppression_blank_g_allow_returns_none() {
         let src = ["// G-allow:", "pub fn my_fn() {}"].map(String::from);
-        let (_allow, _cfg, g) = extract_suppression(&src, 2);
-        assert!(g.is_none(), "blank G-allow: should not produce a marker");
+        let found = extract_suppression(&src, 2).expect("line 2 is in range");
+        assert!(
+            found.g_allow_marker.is_none(),
+            "blank G-allow: should not produce a marker"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -2760,9 +2811,9 @@ mod tests {
             "pub fn my_fn() {}",
         ]
         .map(String::from);
-        let (allow, _cfg, _g) = extract_suppression(&src, 3);
+        let found = extract_suppression(&src, 3).expect("line 3 is in range");
         assert!(
-            !allow,
+            !found.has_allow_dead_code,
             "scanner should not cross blank line to find #[allow(dead_code)]"
         );
     }
@@ -2777,53 +2828,42 @@ mod tests {
             "pub fn my_fn() {}",
         ]
         .map(String::from);
-        let (allow, cfg, _g) = extract_suppression(&src, 4);
+        let found = extract_suppression(&src, 4).expect("line 4 is in range");
         // cfg(test) is directly above the declaration — should be found.
-        assert!(cfg, "cfg(test) is directly above the declaration");
+        assert!(found.has_cfg_test, "cfg(test) is directly above the declaration");
         // allow(dead_code) is separated by a code line — should NOT be found.
         assert!(
-            !allow,
+            !found.has_allow_dead_code,
             "scanner should not cross code line to find #[allow(dead_code)]"
         );
     }
 
     // ------------------------------------------------------------------
-    // step-6 / step-7: extract_suppression totality guard boundary cases
+    // step-6 / step-7: extract_suppression totality guard, IN-range boundary
     //
-    // Pins the guard added in step-6 exactly, so a later widening of
-    // `decl_line_1based == 0 || decl_line_1based > lines.len()` cannot go
+    // Pins the guard's `>` exactly, so a later widening to `>=` cannot go
     // unnoticed: the boundary `== lines.len()` (declaration on the final
-    // line) must still scan upward — the guard is strictly `>`, not `>=`.
+    // line) is IN range and must still scan upward. The guard's OUT-of-range
+    // half — line 0, past-EOF, empty slice — is pinned by
+    // `extract_suppression_reads_a_clean_decl_but_declines_an_unlocatable_one`
+    // above, which is also where the declined answer is contrasted against a
+    // clean one.
     // ------------------------------------------------------------------
 
     #[test]
-    fn extract_suppression_boundary_cases() {
-        // decl_line_1based == lines.len() (declaration on the final line)
-        // must still scan upward for attrs above it.
+    fn extract_suppression_scans_upward_from_a_final_line_declaration() {
         let src = [
             "fn placeholder() {}",
             "#[allow(dead_code)]",
             "pub fn my_fn() {}",
         ]
         .map(String::from);
-        let (allow, _cfg, _g) = extract_suppression(&src, 3);
+        let found = extract_suppression(&src, 3).expect(
+            "decl_line_1based == lines.len() is IN range — the guard is strictly `>`",
+        );
         assert!(
-            allow,
+            found.has_allow_dead_code,
             "decl_line_1based == lines.len() must still scan upward for attrs"
-        );
-
-        // An empty `lines` slice is out of range for any decl_line_1based.
-        let (allow, cfg, g) = extract_suppression(&[], 1);
-        assert!(
-            !allow && !cfg && g.is_none(),
-            "extract_suppression(&[], 1) must return the neutral triple"
-        );
-
-        // decl_line_1based == 0 is out of range regardless of lines' length.
-        let (allow, cfg, g) = extract_suppression(&["a".to_string()], 0);
-        assert!(
-            !allow && !cfg && g.is_none(),
-            "extract_suppression(&[\"a\".to_string()], 0) must return the neutral triple"
         );
     }
 
@@ -3236,11 +3276,10 @@ mod tests {
             msg.contains("empty.rs"),
             "diagnostic must name the empty declaring file; got: {msg}"
         );
-        assert!(
-            !symbols[0].has_allow_dead_code
-                && !symbols[0].has_cfg_test
-                && symbols[0].g_allow_marker.is_none(),
-            "nothing is locatable in a 0-line file — flags stay neutral; got {:?}",
+        assert_eq!(
+            symbols[0].suppression, None,
+            "nothing is locatable in a 0-line file — the declaration was never \
+             found, so suppression stays UNKNOWN; got {:?}",
             symbols[0]
         );
 
@@ -3253,6 +3292,44 @@ mod tests {
             enrich_suppression_flags(&mut unreadable, tmp.path()).is_none(),
             "an unreadable file has its own per-path diagnostic and must not \
              also appear in the stale-index summary"
+        );
+    }
+
+    /// The third way a declaration goes unlocatable, and the one #6447's
+    /// KNOWN LIMITATION did not even name: the declaring file could not be
+    /// READ at all, so `enrich_suppression_flags` never enters its `Ok` arm
+    /// and nothing was scanned.
+    ///
+    /// The sibling above pins the OPERATOR-facing half of this state (an
+    /// unreadable file stays out of the stale-index summary because it has
+    /// its own per-path diagnostic). This pins the DETECTOR-facing half: what
+    /// the symbol itself carries afterwards must be "unknown", never
+    /// "checked, carries nothing" — the latter is what turns an unreadable
+    /// file into a false-positive orphan for every symbol it declares.
+    #[test]
+    fn enrich_suppression_flags_leaves_suppression_unknown_for_an_unreadable_declaring_file() {
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        // Deliberately never written: the path does not exist under the root.
+        let mut symbols = vec![ChangedSymbol {
+            name: "widget".to_string(),
+            file: "does-not-exist.rs".to_string(),
+            line: 7,
+            suppression: None,
+        }];
+
+        let _ = enrich_suppression_flags(&mut symbols, tmp.path());
+
+        assert_eq!(
+            symbols[0].suppression, None,
+            "a declaring file that could not be read leaves suppression \
+             UNKNOWN — enrichment scanned nothing, so it may not report that \
+             the author declined every opt-out; got {:?}",
+            symbols[0]
+        );
+        assert!(
+            !symbols[0].decl_located(),
+            "decl_located() is the accessor a detector branches on; got {:?}",
+            symbols[0]
         );
     }
 
@@ -3936,10 +4013,10 @@ mod tests {
             assert_eq!(sym.name, "widget");
             assert_eq!(sym.line, 99);
             assert!(
-                !sym.has_allow_dead_code && !sym.has_cfg_test && sym.g_allow_marker.is_none(),
+                sym.suppression.is_none(),
                 "declaration line could not be located past EOF — suppression \
-                 flags must be the neutral (false, false, None), not fabricated \
-                 from an unrelated block of the file; got {sym:?}",
+                 must stay UNKNOWN, neither fabricated from an unrelated block \
+                 of the file nor reported as \"carries no opt-out\"; got {sym:?}",
             );
 
             // …and the degradation must not be SILENT. `get_changed_symbols`
@@ -4012,18 +4089,22 @@ mod tests {
             let sym = &symbols[0];
             assert_eq!(sym.name, "widget");
             assert_eq!(sym.line, 4);
+            let found = sym
+                .suppression
+                .as_ref()
+                .expect("declaration was located — line 4 is in range for a 4-line file");
             assert!(
-                sym.has_allow_dead_code,
+                found.has_allow_dead_code,
                 "`#[allow(dead_code)]` sits directly above the declaration — \
                  `get_changed_symbols` must enrich the decoded symbol from the \
                  declaring file, not return the wire defaults; got {sym:?}",
             );
             assert!(
-                sym.has_cfg_test,
+                found.has_cfg_test,
                 "`#[cfg(test)]` sits in the same attribute block; got {sym:?}",
             );
             assert_eq!(
-                sym.g_allow_marker.as_deref(),
+                found.g_allow_marker.as_deref(),
                 Some("exercised only by the GUI sidecar"),
                 "the `// G-allow:` marker above the block must reach the caller; \
                  got {sym:?}",
