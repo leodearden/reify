@@ -327,39 +327,43 @@ fn assert_arms(msg: &str, expected: &[&str], forbidden: &[&str]) {
 /// cannot be acted on: the file has several contexts and the reader needs to
 /// know WHICH one to open.
 fn assert_names_a_context_index(msg: &str) {
-    entity_index_after(msg, "context #");
+    positive_number_after(msg, "context #");
 }
 
-/// Pull the entity index a message reports after `marker`.
+/// Pull the number a message reports after `marker`, requiring it to be > 0.
 ///
 /// The counts moved to `StepGuardProbeResult`, but WHICH entity a violation
-/// blames is not a count — it is the located half of the diagnostic, and it
-/// exists only in the text a user reads. So this one scan stays, shared by
-/// every arm that names an entity rather than reimplemented per test.
+/// blames — and how many entities V1 walked — is not among them: it is the
+/// located half of the diagnostic, and it exists only in the text a user
+/// reads. So this one scan stays, shared by every arm that reports a number
+/// rather than reimplemented per test.
 ///
-/// The index has to be a real model entity number:
+/// The `> 0` requirement is load-bearing in both readings.
 /// `Interface_InterfaceModel::Number` returns 0 for an entity the model does
-/// not carry, and "plane-angle unit #0" sends a reader looking for something
-/// that is not in the file.
-fn entity_index_after(msg: &str, marker: &str) -> u32 {
+/// not carry, so "plane-angle unit #0" sends a reader looking for something
+/// that is not in the file; and a walked count of 0 means V1 fired on its
+/// null-model branch, which says nothing about a real export.
+fn positive_number_after(msg: &str, marker: &str) -> u32 {
     let at = msg
         .find(marker)
-        .unwrap_or_else(|| panic!("refusal must name the entity as {marker:?} + index; got: {msg}"));
-    let rest = &msg[at + marker.len()..];
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        .unwrap_or_else(|| panic!("refusal must report {marker:?} + a number; got: {msg}"));
+    let digits: String = msg[at + marker.len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     assert!(
         !digits.is_empty(),
-        "{marker:?} must be followed by the entity index; got: {msg}"
+        "{marker:?} must be followed by a number; got: {msg}"
     );
-    let index: u32 = digits.parse().expect("digits parse");
+    let value: u32 = digits.parse().expect("digits parse");
     assert!(
-        index > 0,
-        "the reported entity index must be a real model entity number — \
-         Interface_InterfaceModel::Number returns 0 for an entity the model \
-         does not carry, and an index of 0 is not something a reader can look \
-         up; got: {msg}"
+        value > 0,
+        "the number after {marker:?} must be > 0 — an entity index of 0 names \
+         nothing in the file (Interface_InterfaceModel::Number returns 0 for \
+         an entity the model does not carry), and a walked count of 0 means \
+         the null-model branch fired instead; got: {msg}"
     );
-    index
+    value
 }
 
 // ---------------------------------------------------------------------------
@@ -437,12 +441,13 @@ fn guard_refuses_a_non_radian_plane_angle_declaration() {
          classified the corrupted unit; got radian_ok={radian_ok} \
          plane_angle_units={plane_angle_units} in: {msg}"
     );
-    assert!(
-        radian_ok > 0,
-        "the OTHER contexts are untouched and must still classify as radian — \
-         if radian_ok is 0 the fault corrupted more than the one unit it \
-         claims to, and this test is no longer about a partial flip; got: {msg}"
-    );
+    // `radian_ok > 0` is deliberately NOT asserted beside it. It reads as "the
+    // other contexts are untouched", but it holds only while OCCT emits a
+    // distinct unit entity per context: dedup those entities upstream and one
+    // mutation legitimately flips every association, reddening this test on a
+    // perfectly correct guard. That is the same OCCT detail
+    // `audit_step_plane_angle_units` refuses to depend on (an association walk,
+    // not a count proxy), and the assertion above needs no such assumption.
 }
 
 /// A PREFIXED radian — a MILLIRADIAN — is REFUSED, proving the guard is not a
@@ -558,11 +563,9 @@ fn guard_refuses_a_context_with_no_plane_angle_declaration() {
          noticed the missing reference; got radian_ok={radian_ok} \
          contexts={contexts} in: {msg}"
     );
-    assert!(
-        radian_ok > 0,
-        "the OTHER contexts are untouched and must still reach radians; if \
-         radian_ok is 0 the fault did more than remove one reference; got: {msg}"
-    );
+    // No `radian_ok > 0` here either, for the reason spelled out in
+    // `guard_refuses_a_non_radian_plane_angle_declaration`: it would pin OCCT's
+    // per-context unit-entity layout, which this suite must not depend on.
 }
 
 /// A CONVERSION_BASED plane-angle declaration — the spelling a DEGREE unit
@@ -606,7 +609,7 @@ fn guard_refuses_a_conversion_based_degree_declaration() {
          token that tells a reader what they are looking at; got: {msg}"
     );
     assert_names_a_context_index(&msg);
-    entity_index_after(&msg, "reaches plane-angle unit #");
+    positive_number_after(&msg, "reaches plane-angle unit #");
 
     // (d) The walk COUNTED the substitute as angular but not as a radian. If
     // the ConversionBased downcast were mistyped, the unit would fall through
@@ -770,18 +773,7 @@ fn guard_refuses_an_orphaned_non_radian_plane_angle_unit() {
     // (c) The offending ENTITY is named by index, and by unit name. This is
     // V4's own message-formatting branch — distinct from V3's, which names a
     // context as well — so it needs its own pin.
-    let at = msg
-        .find("unreferenced plane-angle unit #")
-        .unwrap_or_else(|| {
-            panic!("V4 must name the orphan as \"unreferenced plane-angle unit #N\"; got: {msg}")
-        });
-    let rest = &msg[at + "unreferenced plane-angle unit #".len()..];
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    assert!(
-        !digits.is_empty(),
-        "\"unreferenced plane-angle unit #\" must be followed by the entity \
-         index — an orphan the reader cannot locate is not actionable; got: {msg}"
-    );
+    positive_number_after(&msg, "unreferenced plane-angle unit #");
     assert!(
         msg.contains(".STERADIAN.") || msg.contains("sunSteradian"),
         "the refusal must name what the orphan actually is; got: {msg}"
@@ -861,7 +853,7 @@ fn guard_refuses_an_unverifiable_plane_angle_declaration() {
 
     // (e) Both the context and the unit are located by entity index.
     assert_names_a_context_index(&msg);
-    entity_index_after(&msg, "reaches plane-angle unit #");
+    positive_number_after(&msg, "reaches plane-angle unit #");
 
     // (f) The counts show the walk classified the substitute as ANGULAR (it is
     // counted) but not as a radian. If the third downcast were removed, the
@@ -911,7 +903,7 @@ fn guard_refuses_an_orphaned_unverifiable_plane_angle_unit() {
         msg.contains("StepBasic_PlaneAngleUnit"),
         "the refusal must name the orphan's OCCT class; got: {msg}"
     );
-    entity_index_after(&msg, "unreferenced plane-angle unit #");
+    positive_number_after(&msg, "unreferenced plane-angle unit #");
 
     // (d) The counts localise the finding to the orphan and nowhere else. The
     // three association counts are blind to an orphan by construction, so they
@@ -1041,22 +1033,7 @@ fn guard_refuses_a_model_with_no_unit_assigned_context() {
     // the entity count it reports. Both are V1, and the two say different
     // things about where to look: "the model is null" is a wrapper bug, while
     // "walked N entities and found no context" is a defect in the file.
-    let at = msg
-        .find("walked ")
-        .unwrap_or_else(|| panic!("V1 must report how many entities it walked; got: {msg}"));
-    let digits: String = msg[at + "walked ".len()..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    let walked: u32 = digits
-        .parse()
-        .unwrap_or_else(|_| panic!("\"walked \" must be followed by a count; got: {msg}"));
-    assert!(
-        walked > 0,
-        "the walk must report a POPULATED model — a count of zero would mean \
-         this test hit the null-model branch instead, which says nothing about \
-         a real export; got: {msg}"
-    );
+    positive_number_after(&msg, "walked ");
 
     // (d) The counts agree with the finding: nothing was resolved, so nothing
     // could be checked.
