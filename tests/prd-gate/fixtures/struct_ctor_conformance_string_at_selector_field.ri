@@ -1,0 +1,18 @@
+// PRD probe fixture — docs/prds/struct-ctor-field-type-conformance.md §7 row 3, task δ (#5306).
+//
+// The "disallow string" rule (4581): a bare String at a selector-typed ctor field is NOT a
+// selector and must not be over-tagged with the pose hint — it gets the plain
+// `requires selector type` wording.
+//
+// PRE (knob at Severity::Warning): `reify check` exits 0, "All constraints satisfied."
+// POST (task δ / #5306): `reify check` exits 1 with
+// "argument 'face' has type 'String' but param 'face' requires selector type 'FaceSelector'"
+// (crates/reify-compiler/src/conformance/mod.rs `emit_selector_mismatch`, the non-pose arm).
+//
+// Asserted by tests/prd-gate/struct-ctor-conformance-probe-set.json, gated by
+// tests/infra/test_prd_gate_struct_ctor_conformance.sh.
+module struct_ctor_conformance_string_at_selector_field
+
+structure def StringAtSelectorField {
+    let pl = PressureLoad(face: "x_max")
+}
