@@ -3042,9 +3042,11 @@ build_plan() {
         # because the frontend consumes generated Rust->TS bindings). On a merge-gate narrowed retry, dark-factory sets
         # REIFY_GUI_RETRY_SPECS to the space-separated, gui-root-relative vitest
         # spec paths that failed (e.g. `src/__tests__/foo.test.ts`); forward them
-        # so the block runs ONLY those specs via `npm test -- <specs>` (== `vitest
-        # run <specs>`; the block cd's into gui/, so gui-relative positionals
-        # match). Unset OR empty => full `npm test`, byte-identical to the
+        # so the block runs ONLY those specs via the shared runner
+        # ../scripts/gui-vitest-run.sh (== `npm test -- <specs>` == `vitest run
+        # <specs>`, plus task 7630's bounded worker-RPC-flake retry; the block
+        # cd's into gui/, hence the ../ prefix, and gui-relative positionals
+        # match). Unset OR empty => the full suite, byte-identical to the
         # non-retry path (the §4.3 loud full-fallback for an empty gui subset).
         # PRD docs/prds/verify-retry-failed-only.md §4.2 leaf γ.
         #
@@ -3085,7 +3087,7 @@ build_plan() {
                 done
             fi
             if [ "$_gui_retry_ok" -eq 1 ]; then
-                gui_inner+=" && npm test -- $_gui_retry_specs"
+                gui_inner+=" && ../scripts/gui-vitest-run.sh $_gui_retry_specs"
                 # δ honest marker (task 5290): count the VALIDATED specs at this
                 # SINGLE narrowing site (INV-5 — reuse the allowlist result, so
                 # an ignored/invalid REIFY_GUI_RETRY_SPECS reports gui=0, matching
@@ -3096,7 +3098,7 @@ build_plan() {
                 _RETRY_GUI_SUBSET_APPLIED=${#_gui_retry_toks[@]}
             else
                 [ -n "$_gui_retry_specs" ] && echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS contains characters outside [A-Za-z0-9._/ -] or a token beginning with '-'; ignoring the subset and running the full gui suite" >&2
-                gui_inner+=" && npm test"
+                gui_inner+=" && ../scripts/gui-vitest-run.sh"
             fi
         fi
         _gui_cmd="if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
