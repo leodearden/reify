@@ -46,6 +46,8 @@ mod io_traits_tests;
 mod module_dag_tests;
 #[path = "harness_modules_ports/occurrence_compile_tests.rs"]
 mod occurrence_compile_tests;
+#[path = "harness_modules_ports/pin_cell_id_namespace_tests.rs"]
+mod pin_cell_id_namespace_tests;
 #[path = "harness_modules_ports/port_compile_tests.rs"]
 mod port_compile_tests;
 #[path = "harness_modules_ports/ports_prelude_test.rs"]
