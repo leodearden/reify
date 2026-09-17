@@ -13,6 +13,8 @@
 #            else, and its consumers source it rather than re-inlining it
 #   step-20 — digit-bearing branch prefixes (D9-D12), and Block F: the
 #            harvest/arbiter AGREEMENT invariant, asserted as set EQUALITY
+#   esc-7244-16 — Block H: the conventional-commit subject arm, the form
+#            reify's own task commits use and the one the grammar lacked
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -193,6 +195,12 @@ assert "D8: an id repeated in both forms appears exactly once" \
     stdout_is '5686' task_citation_peer_ids "Merge task/5686 into main
 
 Re-lands #5686." "$PFX"
+assert "D8b: a conventional-commit subject id is harvested" \
+    stdout_is '5686' task_citation_peer_ids 'impl(5686): GREEN — tier 4' "$PFX"
+assert "D8c: a '(<id>' in a BODY line is collected but rejected (subject-only arm)" \
+    stdout_is '5686' task_citation_peer_ids "impl(5686): subject
+
+test(4880): a body line listing another commit" "$PFX"
 
 # D9-D12 (step-20) — the branch prefix is CALLER-SUPPLIED and may itself carry
 # digits, so the id can never be re-derived from the matched text by a
@@ -234,6 +242,7 @@ echo "--- Block E: SPOT-delegation guard ---"
 # each ERE.
 E_MERGE_FRAGMENT='^Merge '
 E_HASH_FRAGMENT='(^|[^0-9])#'
+E_KINDS_FRAGMENT='merge|impl|amend|fix|test|feat|chore|docs|refactor|style|build'
 
 E_LIB_REL="scripts/lib_task_citation.sh"
 # Every consumer named in the lib header. A new consumer belongs on this list.
@@ -268,6 +277,8 @@ assert "E1: the lib's CODE carries the merge-subject ERE (guard is non-vacuous)"
     _carries "$REPO_ROOT/$E_LIB_REL" "$E_MERGE_FRAGMENT"
 assert "E2: the lib's CODE carries the '#<id>' boundary ERE (guard is non-vacuous)" \
     _carries "$REPO_ROOT/$E_LIB_REL" "$E_HASH_FRAGMENT"
+assert "E2b: the lib's CODE carries the conventional-commit kind list (guard is non-vacuous)" \
+    _carries "$REPO_ROOT/$E_LIB_REL" "$E_KINDS_FRAGMENT"
 
 for _c in "${E_CONSUMERS[@]}"; do
     _abs="$REPO_ROOT/$_c"
@@ -283,6 +294,8 @@ for _c in "${E_CONSUMERS[@]}"; do
         _lacks "$_abs" "$E_MERGE_FRAGMENT"
     assert "E6[$_c]: carries NO second copy of the '#<id>' boundary ERE" \
         _lacks "$_abs" "$E_HASH_FRAGMENT"
+    assert "E6b[$_c]: carries NO second copy of the conventional-commit kind list" \
+        _lacks "$_abs" "$E_KINDS_FRAGMENT"
 done
 
 # Tree-wide backstop: no OTHER tracked script may grow a copy either. Scoped to
@@ -292,7 +305,8 @@ _no_other_carriers() {
     local f hits=""
     while IFS= read -r f; do
         case "$f" in */"$E_LIB_REL"|*/lib_task_citation.sh) continue ;; esac
-        if _carries "$f" "$E_MERGE_FRAGMENT" || _carries "$f" "$E_HASH_FRAGMENT"; then
+        if _carries "$f" "$E_MERGE_FRAGMENT" || _carries "$f" "$E_HASH_FRAGMENT" \
+                || _carries "$f" "$E_KINDS_FRAGMENT"; then
             hits="$hits$f"$'\n'
         fi
     done < <(find "$REPO_ROOT/scripts" "$REPO_ROOT/hooks" -type f 2>/dev/null | sort)
@@ -318,10 +332,11 @@ assert "E7: no other file under scripts/ or hooks/ carries the grammar in code" 
 # The oracle is derived INDEPENDENTLY of the harvest: enumerate every id the
 # arbiter COULD accept and adjudicate each one through
 # task_citation_message_cites. That candidate set is every SUFFIX of every
-# maximal digit run in the message, which is provably complete: both citation
-# forms require a non-digit (' ' for the merge form, `[^0-9]|$` for the '#'
-# form) immediately after the id, so an accepted id always ends at a run
-# boundary. Nothing acceptable can escape it.
+# maximal digit run in the message, which is provably complete: every citation
+# form requires a non-digit (' ' for the merge form, `[):]` or a non-word byte
+# for the conventional-commit form, `[^0-9]|$` for the '#' form) immediately
+# after the id, so an accepted id always ends at a run boundary. Nothing
+# acceptable can escape it.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block F: harvest/arbiter agreement ---"
@@ -387,6 +402,13 @@ Carries #4880 and #99, and #4880 again.'
 Re-lands #100.'
     'Merge task/5686 into main'
     'Merge @PFX@ into main'
+    'impl(200): GREEN — the conventional-commit arm'
+    'fix(x): rebase onto @PFX@200 tip, see #99'
+    'chore: save WIP before warm-lane reclaim (task 1933)'
+    'docs(200): subject
+
+test(4880): a body line citing nothing'
+    'test(4414/step-5): RED — id followed by a slash'
 )
 
 for _pfx in "${F_PREFIXES[@]}"; do
@@ -467,6 +489,56 @@ assert "G4: an oversized message does NOT cite an id it never names" \
     not task_citation_message_cites "$G_MERGE" 4242 "$PFX"
 assert "G5: the digit boundary still holds at size ('task/200' is not 'task/20')" \
     not task_citation_message_cites "$G_MERGE" 20 "$PFX"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block H (esc-7244-16) — the conventional-commit subject arm
+#
+# reify's task commits are `impl(5686): …`, not `#5686`: over the last 6000
+# non-merge commits on main, 4671 carry an id-headed subject and 4569 of those
+# use one of dark-factory's kinds. A grammar without this arm missed the
+# esc-6205-4 contamination outright (14 `kind(5686)` commits, 0 citations
+# recognised), and warm-lane-degenerate-ref-check.sh classified 85 genuinely
+# landed refs as degenerate because their tips read `kind(<own id>): …`.
+#
+# The arm mirrors DF's DEFAULT_COMMIT_CITATION_PATTERN first alternative and is
+# SUBJECT-ONLY, as DF applies it. H6-H9 are the controls that pin what it must
+# NOT accept, so the positive cases cannot be satisfied by an arm that has
+# merely become permissive.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: conventional-commit subject arm ---"
+
+assert "H1: 'impl(5686): …' cites 5686" \
+    task_citation_message_cites 'impl(5686): GREEN — arg-side D4 tier 4' 5686 "$PFX"
+assert "H2: DF's '(<id>:' terminator is accepted too" \
+    task_citation_message_cites 'test(5686: RED — unclosed paren' 5686 "$PFX"
+assert "H3: '<kind>' then '<prefix><id>' later on the subject cites <id>" \
+    task_citation_message_cites 'fix(x): rebase onto task/5686 tip' 5686 "$PFX"
+assert "H4: every DF kind is recognised (merge … build)" \
+    bash -c 'source "$1"; for k in merge impl amend fix test feat chore docs refactor style build; do
+        task_citation_message_cites "$k(77): s" 77 "$2" || { echo "kind $k rejected"; exit 1; }; done' _ "$LIB" "$PFX"
+assert "H5: the arm honours an escaped metacharacter prefix" \
+    task_citation_message_cites 'fix: land t.sk/7 now' 7 "$A_DOT_RE"
+
+assert "H6: boundary — 'impl(56860)' does NOT cite 5686, 'impl(5686)' does NOT cite 568" \
+    bash -c 'source "$1"; ! task_citation_message_cites "impl(56860): s" 5686 "$2" \
+        && ! task_citation_message_cites "impl(5686): s" 568 "$2"' _ "$LIB" "$PFX"
+assert "H6b: boundary — 'task/56860' after a kind does NOT cite 5686" \
+    not task_citation_message_cites 'fix: land task/56860' 5686 "$PFX"
+assert "H7: SUBJECT-ONLY — a body line 'impl(5686): …' does NOT cite 5686" \
+    not task_citation_message_cites "docs: squash summary
+
+impl(5686): a listed commit, not a citation" 5686 "$PFX"
+assert "H8: a kind outside DF's closed list does NOT cite ('verify(5686)')" \
+    not task_citation_message_cites 'verify(5686): cross-crate sweep' 5686 "$PFX"
+assert "H8b: kinds are case-sensitive, as DF's are ('Impl(5686)')" \
+    not task_citation_message_cites 'Impl(5686): s' 5686 "$PFX"
+assert "H9: DF's unanchored paren arms are NOT mirrored ('(task 1933)', '(2)')" \
+    bash -c 'source "$1"; ! task_citation_message_cites "chore: save WIP before warm-lane reclaim (task 1933)" 1933 "$2" \
+        && ! task_citation_message_cites "feat: gate entry point (2)" 2 "$2"' _ "$LIB" "$PFX"
+assert "H9b: '<prefix><id>' without a kind head does NOT cite (D6's shape)" \
+    not task_citation_message_cites 'rebased onto task/5686 yesterday' 5686 "$PFX"
 
 
 test_summary
