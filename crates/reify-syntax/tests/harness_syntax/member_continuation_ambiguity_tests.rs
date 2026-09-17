@@ -559,6 +559,23 @@ fn field_source_imported_body_leading_operator_continuation_is_rejected() {
     assert_one_member_continuation_error_at("imported field source", source, "- 3mm", "-");
 }
 
+/// `derived_body` (grammar.js:1052-1061) is the derived-sub body added by task
+/// #6615, which landed on main AFTER the container list was first written — so
+/// this is section (g)'s tripwire firing on real drift rather than in theory.
+/// The body admits full `let` members, so it carries REPRO 1 verbatim.
+#[test]
+fn derived_body_leading_operator_continuation_is_rejected() {
+    let source = concat!(
+        "structure S {\n",
+        "  sub b = mirror of a across P {\n",
+        "    let x = 5mm\n",
+        "    - 3mm\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at("derived body", source, "- 3mm", "-");
+}
+
 // ── (g) grammar-drift guard ─────────────────────────────────────────────────
 //
 // The container list in `member_continuation.rs` is a hand-written enumeration

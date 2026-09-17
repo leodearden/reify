@@ -179,6 +179,14 @@ pub const MEMBER_LIST_CONTAINERS: &[&str] = &[
     // #3569; carrying the container now means that widening arrives covered.
     // Pinned by `match_arm_decl_block_rejects_the_join_at_the_grammar_level_already`.
     "match_arm_decl_block",
+    // repeat(choice($.derived_param_assignment, $.keep_disposition,
+    // $.exclude_disposition, $.let_declaration, $.constraint_declaration))
+    // — grammar.js:1054. The derived-sub body added by task #6615, which landed
+    // on main after this list was first written — the TRIPWIRE above firing for
+    // real rather than in theory. It admits full `let` members, so it carries
+    // REPRO 1 verbatim: `sub b = mirror of a across P { let x = 5mm ⏎ - 3mm }`
+    // joins into one `binary_expression` (measured).
+    "derived_body",
 ];
 
 /// Grammar rules that own a separator-free `repeat(...)` body which this check
