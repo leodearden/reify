@@ -1973,11 +1973,12 @@ fn every_fea_family_shaped_stdlib_module_is_classified() {
 
 /// The `structure def <Name>` declarations in `dir/<stem>.ri` for each `stem`.
 ///
-/// Anchored at COLUMN 0 rather than matched as a substring, deliberately: a
-/// naive scan of `stdlib/fea_multi_case.ri` harvests `already` as a def name
-/// from the prose "…(its structure def already declares…" in a comment at line
-/// 292. Every real declaration in the stdlib is at column 0, and a `//` line is
-/// skipped outright, so both halves of that guard are cheap.
+/// Anchored at the START OF A LINE rather than matched as a substring,
+/// deliberately: a naive scan of `stdlib/fea_multi_case.ri` harvests `already`
+/// as a def name from the prose "…(its structure def already declares…" in a
+/// comment at line 292. Leading whitespace is trimmed first, so an INDENTED
+/// declaration counts; a `//` line still fails the keyword strip after trimming,
+/// which is what keeps that guard intact.
 ///
 /// # Panics
 ///
@@ -2006,18 +2007,32 @@ fn scan_structure_defs(
 
 /// Add every `structure def <Name>` declared by `source` to `defs`.
 ///
-/// The column-0 anchor and the `pub `/`priv ` visibility prefixes are the whole
-/// grammar: measured over the tracked corpus, all 719 declarations sit at column
-/// 0 and 10 of them carry `pub `. Missing the visibility prefix would drop
-/// `pub structure def Actuator` from the known set and demote its sites to
-/// [`Owner::UnresolvedDef`] — conservative, but needless noise in γ's triage.
+/// The line-start anchor and the `pub `/`priv ` visibility prefixes are the whole
+/// grammar. Leading whitespace is trimmed before the strip, because this scanner
+/// serves BOTH corpus halves and they are indented differently: all 719
+/// declarations in the tracked `.ri` corpus sit at column 0, so the trim is a
+/// measured no-op there (that corpus has zero indented declarations), but Reify
+/// embedded in a Rust raw-string literal is routinely indented to match the
+/// surrounding Rust — 480 of the 2,228 declarations across `crates/**/*.rs` carry
+/// leading whitespace. Anchoring at column 0 hid every one of those from the
+/// known-def set and demoted each site constructing them to
+/// [`Owner::UnresolvedDef`], a factually false owner attribution in an artifact
+/// whose Provenance section promises machine-derived rows.
+///
+/// Missing the visibility prefix would likewise drop `pub structure def Actuator`
+/// from the known set and demote its sites — conservative, but needless noise in
+/// γ's triage.
 fn collect_structure_defs_into(source: &str, defs: &mut std::collections::BTreeSet<String>) {
     const DEF_KEYWORD: &str = "structure def ";
     const VISIBILITY_PREFIXES: &[&str] = &["pub ", "priv "];
     for line in source.lines() {
-        // Column-0 anchor: skips comments and any nested/indented prose. A naive
-        // substring scan of `stdlib/fea_multi_case.ri` harvests `already` from
-        // the comment "…(its structure def already declares…".
+        // Line-start anchor, after trimming indentation: a declaration may be
+        // INDENTED (the inline-fixture shape), but a comment or a mid-line
+        // mention still fails the keyword strip. A naive SUBSTRING scan of
+        // `stdlib/fea_multi_case.ri` harvests `already` from the comment
+        // "…(its structure def already declares…"; that line still opens with
+        // `// ` after the trim, so it still fails `strip_prefix(DEF_KEYWORD)`.
+        let line = line.trim_start();
         let after_vis = VISIBILITY_PREFIXES
             .iter()
             .find_map(|p| line.strip_prefix(p))
@@ -2304,6 +2319,13 @@ fn scan_structure_defs_ignores_structure_def_prose_inside_comments() {
         "prose inside a comment must not enter the def set, got {defs:?}"
     );
     assert!(defs.contains("Real1"), "a real column-0 def must be found");
+    assert!(
+        defs.contains("Indented"),
+        "an INDENTED declaration must be found too: the scanner serves the inline-Rust \
+         corpus half, where a `structure def` is routinely indented to match the \
+         surrounding Rust. Anchoring at column 0 hid 480 such declarations and demoted \
+         every site constructing them to `Owner::UnresolvedDef`. Got {defs:?}"
+    );
 }
 
 #[test]
@@ -2383,10 +2405,12 @@ fn structure_def_scanner_reads_the_visibility_prefixes() {
     let got: Vec<&str> = defs.iter().map(String::as_str).collect();
     assert_eq!(
         got,
-        vec!["Actuator", "Hidden", "Plain"],
+        vec!["Actuator", "Hidden", "Indented", "Plain"],
         "`pub`/`priv` prefixes are part of the declaration grammar (10 `pub structure \
-         def` sites in the tracked corpus); comments, indented prose and mid-line \
-         mentions are not declarations"
+         def` sites in the tracked corpus), and an INDENTED declaration is a real \
+         declaration \u{2014} it is the shape Reify takes inside a Rust raw-string literal, \
+         where 480 of 2,228 `crates/**/*.rs` declarations carry leading whitespace. \
+         Comments and mid-line mentions are still not declarations"
     );
 }
 
