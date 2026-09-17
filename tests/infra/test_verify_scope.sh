@@ -2489,10 +2489,14 @@ assert "GV-5b: gui lane carries npm test" \
 # edit to a fixture it pins. A narrowing that skipped vitest here would delete
 # that task's whole coverage argument while leaving its RUN_GUI=1 assertion
 # (PG-DRIFT-GUI, above) passing. Derived from the same ledger as PG-DRIFT-GUI,
-# so it cannot drift from the real pin set.
+# so it cannot drift from the real pin set. The pin must be GUI-ONLY (absent
+# from PG-DRIFT's Rust-coupled set): a Rust-coupled pin classifies RUN_RUST=1,
+# which is a different arm — and the first pin in sort order became one when
+# task 6615 pinned adt_mirror_of_arm.ri.
 echo ""
 echo "--- Scenario GV-6: EXPECTED_CLEAN-pinned prd-gate fixture -> vitest runs (task 6435) ---"
-_GV6_PIN="$(printf '%s\n' "$_PG_GUI_PINS" | head -1)"
+_GV6_PIN="$(printf '%s\n' "$_PG_GUI_PINS" \
+    | grep -vxF -f <(printf '%s\n' "$_PG_COUPLED") | head -1 || true)"
 assert "GV-6: a pinned fixture was derived (guard is not vacuous)" \
     test -n "$_GV6_PIN"
 plan_for staged "$_GV6_PIN"
