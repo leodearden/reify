@@ -296,7 +296,13 @@ fn money_times_real_sum(q_ids: &[ValueCellId]) -> CompiledExpr {
 /// Builds the #5618 headline problem: one auto param bracketed away from 0 by an
 /// inequality pair, under a Money `Minimize` objective, with NO current value and
 /// NO explicit `AutoParam.bounds` (the production shape).
+///
+/// `entity` names the constraints; pass the same entity the fixture's
+/// `ValueCellId`s carry, which is the invariant every caller here holds.  It is a
+/// parameter rather than a hardcoded string only so the underivable-bracket
+/// fixtures can reuse this instead of restating the whole literal.
 fn bracketed_money_problem(
+    entity: &str,
     auto_params: Vec<AutoParam>,
     constraints: Vec<CompiledExpr>,
     objective: CompiledExpr,
@@ -307,7 +313,7 @@ fn bracketed_money_problem(
         constraints: constraints
             .into_iter()
             .enumerate()
-            .map(|(i, e)| (constraint_id("Bracketed", i as u32), e))
+            .map(|(i, e)| (constraint_id(entity, i as u32), e))
             .collect(),
         current_values: ValueMap::new(),
         objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, objective)),
@@ -649,6 +655,7 @@ fn bracketed_money_auto_solves_inside_floored_window() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
+        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 1.0),
@@ -682,6 +689,7 @@ fn bracketed_money_auto_from_zero_still_solves() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
+        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 0.0),
@@ -715,6 +723,7 @@ fn floor_empty_bracket_still_infeasible() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
+        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 99.0),
@@ -753,6 +762,7 @@ fn bracketed_money_length_auto_solves_inside_floored_window() {
     let x_id = ValueCellId::new("Bracketed", "x");
 
     let problem = bracketed_money_problem(
+        "Bracketed",
         vec![length_auto_param_free(x_id.clone())],
         vec![
             length_cmp(BinOp::Ge, &x_id, 0.050),
@@ -806,6 +816,7 @@ fn bracketed_money_auto_resolves_at_floored_argmin() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
+        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 1.0),
@@ -843,6 +854,7 @@ fn bracketed_money_strict_auto_survives_uniqueness_resolve() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
+        "Bracketed",
         vec![real_auto_param(q_id.clone(), false)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 1.0),
@@ -892,6 +904,7 @@ fn bracketed_money_multistart_cluster_ranks_a_feasible_candidate() {
     let q1_id = ValueCellId::new("Bracketed", "q1");
 
     let problem = bracketed_money_problem(
+        "Bracketed",
         vec![
             real_auto_param(q0_id.clone(), true),
             real_auto_param(q1_id.clone(), true),
@@ -965,6 +978,45 @@ fn floor_infeasible_message(problem: &ResolutionProblem) -> String {
     }
 }
 
+/// Asserts the CLASS-2 signature in one place: the original constraints are
+/// reported satisfiable, the synthesised margin is named as what was not met, the
+/// 2% `REL_MARGIN` is quoted, and the `cost_robustness_tradeoff` override hint
+/// survives — while the region-empty wording is ABSENT.
+///
+/// Extracted because those four positive assertions were byte-identical at every
+/// class-2 fixture: a change to the emitted wording used to need one synchronised
+/// edit per fixture, which is the drift this file exists to catch.
+///
+/// `why_not_empty` is the only part a fixture states for itself — which point in
+/// its own box makes the region-empty wording false.
+fn assert_names_the_margin(message: &str, why_not_empty: &str) {
+    assert!(
+        !message.contains("feasible region is empty"),
+        "{why_not_empty} — the diagnostic must not claim the region is empty; \
+         got: {message}"
+    );
+    assert!(
+        message.contains("original constraints"),
+        "the diagnostic must say the ORIGINAL constraints are satisfiable, verified \
+         at a witness; got: {message}"
+    );
+    assert!(
+        message.contains("robustness margin"),
+        "the diagnostic must name the synthesised robustness margin as what cannot be \
+         met; got: {message}"
+    );
+    assert!(
+        message.contains("2%"),
+        "the diagnostic must report the REL_MARGIN (2%) the user has to relax; \
+         got: {message}"
+    );
+    assert!(
+        message.contains("cost_robustness_tradeoff"),
+        "the diagnostic must keep the cost_robustness_tradeoff override hint (PRD \
+         §2.4/§9); got: {message}"
+    );
+}
+
 /// MARGIN-ONLY infeasibility must NOT claim the feasible region is empty.
 ///
 /// `q ∈ [99, 100]` is a 1-unit-wide, perfectly satisfiable box.  Only the synthesised
@@ -994,6 +1046,7 @@ fn margin_only_infeasibility_names_the_margin_not_an_empty_region() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
+        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 99.0),
@@ -1004,30 +1057,9 @@ fn margin_only_infeasibility_names_the_margin_not_an_empty_region() {
 
     let message = floor_infeasible_message(&problem);
 
-    assert!(
-        !message.contains("feasible region is empty"),
-        "the user's box [99, 100] is 1 unit wide and the returned point is inside \
-         it — the diagnostic must not claim the region is empty; got: {message}"
-    );
-    assert!(
-        message.contains("original constraints"),
-        "the diagnostic must say the ORIGINAL constraints are satisfied at the returned \
-         point; got: {message}"
-    );
-    assert!(
-        message.contains("robustness margin"),
-        "the diagnostic must name the synthesised robustness margin as what cannot be \
-         met; got: {message}"
-    );
-    assert!(
-        message.contains("2%"),
-        "the diagnostic must report the REL_MARGIN (2%) the user has to relax; \
-         got: {message}"
-    );
-    assert!(
-        message.contains("cost_robustness_tradeoff"),
-        "the diagnostic must keep the cost_robustness_tradeoff override hint (PRD \
-         §2.4/§9); got: {message}"
+    assert_names_the_margin(
+        &message,
+        "the user's box [99, 100] is 1 unit wide and the returned point is inside it",
     );
 }
 
@@ -1148,48 +1180,20 @@ fn scaled_length_cmp(coeff: f64, op: BinOp, x_id: &ValueCellId, bound_si_m: f64)
 fn steep_objective_margin_only_infeasibility_names_the_margin() {
     let x_id = ValueCellId::new("FloorInfeasible", "x");
 
-    let problem = ResolutionProblem {
-        dependent_cells: Vec::new(),
-        auto_params: vec![length_auto_param(x_id.clone())],
-        constraints: vec![
-            (constraint_id("FloorInfeasible", 0), gt_expr(&x_id, 0.010)),
-            (constraint_id("FloorInfeasible", 1), lt_expr(&x_id, 0.0103)),
-        ],
-        current_values: ValueMap::new(),
-        objective: Some(ObjectiveSet::single(
-            ObjectiveSense::Minimize,
-            money_expr_x_per_mm(&x_id),
-        )),
-        functions: vec![].into(),
-    };
+    let problem = bracketed_money_problem(
+        "FloorInfeasible",
+        vec![length_auto_param(x_id.clone())],
+        vec![gt_expr(&x_id, 0.010), lt_expr(&x_id, 0.0103)],
+        money_expr_x_per_mm(&x_id),
+    );
 
     let message = floor_infeasible_message(&problem);
 
-    assert!(
-        !message.contains("feasible region is empty"),
-        "x ∈ (10mm, 10.3mm) is a non-empty box and x = 10.15mm satisfies it — a steep \
-         objective parking the floored solve's converged point outside that box must \
-         not cost the user an honest diagnostic; got: {message}"
-    );
-    assert!(
-        message.contains("original constraints"),
-        "the diagnostic must say the ORIGINAL constraints are satisfiable, verified at \
-         a witness; got: {message}"
-    );
-    assert!(
-        message.contains("robustness margin"),
-        "the diagnostic must name the synthesised robustness margin as what cannot be \
-         met; got: {message}"
-    );
-    assert!(
-        message.contains("2%"),
-        "the diagnostic must report the REL_MARGIN (2%) the user has to relax; \
-         got: {message}"
-    );
-    assert!(
-        message.contains("cost_robustness_tradeoff"),
-        "the diagnostic must keep the cost_robustness_tradeoff override hint (PRD \
-         §2.4/§9); got: {message}"
+    assert_names_the_margin(
+        &message,
+        "x ∈ (10mm, 10.3mm) is a non-empty box and x = 10.15mm satisfies it, and a \
+         steep objective parking the floored solve's converged point outside that box \
+         must not cost the user an honest diagnostic",
     );
 }
 
@@ -1212,26 +1216,15 @@ fn steep_objective_margin_only_infeasibility_names_the_margin() {
 fn underivable_empty_box_keeps_the_region_empty_wording() {
     let x_id = ValueCellId::new("UnderivableEmpty", "x");
 
-    let problem = ResolutionProblem {
-        dependent_cells: Vec::new(),
-        auto_params: vec![length_auto_param(x_id.clone())],
-        constraints: vec![
-            (
-                constraint_id("UnderivableEmpty", 0),
-                scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
-            ),
-            (
-                constraint_id("UnderivableEmpty", 1),
-                scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.020),
-            ),
+    let problem = bracketed_money_problem(
+        "UnderivableEmpty",
+        vec![length_auto_param(x_id.clone())],
+        vec![
+            scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.020),
         ],
-        current_values: ValueMap::new(),
-        objective: Some(ObjectiveSet::single(
-            ObjectiveSense::Minimize,
-            money_expr_x_per_mm(&x_id),
-        )),
-        functions: vec![].into(),
-    };
+        money_expr_x_per_mm(&x_id),
+    );
 
     let message = floor_infeasible_message(&problem);
 
@@ -1275,54 +1268,22 @@ fn underivable_empty_box_keeps_the_region_empty_wording() {
 fn steep_objective_over_an_underivable_bracket_still_names_the_margin() {
     let x_id = ValueCellId::new("UnderivableTight", "x");
 
-    let problem = ResolutionProblem {
-        dependent_cells: Vec::new(),
-        auto_params: vec![length_auto_param(x_id.clone())],
-        constraints: vec![
-            (
-                constraint_id("UnderivableTight", 0),
-                scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
-            ),
-            (
-                constraint_id("UnderivableTight", 1),
-                scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.061),
-            ),
+    let problem = bracketed_money_problem(
+        "UnderivableTight",
+        vec![length_auto_param(x_id.clone())],
+        vec![
+            scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.061),
         ],
-        current_values: ValueMap::new(),
-        objective: Some(ObjectiveSet::single(
-            ObjectiveSense::Minimize,
-            money_expr_x_per_mm(&x_id),
-        )),
-        functions: vec![].into(),
-    };
+        money_expr_x_per_mm(&x_id),
+    );
 
     let message = floor_infeasible_message(&problem);
 
-    assert!(
-        !message.contains("feasible region is empty"),
-        "x ∈ (30mm, 30.5mm) is non-empty and x = 30.25mm satisfies both constraints \
-         — a bracket the bound derivation cannot read must not be reported as empty; \
-         got: {message}"
-    );
-    assert!(
-        message.contains("original constraints"),
-        "the diagnostic must say the ORIGINAL constraints are satisfiable, verified at \
-         a witness; got: {message}"
-    );
-    assert!(
-        message.contains("robustness margin"),
-        "the diagnostic must name the synthesised robustness margin as what cannot be \
-         met; got: {message}"
-    );
-    assert!(
-        message.contains("2%"),
-        "the diagnostic must report the REL_MARGIN (2%) the user has to relax; \
-         got: {message}"
-    );
-    assert!(
-        message.contains("cost_robustness_tradeoff"),
-        "the diagnostic must keep the cost_robustness_tradeoff override hint (PRD \
-         §2.4/§9); got: {message}"
+    assert_names_the_margin(
+        &message,
+        "x ∈ (30mm, 30.5mm) is non-empty and x = 30.25mm satisfies both constraints, \
+         a bracket the bound derivation cannot read",
     );
     // CLASS 2 specifically.  The floored window here is `2·x ∈ [61.2mm, 60.6mm]` —
     // INVERTED, i.e. genuinely empty — so the floored search declines and the
@@ -1391,26 +1352,15 @@ fn steep_objective_over_an_underivable_bracket_still_names_the_margin() {
 fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
     let x_id = ValueCellId::new("UnderivableWide", "x");
 
-    let problem = ResolutionProblem {
-        dependent_cells: Vec::new(),
-        auto_params: vec![length_auto_param(x_id.clone())],
-        constraints: vec![
-            (
-                constraint_id("UnderivableWide", 0),
-                scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
-            ),
-            (
-                constraint_id("UnderivableWide", 1),
-                scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.100),
-            ),
+    let problem = bracketed_money_problem(
+        "UnderivableWide",
+        vec![length_auto_param(x_id.clone())],
+        vec![
+            scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.100),
         ],
-        current_values: ValueMap::new(),
-        objective: Some(ObjectiveSet::single(
-            ObjectiveSense::Minimize,
-            money_expr_x_per_mm(&x_id),
-        )),
-        functions: vec![].into(),
-    };
+        money_expr_x_per_mm(&x_id),
+    );
 
     let message = floor_infeasible_message(&problem);
 
@@ -1422,7 +1372,7 @@ fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
     );
     assert!(
         !message.contains("feasible region is empty"),
-        "the floored region x ∈ (30.6mm, 49.4mm) is non-empty, so this is not class 1 \
+        "the floored region x ∈ (30.6mm, 49.8mm) is non-empty, so this is not class 1 \
          either; got: {message}"
     );
     assert!(
@@ -1483,26 +1433,15 @@ fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
 fn asymmetric_margin_band_does_not_blame_a_satisfiable_margin() {
     let x_id = ValueCellId::new("UnderivableBand", "x");
 
-    let problem = ResolutionProblem {
-        dependent_cells: Vec::new(),
-        auto_params: vec![length_auto_param(x_id.clone())],
-        constraints: vec![
-            (
-                constraint_id("UnderivableBand", 0),
-                scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
-            ),
-            (
-                constraint_id("UnderivableBand", 1),
-                scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.062),
-            ),
+    let problem = bracketed_money_problem(
+        "UnderivableBand",
+        vec![length_auto_param(x_id.clone())],
+        vec![
+            scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            scaled_length_cmp(2.0, BinOp::Lt, &x_id, 0.062),
         ],
-        current_values: ValueMap::new(),
-        objective: Some(ObjectiveSet::single(
-            ObjectiveSense::Minimize,
-            money_expr_x_per_mm(&x_id),
-        )),
-        functions: vec![].into(),
-    };
+        money_expr_x_per_mm(&x_id),
+    );
 
     let message = floor_infeasible_message(&problem);
 
@@ -1551,10 +1490,12 @@ fn asymmetric_margin_band_does_not_blame_a_satisfiable_margin() {
 /// all inside it.
 #[test]
 fn floored_window_emptiness_decides_the_class_across_the_band() {
-    // Margins synthesised by `collect_floor_terms`, both from the SEED: 2% of
-    // the 60mm lower literal, and 2% of... the upper side's own bound, which is
-    // why they are asymmetric and why the un-floored Chebyshev centre is not a
-    // valid discriminator.
+    // Margins synthesised by `collect_floor_terms`, each 2% of that term's own
+    // bound at the SEED.  `Gt` reads its bound off the RIGHT operand — the 60mm
+    // literal — giving 1.2e-3.  `Lt` reads it off the LEFT operand, here `2·x` at
+    // the fixed seed x = 0.01, giving 2% of 0.02 = 4.0e-4 REGARDLESS of HI.  That
+    // asymmetry is why the un-floored Chebyshev centre, which maximises the
+    // minimum RAW slack, is not a valid discriminator.
     const LOWER_MARGIN_M: f64 = 1.2e-3;
     const UPPER_MARGIN_M: f64 = 4.0e-4;
 
@@ -1566,26 +1507,15 @@ fn floored_window_emptiness_decides_the_class_across_the_band() {
         let hi_m = hi_mm / 1000.0;
         let x_id = ValueCellId::new("SweptBand", "x");
 
-        let problem = ResolutionProblem {
-            dependent_cells: Vec::new(),
-            auto_params: vec![length_auto_param(x_id.clone())],
-            constraints: vec![
-                (
-                    constraint_id("SweptBand", 0),
-                    scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
-                ),
-                (
-                    constraint_id("SweptBand", 1),
-                    scaled_length_cmp(2.0, BinOp::Lt, &x_id, hi_m),
-                ),
+        let problem = bracketed_money_problem(
+            "SweptBand",
+            vec![length_auto_param(x_id.clone())],
+            vec![
+                scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+                scaled_length_cmp(2.0, BinOp::Lt, &x_id, hi_m),
             ],
-            current_values: ValueMap::new(),
-            objective: Some(ObjectiveSet::single(
-                ObjectiveSense::Minimize,
-                money_expr_x_per_mm(&x_id),
-            )),
-            functions: vec![].into(),
-        };
+            money_expr_x_per_mm(&x_id),
+        );
 
         let message = floor_infeasible_message(&problem);
         let expect_satisfiable = (hi_m - UPPER_MARGIN_M) >= (0.060 + LOWER_MARGIN_M);
