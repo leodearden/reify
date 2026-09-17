@@ -5,7 +5,7 @@
 //!   kinematics (λ) → RBD (ο) → modal (π) → trajectory (ρ).
 //!
 //! Drives `examples/trajectory/printer_print_envelope.ri` through the full
-//! parse → `parse_and_compile_with_stdlib` → `make_simple_engine` +
+//! parse → `compile_source_with_stdlib` → `make_simple_engine` +
 //! `register_compute_fns` → `Engine::eval` pipeline and asserts:
 //!
 //!   1. No Error-severity diagnostics after eval.
@@ -48,7 +48,8 @@
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value, ValueMap};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::ctor_conformance_debt::is_migration_debt_diagnostic;
+use reify_test_support::{compile_source_with_stdlib, make_simple_engine};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
@@ -56,6 +57,11 @@ const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/trajectory/printer_print_envelope.ri"
 );
+
+/// The same file's key in `CTOR_CONFORMANCE_MIGRATION_DEBT` — the forward-slash
+/// `relative_to_examples_dir` spelling that table uses, never the repo-relative
+/// one [`EXAMPLE_PATH`] resolves.
+const DEBT_REL_KEY: &str = "trajectory/printer_print_envelope.ri";
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -197,17 +203,32 @@ fn printer_print_envelope_eval_e2e() {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/trajectory/printer_print_envelope.ri should exist (authored by step-2)");
 
-    let compiled = parse_and_compile_with_stdlib(&source);
+    // `compile_source_with_stdlib`, NOT `parse_and_compile_with_stdlib`: the latter
+    // itself panics on any Error-severity diagnostic (helpers.rs), so it would fire
+    // before the waiver-aware check below could run. δ (#5306) flipped
+    // CTOR_FIELD_CONFORMANCE_SEVERITY to Error and this file carries two un-migrated
+    // ctor sites.
+    let compiled = compile_source_with_stdlib(&source);
 
     // ── (1) Compile-clean pre-condition ──────────────────────────────────────
+    //
+    // "Clean" means zero UNWAIVED Errors. The two `#5847`-owned sites
+    // (`velocity_limit`, `acceleration_limit`) stay waived rather than fixed:
+    // esc-5305-3 (Leo) ruled against both migrating them here and taking a
+    // dependency edge on #5847, which owns dimensioning them — they cannot be
+    // dimensioned in isolation without collapsing the TOTS solve. Section (6) below
+    // still pins their VALUES, which is what keeps the waiver honest: eval stays
+    // permissive under D7, so the bare literals must still flow through.
     let compile_errors: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .filter(|d| !is_migration_debt_diagnostic(DEBT_REL_KEY, d))
         .collect();
     assert!(
         compile_errors.is_empty(),
-        "printer_print_envelope.ri should compile with no Error diagnostics; got:\n{:#?}",
+        "printer_print_envelope.ri should compile with no unwaived Error diagnostics; \
+         got:\n{:#?}",
         compile_errors
     );
 

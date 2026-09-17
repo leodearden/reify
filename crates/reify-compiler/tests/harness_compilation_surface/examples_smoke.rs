@@ -9,7 +9,8 @@
 use std::path::{Path, PathBuf};
 
 use reify_test_support::ctor_conformance_debt::{
-    CTOR_CONFORMANCE_MIGRATION_DEBT, debt_entry_matches, param_name_from_ctor_diagnostic,
+    CTOR_CONFORMANCE_MIGRATION_DEBT, debt_entry_matches, is_migration_debt_diagnostic,
+    param_name_from_ctor_diagnostic,
 };
 use reify_test_support::missing_paths_under;
 
@@ -600,12 +601,22 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
         return;
     }
 
-    // Compile phase — filter to Error severity only.
+    // Compile phase — filter to Error severity only, less the per-SITE waivers.
+    //
+    // δ (#5306) flipped CTOR_FIELD_CONFORMANCE_SEVERITY to Error, which put the two
+    // un-migrated `trajectory/printer_print_envelope.ri` ctor sites in front of this
+    // gate. They stay WAIVED rather than fixed: esc-5305-3 (Leo) ruled explicitly
+    // against both migrating them here and taking a dependency edge on #5847, which
+    // owns dimensioning them — they cannot be dimensioned in isolation without
+    // collapsing the TOTS solve. `is_migration_debt_diagnostic` is the one place that
+    // rule is stated; it is keyed on `(file, param)` AND `ArgTypeMismatch` AND Error,
+    // so every OTHER diagnostic this file can emit still fails the gate.
     let compiled = compile_with_stdlib(&parsed);
     let errors: Vec<String> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .filter(|d| !is_migration_debt_diagnostic(rel_key, d))
         .map(|d| d.message.clone())
         .collect();
 

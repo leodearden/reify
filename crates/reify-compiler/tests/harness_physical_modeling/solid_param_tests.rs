@@ -620,17 +620,17 @@ fn nested_guarded_solid_param_in_else_branch_compiles_as_realization() {
 /// task 4584 per that test's own contract ("Any such change MUST update this test
 /// intentionally").
 ///
-/// **task 5302 α (D8) downgrade:** the diagnostic is now **Warning**-severity, not
-/// Error. Param-default conformance is one of the ctor-conformance entries governed
-/// by the single `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning at α); the δ
-/// follow-up flips that const back to Error and promotes the whole surface
-/// uniformly. Code is unchanged (`TypeNotConformingToStructureRef`). The assertion
-/// filters by CODE (not severity) because the source omits a `module` decl, so a
-/// `W_MODULE_DECL_MISSING` warning is also present and a bare Warning-count filter
-/// would over-count.
+/// **PRD §7 row 10 (D8), and it moved twice.** Param-default conformance is one of
+/// the ctor-conformance entries governed by the single
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob: task 5302 α downgraded it to Warning as
+/// a landing convenience, and task 5306 δ flipped the const back to Error,
+/// promoting the whole surface uniformly. The code was unchanged throughout
+/// (`TypeNotConformingToStructureRef`). The count assertion still filters by CODE,
+/// not severity, because the source omits a `module` decl so a
+/// `W_MODULE_DECL_MISSING` warning is also present.
 ///
 /// Structural assertions (b) no-realization, (c) ValueCellDecl shape are
-/// preserved — both still hold after the downgrade (42 is not geometry-producing).
+/// preserved — both held across both moves (42 is not geometry-producing).
 #[test]
 fn solid_param_with_non_geometry_default_rejected() {
     let source = r#"structure def W3 {
@@ -643,9 +643,9 @@ fn solid_param_with_non_geometry_default_rejected() {
         .find(|t| t.name == "W3")
         .expect("W3 template not found");
 
-    // (a) Exactly one TypeNotConformingToStructureRef diagnostic, now at Warning
-    //     severity (task 5302 α knob downgrade). Filter by CODE — the source has no
-    //     `module` decl so a W_MODULE_DECL_MISSING warning also fires.
+    // (a) Exactly one TypeNotConformingToStructureRef diagnostic, at Error severity
+    //     since δ (#5306). Filter by CODE — the source has no `module` decl so a
+    //     W_MODULE_DECL_MISSING warning also fires.
     let conformance_diags: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -660,18 +660,21 @@ fn solid_param_with_non_geometry_default_rejected() {
     );
     assert_eq!(
         conformance_diags[0].severity,
-        Severity::Warning,
-        "task 5302 α: param-default conformance is Warning-severity (knob-governed), got: {:?}",
+        Severity::Error,
+        "param-default conformance is knob-governed; task 5302 α downgraded the knob to \
+         Warning and task 5306 δ flipped it back to Error, got: {:?}",
         conformance_diags[0]
     );
-    // The α downgrade means the module no longer hard-errors on this default.
+    // δ (#5306) re-armed the exit code: this default hard-errors again, and the
+    // conformance diagnostic is the ONLY Error it produces.
     assert!(
         compiled
             .diagnostics
             .iter()
-            .all(|d| d.severity != Severity::Error),
-        "task 5302 α: `param g : Solid = 42` must no longer produce any Error-severity \
-         diagnostic (downgraded to Warning), got: {:#?}",
+            .all(|d| d.severity != Severity::Error
+                || d.code == Some(DiagnosticCode::TypeNotConformingToStructureRef)),
+        "`param g : Solid = 42` must produce no Error-severity diagnostic OTHER than \
+         the knob-governed conformance one, got: {:#?}",
         compiled
             .diagnostics
             .iter()
