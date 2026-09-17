@@ -1681,6 +1681,85 @@ mod tests {
         assert_eq!(sites(&src), vec![(2, false)]);
     }
 
+    #[test]
+    fn a_constructor_past_a_statement_end_bounds_the_code_probe() {
+        // The code probe's half of the hard-gate hole `escape_in_window`
+        // closes for the escape: a brand-new code-less site parked directly
+        // ABOVE an existing coded one used to census as coded, because the
+        // probe walked its full 15-line window into the neighbour's
+        // `.with_code(`.
+        //
+        // The rule: `;` alone never bounds the probe; an anchor alone never
+        // bounds it; the ordered pair `; … <anchor>` does. `code_in_window`'s
+        // docs own the rationale.
+
+        // (i) THE HOLE. `a` is unreviewed and code-less; `b`'s code sits one
+        //     line below it, separated by a real statement terminator.
+        let src = file(&[
+            "    out.push(Diagnostic::error(m));",
+            "    out.push(Diagnostic::warning(m2).with_code(c));",
+        ]);
+        assert_eq!(
+            sites(&src),
+            vec![(1, false), (2, true)],
+            "the lower site's own code must not absorb the code-less site above it"
+        );
+
+        // (ii) The same shape with a plain statement between. The code is
+        //      still well inside `a`'s raw 15-line window, and still bounded.
+        let src = file(&[
+            "    out.push(Diagnostic::error(m));",
+            "    let x = 1;",
+            "    out.push(Diagnostic::warning(m2).with_code(c));",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false), (3, true)]);
+
+        // (iii) NEGATIVE CONTROL — the multi-line severity-dispatch shape,
+        //       crates/reify-eval/src/compute_targets/fea_diagnostics.rs:48-53.
+        //       No `;` separates the two constructors, so the first must still
+        //       reach PAST the second to their shared trailing code.
+        let src = file(&[
+            "    let mut diag = if failure.is_error() {",
+            "        Diagnostic::error(message.clone())",
+            "    } else {",
+            "        Diagnostic::warning(message.clone())",
+            "    }",
+            "    .with_code(code);",
+        ]);
+        assert_eq!(sites(&src), vec![(2, true), (4, true)]);
+
+        // (iv) NEGATIVE CONTROL, the load-bearing one —
+        //      crates/reify-eval/src/engine_compute.rs:165-170 binds the
+        //      dispatch to a variable and codes it in a LATER statement, so
+        //      the `;` falls BETWEEN the constructors and their code. A bare
+        //      "stop at the first line ending in `;`" rule reds this landed,
+        //      genuinely-coded shape; the corpus carries three such sites.
+        let src = file(&[
+            "    let diagnostic = if self.compute_registry.fns.is_empty() {",
+            "        Diagnostic::warning(message)",
+            "    } else {",
+            "        Diagnostic::error(message)",
+            "    };",
+            "    diagnostic.with_code(DiagnosticCode::NoRegisteredComputeTrampoline)",
+        ]);
+        assert_eq!(sites(&src), vec![(2, true), (4, true)]);
+
+        // (v) The same binding shape spanning a terminator the other way —
+        //     crates/reify-compiler/src/expr.rs:3314, which appendix A names
+        //     as the measured 14 -> 15 window step. A rule that reds this one
+        //     invalidates PDIAG_CODE_WINDOW's own justification.
+        let src = file(&[
+            "    let base_diag = Diagnostic::error(format!(\"bad {}\", what))",
+            "        .with_label(label);",
+            "    let diag = if recoverable {",
+            "        base_diag.with_code(DiagnosticCode::Recoverable)",
+            "    } else {",
+            "        base_diag",
+            "    };",
+        ]);
+        assert_eq!(sites(&src), vec![(1, true)]);
+    }
+
     // -- comment exclusion -------------------------------------------------
 
     #[test]
