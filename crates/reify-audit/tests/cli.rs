@@ -1138,8 +1138,7 @@ mod cli {
         let dir = tmp.path();
 
         // A committed .gitignore plus a genuinely-ignored build artefact.
-        std::fs::write(dir.join(".gitignore"), "build/generated.rs\n")
-            .expect("write .gitignore");
+        std::fs::write(dir.join(".gitignore"), "build/generated.rs\n").expect("write .gitignore");
         std::fs::create_dir_all(dir.join("build")).expect("create build dir");
         std::fs::write(dir.join("build/generated.rs"), "// generated\n")
             .expect("write generated.rs");

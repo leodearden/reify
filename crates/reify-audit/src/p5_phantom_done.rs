@@ -293,25 +293,20 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Vec<F
         return vec![];
     }
     // ONE `git check-ignore` fork per declared file for the whole task. Both
-    // `check_gitignored` (which needs the full set as its finding payload) and
-    // the pre-done landing leg (which subtracts it from the declared set) ask
-    // the same question about the same paths; computing it here makes the
+    // `check_gitignored` (which needs the ignored set as its finding payload)
+    // and the pre-done landing leg (which subtracts it from the declared set)
+    // ask the same question about the same paths; computing it here makes the
     // second consumer free. That matters on the pre-done path specifically —
     // it runs inside fused-memory's per-project write lock under a 30 s hard
     // timeout, so a duplicated per-file fork is paid by every task mutation
     // for the project.
-    let gitignored: Vec<String> = meta
-        .files
-        .iter()
-        .filter(|p| ctx.git.is_gitignored(p))
-        .cloned()
-        .collect();
+    let probe = probe_gitignored(ctx, meta);
 
     let mut findings = Vec::new();
-    if let Some(f) = check_one(ctx, meta, mode, &gitignored) {
+    if let Some(f) = check_one(ctx, meta, mode, &probe) {
         findings.push(f);
     }
-    if let Some(f) = check_gitignored(meta, &gitignored) {
+    if let Some(f) = check_gitignored(meta, &probe.ignored) {
         findings.push(f);
     }
     findings.extend(check_tests_assert_empty(ctx, meta));
@@ -438,6 +433,47 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
         }
     }
     findings
+}
+
+/// What one task's `git check-ignore` pass learned, and whether it failed.
+///
+/// The two travel together because dropping the failure is exactly the defect
+/// this type closes: an entry whose probe errored is NOT known-ignored, so it
+/// stays in the declared set a pre-done refusal is built from, and only
+/// `degraded` records that the set was built from an unanswered question.
+struct GitignoreProbe {
+    /// Entries git answered "ignored" for. Never contains an entry whose probe
+    /// failed — unprobeable is not known-ignored, and must not earn a
+    /// `P5MetadataFilesGitignored` Medium.
+    ignored: Vec<String>,
+    /// Why the pass is incomplete, naming the FIRST entry git did not answer
+    /// for, or `None` when every entry was answered.
+    degraded: Option<String>,
+}
+
+/// Ask `git check-ignore` about each declared entry, through the fallible seam.
+///
+/// `path_tracked_on`'s error arm sets the precedent this mirrors
+/// ([`check_pre_done_landing`]): keep the entry in the set the refusal rests
+/// on, and arm `degraded` so any SURVIVING refusal is downgraded to a visible
+/// but non-blocking advisory. First failure wins — the reason names one
+/// concrete entry an operator can re-check by hand, and `RealGitOps` has
+/// already printed its own breadcrumb for the rest.
+fn probe_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> GitignoreProbe {
+    let mut ignored = Vec::new();
+    let mut degraded: Option<String> = None;
+    for p in &meta.files {
+        match ctx.git.try_is_gitignored(p) {
+            Ok(true) => ignored.push(p.clone()),
+            Ok(false) => {}
+            Err(_) => {
+                degraded.get_or_insert_with(|| {
+                    format!("git degraded: check-ignore errored for declared entry {p}")
+                });
+            }
+        }
+    }
+    GitignoreProbe { ignored, degraded }
 }
 
 /// Independent pre-pass: any metadata.files entry that's gitignored gets
@@ -691,11 +727,12 @@ fn changed_paths_for_claim(
 /// Every git leg in this crate fail-safes to `false` / empty on error. In the
 /// sweep that converges on "no finding"; HERE it converges on a High that
 /// BLOCKS a state transition, so an infrastructure hiccup would be
-/// indistinguishable from a genuine phantom-done. Four guards invert that:
+/// indistinguishable from a genuine phantom-done. Five guards invert that:
 /// [`main_base_resolves`] probes the repo once before any refusal; a sibling
 /// scan truncated at [`PRE_DONE_SIBLING_SCAN_CAP`] is treated as incomplete;
-/// and the two legs the refusal actually RESTS on are consulted through their
-/// fallible variants ([`crate::GitOps::try_path_tracked_on`] and
+/// and the three legs the refusal actually RESTS on are consulted through
+/// their fallible variants ([`crate::GitOps::try_is_gitignored`], which builds
+/// `declared`; [`crate::GitOps::try_path_tracked_on`]; and
 /// [`try_task_referencing_commits`]) so a per-call git failure is recorded as
 /// an unanswered question rather than silently read as evidence. Every one of
 /// them still EMITS the finding, but as an advisory `Low` that cannot block
@@ -713,25 +750,36 @@ fn changed_paths_for_claim(
 /// fail-safe to empty/false, so a git failure there can leave an entry in
 /// `still_absent` that a healthy read would have cleared. That is the same
 /// failure direction and is deliberately left open here: those seams are on
-/// the rescue leg rather than on the two legs the refusal rests on, and
+/// the RESCUE leg, which can only clear a refusal, never create one, and
 /// widening them means four more fallible trait methods threaded through the
 /// sweep's two call sites as well.
 ///
-/// `gitignored` is the task's precomputed gitignored subset (see
-/// [`check_task`]), so this leg costs no `git check-ignore` forks of its own.
+/// The gitignore filter is NOT in that residual, and reading it as a mere
+/// pre-pass was the bug: subtracting the ignored subset is what CONSTRUCTS
+/// `declared`, so a failed probe silently supplied the first half of a
+/// blocking refusal. It is consulted through [`probe_gitignored`] for that
+/// reason.
+///
+/// `probe` is the task's `git check-ignore` pass, run once by [`check_task`],
+/// so this leg costs no forks of its own.
 fn check_pre_done_landing(
     ctx: &AuditContext,
     meta: &TaskMetadata,
-    gitignored: &[String],
+    probe: &GitignoreProbe,
 ) -> Option<Finding> {
     // Nothing corroboratable → nothing to refuse. Covers both the research /
     // ops / escalation task that legitimately lands no files, and the task
     // whose declared entries are all gitignored (equally uncorroboratable).
-    // Pure in-memory `retain` against the shared set — no fork here.
+    // Pure in-memory filter against the shared set — no fork here.
+    //
+    // An entry whose probe FAILED deliberately stays in `declared`: dropping it
+    // would mute the gate for that entry and let a genuine phantom-done through
+    // as a clean flip. `probe.degraded` seeds the advisory channel below
+    // instead, so any surviving refusal is visible but non-blocking.
     let declared: Vec<String> = meta
         .files
         .iter()
-        .filter(|p| !gitignored.iter().any(|g| g == *p))
+        .filter(|p| !probe.ignored.iter().any(|g| g == *p))
         .cloned()
         .collect();
     if declared.is_empty() {
@@ -750,7 +798,7 @@ fn check_pre_done_landing(
     // set (the rescue leg below may yet account for it, and if it clears
     // everything the finding disappears entirely), but it arms `degraded` so
     // any SURVIVING refusal is emitted as a non-blocking advisory Low.
-    let mut degraded: Option<String> = None;
+    let mut degraded: Option<String> = probe.degraded.clone();
     let mut absent: Vec<String> = Vec::new();
     for p in &declared {
         match ctx.git.try_path_tracked_on(MAIN_BASE, p) {
@@ -1036,13 +1084,13 @@ fn pre_done_refusal_severity() -> Severity {
 /// Per-task corroboration. Returns `Some(Finding)` if the task is
 /// phantom-done, `None` if the provenance corroborates cleanly.
 ///
-/// `gitignored` is the task's gitignored subset, computed once by
-/// [`check_task`]; only the [`CheckMode::PreDone`] arm consumes it.
+/// `probe` is the task's `git check-ignore` pass, run once by [`check_task`];
+/// only the [`CheckMode::PreDone`] arm consumes it.
 fn check_one(
     ctx: &AuditContext,
     meta: &TaskMetadata,
     mode: CheckMode,
-    gitignored: &[String],
+    probe: &GitignoreProbe,
 ) -> Option<Finding> {
     // One ancestry answer per SHA for the whole invocation: the merged-arm
     // rescue and the primary git-diff leg below both test `prov.commit`.
@@ -1060,7 +1108,7 @@ fn check_one(
             // (no env injection, no stdin), so the subprocess receives no task
             // state beyond the id. Landing must therefore be corroborated from
             // `task_id` + `metadata.files` alone.
-            CheckMode::PreDone => check_pre_done_landing(ctx, meta, gitignored),
+            CheckMode::PreDone => check_pre_done_landing(ctx, meta, probe),
         };
     };
     let kind = prov.kind.as_deref().unwrap_or("");
