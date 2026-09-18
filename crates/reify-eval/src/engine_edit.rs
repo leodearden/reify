@@ -1190,8 +1190,8 @@ impl Engine {
         // (task 2874, step-17).
         //
         // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the analogous one in `Engine::edit_source` (its `Auto-invalidate
-        // the realization cache` comment). Removing either reset, or
+        // the `self.clear_realization_cache()` call near the entry of
+        // `Engine::edit_source`. Removing either reset, or
         // reordering either function body so the reset moves AFTER any
         // state mutation that could fail (which would let a stale cache
         // leak when the edit returns Err),
@@ -3218,8 +3218,8 @@ impl Engine {
         // (task 2874, step-19).
         //
         // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the analogous one in `Engine::edit_param` (its `Auto-invalidate
-        // the realization cache` comment). Removing either reset, or
+        // the `self.clear_realization_cache()` call near the entry of
+        // `Engine::edit_param`. Removing either reset, or
         // reordering either function body so the reset moves AFTER any
         // state mutation that could fail (which would let a stale cache
         // leak when the edit returns Err),
