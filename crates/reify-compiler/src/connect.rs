@@ -362,6 +362,10 @@ pub(crate) fn chain_hops(
 ///     failure: it names what was actually found and sends the author to (c),
 ///     and the endpoint is left unresolved so `chain_hops` drops the hop.
 ///
+/// Inference is per-INSTANCE, so (d) refuses outright when the element names a
+/// collection or keyed sub with no indexer: such a name denotes N occurrences,
+/// and the port it would otherwise infer belongs to none of them.
+///
 /// Usability is TIERED, not a union: a port declared in `needed` wins
 /// outright, and only when the sub declares none does a `bidi` port — which
 /// `is_forward_compatible` accepts in either role — become a candidate. A
@@ -389,7 +393,23 @@ fn resolve_chain_endpoint(
     if name.contains('.') {
         return Some(elem.clone());
     }
-    let sub = name.split_once('[').map_or(name.as_str(), |(base, _)| base);
+    let (sub, indexed) = match name.split_once('[') {
+        Some((base, _)) => (base, true),
+        None => (name.as_str(), false),
+    };
+    if !indexed && names_many_occurrences(ctx, sub) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "chain element '{name}' names a whole collection, not one occurrence; \
+                 chain its elements, e.g. 'forall v in {name}: chain v -> ...'"
+            ))
+            .with_label(DiagnosticLabel::new(
+                elem.span,
+                "names a collection, not one occurrence",
+            )),
+        );
+        return None;
+    }
     let Some(child_ports) = ctx.scope.sub_port_directions.get(sub) else {
         return Some(elem.clone());
     };
@@ -432,6 +452,16 @@ fn resolve_chain_endpoint(
         )),
     );
     None
+}
+
+/// Whether `sub` names a sub-component that denotes MANY occurrences — a
+/// `List<T>` collection or a `Keyed<T>` map — rather than exactly one.
+///
+/// Both maps must be consulted: keyed subs have `is_collection == false` and
+/// are therefore absent from `collection_sub_names`, living in `keyed_sub_keys`
+/// instead.
+fn names_many_occurrences(ctx: &ConnectContext, sub: &str) -> bool {
+    ctx.scope.collection_sub_names.contains(sub) || ctx.scope.keyed_sub_keys.contains_key(sub)
 }
 
 /// The source spelling of a port direction, for diagnostics that quote it back.
