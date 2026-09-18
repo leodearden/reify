@@ -140,23 +140,7 @@ pub fn compute_zz_indicator(
         );
 
         // Step (c): interpolate smoothed stress back to the element centroid.
-        // For P1 tets, barycentric coords at the centroid are (1/N, …, 1/N),
-        // so centroid interpolation = arithmetic mean of the nodal values.
-        let mut sigma_bar = [[0.0_f64; 3]; 3];
-        for &node in el.connectivity {
-            let ns = &nodal_smoothed[node];
-            for i in 0..3 {
-                for j in 0..3 {
-                    sigma_bar[i][j] += ns[i][j];
-                }
-            }
-        }
-        let inv_n = 1.0 / (n as f64);
-        for row in &mut sigma_bar {
-            for cell in row.iter_mut() {
-                *cell *= inv_n;
-            }
-        }
+        let sigma_bar = centroid_smoothed_stress(&nodal_smoothed, el.connectivity);
 
         // Step (d): per-element indicator η_e = sqrt(V_e · diff · S · diff).
         let mut diff = [[0.0_f64; 3]; 3];
@@ -362,9 +346,13 @@ impl DualWeightedIndicator {
 /// For P1 tets the barycentric coordinates at the centroid are (¼,…,¼), so
 /// this is the arithmetic mean of the element's four nodal tensors.
 ///
-/// [`compute_zz_indicator`] keeps its own inline copy of this loop: it is
-/// covered by landed closed-form goldens, and folding it onto this helper is
-/// out of scope here rather than an oversight.
+/// The SINGLE place the centroid/Voigt averaging convention lives: both
+/// [`compute_zz_indicator`] (step (c)) and
+/// [`compute_dual_weighted_indicator`] route through here, so the two cannot
+/// drift apart. The fold is bit-exact rather than merely equivalent — the
+/// accumulation order is unchanged and the same `inv_n` multiply closes it —
+/// which is what lets `compute_zz_indicator`'s landed closed-form goldens
+/// stand unmodified, and what the self-dual reduction test relies on.
 fn centroid_smoothed_stress(nodal: &[[[f64; 3]; 3]], connectivity: &[usize]) -> [[f64; 3]; 3] {
     let mut bar = [[0.0_f64; 3]; 3];
     for &node in connectivity {
@@ -424,22 +412,32 @@ fn recovery_error(recovered: &[[f64; 3]; 3], discrete: &[[f64; 3]; 3]) -> [[f64;
 ///
 /// # `η_K` is weighted by the PRIMAL element's volume
 ///
-/// `el_z.volume` is not read. The two fields describe the same elements in
-/// the same order — the pairing the length assert below pins — so the two
-/// volumes are the same number; saying WHICH one is used keeps that from
-/// being incidental.
+/// `el_z.volume` is not read. The two fields describe the same element at
+/// each position — the pairing the per-element CONNECTIVITY assert below
+/// pins — so the two volumes are the same number; saying WHICH one is used
+/// keeps that from being incidental.
 ///
 /// # Panics
 ///
-/// If `primal` and `dual` have different lengths, or if any element on
-/// EITHER side carries non-P1 (non-4-node) connectivity. Both are caller
-/// errors rather than user data, so they are unconditional `assert!`s per
-/// the crate's contract convention — a truncating zip would otherwise
-/// return an indicator over a subset of the mesh, an under-estimate
-/// indistinguishable from convergence, and a dual element carrying, say,
-/// 10-node P2 connectivity would have its recovered stress averaged over
-/// ten nodes instead of four: a plausible-looking indicator that is simply
-/// wrong.
+/// Three unconditional `assert!`s, all caller errors rather than user data,
+/// per the crate's contract convention:
+///
+/// * `primal` and `dual` have different lengths — a truncating zip would
+///   otherwise return an indicator over a subset of the mesh, an
+///   under-estimate indistinguishable from convergence.
+/// * Paired elements carry different connectivity. Equal LENGTHS alone do
+///   not make two stress fields describe the same elements: a dual
+///   assembled in a different element order, or over a different mesh with
+///   the same element count, zips position-for-position and yields a fully
+///   plausible `η_K` that pairs each primal element with someone else's
+///   dual. That is the same class of quiet corruption as the truncating
+///   zip, and the check costs an O(4) slice comparison per element.
+/// * An element on EITHER side carries non-P1 (non-4-node) connectivity — a
+///   10-node P2 element would have its recovered stress averaged over ten
+///   nodes instead of four: a plausible-looking indicator that is simply
+///   wrong. (Subsumed by the pairing check for the dual once the primal is
+///   P1, but stated and enforced on both sides so neither guard depends on
+///   the other's ordering.)
 pub fn compute_dual_weighted_indicator(
     primal: &[StressElement<'_>],
     dual: &[StressElement<'_>],
@@ -470,6 +468,16 @@ pub fn compute_dual_weighted_indicator(
             n_u == 4 && n_z == 4,
             "compute_dual_weighted_indicator currently supports P1 tets only; \
              got connectivity of length {n_u} (primal) and {n_z} (dual)",
+        );
+        assert_eq!(
+            el_u.connectivity, el_z.connectivity,
+            "compute_dual_weighted_indicator pairs primal and dual \
+             POSITIONALLY, so the two must describe the same element at each \
+             position; element {} carries primal connectivity {:?} and dual \
+             {:?} — equal field lengths alone do not establish the pairing",
+            per_element_signed.len(),
+            el_u.connectivity,
+            el_z.connectivity,
         );
 
         let diff_u = recovery_error(
@@ -1444,6 +1452,39 @@ mod tests {
         let zero = [[0.0_f64; 3]; 3];
         let primal = three_tet_fan_elements([diag_xx(100.0), zero, zero]);
         compute_dual_weighted_indicator(&primal, &primal[..2], &mesh, &mat);
+    }
+
+    /// A dual whose elements are in a DIFFERENT ORDER panics, even though it
+    /// has the right length and is P1 throughout.
+    ///
+    /// The length assert pins only the COUNT, so it cannot see this: a dual
+    /// assembled over the same mesh in another element order (or over a
+    /// different mesh with the same element count) zips position-for-position
+    /// and yields a fully plausible `η_K` in which every element is paired
+    /// with someone else's dual — silently wrong output from a silently
+    /// wrong pairing, and no assertion on the RESULT could distinguish it
+    /// from the correct one. Connectivity is the observable that separates
+    /// them, and comparing it is O(4) per element.
+    ///
+    /// The fixture reverses the primal rather than perturbing a stress, so
+    /// the two fields agree on length, on P1-ness and on every volume, and
+    /// the pairing is the only thing left that differs.
+    #[test]
+    #[should_panic(expected = "POSITIONALLY")]
+    fn dual_weighted_indicator_panics_when_the_dual_describes_the_elements_in_another_order() {
+        let mat = dimensionless_steel_like();
+        let mesh = three_tet_fan_mesh();
+        let zero = [[0.0_f64; 3]; 3];
+        let primal = three_tet_fan_elements([diag_xx(100.0), zero, zero]);
+
+        let mut reordered = primal;
+        reordered.reverse();
+        assert_ne!(
+            reordered[0].connectivity, primal[0].connectivity,
+            "fixture premise: the reversal must actually change the pairing",
+        );
+
+        compute_dual_weighted_indicator(&primal, &reordered, &mesh, &mat);
     }
 
 
