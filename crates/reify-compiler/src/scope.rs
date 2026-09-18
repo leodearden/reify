@@ -65,6 +65,50 @@ pub(crate) struct CompilationScope<'u> {
     /// `collection_sub_names` / `purpose_param_names` — a dedicated typed set for a
     /// category-specific lookup rather than overloading `names`.
     pub(crate) geometry_realization_names: HashSet<String>,
+    /// THE canonical statement of the #5371 forward-reference rationale. Every
+    /// other site that needs it points here rather than restating it.
+    ///
+    /// Names the enclosing MODULE declares that may appear as a call callee:
+    /// its `fn` declarations (local + prelude) AND its structure names, whose
+    /// constructors are called with the same syntax. Read by exactly one site —
+    /// the terminal first-arg fallback in `expr.rs` — to tell "this name exists
+    /// nowhere" from "this name is declared right here but is not resolvable
+    /// from this body yet".
+    ///
+    /// # Why the fallback needs it
+    ///
+    /// `phase_functions` compiles each `fn` body against the user-only
+    /// `functions` table it is still growing in source order, so a call to a
+    /// later-declared sibling — or either half of a mutually-referential pair,
+    /// which no reordering can fix — reaches the fallback with a name the module
+    /// plainly declares. Entity bodies do not have that problem: they compile
+    /// after `ctx.resolution_functions` is merged. Constructors are the mirror
+    /// case — wherever no template registry is set (`phase_traits`'s static fn
+    /// bodies, `compile_assoc_function`'s bodies), `Widget(w: 2mm)` is never
+    /// claimed as a `StructureInstanceCtor` and falls through carrying a
+    /// declared name (esc-5371-12).
+    ///
+    /// # What it does NOT do
+    ///
+    /// It binds NO values — an entry here does not put the name in `names` and
+    /// cannot make a forward reference resolve. It only withholds a diagnostic.
+    /// Forward references still do not resolve; that is `phase_functions`'s
+    /// documented contract and #6014's business.
+    ///
+    /// # Shape
+    ///
+    /// ONE set rather than a fn set and a structure set, because the one reading
+    /// site asks one question and never consults either half alone. The two
+    /// INPUTS stay separate on `CompilationCtx`, where fn-ness and
+    /// structure-ness genuinely differ; [`crate::functions::declared_callable_names`]
+    /// merges them at that single consumer.
+    ///
+    /// `Option<&'u _>` rather than an owned set, mirroring `unit_registry` and
+    /// `template_registry` below: the vocabulary is a module-level invariant
+    /// built once per phase, and a scope only borrows it. `None` is the honest
+    /// default for the entity and test scopes that need no such vocabulary, and
+    /// keeps the per-function cost at zero.
+    pub(crate) declared_callable_names: Option<&'u HashSet<String>>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
     pub(crate) trait_members: HashMap<String, HashSet<String>>,
@@ -173,6 +217,33 @@ pub(crate) struct CompilationScope<'u> {
     /// `BTreeSet` (not `HashSet`) for deterministic iteration, mirroring the
     /// precedent of `sub_member_types`' inner `BTreeMap`.
     pub(crate) sub_realization_names: HashMap<String, BTreeSet<String>>,
+    /// Declared port directions per sub-component: sub_name → { port_name →
+    /// direction }.
+    ///
+    /// A fifth sibling of `sub_member_types` / `sub_realization_names`,
+    /// populated at both Sub pre-pass sites (plain subs and match-arm subs)
+    /// from the same resolved child template those maps use, so it inherits
+    /// that resolution's module-first/prelude-fallback rule and its `Keyed<T>`
+    /// element unwrapping for free.
+    ///
+    /// Read by `connect.rs` so that a DOTTED connect endpoint (`e1.p`) can be
+    /// direction-checked against the child's declaration. Before this map
+    /// existed, `compile_connection` could only see the own entity's ports, so
+    /// every dotted endpoint was silently unchecked (task #7175).
+    ///
+    /// ABSENCE CONTRACT: a missing sub key, or a missing port key within a
+    /// present sub, means "this port's declaration is not resolvable at this
+    /// point in the compile". Three causes, all silent by design: the child
+    /// structure is declared later in the module (task #7374); the named member
+    /// is not a port at all; or the sub is a match-arm cluster whose arms
+    /// disagree about that port's direction, which `merge_arm_port_directions`
+    /// (entity.rs) folds out rather than answering with one arbitrary arm. A
+    /// miss does NOT mean the direction is `Bidi` — consumers must treat it as
+    /// "unknown" and decline to check, never as a default direction.
+    ///
+    /// `BTreeMap` inner for deterministic iteration, matching the
+    /// `sub_member_types` precedent.
+    pub(crate) sub_port_directions: HashMap<String, BTreeMap<String, reify_core::PortDirection>>,
     /// Whether the current structure has at least one geometry-producing let binding
     /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
     pub(crate) has_geometry: bool,
@@ -243,6 +314,7 @@ impl<'u> CompilationScope<'u> {
             collection_sub_names: HashSet::new(),
             keyed_sub_keys: HashMap::new(),
             geometry_realization_names: HashSet::new(),
+            declared_callable_names: None,
             trait_members: HashMap::new(),
             type_param_bounds: HashMap::new(),
             trait_member_types: HashMap::new(),
@@ -257,6 +329,7 @@ impl<'u> CompilationScope<'u> {
             is_entity_scope: false,
             sub_member_types: HashMap::new(),
             sub_realization_names: HashMap::new(),
+            sub_port_directions: HashMap::new(),
             has_geometry: false,
             match_arm_groups: BTreeMap::new(),
             match_arm_group_arm_member_types: HashMap::new(),

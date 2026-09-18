@@ -1059,6 +1059,26 @@ aux sub jig : Jig at tool_frame
 
 **`aux` modifier (v0.6).** Prefixing `aux` marks the sub-entity as structure-local (construction) geometry. An `aux sub` is still realized, tessellated, and shipped to the GUI (hidden-by-default, toggleable) but is excluded from product surfacing, STEP export, FEA mesh generation, and mass-property accumulation. Use `aux` to mark boolean-input operands so they do not appear both standalone and inside a composed result (see §8.3 for the boolean-composition idiom and §15 for the grammar production).
 
+**Derived sub (v0.6).** A sub-entity may be *derived* from a sibling sub rather than instantiated, in one of two surface forms:
+
+```
+sub unit_b = mirror of unit_a across plane_yz { z = 55mm  keep capstan }
+sub rail_l = image of rail_r under c2_z      { span_bu = default  exclude web.hub }
+```
+
+The *prototype* (`unit_a`, `rail_r`) is a bare identifier naming a **sibling sub** of the same structure -- not a dotted path, and not a structure name. `mirror of ... across <plane>` reflects the prototype across a plane; `image of ... under <transform>` maps it through an arbitrary transform.
+
+The block is **required** (an empty `{ }` is legal -- the derivation alone is a complete specification). Its items are:
+
+- **parameter overrides** -- `z = 55mm`, and `<param> = default` to *reset* an inherited value back to the prototype's declared default. Overrides accept the same values a specialization body does, including `auto` and `auto(free)`, and each may carry a `where` guard.
+- **`keep <path>`** -- retain the named feature of the prototype unreflected. This is the explicit **chirality break**: the default policy is reflect-all (always geometrically correct; achiral children come out identical), and `keep` opts a feature out of it. The default compensation `M_c` is the derivation plane conjugated into the child's local frame through the child origin.
+- **`exclude <path>`** -- omit the named feature from the derived copy. Paths are dotted (`web.hub`).
+- local **`let`** and **`constraint`** members.
+
+Placement of a derived sub is *derived* from its prototype, so an `at` clause on a derived sub is a **compile error** (`E_DERIVED_SUB_EXPLICIT_AT`), not a parse error -- the grammar accepts it so the compiler can reject it with a good message, the same division of labour `at` on a collection-form sub already uses.
+
+**Reserved, with no v0.6 meaning:** `keep <path> using <plane>` parses (a CATIA-style declared equivalence plane) but carries no semantics; `symmetry` is reserved as a future contextual keyword; and `xs[<element>]` element addressing inside a disposition path is reserved. None of the three is implemented. See [docs/prds/v0_6/assembly-derivation-toolbox.md](docs/prds/v0_6/assembly-derivation-toolbox.md) and §15 for the grammar production.
+
 #### `let` -- Computed Bindings
 
 ```
@@ -2782,6 +2802,21 @@ where_guard     ::= 'where' expr                         (* per-declaration guar
 param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
 port_decl       ::= 'port' IDENT ':' dir? type_expr ('{' member* '}')? where_guard?
 sub_decl        ::= 'aux'? 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')? ('at' expr)?
+                  | 'aux'? 'sub' IDENT '=' sub_derivation derived_body ('at' expr)?   (* v0.6 derived sub *)
+
+(* The derived alternative's 'at' tail is deliberate: an explicit 'at' on a
+   derived sub PARSES, and is rejected at COMPILE time as
+   E_DERIVED_SUB_EXPLICIT_AT (§4.7) -- the same division of labour 'at' on a
+   collection-form sub already uses.  Dropping it from this production would
+   invite a "fix" to the grammar that pre-empts the diagnostic. *)
+
+sub_derivation  ::= 'mirror' 'of' IDENT 'across' expr
+                  | 'image'  'of' IDENT 'under'  expr
+derived_body    ::= '{' (derived_override | disposition | let_decl | constraint_line)* '}'
+derived_override ::= IDENT '=' ('default' | expr) where_guard?
+disposition     ::= 'keep' disposition_path ('using' expr)?   (* 'using' RESERVED, no v0.6 meaning *)
+                  | 'exclude' disposition_path
+disposition_path ::= IDENT ('.' IDENT)*
 let_decl        ::= 'pub'? 'aux'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
 constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
 

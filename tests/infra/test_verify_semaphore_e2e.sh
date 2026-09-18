@@ -143,7 +143,7 @@ trap cleanup EXIT
 #                 releases (@@SEMAPHORE_RELEASE@@) — so the slot is held for
 #                 the stub sleep duration.  This is the serialization signal.
 #   npm         — instant exit 0: neutralizes the GUI node lane
-#                 (`npm ci && npm run typecheck && npm test`) without any
+#                 (`npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh`) without any
 #                 network/install/build activity.
 #   tree-sitter — satisfies tree-sitter-generate.sh's `command -v` guard.
 #                 The suite-start ensure_tree_sitter_ready call (task 5144 F1,

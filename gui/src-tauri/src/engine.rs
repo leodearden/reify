@@ -9,7 +9,8 @@ use tracing::warn;
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, find_template};
 use reify_eval::cache::NodeId;
 use reify_eval::tolerance_combine::{
-    OutputTarget, conforms_to_output, extract_output_export_spec,
+    OutputTarget, conforms_to_output, conforms_to_trait, extract_output_export_spec,
+    unenforced_representation_bound_diagnostic,
 };
 use reify_eval::{CancellationHandle, CheckResult, Engine};
 use reify_core::{
@@ -3315,11 +3316,28 @@ impl EngineSession {
     }
 
     /// Export geometry to a file.
+    ///
+    /// Refuses outright — writing nothing — when the module declares a
+    /// `RepresentationWithin` bound this path cannot demonstrate it honours; see the
+    /// η gate below and PRD
+    /// `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, C-SURFACE (2).
     pub fn export(&mut self, format: ExportFormat, path: &Path) -> Result<(), String> {
         // split_compiled_and_engine_mut surfaces the compiled-immutable /
         // engine-mutable disjoint-field borrow through the encapsulation boundary.
         let (compiled_opt, engine) = self.core.split_compiled_and_engine_mut();
         let compiled = compiled_opt.ok_or_else(|| "No module loaded".to_string())?;
+
+        // η export refusal — PRD docs/prds/v0_6/precision-nominal-representation-guarantee.md,
+        // C-SURFACE (2). Must precede `engine.build`: that path never emits this
+        // diagnostic, so the `diag.severity == Severity::Error` loop below would catch
+        // NOTHING, and `std::fs::write` runs inside the `Some(data)` arm — only a gate
+        // sited here gates the write at all. Gating on `Some(_)` rather than
+        // `diag.severity` is deliberate: returning `Err` IS the refusal on this surface.
+        // The message is the shared helper's, returned verbatim; the η tests in
+        // `tests/{engine,commands}_tests.rs` pin that and the no-write contract.
+        if let Some(diag) = unenforced_representation_bound_diagnostic(compiled) {
+            return Err(diag.message);
+        }
 
         let result = engine.build(compiled, format);
 
@@ -4412,10 +4430,32 @@ impl EngineSession {
             }
         }
 
+        // Built ONCE here rather than per node: `build_template_node` recurses
+        // per sub-component, so merging inside it would re-clone every stdlib
+        // trait def at every node — O(nodes x traits) on a path the GUI hits on
+        // each refresh. Hoisted, the only per-node cost left is the hash map
+        // `conforms_to_trait` builds, which `build_template_node` now skips for
+        // every node that could not carry the flag anyway.
+        //
+        // The prelude is what carries `Rigid : Physical` (#5558); `Engine::new`
+        // seeds it from `stdlib_loader::load_stdlib()`, so every session already
+        // has it. Same access `build_gui_state` uses; both this and
+        // `self.core.compiled()` are `&`-borrows of `&self`, so no borrow conflict.
+        let trait_defs = merged_trait_defs(compiled, self.core.engine().prelude());
+
         compiled
             .templates
             .iter()
-            .map(|t| build_template_node(t, &t.name, compiled, Some(self.core.engine()), false))
+            .map(|t| {
+                build_template_node(
+                    t,
+                    &t.name,
+                    compiled,
+                    &trait_defs,
+                    Some(self.core.engine()),
+                    false,
+                )
+            })
             .collect()
     }
 
@@ -4978,6 +5018,17 @@ fn build_values(
     values
 }
 
+/// The single producer of `ConstraintData.status`; every comparison against a
+/// verdict token routes through here rather than a hand-written literal. The
+/// wire contract is documented on that field in `types.rs`.
+pub(crate) fn satisfaction_token(s: Satisfaction) -> &'static str {
+    match s {
+        Satisfaction::Satisfied => "satisfied",
+        Satisfaction::Violated => "violated",
+        Satisfaction::Indeterminate => "indeterminate",
+    }
+}
+
 /// Build the `Vec<ConstraintData>` shared between `build_gui_state` and
 /// `build_preview_gui_state`.
 ///
@@ -5000,11 +5051,7 @@ pub(crate) fn build_constraints(
 ) -> Vec<ConstraintData> {
     let mut constraints = Vec::new();
     for entry in &check.constraint_results {
-        let status = match entry.satisfaction {
-            Satisfaction::Satisfied => "Satisfied",
-            Satisfaction::Violated => "Violated",
-            Satisfaction::Indeterminate => "Indeterminate",
-        };
+        let status = satisfaction_token(entry.satisfaction);
         let (expression, parameter_ids) = compiled
             .templates
             .iter()
@@ -5310,7 +5357,15 @@ fn surface_geometry_derived_cells(
     // The overlay is built INSIDE the guard so a pass that surfaces cells but has
     // no Indeterminate constraint left — the non-`Rigid` majority — pays neither
     // the clone nor the dispatch.
-    if surfaced_any && constraints.iter().any(|c| c.status == "Indeterminate") {
+    //
+    // Both Indeterminate comparisons below compare through `satisfaction_token`:
+    // a bare literal out of step with it would disable this entire re-check with
+    // no compile error, surfacing only as a PD constraint stuck Indeterminate.
+    if surfaced_any
+        && constraints
+            .iter()
+            .any(|c| c.status == satisfaction_token(Satisfaction::Indeterminate))
+    {
         let merged: Option<ValueMap> = if cache_sourced.is_empty() {
             None
         } else {
@@ -5324,7 +5379,7 @@ fn surface_geometry_derived_cells(
 
         if let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values) {
             for c in constraints.iter_mut() {
-                if c.status != "Indeterminate" {
+                if c.status != satisfaction_token(Satisfaction::Indeterminate) {
                     continue;
                 }
                 let Some(new_sat) = recheck
@@ -5337,15 +5392,55 @@ fn surface_geometry_derived_cells(
                 if new_sat == Satisfaction::Indeterminate {
                     continue;
                 }
-                c.status = match new_sat {
-                    Satisfaction::Satisfied => "Satisfied",
-                    Satisfaction::Violated => "Violated",
-                    Satisfaction::Indeterminate => "Indeterminate",
-                }
-                .to_string();
+                c.status = satisfaction_token(new_sat).to_string();
             }
         }
     }
+}
+
+/// The trait defs a conformance check must be resolved against: the module's
+/// OWN declared traits, extended with every prelude module's.
+///
+/// A newtype rather than a bare `Vec` because the merge is a PRECONDITION, not
+/// a convenience. A user module's `CompiledModule.trait_defs` holds only the
+/// traits that module declares — `structure def X : Rigid` compiles to a module
+/// with an EMPTY `trait_defs`, because `Rigid` and its `Rigid : Physical`
+/// refinement edge live in the stdlib prelude (`stdlib/structural_physical.ri`).
+/// A bare module set passed to a refinement walk therefore type-checks, runs,
+/// and silently degrades the walk to direct-bound matching with no diagnostic.
+/// The field is private and [`merged_trait_defs`] is the only constructor that
+/// fills it, so outside this module the degraded set is not expressible at all
+/// — the recursion tests reach for [`MergedTraitDefs::empty`], and nothing else
+/// can be built by hand.
+pub(crate) struct MergedTraitDefs(Vec<reify_compiler::CompiledTrait>);
+
+impl MergedTraitDefs {
+    /// No trait defs at all — no refinement edges, so a walk over this set
+    /// recognises only DIRECT bounds. Correct exactly where the templates under
+    /// test declare no trait bounds; `#[cfg(test)]` so it can never stand in
+    /// for the real merge on a production path.
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    fn as_slice(&self) -> &[reify_compiler::CompiledTrait] {
+        &self.0
+    }
+}
+
+/// Merge a module's declared traits with the prelude's, yielding the set every
+/// refinement walk in this file resolves against.
+///
+/// Mirrors `engine_build.rs::build_outputs_with_result`. Shared by
+/// `collect_display_routing`'s `conforms_to_output` gate and
+/// `get_entity_tree`'s `conforms_to_trait` gate so the two cannot drift.
+fn merged_trait_defs(module: &CompiledModule, prelude: &[CompiledModule]) -> MergedTraitDefs {
+    let mut merged = module.trait_defs.clone();
+    for pm in prelude {
+        merged.extend(pm.trait_defs.iter().cloned());
+    }
+    MergedTraitDefs(merged)
 }
 
 // ── PRD-3 γ: DisplayOutput occurrence walk → display_panes ────────────────────
@@ -5379,11 +5474,7 @@ fn collect_display_routing(
     prelude: &[CompiledModule],
     values: &ValueMap,
 ) -> (Vec<DisplayDirective>, Vec<AppearanceDirective>) {
-    // Merge module + prelude trait_defs (mirrors engine_build.rs::build_outputs_with_result).
-    let mut merged_trait_defs = module.trait_defs.clone();
-    for pm in prelude {
-        merged_trait_defs.extend(pm.trait_defs.iter().cloned());
-    }
+    let trait_defs = merged_trait_defs(module, prelude);
 
     let mut directives = Vec::new();
     let mut appearances = Vec::new();
@@ -5407,7 +5498,7 @@ fn collect_display_routing(
             }
 
             // Gate 3: must conform to the Output trait.
-            if !conforms_to_output(&occ_template.trait_bounds, &merged_trait_defs) {
+            if !conforms_to_output(&occ_template.trait_bounds, trait_defs.as_slice()) {
                 continue;
             }
 
@@ -6716,6 +6807,7 @@ pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
+    trait_defs: &MergedTraitDefs,
     engine: Option<&Engine>,
     aux_ancestor: bool,
 ) -> EntityTreeNode {
@@ -6724,21 +6816,32 @@ pub(crate) fn build_template_node(
     let mut children = Vec::new();
 
     // Shared by BOTH the value-cell loop and the realization loop below, so the
-    // two sibling nodes a geometry binding emits (#4954) agree on
-    // `trait_geometry` (#5195). Hoisted out of the value-cell loop, where it
-    // used to be recomputed per cell.
+    // two sibling nodes a geometry binding emits (#4954) agree (#5195).
     //
-    // KNOWN LIMITATION (pre-existing, shared by both call sites, out of scope
-    // for #5195): `trait_bounds` holds DECLARED trait names only, so this fires
-    // for `structure def X : Physical` but NOT for `: Rigid` — even though
-    // `Rigid : Physical` refines it (stdlib/structural_physical.ri:76). A
-    // correct check would resolve the refinement chain
-    // (`reify_eval::conforms_to_trait`) and needs the merged module + prelude
-    // trait_defs threaded in here; that is a separable follow-up. The
-    // consumed-intermediate observable does NOT depend on this flag: the
-    // terminal `geometry` realization is consumed by nothing, so it stays
-    // `default_visible == true` and renders either way.
-    let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
+    // CONTRACT (#5558): a member named `geometry`, on a template whose trait
+    // bounds equal-or-transitively-refine `"Physical"` — the trait that
+    // declares `geometry : Solid` (stdlib/structural_physical.ri). So `: Rigid`
+    // and its sibling refinements qualify through the chain, while a lookalike
+    // name such as `PhysicalMock` — matched purely on spelling by the previous
+    // `contains("Physical")` probe — does not. Cycle safety and the empty-set
+    // direct-bound case are `conforms_to_trait`'s own, documented there.
+    //
+    // The two cheap necessary conditions gate the walk: `conforms_to_trait`
+    // builds a hash map over the whole merged set (~100 stdlib traits) per
+    // call, and this runs per node on every GUI refresh. Neither guard can
+    // change the result — the flag is only ever read ANDed with a `geometry`
+    // name test, and a template with no bounds conforms to nothing.
+    //
+    // Independent of the consumed-intermediate rule: the terminal `geometry`
+    // realization is consumed by nothing, so it renders either way.
+    let declares_geometry_member = template.value_cells.iter().any(|c| c.id.member == "geometry")
+        || template
+            .realizations
+            .iter()
+            .any(|r| r.name.as_deref() == Some("geometry"));
+    let geometry_is_trait_mandated = declares_geometry_member
+        && !template.trait_bounds.is_empty()
+        && conforms_to_trait(&template.trait_bounds, trait_defs.as_slice(), "Physical");
 
     // Value cells: param, let, auto
     for cell in &template.value_cells {
@@ -6766,7 +6869,7 @@ pub(crate) fn build_template_node(
             type_name: Some(cell.cell_type.to_string()),
             display_name: None,
             has_mesh: false,
-            trait_geometry: is_geometry_member && parent_has_physical,
+            trait_geometry: is_geometry_member && geometry_is_trait_mandated,
             children: vec![],
             freshness,
             default_visible: true,
@@ -6838,10 +6941,12 @@ pub(crate) fn build_template_node(
             type_name: None,
             display_name,
             has_mesh: true,
-            // Mirrors the value-cell heuristic above so the two sibling nodes a
-            // geometry binding emits (#4954) agree — see `parent_has_physical`
-            // for the shared `: Rigid` limitation (#5195).
-            trait_geometry: real.name.as_deref() == Some("geometry") && parent_has_physical,
+            // Mirrors the value-cell branch above so the two sibling nodes a
+            // geometry binding emits (#4954) agree — they read the one shared
+            // `geometry_is_trait_mandated` binding, whose contract is documented
+            // there.
+            trait_geometry: real.name.as_deref() == Some("geometry")
+                && geometry_is_trait_mandated,
             children: vec![],
             freshness,
             // Extends the surfacing-walk rule — shared contract anchor:
@@ -6882,7 +6987,7 @@ pub(crate) fn build_template_node(
             } else {
                 // Thread aux_ancestor: if this sub is aux OR an ancestor was aux,
                 // all descendants inherit default_visible = false.
-                build_template_node(child_template, &sub_path, compiled, engine, aux_ancestor || sub.is_aux).children
+                build_template_node(child_template, &sub_path, compiled, trait_defs, engine, aux_ancestor || sub.is_aux).children
             }
         } else {
             vec![]

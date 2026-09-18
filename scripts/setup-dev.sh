@@ -396,7 +396,9 @@ unset _rerere_arm_rc
 #                                    for the dual-FIFO (/tmp/reify-jobserver-merge
 #                                    + /tmp/reify-jobserver-task) pools.
 #
-# Cache size overridable via REIFY_SCCACHE_SIZE (default 100G). Skipped when no
+# Cache size overridable via REIFY_SCCACHE_SIZE (default 500G; raised from 100G
+# per task 7425 — the workstation's 100G cap was continuously LRU-evicting
+# across ~240 worktrees with 1.8 TB free on the volume). Skipped when no
 # systemd --user bus is available (e.g. CI).
 
 install_build_services() {
@@ -404,7 +406,7 @@ install_build_services() {
     local sccache_bin="$HOME/.cargo/bin/sccache"
     local repo_dir size jobserver_dir main_checkout
     repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    size="${REIFY_SCCACHE_SIZE:-100G}"
+    size="${REIFY_SCCACHE_SIZE:-500G}"
     mkdir -p "$unit_dir"
 
     # ---- HOST-GLOBAL ExecStart pinning (task 5888) --------------------------
@@ -564,7 +566,7 @@ EOF
 }
 
 if systemctl --user show-environment &>/dev/null; then
-    info "Installing build-accelerator services (sccache ${REIFY_SCCACHE_SIZE:-100G} + cargo jobserver + leak canary)..."
+    info "Installing build-accelerator services (sccache ${REIFY_SCCACHE_SIZE:-500G} + cargo jobserver + leak canary)..."
     if install_build_services; then
         ok "build-accelerator services installed, enabled & started"
     else

@@ -26,11 +26,6 @@
 ; `indexed_sub_cst_exposes_binder_and_domain_fields`, in hand-written field
 ; assertions that are indifferent to their internal shape.
 ;
-; Heads-up for future readers: `tree-sitter test` is 218/219 on main because of
-; the pre-existing and unrelated test/corpus/imaginary_literal.txt failure
-; (task #5492). That red is NOT your regression — scope any run with
-; `tree-sitter test -f 'indexed sub'` rather than reading a bare full-suite red.
-
 ================================================================================
 indexed sub — indexer clause + at pose
 ================================================================================

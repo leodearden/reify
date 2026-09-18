@@ -17,8 +17,16 @@
 // cantilever's Z-Z global relative energy error is empirically far above it) and
 // `max_refinement_iterations` is 1. The loop therefore performs EXACTLY one
 // mark-driven refine and two solves, which bounds end-to-end wallclock while
-// still proving the refine ran. `max_dofs` is set high enough not to bind first,
-// so the terminal status is unambiguously `NotConverged { MaxIterations }`.
+// still proving the refine ran. `max_dofs` is set high enough not to bind first.
+// So the budget guarantees `NotConverged`, a dof ceiling that does not bind, and
+// exactly one mark-driven refine — but it does NOT fix WHICH reason reports the
+// stop. The stall gate sits ABOVE the iteration cap in the loop's termination
+// precedence, so both are live at the second solve, and the stall wins whenever
+// that one refine fails to drop the global indicator by more than
+// `STALL_MIN_RELATIVE_DROP` (10%) — which it does not do reproducibly. The
+// terminal reason is therefore `MaxIterations` OR `Stalled`; task 7414 relocated
+// that discrimination to a deterministic unit pin
+// (`adaptive_refinement_tests.rs::stall_pre_empts_the_iteration_cap`).
 //
 // No `target` field on the Load/Support: BC selection stays coordinate-based
 // (clamp x_min, load x_max), which is the only BC model that survives a remesh —

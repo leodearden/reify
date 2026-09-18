@@ -1,0 +1,19 @@
+// curated_unit_labels.ri — CLI eval fixture for curated unit labels (task #6674).
+//
+// Witnesses both halves of the acceptance in one eval: Frequency and Stiffness
+// print their curated coherent-SI labels ("50 Hz", "1000 N/m") instead of the
+// composed base-SI forms, while Length and Angle keep BOTH their raw-SI labels
+// and their raw-SI magnitudes ("0.003 m", "0.5 rad") — the eval cell renders
+// the unit from the registry, never a rescaled magnitude.
+//
+// Lives in tests/fixtures/ (NOT examples/) so it is exercised only by
+// cli_curated_unit_labels_eval.rs.
+
+module curated_unit_labels
+
+structure def CuratedUnitLabels {
+    let f : Frequency = 50Hz
+    let k : Stiffness = 1000N / 1m
+    let len : Length = 3mm
+    let ang : Angle = 0.5rad
+}

@@ -523,33 +523,17 @@ fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
         leftover.len(),
     );
 }
-
 // Coverage gap: the `surface_tags.is_empty()` branch in
-// `kernel_real::mesh_to_volume` (post-classify_surfaces +
-// post-create_geometry) is intentionally not exercised by an integration
-// test. Empirical investigation showed that the obvious candidate input —
-// a single open triangle — does NOT hit that branch: gmsh's
-// classify_surfaces+create_geometry produces a surface entity even for an
-// open mesh, and the failure surfaces later in `gmshModelMeshGenerate(3)`
-// when HXT cannot 3D-mesh an unclosed region. Worse, an HXT mesh_generate
-// failure leaves thread-local HXT state that survives `gmshClear()` and
-// corrupts the *next* meshing call's output (it returns 0 tets instead
-// of erroring). So an integration test that reliably hits the
-// empty-entities branch isn't reachable from real input geometry, and a
-// test that triggers HXT failure pollutes other tests in the same binary.
-// The branch remains as defensive guarding against future gmsh-version
-// changes; verification relies on code review rather than runtime
-// coverage. The other three reviewer-requested validation tests
+// `kernel_real::mesh_to_volume` is not reachable from real input geometry.
+// gmsh's classify_surfaces+create_geometry produces a surface entity even for
+// an open mesh, so the obvious candidate — a single open triangle — sails
+// past that branch and fails later, at `gmshModelMeshGenerate(3)`, when HXT
+// cannot 3D-mesh an unclosed region. The branch stays as defensive guarding
+// against future gmsh-version changes, verified by code review rather than
+// runtime coverage. The three sibling validation tests above
 // (`vertices_length_not_multiple_of_three_errors`,
-// `indices_length_not_multiple_of_three_errors`,
-// `out_of_bounds_index_errors`) cover the preflight validation that does
-// have testable error paths.
+// `indices_length_not_multiple_of_three_errors`, `out_of_bounds_index_errors`)
+// cover the preflight validation that does have testable error paths.
 //
-// That pollution warning is now MEASURED, not just reasoned: adding an
-// HXT-failing fixture to this binary turned 7 of the 14 tests above into
-// `tet_indices.len() = 0` failures, while the same run with that one test
-// filtered out was 14/14 green (task #6969). The test it describes does
-// exist — as `mesh_to_volume_failure_reports_gmsh_log_not_just_the_last_error_line`
-// in `tests/log_capture_tests.rs`, whose other tests are immune by
-// construction: pure formatting, plus one guard test whose only gmsh call
-// is `ffi::clear()` — no meshing at all.
+// Deliberate mesher failures live in `tests/mesher_poison_recovery.rs`, whose
+// header carries the mechanism and why they are kept out of this binary.

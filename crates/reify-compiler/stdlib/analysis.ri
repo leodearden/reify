@@ -20,19 +20,24 @@ pub type Strain = Dimensionless
 
 // ── Analysis result trait ──────────────────────────────────────────────────
 
-// AnalysisResult describes the outputs of a stress analysis.
-// All params use `Real` as a dimension-agnostic placeholder. The runtime
-// builtins produce correctly-dimensioned values (e.g. Scalar<PRESSURE> for
-// stresses, dimensionless Real for safety_factor_value). This trait is
-// intended as a structural contract — it does not participate in dimension
-// checking and will not reject dimensioned conforming values.
+// AnalysisResult describes the outputs of a stress analysis. Its five
+// stress-bearing params are `Stress` (= Pressure, Pa); safety_factor_value
+// stays `Real` because it is genuinely dimensionless.
+// Leave the bare `0` in the constraints below — a syntactic zero comparison
+// operand coerces to its sibling operand's dimension (task-4485/β), the same
+// convention as structural_physical.ri's Plastic/Sealed. Do not spell `0Pa`.
+// Not a signature source: analysis_signatures.rs seeds von_mises /
+// principal_stresses / max_shear from its own rows, not off this trait.
+// RULING Q7 posture 2 (task #6165) — rationale, the zero-conformers
+// measurement and the posture-3 upgrade path — is recorded as decision 9 of
+// docs/prds/v0_6/dimension-checked-readers.md.
 trait AnalysisResult {
-    param von_mises_stress : Real
-    param principal_stress_1 : Real
-    param principal_stress_2 : Real
-    param principal_stress_3 : Real
-    param max_shear_stress : Real
-    param safety_factor_value : Real
+    param von_mises_stress : Stress
+    param principal_stress_1 : Stress
+    param principal_stress_2 : Stress
+    param principal_stress_3 : Stress
+    param max_shear_stress : Stress
+    param safety_factor_value : Real // dimensionless
     constraint von_mises_stress >= 0
     constraint max_shear_stress >= 0
     constraint safety_factor_value > 0
@@ -41,7 +46,11 @@ trait AnalysisResult {
 // ── Analysis configuration trait ───────────────────────────────────────────
 
 // Analysis describes a stress analysis configuration.
-// yield_strength: material yield strength used for safety factor (Pa, using Real)
+// yield_strength: material yield strength used for safety factor (Pa, using Real).
+// Deliberately NOT retyped by RULING Q7 posture 2 (task #6165): this trait
+// belongs to decision 9 / task 5807, not this ruling, so yield_strength's
+// Real-vs-Stress question is left for that task rather than resolved here by
+// symmetry with AnalysisResult's five stress params.
 trait Analysis {
     param yield_strength : Real
     constraint yield_strength > 0

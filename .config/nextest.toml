@@ -43,25 +43,59 @@ occt = { max-threads = 24 }
 # wall (scripts/verify.sh: `timeout --kill-after=60 60m`, which on expiry
 # kills the whole nextest process tree as exit 124 with ZERO per-test
 # attribution — the task 4877/4878 failure shape). 120s x 10 = 1200s (20 min).
-# The 5 known-slow "heavy" binaries below carry their own larger ceiling
-# inline on their existing [[profile.default.overrides]] blocks (task 5141) —
-# nextest resolves each override SETTING by first-match independently, so
-# they do not fall through to this default. A 6th override at the end of
-# this file (task 7339, package(reify-eval) & binary
-# (solve_elastic_static_body_e2e)) carries the same 1800s ceiling for a
-# DISTINCT reason — contention headroom, not intrinsic slowness; see that
-# block's own comment.
+# THREE TIERS of ceiling live in this file (task 6485):
+#   - default (here): 1200s = 120s x 10. Everything with no more specific
+#     override.
+#   - gate-resident: 1800s = 120s x 15, on the two blocks that DO run on the
+#     merge gate — representation_within_assertion (LPT tier 50) and
+#     solve_elastic_static_body_e2e (task 7339, contention headroom rather than
+#     intrinsic slowness; see that block's own comment). Both must stay strictly
+#     under the 3600s pass-level wall.
+#   - heavy: 43200s = 120s x 360 (12h), on all 8 members of
+#     REIFY_HEAVY_NEXTEST_FILTER (scripts/heavy-test-filter-lib.sh).
+# nextest resolves each override SETTING by first-match independently, so none
+# of these falls through to this default.
+#
+# WHY A CEILING 12x THE 3600s WALL IS SAFE ON THE BLOCKING GATE: verify.sh scopes
+# the heavy-exclusion EFFECT to the task and merge roles, so those two plus the
+# sanctioned manual-land path do not run heavy members at all. Note what that does
+# NOT say — "no gate path runs heavy members" is FALSE, and is what this comment
+# claimed until task 6485; setting REIFY_GATE_EXCLUDE_HEAVY decides nothing by
+# itself. The full argument — which wall binds which role, why 13h exists, the
+# background residual and the rejected alternatives — is normative in ONE place:
+# docs/prds/offline-deep-test-lane.md DA6. Do not restate it here.
 # DELIBERATE: no `retries` key here or anywhere in this file. A retry would
 # re-run and mask the very hangs/flakes this ceiling exists to attribute and
 # kill (task invariant — regression-guarded by test_occt_gated_scope.sh).
 # OPERATIONAL CAVEAT: this 1200s ceiling applies to every test with no more
-# specific override. A future test that legitimately needs >20 minutes MUST
-# be given its own [[profile.default.overrides]] slow-timeout (mirroring the
-# 5 heavy-binary blocks below) — otherwise nextest will SIGTERM it at 1200s
-# indistinguishable in the log from a genuine hang. There is no automated
-# check that the heavy-binary list (or the contention-headroom override
-# alongside it, task 7339) stays complete; this comment is that guard until
-# one exists.
+# specific override. A future test that legitimately needs >20 minutes MUST be
+# given its own [[profile.default.overrides]] slow-timeout — otherwise nextest
+# will SIGTERM it at 1200s, indistinguishable in the log from a genuine hang.
+# Adding one is enough; classifying it is not optional. Until task 6485 this
+# comment WAS the completeness guard. It no longer has to be: Assertions J/K/L in
+# tests/infra/test_nextest_slow_priority.sh derive the heavy set and the role
+# walls from their own sources and red on any override that classifies as
+# neither heavy nor gate-resident.
+#
+# ACCEPTED RESIDUAL — the paths on which the heavy ceiling is UNREACHABLE, so a
+# heavy hang degrades to `timeout` exit 124 with no per-test attribution. The
+# ceiling is static config and applies everywhere, including where no wall leaves
+# room for it. Three such paths, the third the only orchestrator-spawned one:
+#   1. a bare `cargo nextest run`;
+#   2. a scripts/verify.sh run with REIFY_GATE_EXCLUDE_HEAVY unset (a developer's
+#      manual path — neither the orchestrator verify_env nor land.sh);
+#   3. DF_VERIFY_ROLE=background, the main-tip cadence sweep: --profile both
+#      --scope all, outside verify.sh's task|merge exclusion, so all 8 heavy
+#      members run under the 60m debug wall.
+# Path 3 is a REGRESSION in hang-diagnosability against the pre-6485 1200s/1800s
+# ceilings, deliberately accepted rather than closed. Blast radius, why it was
+# accepted, and the follow-up (ticket tkt_0RTN0PQ35EZGXGQ7WF2HXZE2N9):
+# docs/prds/offline-deep-test-lane.md DA6.
+#
+# This list is not decorative — Assertion L in
+# tests/infra/test_nextest_slow_priority.sh reads it. A role is allowed to be
+# unreachable only if it is named BOTH here and in that test's allowlist, and L
+# reds when either outlives the other. Keep the role names in this paragraph.
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
 
@@ -259,20 +293,22 @@ test-group = 'occt'
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(tensegrity_t0a)'
 priority = 100
-# Heavy-tail slow-timeout ceiling (task 5141): 120s x 15 = 1800s (30 min),
-# larger than the 1200s/20min [profile.default] ceiling above — sized to
-# clear the worst legitimate straggler here (>180s even at ~8x load ≈1440s
-# < 1800s) — while still bounding a true hang well under the 3600s (60m)
-# verify.sh pass-level wall. nextest resolves each override SETTING
+# Heavy-tier slow-timeout ceiling: 120s x 360 = 43200s (12h), shared by all 8
+# members of REIFY_HEAVY_NEXTEST_FILTER (task 6485; was 1800s/30min, task 5141).
+# Sized for the OFFLINE deep lane, which is the only path that runs these
+# binaries — no gate path does (see the three-tier note in [profile.default]
+# above) — and where verify.sh's release wall is 13h, leaving ~3600s of headroom
+# so nextest SIGTERMs a hung test BY NAME before the outer `timeout` could fire
+# exit 124 attributing nothing. nextest resolves each override SETTING
 # (priority, slow-timeout) by first-match independently, so this ceiling is
 # unaffected by both this block's own `priority` value and the earlier occt
 # test-group override.
-slow-timeout = { period = "120s", terminate-after = 15 }
+slow-timeout = { period = "120s", terminate-after = 360 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)'
 priority = 50
-slow-timeout = { period = "120s", terminate-after = 15 }
+slow-timeout = { period = "120s", terminate-after = 360 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(representation_within_assertion)'
@@ -282,12 +318,52 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 [[profile.default.overrides]]
 filter = 'package(reify-solver-elastic) & binary(analytical_validation)'
 priority = 50
-slow-timeout = { period = "120s", terminate-after = 15 }
+slow-timeout = { period = "120s", terminate-after = 360 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-solver-elastic) & binary(determinism)'
 priority = 50
-slow-timeout = { period = "120s", terminate-after = 15 }
+slow-timeout = { period = "120s", terminate-after = 360 }
+
+# The four heavy-filter members that carry no LPT priority (task 6485). These
+# were the completeness gap this task closed: all four are in
+# REIFY_HEAVY_NEXTEST_FILTER but had no override block at all, so they fell
+# through to [profile.default]'s 1200s ceiling — far below what the offline lane
+# exists to allow.
+#
+# slow-timeout ONLY, no `priority` key: none of these was ever in the LPT tier,
+# and adding one would silently change merge-gate scheduling — a distinct lever
+# from a kill ceiling, out of scope here (the same reasoning the task 7339 block
+# at the end of this file records for itself).
+#
+# Each `filter` value below is BYTE-IDENTICAL to its atom in
+# REIFY_HEAVY_NEXTEST_FILTER (scripts/heavy-test-filter-lib.sh) with the outer
+# parentheses stripped. That exact correspondence is what
+# tests/infra/test_nextest_slow_priority.sh Assertion J checks, so a reworded
+# filter that still means the same thing to nextest WILL fail there — by design,
+# because the guard derives the heavy set from the lib rather than restating it.
+#
+# The two harness_fea_solver_e2e blocks are TEST-scoped, not binary-scoped: they
+# share a package AND a binary with ~246 fast siblings, so a whole-binary
+# override would hand those siblings a 12h ceiling too (esc-6368-2). Nothing
+# earlier in this file sets slow-timeout for them — the occt test-group block
+# sets only `test-group`, and nextest resolves each override SETTING by
+# independent first-match.
+[[profile.default.overrides]]
+filter = 'package(reify-solver-elastic) & binary(modal_benchmarks)'
+slow-timeout = { period = "120s", terminate-after = 360 }
+
+[[profile.default.overrides]]
+filter = 'package(reify-eval-fea-tests) & binary(buckling_smoke)'
+slow-timeout = { period = "120s", terminate-after = 360 }
+
+[[profile.default.overrides]]
+filter = 'package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_in_the_loop_producer::/)'
+slow-timeout = { period = "120s", terminate-after = 360 }
+
+[[profile.default.overrides]]
+filter = 'package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_bracket_minimize_mass_e2e::/)'
+slow-timeout = { period = "120s", terminate-after = 360 }
 
 # solve_elastic_static_body_e2e (reify-eval): NOT a 6th "intrinsically slow"
 # heavy binary like the 5 above — its own history says otherwise. Across

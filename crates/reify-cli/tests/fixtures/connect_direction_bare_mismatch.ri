@@ -1,0 +1,11 @@
+// #7175 control fixture: the BARE form of the same In -> In mistake. This has
+// always been rejected; it pins that the dotted fixture's expected diagnostic
+// is the pre-existing one, emitted from the same site with the same wording,
+// rather than a second parallel check.
+trait T { param d : Length }
+
+structure def S {
+    port a : in T { param d : Length = 1mm }
+    port b : in T { param d : Length = 2mm }
+    connect a -> b
+}

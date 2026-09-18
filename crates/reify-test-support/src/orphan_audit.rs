@@ -358,6 +358,41 @@ fn resolve_script_and_root() -> (PathBuf, PathBuf) {
     (script, repo_root)
 }
 
+/// The unexecuted [`Command`] [`run_orphan_audit`] spawns for `scope`:
+/// program, argv, `current_dir`, and [`crate::git_env::sanitize`] already
+/// applied. Composes [`build_audit_command`] and [`resolve_script_and_root`]
+/// — no new resolution logic, no new argv — so it cannot fork from what
+/// production actually spawns.
+///
+/// Public because `reify-audit`'s `tests/g_allow.rs` hazard probe needs to
+/// spawn this EXACT command TWICE, under two different environments, to
+/// compare them — something [`run_orphan_audit`] (one spawn, sanitized,
+/// parsed to a JSON envelope) cannot express. Contrast [`OrphanAudit`]'s doc
+/// above, which declines to promote a finer-grained type ahead of a real
+/// external consumer: this item has one, so it is promoted.
+///
+/// # Composition contract
+///
+/// The returned command is ALREADY sanitized. A caller that then adds
+/// `Command::env` for one of [`crate::git_env::REPO_REDIRECT_VARS`] is
+/// deliberately re-poisoning a sanitized command — e.g. to demonstrate a
+/// hazard synthetically — not working around a missing sanitize. See
+/// [`crate::git_env`] for what sanitization is for and why.
+///
+/// # Not a substitute for [`run_orphan_audit`]
+///
+/// Every REAL invocation of the audit goes through [`run_orphan_audit`],
+/// which wraps this same command with the graceful-skip protocol
+/// (`python3`/`git` presence, script-on-disk, `repo_root`-is-a-git-work-tree,
+/// `EXCLUDE_CRATES` membership), the repo-root premise probe, and the
+/// empty-stdout hard failure. Spawning this command directly buys none of
+/// those — it is for a caller that needs the command ITSELF, unexecuted, to
+/// compare against another.
+pub fn audit_command(scope: &str) -> Command {
+    let (script, repo_root) = resolve_script_and_root();
+    build_audit_command(&script, scope, &repo_root)
+}
+
 /// Like [`run_orphan_audit`], but returns the full three-way [`OrphanAudit`]
 /// outcome instead of collapsing two of them to `None`.
 ///
@@ -734,15 +769,51 @@ mod tests {
     /// Hand-rolled parse of an `EXCLUDE_CRATES = {"a", "b"}`-shaped Python
     /// set-literal declaration. No `regex` dependency exists anywhere in this
     /// workspace (checked before writing this test), so a small manual scan
-    /// is used instead of pulling one in just for this. Returns `None` if no
-    /// `EXCLUDE_CRATES = {` marker is found; otherwise returns whatever names
-    /// it parsed (possibly empty), so the caller can distinguish "declaration
-    /// not found" from "declaration found but parsed empty" and fail loudly
-    /// on the latter rather than matching vacuously.
-    fn parse_exclude_crates_declaration(source: &str) -> Option<Vec<String>> {
+    /// is used instead of pulling one in just for this.
+    ///
+    /// A line counts as the declaration only when its first non-whitespace
+    /// text starts with the marker `EXCLUDE_CRATES = {`. A full-line comment
+    /// (`# EXCLUDE_CRATES = {...}`) starts with `#` instead, so it can never
+    /// match; a trailing inline echo of the marker sits after the start of
+    /// its line, so it can't inflate the count either. Exactly one matching
+    /// line is required: zero returns `None` (the caller reports this — it
+    /// already holds the script path for that message), and more than one is
+    /// a hard `panic!` naming `source_label` and the observed count — either
+    /// case would otherwise risk
+    /// `exclude_crates_const_matches_audit_script_declaration` passing while
+    /// silently pinning the wrong text against the Rust `EXCLUDE_CRATES`
+    /// const, permanently masking real drift.
+    ///
+    /// Returns `None` if no declaration line is found; otherwise whatever
+    /// names it parsed from that line (possibly empty), so the caller can
+    /// distinguish "declaration not found" from "declaration found but
+    /// parsed empty" and fail loudly on the latter rather than matching
+    /// vacuously.
+    fn parse_exclude_crates_declaration(source: &str, source_label: &str) -> Option<Vec<String>> {
         let marker = "EXCLUDE_CRATES = {";
-        let after_marker = source.find(marker)? + marker.len();
-        let rest = &source[after_marker..];
+        let declaration_lines: Vec<&str> = source
+            .lines()
+            .filter(|line| line.trim_start().starts_with(marker))
+            .collect();
+
+        if declaration_lines.is_empty() {
+            return None;
+        }
+        if declaration_lines.len() > 1 {
+            let occurrences = declaration_lines.len();
+            panic!(
+                "found {occurrences} occurrences of `{marker}` in \
+                 {source_label} — this parser cannot tell which declaration \
+                 is authoritative, and silently binding the first would risk \
+                 permanently pinning the wrong text against the Rust \
+                 EXCLUDE_CRATES const while the parity assertion keeps \
+                 passing. Remove the duplicate declaration, or teach this \
+                 parser which one is authoritative."
+            );
+        }
+
+        let line = declaration_lines[0].trim_start();
+        let rest = &line[marker.len()..];
         let end = rest.find('}')?;
         let body = &rest[..end];
 
@@ -762,6 +833,99 @@ mod tests {
             }
         }
         Some(names)
+    }
+
+    /// A full-line `#` comment that illustrates the declaration in
+    /// assignment form (plausible directly above the real one — task 6027
+    /// already added 9 comment lines right above it) never shadows the real
+    /// declaration below it: the parser binds the real one, so
+    /// `exclude_crates_const_matches_audit_script_declaration` keeps
+    /// checking the actual declaration rather than silently pinning a
+    /// comment against the Rust const.
+    ///
+    /// Exercises BOTH a column-0 comment and an INDENTED one, to pin the rule
+    /// as "first non-whitespace character is `#`", not "line starts with
+    /// `#`".
+    #[test]
+    fn parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow() {
+        let source = "#!/usr/bin/env bash\n# Illustration of what this parser looks for:\n#     EXCLUDE_CRATES = {\"decoy-from-a-column-zero-comment\"}\n    # EXCLUDE_CRATES = {\"decoy-from-an-indented-comment\"}\nEXCLUDE_CRATES = {\"reify-test-support\", \"another-real-crate\"}\n";
+
+        let result = parse_exclude_crates_declaration(source, "a test fixture");
+        assert_eq!(
+            result,
+            Some(vec![
+                "reify-test-support".to_string(),
+                "another-real-crate".to_string(),
+            ]),
+            "expected the parser to skip both the column-0 and indented \
+             commented-out shadows and bind the real declaration below \
+             them — got: {result:?}"
+        );
+    }
+
+    /// Companion to
+    /// [`parse_exclude_crates_declaration_binds_the_real_declaration_not_a_commented_shadow`]
+    /// — the other observable face of the same rule. When the ONLY
+    /// occurrence of the marker in the source is inside a full-line comment
+    /// and no real declaration exists anywhere, the parser reports "not
+    /// found" (`None`) so the caller's path-naming not-found panic fires,
+    /// rather than returning the comment's contents as if they were a real
+    /// declaration.
+    #[test]
+    fn parse_exclude_crates_declaration_is_not_found_when_only_a_comment_declares_it() {
+        let source = "# EXCLUDE_CRATES = {\"only-in-a-comment\"}\n";
+
+        let result = parse_exclude_crates_declaration(source, "a test fixture");
+        assert_eq!(
+            result, None,
+            "expected None because the only occurrence of the marker is inside \
+             a full-line comment and no real declaration exists — got: {result:?}"
+        );
+    }
+
+    /// Two REAL (non-comment) declarations panic rather than silently
+    /// first-wins binding the first one — the direction the line-anchored
+    /// match above does not otherwise resolve on its own (a genuine
+    /// duplicate or conditionally-redefined declaration).
+    ///
+    /// Uses `catch_unwind` + `reify_core::panic_payload_to_string` — the
+    /// idiom already established by `wrong_tree_with_real_scope_panics`
+    /// above — rather than `#[should_panic]`, whose attribute-level
+    /// substring match cannot distinguish WHICH panic fired.
+    #[test]
+    fn parse_exclude_crates_declaration_panics_on_multiple_declarations() {
+        let source = "EXCLUDE_CRATES = {\"first-declaration\"}\nsome other line\nEXCLUDE_CRATES = {\"second-declaration\"}\n";
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_exclude_crates_declaration(source, "a test fixture")
+        }));
+
+        let payload = match result {
+            Ok(value) => panic!(
+                "expected parse_exclude_crates_declaration to panic on two \
+                 non-comment EXCLUDE_CRATES declarations with different \
+                 contents — silently binding the first would permanently pin \
+                 the wrong text against the Rust EXCLUDE_CRATES const while \
+                 the parity assertion kept passing — got: {value:?}"
+            ),
+            Err(payload) => payload,
+        };
+        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        assert!(
+            message.contains("found 2 occurrences"),
+            "panicked, but the message doesn't report the observed count of \
+             2 declarations in context; got: {message}"
+        );
+        assert!(
+            message.contains("EXCLUDE_CRATES = {"),
+            "panicked, but the message doesn't name the marker text that was \
+             duplicated; got: {message}"
+        );
+        assert!(
+            message.contains("a test fixture"),
+            "panicked, but the message doesn't name the source being \
+             scanned; got: {message}"
+        );
     }
 
     /// Pins `orphan_audit.rs`'s `EXCLUDE_CRATES` const against
@@ -790,14 +954,15 @@ mod tests {
         let source = std::fs::read_to_string(&script_path)
             .unwrap_or_else(|e| panic!("read {script_path:?}: {e}"));
 
-        let declared = parse_exclude_crates_declaration(&source).unwrap_or_else(|| {
-            panic!(
-                "could not find an `EXCLUDE_CRATES = {{...}}` declaration in \
-                 {script_path:?} — has it moved or been reformatted? Update \
-                 parse_exclude_crates_declaration's marker alongside whatever \
-                 changed the script."
-            )
-        });
+        let declared = parse_exclude_crates_declaration(&source, &format!("{script_path:?}"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "could not find an `EXCLUDE_CRATES = {{...}}` declaration in \
+                     {script_path:?} — has it moved or been reformatted? Update \
+                     parse_exclude_crates_declaration's marker alongside whatever \
+                     changed the script."
+                )
+            });
         assert!(
             !declared.is_empty(),
             "parsed an EXCLUDE_CRATES declaration from {script_path:?} but found \
@@ -991,5 +1156,72 @@ mod tests {
                  {removed:?}"
             );
         }
+    }
+
+    /// The two premises `reify-audit`'s `g_allow.rs` hazard probe used to
+    /// assert about its OWN `CARGO_MANIFEST_DIR` walk — "the script this walk
+    /// names is really on disk" and "this root really holds both crates, so
+    /// the two walks cannot have resolved different trees" — relocated to the
+    /// single resolution site [`audit_command`] now composes, rather than a
+    /// second copy of them at the call site.
+    ///
+    /// One substantive upgrade over the assertions this replaces: those could
+    /// only RECONSTRUCT this crate's root from `reify-audit`'s own walk and
+    /// compare, which does not distinguish this repo from a byte-identical
+    /// vendored copy laid out the same way. Here there is only ONE walk, so
+    /// that reconstruction — and its blind spot — is gone.
+    ///
+    /// The `crates/reify-audit/Cargo.toml` check is kept anyway, even though
+    /// nothing about THIS crate's own resolution needs it: it is what makes
+    /// `audit_command`'s only external consumer (`reify-audit`'s
+    /// `g_allow.rs`) reachable from the root this seam hands back. That is a
+    /// deliberate DOWNWARD reference to a consumer crate by PATH, checked on
+    /// disk — not a dependency edge, which would be a cycle (`reify-audit`
+    /// depends on this crate, never the reverse).
+    ///
+    /// PASSES on arrival: this pins an existing property of
+    /// [`resolve_script_and_root`] at its new home rather than driving new
+    /// behaviour — the relocation is the point, not a fresh RED.
+    ///
+    /// The script's absence is a graceful skip, not a hard assertion: this
+    /// module treats "the script does not exist on disk" as environmentally
+    /// legitimate everywhere else (a packaged crate or a source tarball with
+    /// no `scripts/` tree) — see [`run_orphan_audit_at`]'s
+    /// `EnvUnavailable("audit-orphan-producers.sh not found on disk")` branch
+    /// and `missing_script_is_env_unavailable` above. Hard-asserting here
+    /// would turn that same environmental condition into a red unit test
+    /// instead. The hard assertions this test exists for — that a root
+    /// resolving an EXISTING script also holds both crates' manifests — only
+    /// make sense once the script is confirmed present.
+    #[test]
+    fn audit_command_names_an_existing_script_under_a_root_holding_both_crates() {
+        let cmd = audit_command("crates/reify-audit/src");
+
+        let script = Path::new(cmd.get_program());
+        if !script.exists() {
+            eprintln!(
+                "orphan_audit: skipping \
+                 audit_command_names_an_existing_script_under_a_root_holding_both_crates \
+                 — resolved script {script:?} not found on disk"
+            );
+            return;
+        }
+
+        let root = cmd
+            .get_current_dir()
+            .expect("audit_command sets current_dir");
+        assert!(
+            root.join("crates/reify-test-support/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-test-support/Cargo.toml — this crate's own \
+             manifest is not reachable from the root the seam hands back"
+        );
+        assert!(
+            root.join("crates/reify-audit/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-audit/Cargo.toml — audit_command's only external \
+             consumer's crate is not reachable from the root this seam hands \
+             back (a downward reference by path, not a dependency edge)"
+        );
     }
 }

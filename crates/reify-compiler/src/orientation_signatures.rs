@@ -104,11 +104,12 @@ pub(crate) fn is_orientation_typed_fn(name: &str) -> bool {
 /// Result type for an orientation/transform/frame constructor builtin — a fixed
 /// nominal type keyed on `name` alone.
 ///
-/// Adopts the name-only INFALLIBLE `-> Type` shape of
-/// [`crate::parse_signatures::parse_fn_result_type`] rather than the args-aware
+/// Adopts a name-only INFALLIBLE `-> Type` shape rather than the args-aware
 /// `-> Option<Type>` / `&[CompiledExpr]` shapes used by the arity-sensitive
 /// families, because every result type here is argument-INDEPENDENT: there is
-/// no argument whose type or count could change the answer.
+/// no argument whose type or count could change the answer. (The shape was
+/// modelled on `parse_fn_result_type`, whose module task #6001 α replaced with
+/// the `reify-builtins` row table.)
 ///
 /// The per-name mapping is the grouping documented on
 /// [`ORIENTATION_TYPED_FN_NAMES`], one match arm per group.

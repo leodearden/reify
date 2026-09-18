@@ -1,0 +1,15 @@
+// orient_log_angle_probe.ri — CLI fixture for the #6080 rotation-vector ruling.
+//
+// `orient_log` returns log(q) = axis * angle, so its components carry ANGLE
+// (slot 7, `rad`) rather than being dimensionless. `reify eval` must therefore
+// print each component with a `rad` unit tag.
+//
+// `lv` is deliberately UNANNOTATED: this task rules on the EVAL-time dimension
+// of the emitted value, not on the check-time static signature, so the fixture
+// must stay `reify check`-clean both before and after the change.
+
+module orient_log_angle_probe
+
+structure def RotVecProbe {
+    let lv = orient_log(orient_axis_angle(vec3(0,0,1), 90deg))
+}

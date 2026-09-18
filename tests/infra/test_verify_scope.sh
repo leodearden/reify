@@ -20,6 +20,10 @@
 #   gui/src-tauri          -> Rust+GUI, OCCT-clean (RUN_OCCT_GATE=0)
 #   Cargo.lock / unknown   -> conservative gate (RUN_OCCT_GATE=1)
 #   MERGE_HEAD present     -> forces --scope all regardless of stage
+#   vitest lane            -> tsc/npm-ci run whenever RUN_GUI=1, but the vitest runner (`gui-vitest-run.sh`)
+#                             runs only when RUN_GUI_VITEST=1: a frontend-read
+#                             path changed, or the affected-crate closure
+#                             reaches reify-gui (or is unavailable) — task 7427
 
 set -euo pipefail
 
@@ -185,11 +189,13 @@ assert "PG-1/docs+fixture: hook still completes in seconds — no cargo nextest 
 echo ""
 echo "--- Scenario PG-2: Rust-consumed prd-gate fixture -> stays conservative (control, green before AND after) ---"
 # geometry_let_selector_consumer.ri is pushed into corpus_files() by
-# crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:772 — it is a
-# runtime input to a compiled test target, so EDITING it must keep today's
-# conservative classification even though ADDING an unrelated fixture is inert.
+# crates/reify-eval/tests/harness_corpus_gates/eval_invariant_corpus_sweep.rs
+# (no line number: the previous cite had already drifted, so a fresh one would
+# only re-drift) — it is a runtime input to a compiled test target, so EDITING it
+# must keep today's conservative classification even though ADDING an unrelated
+# fixture is inert.
 plan_for staged tests/prd-gate/fixtures/geometry_let_selector_consumer.ri
-assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by no_stale_undef_invariant_gate.rs)" \
+assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by eval_invariant_corpus_sweep.rs)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 
 echo ""
@@ -393,8 +399,8 @@ assert "PG-DRIFT: marker self-test — the SIBLING 'pg-drift-dir:allow' does NOT
 # which prints `path:count` rather than a bare number.
 _PG_ALLOWED_MENTIONS="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
     | grep 'pg-drift:allow' | wc -l || true)"
-assert "PG-DRIFT: exactly one reviewed 'pg-drift:allow' fixture mention is expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence); found $_PG_ALLOWED_MENTIONS" \
-    test "$_PG_ALLOWED_MENTIONS" -eq 1
+assert "PG-DRIFT: exactly three reviewed 'pg-drift:allow' fixture mentions are expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence, plus ctor_conformance_corpus_survey.rs's two SYNTHETIC one.ri drift-render inputs); found $_PG_ALLOWED_MENTIONS" \
+    test "$_PG_ALLOWED_MENTIONS" -eq 3
 # (B) ABUSE SURFACE. The marker asserts "prose only — nothing compiled reads
 # this", so every marked path must classify RUN_RUST=0 against verify.sh's REAL
 # classifier. A marked basename that IS in _RUST_COUPLED_RI_FIXTURES would mean
@@ -589,6 +595,84 @@ assert "PT-CTRL-DOCS: still zero command leaves (5536's win is preserved for a g
     test "$(plan_cmdcount)" -eq 0
 
 # ---------------------------------------------------------------------------
+# Scenarios PT-RATCHET-*: the EMITTER half of REIFY_PTODO_RATCHET_REQUIRED
+# (task 7006).
+#
+# The cheap gate PT-1 pins can still exit GREEN with the ratchet unrun. On the
+# hook-gated --scope staged path REIFY_AUDIT_NO_COLD_BUILD is deliberately
+# unset, so reify_audit_guard degrades to mode=rebuild; when that rebuild is a
+# no-op against an on-disk mtime older than the last crates/reify-audit commit
+# the guard returns 125 with the binary still executable, and
+# test_reify_audit_ptodo.sh sets RATCHET_SKIP=1 — dropping scenarios (a)+(b),
+# the fingerprint ratchet this selector exists to run, while the surviving
+# (c)-(g) hard gate (High-severity only, where phantom-tracking is MEDIUM)
+# still exits 0. The leaf therefore carries REIFY_PTODO_RATCHET_REQUIRED=1,
+# under which that file refuses instead of skipping.
+#
+# A .py path is used because it is BOTH is_swept_ext-swept (so
+# select_cheap_ptodo_gate fires) AND has a row in
+# scripts/verify-pipeline-infra-tests.txt (so select_infra_tests emits a
+# SECOND, sibling selective-infra leaf into the same plan). One capture
+# therefore carries both the armed leaf and an un-armed sibling, which is what
+# makes PT-RATCHET-SCOPE non-vacuous by construction.
+#
+# Each scenario extracts its leaf and asserts NON-EMPTINESS FIRST (the _E_LEAF
+# idiom from test_infra_git_env_isolation.sh Section E): a capture that
+# produced no leaf must fail loudly rather than pass a content pin by accident.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-RATCHET-REQ: staged swept .py -> ptodo gate leaf carries REIFY_PTODO_RATCHET_REQUIRED=1 ---"
+plan_for staged scripts/prd-capability-check.py
+# `|| true`: under `set -euo pipefail` a no-match grep would abort the suite
+# before the vacuity assertion below could report the empty capture.
+_PT_REQ_LEAF="$(printf '%s\n' "$PLAN_OUT" | grep 'test_reify_audit_ptodo\.sh' | head -1)" || true
+assert "PT-RATCHET-REQ-vacuity: a ptodo gate leaf was captured (content pins below are not vacuous)" \
+    test -n "$_PT_REQ_LEAF"
+assert "PT-RATCHET-REQ: the ptodo gate leaf carries REIFY_PTODO_RATCHET_REQUIRED=1 (a skipped ratchet is a hard failure on the main-landing gate)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "REIFY_PTODO_RATCHET_REQUIRED=1"' _ "$_PT_REQ_LEAF"
+
+echo ""
+echo "--- Scenario PT-RATCHET-SCOPE: the knob is PER-LEAF, not ambient across selected infra tests ---"
+# Same capture as PT-RATCHET-REQ. The sibling leaf comes from the .py path's
+# verify-pipeline-infra-tests.txt row, so both leaves exist in ONE plan and the
+# contrast cannot be an artifact of two different runs. This is the assertion
+# that stops a future edit from exporting the knob ahead of the emission loop,
+# which would arm it for EVERY selected infra test — the ambient-leak failure
+# the REIFY_INFRA_SUITE_ACTIVE rationale at verify.sh's emission site argues
+# against.
+_PT_SIB_LEAF="$(printf '%s\n' "$PLAN_OUT" | grep 'test_prd_capability_check' | head -1)" || true
+assert "PT-RATCHET-SCOPE-vacuity: the sibling selective-infra leaf was captured (the .py infra-map row fired)" \
+    test -n "$_PT_SIB_LEAF"
+assert "PT-RATCHET-SCOPE: the sibling leaf does NOT carry REIFY_PTODO_RATCHET_REQUIRED (per-leaf, not exported across the loop)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "REIFY_PTODO_RATCHET_REQUIRED"' _ "$_PT_SIB_LEAF"
+
+echo ""
+echo "--- Scenario PT-RATCHET-DRIFT: the emitted knob name is the one the reader honours ---"
+# The knob is a contract split across two files pinned by two DIFFERENT tests:
+# this one pins what verify.sh emits, test_reify_audit_ptodo_budget_skip.sh
+# pins what tests/infra/test_reify_audit_ptodo.sh honours. A rename touching
+# only one side leaves BOTH green while the staged gate silently stops
+# requiring the ratchet — the same silent-hole class task 7006 exists to
+# close, one level up. So derive the name from the emitted leaf rather than
+# hand-writing it here, exactly as PT-DRIFT above re-derives the swept-extension
+# set from is_swept_ext's source.
+#
+# The pin matches the READER FORM `${NAME:-`, not a bare mention of the name.
+# That file names the knob several times in prose (its header floor block, the
+# enforcement point's own comment, the refusal diagnostic), so a bare `grep -q
+# "$_PT_REQ_VAR"` is satisfied by a COMMENT — a rename that moved the `if` but
+# left any stale mention behind would keep this green while the emitter and the
+# reader had silently diverged, which is precisely what this scenario exists to
+# catch. Pinning the parameter expansion is not a wording pin: that file runs
+# under `set -u`, where reading an unset knob without a `:-` default is a hard
+# error, so the default form is structural rather than stylistic.
+_PT_REQ_VAR="$(printf '%s\n' "$_PT_REQ_LEAF" | grep -o 'REIFY_[A-Z0-9_]*=' | head -1 | sed 's/=$//')" || true
+assert "PT-RATCHET-DRIFT-vacuity: an env-assignment token was derived from the emitted leaf" \
+    test -n "$_PT_REQ_VAR"
+assert "PT-RATCHET-DRIFT: tests/infra/test_reify_audit_ptodo.sh READS the emitted knob name (\${$_PT_REQ_VAR:-...}), not merely mentions it" \
+    bash -c 'grep -qF "\${$1:-" "$2/tests/infra/test_reify_audit_ptodo.sh"' _ "$_PT_REQ_VAR" "$REPO_ROOT"
+
+# ---------------------------------------------------------------------------
 # Scenario 2: gui/src frontend TS -> GUI only, no cargo
 # ---------------------------------------------------------------------------
 echo ""
@@ -769,6 +853,44 @@ plan_for_branch() {
     for f in "$@"; do rm -f "$FIX_B/$f"; done
 }
 
+# plan_for_branch_env <env-assignment> <file...> — plan_for_branch with ONE
+# extra environment variable exported into the --print-plan child.
+#
+# WHY it exists: the throwaway fixture repo has no cargo workspace, so
+# `cargo metadata` always fails there and affected_crates() always returns the
+# ALL sentinel. Any scenario whose assertion depends on the SHAPE of
+# AFFECTED_CLOSURE (a real crate list that does or does not contain reify-gui)
+# must therefore drive it hermetically via REIFY_AFFECTED_CRATES_OVERRIDE —
+# the same knob, for the same reason, as tests/infra/test_scope_boundary.sh's
+# B4P2 captures.
+#
+# <env-assignment> is a single `NAME=value` word handed VERBATIM to env(1) as
+# one argv element, so a value containing spaces (a crate list) needs no
+# quoting dance and no parsing here. Exactly one assignment: passing two would
+# require word-splitting the argument, which a space-bearing value defeats.
+# Pass "" for none (env with no assignment is a plain exec).
+#
+# Capture uses capture_print_plan rather than plan_for_branch's plain $( ),
+# picking up the retry-on-incomplete-capture defense (task #4708) that the
+# cited B4P2 idiom already uses.
+plan_for_branch_env() {
+    local env_assignment="$1"; shift
+    local f
+    git -C "$FIX_B" checkout -q -b task-branch
+    for f in "$@"; do
+        mkdir -p "$FIX_B/$(dirname "$f")"
+        printf 'x\n' > "$FIX_B/$f"
+        git -C "$FIX_B" add "$f"
+    done
+    git -C "$FIX_B" commit -q -m "task changes"
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec env ${2:+"$2"} bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
+        _ "$FIX_B" "$env_assignment" || true
+    git -C "$FIX_B" checkout -q main
+    git -C "$FIX_B" branch -q -D task-branch
+    for f in "$@"; do rm -f "$FIX_B/$f"; done
+}
+
 # FIX_MOD — shared fixture for the MODIFY-vector (B-KLOC-mod-*) and rename
 # (B-KLOC-rename) scenarios below. An `M` status requires each target file to
 # already exist at the merge-base, so (like B-KLOC-mod-*'s dedicated fixture
@@ -871,6 +993,69 @@ assert "PT-CTRL-BRANCH: plan lacks the cheap PTODO gate leaf (task 5125's merge-
     plan_lacks 'tests/infra/test_reify_audit_ptodo\.sh'
 assert "PT-CTRL-BRANCH: still zero command leaves (--scope branch is untouched by task 6817)" \
     test "$(plan_cmdcount)" -eq 0
+
+# ---------------------------------------------------------------------------
+# Scenario PT-RATCHET-BRANCH: the ratchet-required knob is armed for the
+# main-landing gate ONLY, never for a per-task --scope branch lane (task 7006).
+# Lives here rather than beside PT-RATCHET-REQ above for the same reason
+# PT-CTRL-BRANCH does: plan_for_branch is not defined until this section.
+#
+# A swept .py with an infra-map row, so a selective-infra leaf IS emitted under
+# --scope branch and the pin cannot pass merely because the plan is empty.
+# Rationale for the asymmetry: on a warm-lane task branch, seed-warm-lane.sh
+# stamps target/ mtimes older than the last crates/reify-audit commit and
+# cargo's fingerprint makes the rebuild a no-op, so guard rc 125 with a PRESENT
+# binary is the COMMON state there. Arming the knob on branch scope would turn
+# a routine lane condition into a hard RED on every task; the hook-gated
+# --scope staged path is different in kind, being the last gate before a
+# commit lands on main.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-RATCHET-BRANCH: staged->branch twin of PT-RATCHET-REQ -> no ratchet-required knob anywhere in the plan (control) ---"
+plan_for_branch scripts/prd-capability-check.py
+_PT_BR_LEAF="$(printf '%s\n' "$PLAN_OUT" | grep 'test_prd_capability_check' | head -1)" || true
+assert "PT-RATCHET-BRANCH-vacuity: a selective-infra leaf WAS emitted under --scope branch (the negative pin below is not vacuous)" \
+    test -n "$_PT_BR_LEAF"
+assert "PT-RATCHET-BRANCH: NO plan line carries REIFY_PTODO_RATCHET_REQUIRED (a stamped warm-lane target/ makes rc-125-with-present-binary routine on a task branch)" \
+    plan_lacks 'REIFY_PTODO_RATCHET_REQUIRED'
+
+# ---------------------------------------------------------------------------
+# Scenario PT-RATCHET-FUTUREROW: the branch-scope guard inside
+# selected_infra_leaf_env, exercised on the one input that actually reaches it.
+#
+# PT-RATCHET-BRANCH above is a whole-plan negative, and it passes for the
+# uninteresting reason: under --scope branch nothing produces the ptodo glob
+# token at all, so the helper's matching case arm is never entered. The arm
+# exists SOLELY for the case its own comment describes — a future
+# verify-pipeline-infra-tests.txt row mapping some artifact to that exact path,
+# which would feed the token to the helper under branch scope — and until that
+# row exists, no capture in this file distinguishes "the arm declines to arm
+# the knob" from "the arm aborts verify.sh outright". Those are not the same
+# outcome: the helper's output is consumed by a plain assignment under
+# `set -euo pipefail`, so an arm whose last command is a FALSE test returns 1,
+# takes the enclosing function and the whole script down with it, and emits no
+# plan at all.
+#
+# So simulate the row. The fixture's map is a copy, and it is committed on the
+# fixture's main BEFORE the capture (rather than left dirty in the working
+# tree) because --scope branch diffs merge-base(main, HEAD) against the WORKING
+# TREE: a dirty map would enter the changed-file set and select its own guard
+# glob, muddying the capture. The artifact is the same crates/reify-doc path
+# Scenario B2 uses, so the scope classification is one already pinned here.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PT-RATCHET-FUTUREROW: a mapped infra-map row for the ptodo path under --scope branch -> un-armed leaf, not an aborted plan ---"
+_PT_FR_MAP="scripts/verify-pipeline-infra-tests.txt"
+printf 'crates/reify-doc/src/lib.rs\ttests/infra/test_reify_audit_ptodo.sh\n' >> "$FIX_B/$_PT_FR_MAP"
+git -C "$FIX_B" add "$_PT_FR_MAP"
+git -C "$FIX_B" commit -q -m "simulated future infra-map row"
+plan_for_branch crates/reify-doc/src/lib.rs
+git -C "$FIX_B" reset --hard -q HEAD~1
+_PT_FR_LEAF="$(printf '%s\n' "$PLAN_OUT" | grep 'test_reify_audit_ptodo\.sh' | head -1)" || true
+assert "PT-RATCHET-FUTUREROW-vacuity: the mapped row DID emit a ptodo leaf under --scope branch (so the helper's case arm was really entered, and the plan is not empty)" \
+    test -n "$_PT_FR_LEAF"
+assert "PT-RATCHET-FUTUREROW: that leaf is UN-ARMED (the branch-scope guard declines gracefully; it must not abort the plan)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "REIFY_PTODO_RATCHET_REQUIRED"' _ "$_PT_FR_LEAF"
 
 # ---------------------------------------------------------------------------
 # Scenario B2: non-OCCT crate branch -> ungated Rust tail, no gated pass
@@ -2168,5 +2353,287 @@ echo "--- Scenario GEC-RENAME: git mv of docs/gui-event-channels.md -> RUN_RUST=
 plan_for_gec_rename docs/gui-event-channels.md docs/gui-event-channels-v2.md
 assert "GEC-RENAME: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (rename source forces rust=1)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_OUT"
+
+# ---------------------------------------------------------------------------
+# EX-1 (task 7427): examples/**/*.ri keeps today's full classification.
+#
+# The examples/ tree gains a crate MAPPING on the affected_crates side (ALL ->
+# the declared reader closure), but decide_scope's answer must not move: the
+# corpus gates are compiled Rust tests (rust), gui/src/__tests__/
+# reifyGrammarCorpus.test.ts walks examples/ recursively (gui), and both
+# reify-eval and reify-cli are declared OCCT-touching (gate). A control that
+# pins the mapping as never-SUBTRACTING heavy checks.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario EX-1: examples/*.ri staged -> RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (control) ---"
+# Echoes the header line so a FAIL reports the classification it actually saw
+# rather than just "no match".
+_check_scope_header() {
+    printf '%s\n' "$PLAN_OUT" | grep -E '^# scope decision' || echo "(no scope-decision line in PLAN_OUT)"
+    plan_has "$1"
+}
+
+plan_for staged examples/foo.ri
+assert "EX-1: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1'
+
+echo ""
+echo "--- Scenario EX-1n: NESTED examples/<dir>/*.ri staged -> same classification ---"
+plan_for staged examples/auto/probe.ri
+assert "EX-1n: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (case glob * spans /)" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1'
+
+# ---------------------------------------------------------------------------
+# GV-* (task 7427): the vitest lane is gated on the affected-crate closure.
+#
+# RUN_GUI = rust|gui made EVERY Rust change pay the full node lane — npm ci
+# twice, tsc, and the whole vitest suite. tsc stays unconditional (the GUI
+# consumes generated Rust->TS bindings, so any Rust change can break it), but
+# vitest now runs only when something the frontend actually reads changed:
+# a frontend-read path (GUI_PATH_SIGNAL), or an affected-crate closure that
+# reaches reify-gui — the same predicate, one implementation, that task 6268's
+# gui-feature nextest pass uses — or an explicit spec request (GV-9).
+#
+# The closure must be driven hermetically here: FIX_B has no cargo workspace,
+# so `cargo metadata` always fails and affected_crates() always returns the ALL
+# sentinel. plan_for_branch_env supplies REIFY_AFFECTED_CRATES_OVERRIDE.
+# The two override values used below are pinned against the REAL repo by
+# tests/infra/test_affected_crates_lib.sh (reify-doc's closure excludes
+# reify-gui; reify-eval's includes it), so they cannot drift into fiction.
+#
+# The header field is APPENDED after RUN_OCCT_GATE, never inserted — the same
+# convention scripts/verify.sh documents for the adjacent `closure=` field.
+# Each assertion below matches the full RUN_RUST=… RUN_GUI=… RUN_OCCT_GATE=…
+# RUN_GUI_VITEST=… run, so a reordering fails here too.
+# ---------------------------------------------------------------------------
+
+# The gui block's own inner chain, distinguished from the sidecar block's
+# (which ends `npm run typecheck:test'`). The trailing quote is what pins
+# "typecheck ran and nothing followed it".
+_GUI_LANE_WITH_VITEST="cd gui && .*npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh'"
+_GUI_LANE_TSC_ONLY="cd gui && .*npm ci && npm run typecheck'"
+
+echo ""
+echo "--- Scenario GV-1: crate OUTSIDE reify-gui's cone -> tsc yes, vitest NO ---"
+plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-cli reify-doc reify-doc-build reify-eval" \
+    crates/reify-doc/src/lib.rs
+assert "GV-1: RUN_GUI_VITEST=0 appended after RUN_OCCT_GATE (RUN_RUST=1 RUN_GUI=1 kept)" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=0'
+assert "GV-1: gui typecheck still runs (generated bindings)" \
+    plan_has "$_GUI_LANE_TSC_ONLY"
+assert "GV-1: vitest skipped — no gui-vitest-run.sh anywhere in the plan" \
+    plan_lacks 'gui-vitest-run.sh'
+
+echo ""
+echo "--- Scenario GV-2: crate INSIDE reify-gui's cone -> full npm ci && typecheck && test ---"
+plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-eval reify-gui reify-cli" \
+    crates/reify-eval/src/lib.rs
+assert "GV-2: RUN_GUI_VITEST=1 (reify-gui ∈ closure)" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-2: gui lane carries the full npm ci && typecheck && test chain" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+echo ""
+echo "--- Scenario GV-3: frontend change, no Rust at all -> vitest runs ---"
+plan_for_branch_env "" gui/src/App.tsx
+assert "GV-3: RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (a frontend-read path changed)" \
+    _check_scope_header 'RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
+assert "GV-3: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# The three fixtures above cover the SKIP decision and its two positive
+# routes. GV-4..GV-8 cover the arms they do not reach — every one of which
+# must come out RUNNING the lane, because the whole ladder fails open.
+
+echo ""
+echo "--- Scenario GV-4: C5 unmappable path (ALL sentinel) -> vitest runs ---"
+plan_for_branch_env "" scripts/foo.sh
+assert "GV-4: RUN_GUI_VITEST=1 — a widened closure can never SKIP the lane" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-4: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# GV-4b isolates what GV-4 cannot. An unmappable path also takes
+# decide_scope's conservative `*)` catch-all, which sets GUI_PATH_SIGNAL=1 —
+# so GV-4 would pass even if the closure arm were deleted outright. Pairing a
+# crates/** path (GUI_PATH_SIGNAL=0) with a malformed knob routes the decision
+# through closure_reaches_reify_gui's fail-wide arm and nothing else.
+echo ""
+echo "--- Scenario GV-4b: malformed closure knob + crates/** path -> fail WIDE to vitest ---"
+plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=   " crates/reify-doc/src/lib.rs
+assert "GV-4b: RUN_GUI_VITEST=1 — a whitespace-only knob is 'unavailable', not 'excludes reify-gui'" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
+assert "GV-4b: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+echo ""
+echo "--- Scenario GV-5a: --scope all -> vitest unconditional (C2) ---"
+plan_for all crates/reify-doc/src/lib.rs
+assert "GV-5a: RUN_GUI_VITEST=1 at scope=all — the merge gate never narrows" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-5a: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# The same crate GV-1 skips on. DF_VERIFY_ROLE=merge forces --scope all, so
+# the merge gate keeps the lane even for a closure that excludes reify-gui —
+# which is what makes a task-tier skip a LATENCY cost and never a coverage
+# hole.
+echo ""
+echo "--- Scenario GV-5b: DF_VERIFY_ROLE=merge --scope branch (forced to all) -> vitest runs ---"
+plan_for_branch_env "DF_VERIFY_ROLE=merge" crates/reify-doc/src/lib.rs
+assert "GV-5b: RUN_GUI_VITEST=1 under the merge role" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-5b: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# GV-6 — task 6435 regression guard. The _GUI_COUPLED_RI_FIXTURES arm sets
+# gui=1 for exactly one reason: to run the GUI grammar drift ledger for an
+# edit to a fixture it pins. A narrowing that skipped vitest here would delete
+# that task's whole coverage argument while leaving its RUN_GUI=1 assertion
+# (PG-DRIFT-GUI, above) passing. Derived from the same ledger as PG-DRIFT-GUI,
+# so it cannot drift from the real pin set. The pin must be GUI-ONLY (absent
+# from PG-DRIFT's Rust-coupled set): a Rust-coupled pin classifies RUN_RUST=1,
+# which is a different arm — and the first pin in sort order became one when
+# task 6615 pinned adt_mirror_of_arm.ri.
+echo ""
+echo "--- Scenario GV-6: EXPECTED_CLEAN-pinned prd-gate fixture -> vitest runs (task 6435) ---"
+_GV6_PIN="$(printf '%s\n' "$_PG_GUI_PINS" \
+    | grep -vxF -f <(printf '%s\n' "$_PG_COUPLED") | head -1 || true)"
+assert "GV-6: a pinned fixture was derived (guard is not vacuous)" \
+    test -n "$_GV6_PIN"
+plan_for staged "$_GV6_PIN"
+assert "GV-6: $_GV6_PIN -> RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (the ledger is the point of gui=1)" \
+    _check_scope_header 'RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
+assert "GV-6: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# GV-7 — task 6268's arm 2, the OVERLOADED empty closure. A tests/infra-only
+# branch diff yields RUN_RUST=1 from decide_scope's conservative catch-all but
+# an EMPTY closure from affected-crates-lib's non-crate allowlist. Cited, not
+# restated: see closure_reaches_reify_gui's arm 2.
+echo ""
+echo "--- Scenario GV-7: tests/infra-only branch diff (empty closure) -> vitest runs ---"
+plan_for_branch_env "" tests/infra/foo.sh
+assert "GV-7: RUN_GUI_VITEST=1 on an empty closure (task 6268 arm 2)" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-7: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+echo ""
+echo "--- Scenario GV-8: examples/*.ri branch diff -> vitest runs (grammar ledger reads examples/) ---"
+plan_for_branch_env "" examples/foo.ri
+assert "GV-8: RUN_GUI_VITEST=1 for a corpus edit" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-8: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# GV-9 — an explicit spec request is a third route into the lane. dark-factory
+# forwards REIFY_GUI_RETRY_SPECS for a narrowed re-run; on GV-1's own fixture
+# (a real closure that excludes reify-gui) the gate would otherwise drop them
+# and report green having never run the specs it was asked to re-run. Unreachable
+# today only because DF_VERIFY_ROLE=merge forces --scope all (GV-5b), i.e. the
+# safety rested on an invariant enforced in another subsystem; this pins it here.
+#
+# Two env values are needed and plan_for_branch_env carries exactly one, so the
+# specs ride the exported parent environment while the override takes the hook.
+echo ""
+echo "--- Scenario GV-9: REIFY_GUI_RETRY_SPECS on a closure that excludes reify-gui -> vitest runs the specs ---"
+export REIFY_GUI_RETRY_SPECS="src/__tests__/foo.test.ts"
+plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-cli reify-doc reify-doc-build reify-eval" \
+    crates/reify-doc/src/lib.rs
+unset REIFY_GUI_RETRY_SPECS
+assert "GV-9: RUN_GUI_VITEST=1 — a requested spec is never silently dropped" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
+assert "GV-9: the gui lane forwards the requested spec, not a bare runner invocation" \
+    plan_has "cd gui && .*npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh src/__tests__/foo\.test\.ts'"
+
+# ---------------------------------------------------------------------------
+# GV-FAILWIDE-* (task 7427): decide_scope's rename-source fail-wide returns.
+#
+# The rename-source recovery (task 5536) deliberately fails WIDE when its own
+# `git diff --diff-filter=R` fails, rather than silently losing the source
+# side of a renamed fixture. Those two returns are the only decide_scope exits
+# GV-1..GV-8 never reach — every scenario above leaves decide_scope through
+# its normal tail — so the widening tuple they set is untested, and the vitest
+# gate reads a variable they never assign.
+#
+# Driven by a PATH shim that fails ONLY the exact `--diff-filter=R` argument
+# and execs the real binary for everything else — notably the primary
+# --diff-filter=ACMRD diff, which must keep succeeding for the run to reach
+# the vitest gate at all. Same PATH-stub shape as test_seed_warm_lane.sh and
+# test_warm_lane_pool.sh; the shim records each firing so a scenario that
+# silently stopped triggering the arm fails instead of passing vacuously
+# (both fixtures widen for other reasons too, so "vitest ran" alone is not
+# evidence the fail-wide path was taken).
+#
+# Assert on RUN_GUI_VITEST=1, not merely "the run did not abort": an
+# initializer-only fix would leave these returns at GUI_PATH_SIGNAL=0 and
+# reach vitest only via closure_reaches_reify_gui's closure-unavailable arm.
+# The emitted lane is what distinguishes a deliberate widening from that
+# accident.
+# ---------------------------------------------------------------------------
+_FW_SHIM_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_FW_SHIM_DIR")
+_FW_FIRED="$_FW_SHIM_DIR/fired"
+_FW_ERR="$_FW_SHIM_DIR/stderr.log"
+cat > "$_FW_SHIM_DIR/git" << STUB_EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+    if [ "\$arg" = "--diff-filter=R" ]; then
+        echo "\$*" >> "$_FW_FIRED"
+        echo "git: simulated rename-source diff failure" >&2
+        exit 3
+    fi
+done
+exec $(command -v git) "\$@"
+STUB_EOF
+chmod +x "$_FW_SHIM_DIR/git"
+
+# _plan_for_staged_shimmed <file...> — plan_for's stage/capture/unstage body
+# with the shim first on PATH and stderr diverted to $_FW_ERR. It cannot just
+# BE plan_for: the C5 WARNING this family asserts on is written to fd 2, which
+# plan_for leaves on the suite's own stderr. PATH is PREPENDED, never
+# replaced, so grep/cut/sort stay resolvable inside verify.sh.
+_plan_for_staged_shimmed() {
+    local f
+    for f in "$@"; do
+        mkdir -p "$FIX/$(dirname "$f")"
+        printf 'x\n' > "$FIX/$f"
+        git -C "$FIX" add "$f"
+    done
+    capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && exec env PATH="$2:$PATH" bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>"$3"' \
+        _ "$FIX" "$_FW_SHIM_DIR" "$_FW_ERR" || true
+    git -C "$FIX" reset -q -- . 2>/dev/null || true
+    for f in "$@"; do rm -f "$FIX/$f"; done
+}
+
+echo ""
+echo "--- Scenario GV-FAILWIDE-1: staged rename-source diff fails -> widen, not abort ---"
+rm -f "$_FW_FIRED" "$_FW_ERR"
+_plan_for_staged_shimmed crates/reify-doc/src/lib.rs
+assert "GV-FAILWIDE-1: the shim fired (the fail-wide return was actually taken)" \
+    test -s "$_FW_FIRED"
+assert "GV-FAILWIDE-1: the C5 WARNING is still printed" \
+    bash -c 'grep -q "rename-source diff failed — failing WIDE" "$1"' _ "$_FW_ERR"
+assert "GV-FAILWIDE-1: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-FAILWIDE-1: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
+
+# The branch twin. plan_for_branch_env's `env ${2:+"$2"}` hook (pre-1) carries
+# the shim; its capture discards fd 2 by construction, so the WARNING-text
+# assertion lives on the staged scenario above and the shim log is what proves
+# this arm fired.
+echo ""
+echo "--- Scenario GV-FAILWIDE-2: branch rename-source diff fails -> widen, not abort ---"
+rm -f "$_FW_FIRED"
+plan_for_branch_env "PATH=$_FW_SHIM_DIR:$PATH" crates/reify-doc/src/lib.rs
+assert "GV-FAILWIDE-2: the shim fired (the fail-wide return was actually taken)" \
+    test -s "$_FW_FIRED"
+assert "GV-FAILWIDE-2: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
+    _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
+assert "GV-FAILWIDE-2: gui lane carries the vitest runner" \
+    plan_has "$_GUI_LANE_WITH_VITEST"
 
 test_summary

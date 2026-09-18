@@ -21,14 +21,17 @@ use std::f64::consts::PI;
 
 use faer::sparse::{SparseRowMat, Triplet};
 
-use reify_core::{Diagnostic, DimensionVector};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult,
     ElementOrder, ElementStiffness, IsotropicElastic, JointStiffness, add_joint_stiffness,
     assemble_global_stiffness, consistent_element_mass_tet_p1, consistent_element_mass_tet_p2,
-    element_stiffness, solve_eigen_dense, try_solve_eigen_shift_invert,
+    ShiftInvertFailure, element_stiffness, solve_eigen_dense, try_solve_eigen_shift_invert,
 };
+// Not re-exported from the crate root: the shift-contract C5 rule belongs beside
+// the other shift helpers, and this is the module path to it.
+use reify_solver_elastic::eigensolve::conservative_shift_provenance;
 use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
 use reify_stdlib::modal::free_vibration::{
@@ -392,10 +395,8 @@ pub(crate) fn eigensolve_modal(
     // `try_solve_eigen_shift_invert` (task 6663).
     const RIGID_BODY_DOFS: usize = 6;
     let under_constrained = n_dofs.saturating_sub(n_free) < RIGID_BODY_DOFS;
-    let GeneralizedEigenOutcome {
-        result: eig,
-        singular_k_over_ceiling,
-    } = solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone(), under_constrained);
+    let GeneralizedEigenOutcome { result: eig, fault } =
+        solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone(), under_constrained);
 
     // ---- Convert λ→f and scatter φ_free → φ_full --------------------------
     let n_modes_out = eig.eigenvalues.len();
@@ -486,44 +487,66 @@ pub(crate) fn eigensolve_modal(
         }
     }
 
-    // Singular K_free above the dense-fallback ceiling: no eigenpairs at all were
-    // computed, so the rigid-body loop above had nothing to flag. Say WHY rather
-    // than returning a silently empty spectrum. The `W_ModalRigidBodyMode` prefix
-    // is deliberate — the model IS under-constrained, and existing assertions and
-    // consumer grouping keys are keyed on that prefix.
+    // Why the solve returned nothing, when it returned nothing. Matched rather
+    // than tested carrier by carrier: each fault names a DIFFERENT remedy, so an
+    // implementation able to report two at once can send an author to fix the
+    // wrong thing. [`ModalSolveFault`] carries the rationale.
     //
-    // Amendment (review suggestion 2): a WARNING alone is not enough here, and
-    // this outcome differs in kind from every other `W_ModalRigidBodyMode` site.
-    // Those report a rigid-body mode among modes that WERE computed, so the
-    // caller still receives real (near-zero) frequencies. This one returns the
-    // empty spectrum. Downstream, stdlib `first_frequency` is
-    // `result.modes[0].frequency` (`reify-compiler/stdlib/modal_analysis_fns.ri`)
-    // and an out-of-bounds index evaluates to `Undef` SILENTLY — so on a
-    // >1024-DOF under-constrained mesh the author would get an `Undef` frequency
-    // cell while every `errors.is_empty()` gate in the pipeline still passed.
-    // The companion `Error` below is what makes a no-modes outcome impossible to
-    // walk past; the warning above keeps its prefix so existing prefix-keyed
-    // assertions and consumer grouping keys are untouched.
-    if singular_k_over_ceiling {
-        diagnostics.push(Diagnostic::warning(format!(
-            "W_ModalRigidBodyMode: K_free is singular (the model is \
-             under-constrained) and n_free = {n_free} exceeds the dense-fallback \
-             ceiling {DENSE_FALLBACK_MAX_DIM}; no modes were computed. Add \
-             supports that remove all six rigid-body modes."
-        )));
-        diagnostics.push(Diagnostic::error(format!(
-            "E_ModalNoModesComputed: the modal solve returned NO modes (n_free = \
-             {n_free}, K_free singular above the dense-fallback ceiling \
-             {DENSE_FALLBACK_MAX_DIM}), so every frequency read off this result — \
-             `first_frequency`, `mode_frequency` — is Undef. This is a failed \
-             solve, not a result with rigid-body modes in it. Add supports that \
-             remove all six rigid-body modes."
-        )));
+    // TODO(#7261): δ owns the FULL surfacing of the shift fault — the λ-space
+    // surface conversion, `ShiftSkippedModes`, and the `.ri` fixture pair. Only
+    // the refusal lands here, so δ verifies and extends rather than builds.
+    match fault {
+        ModalSolveFault::None => {}
+        // The `W_ModalRigidBodyMode` prefix is deliberate: the model IS
+        // under-constrained, and existing assertions and consumer grouping keys
+        // key on it. The companion `Error` is what makes the outcome impossible
+        // to walk past — unlike every other rigid-body warning this one has NO
+        // frequencies behind it, and stdlib `first_frequency` reads an
+        // out-of-bounds `result.modes[0]` as a silent `Undef`, so a warning
+        // alone would pass every `errors.is_empty()` gate in the pipeline.
+        ModalSolveFault::SingularKOverCeiling => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "W_ModalRigidBodyMode: K_free is singular (the model is \
+                 under-constrained) and n_free = {n_free} exceeds the \
+                 dense-fallback ceiling {DENSE_FALLBACK_MAX_DIM}; no modes were \
+                 computed. Add supports that remove all six rigid-body modes."
+            )));
+            diagnostics.push(Diagnostic::error(format!(
+                "E_ModalNoModesComputed: the modal solve returned NO modes \
+                 (n_free = {n_free}, K_free singular above the dense-fallback \
+                 ceiling {DENSE_FALLBACK_MAX_DIM}), so every frequency read off \
+                 this result — `first_frequency`, `mode_frequency` — is Undef. \
+                 This is a failed solve, not a result with rigid-body modes in \
+                 it. Add supports that remove all six rigid-body modes."
+            )));
+        }
+        // α's canonical template VERBATIM (`DiagnosticCode::ShiftAtEigenvalue`'s
+        // rustdoc), never a second wording: δ reuses that template, and two
+        // drifting messages for one condition is the SPOT violation this file
+        // guards against elsewhere. The message does NOT restate the honesty
+        // limit `ShiftInvertFailure::ShiftAtEigenvalue` records — this Error can
+        // also mean "converged nothing", not ruled out on this path and not
+        // observed on it either. Splitting the two causes is #7617's.
+        ModalSolveFault::ShiftAtEigenvalue(sigma) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "E_ShiftAtEigenvalue: the shift sigma = {sigma} lies on an \
+                     eigenvalue of the pencil, so K − sigma·B is singular; move \
+                     sigma off the eigenvalue"
+                ))
+                .with_code(DiagnosticCode::ShiftAtEigenvalue),
+            );
+        }
     }
 
     // Convergence shortfall: `eig.converged` is false iff fewer modes were
     // returned than requested (holds for both the dense and shift-invert paths).
-    if !eig.converged {
+    //
+    // Suppressed on a REFUSED solve. A refusal returns no modes at all, so the
+    // result is not "partial", and "raise max_iters/tol or lower n_modes" is the
+    // wrong remedy for both faults above — it would stand beside the right one
+    // and contradict it.
+    if !eig.converged && fault == ModalSolveFault::None {
         diagnostics.push(Diagnostic::warning(format!(
             "W_ModalConvergence: eigensolver returned {} of {} requested modes; \
              the result is partial (raise max_iters/tol or lower n_modes).",
@@ -792,16 +815,37 @@ const DENSE_FALLBACK_MAX_DIM: usize = 1024;
 /// cannot recover from an [`EigenSolverResult`] alone.
 struct GeneralizedEigenOutcome {
     result: EigenSolverResult,
-    /// `true` iff `K_free` was singular AND `n_free` exceeded
-    /// [`DENSE_FALLBACK_MAX_DIM`], so `result` carries NO eigenpairs at all.
+    fault: ModalSolveFault,
+}
+
+/// Why `GeneralizedEigenOutcome::result` carries no eigenpairs, when it carries
+/// none.
+///
+/// A sum type rather than one carrier per fault: the faults are mutually
+/// exclusive by construction and each names a DIFFERENT remedy, so a shape that
+/// can hold two at once can also hand an author two contradicting remedies.
+/// Stated structurally here, the exclusion needs no comment to hold, and a
+/// fault added later breaks every consumer's match instead of silently widening
+/// a matrix of flags. [`ShiftInvertFailure`] keeps the same discipline one level
+/// down; this is that channel carried up rather than flattened on arrival.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ModalSolveFault {
+    /// The eigensolve ran. `result` carries whatever spectrum it found, which
+    /// may still be partial (`converged: false`).
+    None,
+    /// `K_free` was singular AND `n_free` exceeded [`DENSE_FALLBACK_MAX_DIM`],
+    /// so densifying was unaffordable. Remedy: add supports.
     ///
-    /// An empty `result` is otherwise indistinguishable from a converge-to-zero
-    /// eigensolver failure, and the rigid-body diagnostic loop in
-    /// [`eigensolve_modal`] has no modes to inspect in this case — so the reason
-    /// has to be carried out of band for the caller to be able to say WHY, and
-    /// to raise the `E_ModalNoModesComputed` Error that keeps a no-modes result
-    /// from passing an `errors.is_empty()` gate.
-    singular_k_over_ceiling: bool,
+    /// Carried out of band because an empty `result` is otherwise
+    /// indistinguishable from a converge-to-zero failure, and the rigid-body
+    /// diagnostic loop in [`eigensolve_modal`] has no modes left to inspect.
+    SingularKOverCeiling,
+    /// The shifted solve REFUSED the requested σ: `K − σM` is singular there, so
+    /// shift-invert had no operator to apply. Remedy: move σ.
+    ///
+    /// See [`ShiftInvertFailure::ShiftAtEigenvalue`] for why this fault and
+    /// `SingularKOverCeiling` must not be merged.
+    ShiftAtEigenvalue(f64),
 }
 
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
@@ -819,7 +863,7 @@ struct GeneralizedEigenOutcome {
 /// # Singular `K_free` is measured, not predicted
 ///
 /// Above the small regime this calls [`try_solve_eigen_shift_invert`], whose
-/// `None` means EXACTLY "`K` is not SPD" — the non-positive-pivot arm of faer's
+/// `Err(KNotSpd)` means EXACTLY "`K` is not SPD" — the non-positive-pivot arm of faer's
 /// Cholesky error, with a resource failure (out of memory / index overflow)
 /// panicking there rather than arriving here disguised as an under-constrained
 /// model. That is a direct measurement, so the
@@ -829,13 +873,13 @@ struct GeneralizedEigenOutcome {
 /// well-posed model therefore pays nothing: same call, same factorization, same
 /// numbers.
 ///
-/// On `None` the model is genuinely under-constrained and the response is size-
+/// On `Err(KNotSpd)` the model is genuinely under-constrained and the response is size-
 /// dependent: at or below [`DENSE_FALLBACK_MAX_DIM`] the dense generalized solver
 /// tolerates the singular `K_free` and the rigid modes come back as `ω ≈ 0`,
 /// which [`eigensolve_modal`]'s `RIGID_BODY_OMEGA_TOL` loop turns into
 /// `W_ModalRigidBodyMode` warnings. Above it, densifying would be a resource bomb
 /// (see the constant), so the result degenerates to no eigenpairs with
-/// `converged: false` and `singular_k_over_ceiling: true`, and the caller emits
+/// `converged: false` and `ModalSolveFault::SingularKOverCeiling`, and the caller emits
 /// the explanatory diagnostics — a `W_ModalRigidBodyMode` Warning naming the
 /// ceiling AND an `E_ModalNoModesComputed` **Error**, because unlike every other
 /// rigid-body warning this outcome has no frequencies in it at all and would
@@ -860,21 +904,55 @@ fn solve_generalized_eigen(
     if n <= 64_usize.max(2 * opts.n_modes) {
         return GeneralizedEigenOutcome {
             result: solve_eigen_dense(k_free, m_free, opts),
-            singular_k_over_ceiling: false,
+            fault: ModalSolveFault::None,
         };
     }
 
-    // Well-posed models: shift-invert Lanczos, exactly as before. `None` is the
-    // one non-contract outcome — K is not SPD. A resource failure inside the
-    // factorization panics there instead of returning `None`, so the
-    // under-constrained branch below is never reached by an allocation problem.
-    if !force_dense
-        && let Some(result) = try_solve_eigen_shift_invert(k_free, m_free, opts.clone())
-    {
-        return GeneralizedEigenOutcome {
-            result,
-            singular_k_over_ceiling: false,
-        };
+    // Well-posed models: shift-invert Lanczos, exactly as before. The failure
+    // channel is TYPED, and each arm is routed on its own meaning rather than
+    // collapsed. A resource failure inside the factorization panics there
+    // instead of arriving here, so the under-constrained branch below is never
+    // reached by an allocation problem.
+    if !force_dense {
+        match try_solve_eigen_shift_invert(k_free, m_free, opts.clone()) {
+            Ok(result) => {
+                return GeneralizedEigenOutcome {
+                    result,
+                    fault: ModalSolveFault::None,
+                };
+            }
+            // K is not SPD: fall through to the under-constrained branch below,
+            // exactly as the former `None` did.
+            Err(ShiftInvertFailure::KNotSpd) => {}
+            // REACHABLE from ordinary `.ri` input — `ModalOptions` declares
+            // `param sigma : Real = 0.0` unconstrained and nothing on the path
+            // to here clamps it. It was inert only while the Lanczos path
+            // IGNORED σ; β (#7259) made σ live there, so this arm is live too.
+            // `shift_landing_on_an_eigenvalue_is_returned_not_panicked` walks
+            // the trace link by link.
+            //
+            // Returned as its own fault, never repaired: no re-solve at a nudged
+            // σ and no silent substitution of σ = 0. Automatic perturbation is
+            // the class this PRD exists to close
+            // (`shift_is_numerically_singular`'s rustdoc carries the rule).
+            Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma }) => {
+                return GeneralizedEigenOutcome {
+                    result: EigenSolverResult {
+                        eigenvalues: Vec::new(),
+                        eigenvectors: faer::Mat::<f64>::zeros(n, 0),
+                        n_converged: 0,
+                        converged: false,
+                        shift: sigma,
+                        // Nothing was factored and no spectrum was computed, so
+                        // C5 forbids ESTABLISHING `false` here — the same
+                        // argument the over-ceiling degenerate site below makes,
+                        // for the same reason.
+                        shift_skipped_modes: conservative_shift_provenance(sigma),
+                    },
+                    fault: ModalSolveFault::ShiftAtEigenvalue(sigma),
+                };
+            }
+        }
     }
 
     // Under-constrained: degrade gracefully if that is affordable, degenerately
@@ -882,7 +960,7 @@ fn solve_generalized_eigen(
     if n <= DENSE_FALLBACK_MAX_DIM {
         GeneralizedEigenOutcome {
             result: solve_eigen_dense(k_free, m_free, opts),
-            singular_k_over_ceiling: false,
+            fault: ModalSolveFault::None,
         }
     } else {
         GeneralizedEigenOutcome {
@@ -891,8 +969,19 @@ fn solve_generalized_eigen(
                 eigenvectors: faer::Mat::<f64>::zeros(n, 0),
                 n_converged: 0,
                 converged: false,
+                shift: opts.sigma,
+                // No spectrum was computed at all here, so `false` cannot be
+                // ESTABLISHED and C5 forbids assuming it.  The rule itself lives
+                // in the solver crate (SPOT) — writing it out here too is how
+                // this copy and the solver's own drift apart.
+                //
+                // This is the CONSERVATIVE form, and correctly so: the sparse
+                // shift-invert path establishes a real answer from which
+                // factorization of `K − σB` succeeded, but this branch factored
+                // nothing and computed nothing, so it has no such evidence.
+                shift_skipped_modes: conservative_shift_provenance(opts.sigma),
             },
-            singular_k_over_ceiling: true,
+            fault: ModalSolveFault::SingularKOverCeiling,
         }
     }
 }
@@ -2851,8 +2940,12 @@ pub fn solve_transient_response_trampoline(
 ///
 /// Lazy: only the queried node's time series is reconstructed — the full
 /// `n_nodes × n_times` displacement field is never materialized. Unlike the other
-/// modal trampolines this returns a non-struct `Value::List(Real)` (PRD §5.2). No
-/// warm state is donated (ι owns fn+dispatch; caching is λ's job).
+/// modal trampolines this returns a non-struct value: a `Value::List` of
+/// LENGTH-dimensioned `Value::Scalar`s in SI metres (PRD §5.2) — Length, not a
+/// bare Real, since #6094; WHY the reconstruction is metres is derived at the
+/// declaration, `reify-compiler/stdlib/modal_analysis_fns.ri` ::
+/// `displacement_at`. No warm state is donated (ι owns fn+dispatch; caching is
+/// λ's job).
 pub fn displacement_at_trampoline(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
@@ -2903,11 +2996,17 @@ pub fn displacement_at_trampoline(
 }
 
 /// Wrap a reconstructed displacement series in a `ComputeOutcome::Completed`
-/// carrying a `Value::List(Real)` (PRD §5.2) — the non-struct result shape unique
-/// to `displacement_at`. No warm state / diagnostics (ι donates neither).
+/// carrying a `Value::List` of LENGTH-dimensioned `Value::Scalar`s in SI metres
+/// (PRD §5.2) — the non-struct result shape unique to `displacement_at`, and the
+/// runtime counterpart of the `-> List<Length>` declaration at
+/// `stdlib/modal_analysis_fns.ri` (#6094). No warm state / diagnostics (ι donates
+/// neither).
 fn displacement_series_outcome(series: Vec<f64>) -> ComputeOutcome {
     ComputeOutcome::Completed {
-        result: Value::List(series.into_iter().map(Value::Real).collect()),
+        result: Value::List(crate::compute_targets::scalar_list(
+            &series,
+            DimensionVector::LENGTH,
+        )),
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: Vec::new(),
@@ -4153,13 +4252,20 @@ mod tests {
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, classify_damping,
         degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
         eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
-        extract_loss_factor, extract_reference_direction, mode_shape_value, nearest_node,
+        extract_loss_factor, extract_reference_direction, frobenius_norm, mode_shape_value,
+        nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
         resolve_location_node, run_modal_analysis, run_transient_response,
-        simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
+        ModalSolveFault, simply_supported_pin_pin_bcs, solve_generalized_eigen,
+        solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
+    /// The 1-D Laplacian pencil and its closed form come from the solver crate's
+    /// `#[doc(hidden)] pub` test-support seam — the same seam this module already
+    /// imports `promote_tets_to_p2` through — so the fixture and its formula have
+    /// ONE definition across the four test sites that drive them.
+    use reify_solver_elastic::eigensolve::test_support::{laplacian_lambda, laplacian_pencil};
 
     /// `aᵀ · M · b` for the free×free mass matrix `M` (sparse CSR row matvec then
     /// dot). Test-local invariant probe; the production normalization path
@@ -5459,6 +5565,279 @@ mod tests {
         assert_over_ceiling_degenerate(&mesh, &bcs, "route 2: force_dense (no supports)");
     }
 
+    // -----------------------------------------------------------------------
+    // β (#7259): a σ that lands on an eigenvalue of the modal pencil
+    // -----------------------------------------------------------------------
+
+    /// β (#7259): a σ landing ON an eigenvalue of the pencil comes back from
+    /// [`solve_generalized_eigen`] as a RETURNED, typed outcome — not a panic,
+    /// and not folded into `singular_k_over_ceiling`.
+    ///
+    /// # The arm is reachable from ordinary `.ri` input
+    ///
+    /// Each link re-checked against this tree rather than assumed:
+    ///
+    /// - `ModalOptions` declares `param sigma : Real = 0.0` as a deliberately
+    ///   UNCONSTRAINED, user-settable parameter
+    ///   (`crates/reify-compiler/stdlib/modal_analysis.ri`, whose sibling note
+    ///   records the "explicitly NOT constrained" discipline);
+    /// - [`extract_eigen_knobs`] returns any FINITE user value verbatim — pinned
+    ///   by `extract_eigen_knobs_reads_fields_and_falls_back`, which asserts
+    ///   `(7, 1e-7, 50, 2.5)` for a `sigma: 2.5` input;
+    /// - that value is written straight into the `EigenSolverOptions` literal
+    ///   [`run_modal_analysis`] builds, and reaches [`solve_generalized_eigen`]
+    ///   with NO clamping anywhere on the path.
+    ///
+    /// Before this diff the Lanczos path IGNORED σ, so the plumbed value was
+    /// inert and the arm really was unreachable — which is what the "unreachable
+    /// today" comment this diff deletes recorded, correctly, at the time. β makes
+    /// σ live on that path, and a live σ turns a dead field into a reachable
+    /// failure.
+    ///
+    /// The value SHAPE matters too: a `.ri` integer literal (`sigma: 2`) arrives
+    /// as `Value::Int` and falls back to 0.0 — the trap
+    /// `buckling_option_unsupported.rs` already pins for the sibling knob — so
+    /// the reachable surface is a Real literal such as `sigma: 2.5`, which is the
+    /// shape the knobs test uses and the shape a user actually writes.
+    #[test]
+    fn shift_landing_on_an_eigenvalue_is_returned_not_panicked() {
+        const N: usize = 80;
+        let (k, m) = laplacian_pencil(N);
+        let opts = EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-10,
+            max_iters: 1000,
+            // Exactly λ₃, computed in f64, so `K − σM` is genuinely singular
+            // rather than merely ill-conditioned.
+            sigma: laplacian_lambda(N, 3),
+        };
+        // K is SPD, so `KNotSpd` cannot fire and confound the result; and
+        // n = 80 > max(64, 2·n_modes) = 64, so the small-model dense arm — which
+        // forms no `K − σM` at all, and on which C6 is satisfied vacuously — is
+        // genuinely bypassed.
+        assert!(
+            N > 64.max(2 * opts.n_modes),
+            "the fixture must bypass the small-model dense arm, or it tests \
+             nothing about the shifted factorization",
+        );
+
+        let outcome = solve_generalized_eigen(&k, &m, opts.clone(), false);
+
+        // One assertion, two claims — which is the point of the sum type. It
+        // must NAME the offending σ (so the caller can say WHICH shift was
+        // refused), and it must not be `SingularKOverCeiling`, which δ (#7261)
+        // forbids here by name: that fault's remedy is "add supports", and this
+        // model's supports are perfectly fine.
+        assert_eq!(
+            outcome.fault,
+            ModalSolveFault::ShiftAtEigenvalue(opts.sigma),
+            "a refused shift must be carried out of band as its own fault",
+        );
+
+        // The degenerate result itself: this branch computed nothing, and says so
+        // rather than handing back a plausible-looking spectrum.
+        assert!(
+            outcome.result.eigenvalues.is_empty(),
+            "a refused shift must yield NO eigenpairs; got {:?}",
+            outcome.result.eigenvalues,
+        );
+        assert_eq!(outcome.result.n_converged, 0);
+        assert!(!outcome.result.converged);
+        assert_eq!(
+            outcome.result.shift, opts.sigma,
+            "the degenerate result must still report the σ that was attempted",
+        );
+        assert!(
+            outcome.result.shift_skipped_modes,
+            "no spectrum was computed here, so C5 forbids ESTABLISHING `false` — \
+             the conservative answer is the only one this branch has evidence for",
+        );
+    }
+
+    /// The step-14 pencil wrapped in the smallest [`ModalAssembly`] that
+    /// [`eigensolve_modal`] accepts, so the refusal can be driven through the
+    /// DIAGNOSTIC-PRODUCING path and not only through the solver call.
+    ///
+    /// `eigensolve_modal` reads `K`/`M` over `3·n_nodes` DOFs and projects out
+    /// the constrained ones, so the free block is sized backwards from the pencil
+    /// wanted: 29 nodes → 87 DOFs, minus the 7 TRAILING DOFs the BCs pin →
+    /// `n_free = 80`. The free block of a tridiagonal matrix under a trailing
+    /// constraint set is its leading principal submatrix, so `K_free` is exactly
+    /// `tridiag(−1, 2, −1)` at 80 and `M_free` exactly `I` — the closed form
+    /// `λ_k = 2(1 − cos(kπ/81))` survives the projection intact, which is what
+    /// still lets σ be placed exactly on λ₃.
+    ///
+    /// SEVEN constrained DOFs, not six: `n_free = 80` needs `n_dofs ≡ 0 (mod 3)`
+    /// and 87 is the smallest such size above 86. Any count ≥ `RIGID_BODY_DOFS`
+    /// would do — what matters is that `under_constrained` stays FALSE, because
+    /// the cheap no-supports fast path would otherwise set `force_dense` and
+    /// bypass the shifted factorization entirely, leaving the fixture testing
+    /// nothing.
+    fn laplacian_modal_assembly() -> (ModalAssembly, Vec<DirichletBc>) {
+        const N_NODES: usize = 29;
+        const N_FREE: usize = 80;
+        let n_dofs = 3 * N_NODES;
+        let (k_full, m_full) = laplacian_pencil(n_dofs);
+        let bcs: Vec<DirichletBc> = (N_FREE..n_dofs)
+            .map(|dof| DirichletBc { dof, value: 0.0 })
+            .collect();
+        assert!(
+            n_dofs - bcs.len() == N_FREE && bcs.len() >= 6,
+            "the fixture must leave n_free = {N_FREE} free DOFs while keeping \
+             `under_constrained` false",
+        );
+        let assembly = ModalAssembly {
+            mass_matrix_norm: frobenius_norm(&m_full),
+            stiffness_matrix_norm: frobenius_norm(&k_full),
+            k_full,
+            m_full,
+            n_nodes: N_NODES,
+        };
+        (assembly, bcs)
+    }
+
+    /// β (#7259): a σ on an eigenvalue reaches the AUTHOR as an `Error`, and as
+    /// neither of the two diagnoses that would be confidently wrong.
+    ///
+    /// The out-of-band carrier from step-15 is invisible until something says
+    /// so, and an empty mode set that raises nothing is a SILENT WRONG ANSWER:
+    /// every frequency reads `Undef` (stdlib `first_frequency` is
+    /// `result.modes[0].frequency`, and an out-of-bounds index is `Undef`) while
+    /// `errors.is_empty()` still passes. That is the failure
+    /// `E_ModalNoModesComputed` was itself introduced to close, so the refusal is
+    /// not optional polish.
+    ///
+    /// # The negative half is the point
+    ///
+    /// `W_ModalRigidBodyMode` and `E_ModalNoModesComputed` both tell an author to
+    /// "add supports that remove all six rigid-body modes"; `W_ModalConvergence`
+    /// tells them to "raise max_iters/tol or lower n_modes". This model's
+    /// supports are fine and its budget is ample — its only fault is where σ was
+    /// placed — so each of the three is a confidently wrong remedy, which is
+    /// exactly what δ (#7261) forbids by name. Asserting only the positive half
+    /// would pass on an implementation that emitted the new Error ALONGSIDE all
+    /// three, which is the likeliest way to get this subtly wrong.
+    ///
+    /// # Severity, not wording
+    ///
+    /// The refusal must be an `Error`: INV-SF-2 (`error-severity-exits-nonzero`)
+    /// is what makes `reify eval` exit non-zero, and a refusal that exits 0 is
+    /// not a refusal. The assertions key on the message PREFIX plus the attached
+    /// `DiagnosticCode` — the convention the file's existing
+    /// `message.starts_with("E_ModalNoModesComputed")` assertions already follow
+    /// — never on the full prose, which δ will extend.
+    #[test]
+    fn shift_on_an_eigenvalue_refuses_without_blaming_the_supports() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 3);
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-10,
+            max_iters: 1000,
+            sigma,
+        };
+
+        let result = eigensolve_modal(&assembly, [0.0, 0.0, 1.0], &bcs, &eigen_opts);
+
+        let errors: Vec<&Diagnostic> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a refused shift must raise EXACTLY ONE Error — the refusal itself, \
+             and none of the under-constrained diagnoses; got {:?}",
+            result.diagnostics,
+        );
+        let refusal = errors[0];
+        assert!(
+            refusal.message.starts_with("E_ShiftAtEigenvalue:"),
+            "the refusal must carry the E_ShiftAtEigenvalue prefix consumers key \
+             on; got {:?}",
+            refusal.message,
+        );
+        assert!(
+            refusal.message.contains(&sigma.to_string()),
+            "the refusal must NAME the offending σ = {sigma} so the author knows \
+             which shift to move; got {:?}",
+            refusal.message,
+        );
+        assert_eq!(
+            refusal.code,
+            Some(reify_core::DiagnosticCode::ShiftAtEigenvalue),
+            "the refusal must carry the code α minted for exactly this consumer, \
+             so a machine reader need not parse the prose; got {:?}",
+            refusal.code,
+        );
+        assert_eq!(
+            refusal.severity,
+            Severity::Error,
+            "INV-SF-2: a refusal that exits 0 is not a refusal",
+        );
+
+        // The negative half.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("W_ModalRigidBodyMode")),
+            "this model's supports are fine — σ's placement is the fault — so no \
+             rigid-body diagnosis may fire; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ModalNoModesComputed")),
+            "the no-modes Error tells an author to add supports, which is the \
+             wrong remedy for a misplaced σ; got {:?}",
+            result.diagnostics,
+        );
+        // The THIRD wrong remedy, and the easiest to ship by accident: a refused
+        // solve also has `converged == false`, so the convergence-shortfall
+        // warning would otherwise fire beside the refusal and advise "raise
+        // max_iters/tol or lower n_modes" — advice that cannot help a σ sitting
+        // on an eigenvalue, and that contradicts the refusal standing next to it.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("W_ModalConvergence")),
+            "a refused solve is not a PARTIAL one, and none of max_iters/tol/\
+             n_modes is the remedy for a misplaced σ; got {:?}",
+            result.diagnostics,
+        );
+
+        // σ = 0 CONTROL, same fixture: the refusal must be specific to where σ
+        // was put, not raised by every shifted-capable solve.
+        let control = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                sigma: 0.0,
+                ..eigen_opts
+            },
+        );
+        assert!(
+            !control
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ShiftAtEigenvalue")),
+            "σ = 0 on the same pencil is a healthy solve; got {:?}",
+            control.diagnostics,
+        );
+        assert!(
+            !control.frequencies.is_empty(),
+            "the control must actually solve, or it cannot witness that the \
+             refusal is about σ rather than about the fixture",
+        );
+    }
+
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
     /// the usual elastic fields, optionally carrying a `density` scalar. Mirrors
     /// the runtime material shape the trampoline reads (cf. buckling's
@@ -5669,84 +6048,6 @@ mod tests {
                 ),
             ],
         )
-    }
-
-    /// ζ = (α + β·ω²)/(2·ω) is HOMOGENEOUS in ω with OPPOSITE exponents for the
-    /// two coefficients: rescaling ω by 2π divides the α term by 2π and
-    /// multiplies the β term by 2π.
-    ///
-    /// SCOPE — read before trusting this as the angular-rate guard. This is an
-    /// algebraic property of the closed form ALONE. It calls the pure
-    /// `reify_stdlib::modal::free_vibration::rayleigh_damping_ratio` twice with
-    /// two ω arguments of its own making; it never observes what scale
-    /// `modal_ops` actually FEEDS. Changing `run_modal_analysis`'s
-    /// `let omega = 2.0 * PI * f` to pass `f` leaves this test GREEN. It was
-    /// previously named `rayleigh_coefficients_are_consumed_on_the_angular_rate_scale`,
-    /// which overstated exactly that, and `modal_analysis.ri` cited it by that
-    /// name as the pin for its ANGULAR-RATE TRAP comment — so a reader was
-    /// being pointed at a guard that is not here. Renamed to what it pins, and
-    /// the `.ri` citation re-pointed at
-    /// [`trampoline_shapes_modal_result_with_rayleigh_damping`], which
-    /// independently recomputes ω = 2π·f from the emitted `Mode.frequency` and
-    /// compares `damping_ratio` against it at 1e-12 — the test that genuinely
-    /// observes the producer's scale.
-    ///
-    /// What it DOES buy: the two exponents move in opposite directions, which is
-    /// why `alpha` is declared `Frequency` and not `AngularVelocity` — the rad/s
-    /// convention lives in ω, and encoding it in ONE of two coupled
-    /// coefficients would be incoherent.
-    ///
-    /// The plain concrete-value anchor for the formula itself — α=2, β=0, ω=10
-    /// ⇒ ζ=0.1 — already lives one crate away in
-    /// `reify-stdlib::modal::free_vibration::tests::rayleigh_damping_ratio_mass_proportional`
-    /// and is deliberately NOT restated here.
-    ///
-    /// MODULE-BOUNDARY NOTE: this is a unit test of a `reify-stdlib` function
-    /// sitting in `reify-eval`'s `mod tests`, an inversion relative to the four
-    /// `rayleigh_damping_ratio_*` tests that live next to the function. Its home
-    /// is `crates/reify-stdlib/src/modal/free_vibration.rs`; that file is
-    /// outside task #6093's module locks, so the move is filed as follow-up
-    /// rather than done here (#6323's neighbourhood — see the amend commit).
-    ///
-    /// Deliberately carries NO corpus-derived constant. An earlier arm anchored
-    /// on the ζ₁ ≈ 0.042 quoted in the prose of
-    /// `examples/modal/transient_step_response.ri` for that example's
-    /// fundamental — but with ω computed HERE as 2π·f it only re-evaluated
-    /// β·ω/2, adding nothing to the arms below, while coupling this test to a
-    /// number that shifts whenever that example's mesh or element order changes
-    /// (red for an unrelated reason) and drifts silently the other way (prose
-    /// edited, constant not).
-    #[test]
-    fn rayleigh_damping_ratio_alpha_and_beta_terms_scale_oppositely_in_omega() {
-        // Reading ω as cycles/s instead of rad/s would inflate the α
-        // contribution by 2π and deflate the β contribution by 2π. Both
-        // coefficients carry the convention, which is what makes typing only
-        // α as `AngularVelocity` (leaving β : `Time`) an incoherent pair.
-        //
-        // Any positive rate exhibits it — the claim is a RATIO, so the
-        // particular value is immaterial and is chosen to be plainly arbitrary.
-        // Compared against 1e-12 rather than an engineering tolerance: the
-        // factor is exactly 2π, and a band wide enough to absorb a nearby-but-
-        // wrong scale would not be judging the convention at all.
-        let two_pi = 2.0 * std::f64::consts::PI;
-        let f_cyc = 7.5_f64;
-        let omega_rad = two_pi * f_cyc;
-
-        let zeta_alpha_cyc = rayleigh_damping_ratio(2.0, 0.0, f_cyc);
-        let zeta_alpha_rad = rayleigh_damping_ratio(2.0, 0.0, omega_rad);
-        assert!(
-            (zeta_alpha_cyc / zeta_alpha_rad - two_pi).abs() < 1e-12,
-            "the α term must scale by 2π with the ω convention; got {}",
-            zeta_alpha_cyc / zeta_alpha_rad
-        );
-
-        let zeta_beta_cyc = rayleigh_damping_ratio(0.0, 0.0003, f_cyc);
-        let zeta_beta_rad = rayleigh_damping_ratio(0.0, 0.0003, omega_rad);
-        assert!(
-            (zeta_beta_cyc * two_pi / zeta_beta_rad - 1.0).abs() < 1e-12,
-            "the β term must scale by 1/2π with the ω convention; got {}",
-            zeta_beta_cyc / zeta_beta_rad
-        );
     }
 
     /// Assemble a `ModalOptions`-shaped instance from the given fields.
@@ -8967,9 +9268,114 @@ mod tests {
         }
     }
 
+    /// The 2-mode, 3-node `displacement_at` reconstruction fixture, shared by
+    /// `displacement_at_reconstructs_phi_projected_series` and
+    /// `displacement_at_series_entries_are_length_dimensioned`.
+    ///
+    /// Extracted so the mode shapes, the modal-coordinate series and the
+    /// hand-derived projection coefficients exist exactly ONCE. As two
+    /// copy-pasted fixtures they could be retuned in one test and not the other,
+    /// leaving the second asserting stale magnitudes while its own docs claimed
+    /// to re-verify "the same closed-form Φ-projection" as the first.
+    ///
+    /// Node layout: `MODE0_SHAPE` / `MODE1_SHAPE` are full-DOF flat xyz triples
+    /// (3·n_nodes = 9 ⇒ 3 nodes). Node 2 carries the largest ‖Φ₀‖ and is
+    /// therefore the fundamental antinode a NON-numeric location resolves to;
+    /// node 1 is a distinct, lower-deflection node. So querying "1" and "tip"
+    /// resolves to different nodes and must yield different series.
+    struct TwoModeTipFixture {
+        /// The `DisplacementTimeHistory` to feed `displacement_at_trampoline`.
+        history: Value,
+        /// ξ₀(tⱼ) — mode-0 modal coordinates, one entry per timestep.
+        mc0: Vec<f64>,
+        /// ξ₁(tⱼ) — mode-1 modal coordinates, one entry per timestep.
+        mc1: Vec<f64>,
+        /// Timestep count (= `t_samples.len()` = each `mcᵢ.len()`).
+        n_times: usize,
+    }
+
+    impl TwoModeTipFixture {
+        /// Full-DOF mode shapes: flat xyz per node, 3 nodes each.
+        const MODE0_SHAPE: [f64; 9] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0];
+        const MODE1_SHAPE: [f64; 9] = [0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4];
+
+        /// The query direction ẑ — the bending axis.
+        const DIR: [f64; 3] = [0.0, 0.0, 1.0];
+
+        /// Projection coefficients (Φ₀[node]·ẑ, Φ₁[node]·ẑ) at node 1 — the
+        /// explicit numeric-index case.
+        const NODE1_COEFFS: (f64, f64) = (0.5, -0.7);
+        /// The same at node 2, the fundamental antinode a non-numeric location
+        /// resolves to.
+        const ANTINODE_COEFFS: (f64, f64) = (1.0, 0.4);
+
+        /// The z component of a full-DOF flat-xyz `shape` at `node`.
+        fn z_at(shape: &[f64; 9], node: usize) -> f64 {
+            shape[node * 3 + 2]
+        }
+
+        fn new() -> Self {
+            let mode0 = mode_struct(40.0, 0.01, &Self::MODE0_SHAPE);
+            let mode1 = mode_struct(250.0, 0.02, &Self::MODE1_SHAPE);
+            let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+
+            let mc0 = vec![1.0, 2.0, 3.0, 4.0];
+            let mc1 = vec![0.1, 0.2, 0.3, 0.4];
+            let t_samples_s = [0.0, 0.01, 0.02, 0.03];
+            let history =
+                displacement_history(modal_result, &t_samples_s, &[mc0.clone(), mc1.clone()]);
+
+            // The coefficients above are hand-derived from the shape arrays; pin
+            // that derivation here so retuning a shape cannot silently leave the
+            // coefficients — and with them BOTH tests' expectations — describing
+            // the old fixture. `direction` is ẑ, so the projection Φᵢ[node]·ẑ is
+            // exactly each shape's z component at that node.
+            assert_eq!(
+                Self::NODE1_COEFFS,
+                (
+                    Self::z_at(&Self::MODE0_SHAPE, 1),
+                    Self::z_at(&Self::MODE1_SHAPE, 1)
+                ),
+                "NODE1_COEFFS must stay the z components of each mode shape at node 1"
+            );
+            assert_eq!(
+                Self::ANTINODE_COEFFS,
+                (
+                    Self::z_at(&Self::MODE0_SHAPE, 2),
+                    Self::z_at(&Self::MODE1_SHAPE, 2)
+                ),
+                "ANTINODE_COEFFS must stay the z components of each mode shape at node 2"
+            );
+
+            // Node 2 must genuinely be the fundamental antinode (max ‖Φ₀‖), or
+            // the "tip" cases below would silently resolve elsewhere.
+            let phi0_z = |node| Self::z_at(&Self::MODE0_SHAPE, node).abs();
+            assert!(
+                phi0_z(2) > phi0_z(0) && phi0_z(2) > phi0_z(1),
+                "node 2 must be the strict max-‖Φ₀‖ antinode"
+            );
+
+            Self {
+                history,
+                mc0,
+                mc1,
+                n_times: t_samples_s.len(),
+            }
+        }
+
+        /// The closed-form expectation u[j] = c0·mc0[j] + c1·mc1[j] — the same
+        /// mode-order summation `reconstruct_series` performs, over the same
+        /// coordinates, in the same order.
+        fn expected_series(&self, (c0, c1): (f64, f64)) -> Vec<f64> {
+            (0..self.n_times)
+                .map(|j| c0 * self.mc0[j] + c1 * self.mc1[j])
+                .collect()
+        }
+    }
+
     /// step-15 (RED → GREEN in step-16): `displacement_at` reconstructs the exact
     /// Φ-projected single-location series u(tⱼ) = Σᵢ (Φᵢ[node]·dir)·mode_coords[i][j],
-    /// returning a non-Undef `List<Real>` (PRD §5.2) — covering the task's
+    /// returning a non-Undef `List<Length>` (PRD §5.2) — covering the task's
     /// "displacement_at returns the Φ-projected time history, not Undef" premise.
     ///
     /// A 2-mode DisplacementTimeHistory with known per-node Φ shapes and known
@@ -8977,7 +9383,7 @@ mod tests {
     ///   - a NUMERIC "1" → explicit node index 1, and
     ///   - a NON-NUMERIC "tip" → the fundamental antinode (node 2, max ‖Φ₀‖).
     ///
-    /// Each returns a finite `List<Real>` of length n_times equal to the
+    /// Each returns a finite `List<Length>` of length n_times equal to the
     /// closed-form reconstruction. The two cases resolve to DIFFERENT nodes
     /// (1 vs 2) and so yield different series — proving the resolver discriminates
     /// explicit-index from antinode.
@@ -8985,27 +9391,16 @@ mod tests {
     /// RED: the step-10 stub returns an empty list (length 0, not n_times).
     #[test]
     fn displacement_at_reconstructs_phi_projected_series() {
-        // node 2 is the fundamental antinode (max ‖Φ₀‖); node 1 is a distinct,
-        // lower-deflection node, so "1" and "tip" must give different series.
-        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
-        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
-        let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+        let fx = TwoModeTipFixture::new();
+        let n_times = fx.n_times;
 
-        let mc0 = vec![1.0, 2.0, 3.0, 4.0];
-        let mc1 = vec![0.1, 0.2, 0.3, 0.4];
-        let mode_coords = vec![mc0.clone(), mc1.clone()];
-        let t_samples_s = [0.0, 0.01, 0.02, 0.03];
-        let n_times = t_samples_s.len();
-        let history = displacement_history(modal_result, &t_samples_s, &mode_coords);
-
-        let dir = [0.0, 0.0, 1.0];
-
-        // Invoke the trampoline for `location` and return the List<Real> as Vec<f64>.
+        // Invoke the trampoline for `location` and return the List<Length> as
+        // Vec<f64> of SI metres (`read_scalar_si` tolerates either spelling).
         let query = |location: &str| -> Vec<f64> {
             let value_inputs = vec![
-                history.clone(),
+                fx.history.clone(),
                 Value::String(location.to_string()),
-                vec3_value(dir),
+                vec3_value(TwoModeTipFixture::DIR),
             ];
             let outcome = displacement_at_trampoline(
                 &value_inputs,
@@ -9039,21 +9434,13 @@ mod tests {
                     );
                     items.iter().map(read_scalar_si).collect()
                 }
-                other => panic!("displacement_at must return a Value::List(Real); got {other:?}"),
+                other => panic!("displacement_at must return a Value::List; got {other:?}"),
             }
-        };
-
-        // Closed-form expectation u[j] = c0·mc0[j] + c1·mc1[j] (same mode-order
-        // summation as `reconstruct_series`).
-        let expect = |c0: f64, c1: f64| -> Vec<f64> {
-            (0..n_times)
-                .map(|j| c0 * mc0[j] + c1 * mc1[j])
-                .collect::<Vec<_>>()
         };
 
         // Case A — numeric "1" → node 1: c0 = Φ₀[1]·ẑ = 0.5, c1 = Φ₁[1]·ẑ = -0.7.
         let got_node1 = query("1");
-        let want_node1 = expect(0.5, -0.7);
+        let want_node1 = fx.expected_series(TwoModeTipFixture::NODE1_COEFFS);
         for (j, (g, w)) in got_node1.iter().zip(want_node1.iter()).enumerate() {
             assert!(
                 (g - w).abs() < 1e-12,
@@ -9064,7 +9451,7 @@ mod tests {
         // Case B — non-numeric "tip" → antinode node 2: c0 = Φ₀[2]·ẑ = 1.0,
         // c1 = Φ₁[2]·ẑ = 0.4.
         let got_tip = query("tip");
-        let want_tip = expect(1.0, 0.4);
+        let want_tip = fx.expected_series(TwoModeTipFixture::ANTINODE_COEFFS);
         for (j, (g, w)) in got_tip.iter().zip(want_tip.iter()).enumerate() {
             assert!(
                 (g - w).abs() < 1e-12,
@@ -9077,6 +9464,95 @@ mod tests {
             got_node1, got_tip,
             "numeric index and antinode must resolve distinctly"
         );
+    }
+
+    /// Every entry of the emitted series must be a LENGTH-dimensioned
+    /// `Value::Scalar`, not a bare `Value::Real` (#6094) — the runtime half of
+    /// the `-> List<Length>` declaration whose derivation lives at
+    /// `reify-compiler/stdlib/modal_analysis_fns.ri` :: `displacement_at`.
+    ///
+    /// Why this cannot be folded into the compile-side pin
+    /// (`reify-compiler/tests/modal_mechanism_compile.rs`, nested module
+    /// `modal_analysis_fns_stdlib_compile`): the `.ri`
+    /// declared return type and the trampoline's emitted `Value` are checked
+    /// NOWHERE against each other. `ComputeNodeData` carries no type slot,
+    /// `ComputeOutcome::Completed` carries an untyped `Value`, and no
+    /// `FnReturnTypeMismatch` diagnostic exists — return types are deliberately
+    /// NOT a dimensional checksum (docs/prds/v0_6/units-physical-constants.md).
+    /// So retyping the declaration to `List<Length>` provably cannot green this
+    /// test, and vice versa; the two halves must be pinned independently or one
+    /// silently drifts, which is how the original `List<Real>`/`Value::Real`
+    /// pair arose.
+    ///
+    /// The magnitudes are re-asserted against the same closed-form Φ-projection
+    /// as the neighbouring `displacement_at_reconstructs_phi_projected_series`,
+    /// so the dimension change is proven not to have perturbed the values: SI
+    /// base unit for LENGTH is metres and `reconstruct_series` already produces
+    /// metres, making this a pure re-wrap with no numeric conversion. "The same"
+    /// is literal, not a claim: both tests read `TwoModeTipFixture`, so neither
+    /// can be retuned without the other following.
+    #[test]
+    fn displacement_at_series_entries_are_length_dimensioned() {
+        let fx = TwoModeTipFixture::new();
+
+        // Non-numeric "tip" → antinode node 2: c0 = Φ₀[2]·ẑ = 1.0, c1 = Φ₁[2]·ẑ = 0.4.
+        let value_inputs = vec![
+            fx.history.clone(),
+            Value::String("tip".to_string()),
+            vec3_value(TwoModeTipFixture::DIR),
+        ];
+        let outcome = displacement_at_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed { result, .. } = outcome else {
+            panic!("expected a Completed outcome");
+        };
+
+        let Value::List(items) = result else {
+            panic!("displacement_at must return a Value::List; got {result:?}");
+        };
+
+        // Non-vacuity guard: an empty list would make the per-entry loop below
+        // pass trivially.
+        assert!(
+            !items.is_empty(),
+            "displacement_at must not return an empty list"
+        );
+        assert_eq!(items.len(), fx.n_times, "series length must equal n_times");
+
+        // u[j] = c0·mc0[j] + c1·mc1[j] — the same summation `reconstruct_series`
+        // does, read off the SHARED fixture so it cannot drift from the sibling
+        // test's expectation.
+        let want = fx.expected_series(TwoModeTipFixture::ANTINODE_COEFFS);
+
+        for (j, item) in items.iter().enumerate() {
+            let Value::Scalar {
+                si_value,
+                dimension,
+            } = item
+            else {
+                panic!(
+                    "series[{j}] must be a Length-dimensioned Value::Scalar, not a bare \
+                     Real (#6094; derivation at stdlib/modal_analysis_fns.ri :: \
+                     displacement_at); got {item:?}"
+                );
+            };
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "series[{j}] must carry the LENGTH dimension; got {dimension:?}"
+            );
+            assert!(
+                (si_value - want[j]).abs() < 1e-12,
+                "series[{j}] magnitude must be unperturbed by the re-wrap: got \
+                 {si_value} m, want {} m",
+                want[j]
+            );
+        }
     }
 
     /// Amendment (reviewer suggestion 4): pin the out-of-range numeric-index
