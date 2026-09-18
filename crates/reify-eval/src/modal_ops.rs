@@ -845,15 +845,35 @@ fn non_finite_frequency_diagnostic(n_modes: usize) -> Diagnostic {
 /// templates drift, which is the SPOT violation this file guards against
 /// elsewhere.
 ///
-/// `sigma` is accepted but NOT yet consulted — δ (#7261) step-8 appends the
-/// optional shift clause. The σ = 0 rendering is today's, byte for byte, and
-/// must stay that way: every existing caller and assertion keyed on this message
-/// reads the unshifted path.
-fn rigid_body_mode_diagnostic(mode_index: usize, omega: f64, tol: f64, _sigma: f64) -> Diagnostic {
+/// At σ ≠ 0 a shift clause is APPENDED — one template with an optional part,
+/// the same discipline α mandates for `W_ShiftSkippedModes`. A near-zero mode
+/// at a shifted solve is more likely a spurious artifact of a near-singular
+/// `K − σM` than a rigid-body mode of the model, so the remedy is to move σ,
+/// not to add supports. Without the clause this warning sends the author to fix
+/// the one thing that is not broken.
+///
+/// The σ = 0 rendering is today's, BYTE FOR BYTE — every existing caller and
+/// assertion keyed on this message reads the unshifted path — so the
+/// `W_ModalRigidBodyMode:` prefix (a consumer grouping key, and the anchor for
+/// β's negative assertions), the `{omega:.3e}` / `{tol:.1e}` formats and the
+/// clause order all stay put. No [`DiagnosticCode`] is attached and the severity
+/// stays `Warning`: this is not one of α's three codes, and inventing a fourth
+/// is out of scope.
+fn rigid_body_mode_diagnostic(mode_index: usize, omega: f64, tol: f64, sigma: f64) -> Diagnostic {
+    let shift_note = if sigma == 0.0 {
+        String::new()
+    } else {
+        format!(
+            " A non-zero spectral shift sigma = {sigma} was applied; at a \
+             shifted solve a near-zero mode is more likely a spurious artifact \
+             of a near-singular K − sigma·M than a rigid-body mode of the \
+             model, so move sigma before adding supports."
+        )
+    };
     Diagnostic::warning(format!(
         "W_ModalRigidBodyMode: mode {mode_index} has near-zero angular frequency \
          ω = {omega:.3e} rad/s (≤ {tol:.1e}); the model \
-         may be under-constrained (rigid-body or spurious mode)."
+         may be under-constrained (rigid-body or spurious mode).{shift_note}"
     ))
 }
 
