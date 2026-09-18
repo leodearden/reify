@@ -6,7 +6,9 @@
 //! `connect` surface at 2368 lines.
 
 use reify_core::*;
-use reify_test_support::{assert_no_diagnostic, compile_source};
+use reify_test_support::{
+    assert_no_diagnostic, assert_no_error_diagnostics, compile_source, errors_only,
+};
 
 /// The spec §6.2 worked shape: three single-in/single-out occurrences chained
 /// by bare name. Each hop must resolve the source element to its unique `out`
@@ -230,5 +232,128 @@ structure def S {
             ("vents[0].outlet", "hub.feed"),
             ("vents[1].outlet", "hub.feed"),
         ]
+    );
+}
+
+/// A `bidi` port is usable in either role, so a sub whose only port is `bidi`
+/// has a unique endpoint for both halves of a hop — `is_forward_compatible`
+/// accepts `(Bidi, Bidi)`.
+///
+/// Rejecting it as "has no 'out' port" states something false: the port exists
+/// and the hand-dotted `chain a.link -> b.link` over this same fixture compiles.
+#[test]
+fn chain_element_with_only_a_bidi_port_resolves_it() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Node {
+    port link : bidi Air { param d : Length = 5mm }
+}
+structure def S {
+    sub a = Node()
+    sub b = Node()
+    chain a -> b
+}
+"#;
+
+    let module = compile_source(source);
+    assert_no_error_diagnostics(&module.diagnostics, "chain desugaring");
+
+    let s = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    let endpoints: Vec<(&str, &str)> = s
+        .connections
+        .iter()
+        .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+        .collect();
+    assert_eq!(endpoints, vec![("a.link", "b.link")]);
+}
+
+/// Accepting `bidi` is a FALLBACK, not a widening of the candidate set. A sub
+/// with one `in`, one `out` and one `bidi` port has exactly one port in each
+/// needed direction per §6.2, so inference must still pick the directional
+/// pair — pooling `bidi` in with them would turn this working shape into an
+/// ambiguity error.
+#[test]
+fn chain_element_prefers_an_exact_direction_match_over_a_bidi_port() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+    port link : bidi Air { param d : Length = 5mm }
+}
+structure def S {
+    sub a = Vent()
+    sub b = Vent()
+    chain a -> b
+}
+"#;
+
+    let module = compile_source(source);
+    assert_no_error_diagnostics(&module.diagnostics, "chain desugaring");
+
+    let s = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    let endpoints: Vec<(&str, &str)> = s
+        .connections
+        .iter()
+        .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+        .collect();
+    assert_eq!(endpoints, vec![("a.outlet", "b.inlet")]);
+}
+
+/// Several `bidi` ports and nothing directional is the §6.2 ambiguity case
+/// reached through the fallback tier: both are usable, so the compiler refuses
+/// to guess and names them. Each role fails separately — `a` as a source, `b`
+/// as a destination — so the author sees one diagnostic per element.
+#[test]
+fn chain_element_with_several_bidi_ports_is_ambiguous() {
+    let source = r#"
+trait Air { param d : Length }
+structure def Coupler {
+    port linkA : bidi Air { param d : Length = 5mm }
+    port linkB : bidi Air { param d : Length = 5mm }
+}
+structure def S {
+    sub a = Coupler()
+    sub b = Coupler()
+    chain a -> b
+}
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        2,
+        "expected one error per role — `a` as source, `b` as destination; got: {:?}",
+        errors
+    );
+    for (element, dir, error) in [("'a'", "'out'", errors[0]), ("'b'", "'in'", errors[1])] {
+        for expected in [element, dir, "linkA", "linkB"] {
+            assert!(
+                error.message.contains(expected),
+                "ambiguity error should name {expected}, got: {}",
+                error.message
+            );
+        }
+    }
+    assert_no_diagnostic(&module.diagnostics, Severity::Error, "undefined port");
+
+    let s = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    assert!(
+        s.connections.is_empty(),
+        "a hop with an unresolved endpoint must not be emitted, got: {:?}",
+        s.connections
     );
 }
