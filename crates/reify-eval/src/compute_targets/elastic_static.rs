@@ -12186,7 +12186,9 @@ mod tests {
         // from the same seed is what proves the growth above was driven by the
         // MARKS and not merely by re-meshing.
         let mut unmarked = gmsh_realized_problem(0.05);
-        let _ = unmarked.solve_and_estimate();
+        unmarked
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         unmarked
             .refine(&[])
             .expect("an empty marked set must still remesh cleanly");

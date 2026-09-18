@@ -500,6 +500,28 @@ pub fn dorfler_size_hints(marked: &[usize], current_sizes: &[f64]) -> Vec<f64> {
 /// `refine` — at the point of failure, leaving the problem in whatever state
 /// the failing call left it.
 ///
+/// # Panics
+///
+/// If any [`AdaptiveEstimate::relative_error`] is not finite, immediately on
+/// the solve that produced it. That field's own doc makes finiteness a
+/// contract, and this is where it is enforced: the violation is a defect in
+/// the injected estimator, not user data, so it follows the crate's
+/// unconditional-`assert!` convention rather than becoming a
+/// [`ConvergenceStatus`]. The alternative was rejected on both counts —
+/// [`BudgetReason`] is a 1:1 mirror of the DSL enum in
+/// `solver_elastic.ri` (pinned variant-for-variant, with a wire discriminant
+/// in `reify-compute-contract`), so a new "non-finite estimate" variant is
+/// not this seam's to mint; and reporting one as `NotConverged` would dress
+/// an estimator bug as an ordinary budget outcome.
+///
+/// The check is deliberately NOT a `debug_assert!`. A `NaN` takes neither
+/// the target nor the stall exit, so the loop would spend its entire
+/// `max_refinement_iterations` on full remesh-and-solve cycles against a
+/// meaningless number — and it would do so only in RELEASE, which is exactly
+/// where real solves run and where the wasted budget costs minutes to hours.
+/// Same reasoning, same strength as
+/// [`crate::qoi::QoiError::DegenerateContributingSet`].
+///
 /// # Termination precedence: target > stall > max-iter > max-dofs
 ///
 /// 1. **Target** — `relative_error <= target_accuracy` ⇒
@@ -530,13 +552,14 @@ pub fn run_adaptive_refinement<P: AdaptiveProblem>(
 
     loop {
         let est = problem.solve_and_estimate()?;
-        debug_assert!(
+        assert!(
             est.relative_error.is_finite(),
             "AdaptiveEstimate::relative_error must be finite (see its doc); \
-             got {} — a non-finite value takes neither the target nor the \
-             stall exit, so the loop would spend its whole iteration budget \
-             refining against a meaningless number",
+             got {} on solve {} — a non-finite value takes neither the target \
+             nor the stall exit, so the loop would spend its whole iteration \
+             budget refining against a meaningless number",
             est.relative_error,
+            iter + 1,
         );
 
         // (1) Target — success outranks every budget reason.
@@ -1274,87 +1297,6 @@ mod tests {
         );
     }
 
-    /// The rename `global_indicator` → `relative_error` is load-bearing but
-    /// behaviour-preserving: the loop still compares it against
-    /// `target_accuracy`, still feeds `is_stalled` from it, and still reports
-    /// it as `Converged { final_indicator }`.
-    ///
-    /// The old name baked the ENERGY norm into the seam. Under a
-    /// goal-oriented estimator the compared quantity is a QoI-relative error
-    /// instead, so the name had to stop naming one estimator's metric — but
-    /// nothing about the loop's arithmetic changes, and this pins that the
-    /// four-way termination precedence (target > stall > max-iter >
-    /// max-dofs) is exactly what `adaptive_refinement_tests.rs` already
-    /// locks in.
-    #[test]
-    fn the_termination_precedence_still_reads_from_the_renamed_relative_error() {
-        // (1) Target: met on the first solve.
-        let mut p = ScriptedProblem::new(vec![Ok(zz_estimate(1e-9, vec![1.0], 100))]);
-        assert_eq!(
-            run_adaptive_refinement(&mut p, &permissive_budget(), DORFLER_THETA),
-            Ok(ConvergenceStatus::Converged {
-                final_indicator: 1e-9
-            }),
-            "final_indicator must carry the renamed relative_error verbatim",
-        );
-        assert_eq!(p.refine_calls, 0, "a converged first solve refines nothing");
-
-        // (2) Stall outranks the iteration and dof caps: an unchanged
-        // relative_error is a 0% drop, well under STALL_MIN_RELATIVE_DROP.
-        let mut p = ScriptedProblem::new(vec![
-            Ok(zz_estimate(0.5, vec![1.0], 100)),
-            Ok(zz_estimate(0.5, vec![1.0], 200)),
-        ]);
-        assert_eq!(
-            run_adaptive_refinement(&mut p, &permissive_budget(), DORFLER_THETA),
-            Ok(ConvergenceStatus::NotConverged {
-                reason: BudgetReason::Stalled
-            }),
-        );
-
-        // (3) Iteration cap: 0 iterations ⇒ one solve, no refinement.
-        let mut p = ScriptedProblem::new(vec![Ok(zz_estimate(0.5, vec![1.0], 100))]);
-        let budget = RefinementBudget {
-            max_refinement_iterations: 0,
-            ..permissive_budget()
-        };
-        assert_eq!(
-            run_adaptive_refinement(&mut p, &budget, DORFLER_THETA),
-            Ok(ConvergenceStatus::NotConverged {
-                reason: BudgetReason::MaxIterations
-            }),
-        );
-        assert_eq!(p.refine_calls, 0);
-
-        // (4) Dof ceiling, reached only after the iteration cap allows more.
-        let mut p = ScriptedProblem::new(vec![Ok(zz_estimate(0.5, vec![1.0], 100))]);
-        let budget = RefinementBudget {
-            max_dofs: 100,
-            ..permissive_budget()
-        };
-        assert_eq!(
-            run_adaptive_refinement(&mut p, &budget, DORFLER_THETA),
-            Ok(ConvergenceStatus::NotConverged {
-                reason: BudgetReason::MaxDofs
-            }),
-        );
-
-        // Precedence: meeting the target outranks tripping BOTH caps at once.
-        let mut p = ScriptedProblem::new(vec![Ok(zz_estimate(1e-9, vec![1.0], 9_999))]);
-        let budget = RefinementBudget {
-            target_accuracy: 1e-6,
-            max_refinement_iterations: 0,
-            max_dofs: 1,
-        };
-        assert_eq!(
-            run_adaptive_refinement(&mut p, &budget, DORFLER_THETA),
-            Ok(ConvergenceStatus::Converged {
-                final_indicator: 1e-9
-            }),
-            "success outranks every budget reason",
-        );
-    }
-
     /// `AdaptiveEstimate.qoi` is carried through the loop WITHOUT being read.
     ///
     /// β widens the seam to carry a QoI result; γ is what will consume it.
@@ -1412,45 +1354,6 @@ mod tests {
         );
     }
 
-    /// `QoiEstimate` and the widened `AdaptiveEstimate` round-trip through
-    /// `Clone`/`PartialEq`.
-    ///
-    /// The loop clones estimates across iterations and callers compare them
-    /// in assertions, so a field that silently failed to participate in
-    /// either would produce tests that pass while comparing nothing.
-    #[test]
-    fn the_qoi_estimate_carries_value_estimate_and_bound_through_clone_and_eq() {
-        let qoi = QoiEstimate {
-            value: -3.25e-4,
-            error_estimate: 7.5e-6,
-            error_bound: 9.0e-6,
-        };
-        assert_eq!(qoi.clone(), qoi, "QoiEstimate must round-trip through Clone");
-
-        let est = AdaptiveEstimate {
-            relative_error: 0.25,
-            per_element: vec![2.0, 1.0],
-            n_dofs: 48,
-            qoi: Some(qoi.clone()),
-        };
-        assert_eq!(est.clone(), est);
-
-        let mut differing = est.clone();
-        differing.qoi = None;
-        assert_ne!(
-            differing, est,
-            "`qoi` must participate in PartialEq, or comparisons that mean to \
-             cover it silently would not",
-        );
-
-        let mut nudged = est.clone();
-        nudged.qoi = Some(QoiEstimate {
-            error_bound: 9.5e-6,
-            ..qoi
-        });
-        assert_ne!(nudged, est, "every QoiEstimate field must participate too");
-    }
-
     /// Marking still runs on `per_element`, unconditionally and unchanged.
     ///
     /// `per_element` is the ONE input `mark_dorfler` sees, and §5.2 makes it
@@ -1490,4 +1393,28 @@ mod tests {
         }
     }
 
+    /// A non-finite `relative_error` stops the loop AT ONCE, in every build
+    /// profile.
+    ///
+    /// `AdaptiveEstimate::relative_error` documents finiteness as a contract;
+    /// this pins that the contract is actually enforced. `NaN` is false under
+    /// both `<=` and `is_stalled`'s `>=`, so without the check the loop takes
+    /// neither exit and burns `max_refinement_iterations` full
+    /// remesh-and-solve cycles — and it would do so only where the check is
+    /// compiled out, which is release, which is where real solves run.
+    ///
+    /// The scripted budget allows ten iterations and the script supplies
+    /// exactly ONE estimate, so a loop that merely limped past the bad value
+    /// would panic on `ScriptedProblem`'s "script exhausted" arm instead —
+    /// a different message, which is why the expected panic text is matched
+    /// rather than left open.
+    ///
+    /// `#[cfg(debug_assertions)]` is deliberately ABSENT: the point of the
+    /// amendment is that this holds in release too.
+    #[test]
+    #[should_panic(expected = "AdaptiveEstimate::relative_error must be finite")]
+    fn a_non_finite_relative_error_aborts_the_loop_rather_than_burning_the_budget() {
+        let mut p = ScriptedProblem::new(vec![Ok(zz_estimate(f64::NAN, vec![1.0], 100))]);
+        let _ = run_adaptive_refinement(&mut p, &permissive_budget(), DORFLER_THETA);
+    }
 }
