@@ -887,6 +887,28 @@ fn eval_dual_binop(
     let ld = descend(left, 0, ctx, seeds, env, record, path);
     let rd = descend(right, 1, ctx, seeds, env, record, path);
 
+    // `%` is a kink at every wrap point, so it is recorded even though it is
+    // differentiable in between.  Recorded BEFORE the strict-`Undef` precheck
+    // below, so an undetermined operand does not DROP the entry: a kink was
+    // traversed either way, and `mod_quotient_choice` already answers
+    // `Unresolved` for an operand with no `as_f64`.
+    if op == BinOp::Mod {
+        note(record, path, KinkKind::Mod, mod_quotient_choice(&ld.value, &rd.value));
+    }
+
+    // `eval_binop`'s strict-`Undef` precheck (lib.rs:3852-3855), which the dual
+    // path would otherwise skip by calling the helpers directly.  On this arm
+    // the helpers happen to fall through to `Undef` anyway — but only by
+    // accident of their `_ =>` arms, so stating the rule here makes the
+    // arithmetic path's correctness explicit instead of contingent on every
+    // present AND future helper continuing to do that.
+    if ld.value.is_undef() || rd.value.is_undef() {
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    }
+
     // THE PRIMAL COMES FROM THE EXISTING CODE.
     let value = match op {
         BinOp::Add => crate::eval_add(&ld.value, &rd.value),
@@ -897,12 +919,6 @@ fn eval_dual_binop(
         BinOp::Mod => crate::eval_mod(&ld.value, &rd.value),
         _ => unreachable!("guarded above"),
     };
-
-    // `%` is a kink at every wrap point, so it is recorded even though it is
-    // differentiable in between.
-    if op == BinOp::Mod {
-        note(record, path, KinkKind::Mod, mod_quotient_choice(&ld.value, &rd.value));
-    }
 
     // The Undef cliff: no derivative is attached to a refusal.
     if value.is_undef() {
@@ -977,6 +993,28 @@ fn eval_dual_comparison(
 ) -> DualValue {
     let ld = descend(left, 0, ctx, seeds, env, record, path);
     let rd = descend(right, 1, ctx, seeds, env, record, path);
+
+    // `eval_binop`'s strict-`Undef` precheck (lib.rs:3852-3855).  Here it is
+    // load-bearing rather than belt-and-braces: `eval_eq` has two arms that
+    // answer `Bool(false)` WITHOUT consulting the other operand — `Enum` vs
+    // anything (lib.rs:5007) and a dimensioned `Scalar` vs anything
+    // (lib.rs:5018) — so calling it directly turns "this cell is not known"
+    // into "these are definitely different".
+    //
+    // The kink is still NOTED: one was genuinely traversed, and `Unresolved`
+    // is the honest choice because the evaluator resolved nothing.  Recording
+    // `Unsatisfied` instead would show λ (#6679) a settled branch and buy a
+    // phantom alternation the moment the cell becomes determined, and would
+    // let a `Conditional` above descend a branch `eval_expr` never evaluates —
+    // handing η (#6675) a finite row for a residual whose cost is `Undef`.
+    if ld.value.is_undef() || rd.value.is_undef() {
+        note(record, path, KinkKind::Comparison(op), BranchChoice::Unresolved);
+        seeds.note_refusal(NonDifferentiable::UndefPrimal {
+            site: KinkSite::new(path.to_vec()),
+        });
+        return DualValue::opaque(Value::Undef);
+    }
+
     let value = match op {
         BinOp::Eq => crate::eval_eq(&ld.value, &rd.value),
         BinOp::Ne => crate::eval_ne(&ld.value, &rd.value),
