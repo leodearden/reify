@@ -611,4 +611,156 @@ assert "E9b: that refusal says so on a 'verify.sh: ERROR' line naming the confli
     bash -c 'printf "%s\n" "$1" | grep -qE "^verify\.sh: ERROR\b.*REIFY_VERIFY_RETRY_SCOPE"' \
     _ "$V_OUT"
 
+# ===========================================================================
+# Section F (leaf γ) — THE OUTPUT CONTRACT (B2/B3/B4/B5/B6 + B9).
+#
+# Every capture here MERGES stdout and stderr into one buffer, because that is
+# exactly what dark-factory's consumer does (stdout=PIPE, stderr=STDOUT) and
+# the merged stream IS the contract. Asserting on stdout alone would pass while
+# a stderr diagnostic quietly corrupted the caller's parse.
+#
+# B9 is the standing guard and the highest-value assertion in the suite: every
+# captured line must be either a plausible bare test id or the one sanctioned
+# `verify.sh: ERROR` banner. Anything else — an executor echo, a nextest
+# progress line, an ionice WARNING, a `retry refused:` diagnostic, the closing
+# `all checks passed` tail — is a line dark-factory would file a fix task
+# against.
+# ===========================================================================
+echo ""
+echo "--- Section F (leaf γ): the confirm run's output contract (B2-B6, B9) ---"
+
+CONFIRM_TREE_OID="$(git -C "$REPO_ROOT" rev-parse HEAD:)"
+
+# write_confirm_state <manifest-body-or-empty> <sidecar-tree-oid-or-empty>
+# An empty sidecar OID means "write no sidecar at all".
+write_confirm_state() {
+    local _body="$1" _oid="$2"
+    if [ -n "$_body" ]; then
+        printf '%s\n' "$_body" > "$CONFIRM_MANIFEST"
+    else
+        : > "$CONFIRM_MANIFEST"
+    fi
+    if [ -n "$_oid" ]; then
+        printf '{"tree_oid":"%s","profiles":"release","timestamp":"2026-09-18T00:00:00Z"}\n' "$_oid" > "$CONFIRM_SIDECAR"
+    else
+        rm -f "$CONFIRM_SIDECAR"
+    fi
+}
+
+# run_confirm <junit-fixture-the-subset-run-will-produce> -> CF_RC, CF_OUT.
+# The stub cargo plants that fixture where the confirm run reads its report,
+# so "which of the recorded tests still fail" is under the test's control.
+run_confirm() {
+    local _fixture="$1"
+    rm -f "$CONFIRM_JUNIT"
+    CF_RC=0
+    CF_OUT="$(
+        cd "$REPO_ROOT" && \
+        PATH="$STUB_BIN:$PATH" \
+        REIFY_TEST_STUB_JUNIT_DEST="$CONFIRM_JUNIT" \
+        REIFY_TEST_STUB_JUNIT_SRC="$_fixture" \
+        REIFY_TEST_STUB_RC="${2:-100}" \
+        REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$CONFIRM_MANIFEST" \
+        REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$CONFIRM_SIDECAR" \
+        REIFY_VERIFY_CONFIRM_JUNIT="$CONFIRM_JUNIT" \
+        timeout 300 bash "$VERIFY_SH" test --profile release --confirm-failed 2>&1
+    )" || CF_RC=$?
+}
+
+# assert_output_purity <label> — B9, applied to whatever CF_OUT currently holds.
+# A bare nextest test id is a `::`-separated Rust path (that is what
+# testcase/@name is, and what `test(=<id>)` takes). The alternative is the one
+# ERROR banner dark-factory's own guard already rejects to [].
+assert_output_purity() {
+    assert "B9/$1: every captured line is a bare test id or a 'verify.sh: ERROR' banner (no executor echo, nextest chatter, WARNING or 'all checks passed' tail)" \
+        bash -c '
+            printf "%s\n" "$1" | while IFS= read -r _line; do
+                [ -z "$_line" ] && continue
+                case "$_line" in
+                    "verify.sh: ERROR"*) continue ;;
+                esac
+                printf "%s" "$_line" | grep -qE "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z0-9_]+)+$" || { printf "IMPURE: %s\n" "$_line"; exit 1; }
+            done' \
+        _ "$CF_OUT"
+}
+
+# --- B5: no manifest at all ---
+rm -f "$CONFIRM_MANIFEST" "$CONFIRM_SIDECAR"
+run_confirm "$FIX/a-two-failures.xml"
+assert "F1 (B5): an ABSENT manifest yields ZERO bytes of merged output" \
+    bash -c '[ -z "$(printf "%s" "$1" | tr -d "[:space:]")" ]' \
+    _ "$CF_OUT"
+assert "F2 (B5): an ABSENT manifest exits 0" \
+    test "$CF_RC" -eq 0
+assert_output_purity "B5"
+
+# --- B6: an empty manifest (a recording that found zero failures) ---
+write_confirm_state "" "$CONFIRM_TREE_OID"
+run_confirm "$FIX/a-two-failures.xml"
+assert "F3 (B6): an EMPTY manifest yields ZERO bytes of merged output (same observable as B5, deliberately)" \
+    bash -c '[ -z "$(printf "%s" "$1" | tr -d "[:space:]")" ]' \
+    _ "$CF_OUT"
+assert "F4 (B6): an EMPTY manifest exits 0" \
+    test "$CF_RC" -eq 0
+assert_output_purity "B6"
+
+# --- B2: 2 recorded, both still fail ---
+write_confirm_state "tests::probe_fail_three
+tests::probe_fail_two" "$CONFIRM_TREE_OID"
+run_confirm "$FIX/a-two-failures.xml"
+assert "F5 (B2): 2 recorded and both still failing yields EXACTLY those 2 bare names, one per line, and nothing else" \
+    bash -c '[ "$1" = "tests::probe_fail_three
+tests::probe_fail_two" ]' \
+    _ "$CF_OUT"
+assert "F6 (B2): a non-empty confirmed set exits 100" \
+    test "$CF_RC" -eq 100
+assert_output_purity "B2"
+
+# --- B3: 2 recorded, 1 now passes ---
+write_confirm_state "tests::probe_fail_three
+tests::probe_fail_two" "$CONFIRM_TREE_OID"
+run_confirm "$FIX/b-error-child.xml"
+assert "F7 (B3): a partial reproduction yields EXACTLY the 1 still-failing bare name" \
+    bash -c '[ "$1" = "tests::probe_abort_four" ]' \
+    _ "$CF_OUT"
+assert_output_purity "B3"
+
+# --- B4: 2 recorded, both now pass ---
+write_confirm_state "tests::probe_fail_three
+tests::probe_fail_two" "$CONFIRM_TREE_OID"
+run_confirm "$FIX/f-all-pass.xml" 0
+assert "F8 (B4): a full reproduction-clear yields ZERO bytes of merged output" \
+    bash -c '[ -z "$(printf "%s" "$1" | tr -d "[:space:]")" ]' \
+    _ "$CF_OUT"
+assert "F9 (B4): a confirmed-clean run exits 0" \
+    test "$CF_RC" -eq 0
+assert_output_purity "B4"
+
+# --- The no-false-clean guard: the subset run produced NO report at all ---
+# (an earlier plan pole failed, the run was killed, nextest never started).
+# "Nothing printed" is the wire encoding of "confirmed clean", so this case
+# must NOT take it.
+write_confirm_state "tests::probe_fail_three
+tests::probe_fail_two" "$CONFIRM_TREE_OID"
+CF_RC=0
+CF_OUT="$(
+    cd "$REPO_ROOT" && \
+    PATH="$STUB_BIN:$PATH" \
+    REIFY_TEST_STUB_JUNIT_DEST="$CONFIRM_JUNIT" \
+    REIFY_TEST_STUB_JUNIT_SRC="" \
+    REIFY_TEST_STUB_RC=124 \
+    REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$CONFIRM_MANIFEST" \
+    REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$CONFIRM_SIDECAR" \
+    REIFY_VERIFY_CONFIRM_JUNIT="$CONFIRM_JUNIT" \
+    timeout 300 bash "$VERIFY_SH" test --profile release --confirm-failed 2>&1
+)" || CF_RC=$?
+
+assert "F10: a subset run that produced NO report does NOT report 'confirmed clean' — it refuses with one 'verify.sh: ERROR' line" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^verify\.sh: ERROR\b"' \
+    _ "$CF_OUT"
+assert "F11: that refusal leaks no test id alongside the ERROR line" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c . )" -eq 1 ]' \
+    _ "$CF_OUT"
+assert_output_purity "no-report"
+
 test_summary
