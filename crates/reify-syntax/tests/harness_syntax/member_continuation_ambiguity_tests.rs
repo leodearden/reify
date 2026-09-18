@@ -320,31 +320,39 @@ fn workspace_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
-/// Every tracked-looking `*.ri` under `root`, skipping build output and
-/// version-control metadata.
-fn collect_ri_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if path.is_dir() {
-                // `target/` is build output; `node_modules/` is vendored JS;
-                // dot-dirs are VCS/tooling metadata. None hold tracked sources.
-                if name == "target" || name == "node_modules" || name.starts_with('.') {
-                    continue;
-                }
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "ri") {
-                out.push(path);
-            }
-        }
-    }
+/// Every `*.ri` file TRACKED by git under `root`, as absolute paths.
+///
+/// Asked of git rather than derived by walking the filesystem: the guard below
+/// makes a claim about this repository's SOURCE, and a filesystem walk cannot
+/// tell source from a scratch design a developer is mid-way through authoring
+/// (the reify-design workflow writes `.ri` files in-tree) or from a fixture
+/// some aborted run left behind. Either would turn this suite red while
+/// asserting, wrongly, that tracked source is ambiguous.
+///
+/// `sanitize` strips the repo-redirect vars (`GIT_DIR`, `GIT_WORK_TREE`, …) so
+/// an ambient environment cannot point this `git -C <root>` at a different
+/// repository — the same precaution `reify_audit::git_env` requires of every
+/// repo-targeting call.
+fn tracked_ri_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(root).args(["ls-files", "-z", "--", "*.ri"]);
+    let output = reify_test_support::git_env::sanitize(&mut command)
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run `git ls-files` in {}: {e}", root.display()));
+    assert!(
+        output.status.success(),
+        "`git ls-files` failed in {} ({}): {}",
+        root.display(),
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let listing = String::from_utf8(output.stdout).expect("git ls-files output must be UTF-8");
+    let mut out: Vec<_> = listing
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| root.join(entry))
+        .collect();
     out.sort();
     out
 }
@@ -358,8 +366,8 @@ fn line_col(source: &str, offset: u32) -> (usize, usize) {
     (line, col)
 }
 
-/// THE STANDING GUARD: no `.ri` source in this repository may trip the
-/// member-continuation check.
+/// THE STANDING GUARD: no TRACKED `.ri` source in this repository may trip
+/// the member-continuation check.
 ///
 /// A hit here is a genuine finding, and it has exactly two dispositions: the
 /// rule is wrong (fix `member_continuation.rs`), or the source really is
@@ -368,10 +376,11 @@ fn line_col(source: &str, offset: u32) -> (usize, usize) {
 #[test]
 fn no_tracked_ri_source_trips_the_member_continuation_check() {
     let root = workspace_root();
-    let files = collect_ri_files(&root);
+    let files = tracked_ri_files(&root);
     assert!(
         files.len() > 100,
-        "sweep found only {} .ri files under {} — the walk is broken, not the repo",
+        "sweep found only {} tracked .ri files under {} — the listing is broken, \
+         not the repo",
         files.len(),
         root.display()
     );
@@ -391,7 +400,7 @@ fn no_tracked_ri_source_trips_the_member_continuation_check() {
     assert!(
         hits.is_empty(),
         "{} tracked .ri source location(s) trip the member-continuation check \
-         (swept {} files):\n{}",
+         (swept {} tracked files):\n{}",
         hits.len(),
         files.len(),
         hits.join("\n")
