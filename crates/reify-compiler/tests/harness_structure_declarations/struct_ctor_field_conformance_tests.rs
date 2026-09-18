@@ -892,8 +892,10 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 // `check_param_default_conformance`.
 //
 // `CompiledPort.members` (port-body `param`s) is a list DISJOINT from
-// `TopologyTemplate.value_cells` (crates/reify-ast/src/decl.rs:853-901 documents
-// why they must stay disjoint). `check_param_default_conformance` walked only
+// `TopologyTemplate.value_cells`. `reify_ast::decl::collect_param_default_candidates`'s
+// doc comment is where the disjointness is justified — cited by SYMBOL, never by
+// line, because a raw line range in another crate rots on that module's next
+// edit. `check_param_default_conformance` walked only
 // `value_cells`, so a `Geometry`/`String`/`StructureRef` param default written
 // inside a `port { … }` block compiled with ZERO diagnostics — measured on this
 // branch. `SRC_CTX_PORT_MEMBER_DEFAULT` above already proves the sibling
@@ -1076,7 +1078,23 @@ struct PortParityCase {
 /// surfaces, so anything else — a different hint clause, a different rendered
 /// type — is drift. Every fixture in this block names its port `mount`, which
 /// is what makes the one-line normalization sufficient.
-fn assert_port_parity_with_top_level(case: &PortParityCase) {
+///
+/// All three run over the FULL `module.diagnostics`, deliberately overriding this
+/// file's [`ctor_conformance_diags`] narrowing convention. That is not a slip:
+/// the Error half of row 1 is `ParamDefaultTypeMismatch`, which is NOT in
+/// `CTOR_CONFORMANCE_CODES`, so a filtered comparison could not see it at all and
+/// the no-double-report claim above would silently evaporate into a
+/// Warning-only check. The cost the convention exists to avoid is accepted, not
+/// denied — an unrelated future `W_*` on these fixtures reds this helper — and
+/// is kept small by every fixture it drives being a three-line inline source
+/// carrying the `module test.<name>` prologue.
+///
+/// Returns the PORT half's compiled module, so a caller pinning anything further
+/// about the port diagnostics (the rendered fallback type below) reads it off the
+/// compile this helper already paid for rather than compiling the whole stdlib a
+/// third time — the same convention as
+/// [`assert_single_arg_type_mismatch_warning_in`].
+fn assert_port_parity_with_top_level(case: &PortParityCase) -> CompiledModule {
     let PortParityCase {
         label,
         top_level_src,
@@ -1116,6 +1134,7 @@ fn assert_port_parity_with_top_level(case: &PortParityCase) {
             t.message
         );
     }
+    port
 }
 
 const PORT_PARITY_CASES: &[PortParityCase] = &[
@@ -1183,11 +1202,12 @@ fn port_unannotated_param_default_takes_real_fallback_like_top_level() {
                    structure def Root {\n    port mount : P {\n        param c = Color.Red\n    }\n}\n",
         expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
     };
-    assert_port_parity_with_top_level(&case);
+    let port = assert_port_parity_with_top_level(&case);
 
     // Pin the rendered fallback type too: parity alone would survive the
-    // fallback changing from `Real` to something else at BOTH sites.
-    let port = compile_source_with_stdlib(case.port_src);
+    // fallback changing from `Real` to something else at BOTH sites. Read off
+    // the module the helper already compiled — re-compiling `case.port_src` here
+    // would pay for the whole stdlib prelude a third time to learn nothing new.
     assert_eq!(
         port.diagnostics[0].message,
         "argument 'mount.c' has type 'Enum(Color)' but param 'mount.c' requires type 'Real'",
@@ -1219,9 +1239,14 @@ fn port_unannotated_param_default_takes_real_fallback_like_top_level() {
 /// failure modes a silence-based fence is blind to. Pinning the count asserts
 /// the walk was actually HANDED these cells and chose to stay quiet.
 ///
-/// Zero diagnostics of ANY severity (not just the ctor-conformance subset) is
-/// the measured truth for both fixtures below and is the stronger claim: it also
-/// catches a fixture that starts tripping an unrelated warning.
+/// Zero diagnostics of ANY severity, not the ctor-conformance subset — the same
+/// deliberate override of this file's [`ctor_conformance_diags`] convention that
+/// [`assert_port_parity_with_top_level`] makes, for the same reason. The emitter
+/// a well-typed port default is next most likely to over-fire at is the
+/// complementary `check_param_default_type`, whose `ParamDefaultTypeMismatch` is
+/// not in `CTOR_CONFORMANCE_CODES`; narrowing would put it out of view. The
+/// accepted cost is an unrelated future `W_*` on these fixtures reading as a red
+/// here, which is why both carry the `module test.<name>` prologue.
 fn assert_port_body_compiles_clean(
     source: &str,
     port_name: &str,
@@ -1286,7 +1311,8 @@ fn port_body_well_typed_param_defaults_stay_clean() {
     );
 }
 
-const SRC_MIGRATED_HYDRO_CONFORMER: &str = r#"import std.ports.fluid
+const SRC_MIGRATED_HYDRO_CONFORMER: &str = r#"module test.migrated_hydro
+import std.ports.fluid
 
 structure def HydroConformer {
     port p : in HydraulicPort {
@@ -1314,6 +1340,20 @@ structure def HydroConformer {
 /// `enum Color { … }` fixture cannot exercise, and it is the part that would
 /// break if enum resolution inside a port body ever regressed to the
 /// dimensionless-scalar fallback the un-annotated form takes.
+///
+/// THREE hand-kept copies of this source exist, one per claim — a re-migration
+/// of the annotations has to move all three:
+///
+/// - `examples/stdlib/ports_breadth.ri` — the corpus site, judged by
+///   `no_example_emits_ctor_field_conformance_diagnostics`;
+/// - `ports_stdlib_compile.rs::hydraulic_port_concrete_conformer_multidomain_compiles`
+///   — the ζ signal that the FluidPort+MechanicalPort diamond resolves,
+///   asserting Error-severity only;
+/// - this one — zero diagnostics of ANY severity plus the port's member count.
+///
+/// They are kept separate rather than folded into the ζ fixture because that
+/// would make the ports harness assert on the ctor-conformance walk, coupling
+/// two surfaces that fail for unrelated reasons.
 #[test]
 fn migrated_hydro_conformer_port_body_stays_clean() {
     assert_port_body_compiles_clean(
