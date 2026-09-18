@@ -6455,6 +6455,93 @@ mod tests {
         assert_eq!(extract_eigen_knobs(&Value::Undef), (10, 1e-9, 200, 0.0));
     }
 
+    /// δ (#7261): the λ-space σ read must not silently become 0.0 for a value
+    /// shape a user actually writes.
+    ///
+    /// A `Real`-typed `.ri` param does not arrive as one Rust variant. A
+    /// literal `sigma: 2` arrives as [`Value::Int`], and a value that has been
+    /// through the dimensional machinery arrives as a DIMENSIONLESS
+    /// [`Value::Scalar`] — the shape the `tolerated` idiom in
+    /// [`extract_loss_factor`] exists for, one knob up in this same file.
+    /// Reading only [`Value::Real`] drops both to the default, which is the
+    /// silent-drop class this PRD exists to close (`buckling.rs` documents and
+    /// handles exactly this trap for the sibling knob, and β's own rustdoc
+    /// records it by name).
+    ///
+    /// A FREQUENCY-dimensioned `Scalar` is deliberately NOT honored — see the
+    /// case below.
+    ///
+    /// Every row also asserts the other three knobs, so the widening is provably
+    /// scoped to σ: the table is over the σ shape ONLY, with `n_modes`/`tol`/
+    /// `max_iters` held at fixed non-default values that must come back
+    /// unchanged.
+    #[test]
+    fn extract_eigen_knobs_sigma_value_shapes() {
+        /// The three non-σ knobs, held at non-default values so a regression in
+        /// their handling cannot hide behind a default.
+        fn with_sigma(sigma: Option<Value>) -> Value {
+            let mut fields = vec![
+                ("n_modes".to_string(), Value::Int(7)),
+                ("tol".to_string(), Value::Real(1e-7)),
+                ("max_iters".to_string(), Value::Int(50)),
+            ];
+            if let Some(sigma) = sigma {
+                fields.push(("sigma".to_string(), sigma));
+            }
+            modal_options(fields)
+        }
+        let dimensionless = |si_value: f64| Value::Scalar {
+            si_value,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+
+        let cases: Vec<(&str, Option<Value>, f64)> = vec![
+            // The regression floor: the shape that already worked.
+            ("Real", Some(Value::Real(2.5)), 2.5),
+            // A `.ri` integer literal `sigma: 2`. RED before the widening.
+            ("Int", Some(Value::Int(2)), 2.0),
+            // A dimensionless Scalar, NEGATIVE: `ModalOptions` declares σ
+            // "explicitly NOT constrained" because a negative shift targets the
+            // negative side of the spectrum, so the sign must round-trip rather
+            // than being clamped away. RED before the widening.
+            ("Scalar<dimensionless>", Some(dimensionless(-1.5)), -1.5),
+            // REFUSED, and the default is the right answer. That shape is
+            // #6097's future `shift_frequency : Frequency` surface; reading
+            // 300 Hz as λ = 300 would be a silent 4π²-and-square error —
+            // strictly WORSE than dropping the value, because a wrong shift
+            // returns a plausible-looking spectrum from the wrong band.
+            // Converting it here would also duplicate #6097's scope and
+            // manufacture the INV-AD-4 angle crossing this branch deliberately
+            // does not have.
+            (
+                "Scalar<frequency>",
+                Some(Value::Scalar {
+                    si_value: 300.0,
+                    dimension: DimensionVector::FREQUENCY,
+                }),
+                0.0,
+            ),
+            // The finite guard survives the widening: an infinite or NaN σ
+            // would poison `K − σM`.
+            ("Real(inf)", Some(Value::Real(f64::INFINITY)), 0.0),
+            ("Real(NaN)", Some(Value::Real(f64::NAN)), 0.0),
+            // Existing fallbacks, unchanged.
+            ("absent", None, 0.0),
+        ];
+
+        for (label, sigma, expected) in cases {
+            assert_eq!(
+                extract_eigen_knobs(&with_sigma(sigma)),
+                (7, 1e-7, 50, expected),
+                "sigma shape {label}: expected σ = {expected} with the other three \
+                 knobs untouched",
+            );
+        }
+
+        // A non-StructureInstance still yields ALL defaults, σ included.
+        assert_eq!(extract_eigen_knobs(&Value::Undef), (10, 1e-9, 200, 0.0));
+    }
+
     /// Amendment (suggestion 2): `extract_reference_direction` normalizes the
     /// vector and falls back to the bending default `[0,0,1]` for missing /
     /// zero-norm / non-struct inputs.
