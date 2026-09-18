@@ -33,11 +33,13 @@ const REPRO_TWO: &str = "structure S {\n  let x = a.b\n  (c)\n}\n";
 
 /// Does this diagnostic identify a member-continuation ambiguity?
 ///
-/// Deliberately the same predicate shape as the reify-syntax suite's
-/// `is_member_continuation_error`, so the two files agree on what counts even
-/// though they cannot share code across crates.
+/// Asks the rule's own exported discriminator
+/// (`reify_syntax::member_continuation::is_member_continuation_message`)
+/// rather than restating it here. The two crates CAN share this: reify-syntax
+/// is already a dependency of reify-compiler, and the predicate is public
+/// precisely so every caller reads the contract from one place.
 fn is_member_continuation(d: &Diagnostic) -> bool {
-    d.message.contains("continuation") && d.message.contains("member")
+    reify_syntax::member_continuation::is_member_continuation_message(&d.message)
 }
 
 /// Compile `source` through the project entry path, in a scratch directory
@@ -100,8 +102,10 @@ fn repro_two_fails_compilation_with_an_error_diagnostic() {
 /// The fixture is the shape from real tracked source —
 /// `designs/litter_tray/bottom_deck.ri:64-65`, where the continuation row is
 /// indented well past the member's own column, which is the author's signal
-/// that the line continues the expression. ~28 such sites exist in the repo;
-/// if this test ever fails, the check has started rejecting all of them.
+/// that the line continues the expression. That shape is ordinary in tracked
+/// source; if this test ever fails, the check has started rejecting all of it.
+/// The live census is reify-syntax's standing sweep,
+/// `no_tracked_ri_source_trips_the_member_continuation_check`.
 #[test]
 fn a_clean_multi_line_continuation_still_compiles() {
     let source = concat!(

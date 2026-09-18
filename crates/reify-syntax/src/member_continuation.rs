@@ -22,8 +22,9 @@
 //!
 //! # The rule (normative)
 //!
-//! For each *member* `M` — a direct named child of a member-list container,
-//! lying between the container's `{` and `}`:
+//! Applied only to a tree that parsed cleanly (see "Only clean parses"
+//! below), for each *member* `M` — a direct named child of a member-list
+//! container, lying between the container's `{` and `}`:
 //!
 //! 1. **`c0`** = `M.start_position().column`, the member's own start column.
 //! 2. Walk `M`'s non-extra leaf tokens in source order. Extras (comments) are
@@ -45,8 +46,9 @@
 //! new member. Indentation past `c0` is the author's signal that the line is a
 //! deliberate continuation, and stays legal — that shape is real, tracked
 //! reify source (`designs/litter_tray/bottom_deck.ri:65`,
-//! `prj/printer_v01/printer.ri`, `docs/prds/v0_6/fixtures/discrete_balance_*.ri`,
-//! ~28 sites).
+//! `prj/printer_v01/printer.ri`,
+//! `docs/prds/v0_6/fixtures/discrete_balance_*.ri`). The standing sweep, not a
+//! count written here, is what keeps that constituency intact.
 //!
 //! Clause 3's inspect-then-apply order decides the two cases that matter:
 //!
@@ -56,8 +58,34 @@
 //! - A row-leading `)` or `}` that closes a group `M` itself opened is
 //!   inspected while still inside that group, i.e. at `d >= 1`, so it is
 //!   skipped. This is the everyday layout of a multi-row argument list or a
-//!   `where cond { … }` block, and it accounts for all 255 locations the
-//!   depth-free rule reported across the 677 tracked `.ri` files.
+//!   `where cond { … }` block, and it accounts for every location the
+//!   depth-free rule reported across tracked `.ri` source. The standing sweep
+//!   `no_tracked_ri_source_trips_the_member_continuation_check`
+//!   (`crates/reify-syntax/tests/harness_syntax/member_continuation_ambiguity_tests.rs`)
+//!   is the live check on that claim; it re-measures on every run, which a
+//!   number written here would not.
+//!
+//! # Only clean parses
+//!
+//! The check runs only when the tree holds no `ERROR` or `MISSING` node
+//! anywhere. INV-SF-7 is about the SILENT join, and silence is precisely what
+//! a clean parse means: once the grammar has spoken, the invariant is already
+//! upheld and a second diagnostic can only mislead.
+//!
+//! It WOULD mislead, measured two different ways:
+//!
+//! - The offending member is itself broken (`let a = 5mm @@` absorbs the
+//!   following `- 3mm` row), so the rule advises indenting a line whose real
+//!   defect is the garbage above it.
+//! - The offending member is CLEAN and something adjacent is broken. An
+//!   incomplete `sub a :` takes the next line's `let` as its type name,
+//!   leaving an error-free `sub_declaration` and an `ERROR` sibling — a
+//!   per-member cleanliness test would let that one through, which is why the
+//!   gate is the whole tree, not the member.
+//!
+//! This is also what keeps the check off the GUI's parse-while-typing path,
+//! where half-written source is the normal state. Pinned by
+//! `a_broken_parse_gets_no_continuation_diagnostic`.
 //!
 //! NOTE for anyone reconciling this against #7094's plan text: the plan's
 //! prose said closers decrement *before* inspection, but its own worked
@@ -105,7 +133,11 @@
 //! no member-continuation entry reaches it on a user-facing compile. If a
 //! future production caller skips that pre-check, the fix is a structural
 //! marker on the entry (not a message-prefix match, which would be a
-//! substring hack under INV-SF-6).
+//! substring hack under INV-SF-6). The tests that must single this diagnostic
+//! out of a mixed list do match on text, but through exactly one exported
+//! predicate — [`is_member_continuation_message`] — so that marker, when it
+//! arrives, replaces one function body rather than N scattered `contains`
+//! calls.
 
 use reify_core::SourceSpan;
 
@@ -236,10 +268,14 @@ pub const MEMBER_LIST_CONTAINER_EXCLUSIONS: &[(&str, &str)] = &[
 /// Returns `(span, message)` pairs in source order, each span covering exactly
 /// the offending row-leading token — never the whole member, which would bury
 /// the boundary the author actually needs to see.
-pub(crate) fn check_member_continuations(
-    root: tree_sitter::Node<'_>,
-    _source: &str,
-) -> Vec<(SourceSpan, String)> {
+pub(crate) fn check_member_continuations(root: tree_sitter::Node<'_>) -> Vec<(SourceSpan, String)> {
+    // A tree that did not parse cleanly has no member boundaries worth reading
+    // (see "Only clean parses" above): under error recovery, spans and start
+    // columns are the parser's guesses, not the author's layout.
+    if root.has_error() {
+        return Vec::new();
+    }
+
     let mut out = Vec::new();
 
     // Iterative pre-order walk (no recursion: member bodies can nest
@@ -352,6 +388,13 @@ fn check_member(member: tree_sitter::Node<'_>, out: &mut Vec<(SourceSpan, String
     }
 }
 
+/// The stable head of every member-continuation diagnostic, and the ONLY text
+/// [`is_member_continuation_message`] matches on.
+///
+/// Written once, used by both the constructor and the recogniser, so the
+/// wording and the discriminator cannot drift apart.
+const MESSAGE_HEAD: &str = "ambiguous member continuation:";
+
 /// The diagnostic wording.
 ///
 /// Names BOTH readings and BOTH fixes: an author who meant a continuation and
@@ -360,9 +403,29 @@ fn check_member(member: tree_sitter::Node<'_>, out: &mut Vec<(SourceSpan, String
 /// source blocks.
 fn continuation_message(col: usize, c0: usize) -> String {
     format!(
-        "ambiguous member continuation: this line starts at column {col}, at or left of \
+        "{MESSAGE_HEAD} this line starts at column {col}, at or left of \
          the enclosing member's start column {c0}, but the grammar joins it onto that \
          member's expression rather than starting a new member; indent it past column \
          {c0} to continue the expression, or separate the members"
     )
+}
+
+/// Does `message` identify a member-continuation ambiguity?
+///
+/// THE discriminator, exported so every caller — in this crate and in
+/// `reify-compiler`'s test suites — asks the same question of the same text.
+/// Three independent substring predicates previously stood in for this, one
+/// per test file; reword the diagnostic and each would have drifted separately
+/// (SPOT).
+///
+/// This is still text matching, and text matching is the wrong shape: a
+/// structured kind or code on `ParseError` would make the discriminator DATA.
+/// Keeping the match here rather than at each call site is what makes that
+/// later change a one-function edit.
+///
+/// `contains`, not `starts_with`, because a caller may read the message after
+/// a renderer has prefixed it with a location (`reify_compiler::module_dag`
+/// maps `ParsedModule::errors` into `Diagnostic`s that way).
+pub fn is_member_continuation_message(message: &str) -> bool {
+    message.contains(MESSAGE_HEAD)
 }

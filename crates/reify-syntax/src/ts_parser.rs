@@ -78,7 +78,7 @@ pub fn parse_with_prelude_enums<'a>(
     // absorbed the following line. All logic lives in `member_continuation`;
     // this stays a call site so the merge surface against the pending
     // `ts_parser.rs` work on `task/5392` is one hunk.
-    for (span, message) in crate::member_continuation::check_member_continuations(root, source) {
+    for (span, message) in crate::member_continuation::check_member_continuations(root) {
         lowering.push_error(message, span);
     }
 

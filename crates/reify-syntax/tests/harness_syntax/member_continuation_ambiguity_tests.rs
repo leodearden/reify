@@ -13,6 +13,11 @@
 //! `crates/reify-syntax/src/member_continuation.rs` for the normative rule.
 
 use reify_core::ModulePath;
+// The "is this a member-continuation diagnostic?" question is answered by the
+// rule's own exported discriminator, never by a substring predicate restated
+// here: the recogniser lives next to the message it recognises, so a reword
+// lands in exactly one place for every caller in every crate.
+use reify_syntax::member_continuation::is_member_continuation_message as is_member_continuation_error;
 
 /// REPRO 1 from task #7094: leading-operator continuation inside a structure
 /// member body.
@@ -21,14 +26,6 @@ const REPRO_ONE: &str = "structure S {\n  let d = 5mm\n  - 3mm\n}\n";
 /// REPRO 2 from task #7094: `(`-led continuation inside a structure member
 /// body.
 const REPRO_TWO: &str = "structure S {\n  let x = a.b\n  (c)\n}\n";
-
-/// Does this diagnostic message identify a member-continuation ambiguity?
-///
-/// Kept as one predicate so every test in this file agrees on what counts,
-/// and so a wording change lands in exactly one place.
-fn is_member_continuation_error(message: &str) -> bool {
-    message.contains("continuation") && message.contains("member")
-}
 
 /// Collect the member-continuation diagnostics from a parse, as
 /// `(span_start, span_end, message)` triples.
@@ -182,8 +179,10 @@ fn assert_no_member_continuation_error(label: &str, source: &str) {
 /// leading-operator continuation indented PAST the member's start column.
 ///
 /// This is the constituency a naive "a newline ends a member" rule would
-/// break — ~28 such sites exist in tracked reify source. Indentation past the
-/// member column is the author's signal, and it stays legal.
+/// break: deliberately-continued rows are ordinary in tracked reify source.
+/// Indentation past the member column is the author's signal, and it stays
+/// legal — `no_tracked_ri_source_trips_the_member_continuation_check` below is
+/// what keeps every such site honest, re-measured on each run.
 #[test]
 fn deeper_indented_leading_operator_is_a_legal_continuation() {
     let source = concat!(
@@ -239,6 +238,65 @@ fn multi_line_argument_list_rows_at_or_left_of_the_member_column_are_clean() {
 fn a_closing_delimiter_at_the_member_column_is_clean() {
     let source = "structure S {\n    let m = f(\n        1mm,\n    )\n}\n";
     assert_no_member_continuation_error("closing paren at the member column", source);
+}
+
+/// The check speaks only about trees that parsed cleanly: a source carrying
+/// an `ERROR` or `MISSING` node anywhere gets no member-continuation
+/// diagnostic at all.
+///
+/// Under error recovery a member's span and start column are the parser's
+/// guesses, not the author's layout, so the rule's advice ("indent it past
+/// column N") is aimed at a boundary nobody wrote. Both fixtures below were
+/// MEASURED to report when the gate is removed, so this test is not vacuous —
+/// and they fail in the two different ways that decide the gate's shape:
+///
+/// - `broken member`: the garbage tail leaves the ERROR INSIDE the
+///   `let_declaration` that swallows the next row.
+/// - `broken sibling`: the incomplete `sub a :` takes the following `let` as
+///   its type name, so the reported member is itself ERROR-free and the ERROR
+///   is a sibling. A per-member cleanliness test would let this one through;
+///   only the whole-tree gate catches it.
+///
+/// This is also the property that keeps the check quiet on the GUI's
+/// parse-while-typing path.
+#[test]
+fn a_broken_parse_gets_no_continuation_diagnostic() {
+    let fixtures: &[(&str, &str)] = &[
+        (
+            "broken member",
+            concat!(
+                "structure def S {\n",
+                "    let a = 5mm @@\n",
+                "    - 3mm\n",
+                "}\n",
+            ),
+        ),
+        (
+            "broken sibling",
+            concat!(
+                "structure def S {\n",
+                "    sub a : \n",
+                "    let z = 2mm\n",
+                "}\n",
+            ),
+        ),
+    ];
+
+    for (label, source) in fixtures {
+        // Sanity: each fixture really is a broken parse with a diagnostic of
+        // its own, so this test cannot pass by being clean source with nothing
+        // to report.
+        let parsed = reify_syntax::parse(source, ModulePath::single("m"));
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|e| !is_member_continuation_error(&e.message)),
+            "{label}: fixture must still produce a syntax error of its own; got {:?}",
+            parsed.errors
+        );
+        assert_no_member_continuation_error(label, source);
+    }
 }
 
 /// Same for a member-level `where cond { ... }` whose `}` sits at the member's
