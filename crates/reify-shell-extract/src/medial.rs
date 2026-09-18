@@ -96,10 +96,39 @@ pub struct MedialOptions {
     /// with `|φ(v)| > narrow_band_half_width_voxels × spacing` are
     /// excluded from the inner loop, emulating OpenVDB's sparse
     /// active-voxel iterator on top of a dense `SampledField`.
-    /// Default `3.0` covers the smallest medial axis at the PRD's
-    /// `thickness/3` voxel-size default (smallest medial slab is 3
-    /// voxels thick → half-width 1.5; 3 leaves headroom for
-    /// gradient-stencil sampling at the boundary voxels).
+    ///
+    /// **This constant sets the extractor's UPPER resolution edge.** A
+    /// wall's medial plane sits at `|φ| = half-thickness`, so the band
+    /// filter (this file, ~:617 and ~:675) admits the mid-plane voxel
+    /// only while `half-thickness ≤ nb × spacing`. That filter runs
+    /// BEFORE `medial_walk_direction`, so an out-of-band mid-plane
+    /// voxel is discarded before #7527's ridge fallback ever sees it —
+    /// the fallback cannot rescue what was never enumerated, which is
+    /// why the failure past the edge is TOTAL (an empty mask) rather
+    /// than degraded. A wall is measurable only while
+    ///
+    /// ```text
+    /// voxels-per-thickness ≤ 2 × narrow_band_half_width_voxels
+    /// ```
+    ///
+    /// At the default `3.0` that ceiling is 6 voxels per thickness.
+    /// Measured (task 6566, analytic slab, h = 1, all eight sub-voxel
+    /// alignments): bit-exact `Measured` (error exactly `0.0`) at all
+    /// eight for `vpt = 6`, and `NoMeasurement` at all eight for
+    /// `vpt = 8`. Between those the behaviour is alignment-DEPENDENT
+    /// (`vpt = 6.5` measures at 5 of 8, `vpt = 7` at 1 of 8) and is
+    /// deliberately not relied upon. Pinned by
+    /// `tests/medial_resolution_window.rs`.
+    ///
+    /// **Do not lower this to "re-match" a voxel-size default.** The
+    /// binding floor is the PRODUCER's: `reify-kernel-openvdb`'s
+    /// `MIN_FEATURE_VOXELS_ACROSS` (= 4, the OpenVDB interior-signing
+    /// floor) is the coarsest grid it will build, so this field must
+    /// satisfy `2 × nb ≥ 4`, i.e. `nb ≥ 2.0`, or no grid the producer
+    /// serves is measurable at all. Enforced across the two crates by
+    /// `crates/reify-eval/tests/shell_voxel_resolution_window.rs`.
+    /// (Named in prose only — this crate deliberately carries no
+    /// kernel/eval dependency, so it stays cycle-free.)
     pub narrow_band_half_width_voxels: f64,
     /// Surface-patch distinctness threshold on the dot product of the
     /// SDF gradients sampled at the two surface-hit points. The
