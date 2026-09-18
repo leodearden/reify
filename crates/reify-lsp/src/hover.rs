@@ -188,6 +188,10 @@ pub fn compute_hover_in_context(
                 }
                 return Some(make_hover_markdown(md));
             }
+            reify_ast::Declaration::Unit(u) if u.name == word => {
+                let md = format!("```reify\n{}\n```", format_unit_signature(u));
+                return Some(make_hover_markdown(md));
+            }
             _ => {}
         }
     }
@@ -239,6 +243,29 @@ pub(crate) fn format_type_alias_signature(t: &reify_ast::TypeAliasDecl) -> Strin
         format_type_params(&t.type_params),
         t.type_expr
     )
+}
+
+/// Render a unit declaration's signature line, e.g. `unit hoop : Length`.
+///
+/// `UnitDecl.dimension_type` is a non-optional [`reify_ast::TypeExpr`], and
+/// `impl Display for TypeExpr` matches all six `TypeExprKind` variants
+/// exhaustively, so this render cannot fail.
+///
+/// The conversion factor and offset are deliberately NOT rendered here:
+/// `UnitDecl.conversion`/`.offset` are `Option<Expr>` and reify-ast has no
+/// `impl Display for Expr`, so the only renderable source for those values is
+/// the COMPILED side (`CompiledUnit.factor`/`.offset`). The hover arm appends
+/// them additively from there, the way the type-alias arm appends its
+/// resolves-to line.
+///
+/// Visibility (`pub`) is deliberately not rendered, matching the sibling
+/// fn/trait/enum/type-alias hover arms.
+///
+/// Private, unlike [`format_type_alias_signature`]: no completion surface
+/// consumes a unit's signature today, and the narrower scope is the right one
+/// until one does. Task #6500.
+fn format_unit_signature(u: &reify_ast::UnitDecl) -> String {
+    format!("unit {} : {}", u.name, u.dimension_type)
 }
 
 /// Render a type-parameter list as `<T, U: Numeric, V: A + B = Int>`, or the empty
