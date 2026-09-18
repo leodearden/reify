@@ -5,8 +5,11 @@
 #![allow(clippy::mutable_key_type)]
 
 mod analysis;
+mod branch_signature;
 mod calculus;
 mod complex;
+mod dual;
+mod dual_eval;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
@@ -14,6 +17,23 @@ mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
+
+// Task #6672 (solver-unification ε): the forward-mode AD surface.  The three
+// modules are PRIVATE and these flat re-exports are the only path to them, so
+// `reify_expr::Tangent` is not merely the preferred spelling over
+// `reify_expr::dual::Tangent` — it is the reachable one, and consumers (η
+// #6675, μ #6680, λ #6679) cannot drift into using both for the same type.
+// Same reasoning, and the same shape, as `reify_constraints`' private
+// `dual_jacobian`.
+pub use branch_signature::{
+    BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, DEPENDENT_MARKER,
+    RESERVED_PATH_SEGMENTS, KinkKind, KinkSite, ReductionKind, first_divergence,
+};
+pub use dual::{DualValue, Tangent};
+pub use dual_eval::{
+    DualEnv, NonDifferentiable, Seeds, eval_dual, eval_dual_with_env, jacobian_row,
+    jacobian_row_with_env,
+};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -4057,7 +4077,7 @@ fn negate_components(components: &[Value], wrap: fn(Vec<Value>) -> Value) -> Val
 /// Recursively negate a value.  Handles all negatable variants: Int, Real,
 /// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
 /// Point negation is explicitly undefined (spec 3.3.1).
-fn negate_value(v: Value) -> Value {
+pub(crate) fn negate_value(v: Value) -> Value {
     match v {
         Value::Int(_) | Value::Real(_) | Value::Scalar { .. } | Value::Complex { .. } => {
             neg_scalar(v)
@@ -4157,7 +4177,7 @@ fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> 
     }
 }
 
-fn eval_add(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a + b),
@@ -4261,7 +4281,7 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_sub(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a - b),
@@ -4443,7 +4463,7 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
     }
 }
 
-fn eval_mul(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a * b),
@@ -4720,7 +4740,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_div(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
     // Check for division by zero
     if let Some(denom) = rv.as_f64()
         && (denom == 0.0 || denom.is_nan())
@@ -4871,7 +4891,7 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_mod(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => {
             if *b == 0 {
@@ -4891,7 +4911,7 @@ fn eval_mod(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_pow(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     // Compute the raw result, then sanitize NaN/Inf → Undef.
     //
     // Rationale: the value-level `^` operator must satisfy the same
@@ -4942,7 +4962,7 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
     sanitize::sanitize_value(result)
 }
 
-fn eval_eq(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
@@ -5010,14 +5030,14 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_ne(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_ne(lv: &Value, rv: &Value) -> Value {
     match eval_eq(lv, rv) {
         Value::Bool(b) => Value::Bool(!b),
         other => other,
     }
 }
 
-fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
+pub(crate) fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
     match (lv, rv) {
         // Scalar-vs-Scalar: compare dimensions first
         (
