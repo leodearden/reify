@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use reify_ast::{
     ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody, ImportKind,
     KeyedSubMemberEntry, MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl,
-    WhereClause,
+    TypeExpr, TypeExprKind, WhereClause,
 };
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{
@@ -1390,17 +1390,24 @@ pub fn compute_document_highlights(
 // cross-file scope logic is unit-testable with an in-memory workspace + a mock
 // resolver. The server handlers assemble both from the live DocumentStore.
 
-/// Collect every structure-name reference to `name` within a SINGLE parsed
+/// Collect every declaration-name reference to `name` within a SINGLE parsed
 /// document: the home declaration's name token (when `name` is declared in this
-/// document) plus each `sub _ = name` construction-site token across every
-/// entity's members, recursing into nested scopes. Ascending by `span.start`.
+/// document) plus each USE-SITE token across every entity's members, recursing
+/// into nested scopes. Ascending by `span.start`.
 ///
-/// `SubDecl.structure_name` is a plain `String` field (decl.rs), not an `Expr`,
-/// so these construction-site uses never appear as `ExprKind::Ident` and are
-/// structurally invisible to `collect_uses`/`collect_idents_in_expr`. This
-/// dedicated traversal is the only way to surface them (κ design decision). The
-/// home declaration token is located via goto_def's `find_declaration_name_span`
-/// so a structure's rename/reference token is uniform with go-to-definition.
+/// Use-site categories collected here:
+/// - `sub _ = name` construction sites (κ design decision).
+/// - TYPE POSITIONS — `param p : Name`, `let l : Name`, `sub _ = Wrapper<Name>`
+///   (#6539), via [`collect_type_name_uses`].
+///
+/// All of them are structurally invisible to
+/// `collect_uses`/`collect_idents_in_expr`: `SubDecl.structure_name` is a plain
+/// `String` field, not an `Expr`, and a `TypeExpr` is not an `Expr` at all, so
+/// neither ever appears as `ExprKind::Ident`. This dedicated, BINDING-FREE
+/// traversal is the only way to surface them — see [`collect_type_name_uses`]
+/// for why the value-binding path is the wrong home. The home declaration token
+/// is located via goto_def's `find_declaration_name_span` so a declaration's
+/// rename/reference token is uniform with go-to-definition.
 fn collect_structure_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> Vec<SourceSpan> {
     let mut spans = Vec::new();
     // Home declaration token (`structure Name` / `occurrence def Name` / …),
@@ -1438,10 +1445,26 @@ fn collect_sub_structure_uses(
         return;
     }
     for member in members {
-        if let MemberDecl::Sub(s) = member
-            && s.structure_name == name
-        {
-            out.push(name_token_span(source, s.span, name));
+        match member {
+            MemberDecl::Sub(s) => {
+                if s.structure_name == name {
+                    out.push(name_token_span(source, s.span, name));
+                }
+                for arg in &s.type_args {
+                    collect_type_name_uses(arg, source, name, out);
+                }
+            }
+            MemberDecl::Param(p) => {
+                if let Some(ty) = &p.type_expr {
+                    collect_type_name_uses(ty, source, name, out);
+                }
+            }
+            MemberDecl::Let(l) => {
+                if let Some(ty) = &l.type_expr {
+                    collect_type_name_uses(ty, source, name, out);
+                }
+            }
+            _ => {}
         }
         // Recurse into the SAME nested member-list scopes `collect_uses`
         // descends into (via `for_each_child_scope`), so a `sub` construction
@@ -1449,6 +1472,83 @@ fn collect_sub_structure_uses(
         for_each_child_scope(member, |child| {
             collect_sub_structure_uses(child, source, name, depth + 1, out);
         });
+    }
+}
+
+/// Push the name-token span of every reference to `name` appearing in TYPE
+/// POSITION within `ty`, recursing through the whole type expression.
+///
+/// WHY THIS LIVES IN THE DECLARATION-NAME TRAVERSAL AND NOT IN
+/// `collect_uses`/`collect_idents_in_expr`. [`collect_references_at`] is a
+/// VALUE-BINDING machine: it collects param/let/sub/port BINDINGS, collects
+/// uses, then keeps only the uses whose `resolve_use(...)` is the selected
+/// binding. A top-level declaration name is not a binding, so a type-position
+/// span pushed there would be filtered straight back out — inert, and
+/// misleading to the next reader. This traversal is the existing binding-free
+/// home for exactly this shape of problem; it was created because
+/// `SubDecl.structure_name` is a plain `String` invisible to
+/// `collect_idents_in_expr`, and a type expression is invisible to it for the
+/// same structural reason.
+///
+/// The match is WILDCARD-FREE over all six `TypeExprKind` variants, so a new
+/// variant is a compile error here rather than a silently uncollected use site
+/// — the same forcing-function design as `analysis::decl_name_and_span`.
+///
+/// SPAN PRECISION is the rename-safety property, because
+/// [`compute_rename_cross_file`] uses the reference set as its exact edit set.
+/// A `Named` type's span is the NAME TOKEN exactly when it is a bare identifier
+/// (`lower_type_expr_node`'s bare-identifier arm spans just that node), but
+/// covers the whole `Box<T>` construct for the parameterized form
+/// (`lower_parameterized_type` spans the entire node). The bare case therefore
+/// pushes `ty.span` directly — authoritative by construction, with no source
+/// scan and no exposure to [`name_token_span`]'s empty-span miss fallback —
+/// while the parameterized case must narrow.
+fn collect_type_name_uses(ty: &TypeExpr, source: &str, name: &str, out: &mut Vec<SourceSpan>) {
+    match &ty.kind {
+        TypeExprKind::Named {
+            name: type_name,
+            type_args,
+        } => {
+            if type_name == name {
+                if type_args.is_empty() {
+                    out.push(ty.span);
+                } else {
+                    out.push(name_token_span(source, ty.span, name));
+                }
+            }
+            for arg in type_args {
+                collect_type_name_uses(arg, source, name, out);
+            }
+        }
+        TypeExprKind::DimensionalOp { op: _, left, right } => {
+            collect_type_name_uses(left, source, name, out);
+            collect_type_name_uses(right, source, name, out);
+        }
+        TypeExprKind::QualifiedAssoc {
+            base,
+            trait_name: _,
+            member: _,
+        } => {
+            // `base` is a type expression; `member` and `trait_name` name an
+            // associated type and a trait, neither of which is a reference to
+            // the top-level declaration `name` denotes.
+            collect_type_name_uses(base, source, name, out);
+        }
+        TypeExprKind::Function {
+            params,
+            return_type,
+        } => {
+            for param in params {
+                collect_type_name_uses(param, source, name, out);
+            }
+            collect_type_name_uses(return_type, source, name, out);
+        }
+        // Leaves: an integer type-argument and an `auto` type-argument name no
+        // declaration. `Auto.bound` is a bare identifier but carries no span of
+        // its own (only the enclosing `TypeExpr.span`), so a bound reference
+        // cannot be located from the AST and is not collected.
+        TypeExprKind::IntegerLiteral(_) => {}
+        TypeExprKind::Auto { .. } => {}
     }
 }
 
