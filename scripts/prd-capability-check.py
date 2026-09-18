@@ -764,13 +764,71 @@ def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
     return True
 
 
-def stdout_value_satisfied(run: ProbeRun, stdout_value: Dict[str, Any]) -> bool:
-    """Return True iff run.stdout carries a capture meeting stdout_value's bounds.
+# Which half of a value predicate a capture failed.  "pattern" means nothing was
+# located at all — a renamed field or a mis-aimed probe — which is a different
+# defect from a located value that is out of bounds, and the two are what a
+# 200-char stdout preview cannot tell apart on real multi-cell output.
+_VALUE_FAILED_PATTERN = "pattern"
+_VALUE_FAILED_FINITE = "finite"
+
+
+@dataclass(frozen=True)
+class ValueObservation:
+    """What a value probe read out of stdout, and why it did or did not satisfy.
+
+    One computation behind both the PRESENT/ABSENT answer and the operator-facing
+    evidence, so a verdict and its explanation can never disagree.
+    """
+    satisfied: bool
+    captured: Optional[str]           # the matched token; None if none was located
+    failed_constraint: Optional[str]  # pattern|finite|min|max; None when satisfied
+
+    def describe(self, stdout_value: Dict[str, Any]) -> str:
+        """One operator-facing line naming the capture and the constraint.
+
+        The captured value is evidence on PASS as much as on FAIL, so this reads
+        as a statement either way rather than only as a complaint.
+        """
+        if self.captured is None:
+            return (
+                "pattern located no value in stdout: "
+                f"{stdout_value['pattern']!r}"
+            )
+        if self.satisfied:
+            return (
+                f"captured {self.captured!r} — satisfies "
+                f"{_describe_value_constraints(stdout_value)}"
+            )
+        if self.failed_constraint == _VALUE_FAILED_FINITE:
+            return f"captured {self.captured!r} — violates finite: not a finite number"
+        return (
+            f"captured {self.captured!r} — violates {self.failed_constraint} "
+            f"{stdout_value[self.failed_constraint]}"
+        )
+
+
+def _describe_value_constraints(stdout_value: Dict[str, Any]) -> str:
+    """Render the constraints a capture was held to, in spec order.
+
+    Falls back to "finite" when the spec names no bound, because finiteness is
+    enforced unconditionally and so is never not part of the answer.
+    """
+    parts = ["finite"] if stdout_value.get("finite") else []
+    parts += [
+        f"{key} {stdout_value[key]}" for key in ("min", "max") if key in stdout_value
+    ]
+    return ", ".join(parts) or _VALUE_FAILED_FINITE
+
+
+def observe_stdout_value(
+    run: ProbeRun, stdout_value: Dict[str, Any]
+) -> ValueObservation:
+    """Locate, parse and bounds-check a value in run.stdout.
 
     Takes an already-validated spec — _validate_value_predicate() guarantees at
-    load that the pattern compiles, has at least one capture group, names a
-    group that exists, and carries at least one constraint — so this function
-    validates nothing and has no error paths of its own.
+    load that the pattern compiles, has at least one capture group, names a group
+    that exists, and carries at least one constraint — so this function validates
+    nothing and has no error paths of its own.
 
     Finiteness is applied unconditionally rather than only under `finite`,
     because float("inf") >= min is True: a bounds-only check would admit inf.
@@ -779,21 +837,27 @@ def stdout_value_satisfied(run: ProbeRun, stdout_value: Dict[str, Any]) -> bool:
     and belongs to observe().
     """
     match = re.search(stdout_value["pattern"], run.stdout)
-    if match is None:
-        return False
+    captured = match.group(stdout_value.get("group", 1)) if match else None
+    if captured is None:
+        return ValueObservation(False, None, _VALUE_FAILED_PATTERN)
 
     try:
-        value = float(match.group(stdout_value.get("group", 1)))
-    except (TypeError, ValueError):
-        return False
+        value = float(captured)
+    except ValueError:
+        return ValueObservation(False, captured, _VALUE_FAILED_FINITE)
     if not math.isfinite(value):
-        return False
+        return ValueObservation(False, captured, _VALUE_FAILED_FINITE)
 
     if "min" in stdout_value and value < stdout_value["min"]:
-        return False
+        return ValueObservation(False, captured, "min")
     if "max" in stdout_value and value > stdout_value["max"]:
-        return False
-    return True
+        return ValueObservation(False, captured, "max")
+    return ValueObservation(True, captured, None)
+
+
+def stdout_value_satisfied(run: ProbeRun, stdout_value: Dict[str, Any]) -> bool:
+    """The boolean view of observe_stdout_value — what observe() needs."""
+    return observe_stdout_value(run, stdout_value).satisfied
 
 
 def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
@@ -903,6 +967,10 @@ class Result:
         stderr      — captured stderr text
         observation — PRESENT / ABSENT / INDETERMINATE / HARNESS_ERROR
         verdict     — PASS / FAIL / UNPROVABLE / HARNESS_ERROR (tool errors → exit 70)
+        value_observation — value probes only: which token was captured and which
+                    constraint it failed.  None on every other kind, and on a
+                    value probe that never produced a value (non-zero exit), so
+                    the existing kinds' record shape is unchanged.
     """
     probe: Probe
     command: List[str]
@@ -911,6 +979,7 @@ class Result:
     stderr: str
     observation: str
     verdict: str
+    value_observation: Optional[ValueObservation] = None
 
     def as_probe_run(self) -> ProbeRun:
         """The captured evidence, viewed again as the ProbeRun that produced it.
@@ -1340,6 +1409,13 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
         expected_obs = probe.expected["observation"]
         verd = verdict(obs, expected_obs)
 
+    # A value probe's captured token is evidence the renderer cannot recover
+    # from a truncated stdout preview.  Only PRESENT/ABSENT reached the value at
+    # all: INDETERMINATE and _HARNESS_ERROR mean none was produced.
+    value_obs = None
+    if probe.probe_kind == "value" and obs in (PRESENT, ABSENT):
+        value_obs = observe_stdout_value(run, match[_VALUE_PREDICATE_KEY])
+
     return Result(
         probe=probe,
         command=cmd,
@@ -1348,6 +1424,7 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
         stderr=run.stderr,
         observation=obs,
         verdict=verd,
+        value_observation=value_obs,
     )
 
 
@@ -1419,6 +1496,30 @@ def verdict(observation: str, expected_observation: str) -> str:
 # whole, while still capping a `reify eval` backtrace that would bury the gate
 # log.  Other verdicts keep the tight 200-char preview; --json is unaffected.
 _HARNESS_ERROR_STDERR_CAP = 4000
+
+
+def _json_record(r: Result) -> Dict[str, Any]:
+    """Project a Result into the --json record shape.
+
+    value_observation is OMITTED rather than set to null on the other kinds, so
+    existing consumers see exactly the record they always saw.
+    """
+    record = {
+        "capability": r.probe.capability,
+        "probe_kind": r.probe.probe_kind,
+        "verdict": r.verdict,
+        "command": r.command,
+        "exit_code": r.exit_code,
+        "stdout": r.stdout,
+        "stderr": r.stderr,
+    }
+    if r.value_observation is not None:
+        record["value_observation"] = {
+            "satisfied": r.value_observation.satisfied,
+            "captured": r.value_observation.captured,
+            "failed_constraint": r.value_observation.failed_constraint,
+        }
+    return record
 
 
 def main(argv: List[str]) -> int:
@@ -1544,18 +1645,7 @@ def main(argv: List[str]) -> int:
 
     # --- Emit output ---
     if args.emit_json:
-        json_records = [
-            {
-                "capability": r.probe.capability,
-                "probe_kind": r.probe.probe_kind,
-                "verdict": r.verdict,
-                "command": r.command,
-                "exit_code": r.exit_code,
-                "stdout": r.stdout,
-                "stderr": r.stderr,
-            }
-            for r in results
-        ]
+        json_records = [_json_record(r) for r in results]
         sys.stdout.write(json.dumps({"results": json_records}, indent=2))
         sys.stdout.write("\n")
     else:
@@ -1577,6 +1667,14 @@ def main(argv: List[str]) -> int:
             sys.stdout.write(f"  exit_code: {r.exit_code}\n")
             sys.stdout.write(f"  stdout:    {stdout_preview}\n")
             sys.stdout.write(f"  stderr:    {stderr_text}\n")
+            # Scoped to value rows for the same reason the hint below is scoped
+            # to HARNESS_ERROR: it answers a question only this kind raises —
+            # which token was read, and which constraint it failed.
+            if r.value_observation is not None:
+                spec = r.probe.expected["match"][_VALUE_PREDICATE_KEY]
+                sys.stdout.write(
+                    f"  value:     {r.value_observation.describe(spec)}\n"
+                )
             # Scoped to HARNESS_ERROR for the same reason as the cap above: the
             # hint explains why a probe could not RUN.  A check/ir probe whose
             # own stderr happened to quote both a load failure and a denial

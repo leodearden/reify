@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -2837,41 +2838,45 @@ class TestMain(unittest.TestCase):
                 rc = pcc.main(argv)
         return rc, buf_out.getvalue(), buf_err.getvalue()
 
-    def _make_runner(self, by_kind):
-        """Stub runner that dispatches by probe.probe_kind."""
-        def runner(probe: Any) -> Any:
-            exit_code, stdout, stderr = by_kind[probe.probe_kind]
-            return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
-        return runner
-
     # stdout the value probe in example-probe-set.json expects to read.
     _VALUE_PASS_STDOUT = "ValueCleanEvalCells.damping_ratio = 0.018"
 
-    def _all_pass_runner(self):
-        """Runner that causes every probe kind in example-probe-set.json to PASS.
+    # The run that makes each kind in example-probe-set.json PASS:
+    #   grammar: expected present → exit 0 (PRESENT)
+    #   check:   expected present, match {exit_code: 1} → exit 1 (match → PRESENT)
+    #   ir:      expected absent,  match {stderr_contains: 'EvalError'} → exit 0 (ABSENT)
+    #   value:   expected present, match {stdout_value: damping_ratio in
+    #            [0.01, 0.03]} → exit 0 AND an in-range capture (PRESENT)
+    _PASSING_RUNS = {
+        "grammar": (0, "", ""),
+        "check":   (1, "", "rejection: bad arg"),
+        "ir":      (0, "a = 0.01 m", ""),
+        "value":   (0, _VALUE_PASS_STDOUT, ""),
+    }
 
-        example-probe-set.json probes:
-          grammar: expected present → need exit 0 (PRESENT)
-          check:   expected present, match {exit_code: 1} → need exit 1 (match → PRESENT)
-          ir:      expected absent,  match {stderr_contains: 'EvalError'} → need exit 0 (ABSENT)
-          value:   expected present, match {stdout_value: damping_ratio in
-                   [0.01, 0.03]} → need exit 0 AND an in-range capture (PRESENT)
+    def _make_runner(self, by_kind):
+        """Stub runner dispatching by probe.probe_kind, PASSing by default.
+
+        A test names only the kinds it actually steers; everything else falls
+        back to _PASSING_RUNS.  Otherwise every test that pins one kind's
+        rendering would have to enumerate all the others, and adding a kind to
+        the example probe set would mean editing all of them in lockstep.
         """
-        return self._make_runner({
-            "grammar": (0, "", ""),
-            "check":   (1, "", "rejection: bad arg"),
-            "ir":      (0, "a = 0.01 m", ""),
-            "value":   (0, self._VALUE_PASS_STDOUT, ""),
-        })
+        runs = dict(self._PASSING_RUNS, **by_kind)
+
+        def runner(probe: Any) -> Any:
+            exit_code, stdout, stderr = runs[probe.probe_kind]
+            return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+        return runner
+
+    def _all_pass_runner(self):
+        """Runner that causes every probe kind in example-probe-set.json to PASS."""
+        return self._make_runner({})
 
     def _check_fail_runner(self):
         """Runner that makes the check probe FAIL (reify silent-accept)."""
-        return self._make_runner({
-            "grammar": (0, "", ""),
-            "check":   (0, "All constraints satisfied.", ""),  # exit 0 → no rejection → ABSENT
-            "ir":      (0, "a = 0.01 m", ""),
-            "value":   (0, self._VALUE_PASS_STDOUT, ""),
-        })
+        # exit 0 → no rejection → ABSENT, against an expected present.
+        return self._make_runner({"check": (0, "All constraints satisfied.", "")})
 
     # ── arg / IO errors → 64 ─────────────────────────────────────────────────
 
@@ -3197,8 +3202,6 @@ class TestMain(unittest.TestCase):
         """
         return self._make_runner({
             "grammar": (1, "", _CACHE_DENIED_STDERR),
-            "check":   (1, "", "rejection: bad arg"),
-            "ir":      (0, "a = 0.01 m", ""),
         })
 
     def test_harness_error_stderr_shows_the_denied_path(self):
@@ -3250,8 +3253,6 @@ class TestMain(unittest.TestCase):
         runner = self._make_runner({
             "grammar": (127, "", pcc._BINARY_NOT_FOUND_SENTINEL +
                         ": [Errno 2] No such file or directory: 'tree-sitter'"),
-            "check":   (1, "", "rejection: bad arg"),
-            "ir":      (0, "a = 0.01 m", ""),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
@@ -3266,8 +3267,6 @@ class TestMain(unittest.TestCase):
         runner = self._make_runner({
             "grammar": (1, "", "Error: Failed to load language for path \"x.ri\"\n"
                                "Caused by: No language found for path\n"),
-            "check":   (1, "", "rejection: bad arg"),
-            "ir":      (0, "a = 0.01 m", ""),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
@@ -3283,11 +3282,9 @@ class TestMain(unittest.TestCase):
         a HARNESS_ERROR means "could not run", which is what the hint explains.
         """
         runner = self._make_runner({
-            "grammar": (0, "", ""),
             # exit 1 satisfies the check probe's match → PRESENT → PASS, while
             # the stderr carries the full denial signature.
             "check":   (1, "", _CACHE_DENIED_STDERR),
-            "ir":      (0, "a = 0.01 m", ""),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 0, "precondition: every probe must have PASSed")
@@ -3303,8 +3300,6 @@ class TestMain(unittest.TestCase):
         flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
         runner = self._make_runner({
             "grammar": (1, "", flood),
-            "check":   (1, "", "rejection: bad arg"),
-            "ir":      (0, "a = 0.01 m", ""),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
@@ -3327,8 +3322,6 @@ class TestMain(unittest.TestCase):
         flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
         runner = self._make_runner({
             "grammar": (1, "", flood),
-            "check":   (1, "", "rejection: bad arg"),
-            "ir":      (0, "a = 0.01 m", ""),
         })
         rc, out, _ = self._run_main_capturing(
             ["--json", str(_EXAMPLE_PROBE_SET)], runner=runner
@@ -3349,9 +3342,7 @@ class TestMain(unittest.TestCase):
         """
         long_tail = "TAIL_BEYOND_200_CHARS"
         runner = self._make_runner({
-            "grammar": (0, "", ""),
             "check":   (1, "", "rejection: " + ("x" * 250) + long_tail),
-            "ir":      (0, "a = 0.01 m", ""),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 0, "precondition: no HARNESS_ERROR in this run")
@@ -3537,6 +3528,15 @@ class TestValueProbeReporting(unittest.TestCase):
         finally:
             os.unlink(tmp)
 
+    def _rows(self, out):
+        """Split rendered output into one block per probe.
+
+        Rows are delimited by their `[VERDICT]` header, not by blank lines: a
+        multi-line stdout preview (the real `reify eval` shape) puts blank lines
+        INSIDE a row.
+        """
+        return re.split(r"\n(?=\[)", out.strip())
+
     def _value_lines(self, text):
         return [
             line for line in text.splitlines() if line.strip().startswith("value:")
@@ -3612,7 +3612,7 @@ class TestValueProbeReporting(unittest.TestCase):
     def test_text_value_line_is_scoped_to_value_rows(self):
         """Scoped exactly as the existing `hint:` line is scoped to HARNESS_ERROR."""
         _, out, _ = self._run_main()
-        rows = [row for row in out.split("\n\n") if row.strip()]
+        rows = self._rows(out)
         self.assertEqual(len(rows), 4, out)
         for row in rows:
             is_value_row = "kind:      value" in row
@@ -3689,7 +3689,7 @@ class TestValueProbeReporting(unittest.TestCase):
         )
         self.assertEqual(rc, 0, out)
         value_rows = [
-            row for row in out.split("\n\n") if "kind:      value" in row
+            row for row in self._rows(out) if "kind:      value" in row
         ]
         self.assertEqual(len(value_rows), 1, out)
         self.assertTrue(value_rows[0].startswith(f"[{pcc.PASS}]"), value_rows[0])
