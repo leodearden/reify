@@ -87,7 +87,7 @@ structure SimplySupportedBeamModes {
     // a typo stays visible under review. What the compiler does with the
     // typo'd arg, and how loudly it says so, are deliberately NOT restated
     // here; both are pinned in
-    // `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
+    // `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
     // n_modes = 8 (not 3): this beam is wide (b=10mm) and thin (h=2mm), so the
     // lateral Y-bending family is ≈ (b/h) = 5× stiffer in frequency than the
     // vertical Z-bending family. The first lateral mode (≈ 5·f₁,z ≈ 579 Hz) lands

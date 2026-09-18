@@ -32,7 +32,7 @@
 // BucklingOptions defaults purely so a typo stays visible under review. What
 // the compiler does with the typo'd arg, and how loudly it says so, are
 // deliberately NOT restated here; both are pinned in
-// `crates/reify-compiler/tests/harness_mechanics/modal_options_validation_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
+// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
 // Mirrors the `let opts = ModalOptions(...)` pattern in
 // examples/modal/cantilever_beam_modes.ri.
 
