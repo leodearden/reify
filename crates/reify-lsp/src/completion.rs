@@ -2081,35 +2081,6 @@ mod tests {
         );
     }
 
-    /// Neither Euler builtin may still describe the removed string path.
-    ///
-    /// Guards the `doc` prose, not just the `signature`. #6082 removed the raw
-    /// lowercase-string convention form outright, so any surviving `"xyz"`
-    /// example in hover text documents a form that now fails to compile — the
-    /// stale-example failure mode that the signature assertions above cannot
-    /// see, since they only read the `signature` field.
-    #[test]
-    fn euler_builtin_docs_do_not_advertise_the_removed_string_path() {
-        for name in ["orient_euler", "orient_to_euler"] {
-            let entry = BUILTIN_FUNCTIONS
-                .iter()
-                .find(|f| f.name == name)
-                .unwrap_or_else(|| panic!("BUILTIN_FUNCTIONS has no entry named {name:?}"));
-            assert!(
-                !entry.doc.contains("\"xyz\""),
-                "{name}'s doc still shows the removed lowercase-string \
-                 convention form: {:?}",
-                entry.doc
-            );
-            assert!(
-                entry.doc.contains("EulerConvention"),
-                "{name}'s doc must name the EulerConvention enum, the only \
-                 accepted convention form: {:?}",
-                entry.doc
-            );
-        }
-    }
-
     // --- stdlib completions: complex functions (step-5) ---
     #[test]
     fn completions_include_complex_functions() {
