@@ -1780,6 +1780,121 @@ F_EDGE_VAR_SUF='\}?([^A-Za-z0-9_]|$)'
 F_FWD_POSBIND_RE='^[[:blank:]]*(local[[:blank:]]+)?[A-Za-z_][A-Za-z0-9_]*="\$[0-9]"'
 F_FWD_FNDEF_RE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*[[:blank:]]*\(\)'
 
+# (g) THE PYTHON DIALECT. Under
+# docs/notes/infra-test-bash-to-python-migration-policy.md a ported member keeps
+# its `.sh` BASENAME and shrinks to a wrapper over a same-stem `.py` sibling
+# holding the real assertions, so the invocation this closure has to see moves
+# out of the node's own text. These EREs are SEPARATELY NAMED and are never a
+# widening of (b)-(e): F_EDGE_VERB_RE drives the bash path, its verb set
+# {bash, sh, source} is measured, and adding `python3` to it would be both
+# insufficient (Python never writes the verb-blank-path shape (c) needs) and
+# broader on the bash side than anything here requires.
+#
+# (g) itself is THE DELEGATION RULE, which gates attribution rather than
+# conferring capability. Same anchor as (a), verb set exactly {python3, python},
+# path ending in the sibling's basename: a node is read together with its `.py`
+# only when it REALLY RUNS it. Mere sibling existence is deliberately not
+# enough -- run_all.sh globs `test_*.sh`, so an unwrapped `.py` is never run and
+# must stay inert here too. The `/` is required for the same reason (c) requires
+# one: a sibling is addressed through the script's own directory.
+F_PY_DELEG_PRE="${F_EDGE_ANCHOR}"'(python3|python)[[:blank:]]+([^"[:blank:]]+[[:blank:]]+)*"?[^"[:blank:]]*/'
+# (h) A PYTHON BIND: a real assignment whose right-hand side ends in the target
+# basename inside a STRING LITERAL. MEASURED against the port's :53,
+# `NESTED_SUITE = SCRIPT_DIR / "test_occt_flock_gate.sh"` -- blanks around the
+# `=` and a Path-join, so (d), which requires `VAR=` with a `/`-path hard
+# against it, cannot match. `[^=]*` keeps the right-hand side from spanning a
+# SECOND `=`, so a keyword argument later on the line cannot masquerade as the
+# binding assignment; the variable name is recovered by `grep -oE` plus sed
+# exactly as (d)'s is.
+# WHAT THIS REJECTS, and it is live rather than hypothetical: a DOCSTRING
+# sentence naming the node (the port :13/:24, test_flake_density_report.py
+# :9/:56) carries no assignment at all. `#`-stripping is shared with Python --
+# `#` opens a comment there too -- but it does NOT remove a docstring, and
+# run_all.sh sorts ahead of every real target in _f_closure_compute's sorted
+# shortlist, so admitting prose would hand a ported member the WRONG ROUTE
+# rather than merely an extra one.
+# THE PAIRING WITH (i) IS LOAD-BEARING ON THE REAL TREE, not just on a fixture,
+# and note WHY: these EREs are applied to every node's stripped text, BASH
+# NODES INCLUDED, and (h)'s shape is laxer about its right-hand side than (d)
+# is. MEASURED by dropping (i)'s exec-position requirement and re-deriving --
+# F1 goes RED with two unlisted members, both bind-only MENTIONS in bash:
+# test_verify_retry_subset.sh:273 binds `RUNALL_IDX=$(... grep -nF
+# "run_all.sh" ...)`, where the node name is a grep PATTERN, and
+# test_verify_retry_failed_only.sh:33 binds `RAMEMBER2=` to a member basename
+# as plain DATA. Neither is a call. That is the same class of false admission
+# F_EDGE_VAR_PRE records for the bash dialect, now with its own real-tree
+# instances.
+F_EDGE_PY_BIND_PRE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*[[:blank:]]*=[[:blank:]]*[^=]*"'
+F_EDGE_PY_STR_SUF='"'
+# (i) THE ARGV-LIST EXEC POSITION, the Python analogue of (e). In Python argv is
+# DATA, so the exec verb is a QUOTED STRING and must be the list's FIRST
+# element; `str(...)` and `os.fspath(...)` wrappers are tolerated because both
+# are idiomatic for handing a Path to subprocess. `[^]]` holds the whole rule
+# inside one list, which also stops a trailing `#` comment -- which the strip,
+# being whole-line, does not remove -- from being read as part of the call.
+# THE VERB SET IS {bash, sh}, deliberately not (b)'s: `source` is a shell
+# builtin and can never be argv[0] of an exec, so admitting it would only add a
+# shape that cannot occur.
+# WHAT THIS REJECTS: `[sys.executable, str(TOOL_PATH), *args]`, live at
+# test_flake_density_report.py:83 -- an argv list headed by a bare NAME rather
+# than a quoted verb. Requiring (h) AND (i) FOR THE SAME VARIABLE is the direct
+# analogue of the (d)+(e) pairing and rejects the Python form of the bind-only
+# inspection shape for the same measured reason (e) records.
+# THE QUOTED-VERB-FIRST REQUIREMENT IS WHAT KEEPS BASH'S `[` OUT, and that was
+# MEASURED rather than reasoned: `[` opens Python's list and is also bash's
+# TEST BUILTIN. Relax the requirement to a bare `\[` and re-derive, and F1 goes
+# RED on test_verify_retry_subset.sh, whose `[ -z "$RUNALL_IDX" ]` (:476) and
+# `[ -n "$STAMP_IDX" ] && [ "$STAMP_IDX" -gt "$RUNALL_IDX" ]` (:477) read as
+# argv lists carrying its :273 bind. The quoted verb is the one token that
+# tells a Python list from a shell test.
+# SCOPED GAP, stated rather than left implied: these are line-oriented like
+# every other ERE here, so an argv list SPLIT ACROSS LINES is not seen. No
+# in-tree Python member writes one today.
+F_EDGE_PY_LIST_PRE='\[[[:blank:]]*"(bash|sh)"[[:blank:]]*,'
+F_EDGE_PY_EXEC_PRE="${F_EDGE_PY_LIST_PRE}"'[^]]*[^A-Za-z0-9_.]'
+F_EDGE_PY_VAR_SUF='([^A-Za-z0-9_]|$)'
+# (j) THE PYTHON LITERAL, (c)'s analogue: the target basename as a string
+# literal in that same argv-list position, so the shortest one-shot spelling --
+# `subprocess.run(["bash", str(D / "test_x.sh")])` -- is not a silent drop.
+# IN-TREE OCCURRENCES TODAY: ZERO. Stated plainly, the same honesty the `body`
+# opener kind's note in Section G carries, and FC8c is the live fixture control
+# that keeps this branch exercised rather than merely present.
+F_EDGE_PY_LITERAL_PRE="${F_EDGE_PY_LIST_PRE}"'[^]]*"[^"]*'
+
+# _f_strip_comments <path> -> that file with whole-line comments removed, on
+# STDOUT. ONE comment grammar for the whole derivation, which is what makes the
+# `.py` attribution below free: `#` opens a comment in both languages this
+# section reads. A token mentioned only in a comment neither makes a file
+# deadline-capable nor constitutes an invocation. Callers redirect to a FILE,
+# never into a pipe -- see the SIGPIPE/pipefail note above
+# _f_direct_capable_stripped.
+_f_strip_comments() {
+    grep -vE '^[[:blank:]]*#' "$1" || true
+}
+
+# _f_strip_node <node-path> <out-file> -> the node's comment-stripped text, PLUS
+# that of the `.py` sibling it delegates to, if it really delegates to one.
+#
+# TEXT ATTRIBUTION, and the whole of Section F's Python support. A `.py` IS
+# NEVER A NODE -- _f_node_list below is unchanged -- so the roster, D_ROSTER,
+# the G0 slice, the run-all-classification manifest row and every doc reference
+# stay keyed on the `.sh` basename, and a ported member keeps its identity.
+# What changes is only WHICH TEXT that node is judged on. Both the direct
+# predicate and every edge rule then see the sibling for free, with no further
+# change anywhere.
+#
+# The delegation is tested against the ALREADY-STRIPPED `.sh`, so a
+# commented-out invocation confers nothing.
+_f_strip_node() {
+    local _p="$1" _out="$2" _py="${1%.sh}.py" _pyb _n
+    _f_strip_comments "$_p" > "$_out"
+    [ -f "$_py" ] || return 0
+    _pyb="${_py##*/}"
+    _n="$(grep -cE -- "${F_PY_DELEG_PRE}${_pyb//./\\.}${F_EDGE_PATH_SUF}" "$_out" || true)"
+    [ "${_n:-0}" -ge 1 ] || return 0
+    _f_strip_comments "$_py" >> "$_out"
+}
+
 # F_FWD_LIB_MAP[<lib basename>] -> `|`-separated alternation of the function
 # names that exec-forwarding lib defines. Computed ONCE per derivation by
 # _f_scan_fwd_libs below, hoisted out of both the per-node and the per-round
@@ -1796,7 +1911,7 @@ _f_scan_fwd_libs() {
     for _l in "$_d"/*_lib.sh; do
         [ -e "$_l" ] || continue
         _base="${_l##*/}"
-        grep -vE '^[[:blank:]]*#' "$_l" > "$_sd/$_base" || true
+        _f_strip_comments "$_l" > "$_sd/$_base"
         _pvars=()
         mapfile -t _pvars < <(grep -oE -- "$F_FWD_POSBIND_RE" "$_sd/$_base" \
             | sed -E 's/^[[:blank:]]*(local[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/' | sort -u)
@@ -1843,12 +1958,20 @@ _f_fwd_fn_alt() {
 # <target-basename>. This is the one place the edge grammar lives, so
 # tightening it is a one-function change.
 #
-# TWO PHASES, because an invocation can name its target either way:
-#   A. a LITERAL path after an anchored verb;
-#   B. a BIND of the path to a variable, AND that same variable appearing in
-#      an EXEC POSITION somewhere in the file. Phase B alone is a mention,
-#      not a call -- see F_EDGE_VAR_PRE's comment for the measured shape this
-#      two-phase requirement is what rejects.
+# FOUR PHASES -- a LITERAL and a BIND-plus-EXEC-POSITION pair in each of the
+# two dialects, because an invocation can name its target either way and can be
+# written in either language:
+#   A. bash: a LITERAL path after an anchored verb;
+#   B. python: the target basename as a string literal in an argv list headed by
+#      a QUOTED exec verb;
+#   C. bash: a BIND of the path to a variable, AND that same variable appearing
+#      in an EXEC POSITION somewhere in the file;
+#   D. python: the same pairing, with (h)'s assignment shape and (i)'s
+#      argv-list position.
+# The BIND HALF ALONE IS A MENTION, not a call, in both dialects -- see
+# F_EDGE_VAR_PRE's comment for the measured bash shape that requirement
+# rejects, and (i)'s for its Python twin. The LITERAL phases run first in each
+# dialect because they are a single grep with no variable recovery.
 # Line-oriented and comment-stripped, exactly like the direct predicate; the
 # two phases are per-FILE rather than per-LINE because a bind and its exec
 # are routinely lines apart (all three real run_all invokers bind at the top
@@ -1863,23 +1986,41 @@ _f_edge_exists() {
     _n="$(grep -cE -- "${F_EDGE_LITERAL_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" || true)"
     if [ "${_n:-0}" -ge 1 ]; then return 0; fi
 
+    _n="$(grep -cE -- "${F_EDGE_PY_LITERAL_PRE}${_esc}${F_EDGE_PY_STR_SUF}" "$_sf" || true)"
+    if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+
     mapfile -t _vars < <(grep -oE -- "${F_EDGE_BIND_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" \
         | sed -E 's/^[[:blank:]]*([A-Za-z_][A-Za-z0-9_]*)=.*/\1/' | sort -u)
-    if [ "${#_vars[@]}" -eq 0 ]; then return 1; fi
-    _f_fwd_fn_alt "$_sf"
-    for _v in "${_vars[@]}"; do
-        [ -n "$_v" ] || continue
-        # Exec position: right after an anchored verb, or as the line's own
-        # first command word, or -- the second-order route -- on a line whose
-        # first command word is an exec-forwarding helper this file sources.
-        _re="${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
-        _re="$_re|^[[:blank:]]*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
-        if [ -n "$F_FWD_FN_ALT" ]; then
-            _re="$_re|^[[:blank:]]*($F_FWD_FN_ALT)[[:blank:]]+([^\"[:blank:]]+[[:blank:]]+)*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
-        fi
-        _n="$(grep -cE -- "$_re" "$_sf" || true)"
-        if [ "${_n:-0}" -ge 1 ]; then return 0; fi
-    done
+    if [ "${#_vars[@]}" -gt 0 ]; then
+        _f_fwd_fn_alt "$_sf"
+        for _v in "${_vars[@]}"; do
+            [ -n "$_v" ] || continue
+            # Exec position: right after an anchored verb, or as the line's own
+            # first command word, or -- the second-order route -- on a line whose
+            # first command word is an exec-forwarding helper this file sources.
+            _re="${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+            _re="$_re|^[[:blank:]]*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+            if [ -n "$F_FWD_FN_ALT" ]; then
+                _re="$_re|^[[:blank:]]*($F_FWD_FN_ALT)[[:blank:]]+([^\"[:blank:]]+[[:blank:]]+)*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+            fi
+            _n="$(grep -cE -- "$_re" "$_sf" || true)"
+            if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+        done
+    fi
+
+    _vars=()
+    mapfile -t _vars < <(grep -oE -- "${F_EDGE_PY_BIND_PRE}${_esc}${F_EDGE_PY_STR_SUF}" "$_sf" \
+        | sed -E 's/^[[:blank:]]*([A-Za-z_][A-Za-z0-9_]*)[[:blank:]]*=.*/\1/' | sort -u)
+    if [ "${#_vars[@]}" -gt 0 ]; then
+        for _v in "${_vars[@]}"; do
+            [ -n "$_v" ] || continue
+            # Argv-list exec position. No forwarding-helper arm here: the bash
+            # second-order route is a property of shell function definitions,
+            # and there is no measured Python instance of it to generalize from.
+            _n="$(grep -cE -- "${F_EDGE_PY_EXEC_PRE}${_v}${F_EDGE_PY_VAR_SUF}" "$_sf" || true)"
+            if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+        done
+    fi
     return 1
 }
 
@@ -1958,14 +2099,14 @@ _f_closure_compute() {
     _sd="$F_CLOSURE_CACHE_DIR/$(_f_closure_key "$_d").stripped"
     rm -rf "$_sd"; mkdir -p "$_sd"
 
-    # SEED round: the UNCHANGED four-ERE direct predicate. Every node is
-    # comment-stripped exactly once here, for the whole derivation -- a token
-    # mentioned only in a comment neither makes a file deadline-capable nor
-    # constitutes an invocation.
+    # SEED round: the UNCHANGED four-ERE direct predicate. Every node is stripped
+    # exactly once here, for the whole derivation, through _f_strip_node -- which
+    # is also where a delegating wrapper picks up its `.py` sibling's text, so
+    # both the direct predicate and every edge rule below see it for free.
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _base="${_p##*/}"
-        grep -vE '^[[:blank:]]*#' "$_p" > "$_sd/$_base" || true
+        _f_strip_node "$_p" "$_sd/$_base"
         if _f_direct_capable_stripped "$_sd/$_base"; then
             _cap["$_base"]="direct"
         else
@@ -2769,10 +2910,16 @@ assert "FC8f: none of the four measured non-invocation shapes is an edge -- a DO
 # with an unlisted member whose natural repair is to declare something that is
 # not deadline-capable at all.
 #
-# HONEST NOTE, in the voice the `body` opener kind's note already uses: FC8h
-# passes VACUOUSLY today, because no attribution exists yet for it to survive.
-# It becomes load-bearing the moment attribution lands, which is precisely when
-# a reader would otherwise have no standing check that it stayed out.
+# FC8h IS LIVE, AND THAT WAS MEASURED rather than assumed -- attribution really
+# does fire on this pair (the wrapper's delegation at :32-33 is a genuine
+# python3 invocation of the sibling), so the file's whole text IS read and the
+# grammar is what keeps it out. Proved by mutation: widen the Python dialect
+# into a path-MENTION grammar -- drop (j)'s list prefix AND (h)'s closing-quote
+# suffix -- and FC8h goes RED, alongside FC6a flipping to the wrong route.
+# NOTE THE ASYMMETRY, recorded so a reader does not over-claim: dropping (i)'s
+# quoted-verb-first requirement alone does NOT red FC8h. It reds F1 instead, on
+# test_verify_retry_subset.sh. The two pins catch different widenings, which is
+# why both are kept.
 # FC8g BEFORE FC8h, the FC7a-before-FC7b ordering and for the same reason:
 # `_f_route_of` prints the empty string both for a node that is correctly not
 # derived AND for one that is not in the node set at all, so FC8h alone would
