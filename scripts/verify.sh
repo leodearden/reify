@@ -341,6 +341,24 @@
 #                                  passes share one report — which is why the
 #                                  manifest write is fused into each pass.
 #
+# Background-sweep verdict ledger (task 7423, GAP 2).
+#   REIFY_BACKGROUND_SWEEP_LEDGER — where a COMPLETED DF_VERIFY_ROLE=background
+#                                  run appends its one-line JSON verdict record
+#                                  (default: <main checkout>/data/orchestrator/
+#                                  verify-background-sweeps.jsonl). The default
+#                                  is resolved through
+#                                  scripts/lib_main_checkout.sh — deliberately
+#                                  NOT relative to the running worktree, because
+#                                  dark-factory's main-tip sweep executes in an
+#                                  ephemeral _mainsweep-<hex> worktree it deletes
+#                                  in a `finally`, so a record written inside it
+#                                  dies with the completion it was meant to
+#                                  prove. Every failure mode (no main checkout,
+#                                  unwritable path, missing helper) is silent
+#                                  and leaves the run's exit code untouched: an
+#                                  observation channel must never gate the
+#                                  integrity gate it observes.
+#
 # OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
@@ -2728,12 +2746,98 @@ wrap_subshell() {
 # hermeticity".)
 _NEXTEST_CONFIG_FILE=""
 
+# ---------------------------------------------------------------------------
+# Background-sweep verdict ledger (task 7423, GAP 2).
+#
+# dark-factory's main-tip integrity sweep enters this script with
+# DF_VERIFY_ROLE=background, inside an ephemeral `_mainsweep-<hex>` worktree it
+# removes in a `finally`, and harness.py::_run_main_tip_sweep returns silently
+# on every non-drift path. So a PASSING sweep emits nothing anywhere and its
+# worktree then vanishes: neither "passed" nor "never ran" leaves a trace, and
+# they are indistinguishable. reify's own merge gate defers release-sensitive
+# re-execution to that sweep ("role=background NEVER skips — the sweep IS the
+# backstop"), so the gate depends on a backstop nobody can observe.
+#
+# One append-only JSON line per COMPLETED background run closes that, entirely
+# reify-side: dark-factory already stamps the role, so no cross-repo change is
+# needed. The upstream fix — a log line or a runs.db event on the PASS path —
+# remains the better long-term answer and is recorded as follow-up in
+# docs/notes/main-tip-sweep-observation.md, not silently replaced by this.
+# ---------------------------------------------------------------------------
+
+# Where the record goes. An explicit knob wins; otherwise the MAIN checkout,
+# never this worktree — see the knob's header note for why that distinction is
+# the whole design. Prints nothing and returns non-zero when unresolvable.
+_sweep_ledger_path() {
+    if [ -n "${REIFY_BACKGROUND_SWEEP_LEDGER:-}" ]; then
+        printf '%s' "$REIFY_BACKGROUND_SWEEP_LEDGER"
+        return 0
+    fi
+    [ -f "$SCRIPT_DIR/lib_main_checkout.sh" ] || return 1
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib_main_checkout.sh" 2>/dev/null || return 1
+    local _main=""
+    _main="$(reify_main_checkout 2>/dev/null)" || return 1
+    [ -n "$_main" ] || return 1
+    printf '%s' "$_main/data/orchestrator/verify-background-sweeps.jsonl"
+}
+
+# _record_background_verdict <exit-code>
+# FAILS OPEN at every step: an unresolvable checkout, an unwritable directory or
+# a missing helper all return 0 having written nothing. The caller's exit code
+# is never touched.
+_SWEEP_LEDGER_RECORDED=0
+_record_background_verdict() {
+    local _rc="$1"
+    [ "${DF_VERIFY_ROLE:-}" = "background" ] || return 0
+    # A dry run reaches no verdict: it executes nothing.
+    [ "${PRINT_PLAN:-0}" -eq 0 ] || return 0
+    # Once per process. The INT/TERM/HUP traps call _verify_cleanup and then
+    # `exit`, which fires the EXIT trap in turn — without this, one killed sweep
+    # would leave two records of itself.
+    [ "$_SWEEP_LEDGER_RECORDED" -eq 0 ] || return 0
+    _SWEEP_LEDGER_RECORDED=1
+
+    local _ledger=""
+    _ledger="$(_sweep_ledger_path)" || return 0
+    [ -n "$_ledger" ] || return 0
+    mkdir -p "${_ledger%/*}" 2>/dev/null || return 0
+
+    local _verdict="fail"
+    if [ "$_rc" -eq 0 ]; then _verdict="pass"; fi
+
+    # {tree_oid, timestamp} are spelled exactly as the attempt-0 / confirm
+    # sidecar stamp spells them, so one reader idiom covers every stamp this
+    # script writes.
+    local _head="" _tree="" _ts=""
+    _head="$(git rev-parse HEAD 2>/dev/null)" || _head=""
+    _tree="$(git rev-parse HEAD: 2>/dev/null)" || _tree=""
+    _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || _ts=""
+
+    printf '{"role":"background","action":"%s","profiles":"%s","scope":"%s","verdict":"%s","exit_code":%d,"head":"%s","tree_oid":"%s","timestamp":"%s"}\n' \
+        "$ACTION" "$PROFILE" "$SCOPE" "$_verdict" "$_rc" "$_head" "$_tree" "$_ts" \
+        >> "$_ledger" 2>/dev/null || return 0
+    return 0
+}
+
 _verify_cleanup() {
+    # FIRST statement: $? is still the status the shell is exiting with. Any
+    # command before this one would overwrite it.
+    local _exit_rc=$?
+    _record_background_verdict "$_exit_rc" || true
     reaper_teardown || true
     if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
         rm -f "$_NEXTEST_CONFIG_FILE"
     fi
+    # Deliberately ends on a no-op rather than re-returning _exit_rc: bash
+    # preserves the pre-trap exit status across an EXIT trap that does not
+    # itself call exit (measured), while the INT/TERM/HUP traps invoke this as
+    # `_verify_cleanup; exit 143` — under set -e a non-zero return there would
+    # pre-empt the explicit signal exit code.
+    true
 }
+# ONE EXIT trap, extended in place: bash EXIT traps do NOT stack, so a second
+# `trap … EXIT` here would silently displace the reaper/config cleanup above.
 trap '_verify_cleanup' EXIT
 trap '_verify_cleanup; exit 130' INT
 trap '_verify_cleanup; exit 143' TERM
