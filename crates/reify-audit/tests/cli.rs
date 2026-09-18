@@ -1120,8 +1120,8 @@ mod cli {
     }
 
     /// End-to-end regression for the same defect
-    /// `real_git_ops::is_gitignored_leading_dash_entry_does_not_latch_later_probes`
-    /// pins at the seam: a `metadata.files` entry beginning with `-` must not
+    /// `real_git_ops::try_is_gitignored_answers_for_a_leading_dash_path` pins
+    /// at the seam: a `metadata.files` entry beginning with `-` must not
     /// silence the gitignore filter for the rest of the run.
     ///
     /// Deliberately a REAL git repo, not the non-git tempdir the two
@@ -1173,7 +1173,9 @@ mod cli {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             !stderr.contains("reify-audit: git check-ignore exited"),
-            "a leading-dash declared entry must be passed to git as a path, so a              HEALTHY repo emits no check-ignore breadcrumb at all; full stderr:\n{stderr}"
+            "a leading-dash declared entry must be passed to git as a path, so a \
+             HEALTHY repo emits no check-ignore breadcrumb at all; full \
+             stderr:\n{stderr}"
         );
 
         let findings = parse_findings_from_stderr(&stderr);
