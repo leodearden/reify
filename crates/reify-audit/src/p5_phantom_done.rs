@@ -435,45 +435,50 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     findings
 }
 
-/// What one task's `git check-ignore` pass learned, and whether it failed.
+/// What one task's `git check-ignore` pass learned, per declared entry.
 ///
-/// The two travel together because dropping the failure is exactly the defect
-/// this type closes: an entry whose probe errored is NOT known-ignored, so it
-/// stays in the declared set a pre-done refusal is built from, and only
-/// `degraded` records that the set was built from an unanswered question.
+/// The two sets travel together because dropping the failures is exactly the
+/// defect this type closes: an entry whose probe errored is NOT known-ignored,
+/// so it stays in the declared set a pre-done refusal is built from, and only
+/// `unprobed` records which members of that set rest on an unanswered
+/// question.
+///
+/// `unprobed` is the entry list rather than a rendered reason so the consumer
+/// can test whether an unanswered entry is load-bearing for the refusal it is
+/// actually building — see [`check_pre_done_landing`].
 struct GitignoreProbe {
     /// Entries git answered "ignored" for. Never contains an entry whose probe
     /// failed — unprobeable is not known-ignored, and must not earn a
     /// `P5MetadataFilesGitignored` Medium.
     ignored: Vec<String>,
-    /// Why the pass is incomplete, naming the FIRST entry git did not answer
-    /// for, or `None` when every entry was answered.
-    degraded: Option<String>,
+    /// Entries git did not answer for at all, in `meta.files` order. Empty
+    /// when the pass was complete.
+    unprobed: Vec<String>,
 }
 
 /// Ask `git check-ignore` about each declared entry, through the fallible seam.
 ///
 /// `path_tracked_on`'s error arm sets the precedent this mirrors
 /// ([`check_pre_done_landing`]): keep the entry in the set the refusal rests
-/// on, and arm `degraded` so any SURVIVING refusal is downgraded to a visible
-/// but non-blocking advisory. First failure wins — the reason names one
-/// concrete entry an operator can re-check by hand, and `RealGitOps` has
-/// already printed its own breadcrumb for the rest.
+/// on, and record the failure so any SURVIVING refusal that rests on it is
+/// downgraded to a visible but non-blocking advisory.
+///
+/// Unlike the ls-tree leg, which stops at the first failure because
+/// `RealGitOps` prints a breadcrumb per failing call, EVERY failure is
+/// collected here: `gitignore_unavailable` latches on the first non-0/1 exit
+/// and silences every later one, so stderr names at most one entry for the
+/// whole task and cannot be the consumer's per-entry record.
 fn probe_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> GitignoreProbe {
     let mut ignored = Vec::new();
-    let mut degraded: Option<String> = None;
+    let mut unprobed = Vec::new();
     for p in &meta.files {
         match ctx.git.try_is_gitignored(p) {
             Ok(true) => ignored.push(p.clone()),
             Ok(false) => {}
-            Err(_) => {
-                degraded.get_or_insert_with(|| {
-                    format!("git degraded: check-ignore errored for declared entry {p}")
-                });
-            }
+            Err(_) => unprobed.push(p.clone()),
         }
     }
-    GitignoreProbe { ignored, degraded }
+    GitignoreProbe { ignored, unprobed }
 }
 
 /// Independent pre-pass: any metadata.files entry that's gitignored gets
@@ -774,8 +779,8 @@ fn check_pre_done_landing(
     //
     // An entry whose probe FAILED deliberately stays in `declared`: dropping it
     // would mute the gate for that entry and let a genuine phantom-done through
-    // as a clean flip. `probe.degraded` seeds the advisory channel below
-    // instead, so any surviving refusal is visible but non-blocking.
+    // as a clean flip. `probe.unprobed` arms the advisory channel below
+    // instead, and only if such an entry survives to the refusal.
     let declared: Vec<String> = meta
         .files
         .iter()
@@ -798,7 +803,7 @@ fn check_pre_done_landing(
     // set (the rescue leg below may yet account for it, and if it clears
     // everything the finding disappears entirely), but it arms `degraded` so
     // any SURVIVING refusal is emitted as a non-blocking advisory Low.
-    let mut degraded: Option<String> = probe.degraded.clone();
+    let mut degraded: Option<String> = None;
     let mut absent: Vec<String> = Vec::new();
     for p in &declared {
         match ctx.git.try_path_tracked_on(MAIN_BASE, p) {
@@ -912,8 +917,27 @@ fn check_pre_done_landing(
         return None;
     }
 
-    // A recorded git failure outranks truncation as the reported reason: it is
-    // the more actionable of the two, and both downgrade identically.
+    // A failed `check-ignore` downgrades only when an unanswered entry is
+    // LOAD-BEARING for this refusal. `probe.unprobed` is task-wide, but the
+    // refusal rests on `still_absent`: an entry git answered for keeps its full
+    // blocking strength even when a DIFFERENT entry's probe errored, so one
+    // transient spawn EAGAIN cannot disarm the gate for a genuine phantom-done
+    // elsewhere in the same `metadata.files`.
+    //
+    // One entry is named, not all, and it must be a concrete one: the
+    // `gitignore_unavailable` latch caps stderr at a single `check-ignore`
+    // breadcrumb for the whole task, so unlike the per-failure ls-tree leg this
+    // reason is the operator's only per-entry locator.
+    let unanswered = probe
+        .unprobed
+        .iter()
+        .find(|p| still_absent.contains(p))
+        .map(|p| format!("git degraded: check-ignore errored for declared entry {p}"));
+    // `check-ignore` ran before either leg above, so its reason leads when more
+    // than one seam failed — first failure wins, as within `degraded` itself.
+    // A recorded git failure in turn outranks truncation: it is the more
+    // actionable reason, and all of them downgrade identically.
+    let degraded = unanswered.or(degraded);
     let advisory = degraded.as_deref().or(truncated.then_some(
         "incomplete: sibling scan hit PRE_DONE_SIBLING_SCAN_CAP before exhausting candidates",
     ));

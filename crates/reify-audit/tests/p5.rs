@@ -2046,6 +2046,82 @@ mod tests {
         );
     }
 
+    /// The precision boundary of the downgrade: an unanswered entry disarms
+    /// the gate only for a refusal that RESTS on it.
+    ///
+    /// `metadata.files` is task-wide, but a refusal rests on the entries that
+    /// survive to `still_absent`. Here the unprobeable entry is the vendored
+    /// generated file the ignore filter exists for — and `ls-tree` answers
+    /// that it IS on main, so it clears before any refusal is built. The
+    /// SECOND entry was answered on both legs (git says "not ignored", "not on
+    /// main") and was never written at all: a genuine phantom-done whose
+    /// evidence was fully gathered.
+    ///
+    /// Seeding the advisory channel task-globally emits that refusal as a
+    /// non-blocking `Low`, so one unrelated probe failure would let the
+    /// phantom-done flip through. The intended semantics — pinned here — is
+    /// that entries git answered for keep their full blocking strength.
+    ///
+    /// The converse (the unanswered entry IS the one still absent, so the
+    /// refusal downgrades) is pinned by
+    /// `pre_done_gate_gitignore_probe_failure_downgrades_to_advisory_low`;
+    /// together the two straddle the boundary.
+    #[test]
+    fn pre_done_gate_answered_absent_entry_still_blocks_despite_a_sibling_probe_failure() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("main", "main", true);
+
+        // Entry 1: git never answered whether it is ignored — but it is
+        // demonstrably on main, so its ignore-status was never load-bearing.
+        git.set_is_gitignored_error(
+            "crates/reify-x/src/generated/parser.c",
+            "git check-ignore failed: Resource temporarily unavailable",
+        );
+        git.set_path_tracked_on("main", "crates/reify-x/src/generated/parser.c", true);
+        // Entry 2: git ANSWERED both questions about it. This is the entry the
+        // refusal rests on.
+        git.set_is_gitignored("crates/reify-x/src/never-landed.rs", false);
+        git.set_path_tracked_on("main", "crates/reify-x/src/never-landed.rs", false);
+        git.set_log_grep("main", "6345GIMIX", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345GIMIX".to_string(),
+            pre_done_meta(
+                "6345GIMIX",
+                "review",
+                &[
+                    "crates/reify-x/src/generated/parser.c",
+                    "crates/reify-x/src/never-landed.rs",
+                ],
+            ),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345GIMIX");
+        assert_eq!(findings.len(), 1, "expected one refusal; got {:?}", findings);
+        assert_eq!(
+            findings[0].severity,
+            Severity::High,
+            "the refusal rests ONLY on an entry git answered for, so an              unanswered probe on a DIFFERENT entry must not disarm it; got {:?}",
+            findings[0]
+        );
+    }
+
     /// A `log_grep`-derived sibling is an ancestor of `MAIN_BASE` by
     /// construction, so the pre-done scan must not fork to ask.
     ///
