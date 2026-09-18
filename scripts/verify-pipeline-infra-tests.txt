@@ -561,3 +561,16 @@ scripts/task-branch-contamination-sweep.sh    tests/infra/test_task_branch_conta
 scripts/lib_task_citation.sh    tests/infra/test_lib_task_citation.sh
 scripts/lib_task_citation.sh    tests/infra/test_warm_lane_degenerate_ref.sh
 scripts/lib_task_citation.sh    tests/infra/test_task_branch_contamination_sweep.sh
+
+# Task 5738: scripts/lib_lane_lock.sh is the SINGLE tri-state warm-lane lock
+# probe (IDLE/BUSY/UNMEASURABLE), shared by scripts/warm-lane-audit.sh and
+# scripts/warm-lane-lock-guard.sh. It owns the measurement; each caller owns
+# its own fail direction on UNMEASURABLE, and those two directions are
+# deliberately OPPOSITE (guard fails open, audit fails closed). So it needs a
+# row per CONSUMER — the same one-artifact-multiple-rows pattern
+# scripts/lib_task_citation.sh uses above. A lib-only diff that selected only
+# the lib's unit suite would leave BOTH mapping contracts unrun on the very
+# edit that can break either of them.
+scripts/lib_lane_lock.sh    tests/infra/test_lane_lock_probe.sh
+scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_audit.sh
+scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_lock_guard.sh
