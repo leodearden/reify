@@ -104,9 +104,18 @@ fn eval_bare_axis_origin_exits_nonzero_with_a_units_error() {
 /// Without it, both rows above could pass for the wrong reason — a `make_plane` /
 /// `make_axis` that rejected EVERYTHING would satisfy them perfectly. It is also
 /// the end-to-end proof of the two dimension claims the gate makes: the plane's
-/// single LENGTH offset MIRRORS into the whole origin triple (`0 m` in x and y,
-/// not a bare `0`), while the synthesized unit normal / direction stays
-/// dimensionless (`vec(0, 0, 1)` / `vec(1, 0, 0)`) — decision D3's scope lock.
+/// single LENGTH offset MIRRORS into the whole origin triple (`0 m` in the two
+/// SYNTHESIZED slots, not a bare `0`), while the synthesized unit normal /
+/// direction stays dimensionless (`vec(0, 0, 1)` / `vec(1, 0, 0)`) — decision
+/// D3's scope lock.
+///
+/// The plane offset is NON-ZERO on purpose. `make_plane` writes the gated offset
+/// into `origin_si[offset_index]` and zeros the rest, so a zero offset yields
+/// three indistinguishable zeros and this row could not tell a correct
+/// `offset_index` from a wrong or hardcoded one. (The suite is not blind to that
+/// either way — `decode_plane_producer_round_trip_plane_{xy,xz,yz}` drives all
+/// three names at distinct offsets — but a control that cannot fail for the
+/// reason it names is not much of a control.)
 ///
 /// The printed forms were measured against the real `target/debug/reify` binary
 /// before being pinned; the value printer's number formatting is the drift-prone
@@ -121,9 +130,9 @@ fn eval_dimensioned_datums_exit_0_and_print_length_origins() {
         "dimensioned datum constructors must still build;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("plane(point(0 m, 0 m, 0 m), vec(0, 0, 1))"),
-        "stdout should print the plane with an all-LENGTH origin and a bare normal; \
-         got: {stdout}"
+        stdout.contains("plane(point(0 m, 0 m, 0.005 m), vec(0, 0, 1))"),
+        "stdout should print the plane with the 5mm offset in the z slot, an \
+         all-LENGTH origin and a bare normal; got: {stdout}"
     );
     assert!(
         stdout.contains("axis(point(0 m, 0 m, 0 m), vec(1, 0, 0))"),

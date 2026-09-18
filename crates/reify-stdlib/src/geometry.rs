@@ -1297,26 +1297,6 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
 /// inputs, never LENGTH. `decode_plane`'s consumer-side `ox`/`oy`/`oz` gate
 /// (task δ / 5745) therefore stays live and reachable through them, which is why
 /// ε shuts R11 at both ends rather than retiring either.
-///
-/// MIGRATION FOOTPRINT, MEASURED on this leaf's own tree (C6 forbids asserting a
-/// workspace-wide count, so this is an enumeration of what ε broke, not a claim
-/// about the whole corpus). FIVE test call sites had to change, all in this diff:
-/// the two pre-doctrine locking rows in this file's `mod tests` (both FLIPPED —
-/// the fix, not a regression), `mirror_value_form_bare_plane_origin_drops_op_with_error`
-/// in reify-eval's value-form e2e (re-anchored on the producer, since the verdict
-/// is unchanged and only the SPEAKER moved), and reify-cli's two `cli_check` rows
-/// (re-anchored on the post-ε compile-gate error, with their load-bearing D2
-/// dedup pin re-verified by measurement). The axis twin of the e2e row,
-/// `circular_pattern_value_form_bare_axis_origin_drops_op_with_error`, was run
-/// and is green UNCHANGED.
-///
-/// The `.ri` corpus needed ZERO source migrations. Nine datum call sites predate
-/// ε: the two deliberately BARE ones in
-/// `reify-cli/tests/fixtures/mirror_bare_origin{,_purpose}.ri` stay bare and are
-/// now tests OF this gate (D7 — only their measured-baseline headers changed),
-/// and the other seven were ALREADY dimensioned — five in
-/// `reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri` and two in
-/// `examples/`, so the examples corpus needed no edit at all.
 fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
@@ -1365,6 +1345,27 @@ fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
 /// mixed-dimension component triples. Those are shape/consistency failures, not
 /// units ones, and they now fail closed here just as they long have in
 /// [`make_plane`].
+///
+/// That tightening costs no diagnosability, because NO `.ri` source can reach
+/// it — the widened cases are unconstructible one layer earlier, and were
+/// equally unreachable before this gate existed. MEASURED against
+/// `target/debug/reify`, not argued:
+///
+/// - `point3(1mm, 2deg, 3mm)` is itself `undef` — [`construct_point_or_vector`]
+///   requires ONE shared dimension, so the mixed-dimension `Value::Point` is
+///   never built and this function receives `Value::Undef`, which the arity/shape
+///   guard has always rejected;
+/// - `1mm / 0.0` is itself `undef`, so a non-finite LENGTH component cannot be
+///   assembled into a `Point` either.
+///
+/// Every non-test site that CONSTRUCTS a `Value::Point` in this workspace is
+/// dimension-uniform by construction, so the widened cases are reachable only
+/// from a HAND-BUILT value in a test. `decode_axis`'s per-coordinate `ox`/`oy`/`oz`
+/// attribution for such a triple was unreachable from source for exactly the same
+/// reason, so nothing a user could write has lost a diagnostic. This is why
+/// [`diagnose`]'s axis arm stays SILENT on them rather than growing a
+/// per-component scan: the silence is a no-mis-attribution contract over inputs
+/// no author can produce, not a swallowed fault.
 ///
 /// The accepted origin is cloned VERBATIM so a `Point3<Length>` round-trips
 /// byte-identically (`decode_axis_producer_round_trip_*`). The synthesized
@@ -7215,6 +7216,13 @@ mod tests {
     /// accepted LENGTH argument; and — on the axis side — a non-`Point`, a
     /// wrong-length `Point`, and a MIXED-dimension `Point`, which is a
     /// `decompose_xyz3` CONSISTENCY failure rather than a LENGTH one.
+    ///
+    /// The MIXED-dimension and non-finite axis rows are silent over inputs NO
+    /// `.ri` source can produce: `point3` refuses a mixed triple and `1mm / 0.0`
+    /// is already `undef`, both measured, so such a `Value::Point` only ever
+    /// exists hand-built in a test. [`super::make_axis`]'s doc carries the
+    /// measurement. They are pinned here so the silence reads as the deliberate
+    /// contract it is rather than as an unnoticed gap.
     #[test]
     fn diagnose_datum_non_dimension_causes_stay_silent() {
         let triple = |c: Value| Value::Point(vec![c.clone(), c.clone(), c]);
