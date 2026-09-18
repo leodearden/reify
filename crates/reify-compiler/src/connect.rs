@@ -341,30 +341,40 @@ pub(crate) fn chain_hops(
 /// Resolve one chain element in one role to the endpoint expression the hop
 /// should connect, per spec §6.2.
 ///
-/// Four arms, in order, each answering a shape the other three must not claim:
+/// Only two shapes name a sub whose port can be inferred, so the dispatch
+/// reads `elem.kind` — the structure already in hand. The serialized name is
+/// diagnostic TEXT here and never a dispatch input: it cannot distinguish a
+/// keyed element from a dotted port reference (`vents["a.b"]` carries both a
+/// bracket and a dot), and asking it to try is what made an element's shape
+/// depend on its key's spelling.
 ///
-/// (a) The element is not a port reference at all. Handed back verbatim so
-///     `compile_connection` owns the "invalid port reference" wording — this
-///     function never duplicates a diagnostic that already has a home.
-/// (b) The element names one of the ENCLOSING entity's own ports. That is what
-///     `chain a -> b -> c` over own ports has always meant, so own ports take
-///     precedence over a same-named sub; inference here would silently
-///     repoint an existing chain.
-/// (c) The element is already an explicit dotted port reference (`p1.outlet`).
-///     The designer has named the port, so inference has nothing to add — this
-///     is also the escape hatch for an element with several ports in the
-///     needed direction, which (d) refuses to guess at.
-/// (d) Otherwise the element names a sub, and its unique port usable in
-///     `needed` is the hop's endpoint. An indexer is stripped at the FIRST `[`
-///     because `sub_port_directions` keys on the SUB name and every element of
-///     a collection shares one child template — the same decomposition
-///     `endpoint_direction` uses. Zero or several such ports is the §6.2
-///     failure: it names what was actually found and sends the author to (c),
-///     and the endpoint is left unresolved so `chain_hops` drops the hop.
+/// * `Ident` naming one of the ENCLOSING entity's own ports — verbatim. That
+///   is what `chain a -> b -> c` over own ports has always meant, so own ports
+///   take precedence over a same-named sub; inferring here would silently
+///   repoint an existing chain.
+/// * `Ident` otherwise, and `IndexAccess` under an `Ident` object (`vents[0]`,
+///   `vents["intake"]`) — the sub whose unique port usable in `needed` is the
+///   hop's endpoint. The sub name comes from the object, not from splitting
+///   the serialized string, and `sub_port_directions` keys on it because every
+///   element of a collection shares one child template.
+/// * Every other shape — verbatim. That covers `MemberAccess` (`sub.port`,
+///   `self.port`, `vents[0].inlet`), where the designer has already named the
+///   port and inference has nothing to add, and `AdHocSelector`, which
+///   inference cannot resolve and must not wrap into an expression its own
+///   serializer cannot read back.
 ///
-/// Inference is per-INSTANCE, so (d) refuses outright when the element names a
-/// collection or keyed sub with no indexer: such a name denotes N occurrences,
-/// and the port it would otherwise infer belongs to none of them.
+/// An element `resolve_port_name` cannot serialize at all is likewise handed
+/// back, so `compile_connection` keeps sole ownership of the "invalid port
+/// reference" wording — this function never duplicates a diagnostic that
+/// already has a home.
+///
+/// Zero or several usable ports is the §6.2 failure: it names what was
+/// actually found and sends the author to the dotted form, leaving the
+/// endpoint unresolved so `chain_hops` drops the hop.
+///
+/// Inference is per-INSTANCE, so an `Ident` naming a collection or keyed sub —
+/// no indexer — is refused outright: such a name denotes N occurrences, and
+/// the port that would otherwise be inferred belongs to none of them.
 ///
 /// Usability is TIERED, not a union: a port declared in `needed` wins
 /// outright, and only when the sub declares none does a `bidi` port — which
@@ -387,16 +397,17 @@ fn resolve_chain_endpoint(
     let Some(name) = resolve_port_name(elem) else {
         return Some(elem.clone());
     };
-    if own_port_name(&name).is_some_and(|own| ctx.ports.iter().any(|p| p.name == own)) {
-        return Some(elem.clone());
-    }
-    if name.contains('.') {
-        return Some(elem.clone());
-    }
-    let (sub, indexed) = match name.split_once('[') {
-        Some((base, _)) => (base, true),
-        None => (name.as_str(), false),
+    let (sub, indexed) = match &elem.kind {
+        reify_ast::ExprKind::Ident(sub) => (sub.as_str(), false),
+        reify_ast::ExprKind::IndexAccess { object, .. } => match &object.kind {
+            reify_ast::ExprKind::Ident(sub) => (sub.as_str(), true),
+            _ => return Some(elem.clone()),
+        },
+        _ => return Some(elem.clone()),
     };
+    if !indexed && ctx.ports.iter().any(|p| p.name == sub) {
+        return Some(elem.clone());
+    }
     if !indexed && names_many_occurrences(ctx, sub) {
         diagnostics.push(
             Diagnostic::error(format!(
