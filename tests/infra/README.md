@@ -28,6 +28,35 @@ failure surfaces at that first gate entry, far from this README. The
 executable bit is *not* required: every runner path invokes the file via
 `bash <file>`.
 
+### Python members need a `.sh` wrapper — `test_*.py` is NOT discovered
+
+Discovery matches **`test_*.sh` only**. A `test_<name>.py` dropped in this
+directory matches no glob, takes no manifest row, and is **never executed** —
+it reads as coverage while asserting nothing, and no gate will tell you.
+(`scripts/test_legibility_reify_config.py` is the live casualty: no wrapper, no
+runner, red today.)
+
+New infra tests are nevertheless authored in **Python** — see
+[the migration policy](../../docs/notes/infra-test-bash-to-python-migration-policy.md)
+for the rule, the evidence, and why pytest is never used. A Python member runs
+via a thin `test_<name>.sh` wrapper:
+
+```bash
+assert "python3 is available" command -v python3
+assert "test_<name>.py exits 0" python3 "$SCRIPT_DIR/test_<name>.py"
+```
+
+**The wrapper is the discovered file and the wrapper is what takes the
+`run-all-classification.manifest` row** — not the `.py`. Copy any of
+`test_sn_gate.sh`, `test_prd_capability_check.sh`,
+`test_prd_decompose_verify.sh` or `test_reify_overlap_detector.sh`.
+
+Two things a `.py` also drops out from under, both `.sh`-scoped by
+construction: the wall-clock upper-bound ratchet
+(`test_no_new_wallclock_upper_bounds.sh`) and the deadline-capable-suite
+derivation (`test_slot_timeout_marker.sh` Section F). Making `test_*.py`
+discovery native — which would retire this wrapper idiom — is task #7445.
+
 ## Shared test helpers
 
 All test files (except `test_tree_sitter_pipeline.sh`, see below) source
