@@ -26,7 +26,8 @@ use std::collections::{HashMap, HashSet};
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    partition_driving_set, pose_from_frame, solve_frame, static_relation_residuals,
+    ResidualRow, ResidualUnit, partition_driving_set, pose_from_frame, solve_frame,
+    static_relation_residuals,
 };
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
@@ -882,9 +883,13 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
 enum StaticVerdict {
     /// Measured, and satisfied within the assertion tolerance — silent.
     Verified,
-    /// Measured, and violated. Carries the largest residual magnitude (metres) so
-    /// the aggregate can say by how much.
-    Violated(f64),
+    /// Measured, and violated. Carries the DOMINANT residual row — value AND unit
+    /// — so the aggregate can say by how much in the unit that was actually
+    /// measured. A bare `f64` here is what let the renderer print `fmt_mm` over a
+    /// dimensionless direction/dot/cosine row and state a fabricated length; a
+    /// residual row vector is not dimensionally homogeneous (`concentric` alone
+    /// mixes two tilt rows with two metre rows), so the unit has to ride along.
+    Violated(ResidualRow),
     /// Not DECIDED. Carries the reader-facing reason, which is the whole value of
     /// this arm: an undecided relation must say why, not fall silent.
     Unverifiable(String),
@@ -942,9 +947,12 @@ enum StaticVerdict {
 /// at decompose and superseded by this task (ratified 2026-07-25). Satisfied
 /// relations are counted in [`StaticRelateFacts::verified`] for ζ's ledger instead.
 ///
-/// Diagnostics speak geometry — magnitudes in mm via the same [`describe_demand`] /
+/// Diagnostics speak geometry — via the same [`describe_demand`] /
 /// [`describe_operands`] / [`fmt_mm`] helpers the auto-ful conflict path uses —
-/// never solver internals. [`conflict_diagnostic`] is deliberately NOT reused: it
+/// never solver internals. The measured magnitude is rendered by
+/// [`fmt_residual`] in the unit the residual row carries: mm for a length row,
+/// degrees for an orientation row, and a bare number for a direction/dot/cosine
+/// row, which has no length reading at all. [`conflict_diagnostic`] is deliberately NOT reused: it
 /// needs an auto sub and a driving/redundant partition that a zero-auto scope does
 /// not have.
 pub fn verify_static_scope(scope: &RelateScope, realized: &RealizedDatums) -> RelateSolution {
@@ -961,7 +969,7 @@ pub fn verify_static_scope(scope: &RelateScope, realized: &RealizedDatums) -> Re
         let refs = operand_refs(rel);
         match static_verdict(rel, &refs, scope, realized, tol.assertion()) {
             StaticVerdict::Verified => facts.verified += 1,
-            StaticVerdict::Violated(magnitude) => {
+            StaticVerdict::Violated(row) => {
                 facts.violated += 1;
                 let demand = relation_instance(rel, realized)
                     .as_ref()
@@ -972,7 +980,7 @@ pub fn verify_static_scope(scope: &RelateScope, realized: &RealizedDatums) -> Re
                     relation_name(rel),
                     describe_operands(rel),
                     demand,
-                    fmt_mm(magnitude)
+                    fmt_residual(row)
                 ));
             }
             StaticVerdict::Unverifiable(reason) => {
@@ -1088,12 +1096,50 @@ fn static_verdict(
             inst.name
         ));
     }
-    let magnitude = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
-    if magnitude <= assertion_tol {
+    // The verdict is still `max |row| <= tol`, unchanged: the tolerance rung is a
+    // single number applied to the whole vector, exactly as the solve path's
+    // remainder check applies it. What changes is that the DOMINANT row is carried
+    // out whole rather than collapsed to its magnitude, so the diagnostic can name
+    // the unit it was measured in. `fold` keeps the FIRST row of a tie, matching the
+    // source-order determinism the rest of this arm relies on.
+    let dominant = rows
+        .iter()
+        .copied()
+        .reduce(|m, r| if r.value.abs() > m.value.abs() { r } else { m })
+        .expect("rows is non-empty — the empty case returned Unverifiable above");
+    if dominant.value.abs() <= assertion_tol {
         StaticVerdict::Verified
     } else {
-        StaticVerdict::Violated(magnitude)
+        StaticVerdict::Violated(dominant)
     }
+}
+
+/// Render a residual row in the unit it was MEASURED in.
+///
+/// Never launder a dimensionless row through [`fmt_mm`]. `parallel` /
+/// `antiparallel` / `coincident`-over-Direction measure a unit-vector difference,
+/// `perpendicular` a dot product and `angle` a cosine difference — all pure
+/// numbers — while `concentric` / `flush` / `offset` mix dimensionless tilt rows
+/// WITH metre rows in one vector. Printing "off by 0.5 mm" for a 0.5 direction
+/// residual is a confidently-wrong claim of exactly the kind this whole arm exists
+/// to prevent, so the unit tag decides the phrasing.
+fn fmt_residual(row: ResidualRow) -> String {
+    match row.unit {
+        ResidualUnit::Length => fmt_mm(row.value),
+        ResidualUnit::Angle => fmt_deg(row.value),
+        // No length and no angle reading — say the number and what it is, rather
+        // than dress it in a unit it does not have.
+        ResidualUnit::Dimensionless => {
+            format!("{:.4} (direction residual, dimensionless)", row.value)
+        }
+    }
+}
+
+/// An angle magnitude in degrees, trimmed like [`fmt_mm`] so the two read alike.
+fn fmt_deg(radians: f64) -> String {
+    let s = format!("{:.3}", radians.to_degrees());
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    format!("{s}°")
 }
 
 /// Process every scope in `module` that declares at least one relation (ζ step-18 —
@@ -2128,6 +2174,74 @@ structure PosedOperandScope {
                 violated: 2,
                 unverifiable: 0,
             })
+        );
+    }
+
+    /// (b′) A violation whose DOMINANT residual row is angular must not be
+    /// rendered as a length.
+    ///
+    /// A residual row vector is not dimensionally homogeneous:
+    /// `axis_coincidence_residual` returns two dimensionless TILT rows followed by
+    /// two metre POSITION rows. Two axes that are CO-LOCATED but tilted are
+    /// therefore violated entirely in the dimensionless block, and the earlier
+    /// renderer — `fmt_mm(max |row|)` — turned that pure number into a confident
+    /// millimetre figure that no measurement supports. Fabricating a length is
+    /// precisely the class of claim this whole arm exists to kill, so it is pinned
+    /// here rather than left to the reviewer who happens to read the output.
+    ///
+    /// Every other violated-path test uses axis-aligned datums, where the dominant
+    /// row happens to be the metre one — which is why the bug survived them all.
+    #[test]
+    fn verify_static_scope_reports_an_angular_violation_without_claiming_mm() {
+        let s = scope("StaticScope");
+        // Axes share an origin and differ only in TILT (45°); planes are left
+        // genuinely flush, so `concentric` is the only violated relation.
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v(SPLIT, (1.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+        ]);
+
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 1,
+                violated: 1,
+                unverifiable: 0,
+            }),
+            "tilted co-located axes violate `concentric` while the flush planes \
+             still hold; got {:?}",
+            solution.diagnostics
+        );
+        let d = solution
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == Severity::Error)
+            .expect("a tilted concentric pair is a violation");
+
+        // The measured magnitude is whatever follows "off by ". The DEMAND clause
+        // legitimately says "0 mm" (that is the target, not a measurement), so the
+        // assertion is scoped to the measured figure alone.
+        let measured = d
+            .message
+            .split("off by ")
+            .nth(1)
+            .expect("a violated relation reports what it measured")
+            .trim_end_matches(['"', '.']);
+        assert!(
+            !measured.contains("mm"),
+            "the dominant row here is a dimensionless tilt component, which has no \
+             length reading — reporting it in mm states a magnitude nothing \
+             measured. Got {measured:?} from {:?}",
+            d.message
+        );
+        assert!(
+            measured.contains("dimensionless"),
+            "an angular/direction violation must say what it actually measured; \
+             got {measured:?}"
         );
     }
 

@@ -26,8 +26,9 @@
 //! genuinely-zero column (an unconstrained DOF) from an O(1) gradient entry.
 
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    partition_driving_set, pose_from_frame, solve_frame, static_relation_residuals,
+    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, ResidualUnit,
+    max_relation_residual, partition_driving_set, pose_from_frame, solve_frame,
+    static_relation_residuals,
 };
 use reify_ir::{SolveResult, Value};
 
@@ -1538,7 +1539,7 @@ fn static_residuals_measure_the_gap_between_two_offset_axes() {
          verdict from violated"
     );
 
-    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.value.abs()));
     assert!(
         (max - 0.03).abs() < 1e-9,
         "the measured residual must be the 30 mm x-split of the fixture's \
@@ -1586,7 +1587,7 @@ fn static_residuals_are_exactly_zero_for_bit_identical_axes() {
     );
     for (i, r) in rows.iter().enumerate() {
         assert_eq!(
-            *r, 0.0,
+            r.value, 0.0,
             "row {i} of {rows:?} must be exactly zero for bit-identical operands"
         );
     }
@@ -1617,7 +1618,7 @@ fn static_residuals_do_not_self_compare_perpendicular_directions() {
         !rows.is_empty(),
         "perpendicular over two Directions has a residual model"
     );
-    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.value.abs()));
     assert!(
         max <= 1e-12,
         "two genuinely perpendicular directions must measure as SATISFIED; got \
@@ -1644,7 +1645,7 @@ fn static_residuals_do_not_self_compare_antiparallel_directions() {
         !rows.is_empty(),
         "antiparallel over two Directions has a residual model"
     );
-    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.value.abs()));
     assert!(
         max <= 1e-12,
         "two genuinely antiparallel directions must measure as SATISFIED; got \
@@ -1726,11 +1727,165 @@ fn static_residuals_compare_two_datums_of_the_same_sub() {
     );
 
     let rows = static_relation_residuals(&rel);
-    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    let max = rows.iter().fold(0.0_f64, |m, r| m.max(r.value.abs()));
     assert!(
         (max - 0.03).abs() < 1e-9,
         "two datums of the SAME sub must still be compared against each other; \
          got {max} from rows {rows:?} (0.0 means the first datum was compared \
          against itself)"
+    );
+}
+
+// ── Residual-row units (the fabricated-length guard) ─────────────────────────
+//
+// A residual row vector is NOT dimensionally homogeneous. Before every row
+// carried its `ResidualUnit`, the static-verification renderer took `max |row|`
+// and printed it through `fmt_mm`, so any relation whose dominant row is
+// angular/dimensionless reported a length that does not exist. These pin the
+// UNIT of each row at its source, which is what the renderer now dispatches on.
+
+/// `parallel` measures a unit-vector difference: three PURE NUMBERS. A renderer
+/// that reads these as metres states a fabricated length.
+#[test]
+fn parallel_residual_rows_are_dimensionless() {
+    // 90° apart — maximally violated for a parallel demand.
+    let rel = relation(
+        "parallel",
+        vec![
+            datum("m", dir(1.0, 0.0, 0.0)),
+            datum("a", dir(0.0, 1.0, 0.0)),
+        ],
+        2,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert!(!rows.is_empty(), "parallel over two Directions has a residual model");
+    assert!(
+        rows.iter().all(|r| r.unit == ResidualUnit::Dimensionless),
+        "every row of a direction-alignment residual is a pure number; got {rows:?}"
+    );
+}
+
+/// `perpendicular` measures a dot product — likewise a pure number, and the
+/// violated magnitude here (1.0 for two parallel directions) is precisely the
+/// value that used to render as "off by 1000 mm".
+#[test]
+fn perpendicular_residual_row_is_dimensionless() {
+    let rel = relation(
+        "perpendicular",
+        vec![
+            datum("m", dir(1.0, 0.0, 0.0)),
+            datum("a", dir(1.0, 0.0, 0.0)),
+        ],
+        1,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    assert_eq!(rows.len(), 1, "perpendicular contributes one dot-product row");
+    assert_eq!(
+        rows[0].unit,
+        ResidualUnit::Dimensionless,
+        "a dot product has no length reading; got {rows:?}"
+    );
+}
+
+/// `angle` measures `dot(â, b̂) − cos θ` — a cosine difference, not a length.
+#[test]
+fn angle_residual_row_is_dimensionless() {
+    let mut rel = relation(
+        "angle",
+        vec![
+            datum("m", dir(1.0, 0.0, 0.0)),
+            datum("a", dir(0.0, 1.0, 0.0)),
+        ],
+        1,
+    );
+    // The demanded angle rides as a trailing scalar (non-datum) operand.
+    rel.operands.push(Operand {
+        sub: None,
+        datum: Value::Real(0.0),
+    });
+
+    let rows = static_relation_residuals(&rel);
+    assert_eq!(rows.len(), 1, "angle contributes one cosine-difference row");
+    assert_eq!(
+        rows[0].unit,
+        ResidualUnit::Dimensionless,
+        "a cosine difference has no length reading; got {rows:?}"
+    );
+}
+
+/// `concentric` is the MIXED case that makes a per-relation-family split
+/// insufficient: two dimensionless tilt rows followed by two metre rows, in that
+/// order. A pair of axes that are CO-LOCATED but TILTED therefore has its
+/// dominant row in the dimensionless block — the exact shape that used to print a
+/// fabricated millimetre figure.
+#[test]
+fn concentric_residual_rows_are_tilt_then_length() {
+    let rel = relation(
+        "concentric",
+        vec![
+            // Same origin, 45° apart: the position rows are exactly zero and the
+            // tilt rows dominate.
+            datum("bush", axis((0.0, 0.0, 0.0), (1.0, 0.0, 1.0))),
+            datum("plate", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        ],
+        4,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    let units: Vec<ResidualUnit> = rows.iter().map(|r| r.unit).collect();
+    assert_eq!(
+        units,
+        vec![
+            ResidualUnit::Dimensionless,
+            ResidualUnit::Dimensionless,
+            ResidualUnit::Length,
+            ResidualUnit::Length,
+        ],
+        "axis-coincidence is 2 tilt rows then 2 position rows; got {rows:?}"
+    );
+
+    let dominant = rows
+        .iter()
+        .copied()
+        .reduce(|m, r| if r.value.abs() > m.value.abs() { r } else { m })
+        .expect("non-empty");
+    assert_eq!(
+        dominant.unit,
+        ResidualUnit::Dimensionless,
+        "co-located but tilted axes are violated in TILT, so the dominant row \
+         carries no length reading; got {rows:?}"
+    );
+}
+
+/// `fasten` (coincident over Frame) is the other mixed form: three metre origin
+/// rows then three RADIAN orientation rows.
+#[test]
+fn frame_coincidence_rows_are_length_then_angle() {
+    let identity_q = (1.0, 0.0, 0.0, 0.0);
+    let rel = relation(
+        "fasten",
+        vec![
+            datum("m", frame((0.010, 0.0, 0.0), identity_q)),
+            datum("a", frame((0.0, 0.0, 0.0), identity_q)),
+        ],
+        6,
+    );
+
+    let rows = static_relation_residuals(&rel);
+    let units: Vec<ResidualUnit> = rows.iter().map(|r| r.unit).collect();
+    assert_eq!(
+        units,
+        vec![
+            ResidualUnit::Length,
+            ResidualUnit::Length,
+            ResidualUnit::Length,
+            ResidualUnit::Angle,
+            ResidualUnit::Angle,
+            ResidualUnit::Angle,
+        ],
+        "frame-coincidence is 3 origin-delta rows then 3 orientation-delta rows; \
+         got {rows:?}"
     );
 }
