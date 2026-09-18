@@ -18,14 +18,29 @@
 //!   `reify_stdlib::eval_builtin`, or from `crate::field_reductions`.
 //!
 //! The corollary, and the one maintenance rule this module has: wherever
-//! [`crate::eval_expr`] INTERCEPTS a call before `reify_stdlib::eval_builtin`,
-//! this module must intercept it in the same place, on the same operand shapes.
-//! Today that is the field reductions, at both arities — the whole-field arms
-//! (lib.rs:459-484) and the bounded `max/min/argmax/argmin(field, bounds)` arms
-//! (lib.rs:490-533) — see [`field_reduction_kind`].  An interception added
-//! there and not mirrored here does not fail loudly; it silently routes the
-//! call to `eval_builtin`, which typically answers `Undef` for the very
-//! operand types the interception existed to handle.
+//! [`crate::eval_expr`] INTERCEPTS a call — before `reify_stdlib::eval_builtin`
+//! OR before `crate::eval_user_function_call` — this module must intercept it
+//! in the same place, on the same operand shapes.  Today that is:
+//!
+//! - the field reductions, at both arities — the whole-field arms
+//!   (lib.rs:459-484) and the bounded `max/min/argmax/argmin(field, bounds)`
+//!   arms (lib.rs:490-533) — see [`field_reduction_kind`];
+//! - the four `UserFunctionCall` families — `solve_load_cases`/5|6
+//!   (lib.rs:751), every `option_recovery::is_combinator` name (lib.rs:783),
+//!   `map_or`/3 (lib.rs:803) and `map_err`/2 (lib.rs:824) — see
+//!   [`is_intercepted_user_fn`].
+//!
+//! The rule used to name only the `eval_builtin` half, which is precisely why
+//! the `UserFunctionCall` half went unconsidered until a review found it; a
+//! rule that misses a case is not repaired by fixing the case alone.
+//!
+//! An interception added on either side and not mirrored here does not fail
+//! loudly.  On the builtin side it silently routes the call to `eval_builtin`,
+//! which typically answers `Undef` for the very operand types the interception
+//! existed to handle.  On the user-function side it silently evaluates the
+//! callee's `.ri` body — which for the intercepted families is a PLACEHOLDER
+//! the intercept exists to bypass (grammar gap, PRD §4.4 raf-12) — so the dual
+//! path returns a WRONG PRIMAL rather than merely losing a tangent.
 //!
 //! So reify's value semantics — dimension algebra, strict-`Undef` propagation,
 //! `sanitize`, the Invariant V `Scalar{DIMENSIONLESS} → Real` collapse,
@@ -565,7 +580,7 @@ fn eval_dual_at(
         }
 
         CompiledExprKind::UserFunctionCall { function_name, args } => {
-            eval_dual_user_fn(function_name, args, ctx, seeds, env, record, path)
+            eval_dual_user_fn(expr, function_name, args, ctx, seeds, env, record, path)
         }
 
         // Everything else is a kind this task does not differentiate.
@@ -1817,11 +1832,40 @@ fn builtin_partials(name: &str, xs: &[f64]) -> Option<Vec<f64>> {
 // User-defined functions and lambdas — "arbitrary user algebra"
 // ---------------------------------------------------------------------------
 
+/// The names `eval_expr` INTERCEPTS before ever reaching
+/// `eval_user_function_call`, and the family each belongs to.
+///
+/// This is the single greppable statement of that set — the `UserFunctionCall`
+/// half of the module's mirroring rule.  `Some(family)` means the evaluator
+/// never runs the callee's `.ri` body for this name and arity, so neither may
+/// the dual path.
+///
+/// The combinator family delegates to `option_recovery::is_combinator` rather
+/// than restating its ten names, so that table has exactly one home and a
+/// combinator added there is covered here by construction.
+fn is_intercepted_user_fn(name: &str, arity: usize) -> Option<&'static str> {
+    if name == "solve_load_cases" && (arity == 5 || arity == 6) {
+        return Some("a `solve_load_cases` multi-case FEA call");
+    }
+    if crate::option_recovery::is_combinator(name, arity) {
+        return Some("an Option-recovery combinator");
+    }
+    if name == "map_or" && arity == 3 {
+        return Some("the `map_or` arrow-type combinator");
+    }
+    if name == "map_err" && arity == 2 {
+        return Some("the `map_err` arrow-type combinator");
+    }
+    None
+}
+
 /// A `UserFunctionCall` node, mirroring `eval_user_function_call`
 /// (`reify-expr/src/lib.rs:1946`) step for step on the value path so the primal
-/// invariant survives overload selection and the `@optimized` hook.
+/// invariant survives the intercepted families, overload selection and the
+/// `@optimized` hook.
 #[allow(clippy::too_many_arguments)]
 fn eval_dual_user_fn(
+    expr: &CompiledExpr,
     function_name: &str,
     args: &[CompiledExpr],
     ctx: &EvalContext,
@@ -1830,6 +1874,24 @@ fn eval_dual_user_fn(
     record: &mut BranchRecord,
     path: &mut Vec<u16>,
 ) -> DualValue {
+    // The mirroring rule, `UserFunctionCall` half.
+    //
+    // This gate fires BEFORE the arguments are descended, not merely before the
+    // strict-`Undef` short-circuit below.  `Seeds::note_refusal` is FIRST-WINS,
+    // so descending into `unwrap_or(some(5mm), undef)`'s second argument would
+    // record an `UndefPrimal` refusal that poisons the row even after the
+    // intercept restored a perfectly good primal — which is why an
+    // arg-descent-then-gate shape cannot work here.
+    //
+    // `refuse_or_constant` evaluates the WHOLE node through `crate::eval_expr`,
+    // so each family's own `Undef` discipline is INHERITED rather than restated
+    // — strict for `solve_load_cases`, non-strict and SUBJECT-tag-driven for
+    // the combinators (lib.rs:780-782).  That is also why this cannot double
+    // evaluate: no argument was evaluated on the dual path at all.
+    if let Some(family) = is_intercepted_user_fn(function_name, args.len()) {
+        return refuse_or_constant(expr, ctx, seeds, env, path, family);
+    }
+
     let duals: Vec<DualValue> = args
         .iter()
         .enumerate()
@@ -2129,4 +2191,80 @@ pub fn jacobian_row_with_env(
         return Err(NonDifferentiable::NonFiniteTangent { column });
     }
     Ok((primal, row))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_intercepted_user_fn;
+
+    /// The gate covers exactly the four families `eval_expr` intercepts before
+    /// `eval_user_function_call`.
+    ///
+    /// A MEMBERSHIP assertion rather than an evaluation, which is what lets the
+    /// `solve_load_cases` arm be pinned at both its arities without standing up
+    /// the FEA kernel.  It lives here rather than in the integration binary
+    /// because `is_intercepted_user_fn` is private and a separate test binary
+    /// cannot see it.
+    #[test]
+    fn the_dual_intercept_gate_covers_exactly_the_families_eval_expr_intercepts() {
+        // lib.rs:751 — BOTH arities; the 6th arg is `options`, which may be
+        // default-padded, so gating only /5 would miss the padded spelling.
+        assert!(is_intercepted_user_fn("solve_load_cases", 5).is_some());
+        assert!(is_intercepted_user_fn("solve_load_cases", 6).is_some());
+
+        // lib.rs:783 — every `option_recovery::is_combinator` name at its
+        // declared arity.  Asserting BOTH directions keeps the delegation
+        // honest: the gate must fire, and the name must still be in the table
+        // the gate delegates to.
+        for (name, arity) in [
+            ("unwrap_or", 2),
+            ("or_default", 2),
+            ("fallback", 2),
+            ("or_else", 2),
+            ("is_some", 1),
+            ("is_none", 1),
+            ("get_or", 3),
+            ("is_ok", 1),
+            ("is_err", 1),
+            ("ok_or", 2),
+        ] {
+            assert!(
+                is_intercepted_user_fn(name, arity).is_some(),
+                "{name}/{arity} is intercepted by eval_expr and must be gated here"
+            );
+            assert!(
+                crate::option_recovery::is_combinator(name, arity),
+                "{name}/{arity} drifted out of is_combinator's own table"
+            );
+        }
+
+        // lib.rs:803 and lib.rs:824 — the two ctx-aware arrow-type combinators,
+        // which `is_combinator` deliberately OMITS because they must apply a
+        // lambda argument.  So they need their own gate entries, and the
+        // omission is asserted rather than assumed.
+        assert!(is_intercepted_user_fn("map_or", 3).is_some());
+        assert!(is_intercepted_user_fn("map_err", 2).is_some());
+        assert!(!crate::option_recovery::is_combinator("map_or", 3));
+        assert!(!crate::option_recovery::is_combinator("map_err", 2));
+
+        // EXACTLY those families: a wrong arity, or an ordinary user function,
+        // must fall through.  Gating one of these would SHADOW a function the
+        // evaluator resolves through `eval_user_function_call` normally — the
+        // mirror defect of the one this gate fixes.
+        for (name, arity) in [
+            ("solve_load_cases", 4),
+            ("solve_load_cases", 7),
+            ("unwrap_or", 1),
+            ("unwrap_or", 3),
+            ("map_or", 2),
+            ("map_err", 3),
+            ("is_some", 2),
+            ("hyp", 2),
+        ] {
+            assert!(
+                is_intercepted_user_fn(name, arity).is_none(),
+                "{name}/{arity} is NOT intercepted by eval_expr; gating it would shadow a real user function"
+            );
+        }
+    }
 }
