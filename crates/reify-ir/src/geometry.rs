@@ -938,27 +938,26 @@ pub enum GeometryOp {
     /// of the exported STEP `TRIMMED_CURVE` as its `PARAMETER_VALUE` bounds.
     /// Arc — not [`GeometryOp::Helix`] — is the wireframe op on that path.
     ///
-    /// **Why these two carry no `_rad` suffix.** Unlike `Rotate`'s `angle_rad`,
-    /// the names are not private to this crate: they are the UNTYPED STRING KEY
-    /// shared across the compiler→eval boundary, emitted as string literals by
-    /// `compile_curve_op` (`reify-compiler/src/geometry_curve.rs`) and looked
-    /// up by name in `curve_arc` (`reify-eval/src/geometry_ops.rs`), and they
-    /// are also the published `arc(...)` signature in
+    /// **Why these two carry no `_rad` suffix.** These are crate-local Rust
+    /// identifiers and the enum derives no serde, so a rename is
+    /// COMPILE-CHECKED: it would break loudly at every construct and
+    /// destructure site — eval's shorthand struct literal, the kernel's
+    /// dispatch arm, the tests — never silently. What it would also do is
+    /// diverge from two INDEPENDENT identifiers that merely spell the same:
+    /// the untyped string key of the compiler→eval boundary (`compile_curve_op`
+    /// in `reify-compiler/src/geometry_curve.rs` mints them as owned literals;
+    /// `curve_arc` in `reify-eval/src/geometry_ops.rs` looks them up by name),
+    /// and the published `arc(...)` signature in
     /// `docs/reify-stdlib-reference.md`. No `.ri` source names them — the
-    /// compiler checks an exact 9-argument count and assigns these keys
-    /// POSITIONALLY — so a rename would break no design file. What it would do
-    /// is fail SILENTLY: the lookups are runtime string matches, so a rename
-    /// that missed one end still compiles and merely drops the op with a
-    /// warning, and it desyncs the published signature — a silent, cross-crate,
-    /// docs-desyncing change for cosmetic gain. So `Rotate`'s "the `_rad`
-    /// suffix IS the contract" is discharged HERE, by this comment, instead.
-    /// The rename was CONSIDERED AND DECLINED (#6521); the absence is
-    /// a recorded decision, not an oversight. That cross-crate ground is the
-    /// WHOLE of it: the eval gate below does NOT supersede the question, since
-    /// `required_angle_args` hands back `[f64; N]` — these two fields are
-    /// still raw SI-radian `f64` on the far side of it, so a `_rad` suffix
-    /// would still be type-accurate, and is declined for the silent-rename
-    /// reason alone.
+    /// compiler checks an exact 9-argument count and assigns those keys
+    /// POSITIONALLY — so no design file is involved either way. Churn plus
+    /// cosmetic divergence, in exchange for a suffix: the rename was
+    /// CONSIDERED AND DECLINED (#6521), so the absence is a recorded decision,
+    /// not an oversight, and `Rotate`'s "the `_rad` suffix IS the contract" is
+    /// discharged HERE, by this comment, instead. The eval gate below does not
+    /// supersede the question either: `required_angle_args` hands back
+    /// `[f64; N]`, so these two fields are still raw SI-radian `f64` past it
+    /// and a `_rad` suffix would still be type-accurate.
     ///
     /// **GATED at eval.** A dimensioned `90deg` literal is resolved to radians
     /// in the units layer (`reify-core/src/units.rs`: `deg` = PI/180 tagged
@@ -970,15 +969,17 @@ pub enum GeometryOp {
     /// coded `DimensionedArgRejected` ("expects Angle, got Real; pass a
     /// dimensioned angle such as `45deg` or `1.5rad`") and drops the op. It is
     /// the GROUP reader, so a pair of bare angles is named in ONE rebuild
-    /// rather than one slot per rebuild. What reaches these two fields is
-    /// therefore always an ACCEPTED SI-radian magnitude.
+    /// rather than one slot per rebuild. What reaches these two fields FROM
+    /// EVAL is therefore always an ACCEPTED SI-radian magnitude — but
+    /// directly-constructed IR bypasses the gate entirely, and the kernel's
+    /// `Arc` dispatch (`reify-kernel-occt/src/lib.rs`) validates only `radius`
+    /// and `axis`, so a non-finite angle from hand-built IR reaches
+    /// `make_arc_wire` unchecked.
     ///
-    /// **Which task landed it: #6924** (done), which delivered leaves γ/δ/ε of
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md` in one pass. The
-    /// CHARTERING ids — #5779 (leaf γ, these two positions) and #5780 (leaf δ,
-    /// [`GeometryOp::Draft`]'s angle) — are still status=deferred, so they stay
-    /// citable as the charter, but the shipped behaviour does not live there;
-    /// do not read a deferred leaf as a statement that this gate is parked.
+    /// Landed under #6924, which delivered leaves γ/δ/ε of
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` in one pass;
+    /// chartered by #5779 (leaf γ, these two positions) and #5780 (leaf δ,
+    /// [`GeometryOp::Draft`]'s angle).
     Arc {
         center: [f64; 3],
         radius: f64,
@@ -1089,10 +1090,9 @@ pub enum GeometryOp {
         /// leaf δ's breadcrumb there records why that ONE read is the whole
         /// gate, and that the `eval_arg` closure it replaced "died with the
         /// change", so no ungated route from eval into this field survives.
-        /// Landed under #6924 (done); #5780, leaf δ of
-        /// `docs/prds/v0_6/angle-units-surface-convergence.md` (whose C1
-        /// gated-position list carries this position and Arc's together), is
-        /// still status=deferred and is the CHARTER cite, not the delivery one.
+        /// Landed under #6924; chartered by #5780, leaf δ of
+        /// `docs/prds/v0_6/angle-units-surface-convergence.md`, whose C1
+        /// gated-position list carries this position and Arc's together.
         angle: Value,
         plane: GeometryHandleId,
     },
