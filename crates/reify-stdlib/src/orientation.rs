@@ -2742,7 +2742,7 @@ mod tests {
         };
         assert!(eval_builtin("orient_to_euler", &[]).is_undef());
         // Subject only, convention missing.
-        assert!(eval_builtin("orient_to_euler", &[q.clone()]).is_undef());
+        assert!(eval_builtin("orient_to_euler", std::slice::from_ref(&q)).is_undef());
         assert!(
             eval_builtin(
                 "orient_to_euler",
