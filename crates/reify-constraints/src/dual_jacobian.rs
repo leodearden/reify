@@ -285,6 +285,7 @@ pub fn residual_jacobian(
 ///   by construction, so this is a backstop against upstream DRIFT — enforced
 ///   rather than assumed, because a clobbered auto column is silent: the solver
 ///   would report a solved value for a direction it never actually probed.
+#[inline]
 fn fold_dependent_duals(
     values: &ValueMap,
     auto_params: &[AutoParam],
@@ -293,12 +294,68 @@ fn fold_dependent_duals(
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
     seeds: &Seeds,
 ) -> (DualEnv, BranchRecord) {
+    let (env, prelude, collisions) = fold_dependent_duals_skipping_collisions(
+        values,
+        auto_params,
+        dependent_cells,
+        functions,
+        dispatch,
+        seeds,
+    );
+    debug_assert!(
+        collisions.is_empty(),
+        "fold_dependent_duals: dependent cell(s) {collisions:?} — each collides with an auto \
+         param — reify-eval's `build_dependent_cells` excludes autos by construction, so this \
+         means upstream membership drifted. Skipping the entries to keep the auto's seed column."
+    );
+    (env, prelude)
+}
+
+/// [`fold_dependent_duals`]' body, reporting rather than asserting: folds the
+/// list exactly as the wrapper's contract describes and RETURNS, in stored
+/// order, the ids it skipped because they collide with an auto param.
+///
+/// The derivative sibling of `solver::fold_dependent_cells_skipping_collisions`
+/// (review #5721), split for the same reason and mirrored leaf for leaf: the
+/// SKIP half of the collision contract — "pass the entry over and keep the
+/// auto's own seed column" — is not assertable through the wrapper, because in
+/// a debug build the `debug_assert!` unwinds before any caller can inspect the
+/// result, and the skip is the ONLY behaviour that can ever run in production.
+///
+/// Do NOT call this from production code — the one production caller is the
+/// wrapper, which keeps the debug alarm. That rule is enforced by the
+/// VISIBILITY, not by this paragraph: the function is private rather than
+/// `pub(crate)`, so a future sibling module cannot pick the alarm-free variant
+/// and quietly drop the drift alarm the split exists to strengthen. The only
+/// other caller is this file's `mod tests`, reaching it through `super::`, so
+/// private is sufficient.
+///
+/// The `debug_assert!` is DELIBERATELY retained rather than promoted to a hard
+/// `assert!` or a `JacobianError`. The value fold and the dual fold are ONE
+/// contract seen twice, and having the derivative sibling fail LOUDER than the
+/// value sibling on identical input would be a worse defect than the one this
+/// fixes: the solver would refuse a Jacobian for a trial point whose values
+/// folded perfectly well.
+///
+/// An empty returned vector is the ONLY correct steady state; a non-empty one
+/// means reify-eval's `build_dependent_cells` membership drifted.
+#[inline]
+fn fold_dependent_duals_skipping_collisions(
+    values: &ValueMap,
+    auto_params: &[AutoParam],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+    seeds: &Seeds,
+) -> (DualEnv, BranchRecord, Vec<ValueCellId>) {
+    let mut collisions = Vec::new();
     let mut env = DualEnv::new();
     let mut prelude = BranchRecord::new();
     if dependent_cells.is_empty() {
         // No cells, no prefix block, not even an empty one — a non-clustered
-        // solve keeps precisely the sites it had before this fold existed.
-        return (env, prelude);
+        // solve keeps precisely the sites it had before this fold existed, and
+        // `Vec::new()` does not allocate, so it stays allocation-free too.
+        return (env, prelude, collisions);
     }
     debug_assert!(
         dependent_cells.len() < DEPENDENT_MARKER as usize,
@@ -312,13 +369,12 @@ fn fold_dependent_duals(
     // a change that has nothing to do with it.
     for (k, (id, expr)) in dependent_cells.iter().enumerate() {
         if auto_params.iter().any(|p| &p.id == id) {
-            debug_assert!(
-                false,
-                "fold_dependent_duals: dependent cell {id:?} collides with an auto param — \
-                 reify-eval's `build_dependent_cells` excludes autos by construction, so this \
-                 means upstream membership drifted. Skipping the entry to keep the auto's seed \
-                 column."
-            );
+            // Reported, not asserted: the wrapper raises the drift alarm, and
+            // leaving the cell UNBOUND here is what preserves the auto's seed
+            // column `e_j` — the overlay outranks the seed columns, so a
+            // binding would silently replace that basis vector with a computed
+            // one.
+            collisions.push(id.clone());
             continue;
         }
         // The VALUE is already in `values` (folded by `build_trial_values`), so
@@ -365,7 +421,7 @@ fn fold_dependent_duals(
             tangent => env.bind(id.clone(), tangent),
         }
     }
-    (env, prelude)
+    (env, prelude, collisions)
 }
 
 #[cfg(test)]
