@@ -278,20 +278,25 @@ class TestProbeSetRoundTrip(unittest.TestCase):
 
     # ── committed example-probe-set.json ─────────────────────────────────────
 
-    def test_committed_probe_set_parses_into_3_records(self):
-        """The committed example-probe-set.json parses into exactly 3 Probe records."""
+    def test_committed_probe_set_has_one_record_per_kind(self):
+        """The committed example-probe-set.json holds exactly one probe per kind."""
         with open(_EXAMPLE_PROBE_SET) as f:
             text = f.read()
         probes = pcc.load_probe_set(text)
-        self.assertEqual(len(probes), 3)
+        self.assertEqual(len(probes), len(pcc._VALID_PROBE_KINDS))
 
     def test_committed_probe_set_has_one_of_each_kind(self):
-        """The committed probe set has one grammar, one check, and one ir probe."""
+        """The worked example demonstrates every kind — derived, so it cannot drift.
+
+        Spelling the expected set here is what let it fall a kind behind when a
+        fourth was added; reading it off _VALID_PROBE_KINDS makes the next
+        addition red this test until the example covers it too.
+        """
         with open(_EXAMPLE_PROBE_SET) as f:
             text = f.read()
         probes = pcc.load_probe_set(text)
         kinds = {p.probe_kind for p in probes}
-        self.assertEqual(kinds, {"grammar", "check", "ir"})
+        self.assertEqual(kinds, set(pcc._VALID_PROBE_KINDS))
 
 
 # ---------------------------------------------------------------------------
@@ -2839,18 +2844,24 @@ class TestMain(unittest.TestCase):
             return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
         return runner
 
+    # stdout the value probe in example-probe-set.json expects to read.
+    _VALUE_PASS_STDOUT = "ValueCleanEvalCells.damping_ratio = 0.018"
+
     def _all_pass_runner(self):
-        """Runner that causes all three probe kinds in example-probe-set.json to PASS.
+        """Runner that causes every probe kind in example-probe-set.json to PASS.
 
         example-probe-set.json probes:
           grammar: expected present → need exit 0 (PRESENT)
           check:   expected present, match {exit_code: 1} → need exit 1 (match → PRESENT)
           ir:      expected absent,  match {stderr_contains: 'EvalError'} → need exit 0 (ABSENT)
+          value:   expected present, match {stdout_value: damping_ratio in
+                   [0.01, 0.03]} → need exit 0 AND an in-range capture (PRESENT)
         """
         return self._make_runner({
             "grammar": (0, "", ""),
             "check":   (1, "", "rejection: bad arg"),
             "ir":      (0, "a = 0.01 m", ""),
+            "value":   (0, self._VALUE_PASS_STDOUT, ""),
         })
 
     def _check_fail_runner(self):
@@ -2859,6 +2870,7 @@ class TestMain(unittest.TestCase):
             "grammar": (0, "", ""),
             "check":   (0, "All constraints satisfied.", ""),  # exit 0 → no rejection → ABSENT
             "ir":      (0, "a = 0.01 m", ""),
+            "value":   (0, self._VALUE_PASS_STDOUT, ""),
         })
 
     # ── arg / IO errors → 64 ─────────────────────────────────────────────────
@@ -3435,6 +3447,318 @@ class TestMain(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # step-15 (RED): regression — grammar-probe fixture must be absolute in build_command
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# #6876 step-09 (RED): value-probe result legibility + the real-binary e2e
+# ---------------------------------------------------------------------------
+
+class TestValueProbeReporting(unittest.TestCase):
+    """A value FAIL must say WHICH defect it found.
+
+    "the pattern matched and captured 0, which is below min 0.01" and "the
+    pattern never matched" are different defects — a wrong value versus a
+    renamed field or a mis-aimed probe — and the renderer's 200-char stdout
+    preview cannot tell them apart on real multi-cell output.  So the evidence
+    is computed once, alongside the verdict, and carried on the Result.
+
+    The e2e half (against the real binary) is the end-to-end proof of the whole
+    chain; its VERDICTS are already green after step-08, and it is the evidence
+    surface here plus the committed example's fourth row that make this RED.
+    """
+
+    _FIXTURE = "tests/prd-gate/fixtures/value_clean_eval_cells.ri"
+
+    _DAMPING_SPEC = {
+        "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
+        "min": 0.01,
+        "max": 0.03,
+    }
+    _CELLS = (
+        "ValueCleanEvalCells.damping_ratio = 0.018\n"
+        "ValueCleanEvalCells.degenerate_ratio = 0\n"
+        "ValueCleanEvalCells.undef_ratio = undef\n"
+    )
+
+    # ── hermetic plumbing ─────────────────────────────────────────────────────
+
+    def _probe_set_text(self, value_spec=None):
+        """One probe of every kind, so scoping can be asserted in one run."""
+        return json.dumps({"probes": [
+            {
+                "capability": "grammar row",
+                "probe_kind": "grammar",
+                "fixture": "tests/prd-gate/fixtures/arrow_type.ri",
+                "expected": {"observation": "present", "match": {}},
+            },
+            {
+                "capability": "check row",
+                "probe_kind": "check",
+                "fixture": "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+                "expected": {"observation": "present", "match": {"exit_code": 1}},
+            },
+            {
+                "capability": "ir row",
+                "probe_kind": "ir",
+                "fixture": "tests/prd-gate/fixtures/ir_clean_eval.ri",
+                "expected": {
+                    "observation": "absent",
+                    "match": {"stderr_contains": "EvalError"},
+                },
+            },
+            {
+                "capability": "value row",
+                "probe_kind": "value",
+                "fixture": self._FIXTURE,
+                "expected": {
+                    "observation": "present",
+                    "match": {
+                        "stdout_value": value_spec or dict(self._DAMPING_SPEC)
+                    },
+                },
+            },
+        ]})
+
+    def _run_main(self, argv_prefix=(), value_spec=None, value_stdout=None,
+                  value_exit=0):
+        main_test = TestMain()
+        runner = main_test._make_runner({
+            "grammar": (0, "", ""),
+            "check": (1, "", "rejection: bad arg"),
+            "ir": (0, "a = 0.01 m", ""),
+            "value": (value_exit,
+                      self._CELLS if value_stdout is None else value_stdout,
+                      ""),
+        })
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
+            fh.write(self._probe_set_text(value_spec))
+            tmp = fh.name
+        try:
+            return main_test._run_main_capturing(list(argv_prefix) + [tmp], runner=runner)
+        finally:
+            os.unlink(tmp)
+
+    def _value_lines(self, text):
+        return [
+            line for line in text.splitlines() if line.strip().startswith("value:")
+        ]
+
+    def _json_records(self, out):
+        return json.loads(out)["results"]
+
+    # ── the evidence is computed once, with the verdict ───────────────────────
+
+    def test_evaluate_populates_value_observation_only_for_value_kind(self):
+        def runner(probe):
+            return pcc.ProbeRun(exit_code=0, stdout=self._CELLS, stderr="")
+
+        probes = pcc.load_probe_set(self._probe_set_text())
+        by_kind = {p.probe_kind: pcc.evaluate(p, runner=runner) for p in probes}
+        for kind in ("grammar", "check", "ir"):
+            with self.subTest(kind=kind):
+                self.assertIsNone(by_kind[kind].value_observation)
+        self.assertIsNotNone(by_kind["value"].value_observation)
+
+    def test_value_observation_agrees_with_the_boolean_predicate(self):
+        """SPOT: the explanation and the predicate are one computation."""
+        for stdout in (self._CELLS, "nothing here\n",
+                       "ValueCleanEvalCells.damping_ratio = 0\n"):
+            with self.subTest(stdout=stdout):
+                run = pcc.ProbeRun(exit_code=0, stdout=stdout, stderr="")
+                probe = [
+                    p for p in pcc.load_probe_set(self._probe_set_text())
+                    if p.probe_kind == "value"
+                ][0]
+                result = pcc.evaluate(probe, runner=lambda _p: run)
+                self.assertEqual(
+                    result.value_observation.satisfied,
+                    pcc.stdout_value_satisfied(run, self._DAMPING_SPEC),
+                )
+
+    def test_value_observation_records_capture_and_failed_constraint(self):
+        cases = [
+            (self._CELLS, True, "0.018", None),
+            ("ValueCleanEvalCells.damping_ratio = 0\n", False, "0", "min"),
+            ("ValueCleanEvalCells.damping_ratio = 9.9\n", False, "9.9", "max"),
+            ("nothing here\n", False, None, "pattern"),
+        ]
+        probe = [
+            p for p in pcc.load_probe_set(self._probe_set_text())
+            if p.probe_kind == "value"
+        ][0]
+        for stdout, satisfied, captured, failed in cases:
+            with self.subTest(stdout=stdout):
+                run = pcc.ProbeRun(exit_code=0, stdout=stdout, stderr="")
+                obs = pcc.evaluate(probe, runner=lambda _p: run).value_observation
+                self.assertEqual(obs.satisfied, satisfied)
+                self.assertEqual(obs.captured, captured)
+                self.assertEqual(obs.failed_constraint, failed)
+
+    def test_non_finite_capture_names_the_finite_constraint(self):
+        spec = {"pattern": r"undef_ratio = (\S+)", "finite": True}
+        probes = pcc.load_probe_set(self._probe_set_text(value_spec=spec))
+        probe = [p for p in probes if p.probe_kind == "value"][0]
+        run = pcc.ProbeRun(exit_code=0, stdout=self._CELLS, stderr="")
+        obs = pcc.evaluate(probe, runner=lambda _p: run).value_observation
+        self.assertFalse(obs.satisfied)
+        self.assertEqual(obs.captured, "undef")
+        self.assertEqual(obs.failed_constraint, "finite")
+
+    # ── text renderer ─────────────────────────────────────────────────────────
+
+    def test_text_renderer_emits_exactly_one_value_line(self):
+        _, out, _ = self._run_main()
+        self.assertEqual(len(self._value_lines(out)), 1, out)
+
+    def test_text_value_line_is_scoped_to_value_rows(self):
+        """Scoped exactly as the existing `hint:` line is scoped to HARNESS_ERROR."""
+        _, out, _ = self._run_main()
+        rows = [row for row in out.split("\n\n") if row.strip()]
+        self.assertEqual(len(rows), 4, out)
+        for row in rows:
+            is_value_row = "kind:      value" in row
+            self.assertEqual(bool(self._value_lines(row)), is_value_row, row)
+
+    def test_text_value_line_names_the_capture_on_pass(self):
+        """The captured value is the evidence on PASS too, not only on FAIL."""
+        rc, out, _ = self._run_main()
+        self.assertEqual(rc, 0, out)
+        line = self._value_lines(out)[0]
+        self.assertIn("0.018", line)
+
+    def test_text_value_line_names_the_violated_constraint_on_fail(self):
+        rc, out, _ = self._run_main(
+            value_stdout="ValueCleanEvalCells.damping_ratio = 0\n"
+        )
+        self.assertEqual(rc, 1, out)
+        line = self._value_lines(out)[0]
+        self.assertIn("0", line)
+        self.assertIn("min", line)
+
+    def test_text_value_line_distinguishes_a_pattern_miss(self):
+        """A mis-aimed probe must not read as a wrong value."""
+        rc, out, _ = self._run_main(value_stdout="something else entirely\n")
+        self.assertEqual(rc, 1, out)
+        line = self._value_lines(out)[0]
+        self.assertIn("pattern", line)
+
+    def test_text_value_line_absent_when_exit_is_nonzero(self):
+        """INDETERMINATE produced no value, so there is no capture to report."""
+        rc, out, _ = self._run_main(value_exit=1)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self._value_lines(out), [], out)
+
+    # ── --json ────────────────────────────────────────────────────────────────
+
+    def test_json_carries_value_observation_on_value_rows_only(self):
+        _, out, _ = self._run_main(argv_prefix=["--json"])
+        records = self._json_records(out)
+        by_kind = {r["probe_kind"]: r for r in records}
+        for kind in ("grammar", "check", "ir"):
+            with self.subTest(kind=kind):
+                self.assertNotIn(
+                    "value_observation", by_kind[kind],
+                    "the record shape of existing kinds must not change",
+                )
+        self.assertIn("value_observation", by_kind["value"])
+
+    def test_json_value_observation_is_structured(self):
+        _, out, _ = self._run_main(
+            argv_prefix=["--json"],
+            value_stdout="ValueCleanEvalCells.damping_ratio = 0\n",
+        )
+        record = {r["probe_kind"]: r for r in self._json_records(out)}["value"]
+        self.assertEqual(
+            record["value_observation"],
+            {"satisfied": False, "captured": "0", "failed_constraint": "min"},
+        )
+
+    def test_json_value_observation_present_on_pass(self):
+        _, out, _ = self._run_main(argv_prefix=["--json"])
+        record = {r["probe_kind"]: r for r in self._json_records(out)}["value"]
+        self.assertEqual(
+            record["value_observation"],
+            {"satisfied": True, "captured": "0.018", "failed_constraint": None},
+        )
+
+    # ── the committed worked example ──────────────────────────────────────────
+
+    def test_committed_example_value_row_passes_under_stub(self):
+        main_test = TestMain()
+        rc, out, _ = main_test._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=main_test._all_pass_runner()
+        )
+        self.assertEqual(rc, 0, out)
+        value_rows = [
+            row for row in out.split("\n\n") if "kind:      value" in row
+        ]
+        self.assertEqual(len(value_rows), 1, out)
+        self.assertTrue(value_rows[0].startswith(f"[{pcc.PASS}]"), value_rows[0])
+
+    def test_committed_example_value_row_points_at_the_fixture(self):
+        with open(_EXAMPLE_PROBE_SET) as fh:
+            probes = pcc.load_probe_set(fh.read())
+        value_probes = [p for p in probes if p.probe_kind == "value"]
+        self.assertEqual(len(value_probes), 1)
+        self.assertEqual(value_probes[0].fixture, _VALUE_CELLS_FIXTURE)
+        self.assertEqual(value_probes[0].expected["observation"], "present")
+
+    # ── real-binary e2e over the committed fixture ────────────────────────────
+
+    def _e2e(self, probe_kind, expected_observation, match):
+        probe_json = json.dumps({"probes": [{
+            "capability": f"#6876 e2e ({probe_kind})",
+            "probe_kind": probe_kind,
+            "fixture": self._FIXTURE,
+            "expected": {"observation": expected_observation, "match": match},
+        }]})
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
+            fh.write(probe_json)
+            tmp = fh.name
+        try:
+            return TestMain()._run_main_capturing([tmp])
+        finally:
+            os.unlink(tmp)
+
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
+    def test_e2e_damping_ratio_in_range_is_pass(self):
+        rc, out, _ = self._e2e("value", "present", {
+            "stdout_value": dict(self._DAMPING_SPEC)
+        })
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"[{pcc.PASS}]", out)
+
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
+    def test_e2e_degenerate_ratio_is_fail(self):
+        """The motivating defect: a clean eval that printed 0."""
+        rc, out, _ = self._e2e("value", "present", {
+            "stdout_value": {
+                "pattern": r"ValueCleanEvalCells\.degenerate_ratio = ([-+0-9.eE]+)",
+                "min": 0.01,
+            }
+        })
+        self.assertEqual(rc, 1, out)
+        self.assertIn(f"[{pcc.FAIL}]", out)
+
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
+    def test_e2e_undef_ratio_is_fail(self):
+        """Prints garbage, still exits 0."""
+        rc, out, _ = self._e2e("value", "present", {
+            "stdout_value": {
+                "pattern": r"ValueCleanEvalCells\.undef_ratio = (\S+)",
+                "finite": True,
+            }
+        })
+        self.assertEqual(rc, 1, out)
+        self.assertIn(f"[{pcc.FAIL}]", out)
+
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
+    def test_e2e_same_fixture_still_passes_an_ir_probe_vacuously(self):
+        """The vacuous pass still holds — the new kind adds signal, it does not
+        change `ir`."""
+        rc, out, _ = self._e2e("ir", "absent", {"stderr_contains": "EvalError"})
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"[{pcc.PASS}]", out)
+
 
 class TestBuildCommandAbsoluteFixture(unittest.TestCase):
     """Regression tests for the grammar fixture-resolution bug.
