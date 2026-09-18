@@ -147,6 +147,12 @@ impl GmshKernel {
     /// acquisition, model setup, mesh generation, readback). Common
     /// failure modes: open / non-manifold input mesh, degenerate triangles,
     /// HXT internal errors.
+    ///
+    /// Also fails when the mesher reports success but the model holds no
+    /// tetrahedra of the requested element type. An empty `VolumeMesh` is
+    /// never a useful caller outcome, so it is reported rather than
+    /// returned — the output-side counterpart of the empty-input rejection
+    /// this function already performs.
     pub fn mesh_to_volume(
         &self,
         surface: &Mesh,
@@ -195,12 +201,11 @@ impl GmshKernel {
             )));
         }
 
-        // Recover from a poisoned lock rather than propagating the failure:
-        // every call begins with `ffi::clear()` immediately below, which
-        // wipes any half-built model state left over from a panicked prior
-        // call. Without this, a single panic anywhere under the lock would
-        // permanently disable meshing for the rest of the process lifetime.
-        let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // `init::lock` rather than `GMSH_LOCK.lock()`: it carries the
+        // poisoned-lock recovery every entry point here needs, refuses outright
+        // once libgmsh has been finalized beyond recovery, and its `GmshGuard`
+        // is the witness `mesh_generate_with_recovery` demands.
+        let _guard = init::lock()?;
         init::ensure_initialized();
 
         // --- Mesh-size clamp: leave nothing behind (task #6298) ---
@@ -234,7 +239,8 @@ impl GmshKernel {
         // deliberately out of #6298's scope and owned by name by task #6212,
         // which also owns the still-unshared `Mesh.MeshSizeFromPoints` /
         // `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` trio.
-        let _clamp_reset = crate::mesh_size_clamp::MeshSizeClampReset::armed(&_guard);
+        let _clamp_reset =
+            crate::mesh_size_clamp::MeshSizeClampReset::armed(_guard.clamp_reset_witness());
 
         ffi::clear()?;
         // Silence gmsh's stdout chatter — keeps test output readable.
@@ -374,14 +380,11 @@ impl GmshKernel {
         let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
         ffi::geo_synchronize()?;
 
-        // Tet meshing.
-        ffi::mesh_generate(3)?;
-
-        // Element type for readback: P1 = 4 (4-node tet), P2 = 11 (10-node tet).
-        let elem_type = match element_order {
-            ElementOrderTag::P1 => 4,
-            ElementOrderTag::P2 => 11,
-        };
+        // Tet meshing. Routed through `init::mesh_generate_with_recovery` so a
+        // failure here stays local: gmsh's mesher is process-global and a
+        // failed generate leaves it silently producing no elements until the
+        // library is recycled. See that function for the measured behaviour.
+        init::mesh_generate_with_recovery(&_guard, 3)?;
 
         let (node_tags, coord_buf) = ffi::get_nodes_all()?;
         // Defend the chunks_exact zip below: if gmsh ever returns mismatched
@@ -397,19 +400,7 @@ impl GmshKernel {
                 node_tags.len() * 3,
             )));
         }
-        let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-        let nodes_per_elem: usize = match element_order {
-            ElementOrderTag::P1 => 4,
-            ElementOrderTag::P2 => 10,
-        };
-        if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
-            return Err(GeometryError::OperationFailed(format!(
-                "gmsh get_elements_by_type stride mismatch: elem_node_tags.len()={} \
-                 is not a multiple of {nodes_per_elem} (expected {nodes_per_elem} \
-                 nodes per {element_order:?} tet)",
-                elem_node_tags.len(),
-            )));
-        }
+        let elem_node_tags = init::read_tet_connectivity("mesh_to_volume", element_order)?;
 
         // Build (gmsh_tag → 0-based local idx) by sorting node tags and
         // assigning indices in tag order. Vertices are emitted in the same
