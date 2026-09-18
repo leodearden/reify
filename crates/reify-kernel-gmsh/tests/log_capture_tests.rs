@@ -191,10 +191,12 @@ fn a_non_operation_failed_error_passes_through_unchanged() {
 /// `GMSH_LOCK`; the `annotated` cases above are pure.
 #[test]
 fn log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop() {
-    // Recover from a poisoned lock the way `mesh_to_volume` does: the
-    // `ffi::clear()` below wipes any half-built model a panicked prior test
-    // left behind.
-    let guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Through `init::lock`, not `GMSH_LOCK` directly: `LogCapture::armed`
+    // asks for the `GmshGuard` only `init::lock` mints, and that acquisition
+    // carries the poisoned-lock recovery every production entry point relies
+    // on — the `ffi::clear()` below wipes whatever half-built model a
+    // panicked prior test left behind.
+    let guard = init::lock().expect("init::lock failed");
     init::ensure_initialized();
 
     let annotated_err = {

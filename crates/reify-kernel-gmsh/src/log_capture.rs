@@ -141,15 +141,23 @@ pub fn annotated(err: GeometryError, lines: &[String]) -> GeometryError {
 /// # Why it borrows the lock guard
 ///
 /// The FFI call in `drop` flips a process-global gmsh switch and must
-/// therefore happen while `GMSH_LOCK` is held. The
-/// `PhantomData<&'g MutexGuard<'g, ()>>` makes that structural rather than a
-/// comment a refactor can quietly violate: [`Self::armed`] can only be
-/// called with a live guard in hand, so the binding cannot be hoisted above
-/// the `let _guard = …` line, and because this type has a `Drop` impl (no
-/// `#[may_dangle]`) dropck requires the borrow to still be live when it
+/// therefore happen while [`crate::init::GMSH_LOCK`] is held. The
+/// `PhantomData<&'g GmshGuard>` makes that structural rather than a comment a
+/// refactor can quietly violate: [`Self::armed`] can only be called with a
+/// live guard in hand, so the binding cannot be hoisted above the
+/// `let _guard = init::lock()?` line, and because this type has a `Drop` impl
+/// (no `#[may_dangle]`) dropck requires the borrow to still be live when it
 /// drops — which forces the stop to land *before* the lock is released.
-/// Copied from [`crate::mesh_size_clamp::MeshSizeClampReset`], which guards
-/// a sibling process-global for the same reason.
+///
+/// The witness is [`crate::init::GmshGuard`], not the weaker
+/// `&MutexGuard<'_, ()>` that [`crate::mesh_size_clamp::MeshSizeClampReset`]
+/// still takes. `GmshGuard`'s own doc calls that weak form "exactly the
+/// witness this type was introduced to stop handing out, so the one site that
+/// still needs it names it", and names `MeshSizeClampReset` as that one site —
+/// so reaching for `GmshGuard::clamp_reset_witness` here would falsify it. The
+/// strong witness is the honest one anyway: a `GmshGuard` proves libgmsh was
+/// alive when the lock was taken, and a capture is a read of a buffer that
+/// lives inside the library.
 ///
 /// # The one contract a caller can still break
 ///
@@ -159,11 +167,11 @@ pub fn annotated(err: GeometryError, lines: &[String]) -> GeometryError {
 /// it, leaving the outer `annotate` with nothing. Arm at most one per lock
 /// hold. Today there is exactly one call site,
 /// [`crate::kernel_real::GmshKernel::mesh_to_volume`].
-pub struct LogCapture<'g>(std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>);
+pub struct LogCapture<'g>(std::marker::PhantomData<&'g crate::init::GmshGuard>);
 
 impl<'g> LogCapture<'g> {
-    /// Arm the capture. Takes the live `GMSH_LOCK` guard by reference purely
-    /// for its lifetime — the guard itself is never touched.
+    /// Arm the capture. Takes the live [`crate::init::GmshGuard`] by reference
+    /// purely for its lifetime — the guard itself is never touched.
     ///
     /// Best-effort on purpose: a diagnostic that cannot be armed must never
     /// turn a mesh that would have succeeded into a failure, so a
@@ -173,7 +181,7 @@ impl<'g> LogCapture<'g> {
     /// an empty `Vec` (measured; see its doc), which is exactly
     /// [`annotated`]'s pass-through path, so the caller gets back the error
     /// it would have got without capture at all.
-    pub fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
+    pub fn armed(_guard: &'g crate::init::GmshGuard) -> Self {
         let _ = crate::ffi::logger_start();
         Self(std::marker::PhantomData)
     }
