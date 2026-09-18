@@ -1274,13 +1274,26 @@ fn fmt_deg(radians: f64) -> String {
 /// are structure-keyed and pose-independent, so the build is shared safely — a
 /// structure's datums are identical regardless of which scope references it.
 ///
-/// **Single-level recursion.** That sub-build realizes each referenced structure
-/// through `engine`. ζ's grounding model keeps those leaf structures free of
-/// relations, so the sub-build's own `solve_scopes` finds nothing and does not
-/// recurse further. Widening the filter to zero-auto scopes does not change that:
-/// the criterion was always "no relations", and a leaf structure that declared one
-/// would already have recursed under the old filter if it also had an auto sub. The
-/// caller MUST invoke this BEFORE the outer build's own state resets so the
+/// **Recursion through the sub-build.** That sub-build realizes each referenced
+/// structure through `engine`, so its own `solve_scopes` runs over the retained
+/// templates — and since the filter is now "≥1 relation", an operand structure that
+/// declares a ZERO-AUTO relate block of its own recurses one level further than it
+/// used to. Termination is structural: each level retains a strict sub-closure of
+/// the last. The nested build's diagnostics are DISCARDED
+/// ([`realize_structures`] keeps only `.values`), which costs nothing here because
+/// this walk covers every template in the module — so the nested scope is verified
+/// by THIS pass in its own right, exactly once. Measured, not assumed, by
+/// `a_nested_zero_auto_scope_is_verified_once_by_the_outer_pass` in
+/// `harness_engine/relate_static_verification_e2e.rs`; the prose this replaced
+/// asserted that operand structures simply carry no relations, which nothing in the
+/// compiler enforces.
+///
+/// Do NOT "fix" the extra level by filtering relation-declaring templates out of
+/// `sub_module`: an operand structure may be BOTH (the pin's `Carrier` is), and
+/// dropping it would leave the outer scope's operand unrealized — a decidable scope
+/// turned unverifiable to save a sub-build.
+///
+/// The caller MUST invoke this BEFORE the outer build's own state resets so the
 /// transient sub-build state is re-established by the main `check()` that follows.
 pub fn solve_scopes(
     module: &CompiledModule,

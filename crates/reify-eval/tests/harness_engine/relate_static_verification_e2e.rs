@@ -703,3 +703,192 @@ fn static_relate_facts_do_not_accumulate_across_builds() {
         engine.relate_static_facts()
     );
 }
+
+/// **V3** — a tessellate surface after the build must LEAVE the ledger STANDING.
+///
+/// `reify check` runs `tessellate_realizations` after `realize_for_check` on any
+/// module carrying a `RepresentationWithin` rule
+/// (`crates/reify-cli/src/main.rs`), and `tessellate_realizations` resets per-build
+/// engine state. While the ledger was classified reset-on-EVERY-surface, that
+/// second surface silently emptied it — and since tessellate runs no relate-solve,
+/// nothing refilled it. ζ (#5420) would then read zero rows and report "no relate
+/// block" for a module that has one; for a SATISFIED scope, which raises no
+/// diagnostic at all, the row is the ONLY evidence of consumption, so the wipe is
+/// indistinguishable downstream from the false green this whole task removes.
+///
+/// `static_relate_facts_do_not_accumulate_across_builds` covers build→build; this
+/// is the build→tessellate leg it cannot see.
+#[test]
+fn static_relate_facts_survive_a_tessellate_after_the_build() {
+    if skip_without_occt("static_relate_facts_survive_a_tessellate_after_the_build") {
+        return;
+    }
+
+    let module = reify_test_support::parse_and_compile_with_stdlib(ok_fixture_source());
+    let mut engine = occt_engine();
+    let _ = engine.build(&module, reify_ir::ExportFormat::Step);
+
+    let after_build = engine.relate_static_facts().to_vec();
+    assert_eq!(
+        after_build.len(),
+        1,
+        "fixture guard: the build must produce a row, or the assertion below is \
+         vacuous"
+    );
+
+    engine.tessellate_realizations(&module);
+
+    assert_eq!(
+        engine.relate_static_facts(),
+        &after_build[..],
+        "a tessellate surface runs no relate-solve, so it must leave the build's \
+         ledger exactly as it found it — clearing it here reads downstream as \
+         `this module has no relate block`"
+    );
+}
+
+// ── Nested zero-auto scopes: the sub-build's own recursion ─────────────────
+//
+// Widening the `solve_scopes` filter to "≥1 relation" also widened what the shared
+// `realize_structures` sub-build can recurse into: that sub-build calls
+// `engine.build(&sub_module, …)`, whose own `solve_scopes` now processes a retained
+// operand structure that declares a relate block with NO auto subs — a case the old
+// filter dropped. The doc used to assert this away ("ζ's leaf structures carry no
+// relations"), which nothing in the compiler enforces. Measured here instead, the
+// same way V1 measures the sharing claim rather than arguing it.
+//
+// Filtering relations OUT of `sub_module` to make single-level recursion structural
+// is the WRONG repair, and this fixture is why: `Carrier` is simultaneously an
+// operand structure (the outer scope reads its `body_axis`) and a relate-declaring
+// one. Dropping it would leave the outer operand unrealized, turning a decidable
+// scope unverifiable — trading a cost concern for a verdict regression.
+
+/// An operand structure that itself declares a ZERO-AUTO relate block.
+///
+/// `Carrier` is referenced by `NestedOuter`'s relation AND carries its own, so
+/// realizing the outer scope's operands builds a sub-module that still contains a
+/// relate scope. Both scopes are geometrically FALSE (7 mm inside, 12 mm outside),
+/// so a lost or duplicated verdict is visible as a count, not as silence.
+const NESTED_ZERO_AUTO_SOURCE: &str = r#"
+structure Pin {
+    let shaft = cylinder(2mm, 8mm)
+    let shaft_axis : Axis = shaft.axis
+}
+
+structure OffsetPin {
+    let shaft = translate(cylinder(2mm, 8mm), 7mm, 0mm, 0mm)
+    let shaft_axis : Axis = shaft.axis
+}
+
+structure Carrier {
+    sub near : Pin
+    sub far : OffsetPin
+
+    let body = cylinder(6mm, 10mm)
+    let body_axis : Axis = body.axis
+
+    relate {
+        concentric(near.shaft_axis, far.shaft_axis)
+    }
+}
+
+structure Host {
+    let bore = translate(cylinder(6mm, 10mm), 12mm, 0mm, 0mm)
+    let bore_axis : Axis = bore.axis
+}
+
+structure NestedOuter {
+    sub carrier : Carrier
+    sub host : Host
+
+    relate {
+        concentric(carrier.body_axis, host.bore_axis)
+    }
+}
+"#;
+
+/// A zero-auto relate scope inside an OPERAND structure is verified exactly ONCE,
+/// by the outer pass — never lost to the discarded sub-build, never doubled.
+///
+/// `realize_structures` throws away the nested build's diagnostics
+/// (`engine.build(…).values`), so a verdict reached only there would vanish. It
+/// does not: `solve_scopes` walks every template in the module, so `Carrier`'s
+/// scope is processed by the OUTER pass in its own right. That is what makes the
+/// nested build's duplicate work redundant rather than load-bearing — and it is
+/// the property that would break if a future edit scoped the walk to the root
+/// template.
+#[test]
+fn a_nested_zero_auto_scope_is_verified_once_by_the_outer_pass() {
+    if skip_without_occt("a_nested_zero_auto_scope_is_verified_once_by_the_outer_pass") {
+        return;
+    }
+
+    let module = reify_test_support::parse_and_compile_with_stdlib(NESTED_ZERO_AUTO_SOURCE);
+    let mut engine = occt_engine();
+    let solved = reify_eval::relate_solve::solve_scopes(&module, &mut engine);
+
+    let names: Vec<&str> = solved.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["Carrier", "NestedOuter"],
+        "both relate-declaring templates are processed, in declaration order — the \
+         nested one exactly once"
+    );
+
+    for (name, solution) in &solved {
+        let errors = relate_static_diagnostics(&solution.diagnostics);
+        assert_eq!(
+            errors.len(),
+            1,
+            "`{name}` declares one violated relation, so it renders ONE aggregate; \
+             got {:?}",
+            solution
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(reify_eval::relate_solve::StaticRelateFacts {
+                verified: 0,
+                violated: 1,
+                unverifiable: 0,
+            }),
+            "`{name}`: the nested sub-build must neither swallow a verdict nor add one"
+        );
+    }
+}
+
+/// The same module through a completed `Engine::build`: exactly TWO ledger rows,
+/// and the nested sub-build's own rows do not survive into them.
+///
+/// The sub-build is a full `engine.build`, so it clears and repopulates the ledger
+/// mid-flight. The outer build's reset runs AFTER `solve_scopes` returns and BEFORE
+/// its consumption loop, which is what keeps the nested rows from leaking into the
+/// outer ledger — an ordering the accessor's "one row per zero-auto scope of THIS
+/// module" contract depends on.
+#[test]
+fn a_nested_zero_auto_module_reports_one_ledger_row_per_scope() {
+    if skip_without_occt("a_nested_zero_auto_module_reports_one_ledger_row_per_scope") {
+        return;
+    }
+
+    let engine = build_and_keep_engine(NESTED_ZERO_AUTO_SOURCE);
+    let rows = engine.relate_static_facts();
+    let violated_one = reify_eval::relate_solve::StaticRelateFacts {
+        verified: 0,
+        violated: 1,
+        unverifiable: 0,
+    };
+
+    assert_eq!(
+        rows,
+        &[
+            ("Carrier".to_string(), violated_one),
+            ("NestedOuter".to_string(), violated_one),
+        ][..],
+        "one row per zero-auto scope of THIS module, in declaration order — no \
+         nested-build leftovers, no missing nested scope"
+    );
+}

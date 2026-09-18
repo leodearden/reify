@@ -650,9 +650,15 @@ impl Engine {
     /// together here: reporting an assembly the solver actually placed as one
     /// merely checked in place would be a false claim.
     ///
-    /// Per-build, not cumulative: cleared by `reset_per_build_state` on every
-    /// surface and repopulated by the relate consumption loop, so a row can
-    /// never describe a previous module's scopes.
+    /// Per-build, not cumulative: `reset_per_build_state` clears it on the
+    /// `Build` surface — the one that also repopulates it, from the relate
+    /// consumption loop — so a row can never describe a previous module's
+    /// scopes. The other surfaces deliberately leave it standing: a
+    /// `tessellate_realizations()` after a build (which `reify check` performs on
+    /// any module carrying a `RepresentationWithin` rule) never repopulates, so
+    /// clearing there would hand ζ (#5420) an empty ledger for a module that has
+    /// a relate block — the same conflation, one layer up, that the ledger exists
+    /// to remove.
     ///
     /// This task produces the rows; rendering them into the `reify check`
     /// summary is ζ #5420's leaf
