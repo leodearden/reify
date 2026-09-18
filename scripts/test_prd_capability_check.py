@@ -3259,6 +3259,101 @@ _CACHE_DENIED_STDERR = (
 
 
 # ---------------------------------------------------------------------------
+# #6876 step-03 (RED): build_command() argv for the "value" kind
+# ---------------------------------------------------------------------------
+
+class TestBuildCommandValueKind(unittest.TestCase):
+    """A `value` probe runs the same command an `ir` probe does.
+
+    The kind names the OBSERVATION MODEL, not the command: both ask
+    `reify eval <fixture>` and differ only in what they read off the result.
+    Pinning argv equality rather than re-spelling the expected list is what
+    keeps the two from drifting apart into two ways of asking one question.
+    """
+
+    _FIXTURE = "tests/prd-gate/fixtures/value_clean_eval_cells.ri"
+    _VALUE_MATCH = {
+        "stdout_value": {
+            "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
+            "min": 0.01,
+            "max": 0.03,
+        }
+    }
+
+    def _make_probe(self, kind, fixture=None, match=None):
+        return pcc.Probe(
+            capability="damping ratio is in range",
+            probe_kind=kind,
+            fixture=fixture if fixture is not None else self._FIXTURE,
+            expected={
+                "observation": "present",
+                "match": match if match is not None else {},
+            },
+        )
+
+    def test_value_argv_shape(self):
+        """value → [reify, eval, <abs-fixture>]."""
+        probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
+            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        self.assertEqual(
+            cmd, ["reify", "eval", os.path.join(_REPO_ROOT, self._FIXTURE)]
+        )
+
+    def test_value_argv_identical_to_ir_argv(self):
+        """SPOT: the two kinds differ in observation model, never in argv."""
+        value_probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
+        ir_probe = self._make_probe("ir", match={"stderr_contains": "EvalError"})
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
+            value_cmd = pcc.build_command(value_probe, repo_root=_REPO_ROOT)
+            ir_cmd = pcc.build_command(ir_probe, repo_root=_REPO_ROOT)
+        self.assertEqual(value_cmd, ir_cmd)
+
+    def test_value_honours_reify_bin_override(self):
+        probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "/custom/reify"}):
+            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        self.assertEqual(cmd[0], "/custom/reify")
+
+    def test_value_resolves_relative_fixture(self):
+        probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
+            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        self.assertTrue(os.path.isabs(cmd[-1]), f"got {cmd[-1]!r}")
+        self.assertTrue(cmd[-1].endswith(self._FIXTURE), f"got {cmd[-1]!r}")
+
+    def test_value_passes_absolute_fixture_through(self):
+        absolute = os.path.join(_REPO_ROOT, self._FIXTURE)
+        probe = self._make_probe(
+            "value", fixture=absolute, match=dict(self._VALUE_MATCH)
+        )
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
+            cmd = pcc.build_command(probe, repo_root="/some/other/root")
+        self.assertEqual(cmd[-1], absolute)
+
+    def test_value_probe_inherits_ambient_env(self):
+        """run_probe() special-cases cwd/env for `grammar` only.
+
+        A value probe drives `reify eval`, which never touches the tree-sitter
+        CLI cache, so overriding its environment would be unjustified blast
+        radius — exactly the reasoning already pinned for `check`.  Measured
+        through a stub that echoes back what it actually received, since the
+        child's environment is what no in-process assertion can observe.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stub = _ts_stub_echo_cache(tmpdir, name="reify_stub_value_env")
+            sentinel = os.path.join(tmpdir, "ambient_cache_value")
+            os.makedirs(sentinel, exist_ok=True)
+            probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
+            with unittest.mock.patch.dict(
+                os.environ, {"REIFY_BIN": stub, "XDG_CACHE_HOME": sentinel}
+            ):
+                run = pcc.run_probe(probe)
+        self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
+        self.assertEqual(run.stdout.strip(), f"XDG_CACHE_HOME={sentinel}")
+
+
+# ---------------------------------------------------------------------------
 # TREE_SITTER_BIN stub factories (module-level so both the grammar_substrate_usable()
 # unit tests and the --grammar-substrate-status CLI tests in TestMain share one
 # definition of "what a denied / clean / rejecting tree-sitter looks like").
