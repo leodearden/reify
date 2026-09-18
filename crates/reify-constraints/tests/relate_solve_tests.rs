@@ -27,8 +27,8 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, ResidualUnit,
-    max_relation_residual, partition_driving_set, pose_from_frame, solve_frame,
-    static_relation_residuals,
+    comparable_datum_operands, max_relation_residual, partition_driving_set, pose_from_frame,
+    solve_frame, static_relation_residuals,
 };
 use reify_ir::{SolveResult, Value};
 
@@ -1887,5 +1887,133 @@ fn frame_coincidence_rows_are_length_then_angle() {
         ],
         "frame-coincidence is 3 origin-delta rows then 3 orientation-delta rows; \
          got {rows:?}"
+    );
+}
+
+// ── Per-unit assertion rungs + scale-free dimensionless rows (DIC α amendment) ──
+//
+// A residual row vector is not dimensionally homogeneous, so ONE rung cannot judge
+// all of it. The zero-auto static verifier compares each row against the rung for
+// its own unit; these pin the rungs’ derivation and the one residual form whose
+// row was not scale-free until now.
+
+/// The three assertion rungs derive from the SAME base length, so an edit to the
+/// hierarchy moves all three together rather than leaving two hand-picked epsilons
+/// behind.
+///
+/// The angular rung is the angle that displaces a feature at the documented 1 m
+/// reference radius by exactly the length rung; the dimensionless rung is its sine,
+/// because every dimensionless form here measures the sine of a misalignment
+/// between two unit directions. At the kernel default the three therefore coincide
+/// to within float noise — which is the point: the numbers agreeing is a
+/// CONSEQUENCE of the derivation, not the licence to compare radians against metres
+/// that the single-rung code was taking.
+#[test]
+fn assertion_rungs_are_derived_per_unit_from_one_base_length() {
+    let tol = RelateTolerance::kernel_default();
+
+    assert_eq!(
+        tol.assertion_angle(),
+        tol.assertion() / 1.0,
+        "the angular rung is the length rung over the 1 m reference radius"
+    );
+    assert_eq!(
+        tol.assertion_dimensionless(),
+        tol.assertion_angle().sin(),
+        "the dimensionless rung is the sine of the angular one"
+    );
+    assert!(
+        tol.assertion_dimensionless() < tol.assertion_angle(),
+        "sin θ < θ for θ > 0, so the dimensionless rung is never the looser of the two"
+    );
+    assert!(
+        tol.kernel_local() <= tol.solver_convergence() && tol.solver_convergence() <= tol.assertion(),
+        "the length hierarchy is unchanged by the per-unit rungs"
+    );
+}
+
+/// A geometrically EXACT `perpendicular` measures zero however long its operands’
+/// direction vectors are.
+///
+/// The residual is `dot(a, b)`, which is the sine of the misalignment only for UNIT
+/// operands — and `dir_of` reads whatever direction vector realization produced.
+/// Unnormalized, the pair below reads `10 × 10 = 100`: six orders of magnitude past
+/// any assertion rung, on geometry that is exactly right. The solve path never
+/// noticed (its zero set is magnitude-invariant), but the static verifier compares
+/// the row against a fixed rung and fails the BUILD, so the scale sensitivity had
+/// to go. `angle` already normalized for the same reason.
+#[test]
+fn perpendicular_residual_is_scale_free_in_its_operands() {
+    let exact = |da: (f64, f64, f64), db: (f64, f64, f64)| {
+        let rel = relation(
+            "perpendicular",
+            vec![datum("m", vec3(da.0, da.1, da.2)), datum("a", vec3(db.0, db.1, db.2))],
+            1,
+        );
+        static_relation_residuals(&rel)
+    };
+
+    let unit_rows = exact((1.0, 0.0, 0.0), (0.0, 0.0, 1.0));
+    let scaled_rows = exact((10.0, 0.0, 0.0), (0.0, 0.0, 10.0));
+    assert_eq!(
+        unit_rows.len(),
+        1,
+        "perpendicular contributes exactly one dimensionless row; got {unit_rows:?}"
+    );
+    assert_eq!(
+        scaled_rows, unit_rows,
+        "scaling either operand must not move the residual — an exact \
+         perpendicular reads zero at every magnitude; got {scaled_rows:?}"
+    );
+
+    // And a genuinely misaligned pair still reads its SINE, not a scaled one: 30°
+    // off perpendicular is sin 30° = 0.5 whatever the operand lengths.
+    let misaligned = exact((10.0, 0.0, 0.0), (5.0, 0.0, 8.660_254_037_844_387));
+    assert!(
+        (misaligned[0].value - 0.5).abs() < 1e-12,
+        "a 30° misalignment reads sin 30° = 0.5 independently of operand scale; \
+         got {misaligned:?}"
+    );
+}
+
+/// `comparable_datum_operands` is the arity `static_relation_residuals` guards on,
+/// exposed so a caller can say WHICH source of an empty row vector it hit.
+///
+/// The two are pinned together here because the zero-auto verifier reports a
+/// DIFFERENT reason for each (“only one operand to compare” vs. “no residual model
+/// for these operand kinds”), and a reason that disagrees with the guard that
+/// actually fired is a confidently wrong “why” on a diagnostic whose entire value
+/// is its why.
+#[test]
+fn comparable_datum_operands_is_the_arity_the_residual_guard_applies() {
+    let identity_q = (1.0, 0.0, 0.0, 0.0);
+    let lone = relation(
+        "fasten",
+        vec![datum("m", frame((0.010, 0.0, 0.0), identity_q))],
+        6,
+    );
+    assert_eq!(
+        comparable_datum_operands(&lone), 1,
+        "one Frame operand — the `ground(sub)` desugar’s shape once `self.frame` \
+         has dropped out"
+    );
+    assert!(
+        static_relation_residuals(&lone).is_empty(),
+        "below two datum operands there is no pair to compare, so no rows"
+    );
+
+    let pair = relation(
+        "fasten",
+        vec![
+            datum("m", frame((0.010, 0.0, 0.0), identity_q)),
+            datum("a", frame((0.0, 0.0, 0.0), identity_q)),
+        ],
+        6,
+    );
+    assert_eq!(comparable_datum_operands(&pair), 2);
+    assert!(
+        !static_relation_residuals(&pair).is_empty(),
+        "`fasten` over two Frames IS modelled — the empty vector above is an arity \
+         verdict, not a missing residual model"
     );
 }

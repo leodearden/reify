@@ -273,9 +273,47 @@ impl RelateTolerance {
         self.solver_convergence
     }
 
-    /// The (loosest) post-solve assertion/dedup tolerance (metres).
+    /// The (loosest) post-solve assertion/dedup tolerance, for a row measured in
+    /// METRES. A row measured in radians or as a pure number is judged against
+    /// [`assertion_angle`](Self::assertion_angle) /
+    /// [`assertion_dimensionless`](Self::assertion_dimensionless) instead — a
+    /// residual row vector is not dimensionally homogeneous (see [`ResidualUnit`]),
+    /// so one rung cannot serve all three.
     pub fn assertion(&self) -> f64 {
         self.assertion
+    }
+
+    /// The radius (metres) at which the angular rung is defined.
+    ///
+    /// An orientation error `θ` displaces a point at radius `R` by `θ·R`, so an
+    /// angle has no length reading until a radius is named. One metre is that
+    /// reference: a feature there, mis-oriented by
+    /// [`assertion_angle`](Self::assertion_angle), is displaced by exactly
+    /// [`assertion`](Self::assertion). Naming the radius is the point — comparing
+    /// radians against the metre rung with no reference scale is a category error
+    /// however close the two numbers happen to land.
+    const ANGULAR_REFERENCE_RADIUS_M: f64 = 1.0;
+
+    /// The assertion rung for a row measured in RADIANS — the angle that displaces
+    /// a feature at [`ANGULAR_REFERENCE_RADIUS_M`](Self::ANGULAR_REFERENCE_RADIUS_M)
+    /// by the length rung. Derived from the same base length, so the three rungs
+    /// cannot drift apart under an edit to one of them.
+    pub fn assertion_angle(&self) -> f64 {
+        self.assertion / Self::ANGULAR_REFERENCE_RADIUS_M
+    }
+
+    /// The assertion rung for a DIMENSIONLESS row — a unit-vector component
+    /// difference, a dot product, or a cosine difference.
+    ///
+    /// The sine of the angular rung: every dimensionless form here measures the
+    /// sine of a misalignment between two UNIT directions (exactly, for
+    /// `perpendicular`'s dot product; to first order for the rest), so this is the
+    /// same physical misalignment expressed in the unit the row carries. It is a
+    /// meaningful rung only because those forms normalize their operands first —
+    /// an unnormalized dot scales with the operands' magnitudes, and no fixed
+    /// threshold means anything against a number that does.
+    pub fn assertion_dimensionless(&self) -> f64 {
+        self.assertion_angle().sin()
     }
 }
 
@@ -476,8 +514,20 @@ fn residual_dispatch(
             (Some(da), Some(db)) => direction_alignment_residual(da, db, -1.0),
             _ => Vec::new(),
         },
+        // Normalize before the dot, for the reason spelled out on the `angle` arm
+        // below: `dot(da, db)` is the SINE of the misalignment only when both
+        // operands are unit-length, and `dir_of` does not guarantee that. Left
+        // unnormalized the row scales with the operands' magnitudes — harmless to
+        // the solver, whose zero set is magnitude-invariant, but not to the static
+        // verifier, which compares the row against a FIXED dimensionless rung: a
+        // scale-10 direction would inflate the residual tenfold and fail a build
+        // that is geometrically correct. A degenerate zero-length direction has no
+        // orientation ⇒ no residual row.
         "perpendicular" => match (dir_of(a), dir_of(b)) {
-            (Some(da), Some(db)) => vec![ResidualRow::dimensionless(dot3(da, db))],
+            (Some(da), Some(db)) => match (unit3(da), unit3(db)) {
+                (Some(ua), Some(ub)) => vec![ResidualRow::dimensionless(dot3(ua, ub))],
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         },
         "coincident" => coincident_residual(a, b),
@@ -604,7 +654,7 @@ fn pick_ab(datums: &[(Value, bool)]) -> Option<(&Value, &Value)> {
 pub fn static_relation_residuals(rel: &RelationInstance) -> Vec<ResidualRow> {
     // Arity guard — see (iii). Two datum operands are the minimum any residual
     // form can compare; below that, `pick_ab` would self-compare.
-    if rel.operands.iter().filter(|op| is_datum(&op.datum)).count() < 2 {
+    if comparable_datum_operands(rel) < 2 {
         return Vec::new();
     }
 
@@ -622,6 +672,22 @@ pub fn static_relation_residuals(rel: &RelationInstance) -> Vec<ResidualRow> {
 
     let unknown = FrameUnknown { sub, free: false };
     relation_residual_rows(rel, &unknown, &Pose::identity())
+}
+
+/// How many of `rel`'s operands are geometric datums a residual form could compare
+/// — the arity [`static_relation_residuals`] guards on.
+///
+/// Public because the empty row vector it produces has two sources (see that
+/// function's (iii)) and a caller that reports "unverifiable" must say WHICH one it
+/// hit. Reading the count here rather than re-deriving a guess keeps the reported
+/// reason DERIVED from the guard that actually fired: the reachable shape is the
+/// `ground(sub)` / `fix(sub)` desugar `fasten(sub.frame, self.frame)`, whose
+/// `self.frame` anchor is not a sub datum — one operand, not two. Reporting that as
+/// "no residual model for `fasten`" would be false (the Frame branch of
+/// [`coincident_residual`] models exactly that pair), and a wrong "why" undercuts
+/// the honest-non-consumption contract the caller exists to uphold.
+pub fn comparable_datum_operands(rel: &RelationInstance) -> usize {
+    rel.operands.iter().filter(|op| is_datum(&op.datum)).count()
 }
 
 // ── Residual rows and their units ────────────────────────────────────────────

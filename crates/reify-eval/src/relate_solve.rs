@@ -25,9 +25,9 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    ResidualRow, ResidualUnit, partition_driving_set, pose_from_frame, solve_frame,
-    static_relation_residuals,
+    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, comparable_datum_operands,
+    max_relation_residual, ResidualRow, ResidualUnit, partition_driving_set, pose_from_frame,
+    solve_frame, static_relation_residuals,
 };
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
@@ -565,8 +565,9 @@ fn link(adj: &mut HashMap<String, Vec<String>>, a: &str, b: &str) {
     adj.entry(b.to_string()).or_default().push(a.to_string());
 }
 
-/// Does `expr` denote a `self.*` intrinsic-datum operand — the anchor reference a
-/// `ground(sub)` desugar (`fasten(sub.frame, self.frame)`) carries?
+/// The datum name of a `self.*` intrinsic-datum operand — the anchor reference a
+/// `ground(sub)` desugar (`fasten(sub.frame, self.frame)`) carries — or `None` when
+/// `expr` is not one.
 ///
 /// A `self.<datum>` projection lowers to `MethodCall { object: ValueRef(__self :
 /// StructureRef), method, [] }` (η step-8/10) — distinct from a `<sub>.<member>`
@@ -574,12 +575,19 @@ fn link(adj: &mut HashMap<String, Vec<String>>, a: &str, b: &str) {
 /// `StructureRef`-typed receiver is the `self` anchor operand. Mirrors the
 /// self-datum discriminator the compiler's `classify` / eval's
 /// `try_eval_self_datum_projection` use.
-fn is_self_anchor_operand(expr: &CompiledExpr) -> bool {
-    matches!(
-        &expr.kind,
-        CompiledExprKind::MethodCall { object, args, .. }
-            if args.is_empty() && matches!(object.result_type, Type::StructureRef(_))
-    )
+///
+/// The member name is carried rather than a bare `bool` so the zero-auto verifier
+/// can NAME the operand (`self.frame`) it could not compare against; the two
+/// callers that only need presence read `.is_some()`.
+fn self_anchor_member(expr: &CompiledExpr) -> Option<&str> {
+    match &expr.kind {
+        CompiledExprKind::MethodCall { object, method, args }
+            if args.is_empty() && matches!(object.result_type, Type::StructureRef(_)) =>
+        {
+            Some(method)
+        }
+        _ => None,
+    }
 }
 
 /// Trace each `at auto` sub in `scope` to the grounded anchor over the relation
@@ -593,7 +601,7 @@ fn is_self_anchor_operand(expr: &CompiledExpr) -> bool {
 ///  - every `<sub>.<member>` datum operand ([`decode_operand`]) contributes its sub,
 ///    and the relation unions all the auto subs it references together;
 ///  - a relation referencing a GROUND sub (a non-auto anchor) or any `self.*` datum
-///    operand ([`is_self_anchor_operand`]) unions its auto subs into the anchor.
+///    operand ([`self_anchor_member`]) unions its auto subs into the anchor.
 ///
 /// An auto sub not in the anchor's connected component is floating.
 pub fn trace_to_ground(scope: &RelateScope) -> Vec<String> {
@@ -618,7 +626,7 @@ pub fn trace_to_ground(scope: &RelateScope) -> Vec<String> {
                 } else if auto.contains(opref.sub.as_str()) {
                     rel_autos.push(opref.sub);
                 }
-            } else if is_self_anchor_operand(arg) {
+            } else if self_anchor_member(arg).is_some() {
                 touches_anchor = true;
             }
         }
@@ -889,7 +897,14 @@ enum StaticVerdict {
     /// dimensionless direction/dot/cosine row and state a fabricated length; a
     /// residual row vector is not dimensionally homogeneous (`concentric` alone
     /// mixes two tilt rows with two metre rows), so the unit has to ride along.
-    Violated(ResidualRow),
+    ///
+    /// The measured [`RelationInstance`] rides along too, so the renderer derives
+    /// the demand phrase from the instance ALREADY IN HAND. Rebuilding it there
+    /// re-walked the args and deep-cloned every operand `Value`, and needed an
+    /// `unwrap_or_else` fallback that this arm's own precondition makes
+    /// unreachable — dead code that, if ever reached, would have rendered
+    /// "`concentric` requires … satisfied — off by 30 mm".
+    Violated(ResidualRow, RelationInstance),
     /// Not DECIDED. Carries the reader-facing reason, which is the whole value of
     /// this arm: an undecided relation must say why, not fall silent.
     Unverifiable(String),
@@ -925,11 +940,18 @@ enum StaticVerdict {
 ///    precisely so a coincidentally-zero residual cannot be mistaken for a pass;
 /// 3. an operand that did not realize (`Value::Undef` / absent) ⇒ unverifiable,
 ///    naming the operand;
-/// 4. an EMPTY residual row vector ⇒ unverifiable — no residual model for this
-///    relation name / operand-kind combination. Never folded into "satisfied";
-/// 5. otherwise the measured `max |row|` against
-///    [`RelateTolerance::kernel_default`]'s assertion rung: within ⇒ verified
-///    (silent), beyond ⇒ violated.
+/// 4. fewer than two datum operands to compare ⇒ unverifiable, naming the
+///    `self.*` anchor when that is the cause. The reachable shape is the
+///    `ground(sub)` / `fix(sub)` desugar `fasten(sub.frame, self.frame)`, whose
+///    `self.frame` is the enclosing structure's own datum and so is not among the
+///    realized sub datums arm 3 walks;
+/// 5. an EMPTY residual row vector ⇒ unverifiable — no residual model for this
+///    relation name / operand-kind combination. Never folded into "satisfied".
+///    Arm 4 runs first so this arm's reason is only ever given for a genuinely
+///    UNMODELLED combination;
+/// 6. otherwise each row against the assertion rung for ITS OWN unit
+///    ([`assertion_rung`]): every row within ⇒ verified (silent), any row beyond ⇒
+///    violated.
 ///
 /// The counts therefore always sum to the scope's relation count, which is what
 /// makes a silently-skipped relation impossible to hide.
@@ -952,7 +974,10 @@ enum StaticVerdict {
 /// never solver internals. The measured magnitude is rendered by
 /// [`fmt_residual`] in the unit the residual row carries: mm for a length row,
 /// degrees for an orientation row, and a bare number for a direction/dot/cosine
-/// row, which has no length reading at all. [`conflict_diagnostic`] is deliberately NOT reused: it
+/// row, which has no length reading at all. That same unit tag also selects the
+/// rung the row is JUDGED against ([`assertion_rung`]) — rendering a row in one
+/// unit while thresholding it in another would leave the category error in place
+/// where it does the most damage, since a static violation FAILS the build. [`conflict_diagnostic`] is deliberately NOT reused: it
 /// needs an auto sub and a driving/redundant partition that a zero-auto scope does
 /// not have.
 pub fn verify_static_scope(scope: &RelateScope, realized: &RealizedDatums) -> RelateSolution {
@@ -967,19 +992,15 @@ pub fn verify_static_scope(scope: &RelateScope, realized: &RealizedDatums) -> Re
 
     for rel in &scope.relations {
         let refs = operand_refs(rel);
-        match static_verdict(rel, &refs, scope, realized, tol.assertion()) {
+        match static_verdict(rel, &refs, scope, realized, tol) {
             StaticVerdict::Verified => facts.verified += 1,
-            StaticVerdict::Violated(row) => {
+            StaticVerdict::Violated(row, inst) => {
                 facts.violated += 1;
-                let demand = relation_instance(rel, realized)
-                    .as_ref()
-                    .map(describe_demand)
-                    .unwrap_or_else(|| "satisfied".to_string());
                 violated.push(format!(
                     "`{}` requires {} {} — off by {}",
                     relation_name(rel),
                     describe_operands(rel),
-                    demand,
+                    describe_demand(&inst),
                     fmt_residual(row)
                 ));
             }
@@ -1054,7 +1075,7 @@ fn static_verdict(
     refs: &[(String, String)],
     scope: &RelateScope,
     realized: &RealizedDatums,
-    assertion_tol: f64,
+    tol: RelateTolerance,
 ) -> StaticVerdict {
     // 1. Not a relation call. Counted, never dropped.
     let Some(inst) = relation_instance(rel, realized) else {
@@ -1087,8 +1108,31 @@ fn static_verdict(
         ));
     }
 
-    // 4/5. Measure. An EMPTY row vector means "no residual model", which is
-    //      UNVERIFIABLE — never folded into satisfied.
+    // 4. Fewer than two datum operands, so there is no PAIR to compare. Read from
+    //    `comparable_datum_operands` — the very guard `static_relation_residuals`
+    //    applies — rather than re-derived here, so the reason cannot drift from the
+    //    condition that fired. Arm 3 cannot catch this shape: `operand_refs` lists
+    //    only `<sub>.<member>` operands, and the `self.*` anchor a
+    //    `ground(sub)`/`fix(sub)` desugar carries is not one.
+    if comparable_datum_operands(&inst) < 2 {
+        return StaticVerdict::Unverifiable(match self_anchor_operand_name(rel) {
+            Some(anchor) => format!(
+                "`{anchor}` is the enclosing structure's own datum rather than a \
+                 realized sub datum, so this relation has only one operand to \
+                 compare"
+            ),
+            None => format!(
+                "only {} of its operands realized as a geometric datum, so there is \
+                 nothing to compare it against",
+                comparable_datum_operands(&inst)
+            ),
+        });
+    }
+
+    // 5. An EMPTY row vector now means exactly one thing — no residual model for
+    //    this name/operand-kind combination — because arm 4 took the other source
+    //    (`static_relation_residuals` (iii)). UNVERIFIABLE, never folded into
+    //    satisfied.
     let rows = static_relation_residuals(&inst);
     if rows.is_empty() {
         return StaticVerdict::Unverifiable(format!(
@@ -1096,22 +1140,54 @@ fn static_verdict(
             inst.name
         ));
     }
-    // The verdict is still `max |row| <= tol`, unchanged: the tolerance rung is a
-    // single number applied to the whole vector, exactly as the solve path's
-    // remainder check applies it. What changes is that the DOMINANT row is carried
-    // out whole rather than collapsed to its magnitude, so the diagnostic can name
-    // the unit it was measured in. `fold` keeps the FIRST row of a tie, matching the
-    // source-order determinism the rest of this arm relies on.
-    let dominant = rows
+
+    // 6. Judge each row against the rung for ITS OWN unit. A single rung applied to
+    //    the whole vector was the same category error the `ResidualUnit` tag exists
+    //    to prevent, one level up: `concentric` mixes dimensionless tilt rows with
+    //    metre rows, and 1e-5 m and 1e-5 rad are not the same claim about geometry.
+    //    Because a static violation FAILS a build that previously built silently,
+    //    an over-tight rung on the wrong unit is a false Error, not just a cosmetic
+    //    mismatch.
+    //
+    //    The DOMINANT row — the one the diagnostic reports — is the one furthest
+    //    beyond its own rung, i.e. the largest exceedance RATIO. Picking it by raw
+    //    `|value|` instead would compare a radian against a metre to decide which
+    //    to show. `reduce` keeps the FIRST row of a tie, matching the source-order
+    //    determinism the rest of this arm relies on.
+    let (dominant, exceedance) = rows
         .iter()
         .copied()
-        .reduce(|m, r| if r.value.abs() > m.value.abs() { r } else { m })
+        .map(|row| (row, row.value.abs() / assertion_rung(row.unit, &tol)))
+        .reduce(|m, r| if r.1 > m.1 { r } else { m })
         .expect("rows is non-empty — the empty case returned Unverifiable above");
-    if dominant.value.abs() <= assertion_tol {
+    if exceedance <= 1.0 {
         StaticVerdict::Verified
     } else {
-        StaticVerdict::Violated(dominant)
+        StaticVerdict::Violated(dominant, inst)
     }
+}
+
+/// The assertion rung a residual row is judged against — the one for ITS unit.
+///
+/// The three rungs are all derived from [`RelateTolerance`]'s single base length
+/// (see [`RelateTolerance::assertion_angle`]), so they move together under an edit
+/// to the hierarchy and cannot drift into three independent hand-picked epsilons.
+fn assertion_rung(unit: ResidualUnit, tol: &RelateTolerance) -> f64 {
+    match unit {
+        ResidualUnit::Length => tol.assertion(),
+        ResidualUnit::Angle => tol.assertion_angle(),
+        ResidualUnit::Dimensionless => tol.assertion_dimensionless(),
+    }
+}
+
+/// The name of the `self.*` anchor operand `rel` carries (`"self.frame"` for a
+/// `ground(sub)` desugar), or `None` if it has none.
+fn self_anchor_operand_name(rel: &CompiledExpr) -> Option<String> {
+    let CompiledExprKind::FunctionCall { args, .. } = &rel.kind else {
+        return None;
+    };
+    args.iter()
+        .find_map(|arg| self_anchor_member(arg).map(|m| format!("self.{m}")))
 }
 
 /// Render a residual row in the unit it was MEASURED in.
@@ -1123,19 +1199,35 @@ fn static_verdict(
 /// WITH metre rows in one vector. Printing "off by 0.5 mm" for a 0.5 direction
 /// residual is a confidently-wrong claim of exactly the kind this whole arm exists
 /// to prevent, so the unit tag decides the phrasing.
+///
+/// The MAGNITUDE is rendered, never the signed row value. A residual row's sign is
+/// an artefact of the residual form's operand order and tangent-frame choice — the
+/// dominant `concentric` row for the B1 fixture is `−0.03`, which read out as "off
+/// by −30 mm" — and "off by" states a distance from satisfaction, which has no
+/// direction a reader can act on. Unsigned is also the pre-existing convention on
+/// this path: `max_relation_residual` accumulates `r.abs()`, and every other
+/// reader-facing magnitude here is a magnitude. Taken ONCE, here, so all three arms
+/// agree rather than each remembering.
 fn fmt_residual(row: ResidualRow) -> String {
+    let magnitude = row.value.abs();
     match row.unit {
-        ResidualUnit::Length => fmt_mm(row.value),
-        ResidualUnit::Angle => fmt_deg(row.value),
+        ResidualUnit::Length => fmt_mm(magnitude),
+        ResidualUnit::Angle => fmt_deg(magnitude),
         // No length and no angle reading — say the number and what it is, rather
         // than dress it in a unit it does not have.
         ResidualUnit::Dimensionless => {
-            format!("{:.4} (direction residual, dimensionless)", row.value)
+            format!("{magnitude:.4} (direction residual, dimensionless)")
         }
     }
 }
 
 /// An angle magnitude in degrees, trimmed like [`fmt_mm`] so the two read alike.
+///
+/// The trim cannot eat the whole numeral: `{:.3}` always emits a decimal point and
+/// `trim_end_matches('0')` stops there, so the smallest rendering is `"0°"`, never a
+/// bare `"°"`. That is a property of the format string rather than a thing to
+/// defend with a fallback branch, so it is PINNED
+/// (`fmt_deg_keeps_a_numeral_below_the_trim_threshold`) instead.
 fn fmt_deg(radians: f64) -> String {
     let s = format!("{:.3}", radians.to_degrees());
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -1925,6 +2017,33 @@ structure PosedOperandScope {
         concentric(bush.bore_axis, plate.boss_axis)
     }
 }
+
+structure GroundedScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        ground(bush)
+    }
+}
+
+structure FastenScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        fasten(bush.frame, plate.frame)
+    }
+}
+
+structure PerpendicularScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        perpendicular(bush.bore_axis, plate.boss_axis)
+    }
+}
 "#;
 
     /// Collect the named scope, panicking with the available template names on a
@@ -2051,6 +2170,22 @@ structure PosedOperandScope {
         }
     }
 
+    /// A `Frame` at `o` whose basis is a rotation of `deg` about `+z`. The basis is
+    /// a unit quaternion, which is the only shape `frame_coincidence_residual`
+    /// reads; `deg = 0` is the identity orientation.
+    fn frame_v(o: (f64, f64, f64), deg: f64) -> Value {
+        let half = deg.to_radians() / 2.0;
+        Value::Frame {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            basis: Box::new(Value::Orientation {
+                w: half.cos(),
+                x: 0.0,
+                y: 0.0,
+                z: half.sin(),
+            }),
+        }
+    }
+
     /// Hand-build a [`RealizedDatums`] — its map is crate-private, which is the
     /// reason this module lives in-file rather than in `tests/`.
     fn realized(entries: &[(&str, &str, Value)]) -> RealizedDatums {
@@ -2167,6 +2302,24 @@ structure PosedOperandScope {
             "the aggregate must name BOTH violated relations; got {:?}",
             d.message
         );
+        // The measured figures are MAGNITUDES. Both dominant rows here are
+        // negative as measured — `concentric`'s tangent-frame projection of the
+        // −30 mm split, `flush`'s −5 mm along-normal offset — and the renderer used
+        // to pass the signed value straight to `fmt_mm`, so the Error read "off by
+        // −30 mm". A residual's sign is an artefact of operand order and tangent-
+        // frame choice; "off by" is a distance from satisfaction and has no
+        // direction to carry. `max_relation_residual` is the sibling convention
+        // (it accumulates `r.abs()`).
+        assert!(
+            d.message.contains("off by 30 mm") && d.message.contains("off by 5 mm"),
+            "both measured magnitudes must render unsigned, in mm; got {:?}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("off by -"),
+            "no `off by` clause may carry a sign; got {:?}",
+            d.message
+        );
         assert_eq!(
             solution.static_facts,
             Some(StaticRelateFacts {
@@ -2245,6 +2398,132 @@ structure PosedOperandScope {
         );
     }
 
+    /// (b″) A violation whose dominant row is an ORIENTATION delta renders in
+    /// DEGREES — the only path that reaches `fmt_deg`.
+    ///
+    /// `fasten` (= `coincident` over Frame) is the one residual form that emits
+    /// Angle rows: three metre origin-delta rows followed by three radian
+    /// exponential-map rows. Two frames sharing a BIT-IDENTICAL origin and
+    /// differing only in orientation therefore violate entirely in the angular
+    /// block. Every other violated-path test lands on a metre or a dimensionless
+    /// row, so without this one the degrees rendering never runs at all.
+    ///
+    /// `fasten` is reachable in a zero-auto scope both as written here and as the
+    /// `ground(sub)` / `fix(sub)` desugar, so this is a user-visible rendering, not
+    /// a defensive arm.
+    #[test]
+    fn verify_static_scope_reports_an_orientation_violation_in_degrees() {
+        let s = scope("FastenScope");
+        // Same origin (bitwise), bases 5° apart about +z.
+        let datums = realized(&[
+            ("bush", "frame", frame_v(SPLIT, 0.0)),
+            ("plate", "frame", frame_v(SPLIT, 5.0)),
+        ]);
+
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 1,
+                unverifiable: 0,
+            }),
+            "co-located frames 5° apart violate `fasten`; got {:?}",
+            solution.diagnostics
+        );
+        let d = solution
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == Severity::Error)
+            .expect("a 5° orientation split is a violation");
+        let measured = d
+            .message
+            .split("off by ")
+            .nth(1)
+            .expect("a violated relation reports what it measured")
+            .trim_end_matches(['"', '.']);
+        assert!(
+            measured.starts_with("5°"),
+            "the dominant row is a radian orientation delta of exactly 5°, so it \
+             must render in degrees; got {measured:?} from {:?}",
+            d.message
+        );
+        assert!(
+            !measured.contains("mm") && !measured.contains("dimensionless"),
+            "an orientation residual has neither a length reading nor a bare-number \
+             one; got {measured:?}"
+        );
+    }
+
+    /// The degree rendering always keeps a numeral — `"0°"`, never a bare `"°"`.
+    ///
+    /// [`super::fmt_deg`] formats to three decimals and then trims trailing zeros
+    /// and a trailing point, which LOOKS like it could eat the whole numeral for a
+    /// magnitude below 0.0005°. It cannot: `{:.3}` always emits a decimal point, so
+    /// `trim_end_matches('0')` stops there and leaves the integer part. Measured
+    /// rather than argued, and measured rather than "fixed" with a fallback branch
+    /// that could never run — dead code whose behaviour nobody checks is how the
+    /// `unwrap_or_else("satisfied")` fallback on the violated path came to render
+    /// nonsense.
+    #[test]
+    fn fmt_deg_keeps_a_numeral_below_the_trim_threshold() {
+        for radians in [0.0, 1e-9, 1e-6, 0.0004_f64.to_radians()] {
+            let rendered = super::fmt_deg(radians);
+            assert_eq!(
+                rendered, "0°",
+                "a sub-0.0005° magnitude must render as a zero with its unit, never \
+                 as a bare unit; got {rendered:?} for {radians} rad"
+            );
+        }
+        assert_eq!(super::fmt_deg(5.0_f64.to_radians()), "5°");
+        assert_eq!(super::fmt_deg(0.25), "14.324°");
+    }
+
+    /// A correct `perpendicular` over NON-UNIT direction operands is VERIFIED, not
+    /// failed.
+    ///
+    /// `perpendicular`'s residual is the dot product of its two operands, and
+    /// `dir_of` does not normalize — an `Axis` carries whatever direction vector
+    /// realization produced. Unnormalized, the row scales with BOTH magnitudes: the
+    /// exactly-perpendicular pair below reads `10 × 10 = 100` against a 1e-5 rung
+    /// and fails a build whose geometry is exactly right. The zero set is
+    /// magnitude-invariant, so the solve path never noticed; the static arm turns
+    /// the same row into a build-FAILING Error, which is what made this reachable.
+    ///
+    /// Normalizing first (as `angle` already did) makes the row the cosine of the
+    /// misalignment — the scale-free number the dimensionless rung is defined
+    /// against.
+    #[test]
+    fn verify_static_scope_holds_a_perpendicular_over_non_unit_directions() {
+        let s = scope("PerpendicularScope");
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v(SPLIT, (10.0, 0.0, 0.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 10.0))),
+        ]);
+
+        let solution = verify_static_scope(&s, &datums);
+
+        assert!(
+            solution.diagnostics.is_empty(),
+            "exactly perpendicular axes are SATISFIED however long their direction \
+             vectors are; got {:?}",
+            solution
+                .diagnostics
+                .iter()
+                .map(|d| (d.severity, d.message.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 1,
+                violated: 0,
+                unverifiable: 0,
+            })
+        );
+    }
+
     /// (c) UNVERIFIABLE, source 1 — an operand that did not realize.
     ///
     /// A Warning, not an Error: an unverifiable relation is *not consumed*, which
@@ -2281,6 +2560,57 @@ structure PosedOperandScope {
             d.message.contains("concentric") && d.message.contains("bush.bore_axis"),
             "the warning must name the relation AND the operand that did not \
              resolve, or the reader cannot act on it; got {:?}",
+            d.message
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 0,
+                unverifiable: 1,
+            })
+        );
+    }
+
+    /// (c′) UNVERIFIABLE, source 1b — a relation with only ONE realized sub datum
+    /// says so, and names the operand it could not compare against.
+    ///
+    /// The reachable shape is the `ground(sub)` / `fix(sub)` sugar, which the
+    /// compiler desugars to `fasten(sub.frame, self.frame)`. `self.frame` is the
+    /// ENCLOSING structure's own datum, not a sub datum: it lowers to a no-arg
+    /// `MethodCall` that `decode_operand` rejects, so it never appears in
+    /// `operand_refs` and the did-not-realize arm cannot see it. The relation
+    /// reaches `static_relation_residuals` with one datum operand, trips its arity
+    /// guard, and comes back with an empty row vector.
+    ///
+    /// Reading that emptiness as "there is no residual model for `fasten` over
+    /// these operand kinds" was FALSE — `coincident_residual`'s Frame branch models
+    /// exactly this pair, and would measure it the moment a second Frame were
+    /// available. An unverifiable verdict's whole value is its reason, so a wrong
+    /// reason undercuts the honest-non-consumption contract this arm exists to
+    /// uphold (INV-SF-3).
+    #[test]
+    fn verify_static_scope_names_the_self_anchor_it_cannot_compare() {
+        let s = scope("GroundedScope");
+        let datums = realized(&[("bush", "frame", frame_v(SPLIT, 0.0))]);
+
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(solution.diagnostics.len(), 1);
+        let d = &solution.diagnostics[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::RelateStaticUnverifiable));
+        assert!(
+            d.message.contains("`self.frame`"),
+            "the reason must name the operand that is not a realized sub datum; got \
+             {:?}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("no residual model"),
+            "`fasten` over two Frames IS modelled — this relation simply has one \
+             operand, not two. Reserving that wording for the genuinely unmodelled \
+             case is the point of the arm; got {:?}",
             d.message
         );
         assert_eq!(
