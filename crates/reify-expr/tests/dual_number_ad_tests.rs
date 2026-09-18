@@ -3106,3 +3106,38 @@ fn map_or_and_map_err_keep_the_primal_invariant_on_the_dual_path() {
         "map_err: the primal invariant on the dual path"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Step-39: the η-side consequence of the missing strict-`Undef` precheck
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_conditional_on_an_undef_comparison_refuses_rather_than_returning_a_row() {
+    // The typed refusal η (#6675) actually consumes.  `eval_binop` short-
+    // circuits an `Undef` operand before any comparison helper sees it
+    // (lib.rs:3852-3855); the dual path calls `eval_eq` directly, which
+    // answers `Bool(false)` from an arm that never consults the right operand.
+    // The conditional then descends a branch and hands η a FINITE gradient row
+    // for a residual whose actual cost is `Undef` — a step along a direction
+    // the value path cannot even evaluate.
+    let mut values = ValueMap::new();
+    values.insert(cell("x"), Value::Real(2.0));
+    values.insert(cell("w"), mm(5.0));
+    values.insert(cell("u"), Value::Undef);
+    let seed_cells = vec![cell("x")];
+
+    let expr = conditional_expr(
+        binop(BinOp::Eq, pref("w"), pref("u")),
+        binop(BinOp::Mul, pref("x"), pref("x")),
+        binop(BinOp::Mul, literal(Value::Real(3.0)), pref("x")),
+    );
+
+    let ctx = EvalContext::simple(&values);
+    assert_eq!(eval_expr(&expr, &ctx), Value::Undef, "precondition: the residual has no value");
+    match jrow(&expr, &values, &seed_cells) {
+        Err(_) => {}
+        Ok((primal, row)) => panic!(
+            "expected a refusal for a residual whose cost is Undef, got primal {primal:?} row {row:?}"
+        ),
+    }
+}

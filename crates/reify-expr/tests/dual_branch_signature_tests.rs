@@ -1281,3 +1281,174 @@ fn a_kink_builtin_with_an_undef_operand_refuses_before_kink_dispatch_and_records
     let (v, _, _) = run(&nested, &[("x", Value::Real(2.0))], &["x"]);
     assert_eq!(v, Value::Undef, "Undef propagates strictly, so the whole row is refused");
 }
+
+// ===========================================================================
+// Step-39: the strict-`Undef` PRECHECK `eval_binop` has and the dual path lacks
+// ===========================================================================
+//
+// `eval_binop` evaluates both operands and then, FIRST, short-circuits:
+//
+//     if lv.is_undef() || rv.is_undef() { return Value::Undef }   // lib.rs:3852
+//
+// `eval_dual_comparison` and `eval_dual_binop` call `crate::eval_eq` /
+// `eval_ne` / `eval_cmp` / the arithmetic helpers DIRECTLY, so neither ever
+// reaches that precheck.  For arithmetic the omission is benign only by
+// accident of the helpers' `_ => Undef` fall-through arms.  For EQUALITY it is
+// a live wrong value, because `eval_eq` has two arms that answer `Bool(false)`
+// without ever consulting the other operand:
+//
+//     (Value::Enum { .. }, _) | (_, Value::Enum { .. })              lib.rs:5007
+//     (Value::Scalar { dimension, .. }, _) if !dimension.is_dimensionless()
+//                                                                    lib.rs:5018
+//
+// `eval_binop` never reaches either for an `Undef` operand.  The dual path
+// does, and the damage lands in three places at once: a WRONG PRIMAL, a
+// RESOLVED `BranchChoice` where the evaluator had none (λ #6679 counts a
+// phantom alternation the moment the cell becomes determined), and a finite
+// gradient row for a residual whose actual cost is `Undef` (η #6675 steps
+// along it).
+
+fn mm5() -> Value {
+    Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH }
+}
+
+#[test]
+fn a_dimensioned_scalar_compared_to_undef_is_undef_on_both_paths() {
+    // The `!dimension.is_dimensionless()` arm short-circuits to `Bool(false)`
+    // without looking at the right operand, so the dual path answers "these
+    // are definitely different" about a value that is not known at all.
+    let expr = binop(BinOp::Eq, vref("w"), vref("u"));
+    let (value, _t, _rec) = run(&expr, &[("w", mm5()), ("u", Value::Undef)], &["w"]);
+    assert_eq!(value, Value::Undef, "a comparison against an undetermined cell has no answer");
+}
+
+#[test]
+fn an_enum_compared_to_undef_is_undef_on_both_paths() {
+    // The sibling `Enum` arm (lib.rs:5007).  Asserted separately because the
+    // two arms are INDEPENDENT short-circuits: one test cannot discriminate
+    // both, and a fix that reached only one would leave the other live.
+    let expr = binop(BinOp::Eq, vref("e"), vref("u"));
+    let (value, _t, _rec) = run(
+        &expr,
+        &[("e", enum_value("Ok", vec![])), ("u", Value::Undef)],
+        &["x"],
+    );
+    assert_eq!(value, Value::Undef, "a comparison against an undetermined cell has no answer");
+}
+
+#[test]
+fn a_comparison_against_undef_records_unresolved_not_unsatisfied() {
+    // The λ (#6679) half.  Today the recorded choice is `Unsatisfied` — a
+    // RESOLVED branch where the evaluator resolved nothing — so λ sees a
+    // settled comparison and will count a phantom alternation as soon as the
+    // cell becomes determined.  The entry must still be PRESENT: a kink was
+    // genuinely traversed, and `Unresolved` is the honest choice for it.
+    let expr = binop(BinOp::Eq, vref("w"), vref("u"));
+    let (_v, _t, rec) = run(&expr, &[("w", mm5()), ("u", Value::Undef)], &["w"]);
+    assert_single_entry(
+        &rec,
+        &[],
+        KinkKind::Comparison(BinOp::Eq),
+        BranchChoice::Unresolved,
+        "eq against an undetermined operand",
+    );
+}
+
+#[test]
+fn a_conditional_on_an_undef_comparison_descends_into_neither_branch() {
+    // The η (#6675) half.  `eval_expr` returns `Undef` for a conditional whose
+    // condition is `Undef`, WITHOUT evaluating either branch (lib.rs:731-732).
+    // The dual path resolves that condition to `Bool(false)`, descends the else
+    // branch and returns a finite gradient row — so η would take a step along a
+    // gradient for a residual whose actual cost is `Undef`.
+    //
+    // BOTH branches carry their own kink, so any descent at all shows up as a
+    // third record entry (the `conditional_records_..._never_traverses_the_
+    // untaken_else` convention, applied to the case where NEITHER is taken).
+    let expr = conditional_expr(
+        binop(BinOp::Eq, vref("w"), vref("u")),
+        call("abs", vec![vref("x")]),
+        binop(BinOp::Mul, call("abs", vec![neg(vref("x"))]), literal(Value::Real(3.0))),
+    );
+    let cells = [("w", mm5()), ("u", Value::Undef), ("x", Value::Real(2.0))];
+    let (value, tangent, rec) = run(&expr, &cells, &["x"]);
+
+    assert_eq!(value, Value::Undef, "the conditional's cost is Undef");
+    assert_eq!(tangent, Tangent::None, "no finite row for a residual whose cost is Undef");
+    assert_eq!(
+        rec.len(),
+        2,
+        "expected only the comparison and the conditional — a third entry means a \
+         branch was traversed that `eval_expr` never evaluates: {:?}",
+        rec.entries()
+    );
+    assert_eq!(rec.entries()[0].kind, KinkKind::Comparison(BinOp::Eq));
+    assert_eq!(rec.entries()[0].site.path(), &[0], "the condition is child 0");
+    assert_eq!(rec.entries()[1].kind, KinkKind::Conditional);
+    assert_eq!(rec.entries()[1].choice, BranchChoice::Unresolved);
+}
+
+#[test]
+fn an_undef_operand_in_a_mod_binop_still_records_its_kink_as_unresolved() {
+    // The NEGATIVE control: the precheck's placement must not DROP the `Mod`
+    // entry the current code emits.  `mod_quotient_choice` already yields
+    // `Unresolved` on an `Undef` operand (its `as_f64()` `None` arm), so this
+    // record must come out bit-identical before and after the fix.
+    let expr = binop(BinOp::Mod, vref("x"), vref("u"));
+    let (value, tangent, rec) =
+        run(&expr, &[("x", Value::Real(7.0)), ("u", Value::Undef)], &["x"]);
+    assert_eq!(value, Value::Undef);
+    assert_eq!(tangent, Tangent::None);
+    assert_single_entry(
+        &rec,
+        &[],
+        KinkKind::Mod,
+        BranchChoice::Unresolved,
+        "mod against an undetermined divisor",
+    );
+}
+
+#[test]
+fn comparisons_and_arithmetic_with_both_operands_determined_are_unchanged() {
+    // The control that stops the precheck becoming a blanket `Undef`.  Every
+    // comparison operator still resolves, and every arithmetic operator still
+    // produces its value and its tangent, when nothing is undetermined.
+    for (op, satisfied) in [
+        (BinOp::Lt, true),
+        (BinOp::Le, true),
+        (BinOp::Gt, false),
+        (BinOp::Ge, false),
+        (BinOp::Eq, false),
+        (BinOp::Ne, true),
+    ] {
+        let expr = binop(op, vref("x"), literal(Value::Real(5.0)));
+        let (v, _t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);
+        assert_eq!(v, Value::Bool(satisfied), "{op:?}: still resolves");
+        assert_single_entry(
+            &rec,
+            &[],
+            KinkKind::Comparison(op),
+            if satisfied { BranchChoice::Satisfied } else { BranchChoice::Unsatisfied },
+            &format!("{op:?} determined"),
+        );
+    }
+
+    // A dimensioned scalar compared to a DETERMINED operand keeps taking the
+    // `Bool(false)` arm — the precheck gates on `Undef`, not on dimension.
+    let expr = binop(BinOp::Eq, vref("w"), literal(Value::Real(5.0)));
+    let (v, _t, _rec) = run(&expr, &[("w", mm5())], &["w"]);
+    assert_eq!(v, Value::Bool(false), "a dimensioned Scalar is never equal to a bare number");
+
+    for (op, expected) in [
+        (BinOp::Add, 9.0),
+        (BinOp::Sub, 5.0),
+        (BinOp::Mul, 14.0),
+        (BinOp::Div, 3.5),
+    ] {
+        let expr = binop(op, vref("x"), literal(Value::Real(2.0)));
+        let (v, t, rec) = run(&expr, &[("x", Value::Real(7.0))], &["x"]);
+        assert_eq!(v, Value::Real(expected), "{op:?}: still evaluates");
+        assert!(rec.is_empty(), "{op:?}: smooth arithmetic records no kink");
+        assert!(!t.is_none(), "{op:?}: still carries a tangent");
+    }
+}
