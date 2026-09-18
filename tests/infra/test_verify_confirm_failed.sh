@@ -824,4 +824,199 @@ assert "G6 (B7): no test id leaks onto the stream alongside the refusal" \
 
 assert_output_purity "B7"
 
+# ===========================================================================
+# Section H (leaf ε) — the LANE ENTRY POINT, end to end: recording → confirm.
+#
+# Sections D-G drive verify.sh directly. This one drives what dark-factory
+# actually spawns — `scripts/run-offline-deep.sh` — in its exact two-call argv
+# shape, so the wrapper's own contributions are under test: the
+# DF_VERIFY_ROLE=offline export, the --test-threads=1 threading, the
+# --confirm-failed detection, and the outcome-line suppression that keeps the
+# merged stream parseable.
+#
+#   call 1   run-offline-deep.sh --test-threads=1                   (recording)
+#   call 2   run-offline-deep.sh --test-threads=1 --confirm-failed  (confirm)
+#
+# TWO DELIBERATE BOUNDS, both load-bearing:
+#
+# (1) `cargo` is the Section D stub for both calls, so the "planted red" is a
+#     JUnit report this test controls rather than a real failing test. That
+#     bounds an infra-pool member to seconds AND keeps it hermetic: the real
+#     heavy set is eight atoms under a 13h offline release budget, and even one
+#     real atom would need a full release build of the workspace plus the three
+#     native deps. WHAT IS STILL REAL: both entry points, the offline plan the
+#     wrapper emits, the fused manifest write, the tree pin, the child subset
+#     plan, the shared JUnit reader and the whole output contract.
+#
+# (2) CALL 1 EXECUTES THE WRAPPER'S OWN EMITTED TEST-REGION COMMAND rather than
+#     letting the wrapper run its full plan. Running the whole offline plan from
+#     inside an infra test would acquire the HOST-GLOBAL test-run semaphore that
+#     the outer verify run already holds — a self-deadlock, not merely a slow
+#     test — and would additionally run npm ci, the gui vitest suite, the PSI
+#     gate and the compile gate. The lifted line is byte-for-byte the string the
+#     plan executor evals, so the recording behaviour under test is identical;
+#     only the semaphore bracket around it is dropped. CALL 2 has no such
+#     hazard — `--confirm-failed` returns before the executor and never touches
+#     the semaphore — so it is executed literally, exactly as DF spawns it.
+# ===========================================================================
+echo ""
+echo "--- Section H (leaf ε): run-offline-deep.sh recording → confirm, end to end ---"
+
+RUN_OFFLINE_DEEP="$REPO_ROOT/scripts/run-offline-deep.sh"
+
+E2E="$WORK/e2e"
+mkdir -p "$E2E/junit"
+E2E_MANIFEST="$E2E/manifest-release.txt"
+E2E_SIDECAR="$E2E/sidecar-release.json"
+E2E_JUNIT="$E2E/junit/reify-confirm.xml"
+E2E_LOG="$E2E/confirm.log"
+
+E2E_PLANTED='tests::e2e_planted_red'
+E2E_GHOST='tests::e2e_stale_ghost'
+
+# The recording run's report: ONE planted failure beside a passing sibling, so
+# the manifest's content is an assertion about extraction, not about a fixture
+# that happens to contain a single case.
+cat > "$E2E/red.xml" <<XML_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="2" failures="1" errors="0">
+    <testsuite name="e2e_probe" tests="2" failures="1">
+        <testcase name="tests::e2e_passing_sibling" classname="e2e_probe" time="0.010"/>
+        <testcase name="${E2E_PLANTED}" classname="e2e_probe" time="0.011">
+            <failure message="planted red" type="test failure with exit code 101">deliberate e2e plant</failure>
+        </testcase>
+    </testsuite>
+</testsuites>
+XML_EOF
+
+# The confirm run's report once the red is un-planted: the subset ran and every
+# member passed.
+cat > "$E2E/green.xml" <<XML_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="1" failures="0" errors="0">
+    <testsuite name="e2e_probe" tests="1" failures="0">
+        <testcase name="${E2E_PLANTED}" classname="e2e_probe" time="0.011"/>
+    </testsuite>
+</testsuites>
+XML_EOF
+
+# A STALE report, pre-planted at the read path before each confirm call. It
+# names an id that appears in no manifest and in no fresh report, so if it ever
+# surfaces on the wire the confirm derived its answer from a leftover file
+# instead of from the report its own subset pass produced.
+cat > "$E2E/stale.xml" <<XML_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="1" failures="1" errors="0">
+    <testsuite name="e2e_probe" tests="1" failures="1">
+        <testcase name="${E2E_GHOST}" classname="e2e_probe" time="0.011">
+            <failure message="stale" type="test failure with exit code 101">from a previous run</failure>
+        </testcase>
+    </testsuite>
+</testsuites>
+XML_EOF
+
+# lane_recording_run <stub-rc> <junit-fixture> -> sets E2E_REC_RC.
+# Takes the plan from the WRAPPER (so the role export and the --test-threads=1
+# threading are the wrapper's, not this test's) and executes its test-region
+# nextest command. See bound (2) above for why the region is lifted.
+lane_recording_run() {
+    local _stub_rc="$1" _fixture="$2"
+    local _plan _cmd
+    _plan="$(
+        REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$E2E_MANIFEST" \
+        REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$E2E_SIDECAR" \
+        REIFY_VERIFY_CONFIRM_JUNIT="$E2E_JUNIT" \
+        bash "$RUN_OFFLINE_DEEP" --test-threads=1 --print-plan 2>/dev/null
+    )" || true
+    _cmd="$(printf '%s\n' "$_plan" | grep -E '(^| )cargo nextest run ' | grep -v '^if test ' | head -n1 || true)"
+    _cmd="$(printf '%s\n' "$_cmd" | sed "s#--config-file [^ ;]*#--config-file $WORK/nextest-stub.toml#")"
+    if [ -z "$_cmd" ]; then
+        E2E_REC_RC=127
+        return 0
+    fi
+    rm -f "$E2E_JUNIT"
+    E2E_REC_RC=0
+    (
+        cd "$REPO_ROOT"
+        PATH="$STUB_BIN:$PATH" \
+        REIFY_TEST_STUB_JUNIT_DEST="$E2E_JUNIT" \
+        REIFY_TEST_STUB_JUNIT_SRC="$_fixture" \
+        REIFY_TEST_STUB_RC="$_stub_rc" \
+        bash -c "$_cmd"
+    ) >/dev/null 2>&1 || E2E_REC_RC=$?
+}
+
+# lane_confirm_run <stub-rc> <junit-fixture> -> sets E2E_CF_RC, E2E_CF_OUT.
+# The literal DF spawn: the real wrapper, the real argv, stdout and stderr
+# MERGED into one buffer because that is the wire.
+lane_confirm_run() {
+    local _stub_rc="$1" _fixture="$2"
+    cp "$E2E/stale.xml" "$E2E_JUNIT"
+    E2E_CF_RC=0
+    E2E_CF_OUT="$(
+        cd "$REPO_ROOT" && \
+        PATH="$STUB_BIN:$PATH" \
+        REIFY_TEST_STUB_JUNIT_DEST="$E2E_JUNIT" \
+        REIFY_TEST_STUB_JUNIT_SRC="$_fixture" \
+        REIFY_TEST_STUB_RC="$_stub_rc" \
+        REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$E2E_MANIFEST" \
+        REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$E2E_SIDECAR" \
+        REIFY_VERIFY_CONFIRM_JUNIT="$E2E_JUNIT" \
+        REIFY_VERIFY_CONFIRM_LOG="$E2E_LOG" \
+        timeout 300 bash "$RUN_OFFLINE_DEEP" --test-threads=1 --confirm-failed 2>&1
+    )" || E2E_CF_RC=$?
+}
+
+# --- the red is planted: record it, then confirm it ---
+rm -f "$E2E_MANIFEST" "$E2E_SIDECAR"
+lane_recording_run 100 "$E2E/red.xml"
+
+assert "H1 (ε): the lane's RECORDING call wrote a manifest naming exactly the planted red" \
+    bash -c '[ -f "$1" ] && [ "$(cat "$1")" = "$2" ]' \
+    _ "$E2E_MANIFEST" "$E2E_PLANTED"
+
+assert "H2 (ε): the recording stamped a confirm-owned sidecar pinned to the CURRENT tree" \
+    bash -c '[ -f "$1" ] && [ "$(sed -n "s/.*\"tree_oid\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -n1)" = "$2" ]' \
+    _ "$E2E_SIDECAR" "$CONFIRM_TREE_OID"
+
+assert "H3 (ε): the recording call still reports its own red (exit 100) — recording never masks the failure it records" \
+    test "$E2E_REC_RC" -eq 100
+
+lane_confirm_run 100 "$E2E/red.xml"
+
+assert "H4 (ε): the lane's CONFIRM call emits EXACTLY the planted red's bare name and nothing else, on the merged stream" \
+    bash -c '[ "$1" = "$2" ]' \
+    _ "$E2E_CF_OUT" "$E2E_PLANTED"
+
+assert "H5 (ε): a confirmed-still-failing lane run exits 100" \
+    test "$E2E_CF_RC" -eq 100
+
+assert "H6 (ε): the confirm derived from its OWN fresh report — the stale report pre-planted at the read path never surfaces" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "$2"' \
+    _ "$E2E_CF_OUT" "$E2E_GHOST"
+
+assert "H7 (ε): the wrapper's own '==> offline deep-test lane' outcome line is absent from the merged capture (it would parse as a test id)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "offline deep-test lane"' \
+    _ "$E2E_CF_OUT"
+
+CF_OUT="$E2E_CF_OUT"
+assert_output_purity "ε-confirmed"
+
+# --- un-plant the failure: the SAME manifest, a now-green subset ---
+lane_confirm_run 0 "$E2E/green.xml"
+
+assert "H8 (ε): with the red un-planted, the confirm call's merged capture is EMPTY — the wire encoding of 'nothing still fails'" \
+    bash -c '[ -z "$(printf "%s" "$1" | tr -d "[:space:]")" ]' \
+    _ "$E2E_CF_OUT"
+
+assert "H9 (ε): a confirmed-clean lane run exits 0" \
+    test "$E2E_CF_RC" -eq 0
+
+assert "H10 (ε): the manifest is UNCHANGED by confirming — the confirm's own narrowed view never overwrites the recording" \
+    bash -c '[ "$(cat "$1")" = "$2" ]' \
+    _ "$E2E_MANIFEST" "$E2E_PLANTED"
+
+CF_OUT="$E2E_CF_OUT"
+assert_output_purity "ε-clean"
+
 test_summary
