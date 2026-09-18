@@ -3082,6 +3082,99 @@ mod tests {
         );
     }
 
+    // --- task #6533: the outline's remaining per-kind gap ---
+
+    /// The FIVE named `Declaration` kinds the outline still drops, paired with
+    /// the `SymbolKind` each must map to and the declared name its
+    /// [`NAMED_DECL_SNIPPETS`] row carries.
+    ///
+    /// TypeAlias is deliberately ABSENT even though it is a named kind: #6341
+    /// already gave it a TYPE_PARAMETER arm, pinned by
+    /// `document_symbols_include_type_alias`. The five here are what is left.
+    const OUTLINE_MISSING_KINDS: &[(&str, SymbolKind)] = &[
+        // `field def temp : Point3 -> Real` — a named mapping over a domain, the
+        // closest LSP analogue to a property.
+        ("temp", SymbolKind::PROPERTY),
+        // `purpose lightweight(...)` — a named region enclosing other
+        // declarations, which is what NAMESPACE means in LSP.
+        ("lightweight", SymbolKind::NAMESPACE),
+        // `constraint def Foo { x > 0 }` — a named relation, not a value.
+        ("Foo", SymbolKind::OPERATOR),
+        // `unit meter : Length` — a named fixed quantity.
+        ("meter", SymbolKind::CONSTANT),
+        // `joint ball(...)` — a named parameterized construction.
+        ("ball", SymbolKind::METHOD),
+    ];
+
+    /// Look up the shared-table snippet that declares `name`.
+    ///
+    /// Panics rather than returning an Option: a miss means
+    /// [`OUTLINE_MISSING_KINDS`] and [`NAMED_DECL_SNIPPETS`] have drifted apart,
+    /// which must fail loudly here rather than silently shrink the loop below.
+    fn named_decl_snippet(name: &str) -> &'static str {
+        NAMED_DECL_SNIPPETS
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(src, _)| *src)
+            .unwrap_or_else(|| panic!("no NAMED_DECL_SNIPPETS row declares {name:?}"))
+    }
+
+    #[test]
+    fn document_symbols_include_every_remaining_named_kind() {
+        for (name, expected_kind) in OUTLINE_MISSING_KINDS {
+            let source = named_decl_snippet(name);
+            let parsed = parse_one_clean(source, "test");
+            let symbols = compute_document_symbols_from_parsed(&parsed, source);
+
+            assert_eq!(
+                symbols.len(),
+                1,
+                "one declaration \u{2192} one top-level symbol for {source:?}, got: {:?}",
+                symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+            );
+            let sym = &symbols[0];
+            assert_eq!(sym.name, *name, "symbol name mismatch for {source:?}");
+            assert_eq!(
+                sym.kind, *expected_kind,
+                "symbol kind mismatch for {source:?}"
+            );
+            // LSP requires selection_range to be contained in range and to sit on
+            // the name token; the helper asserts both.
+            assert_selection_on_name(source, sym);
+        }
+    }
+
+    /// The complement. The three kinds `decl_name_and_span` answers `None` for
+    /// declare no name of their own, so they must emit NOTHING — admitting one
+    /// would put a symbol with no meaningful label in the outline.
+    #[test]
+    fn document_symbols_exclude_every_unnamed_kind() {
+        for source in ["import parts.Hole", "module a.b", "default Material = 1"] {
+            let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+            assert!(
+                parsed.errors.is_empty(),
+                "fixture must parse clean, got {:?} for: {source}",
+                parsed.errors
+            );
+            assert_eq!(
+                parsed.declarations.len(),
+                1,
+                "fixture must hold exactly one declaration: {source}"
+            );
+            assert!(
+                decl_name_and_span(&parsed.declarations[0]).is_none(),
+                "fixture must parse to an UNNAMED kind, or this asserts nothing: {source}"
+            );
+
+            let symbols = compute_document_symbols_from_parsed(&parsed, source);
+            assert!(
+                symbols.is_empty(),
+                "an unnamed declaration must emit no symbol for {source:?}, got: {:?}",
+                symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn compute_document_symbols_sub_port_and_guarded() {
         use tower_lsp::lsp_types::SymbolKind;
