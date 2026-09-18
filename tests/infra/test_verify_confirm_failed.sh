@@ -390,15 +390,27 @@ STUB_BIN="$WORK/stub-bin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/cargo" <<'STUB_EOF'
 #!/usr/bin/env bash
-# Stub `cargo` for tests/infra/test_verify_confirm_failed.sh Section D only.
-# Plants a chosen JUnit report where nextest would have written one, then
-# exits a chosen code. Never invokes the real cargo.
+# Stub `cargo` for tests/infra/test_verify_confirm_failed.sh. On a `nextest
+# run` it plants a chosen JUnit report where nextest would have written one and
+# exits a chosen code; every other invocation succeeds silently. Never invokes
+# the real cargo.
+#
+# THE CATCH-ALL ARM IS LOAD-BEARING, not politeness. verify.sh probes runner
+# availability with `cargo nextest --version` and REFUSES to run (rather than
+# silently fall back to the -E-less cargo-test plan) when that probe fails, so
+# a stub that answered every invocation with the chosen failure code would make
+# the confirm path refuse before any subset pass ran.
 set -u
-mkdir -p "$(dirname "$REIFY_TEST_STUB_JUNIT_DEST")"
-if [ -n "${REIFY_TEST_STUB_JUNIT_SRC:-}" ]; then
-    cp "$REIFY_TEST_STUB_JUNIT_SRC" "$REIFY_TEST_STUB_JUNIT_DEST"
-fi
-exit "${REIFY_TEST_STUB_RC:-0}"
+case "$*" in
+    *"nextest run"*)
+        mkdir -p "$(dirname "$REIFY_TEST_STUB_JUNIT_DEST")"
+        if [ -n "${REIFY_TEST_STUB_JUNIT_SRC:-}" ]; then
+            cp "$REIFY_TEST_STUB_JUNIT_SRC" "$REIFY_TEST_STUB_JUNIT_DEST"
+        fi
+        exit "${REIFY_TEST_STUB_RC:-0}"
+        ;;
+esac
+exit 0
 STUB_EOF
 chmod +x "$STUB_BIN/cargo"
 
@@ -663,6 +675,7 @@ run_confirm() {
         REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$CONFIRM_MANIFEST" \
         REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$CONFIRM_SIDECAR" \
         REIFY_VERIFY_CONFIRM_JUNIT="$CONFIRM_JUNIT" \
+        REIFY_VERIFY_CONFIRM_LOG="$WORK/confirm.log" \
         timeout 300 bash "$VERIFY_SH" test --profile release --confirm-failed 2>&1
     )" || CF_RC=$?
 }
@@ -752,6 +765,7 @@ CF_OUT="$(
     REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$CONFIRM_MANIFEST" \
     REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$CONFIRM_SIDECAR" \
     REIFY_VERIFY_CONFIRM_JUNIT="$CONFIRM_JUNIT" \
+    REIFY_VERIFY_CONFIRM_LOG="$WORK/confirm.log" \
     timeout 300 bash "$VERIFY_SH" test --profile release --confirm-failed 2>&1
 )" || CF_RC=$?
 
