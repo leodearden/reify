@@ -4142,6 +4142,103 @@ structure Assembly {
         assert_eq!(sorted_locations(got_c), expected, "(c) import entity cursor");
     }
 
+    // --- task #6539: declaration names used in TYPE POSITION ---
+
+    /// The `is_renameable_cross_file` CAVEAT, made executable.
+    ///
+    /// That doc block names this exact hazard: "If a structure name ALSO appears
+    /// in a type-annotation / refinement position (e.g. `param p: Name`),
+    /// renaming the structure rewrites the decl + construction sites but leaves
+    /// that type-position use stale." Structure is an ALREADY-ADMITTED kind, so
+    /// this test needs no oracle widening — it is RED for the collector reason
+    /// alone, which is what makes it the right first assertion of workstream D.
+    ///
+    /// FIXTURE DISCIPLINE: cleanliness is asserted BEFORE anything else, and the
+    /// `param p : Hole` annotation is asserted to be present IN THE AST rather
+    /// than only in the source text. `test_fixtures::parse_one_clean` does not
+    /// fit here — it requires a single declaration and this fixture needs an
+    /// import plus a structure — so the same two assertions are made inline. A
+    /// snippet broken by grammar drift would otherwise yield an `Assembly` with
+    /// no `param p` at all and make the whole test pass vacuously.
+    #[test]
+    fn compute_references_cross_file_reports_a_structure_name_in_type_position() {
+        let main_src =
+            "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n    param p : Hole\n}";
+        let parsed_main = reify_syntax::parse(main_src, ModulePath::single("main"));
+        assert!(
+            parsed_main.errors.is_empty(),
+            "fixture must parse clean, got {:?}",
+            parsed_main.errors
+        );
+        let assembly = parsed_main
+            .declarations
+            .iter()
+            .find_map(|d| match d {
+                Declaration::Structure(s) if s.name == "Assembly" => Some(s),
+                _ => None,
+            })
+            .expect("fixture must declare `structure Assembly`");
+        assert!(
+            assembly.members.iter().any(|m| matches!(
+                m,
+                MemberDecl::Param(param)
+                    if param.name == "p"
+                        && param
+                            .type_expr
+                            .as_ref()
+                            .is_some_and(|t| t.to_string() == "Hole")
+            )),
+            "fixture must carry `param p : Hole` as a TYPE POSITION in the AST, \
+             not merely as source text; got members: {:?}",
+            assembly.members.len()
+        );
+
+        let docs = workspace_docs(&[(parts_uri(), PARTS_SRC), (main_uri(), main_src)]);
+        let mut map = HashMap::new();
+        map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
+        let resolver = mock_resolver(map);
+
+        let main_hits = occurrences(main_src, "Hole");
+        assert_eq!(
+            main_hits.len(),
+            3,
+            "main.ri holds the import token, the construction site and the type \
+             annotation"
+        );
+        let expected = sorted_locations(vec![
+            loc_at(
+                parts_uri(),
+                PARTS_SRC,
+                occurrences(PARTS_SRC, "Hole")[0],
+                "Hole",
+            ),
+            loc_at(main_uri(), main_src, main_hits[0], "Hole"),
+            loc_at(main_uri(), main_src, main_hits[1], "Hole"),
+            loc_at(main_uri(), main_src, main_hits[2], "Hole"),
+        ]);
+
+        // Cursor on the parts.ri home declaration token.
+        let decl_offset = occurrences(PARTS_SRC, "Hole")[0];
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let got = compute_references_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            offset_to_position(PARTS_SRC, decl_offset as u32),
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("cursor on the home declaration token resolves a cross-file set");
+        assert_eq!(
+            sorted_locations(got),
+            expected,
+            "the type-annotation use must be reported alongside the declaration \
+             and the construction site \u{2014} a rename's edit set is exactly this \
+             reference set, so a missing use is a stale-rename bug"
+        );
+    }
+
     #[test]
     fn compute_references_cross_file_exclude_declaration_drops_home_decl_token() {
         // include_declaration=false drops ONLY the parts.ri home declaration token,
