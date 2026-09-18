@@ -48,6 +48,7 @@ pub mod ptodo;
 pub mod pdssentinel;
 pub mod pdiag;
 pub mod pdoccover;
+pub mod pdcheck;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;
