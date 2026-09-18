@@ -470,7 +470,10 @@ def mask_cfg_test(lines):
     region now contributes the real callers it always had. Two fns leave
     allowed[] -- `reify-ir` `capability_kind` and `reify-audit`
     `is_symbol_suppressed` -- by GAINING a real caller (0 -> 1), not by
-    being hidden.
+    being hidden. The 13 newly-visible orphan rows are not silent corpus
+    churn: they are enumerated and owned by #6429 for triage, and the
+    baseline report they drift against is owned by #7634. Neither list is
+    copied here, so neither can go stale against its owner.
 
     Returns (masked, unclosed, lexer_open_state). `lexer_open_state` is
     the `strip_literals_and_comments` terminal state (None, or one of
