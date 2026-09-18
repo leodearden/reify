@@ -49,6 +49,9 @@ pub mod pdssentinel;
 pub mod pdiag;
 pub mod pdoccover;
 pub mod pdcheck;
+/// Crate-internal: shared scaffolding for the lanes that read the task DB.
+/// Not part of the detector API surface — the lanes are.
+pub(crate) mod task_rows;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;

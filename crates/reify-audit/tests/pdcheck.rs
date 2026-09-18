@@ -52,7 +52,17 @@ fn resolve(
     git: &dyn GitOps,
     tracked: &HashSet<String>,
 ) -> Vec<Finding> {
-    reify_audit::pdcheck::resolve_delivered_check_paths(conn, git, tracked)
+    resolve_for(conn, git, tracked, None)
+}
+
+/// The narrowed form: `target_task_id` is what `--task <id>` supplies.
+fn resolve_for(
+    conn: &rusqlite::Connection,
+    git: &dyn GitOps,
+    tracked: &HashSet<String>,
+    target_task_id: Option<&str>,
+) -> Vec<Finding> {
+    reify_audit::pdcheck::resolve_delivered_check_paths(conn, git, tracked, target_task_id)
         .expect("resolve_delivered_check_paths")
 }
 
@@ -411,6 +421,61 @@ fn findings_are_sorted_by_numeric_task_id_then_check_name() {
 
     let second = resolve(&conn, &git, &tracked(&[LIVE]));
     assert_eq!(first, second, "the order must be stable across runs");
+}
+
+// -------------------------------------------------------------------------
+// Single-task narrowing — what `--task <id>` means for a task-state lane
+// -------------------------------------------------------------------------
+
+/// `--task <id>` spot-checks ONE task. This lane iterates the tasks table, so
+/// unlike the purely structural detectors it has a task to narrow to, and the
+/// likeliest caller is someone unblocking a single stuck dependent.
+#[test]
+fn a_target_task_id_narrows_the_sweep_to_that_task() {
+    let conn = seed_tasks_db();
+    let row = |name: &str| one_grep_row(name, "present", &[DEAD]);
+    insert_task_with_metadata(&conn, "master", 5778, "deferred", &row("angle-spec-absent-today"));
+    insert_task_with_metadata(&conn, "master", 5743, "pending", &row("length-hint-absent-today"));
+
+    let mut git = MockGitOps::new();
+    git.set_last_commit_for_path(DEAD, mock_commit("abc123", "relocate arg_acceptance"));
+    let tracked = tracked(&[LIVE]);
+
+    assert_eq!(
+        resolve(&conn, &git, &tracked).len(),
+        2,
+        "the unnarrowed sweep sees both seeded tasks"
+    );
+
+    let narrowed = resolve_for(&conn, &git, &tracked, Some("5778"));
+    let ids: Vec<&str> = narrowed.iter().map(|f| f.task_id.as_str()).collect();
+    assert_eq!(ids, ["5778"], "only the targeted task may be reported: {ids:?}");
+}
+
+/// The narrowing is exact, not a prefix or substring match: targeting a task
+/// with findings of its own must not surface a neighbour's.
+#[test]
+fn a_target_task_id_matching_no_task_yields_nothing() {
+    let conn = seed_tasks_db();
+    insert_task_with_metadata(
+        &conn,
+        "master",
+        5778,
+        "deferred",
+        &one_grep_row("angle-spec-absent-today", "present", &[DEAD]),
+    );
+
+    let mut git = MockGitOps::new();
+    git.set_last_commit_for_path(DEAD, mock_commit("abc123", "relocate arg_acceptance"));
+
+    assert!(
+        resolve_for(&conn, &git, &tracked(&[LIVE]), Some("9999")).is_empty(),
+        "a target id no task carries must report nothing"
+    );
+    assert!(
+        resolve_for(&conn, &git, &tracked(&[LIVE]), Some("577")).is_empty(),
+        "the id comparison is exact, not a prefix match"
+    );
 }
 
 // -------------------------------------------------------------------------

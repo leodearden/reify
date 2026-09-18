@@ -26,8 +26,9 @@
 //! is stated here because it cannot be re-derived from this tree, which parses
 //! `delivered_checks` nowhere else.
 
+use crate::task_rows::{PathHistory, metadata_array, non_terminal_master_tasks, path_present_in_tracked};
 use crate::{EvidenceRef, Finding, GitCommit, GitOps, Pattern, Severity};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// Wire spelling of the only `kind` this lane reads. `script` and `manual`
 /// rows carry no grep pathspec, so their `paths` assert nothing about path
@@ -111,14 +112,27 @@ impl DeliveredCheckRow {
     }
 }
 
+/// Whether `pathspec` carries git pathspec MAGIC: a leading `:` (`:(exclude)`,
+/// `:!`, `:/`, `:^`) or an fnmatch wildcard. Git resolves both;
+/// [`path_present_in_tracked`] models only exact-match and directory-prefix
+/// membership and cannot.
+fn is_pathspec_magic(pathspec: &str) -> bool {
+    pathspec.starts_with(':') || pathspec.contains(['*', '?', '['])
+}
+
 /// The lane's whole predicate: one row against the tracked-file set.
 ///
 /// `Option<Verdict>` rather than a collection because a finding is per ROW —
 /// see the ANY-match quantifier in the module doc. Path membership is decided
-/// by [`crate::ptodo::path_present_in_tracked`] rather than a bare
-/// `tracked.contains`, so a trailing-slash or DIRECTORY pathspec that still
-/// holds tracked files counts as present; sharing that predicate with PTODO's
-/// ζ lane is also what stops the two lanes' membership tests from drifting.
+/// by [`path_present_in_tracked`] rather than a bare `tracked.contains`, so a
+/// trailing-slash or DIRECTORY pathspec that still holds tracked files counts
+/// as present; sharing that predicate with PTODO's ζ lane is also what stops
+/// the two lanes' membership tests from drifting.
+///
+/// A row carrying pathspec magic is UNCLASSIFIABLE here and stays silent: the
+/// membership test would call `crates/reify-ir/src/*.rs` absent while git greps
+/// it fine, which is this lane's only false-positive class — and it would land
+/// on the High kind. Silence is the fail-safe direction.
 fn classify_row(row: &DeliveredCheckRow, tracked: &HashSet<String>) -> Option<Verdict> {
     if row.kind.as_deref() != Some(GREP_KIND) {
         return None;
@@ -131,12 +145,13 @@ fn classify_row(row: &DeliveredCheckRow, tracked: &HashSet<String>) -> Option<Ve
         _ => return None,
     };
     // An EMPTY pathspec greps the whole tree, so it is never a dead-path row;
-    // and one live path satisfies the row under the ANY-match rule.
+    // one live path satisfies the row under the ANY-match rule; and one magic
+    // path makes the whole row unreadable to this lane.
     if row.paths.is_empty()
         || row
             .paths
             .iter()
-            .any(|p| crate::ptodo::path_present_in_tracked(p, tracked))
+            .any(|p| is_pathspec_magic(p) || path_present_in_tracked(p, tracked))
     {
         return None;
     }
@@ -155,23 +170,26 @@ struct DeadPath {
 /// The lane: for each non-terminal master task, classify every
 /// `metadata.delivered_checks` row against the tracked-file set.
 ///
-/// Structurally parallel to [`crate::ptodo::resolve_inverse`] — same
-/// `tag = 'master'` query, same terminal-status skip, same permissive metadata
-/// parse, same per-run git memo caches, same `.filter(path_present_in_tracked)`
-/// guard on a rename target so no advertised path is one the reader cannot
-/// open. Two deliberate divergences from that lane:
+/// `target_task_id` narrows the sweep to one task — what `--task <id>` means
+/// for a task-state-shaped detector, and the shape someone unblocking a single
+/// stuck dependent actually wants. `None` sweeps the whole backlog.
+///
+/// Task selection, the permissive metadata parse and the git memo are
+/// [`crate::task_rows`], shared with PTODO's ζ inverse lane. What is this
+/// lane's own is the quantifier and the finding kind, and both diverge from ζ
+/// deliberately:
 ///
 /// 1. Iteration is per ROW with an all-paths-absent quantifier, not per path,
 ///    because a row's `paths` are ONE ANY-match pathspec (see the module doc).
-///    `resolve_inverse`'s per-entry iteration is correct only because each
-///    `metadata.files` entry stands alone.
+///    ζ's per-entry iteration is correct only because each `metadata.files`
+///    entry stands alone.
 /// 2. The finding kind comes from the row's `expect` polarity, not from
 ///    rename-vs-delete; that axis changes only the repair hint, which is
 ///    carried as evidence.
 ///
 /// A row all of whose paths are absent but NONE of which git has ever seen is
 /// presumed to name files the task will CREATE, and passes — the same
-/// load-bearing arm `resolve_inverse` documents, and what keeps healthy
+/// load-bearing arm [`PathHistory::resolve`] documents, and what keeps healthy
 /// post-state rows quiet.
 ///
 /// Findings are sorted by (task id as integer, check name) for determinism.
@@ -181,43 +199,25 @@ pub fn resolve_delivered_check_paths(
     conn: &rusqlite::Connection,
     git: &dyn GitOps,
     tracked: &HashSet<String>,
+    target_task_id: Option<&str>,
 ) -> rusqlite::Result<Vec<Finding>> {
-    let mut stmt = conn.prepare("SELECT id, status, metadata FROM tasks WHERE tag = 'master'")?;
-
-    let rows: Vec<(i64, String, Option<String>)> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-
     let mut out: Vec<Finding> = Vec::new();
-    // Per-run caches, for the reason `resolve_inverse` measured: one relocated
-    // file is routinely cited by several related tasks, and each miss is a
-    // subprocess spawn.
-    let mut git_cache: HashMap<String, Option<GitCommit>> = HashMap::new();
-    let mut rename_cache: HashMap<(String, String), Option<String>> = HashMap::new();
+    let mut history = PathHistory::default();
 
-    for (id, status, metadata_opt) in rows {
-        if crate::ptodo::is_terminal_status(&status) {
+    for (id, metadata) in non_terminal_master_tasks(conn)? {
+        // Optional single-task narrowing (mirrors p5_phantom_done::check_with_target).
+        if let Some(target) = target_task_id
+            && id.to_string() != target
+        {
             continue;
         }
 
-        // NULL / malformed / missing key / non-array / non-object row → empty,
-        // graceful. The producer lives in another repo; nothing here may panic
-        // on a shape it does not recognise.
-        let check_rows: Vec<DeliveredCheckRow> = metadata_opt
-            .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
-            .and_then(|v| v.get("delivered_checks").and_then(|a| a.as_array()).cloned())
-            .unwrap_or_default()
+        let rows: Vec<DeliveredCheckRow> = metadata_array(&metadata, "delivered_checks")
             .iter()
             .filter_map(DeliveredCheckRow::from_json)
             .collect();
 
-        for row in check_rows {
+        for row in rows {
             let Some(verdict) = classify_row(&row, tracked) else {
                 continue;
             };
@@ -229,18 +229,7 @@ pub fn resolve_delivered_check_paths(
                 .paths
                 .iter()
                 .filter_map(|path| {
-                    let commit = git_cache
-                        .entry(path.clone())
-                        .or_insert_with(|| git.last_commit_for_path(path))
-                        .clone()?;
-                    let rename_target = rename_cache
-                        .entry((path.clone(), commit.sha.clone()))
-                        .or_insert_with(|| git.rename_target_for_path(path, &commit.sha))
-                        .clone()
-                        // Never advertise a target the reader cannot open.
-                        // `path_present_in_tracked`, not a bare `contains`, so
-                        // this test cannot drift from the cited-path one.
-                        .filter(|t| crate::ptodo::path_present_in_tracked(t, tracked));
+                    let (commit, rename_target) = history.resolve(git, tracked, path)?;
                     Some(DeadPath { path: path.clone(), commit, rename_target })
                 })
                 .collect();
@@ -333,13 +322,18 @@ fn build_finding(id: i64, row: &DeliveredCheckRow, verdict: Verdict, dead: &[Dea
 pub fn check(ctx: &crate::AuditContext) -> Vec<Finding> {
     let tracked: HashSet<String> = ctx.git.ls_files().into_iter().collect();
     let db_path = crate::ptodo::tasks_db_path(&ctx.project_root);
-    match crate::ptodo::open_tasks_db(&db_path)
-        .and_then(|conn| resolve_delivered_check_paths(&conn, ctx.git, &tracked))
-    {
+    match crate::ptodo::open_tasks_db(&db_path).and_then(|conn| {
+        resolve_delivered_check_paths(&conn, ctx.git, &tracked, ctx.target_task_id.as_deref())
+    }) {
         Ok(findings) => findings,
-        Err(_) => {
+        Err(e) => {
+            // Name the CAUSE, not a presumed one: this `Err` also covers a DB
+            // that opened fine and then failed to query (schema drift, a
+            // corrupt page). Blaming an absent file for that would send the
+            // reader looking for a path that is sitting right there.
+            let cause = if db_path.exists() { "query failed" } else { "absent" };
             eprintln!(
-                "reify-audit: tasks.db unreachable at '{}' — PDCHECK delivered_checks dead-path lane skipped; this is NOT a clean bill of health",
+                "reify-audit: PDCHECK delivered_checks dead-path lane skipped — tasks.db {cause} at '{}': {e}; this is NOT a clean bill of health",
                 db_path.display()
             );
             Vec::new()
@@ -498,6 +492,63 @@ mod tests {
                 None,
                 "directory pathspec '{pathspec}' still contains tracked files"
             );
+        }
+    }
+
+    /// `delivered_checks[].paths` is a git PATHSPEC list, and git resolves
+    /// magic this lane's membership test cannot: `crates/reify-ir/src/*.rs`
+    /// equals no tracked entry and prefixes none, yet greps a live file set.
+    /// Reading that `false` as "absent" would manufacture a HIGH finding
+    /// against a perfectly satisfiable row — the lane's only false-positive
+    /// class — so a magic pathspec silences the whole row instead.
+    #[test]
+    fn pathspec_magic_silences_the_row_under_either_polarity() {
+        for pathspec in [
+            "crates/reify-ir/src/*.rs",
+            "crates/reify-ir/src/arg_acceptance.?s",
+            "crates/reify-ir/src/arg_acceptance.[rs]s",
+            ":(exclude)crates/reify-eval/src/arg_acceptance.rs",
+            ":!crates/reify-eval/src/arg_acceptance.rs",
+            ":/crates",
+        ] {
+            for expect in ["present", "absent"] {
+                let r = row(json!({
+                    "name": "angle-spec-absent-today",
+                    "kind": "grep",
+                    "expect": expect,
+                    "pattern": "pub fn angle_spec",
+                    "paths": [pathspec],
+                }));
+                assert_eq!(
+                    classify_row(&r, &tracked(&[LIVE])),
+                    None,
+                    "pathspec magic '{pathspec}' is unclassifiable here (expect: {expect})"
+                );
+            }
+        }
+    }
+
+    /// One magic path is enough: the row is a SINGLE ANY-match grep, so a
+    /// pathspec this lane cannot resolve leaves the whole row unreadable —
+    /// exactly as one live path does.
+    #[test]
+    fn one_magic_path_silences_a_row_whose_other_paths_are_dead() {
+        let r = row(json!({
+            "name": "angle-spec-absent-today",
+            "kind": "grep",
+            "expect": "present",
+            "pattern": "pub fn angle_spec",
+            "paths": [DEAD, "crates/reify-ir/src/*.rs"],
+        }));
+        assert_eq!(classify_row(&r, &tracked(&[LIVE])), None);
+    }
+
+    /// The guard must not swallow ordinary paths: a plain path carrying none
+    /// of the magic characters still classifies, or the whole lane goes quiet.
+    #[test]
+    fn ordinary_paths_are_not_mistaken_for_pathspec_magic() {
+        for path in [DEAD, LIVE, "crates/reify-eval/tests/", "a-b_c.d/e.rs"] {
+            assert!(!super::is_pathspec_magic(path), "'{path}' carries no magic");
         }
     }
 
