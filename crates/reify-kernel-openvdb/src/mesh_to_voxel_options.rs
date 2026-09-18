@@ -82,10 +82,11 @@ pub const BAND_MARGIN_VOXELS: f64 = 2.0;
 /// Number of voxels required ACROSS the thinnest feature a caller asks to
 /// resolve (task 6560): `voxel_size = h = min_feature / MIN_FEATURE_VOXELS_ACROSS`.
 ///
-/// # Why 4 and not the PRD's "≈ thickness/3"
+/// # Why 4 and not the PRD's former "≈ thickness/3"
 ///
-/// The v0.4-shells gate (`docs/prds/v0_4/structural-analysis-shells.md`) asks
-/// for "≈ thickness/3 voxel size for the thinnest expected feature". At
+/// The v0.4-shells gate (`docs/prds/v0_4/structural-analysis-shells.md`) asked
+/// for "≈ thickness/3 voxel size for the thinnest expected feature" until task
+/// 6566 retired that figure in favour of the window described below. At
 /// `h = t/3` the half-thickness of that feature is `1.5 h` — BELOW the
 /// empirically-established OpenVDB interior-signing floor of
 /// "half-thickness ≥ 2 × voxel_size" documented at
@@ -94,10 +95,48 @@ pub const BAND_MARGIN_VOXELS: f64 = 2.0;
 /// COARSEST value clearing that floor (`half-thickness = 2 h`), and being
 /// finer than `t/3` it satisfies the gate's "resolutions sufficient for".
 ///
+/// That floor makes this constant the LOWER edge of a window that is bounded
+/// at both ends. `t/3` is not merely discouraged, it is unreachable: on any
+/// thin plate the smallest bbox extent IS the thickness, so the too-coarse
+/// guard in [`MeshToVoxelOptions::for_resolution`] refuses it outright
+/// (`the_prd_thickness_over_three_voxel_size_is_refused_on_a_plate`).
+///
+/// # The upper edge, which this constant does not set
+///
+/// Refining past a point destroys the measurement rather than improving it.
+/// `reify-shell-extract`'s medial extractor admits a voxel only while
+/// `|φ| ≤ narrow_band_half_width_voxels × spacing` (default `3.0`), and a
+/// wall's medial plane sits at `|φ| = half-thickness` — so once the request is
+/// finer than `t/6` the medial plane falls outside the band, the mask comes
+/// back EMPTY, and every measurement built on it degrades to `NoMeasurement`
+/// at EVERY sub-voxel alignment (measured, task 6566). The usable window is
+/// therefore
+///
+/// ```text
+/// 4 ≤ voxels-per-thickness ≤ 2 × narrow_band_half_width_voxels = 6
+/// ```
+///
+/// with this constant setting the lower edge and the extractor's band
+/// half-width the upper.
+///
+/// **The upper edge is not enforced here.** `for_resolution` checks only the
+/// coarse side: `TargetVoxelSize(t/8)` returns `Ok` with a perfectly
+/// well-formed grid, which then measures as `NoMeasurement` downstream with
+/// nothing naming over-refinement as the cause. Closing that gap needs a new
+/// error variant and a policy call about whether this crate should know its
+/// consumer's band at all (today it deliberately does not — there is no
+/// dependency on `reify-shell-extract`, and adding one would invert the
+/// layering), so it is filed as separate follow-up work rather than done here.
+/// `crates/reify-eval/tests/shell_voxel_resolution_window.rs` brackets the two
+/// constants so the gap stays visible and the window cannot silently close.
+///
 /// Tunable on the same "measure first, then tune" footing as
-/// [`VOXELS_PER_LONGEST_AXIS`] (PRD §6 D7): raising it refines the grid and
-/// raises cost cubically; lowering it below 4.0 re-enters the unsigned-interior
-/// regime and must not be done without re-measuring that floor.
+/// [`VOXELS_PER_LONGEST_AXIS`] (PRD §6 D7), but constrained in BOTH directions:
+/// lowering it below 4.0 re-enters the unsigned-interior regime and must not be
+/// done without re-measuring that floor; raising it is not free either, because
+/// it refines the grid (cost cubically) and must stay `≤ 2 ×
+/// narrow_band_half_width_voxels` or the window closes entirely and no grid
+/// this crate will build is measurable.
 pub const MIN_FEATURE_VOXELS_ACROSS: f64 = 4.0;
 
 /// Maximum dense voxel count [`MeshToVoxelOptions::for_resolution`] will admit
