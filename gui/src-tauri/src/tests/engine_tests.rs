@@ -5370,7 +5370,7 @@ fn get_entity_tree_sub_component_produces_nested_node() {
 
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Length = 1 }
+            r#"structure Bolt { param mass: Length = 1mm }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -5596,7 +5596,7 @@ fn get_entity_tree_sub_node_type_name_from_structure_name() {
     let mut session = EngineSession::new(Box::new(checker), None);
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Length = 1 }
+            r#"structure Bolt { param mass: Length = 1mm }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -5857,7 +5857,7 @@ fn get_containing_definition_no_module_returns_none() {
 fn get_containing_definition_inside_structure_returns_some() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Length = 1 }";
+    let source = "structure Foo { param x: Length = 1mm }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -5874,7 +5874,7 @@ fn get_containing_definition_outside_def_returns_none() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
     // The structure def lives entirely on line 1; line 2 is a comment.
-    let source = "structure Foo { param x: Length = 1 }\n// outside any def";
+    let source = "structure Foo { param x: Length = 1mm }\n// outside any def";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -5909,7 +5909,7 @@ fn get_containing_definition_occurrence_returns_occurrence_kind() {
 fn get_containing_definition_span_valid_and_starts_at_zero() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Length = 1 }";
+    let source = "structure Foo { param x: Length = 1mm }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -6554,7 +6554,7 @@ fn commit_state_refreshes_caches_on_update_source() {
     let mut session = EngineSession::new(Box::new(checker), None);
 
     // Load a single-structure source (1 declaration, 0 newlines).
-    let source1 = "structure A { param x: Length = 1 }";
+    let source1 = "structure A { param x: Length = 1mm }";
     session
         .load_from_source(source1, "test_refresh")
         .expect("first load should succeed");
@@ -6570,7 +6570,7 @@ fn commit_state_refreshes_caches_on_update_source() {
         .len();
 
     // Update with a two-structure source split across two lines (1 newline).
-    let source2 = "structure A { param x: Length = 1 }\nstructure B { param y: Length = 2 }";
+    let source2 = "structure A { param x: Length = 1mm }\nstructure B { param y: Length = 2mm }";
     session
         .update_source("test_refresh.ri", source2)
         .expect("update_source should succeed");
