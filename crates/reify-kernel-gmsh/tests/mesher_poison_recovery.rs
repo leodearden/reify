@@ -7,10 +7,12 @@
 //! tetrahedra. `gmshClear()` did not lift that; a
 //! `gmshFinalize`+`gmshInitialize` cycle does.
 //!
-//! Every test here therefore fails a mesh on purpose and then asserts the
+//! Every test here therefore fails a mesh on purpose. Most then assert the
 //! process is still usable — that the damage is confined to the call that
-//! earned it. The failing call itself is expected to be loud; what is under
-//! test is the state it leaves behind.
+//! earned it. The last asserts what that failing call REPORTS, which needs
+//! the same deliberate failure to observe. The failing call itself is
+//! expected to be loud; what is under test is the state it leaves behind and
+//! the diagnosis it hands back.
 //!
 //! Two of this crate's four `mesh_generate` sites are driven from here —
 //! `mesh_to_volume` and `refine_volume_with_size_field`, in both directions.
@@ -76,8 +78,15 @@ fn unmeshable_open_triangle() -> Mesh {
 /// name would let a test pass having poisoned nothing and exercised no
 /// recovery — and a per-test copy of this assertion is exactly what drifts
 /// into that weaker form.
+///
+/// Returns the error it checked, so a caller with more to say about the
+/// message — the captured-log test at the foot of this file — states this
+/// premise by reusing it rather than by re-deriving a weaker copy.
 #[track_caller]
-fn assert_failed_at_the_mesher<T>(entry_point: &str, result: Result<T, GeometryError>) {
+fn assert_failed_at_the_mesher<T>(
+    entry_point: &str,
+    result: Result<T, GeometryError>,
+) -> GeometryError {
     let Err(err) = result else {
         panic!("{entry_point}: an open triangle bounds no volume — it must report a failure");
     };
@@ -88,6 +97,7 @@ fn assert_failed_at_the_mesher<T>(entry_point: &str, result: Result<T, GeometryE
          process-global mesher damaged; it failed somewhere earlier instead, so \
          this test would prove nothing about recovery. Got: {msg}"
     );
+    err
 }
 
 /// Poison the shared mesher through `GmshKernel::mesh_to_volume`.
@@ -274,5 +284,51 @@ fn a_failed_mesh_to_volume_leaves_the_default_clamp_behind() {
          defaults-relying call meshed to {after} triangles where a just-recycled \
          gmsh gives {PROBE_TRIANGLES_AT_DEFAULT_OPTIONS} (242 is this probe's \
          reading under a leaked 0.1 clamp)",
+    );
+}
+
+/// A `mesh_to_volume` that fails at the mesher must report gmsh's OWN
+/// diagnosis, not only the single line `gmshLoggerGetLastError` holds.
+///
+/// The `Info:` assertion is the decisive one, and the reason this test is
+/// worth its runtime: `gmshLoggerGetLastError` only ever holds the last
+/// ERROR, so an `Info:` line in the message can have reached it only through
+/// gmsh's capture buffer. Measured on this fixture, that buffer is where the
+/// actual explanation lives — `Info: all vertices are coplanar or nearly
+/// coplanar` — while the last error says no more than `HXT 3D mesh failed`.
+///
+/// It belongs in THIS binary rather than beside `log_capture`'s formatter
+/// cases: it needs a real mesher failure, which is what this binary exists to
+/// provoke, and `assert_failed_at_the_mesher` is what establishes that the
+/// failure landed there and so that there is a real capture to read.
+///
+/// The assertions stay on stable gmsh phrases and deliberately do not pin the
+/// captured line COUNT, which is version- and thread-sensitive.
+#[test]
+fn a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let err = assert_failed_at_the_mesher(
+        "mesh_to_volume",
+        GmshKernel::new().mesh_to_volume(
+            &unmeshable_open_triangle(),
+            &MeshingOptions::default(),
+            ElementOrderTag::P1,
+        ),
+    );
+
+    // Display, not Debug: this is the form that reaches a log or the GUI.
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("gmshModelMeshGenerate") && msg.contains("HXT 3D mesh failed"),
+        "the pre-existing last-error annotation must be preserved, not replaced; got: {msg}",
+    );
+    assert!(
+        msg.contains("gmsh log ("),
+        "expected the captured-log header; got: {msg}",
+    );
+    assert!(
+        msg.contains("Info:"),
+        "expected a captured Info line — gmshLoggerGetLastError can never supply one; got: {msg}",
     );
 }

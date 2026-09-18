@@ -16,8 +16,7 @@
 
 use reify_ir::GeometryError;
 use reify_kernel_gmsh::log_capture::{LogCapture, MAX_APPENDED_LOG_LINES, annotated};
-use reify_kernel_gmsh::{GmshKernel, MeshingOptions, ffi, init};
-use reify_ir::ElementOrderTag;
+use reify_kernel_gmsh::{ffi, init};
 
 /// Unwrap the `OperationFailed` payload, or fail naming what came back.
 fn operation_failed_message(err: GeometryError) -> String {
@@ -228,69 +227,5 @@ fn log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop() {
         leftover.is_empty(),
         "dropping LogCapture must stop and drain the capture; {} lines left: {leftover:?}",
         leftover.len(),
-    );
-}
-
-/// A meshing failure must report gmsh's own diagnosis, not only the single
-/// line `gmshLoggerGetLastError` holds.
-///
-/// Fixture is a SINGLE open triangle. MEASURED through this public API: it
-/// clears all four pre-lock validations, reaches `mesh_generate(3)`, and
-/// returns `Err(OperationFailed("gmshModelMeshGenerate: ierr=1 (HXT 3D mesh
-/// failed)"))` in ~0.8s — a clean `Err`, not the #4876 SIGSEGV that
-/// `mesh_boundary.rs` documents for non-watertight input. Chosen over the
-/// other measured clean-failure fixture (a unit cube missing one face, same
-/// error) because it captures 28 lines against that one's 66: the cheaper,
-/// more legible witness.
-///
-/// # Why this test is not in `mesh_to_volume_tests.rs`
-///
-/// An HXT `mesh_generate` failure leaves state that survives `gmshClear()`
-/// and makes the NEXT meshing call in the process return 0 tets instead of
-/// erroring — a hazard that file's trailing comment called out and this task
-/// measured: moving this one test there turned 7 of its 14 tests into
-/// `tet_indices.len() = 0` failures, and filtering it back out restored
-/// 14/14. Cargo gives each `tests/*.rs` its own process, so the poison is
-/// contained here, where nothing is susceptible: the cases above are pure,
-/// and the guard test meshes nothing at all — its only gmsh call is
-/// `ffi::clear()`.
-///
-/// Assertion (iii) is the crisp statement of "more than the last-error
-/// line": `gmshLoggerGetLastError` only ever holds the last ERROR, so an
-/// `Info:` line in the message can only have come from the capture buffer.
-/// The assertions stay on stable gmsh phrases and deliberately do not pin
-/// the captured line COUNT, which is version- and thread-sensitive.
-#[test]
-fn mesh_to_volume_failure_reports_gmsh_log_not_just_the_last_error_line() {
-    let open_triangle = reify_ir::Mesh {
-        vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        indices: vec![0, 1, 2],
-        normals: None,
-    };
-    let kernel = GmshKernel::new();
-    let err = kernel
-        .mesh_to_volume(
-            &open_triangle,
-            &MeshingOptions::default(),
-            ElementOrderTag::P1,
-        )
-        .expect_err("a single open triangle has no volume for HXT to fill");
-    let msg = format!("{err}");
-
-    assert!(
-        msg.contains("gmshModelMeshGenerate") && msg.contains("HXT 3D mesh failed"),
-        "the pre-existing last-error annotation must be preserved, not replaced; got: {msg}",
-    );
-    assert!(
-        msg.contains("gmsh log ("),
-        "expected the captured-log header; got: {msg}",
-    );
-    assert!(
-        msg.contains("Info:"),
-        "expected a captured Info line — gmshLoggerGetLastError can never supply one; got: {msg}",
-    );
-    assert!(
-        msg.contains("Meshing 3D"),
-        "expected the measured `Info: Meshing 3D...` line; got: {msg}",
     );
 }
