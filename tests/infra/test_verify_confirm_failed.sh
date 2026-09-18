@@ -395,6 +395,10 @@ cat > "$STUB_BIN/cargo" <<'STUB_EOF'
 # exits a chosen code; every other invocation succeeds silently. Never invokes
 # the real cargo.
 #
+# With REIFY_TEST_STUB_ARGV_LOG set it also appends the argv it was called with,
+# one invocation per line — the only way to assert on the command the subset pass
+# ACTUALLY ran, since verify.sh evals its plan lines without echoing them.
+#
 # THE CATCH-ALL ARM IS LOAD-BEARING, not politeness. verify.sh probes runner
 # availability with `cargo nextest --version` and REFUSES to run (rather than
 # silently fall back to the -E-less cargo-test plan) when that probe fails, so
@@ -403,6 +407,9 @@ cat > "$STUB_BIN/cargo" <<'STUB_EOF'
 set -u
 case "$*" in
     *"nextest run"*)
+        if [ -n "${REIFY_TEST_STUB_ARGV_LOG:-}" ]; then
+            printf '%s\n' "$*" >> "$REIFY_TEST_STUB_ARGV_LOG"
+        fi
         mkdir -p "$(dirname "$REIFY_TEST_STUB_JUNIT_DEST")"
         if [ -n "${REIFY_TEST_STUB_JUNIT_SRC:-}" ]; then
             cp "$REIFY_TEST_STUB_JUNIT_SRC" "$REIFY_TEST_STUB_JUNIT_DEST"
@@ -870,6 +877,7 @@ E2E_MANIFEST="$E2E/manifest-release.txt"
 E2E_SIDECAR="$E2E/sidecar-release.json"
 E2E_JUNIT="$E2E/junit/reify-confirm.xml"
 E2E_LOG="$E2E/confirm.log"
+E2E_ARGV="$E2E/nextest-argv.log"
 
 E2E_PLANTED='tests::e2e_planted_red'
 E2E_GHOST='tests::e2e_stale_ghost'
@@ -952,10 +960,12 @@ lane_recording_run() {
 lane_confirm_run() {
     local _stub_rc="$1" _fixture="$2"
     cp "$E2E/stale.xml" "$E2E_JUNIT"
+    : > "$E2E_ARGV"
     E2E_CF_RC=0
     E2E_CF_OUT="$(
         cd "$REPO_ROOT" && \
         PATH="$STUB_BIN:$PATH" \
+        REIFY_TEST_STUB_ARGV_LOG="$E2E_ARGV" \
         REIFY_TEST_STUB_JUNIT_DEST="$E2E_JUNIT" \
         REIFY_TEST_STUB_JUNIT_SRC="$_fixture" \
         REIFY_TEST_STUB_RC="$_stub_rc" \
@@ -1001,6 +1011,33 @@ assert "H7 (ε): the wrapper's own '==> offline deep-test lane' outcome line is 
 
 CF_OUT="$E2E_CF_OUT"
 assert_output_purity "ε-confirmed"
+
+# --- what the subset pass ACTUALLY ran (the stub's recorded argv) ---
+#
+# Everything above would pass even if the subset command were wrong, because the
+# stub ignores its arguments. These five read the recorded argv instead, and are
+# the only assertions here that can see the two interactions the confirm path
+# has to get right: the filterset FOLD and the PROFILE AXIS.
+
+assert "H11 (ε): the confirm ran EXACTLY ONE nextest pass — the offline role resolves to release alone, so a 'both' default would show two" \
+    bash -c '[ "$(grep -c . "$1")" -eq 1 ]' \
+    _ "$E2E_ARGV"
+
+assert "H12 (ε): that pass is the RELEASE pass (the profile the recording ran, and the one the manifest is qualified by)" \
+    bash -c 'grep -q -- " --release" "$1"' \
+    _ "$E2E_ARGV"
+
+assert "H13 (ε): the subset is carried by EXACTLY ONE -E term — nextest UNIONs multiple -E expressions, so a second would widen the subset back to the whole heavy set" \
+    bash -c '[ "$(grep -o -- " -E " "$1" | grep -c .)" -eq 1 ]' \
+    _ "$E2E_ARGV"
+
+assert "H14 (ε): that one term INTERSECTS the offline heavy select with the exact-match subset, rather than replacing either" \
+    bash -c 'grep -q -- "package(reify-solver-elastic)" "$1" && grep -qF "& (test(=$2))" "$1"' \
+    _ "$E2E_ARGV" "$E2E_PLANTED"
+
+assert "H15 (ε): the narrowed pass keeps --run-ignored all and the wrapper's --test-threads=1 (the heavy atoms are #[ignore]d — dropping it would run zero tests and report a FALSE clean)" \
+    bash -c 'grep -q -- "--run-ignored all" "$1" && grep -q -- "--test-threads=1" "$1"' \
+    _ "$E2E_ARGV"
 
 # --- un-plant the failure: the SAME manifest, a now-green subset ---
 lane_confirm_run 0 "$E2E/green.xml"
