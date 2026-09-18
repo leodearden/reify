@@ -355,11 +355,28 @@ fn set_parameter(
     let result = reify_gui::large_stack::run_on_worker(move || {
         reify_gui::commands::set_parameter_impl(&engine, &cell_id, &value)
     });
-    if let Ok(ref gui_state) = result {
-        let delta = compute_delta(&state.last_state, gui_state);
-        emit_delta(&app, &delta);
+    // BOTH arms emit, which is what makes this command differ from every other
+    // one here. A refusal is a state mutation: it discards whatever
+    // `preview_parameter` left in the engine, so the frontend is holding the
+    // preview's geometry and values while the engine has gone back to the
+    // source. It has no other way to learn that — the shared telemetry
+    // choke-point carries auto-resolve and FEA events, never meshes or values —
+    // so a return that only carried the message would strand the viewport on
+    // geometry neither the engine nor the disk holds.
+    match result {
+        Ok(gui_state) => {
+            let delta = compute_delta(&state.last_state, &gui_state);
+            emit_delta(&app, &delta);
+            Ok(gui_state)
+        }
+        Err(refused) => {
+            if let Some(ref restored) = refused.restored {
+                let delta = compute_delta(&state.last_state, restored);
+                emit_delta(&app, &delta);
+            }
+            Err(refused.message)
+        }
     }
-    result
 }
 
 /// The TRANSIENT parameter preview — one per slider-drag frame. Identical

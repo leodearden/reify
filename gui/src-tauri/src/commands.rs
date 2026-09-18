@@ -74,6 +74,31 @@ pub fn get_initial_state_impl(engine: &Mutex<EngineSession>) -> Result<GuiState,
         .and_then(std::convert::identity)
 }
 
+/// A REFUSED durable parameter write, and the state the frontend must render
+/// now that the refusal has happened.
+///
+/// The second field is the whole reason this is a struct rather than the
+/// `String` a Tauri command error ultimately becomes.
+/// [`EngineSession::commit_parameter`] does not merely decline on the error
+/// path — it DISCARDS any live [`preview_parameter_impl`] override by
+/// recompiling the canonical source, so a refusal is itself a state mutation.
+/// Returning only a message would leave the frontend rendering the preview's
+/// geometry and values while the engine and the disk both hold the source
+/// value: esc-7281-4's divergence relocated from the engine to the frontend,
+/// and with no later event to correct it. Carrying the restored state in the
+/// error makes the emit the caller's obligation rather than its option — the
+/// compiler will not let `main.rs` destructure this and forget.
+#[derive(Debug, Clone)]
+pub struct RefusedParameterWrite {
+    /// The refusal, verbatim from [`EngineSession::commit_parameter`] — this is
+    /// what reaches the user as a toast.
+    pub message: String,
+    /// State AFTER the discard: what the engine and the canonical `.ri` now
+    /// agree on. `None` only when no state could be read back at all (a
+    /// panicking or poisoned engine), where there is nothing truthful to emit.
+    pub restored: Option<GuiState>,
+}
+
 /// Set a parameter value DURABLY — write it back into the canonical `.ri` — and
 /// return updated state.
 ///
@@ -88,9 +113,25 @@ pub fn set_parameter_impl(
     engine: &Mutex<EngineSession>,
     cell_id: &str,
     value: &str,
-) -> Result<GuiState, String> {
-    crate::engine_lock::with_engine_lock(engine, |s| s.commit_parameter(cell_id, value))
-        .and_then(std::convert::identity)
+) -> Result<GuiState, RefusedParameterWrite> {
+    // The rebuild happens INSIDE the same lock the commit ran under, so no
+    // other command can interleave between the discard and the snapshot the
+    // frontend will be told to render.
+    match crate::engine_lock::with_engine_lock(engine, |s| {
+        s.commit_parameter(cell_id, value)
+            .map_err(|message| RefusedParameterWrite {
+                message,
+                restored: s.build_gui_state().ok(),
+            })
+    }) {
+        Ok(committed_or_refused) => committed_or_refused,
+        // A poisoned lock or a panic inside the engine: nothing is known to
+        // have been discarded, and there is no trustworthy state to hand back.
+        Err(lock_failure) => Err(RefusedParameterWrite {
+            message: lock_failure,
+            restored: None,
+        }),
+    }
 }
 
 /// Show a parameter value TRANSIENTLY and return updated state, without making

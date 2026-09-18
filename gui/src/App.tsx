@@ -1801,6 +1801,15 @@ const App: Component = () => {
     return bridgeSetParameter(cellId, value).then(
       () => undefined,
       (err) => {
+        // A refusal discards the gesture's previews engine-side and re-emits
+        // the source values, so the optimistic overrides a scrub recorded are
+        // now the only thing still claiming the refused number. `refresh()`
+        // cannot retire them — it clears an override only when the committed
+        // value CATCHES UP to it, which is exactly what a refusal guarantees
+        // will not happen — so the slider would stay parked on a value neither
+        // the engine nor the file carries. Clearing all of them is right
+        // because a refusal invalidates the whole gesture, not one joint.
+        mechanismStore.clearOptimistic();
         showToast(`Parameter update failed: ${errorMessage(err)}`, 'error');
       },
     );

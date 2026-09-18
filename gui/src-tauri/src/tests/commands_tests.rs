@@ -2448,6 +2448,64 @@ fn set_parameter_impl_writes_the_value_back_to_the_ri_file() {
 }
 
 #[test]
+fn a_refused_set_parameter_hands_back_the_state_that_replaces_the_discarded_preview() {
+    // The emit half of the discard, which the session-level tests cannot reach.
+    // `commit_parameter` discarding a live preview is only half a fix: the
+    // frontend renders from the delta the Tauri layer emits, and that delta is
+    // computed from what THIS function returns. A refusal that returned only a
+    // message would leave the viewport on the preview's geometry and the
+    // property panel on the preview's number while the engine and the disk had
+    // both gone back to 80mm — with no later event to correct it.
+    //
+    // So the assertion is specifically that the restored GuiState RIDES THE
+    // ERROR, not merely that the session discarded internally.
+    use crate::commands::{preview_parameter_impl, set_parameter_impl};
+
+    let (_dir, path, engine) = make_test_engine_on_disk();
+
+    let previewed = preview_parameter_impl(&engine, "Bracket.width", "120mm")
+        .expect("preview_parameter_impl should succeed");
+    assert!(
+        previewed
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120"),
+        "precondition: the preview must have taken, or this test exercises no discard"
+    );
+
+    // γ's disk-divergence refusal — the most ordinary one a user meets, and the
+    // one an unsaved editor buffer or a watcher that has not re-fired produces.
+    let external_text = format!("{}\n// an external editor was here\n", bracket_source());
+    std::fs::write(&path, &external_text).expect("external write should succeed");
+
+    let refused = set_parameter_impl(&engine, "Bracket.width", "150mm")
+        .expect_err("a diverged file must be REFUSED rather than clobbered");
+    assert!(
+        refused
+            .message
+            .contains("no longer matches the source this session compiled"),
+        "precondition: the failure must be the divergence refusal, got: {}",
+        refused.message
+    );
+
+    let restored = refused
+        .restored
+        .expect("a refusal that discarded a preview must hand back the state that replaced it");
+    let width = restored
+        .values
+        .iter()
+        .find(|v| v.cell_id == "Bracket.width")
+        .expect("the restored state must still describe the cell that was refused");
+    assert_eq!(
+        (width.value.as_str(), width.unit.as_str()),
+        ("80", "mm"),
+        "the state riding the refusal must be the SOURCE value, so the delta the \
+         command layer emits returns the frontend to what the engine now holds — \
+         not the stranded 120mm preview"
+    );
+}
+
+#[test]
 fn preview_parameter_impl_leaves_the_ri_file_untouched() {
     // Its counterpart, and the reason the split exists: the per-frame command a
     // slider drag drives must move the viewport without recompiling and

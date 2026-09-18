@@ -5684,6 +5684,30 @@ describe('App slider parameter cadence', () => {
     });
   });
 
+  it('a refused commit drops the optimistic override so the slider stops showing it', async () => {
+    // The frontend half of the discard. A refused commit reverts the engine to
+    // the source value, and the backend now emits that restored state — but the
+    // scrub's optimistic override outranks it in `getEffectiveValueSi`, and
+    // `mechanismStore.refresh()` retires an override only when the committed
+    // value CATCHES UP to it, which a refusal guarantees will never happen. So
+    // without an explicit clear the slider stays parked on 400mm, a value
+    // neither the engine nor the file carries.
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked(bridge.setParameter).mockRejectedValue(new Error('parameter is not a literal'));
+      const slider = await renderSlider();
+
+      fireEvent.input(slider, { target: { value: '400' } });
+      fireEvent.change(slider, { target: { value: '400' } });
+
+      await waitFor(() => {
+        expect(vi.mocked(bridge.setParameter)).toHaveBeenCalled();
+      });
+      await flushMacrotasks();
+
+      expect(slider.value).toBe('100');
+    });
+  });
+
   it('releasing the slider reaches bridge.setParameter with the final value', async () => {
     const slider = await renderSlider();
 
