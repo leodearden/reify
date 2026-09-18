@@ -91,8 +91,8 @@ would block. **No binding in this manifest resolves to a blocking value.**
 
 | Capability | Binding | Verdict |
 |---|---|---|
-| `accept_arg` / `ArgSpec` / `Acceptance` / `ArgRejection` | `grep:crates/reify-eval/src/arg_acceptance.rs:117 / :28 / :40 / :52` — wired on main; `length_spec` at `:103`, `density_spec` at `:86` | PASS |
-| rejection wording template | `grep:crates/reify-eval/src/arg_acceptance.rs:69` `ArgRejection::message(builtin, arg_name)` | PASS |
+| `accept_arg` / `ArgSpec` / `Acceptance` / `ArgRejection` | `grep:crates/reify-ir/src/arg_acceptance.rs:635 / :240 / :252 / :264` — wired on main; `length_spec` at `:337`, `density_spec` at `:298` | PASS |
+| rejection wording template | `grep:crates/reify-ir/src/arg_acceptance.rs:281` `ArgRejection::message(builtin, arg_name)` | PASS |
 | the rejection is **observed to fire** (G6 branch 4) | `rejection-check:mirror(b,10,0,0,1,0,0)` → `reify eval` exit 1 with the exact template message (captured above) | PASS |
 | the 38 un-gated slots exist | `grep:crates/reify-ir/src/geometry.rs:575-1082` — 46 `Value`-typed GeometryOp fields = 41 length-semantic (38 un-gated + `spacing`/`spacing1`/`spacing2` gated) + 3 dimensionless normal components + 2 angle | PASS |
 | the pre-state is silent (motivation, not a required capability) | probe: `box(20,20,10)` exits 0 on both `check` and `eval` | PASS |

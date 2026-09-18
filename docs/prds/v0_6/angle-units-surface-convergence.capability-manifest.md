@@ -292,7 +292,7 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `arg_acceptance` has `length_spec`/`density_spec`/`accept_arg` and **no** `angle_spec` | `grep:crates/reify-eval/src/arg_acceptance.rs:86,103,117`; `angle_spec` absent repo-wide | PASS |
+| `arg_acceptance` has `length_spec`/`density_spec`/`accept_arg` and **no** `angle_spec` | `grep:crates/reify-ir/src/arg_acceptance.rs:298,337,635`; `angle_spec` absent repo-wide | PASS |
 | **the ANGLE rejection mechanism fires today** (G6 branch 4) | `probe: reify eval faces_by_normal(b,0.0,0.0,1.0,0.01)` → **exit 1**, `error: faces_by_normal: tol argument expects Angle, got Real` | PASS — rejection observed |
 | the hint is absent today (what β adds is observable) | same probe: **no** `pass a dimensioned angle` clause; `grep:geometry_ops.rs:8755` `resolve_scalar_dim_arg`, call site `:8767-8771` passes `migration_hint: None` | PASS |
 | the shared `DiagnosticCode` | `producer:task-5743` (PRD 1 β: *"introduce ONE shared DiagnosticCode … PRDs 3 and 5 reuse this code"*) — **upstream** | PASS |
