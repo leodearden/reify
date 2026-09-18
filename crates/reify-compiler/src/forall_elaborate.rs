@@ -840,10 +840,11 @@ pub(crate) fn elaborate_forall_connect(
                 // needed for diagnostic provenance.
             }
             // Per-element chain desugaring: substitute every chain element,
-            // then emit pairwise Forward connections via `windows(2)`. Mirror
-            // the plain `MemberDecl::Chain` arm at entity.rs:1304-1342, but
-            // anchor every emitted connection's span at `decl.span` so
-            // per-element diagnostics cite the forall site.
+            // then hand the result to `chain_hops` (connect.rs), which owns
+            // the spec §6.2 element resolution and names both desugar sites
+            // this arm shares it with. Every emitted connection's span is
+            // anchored at `decl.span` rather than the chain body's, so
+            // per-element diagnostics cite the forall site the designer wrote.
             ForallConnectBody::Chain(cd) => {
                 // Edge case: fewer than two elements is a malformed chain.
                 // Emit the standard chain diagnostic once per element-iteration
