@@ -764,6 +764,38 @@ def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
     return True
 
 
+def stdout_value_satisfied(run: ProbeRun, stdout_value: Dict[str, Any]) -> bool:
+    """Return True iff run.stdout carries a capture meeting stdout_value's bounds.
+
+    Takes an already-validated spec — _validate_value_predicate() guarantees at
+    load that the pattern compiles, has at least one capture group, names a
+    group that exists, and carries at least one constraint — so this function
+    validates nothing and has no error paths of its own.
+
+    Finiteness is applied unconditionally rather than only under `finite`,
+    because float("inf") >= min is True: a bounds-only check would admit inf.
+
+    Reads run.stdout only.  The exit code is the other half of the observation
+    and belongs to observe().
+    """
+    match = re.search(stdout_value["pattern"], run.stdout)
+    if match is None:
+        return False
+
+    try:
+        value = float(match.group(stdout_value.get("group", 1)))
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(value):
+        return False
+
+    if "min" in stdout_value and value < stdout_value["min"]:
+        return False
+    if "max" in stdout_value and value > stdout_value["max"]:
+        return False
+    return True
+
+
 def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
     """Determine observation (PRESENT/ABSENT/INDETERMINATE or _HARNESS_ERROR).
 
