@@ -426,6 +426,27 @@ pub(crate) fn check_fn_arg_conformance(
 /// — so extending conformance there is a change with its own acceptance
 /// criteria, not a ride-along on this one. Mechanically it would be one more
 /// `.chain(…)` here; structurally it still needs no second call site.
+///
+/// UNANNOTATED cells ARE judged here, against the `Type::dimensionless_scalar()`
+/// INFERENCE FALLBACK the compiler assigns when a `param` names no type — so
+/// `param c = Color.Red` reports `Enum(Color)` vs `Real`, naming a type the
+/// source never wrote. That is deliberate, and it is not something the port
+/// cells introduce: the walk is site-blind by construction (ONE loop body), and
+/// the top-level half has reported the fallback this way since α. The asymmetry
+/// worth knowing is against the sibling `check_param_default_type` (`entity.rs`),
+/// which IS gated on `param.type_expr.is_some()` at both its call sites and so
+/// stays silent on the same source (`untyped_port_member_param_with_enum_default_does_not_error`).
+/// The two checks are complementary, not alike-gated; what holds both SITES to
+/// one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
+///
+/// Whether an inference fallback should be judged AT ALL is a live question, and
+/// it is δ's (task #5306): that flip turns this Warning into a hard error on
+/// source that named no type. It is recorded here rather than pre-empted because
+/// gating it is a behaviour change at BOTH sites — this chain cannot skip the
+/// fallback for port cells without also skipping it for top-level ones, which is
+/// exactly the parity this task established. The bit such a gate would need
+/// (`param.type_expr.is_some()`, already computed at both `check_param_default_type`
+/// call sites) is not carried on `ValueCellDecl` today.
 fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellDecl> {
     template
         .value_cells
@@ -7459,6 +7480,16 @@ mod tests {
     /// `Geometry` param cell onto `template.ports` instead of `template.value_cells`
     /// made it invisible to the walk: RED (zero diagnostics) until
     /// `param_default_cells` chains `template.ports[].members` in.
+    ///
+    /// Its integration twin `port_member_geometry_param_default_warns`
+    /// (`harness_structure_declarations`) proves the same warning end-to-end from
+    /// real source, so this probe is not here for the diagnostic — it is here for
+    /// the ROUTE. Constructing the cell on `ports[].members` and nowhere else is
+    /// the only way to distinguish "the chain reached the port list" from "the
+    /// producer merged port members into `value_cells` after all", and that second
+    /// shape is a regression of the disjointness the GUI / `set_parameter` /
+    /// `find_param_default_expr` consumers depend on, which the integration probe
+    /// would happily stay green through.
     #[test]
     fn port_member_param_default_reaches_conformance_walk() {
         let region_cell = ValueCellDecl {
