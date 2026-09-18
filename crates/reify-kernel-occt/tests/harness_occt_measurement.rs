@@ -26,9 +26,9 @@
 //! the include, and rustc really does compile a separate copy per test binary — every line of
 //! it duplicated, and counted twice under the C2 cap. Read the live split off
 //! `harness_layout_unit_lines` on both roots rather than trusting a count quoted here; the
-//! invariant that does not drift is `external_files`, which must stay 0 here and 1 there.
+//! invariant that does not drift is `external_files`: 1 on this root, 0 on `harness_occt`.
 //!
-//! `mod common;` above is bare (no `#[path]`) — the ONE principled exception Section 6 of the
+//! `mod common;` below is bare (no `#[path]`) — the ONE principled exception Section 6 of the
 //! kLOC guard encodes. `common` was deliberately NOT moved under a harness directory; it is a
 //! retained `tests/` SIBLING at `tests/common/mod.rs`, and crate-root-relative resolution
 //! lands on it precisely because it is still there. Every OTHER module below needs explicit
