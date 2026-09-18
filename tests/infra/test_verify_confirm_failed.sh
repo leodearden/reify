@@ -777,4 +777,51 @@ assert "F11: that refusal leaks no test id alongside the ERROR line" \
     _ "$CF_OUT"
 assert_output_purity "no-report"
 
+# ===========================================================================
+# Section G (leaf γ) — B7, the tree-drift refusal.
+#
+# The recorded failed-set belongs to ONE tree. If HEAD's tree has moved, the
+# recorded ids may name tests that no longer exist, or miss ones that now fail;
+# re-running them would produce an answer about a tree nobody asked about.
+#
+# The refusal is spelled with the pre-existing `verify.sh: ERROR` banner rather
+# than a novel sentinel exit code for a measured reason: the live consumer never
+# inspects proc.returncode, so a new exit code would be invisible to it, while
+# this exact banner is already on its reject-to-[] list (task 5308's
+# _VERIFY_USAGE_MARKER_RE). Reusing it is what makes this case degrade safely
+# with ZERO dark-factory change.
+# ===========================================================================
+echo ""
+echo "--- Section G (leaf γ): B7 tree-drift refusal ---"
+
+DRIFTED_OID='0000000000000000000000000000000000000000'
+write_confirm_state "tests::probe_fail_three
+tests::probe_fail_two" "$DRIFTED_OID"
+run_confirm "$FIX/a-two-failures.xml"
+
+assert "G1 (B7): a drifted sidecar yields EXACTLY ONE line" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c .)" -eq 1 ]' \
+    _ "$CF_OUT"
+
+assert "G2 (B7): that line matches ^verify\.sh: ERROR\b — the exact pattern dark-factory's live guard rejects to []" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^verify\.sh: ERROR\b"' \
+    _ "$CF_OUT"
+
+assert "G3 (B7): the refusal exits 64" \
+    test "$CF_RC" -eq 64
+
+assert "G4 (B7): the line names the sidecar's recorded OID, so an operator can diagnose it" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' \
+    _ "$CF_OUT" "$DRIFTED_OID"
+
+assert "G5 (B7): the line also names the CURRENT tree OID (a refusal naming only one side is not diagnosable)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' \
+    _ "$CF_OUT" "$CONFIRM_TREE_OID"
+
+assert "G6 (B7): no test id leaks onto the stream alongside the refusal" \
+    bash -c '! printf "%s\n" "$1" | grep -q "probe_fail"' \
+    _ "$CF_OUT"
+
+assert_output_purity "B7"
+
 test_summary
