@@ -1495,6 +1495,48 @@ structure Bolt {
         );
     }
 
+    // --- task #6500: hover on unit declarations ---
+
+    /// The fixture name is deliberately non-SI. `si_units.rs` emits a `pub unit`
+    /// for every SI base, prefixed and derived unit into the prelude, and a
+    /// module-local unit duplicating one of those names is REJECTED with
+    /// "duplicate unit declaration … already defined in stdlib prelude" and never
+    /// reaches `compiled.units` — which would make every assertion below vacuous.
+    /// `hoop` was probe-verified to compile with zero diagnostics and to appear in
+    /// `AnalysisContext.compiled.units`.
+    #[test]
+    fn hover_on_unit_declaration_name_shows_signature() {
+        let source = "unit hoop : Length\n";
+        // Line 0 "unit hoop : Length": column 6 is inside the 'hoop' name token.
+        let position = Position::new(0, 6);
+        let md = hover_markdown(source, position).expect("hover on a unit name must return Some");
+        assert!(
+            md.contains("```reify\nunit hoop : Length\n```"),
+            "hover should render the unit signature fence, got: {md}"
+        );
+    }
+
+    /// The new unit arm must not swallow positions on the unit's DIMENSION type,
+    /// mirroring `hover_on_type_alias_rhs_name_is_unaffected`.
+    ///
+    /// Stated as "must not render the unit signature" rather than "must be None":
+    /// a dimension type is restricted by the compiler to the builtin dimension
+    /// names (probe: `unit hoop : HoopDim` reds with "unknown dimension type"), and
+    /// no hover surface covers those today — but a future one is a legitimate
+    /// addition, and this test must pin the swallow property, not the absence.
+    #[test]
+    fn hover_on_unit_dimension_type_is_unaffected() {
+        let source = "unit hoop : Length\n";
+        // Line 0 "unit hoop : Length": column 13 is inside the 'Length' token.
+        let position = Position::new(0, 13);
+        if let Some(md) = hover_markdown(source, position) {
+            assert!(
+                !md.contains("unit hoop"),
+                "the dimension-type position must not resolve to the unit signature, got: {md}"
+            );
+        }
+    }
+
     /// The `type` keyword itself must have a hover description, like every other
     /// declaration-introducing keyword. Task #6341.
     #[test]
