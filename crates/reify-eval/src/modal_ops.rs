@@ -479,11 +479,12 @@ pub(crate) fn eigensolve_modal(
     for (i, &f) in frequencies.iter().enumerate() {
         let omega = 2.0 * PI * f;
         if is_rigid_body_mode(omega, RIGID_BODY_OMEGA_TOL) {
-            diagnostics.push(Diagnostic::warning(format!(
-                "W_ModalRigidBodyMode: mode {i} has near-zero angular frequency \
-                 ω = {omega:.3e} rad/s (≤ {RIGID_BODY_OMEGA_TOL:.1e}); the model \
-                 may be under-constrained (rigid-body or spurious mode)."
-            )));
+            diagnostics.push(rigid_body_mode_diagnostic(
+                i,
+                omega,
+                RIGID_BODY_OMEGA_TOL,
+                eigen_opts.sigma,
+            ));
         }
     }
 
@@ -829,6 +830,30 @@ fn non_finite_frequency_diagnostic(n_modes: usize) -> Diagnostic {
          preserved instead. This indicates a numerical pathology upstream of \
          the eigensolve (e.g. an ill-conditioned or non-PSD stiffness/mass \
          assembly) — treat this result's mode ordering as unverified."
+    ))
+}
+
+/// The [`ModalCoreResult::diagnostics`] entry pushed for a per-mode `ω ≈ 0`, one
+/// mode at a time.
+///
+/// Extracted from the loop in [`eigensolve_modal`] so the exact rendering can be
+/// asserted DIRECTLY, without a test having to reproduce a spurious eigenvalue
+/// numerically — the σ ≠ 0 case below is reachable only through a near-singular
+/// `K − σM`, which is not a thing a deterministic test should have to conjure.
+///
+/// ONE format template, never two `format!` arms for one condition: two
+/// templates drift, which is the SPOT violation this file guards against
+/// elsewhere.
+///
+/// `sigma` is accepted but NOT yet consulted — δ (#7261) step-8 appends the
+/// optional shift clause. The σ = 0 rendering is today's, byte for byte, and
+/// must stay that way: every existing caller and assertion keyed on this message
+/// reads the unshifted path.
+fn rigid_body_mode_diagnostic(mode_index: usize, omega: f64, tol: f64, _sigma: f64) -> Diagnostic {
+    Diagnostic::warning(format!(
+        "W_ModalRigidBodyMode: mode {mode_index} has near-zero angular frequency \
+         ω = {omega:.3e} rad/s (≤ {tol:.1e}); the model \
+         may be under-constrained (rigid-body or spurious mode)."
     ))
 }
 
@@ -4343,7 +4368,8 @@ mod tests {
         extract_loss_factor, extract_reference_direction, frobenius_norm, mode_shape_value,
         nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
-        resolve_location_node, run_modal_analysis, run_transient_response,
+        resolve_location_node, rigid_body_mode_diagnostic, run_modal_analysis,
+        run_transient_response,
         ModalSolveFault, simply_supported_pin_pin_bcs, solve_generalized_eigen,
         solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
@@ -6128,6 +6154,92 @@ mod tests {
              which shift produced the window; got {:?}",
             warnings[0].message,
         );
+    }
+
+    /// The exact σ = 0 rendering of [`rigid_body_mode_diagnostic`], as every
+    /// existing caller and assertion reads it today. Any change to
+    /// `RIGID_BODY_OMEGA_TOL`, to the `{omega:.3e}` / `{tol:.1e}` formats or to
+    /// the clause order moves this string, which is the point.
+    const RIGID_BODY_MESSAGE_AT_SIGMA_ZERO: &str =
+        "W_ModalRigidBodyMode: mode 0 has near-zero angular frequency \
+         ω = 0.000e0 rad/s (≤ 1.0e0); the model \
+         may be under-constrained (rigid-body or spurious mode).";
+
+    /// δ (#7261): the UNSHIFTED rigid-body message does not move.
+    ///
+    /// Asserted as full equality rather than by prefix: this is a regression
+    /// floor for every existing consumer of the unshifted path, and step-8's
+    /// optional shift clause must be strictly additive.
+    #[test]
+    fn rigid_body_diagnostic_at_sigma_zero_is_unchanged() {
+        let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, 0.0);
+        assert_eq!(
+            d.message, RIGID_BODY_MESSAGE_AT_SIGMA_ZERO,
+            "the σ = 0 rendering is today's, byte for byte",
+        );
+    }
+
+    /// δ (#7261): at σ ≠ 0, "add supports" must not be the standing remedy.
+    ///
+    /// MEASURED on the `shift_invert_modal_*` fixture geometry: with σ set to
+    /// that model's own λ₁ (13996484663.660404), `reify eval` returns
+    /// `f1 = 0 Hz` and emits the rigid-body warning above. The model's supports
+    /// are perfectly fine — the zero mode is a spurious artifact of a
+    /// near-singular `K − σM` — so the σ-blind loop hands the author a remedy
+    /// that is wrong for a fault entirely about WHERE σ was put. That is the
+    /// confidently-wrong-diagnosis class this leaf is forbidden to create, and
+    /// it is reachable only because β + δ made σ live.
+    ///
+    /// The `W_ModalRigidBodyMode:` prefix and the leading clause are KEPT — β's
+    /// negative assertions and consumer grouping keys depend on them — and the
+    /// shift note is APPENDED. The appended prose itself is not asserted, only
+    /// that σ is named in it: the remedy's wording is free to improve.
+    #[test]
+    fn rigid_body_diagnostic_at_a_shifted_solve_names_the_shift() {
+        let sigma = 13996484663.660404_f64;
+        let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, sigma);
+
+        assert!(
+            d.message.starts_with("W_ModalRigidBodyMode:"),
+            "the prefix is a consumer grouping key and must survive; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.starts_with(RIGID_BODY_MESSAGE_AT_SIGMA_ZERO),
+            "the shift note must EXTEND the one template, not replace it — two \
+             templates for one condition drift; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.contains(&sigma.to_string()),
+            "the appended clause must NAME σ = {sigma}, or the author cannot tell \
+             which shift to move; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.len() > RIGID_BODY_MESSAGE_AT_SIGMA_ZERO.len(),
+            "σ ≠ 0 must say strictly MORE than σ = 0; got {:?}",
+            d.message,
+        );
+    }
+
+    /// δ (#7261): severity and code are unchanged at both shifts.
+    ///
+    /// This stays the advisory it is, and α minted exactly THREE codes for this
+    /// PRD — `ShiftSkippedModes`, `ShiftAtEigenvalue` and
+    /// `FirstModeNotInShiftedResult`. This is none of them; do not invent a
+    /// fourth.
+    #[test]
+    fn rigid_body_diagnostic_stays_an_uncoded_warning_at_every_shift() {
+        for sigma in [0.0, 13996484663.660404_f64] {
+            let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, sigma);
+            assert_eq!(
+                d.severity,
+                Severity::Warning,
+                "σ = {sigma}: this stays advisory",
+            );
+            assert_eq!(d.code, None, "σ = {sigma}: no fourth code is minted here");
+        }
     }
 
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
