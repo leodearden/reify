@@ -354,13 +354,19 @@ pub(crate) fn chain_hops(
 ///     The designer has named the port, so inference has nothing to add — this
 ///     is also the escape hatch for an element with several ports in the
 ///     needed direction, which (d) refuses to guess at.
-/// (d) Otherwise the element names a sub, and its unique port in `needed` is
-///     the hop's endpoint. An indexer is stripped at the FIRST `[` because
-///     `sub_port_directions` keys on the SUB name and every element of a
-///     collection shares one child template — the same decomposition
+/// (d) Otherwise the element names a sub, and its unique port usable in
+///     `needed` is the hop's endpoint. An indexer is stripped at the FIRST `[`
+///     because `sub_port_directions` keys on the SUB name and every element of
+///     a collection shares one child template — the same decomposition
 ///     `endpoint_direction` uses. Zero or several such ports is the §6.2
 ///     failure: it names what was actually found and sends the author to (c),
 ///     and the endpoint is left unresolved so `chain_hops` drops the hop.
+///
+/// Usability is TIERED, not a union: a port declared in `needed` wins
+/// outright, and only when the sub declares none does a `bidi` port — which
+/// `is_forward_compatible` accepts in either role — become a candidate. A
+/// union would make the common `in`/`out`/`bidi` sub ambiguous, though §6.2
+/// reads it as having exactly one port per direction.
 ///
 /// A `sub_port_directions` MISS is handed back verbatim rather than diagnosed
 /// here: per that map's absence contract a miss means "not resolvable at this
@@ -387,11 +393,17 @@ fn resolve_chain_endpoint(
     let Some(child_ports) = ctx.scope.sub_port_directions.get(sub) else {
         return Some(elem.clone());
     };
-    let candidates: Vec<&str> = child_ports
-        .iter()
-        .filter(|(_, dir)| **dir == needed)
-        .map(|(port, _)| port.as_str())
-        .collect();
+    let declared_in = |wanted: reify_core::PortDirection| -> Vec<&str> {
+        child_ports
+            .iter()
+            .filter(|(_, dir)| **dir == wanted)
+            .map(|(port, _)| port.as_str())
+            .collect()
+    };
+    let mut candidates = declared_in(needed);
+    if candidates.is_empty() {
+        candidates = declared_in(reify_core::PortDirection::Bidi);
+    }
     let dir = direction_word(needed);
     let found = match candidates.as_slice() {
         [port] => {
@@ -403,8 +415,11 @@ fn resolve_chain_endpoint(
                 span: elem.span,
             });
         }
-        [] => format!("has no '{dir}' port"),
-        several => format!("has several '{dir}' ports ({})", several.join(", ")),
+        [] => format!("has no port usable as '{dir}'"),
+        several => format!(
+            "has several ports usable as '{dir}' ({})",
+            several.join(", ")
+        ),
     };
     diagnostics.push(
         Diagnostic::error(format!(
@@ -413,7 +428,7 @@ fn resolve_chain_endpoint(
         ))
         .with_label(DiagnosticLabel::new(
             elem.span,
-            format!("no unique '{dir}' port"),
+            format!("no unique port usable as '{dir}'"),
         )),
     );
     None
