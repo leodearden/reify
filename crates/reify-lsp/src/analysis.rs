@@ -547,18 +547,21 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// The returned span is the whole declaration statement, NOT the name token —
 /// narrow it with [`name_token_span`] when a jump target is wanted.
 ///
-/// SCOPE — same-file go-to-definition (task 6388); `goto_def::resolve_decl_name`
-/// is its one production consumer. The other scans are NOT migrated onto it,
-/// for two different reasons:
-/// - `goto_def::find_declaration_name_span` and
-///   `references::classify_top_level_decl` MUST stay narrower — they feed
-///   rename/references, and widening them corrupts a rename. The argument and
-///   the measurement behind it live on the guard test
-///   `references::tests::rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
-/// - [`compute_document_symbols_from_parsed`] carries no such hazard; its
-///   allowlist is simply UN-MIGRATED, because adopting this pair would need a
-///   `SymbolKind` decision per newly-admitted kind and would change the
-///   outline. Tracked as #6533.
+/// CONSUMERS — same-file go-to-definition (`goto_def::resolve_decl_name`, task
+/// 6388) and the document outline ([`compute_document_symbols_from_parsed`],
+/// migrated onto this pair by #6972, which is what let that function drop its
+/// own wildcard). Both are READ-ONLY surfaces, where admitting a kind too
+/// generously costs precision, not correctness.
+///
+/// The deliberate NON-consumers are the two rename/references oracles,
+/// `goto_def::find_declaration_name_span` and
+/// `references::classify_top_level_decl`. They stay narrower on purpose: they
+/// feed rename, whose edit set is the reference set, so admitting a kind whose
+/// USE SITES are not collected produces a rename that moves the declaration and
+/// leaves every use stale. A kind belongs there only once every use-site form
+/// for it is collected. The argument and the measurement behind it live on the
+/// guard test
+/// `references::tests::rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
 pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
     let named = match decl {
         Declaration::Structure(s) => (s.name.as_str(), s.span),
@@ -636,10 +639,13 @@ pub fn format_value(value: &Value) -> String {
 /// semantic realization tree (`get_entity_tree`) per PRD design decision 5 —
 /// the symbol list reflects declaration structure, not evaluation.
 ///
-/// Top-level declarations map to symbols as: structure→STRUCT,
-/// occurrence→CLASS, trait→INTERFACE, enum→ENUM, fn→FUNCTION. All other
-/// top-level declarations (import/unit/type-alias/constraint-def/field/
-/// purpose/module) are not navigable symbols and are skipped.
+/// EVERY named top-level declaration is a symbol; [`symbol_kind_for`] owns the
+/// per-kind mapping and is wildcard-free over all 14 `Declaration` variants.
+/// The skip set is exactly the three kinds that declare no name of their own —
+/// Import, Module and Default, the kinds [`decl_name_and_span`] answers `None`
+/// for. Before #6533 the skip set was instead whatever a `_ => {}` wildcard
+/// happened to catch, which is how Field, Purpose, Constraint, Unit and Joint
+/// were silently dropped as the parser grew them.
 // G-allow: LSP public API entry point; production caller uses the _in_context/_with_parsed/_from_parsed variant
 pub fn compute_document_symbols(source: &str, uri: &Url) -> Vec<DocumentSymbol> {
     let module_name = module_name_from_uri(uri);
