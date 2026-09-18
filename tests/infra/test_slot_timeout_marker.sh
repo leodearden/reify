@@ -3208,6 +3208,39 @@ assert "G0: Section G covers EVERY static-only roster member -- the declared cov
 # G2e below pins that the two grammars stay separate.
 G_CAPTURE_RE='2>[^&]'
 
+# THE PYTHON DIALECT OF THAT SAME GRAMMAR (task 7626). Section F now follows a
+# delegating wrapper into its `.py` sibling, so a ported member can hold its
+# deadline-capable invocation in Python -- where the leak property is not
+# written with `2>` at all but carried by the spawn call KWARGS. Three
+# separately-named EREs, held apart from each other and from G_CAPTURE_RE for
+# the same reason Section F holds its edge EREs apart: each keeps its own
+# rationale attached and stays independently greppable.
+#
+# G_PY_CAPTURE_RE is the straight-diversion analogue of `2>[^&]`. Both
+# subprocess.PIPE and subprocess.DEVNULL satisfy it, for exactly the reason
+# `2>/dev/null` does at G2e1: Section G asserts the LEAK property, not D4
+# evidence preservation. `capture_output=True` is the third in-tree idiom
+# (test_flake_density_report.py:83) and diverts BOTH streams in one token.
+G_PY_CAPTURE_RE='(stderr=subprocess\.(PIPE|DEVNULL)|capture_output=True)'
+# G_PY_MERGE_RE is the `2>&1` analogue, and carries the same stdout
+# PRECONDITION: merging stderr into an INHERITED stdout is the leak, not a fix.
+#
+# THE PYTHON MERGE BRANCH TAKES NO ORDER TEST, and that is a deliberate dialect
+# difference with a stated reason rather than an omission. G2g3 pins that bash
+# `2>&1 >file` still leaks, because fd 2 is aimed at whatever fd 1 is AT THAT
+# MOMENT -- the inherited stdout -- and only then does fd 1 move, so the bash
+# rule has to compare POSITIONS. Python kwargs carry no ordering at all: they
+# are collected into one mapping and applied by a single call, so
+# `stdout=..., stderr=...` and the reverse are the same call. G2h3b is the
+# standing fixture that pins the difference, so a future reader cannot restore
+# symmetry with bash and start flagging a correct spawn.
+G_PY_MERGE_RE='stderr=subprocess\.STDOUT'
+# G_PY_OUTDIV_RE is that precondition: stdout itself diverted.
+G_PY_OUTDIV_RE='(stdout=subprocess\.(PIPE|DEVNULL)|capture_output=True)'
+# The spawn verbs that OPEN a multi-line call. PASS 1 tests this BEFORE the bare
+# `(` subshell branch, so a spawn is never misread as a subshell.
+G_PY_SPAWN_RE='subprocess\.(Popen|run|call|check_call|check_output)'
+
 # _g_scan <logical-lines-file> <site-ERE> -> "<sites> <unredirected>", the ONE
 # analysis both predicates below read, so their two counts can never disagree.
 #
@@ -3237,11 +3270,23 @@ G_CAPTURE_RE='2>[^&]'
 # NO APOSTROPHE APPEARS INSIDE THE AWK PROGRAM, comments included -- the whole
 # program is a single-quoted shell string, so one would end it. The single
 # quote the body rule needs is BUILT (SQ, below) for the same reason.
-_g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
-    G_AWK_SITE="$2" G_AWK_CAP="$G_CAPTURE_RE" awk '
+_g_scan() {  # <logical-lines-file> <site-ERE> [dialect] -> "<sites> <unredirected>"
+    G_AWK_SITE="$2" G_AWK_CAP="$G_CAPTURE_RE" G_AWK_DIALECT="${3:-bash}" \
+    G_AWK_PYCAP="$G_PY_CAPTURE_RE" G_AWK_PYMERGE="$G_PY_MERGE_RE" \
+    G_AWK_PYOUT="$G_PY_OUTDIV_RE" G_AWK_PYSPAWN="$G_PY_SPAWN_RE" awk '
     BEGIN {
         SITE = ENVIRON["G_AWK_SITE"]
         CAP  = ENVIRON["G_AWK_CAP"]
+        # The DIALECT selects which capture grammar is asked. It DEFAULTS to
+        # bash, which is what makes every control and every bash member above
+        # provably byte-identical: they pass no third argument, so nothing they
+        # see can change. Like the two EREs it arrives through ENVIRON, never
+        # awk -v -- see the escape-processing trap recorded in the preamble.
+        DIA      = ENVIRON["G_AWK_DIALECT"]
+        PYCAP    = ENVIRON["G_AWK_PYCAP"]
+        PYMERGE  = ENVIRON["G_AWK_PYMERGE"]
+        PYOUT    = ENVIRON["G_AWK_PYOUT"]
+        PYSPAWN  = ENVIRON["G_AWK_PYSPAWN"]
         SQ = sprintf("%c", 39)   # the single quote, built not written
         DQ = sprintf("%c", 34)   # the double quote, built for symmetry
         n = 0; top = 0; sites = 0; unred = 0
@@ -3342,9 +3387,26 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
     # NOT captured. Both degrade toward flagging, never toward hiding.
     {
         line[++n] = $0
+        # PYSPAWN BODY ACCUMULATION, and the one structural difference from the
+        # three bash kinds. A subshell and an inline body are stamped by their
+        # CLOSER; the disposition of a Python call is in its BODY -- the kwargs --
+        # and its closer is a bare paren carrying nothing. So the flags are
+        # gathered here, across every line inside the block, and the stamp is
+        # computed at close from what was gathered. Runs BEFORE this line is
+        # classified, so top still names the ENCLOSING block: a spawn opener
+        # never feeds its own accumulator, which is correct -- a line that ends
+        # in the open paren has no kwargs on it, and one that does carry them
+        # is not an opener at all and takes the line-local branch in PASS 2.
+        if (DIA == "py" && top > 0 && bk[stack[top]] == "pyspawn") {
+            po = stack[top]
+            if ($0 ~ PYCAP)   pycap[po]   = 1
+            if ($0 ~ PYMERGE) pymerge[po] = 1
+            if ($0 ~ PYOUT)   pyout[po]   = 1
+        }
         isopen = 0; k = ""
         if      ($0 ~ /\$\($/)                                      { isopen = 1; k = "subst" }
         else if ($0 ~ "(bash|sh)[[:blank:]]+-c[[:blank:]]+" SQ "$") { isopen = 1; k = "body" }
+        else if (DIA == "py" && $0 ~ /\($/ && $0 ~ PYSPAWN)         { isopen = 1; k = "pyspawn" }
         else if ($0 ~ /\($/ && $0 !~ /\$\(\($/)                     { isopen = 1; k = "subshell" }
 
         isclose = 0
@@ -3356,6 +3418,12 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
 
         if (isclose) {
             ok = stack[top--]
+            if (bk[ok] == "pyspawn") {
+                # From the BODY. A straight diversion captures on its own; a
+                # merge captures only with stdout diverted too -- the G2d
+                # precondition, in the other language.
+                d = (pycap[ok] || (pymerge[ok] && pyout[ok])) ? "err" : "none"
+            } else {
             # Only the CLOSERS OWN segment can capture the block. Scan from
             # just past the closing token, stepping over the `"` of a `)"` that
             # closes a `"$( ... )"` so the segment scanner does not read the
@@ -3366,6 +3434,7 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
             if (substr($0, cfrom, 1) == DQ) cfrom++
             cseg = segfrom($0, cfrom)
             d = (cseg ~ CAP) ? "err" : (bk[ok] == "subst" ? "out" : "none")
+            }
             stamp[ok] = bk[ok] ":" d
             encl[n] = (top > 0) ? stack[top] : 0
         } else if (isopen) {
@@ -3398,11 +3467,22 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
             seg = segat(line[i], RSTART)
             sep = SEP
             cap = 0
+            if (DIA == "py") {
+                # Line-local first: a one-line spawn needs no block machinery.
+                if (seg ~ PYCAP) cap = 1
+                else if (seg ~ PYMERGE && seg ~ PYOUT) cap = 1
+                # THE ONE NEW CLAUSE. A multi-line spawn site IS its own
+                # opener, and encl[] points at the block ENCLOSING an opener,
+                # never at itself -- so unlike the subshell and body kinds this
+                # site has to consult its own stamp.
+                if (!cap && bk[i] == "pyspawn" && stamp[i] ~ /:err$/) cap = 1
+            } else {
             if (seg ~ CAP) cap = 1
             else if (match(seg, /2>&1/)) {
                 pre = substr(seg, 1, RSTART - 1)
                 if (pre ~ /(^|[^2>&])>[^&]/ || pre ~ /\$\(/ || sep == "|") cap = 1
                 else for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /^subst:/) { cap = 1; break }
+            }
             }
             if (!cap) for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /:err$/) { cap = 1; break }
             if (!cap) unred++
@@ -3416,7 +3496,7 @@ _g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
 # that file holds. Drives G3's per-member non-vacuity arm.
 _g_sites() {
     local _r
-    _r="$(_g_scan "$1" "$2")"
+    _r="$(_g_scan "$1" "$2" "${3:-bash}")"
     echo "${_r%% *}"
 }
 
@@ -3424,7 +3504,7 @@ _g_sites() {
 # NOT divert their stderr. Drives G1.
 _g_unredirected() {
     local _r
-    _r="$(_g_scan "$1" "$2")"
+    _r="$(_g_scan "$1" "$2" "${3:-bash}")"
     echo "${_r##* }"
 }
 
@@ -3957,9 +4037,29 @@ for _g_i in "${!G_MEMBERS[@]}"; do
     [ "$_g_f" = "$_g_m" ] || _g_via=" -> $_g_f"
     _g_j="$TMPG/${_g_m}.logical"
     _d_join_logical "$SCRIPT_DIR/$_g_f" > "$_g_j"
-    _g_re="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_SITE[$_g_i]}"
-    _g_nsites="$(_g_sites "$_g_j" "$_g_re")"
-    _g_nbare="$(_g_unredirected "$_g_j" "$_g_re")"
+    # THE DIALECT IS DERIVED FROM THE SCAN TARGET, never declared: a fourth
+    # hand-typed column could drift from the file it describes, and there is
+    # nothing to judge here that the extension does not already say.
+    # _d_join_logical itself needs no dialect -- it strips `^[[:blank:]]*(#|
+    # assert )`, which is already right for Python, and a second near-identical
+    # joiner is exactly the twin-drift hazard this file forbids elsewhere.
+    #
+    # THE EXEC-POSITION ANCHOR IS BASH-ONLY, and that is not an oversight. It
+    # exists to tell an invocation from an INSPECTION of the same token --
+    # `test -f "$RUN_ALL"`, a case subject, a grep argument (G2f4). A Python
+    # site target is the spawn CALL itself, which has no inspection form, so
+    # there is nothing for an anchor to discriminate; prefixing the bash one
+    # would simply reject every real site, since `proc = subprocess.Popen(`
+    # puts no command start before the token. The site target is used bare.
+    _g_dialect=bash
+    case "$_g_f" in *.py) _g_dialect=py ;; esac
+    if [ "$_g_dialect" = "py" ]; then
+        _g_re="${G_SITE[$_g_i]}"
+    else
+        _g_re="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_SITE[$_g_i]}"
+    fi
+    _g_nsites="$(_g_sites "$_g_j" "$_g_re" "$_g_dialect")"
+    _g_nbare="$(_g_unredirected "$_g_j" "$_g_re" "$_g_dialect")"
 
     # G3 BEFORE G1, the D4a analogue: G1 asserts a ZERO, and a stale or
     # typo'd site target would make that zero green forever. This is the arm
