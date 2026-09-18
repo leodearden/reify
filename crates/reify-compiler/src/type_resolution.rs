@@ -24,8 +24,8 @@ thread_local! {
     ///   * `functions.rs` — fn return-type resolution;
     ///   * `compile_builder/defs_phase.rs::phase_constraint_defs` —
     ///     constraint-def param resolution, installed once for the whole
-    ///     declaration loop and passed as a witness into
-    ///     `compile_constraint_def` (task 6416).
+    ///     declaration loop; `compile_constraint_def` documents the
+    ///     precondition it relies on (task 6416).
     ///
     /// It is empty everywhere else, so type positions outside those four are
     /// unaffected — the same param-position scoping precedent as qualified-assoc

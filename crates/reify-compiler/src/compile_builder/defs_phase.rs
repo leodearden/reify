@@ -117,22 +117,15 @@ fn compile_constraint_def(
             // an error so the user sees the typo at def-compile time rather than silently
             // accepting it and getting a confusing error at the instantiation site.
             //
-            // `enum_defs` is this site's PRIVATE enum namespace, NARROWED by task
-            // 6416: with an `EnumNameScope` now installed by the caller, the bare
-            // (`Zq`), enum-bodied-alias (`AL`) and nested (`Option<Zq>`) spellings
-            // all RESOLVE rather than merely being suppressed here.
+            // `enum_defs` is this site's PRIVATE enum namespace. Task 6416 narrowed
+            // its reach to the PARAMETERISED spellings (`Zq<Int>`, `AL<Int>`); that
+            // residue is argued once on `unresolved_alias_body_name` and enforced by
+            // `parameterised_{enum,alias_to_enum}_constraint_def_param_emits_no_unknown_type_diagnostic`
+            // in `tests/harness_statement_semantics/constraint_def_compile_tests.rs`.
+            // Do NOT delete this conjunct or the alias hop below as newly redundant.
             //
-            // Do NOT delete this conjunct or the alias hop below as newly
-            // redundant. What survives is the PARAMETERISED form — the ambient
-            // fallback is gated on `type_args.is_empty()` while `resolve_enum_type`
-            // ignores type args — so this is still the only thing suppressing a
-            // spurious "unknown type" for `param g : Zq<Int>` and `param g :
-            // AL<Int>`. The full measured argument, for both the reach and the
-            // residue, lives once on `unresolved_alias_body_name`.
-            //
-            // The enum lookup sits inside the block so the hop can be named; it
-            // and the `structure_names` test are both pure predicates, so the
-            // ordering is behaviour-preserving.
+            // Both it and the `structure_names` test are pure predicates, so their
+            // ordering within the chain is behaviour-preserving.
             if let Some(te) = &param.type_expr
                 && resolved_ty.is_none()
                 && let reify_ast::TypeExprKind::Named { name, .. } = &te.kind
