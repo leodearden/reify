@@ -2508,6 +2508,289 @@ assert "FC5a: a node-bound variable passed to an EXEC-FORWARDING helper is an ed
 assert "FC5b: the same handoff to an INERT lib, and sourcing a forwarding lib without handing it the target, are NOT edges (expected $F_CLOSURE_FWD_EXPECT derived, got $F_FC5_COUNT: ${F_FC5_DERIVED:-<none>})" \
     test "$F_FC5_COUNT" -eq "$F_CLOSURE_FWD_EXPECT"
 
+echo ""
+echo "--- FC8: the PYTHON-SIBLING dialect -- a wrapper whose invocation lives in its .py sibling ---"
+
+# THE SHAPE THESE CONTROLS EXIST FOR, and why it needs a dialect of its own
+# rather than a widening of the four bash edge EREs above.
+# docs/notes/infra-test-bash-to-python-migration-policy.md ports a member by
+# keeping its `.sh` BASENAME -- run_all.sh globs `test_*.sh` only, so the
+# basename is what stays discovered, manifest-keyed and doc-referenced -- and
+# shrinking that `.sh` to a wrapper that runs a sibling `.py` holding the real
+# assertions. The invocation this closure has to see therefore moves OUT of the
+# node's own text and into that sibling, written in a language where argv is
+# DATA rather than syntax:
+#   NESTED = SCRIPT_DIR / "test_occt_flock_gate.sh"   a Path-join, not `VAR=`
+#   ["bash", str(NESTED)]                             a LIST, not `bash <path>`
+# MEASURED on the parked port of test_verify_env_ambient_isolation.py (:53 and
+# :520): F_EDGE_BIND_PRE cannot match the first (it requires `VAR=` with no
+# blanks around it and a `/` immediately after), and F_EDGE_VERB_RE cannot match
+# the second (it requires the verb followed by a BLANK, where a list gives it a
+# `"`). A ported member therefore drops silently out of the derivation, taking
+# its roster membership and Section G's non-vacuity check with it -- 144/0 ->
+# 141/3, the measurement that has kept the policy's second arm deferred.
+#
+# A `.py` IS NEVER A NODE. _f_node_list stays `test_*.sh` plus run_all.sh, so
+# D_ROSTER, F1, the G0 slice, the run-all-classification manifest row and every
+# doc reference keep pointing at the `.sh` basename. What the derivation gains
+# instead is TEXT ATTRIBUTION: a node that REALLY DELEGATES to a same-stem
+# sibling is read together with it. Gating on a real delegation rather than on
+# mere sibling existence is what keeps a stray, unrun `.py` inert -- the same
+# line the house rule draws when it says an unwrapped `.py` asserts nothing.
+#
+# THE FALSE-ADMISSION HAZARD IS MEASURED AND LIVE, which is why the negatives
+# below are not decorative. `#`-stripping is shared with Python -- `#` is its
+# comment character too -- but it does NOT remove a DOCSTRING, and both
+# in-tree Python members name a node in docstring prose: the parked port at
+# :13/:24 and test_flake_density_report.py at :9/:56 both name run_all.sh,
+# which sorts AHEAD of every real target in _f_closure_compute's sorted
+# shortlist. A rule loose enough to read prose as an invocation would not merely
+# over-admit -- it would hand a ported member the WRONG ROUTE, silently.
+F_PY_POS_DIR="$TMPF/fx-py-pos"; mkdir -p "$F_PY_POS_DIR"
+F_PY_NEG_DIR="$TMPF/fx-py-neg"; mkdir -p "$F_PY_NEG_DIR"
+
+# The SEED node both dirs are built around: a plainly direct-capable suite, so
+# every derivation below reaches its deadline through a node whose capability
+# has nothing to do with Python.
+cat > "$F_PY_POS_DIR/test_f_py_seed.sh" <<'F8SEEDEOF'
+#!/usr/bin/env bash
+slot_acquire "$LOCK" 1 1
+F8SEEDEOF
+cp "$F_PY_POS_DIR/test_f_py_seed.sh" "$F_PY_NEG_DIR/test_f_py_seed.sh"
+
+# FC8 POSITIVE -- three grammar variants, each as its OWN wrapper/sibling pair
+# and each with its own ROUTE pin below, so a narrowing edit reports WHICH
+# variant it stopped seeing rather than one opaque count (the F_POS_VARIANTS /
+# E_POS_VARIANTS idiom this file uses throughout).
+#
+# (i) BIND plus argv-list EXEC -- the real port's shape, transcribed.
+cat > "$F_PY_POS_DIR/test_f_py_bind.sh" <<'F8BINDSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_bind.py"
+F8BINDSHEOF
+cat > "$F_PY_POS_DIR/test_f_py_bind.py" <<'F8BINDPYEOF'
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run(["bash", str(NESTED)], check=True)
+F8BINDPYEOF
+
+# (ii) The SAME bind reached through an os.fspath() wrapper rather than str().
+# Both spellings are idiomatic for handing a Path to subprocess, and a rule
+# that saw only one of them would be a coin flip on the next porter's habit.
+cat > "$F_PY_POS_DIR/test_f_py_fspath.sh" <<'F8FSSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_fspath.py"
+F8FSSHEOF
+cat > "$F_PY_POS_DIR/test_f_py_fspath.py" <<'F8FSPYEOF'
+import os
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run(["bash", os.fspath(NESTED)], check=True)
+F8FSPYEOF
+
+# (iii) The one-line LITERAL form, where the node basename never reaches a
+# variable at all. IN-TREE OCCURRENCES TODAY: ZERO -- stated plainly, the same
+# honesty the `body` opener kind's note in Section G already carries. It is
+# covered because it is the shortest way to write a one-shot nested run and
+# the alternative is a SILENT drop, and this fixture is the live control that
+# keeps the branch exercised rather than merely present.
+cat > "$F_PY_POS_DIR/test_f_py_literal.sh" <<'F8LITSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_literal.py"
+F8LITSHEOF
+cat > "$F_PY_POS_DIR/test_f_py_literal.py" <<'F8LITPYEOF'
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+
+subprocess.run(["bash", str(D / "test_f_py_seed.sh")], check=True)
+F8LITPYEOF
+
+F_PY_POS_VARIANTS=3
+F_PY_POS_EXPECT=$(( F_PY_POS_VARIANTS + 1 ))
+
+# FC8 NEGATIVE -- four shapes that must NOT be edges, plus the sentinel that
+# keeps their count a DISCRIMINATION rather than an absence (FC4's pairing, and
+# for the same reason: without it "the dialect rejected all four" would be
+# indistinguishable from "the derivation returned nothing over this dir").
+#
+# (iv) A DOCSTRING naming the seed node in PROSE, with no assignment and no
+# argv list anywhere in the file. This is the shape live at the parked port's
+# :13/:24 and at test_flake_density_report.py:9/:56, and `#`-stripping does not
+# touch it.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_docstring.sh" <<'F8DOCSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_neg_docstring.py"
+F8DOCSHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_docstring.py" <<'F8DOCPYEOF'
+"""Guard ported from bash.
+
+The suite this module used to drive was test_f_py_seed.sh, and the wrapper
+run_all.sh discovers is the sibling of the same stem. Neither sentence is an
+invocation, and neither is reached by the comment strip.
+"""
+
+import unittest
+
+
+class TestProseIsNotACall(unittest.TestCase):
+    def test_nothing_is_spawned(self):
+        self.assertTrue(True)
+F8DOCPYEOF
+
+# (v) A sibling the wrapper only INSPECTS -- `test -f` and a source grep, never
+# a python verb. The sibling genuinely would invoke the seed, so the ONLY thing
+# keeping this out of the derivation is the absent delegation: this is the
+# fixture that pins attribution to a real handoff rather than to the mere
+# existence of a same-stem file.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_inspected.sh" <<'F8INSSHEOF'
+#!/usr/bin/env bash
+test -f "$SCRIPT_DIR/test_f_py_neg_inspected.py"
+grep -qE 'subprocess' "$SCRIPT_DIR/test_f_py_neg_inspected.py"
+F8INSSHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_inspected.py" <<'F8INSPYEOF'
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run(["bash", str(NESTED)], check=True)
+F8INSPYEOF
+
+# (vi) A Python BIND to the seed node that is only ever INSPECTED, never placed
+# in argv-list exec position. The direct analogue of
+# test_verify_release_delta_skip.sh's bind-only shape (:521, inspected at
+# :523/:530/:536) -- the one measured false admission that sank the run_all
+# alternation, and the reason the bash rule requires bind AND exec position for
+# the SAME variable. The Python dialect inherits that pairing or it inherits
+# the defect.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_bind_only.sh" <<'F8BOSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_neg_bind_only.py"
+F8BOSHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_bind_only.py" <<'F8BOPYEOF'
+import unittest
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+
+class TestSeedIsOnlyInspected(unittest.TestCase):
+    def test_seed_is_present(self):
+        self.assertTrue(NESTED.is_file())
+
+    def test_seed_carries_a_shebang(self):
+        self.assertTrue(NESTED.read_text().startswith("#!"))
+F8BOPYEOF
+
+# (vii) An argv list whose FIRST element is not a quoted exec verb. The shape is
+# transcribed from test_flake_density_report.py:83
+# (`[sys.executable, str(TOOL_PATH), *args]`); the fixture points it at the seed
+# node so that the quoted-verb-first requirement is the only thing rejecting it.
+# What that requirement buys, measured: it is what keeps the live
+# `[sys.executable, ...]` site in the tree from making
+# test_flake_density_report.sh a roster member -- FC8h below is the real-tree
+# half of this same pin.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_sysexec.sh" <<'F8SESHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_neg_sysexec.py"
+F8SESHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_sysexec.py" <<'F8SEPYEOF'
+import subprocess
+import sys
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run([sys.executable, str(NESTED)], capture_output=True)
+F8SEPYEOF
+
+# THE SENTINEL: one plainly-delegating pair, so FC8f's count discriminates.
+cat > "$F_PY_NEG_DIR/test_f_py_neg_control.sh" <<'F8CTLSHEOF'
+#!/usr/bin/env bash
+python3 "$SCRIPT_DIR/test_f_py_neg_control.py"
+F8CTLSHEOF
+cat > "$F_PY_NEG_DIR/test_f_py_neg_control.py" <<'F8CTLPYEOF'
+import subprocess
+from pathlib import Path
+
+D = Path(__file__).resolve().parent
+NESTED = D / "test_f_py_seed.sh"
+
+subprocess.run(["bash", str(NESTED)], check=True)
+F8CTLPYEOF
+
+F_PY_NEG_EXPECT=2
+
+# Routes and counts precomputed into PLAIN variables -- never a $(...) inside a
+# description (E1's discipline, and E1's sweep includes this file). Basenames
+# and counts only, never a matched line.
+F_FC8_BIND_ROUTE="$(_f_route_of "$F_PY_POS_DIR" test_f_py_bind.sh)"
+F_FC8_FSPATH_ROUTE="$(_f_route_of "$F_PY_POS_DIR" test_f_py_fspath.sh)"
+F_FC8_LITERAL_ROUTE="$(_f_route_of "$F_PY_POS_DIR" test_f_py_literal.sh)"
+F_FC8_POS_COUNT="$(_f_closure_names "$F_PY_POS_DIR" | grep -cE '^test_' || true)"
+F_FC8_NEG_CTRL_ROUTE="$(_f_route_of "$F_PY_NEG_DIR" test_f_py_neg_control.sh)"
+F_FC8_NEG_COUNT="$(_f_closure_names "$F_PY_NEG_DIR" | grep -cE '^test_' || true)"
+F_FC8_NEG_ADMITTED="$(_f_closure_names "$F_PY_NEG_DIR" | grep -E '^test_' | tr '\n' ' ' | sed 's/ *$//' || true)"
+
+assert "FC8a: a Python sibling that BINDS the seed node by Path-join and execs it through an argv list is an edge -- the parked port's shape verbatim (expected via:test_f_py_seed.sh, got ${F_FC8_BIND_ROUTE:-<underived>})" \
+    test "$F_FC8_BIND_ROUTE" = "via:test_f_py_seed.sh"
+assert "FC8b: ... and so is the same bind handed to subprocess through os.fspath() rather than str() (expected via:test_f_py_seed.sh, got ${F_FC8_FSPATH_ROUTE:-<underived>})" \
+    test "$F_FC8_FSPATH_ROUTE" = "via:test_f_py_seed.sh"
+assert "FC8c: ... and so is the one-line LITERAL form, where the node basename never reaches a variable (zero in-tree occurrences today -- this fixture is what keeps that branch exercised; expected via:test_f_py_seed.sh, got ${F_FC8_LITERAL_ROUTE:-<underived>})" \
+    test "$F_FC8_LITERAL_ROUTE" = "via:test_f_py_seed.sh"
+assert "FC8d: all $F_PY_POS_VARIANTS Python edge variants are derived, plus the seed itself, and nothing else in that dir is (expected $F_PY_POS_EXPECT, got $F_FC8_POS_COUNT)" \
+    test "$F_FC8_POS_COUNT" -eq "$F_PY_POS_EXPECT"
+assert "FC8e: positive control for FC8f -- the one pair in the NEGATIVE dir that really does delegate and invoke is admitted, so FC8f's count cannot be satisfied by a wholesale derivation failure over that dir (expected via:test_f_py_seed.sh, got ${F_FC8_NEG_CTRL_ROUTE:-<underived>})" \
+    test "$F_FC8_NEG_CTRL_ROUTE" = "via:test_f_py_seed.sh"
+assert "FC8f: none of the four measured non-invocation shapes is an edge -- a DOCSTRING naming the node in prose, a sibling the wrapper only inspects and never runs, a Python bind that is only ever inspected, and an argv list headed by sys.executable instead of a quoted exec verb (expected $F_PY_NEG_EXPECT derived, the seed and the sentinel and nothing else, got $F_FC8_NEG_COUNT: ${F_FC8_NEG_ADMITTED:-<none>})" \
+    test "$F_FC8_NEG_COUNT" -eq "$F_PY_NEG_EXPECT"
+
+# THE REAL-TREE NEGATIVE, and it needs no fixture and cannot be retired: the
+# tree already carries exactly one delegating wrapper/sibling pair,
+# test_flake_density_report.{sh,py}, and its `.py` names run_all.sh in TWO
+# docstrings (:9, :56) while spawning only `[sys.executable, str(TOOL_PATH),
+# *args]` (:83). It is therefore a free, permanent, real-tree instance of both
+# (iv) and (vii) at once -- and an expensive one to get wrong, because
+# run_all.sh sorts ahead of every other candidate, so a docstring-admitting rule
+# would put this file in the roster with route via:run_all.sh and turn F1 RED
+# with an unlisted member whose natural repair is to declare something that is
+# not deadline-capable at all.
+#
+# HONEST NOTE, in the voice the `body` opener kind's note already uses: FC8h
+# passes VACUOUSLY today, because no attribution exists yet for it to survive.
+# It becomes load-bearing the moment attribution lands, which is precisely when
+# a reader would otherwise have no standing check that it stayed out.
+# FC8g BEFORE FC8h, the FC7a-before-FC7b ordering and for the same reason:
+# `_f_route_of` prints the empty string both for a node that is correctly not
+# derived AND for one that is not in the node set at all, so FC8h alone would
+# go green for the wrong reason the moment the pair is renamed or the
+# delegation is rewritten.
+F_FC8_TREE_DELEG="$(grep -cE -- "${F_EDGE_ANCHOR}(python3|python)[[:blank:]]+([^\"[:blank:]]+[[:blank:]]+)*\"?[^\"[:blank:]]*/test_flake_density_report\.py" \
+    "$SCRIPT_DIR/test_flake_density_report.sh" 2>/dev/null || true)"
+F_FC8_TREE_PAIR=0
+if [ -f "$SCRIPT_DIR/test_flake_density_report.py" ] && [ "${F_FC8_TREE_DELEG:-0}" -ge 1 ]; then
+    F_FC8_TREE_PAIR=1
+fi
+F_FC8_TREE_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_flake_density_report.sh)"
+
+assert "FC8g: test_flake_density_report.sh really IS a delegating wrapper over a sibling .py present on disk, so FC8h pins attribution rather than an absent pair (non-vacuity; got ${F_FC8_TREE_DELEG:-0} delegation line(s), pair present: $F_FC8_TREE_PAIR)" \
+    test "$F_FC8_TREE_PAIR" -eq 1
+assert "FC8h: ... and it is still NOT derived -- its sibling names run_all.sh only in docstring PROSE and spawns only through sys.executable, so neither the prose nor the argv list may become an edge (expected <underived>, got ${F_FC8_TREE_ROUTE:-<underived>})" \
+    test -z "$F_FC8_TREE_ROUTE"
+
 # REAL-TREE ROUTE PINS. Membership alone would not catch a derivation that
 # reached the right file by the wrong edge, and for this file that is not
 # hypothetical: a path-mention grammar derives
