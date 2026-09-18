@@ -130,6 +130,34 @@ Graph-walk invariant (Q-F-6) is **not** an explicit dependency-DAG walk in slice
 
 **Severity:** high → escalate via `mcp__escalation__escalate_info` (or block via pre-done hook). The Phase-2 may10 incident catalog (`project_phantom_done_at_reap_premature_followup.md`, `project_phantom_done_metadata_files_strip_may09.md`, etc.) shows ~6 known incidents in the past 2 weeks — this is the highest-signal pattern.
 
+### PDCHECK — `delivered_checks` dead-path
+
+**Invariant:** For every `kind: grep` row in a **non-terminal** task's `metadata.delivered_checks`, at least one path in the row's `paths` resolves against the tracked-file set (an exact tracked file, or a directory prefix of one).
+
+**Detector:** `ls_files()` for the tracked set, plus a read-only (`SQLITE_OPEN_READ_ONLY`) walk of `.taskmaster/tasks/tasks.db`'s `tag = 'master'` rows — the same route all three PTODO DB lanes take. For each row whose paths are *all* absent, `last_commit_for_path` decides whether any of them ever existed; if none did, the row is presumed to name files the task will create and passes.
+
+**Two finding kinds, split on the row's `expect` polarity.** A `git grep` over a pathspec that matches nothing exits 1, and *both* readings of that rc=1 are silent — which is why one detector reports two different defects:
+
+| kind | polarity | how rc=1 reads | consequence | severity |
+|---|---|---|---|---|
+| `delivered-check-unsatisfiable-path` | `expect: present` | FAILED | every dependent blocks permanently at `DEP_CAPABILITY_NOT_DELIVERED` | **High** |
+| `delivered-check-vacuous-absent-path` | `expect: absent` | PASSED | the check succeeds while asserting nothing | **Medium** |
+
+The Medium kind is **not** a weaker version of the High one and must not be "fixed" into silence by a reader who knows only the loud half: a vacuous check is a hole in the gate, and it is invisible by construction — nothing else reports it, because from the runner's side it passed.
+
+**The ANY-match quantifier (load-bearing).** A multi-`paths` row is executed as ONE `git grep -E -e <pattern> <ref> -- <paths...>`, so it matches when ANY path matches; it is not a per-path conjunction. One dead path among live ones therefore leaves the row satisfiable. The detector consequently quantifies over the whole row — every path absent — and emits at most one finding per row; a per-path lane would flag every multi-path row carrying a single stale entry. This contract lives in dark-factory (`orchestrator/src/orchestrator/delivered_checks.py::_run_grep_check`) and is restated here because `delivered_checks` is parsed nowhere in this repo.
+
+**False-positive guards:**
+- Terminal (`done` / `cancelled`) tasks are skipped — only a task that can still land can block a dependent.
+- Directory and trailing-slash pathspecs count as present when any tracked file lives under them (shared with PTODO's ζ lane via `path_present_in_tracked`, so the two cannot drift).
+- A path with no git history passes (presumed to-be-created), which is what keeps healthy post-state rows quiet.
+- A rename target that is not itself tracked is never advertised as a repair hint.
+- Rename-vs-delete is carried as **evidence**, not as a kind split: it changes only the repair hint, not what is wrong.
+
+**Severity / wiring:** **Opt-in via `--pattern PDCHECK`**, not a member of the no-`--pattern` default sweep. The process exit code is the count of High-severity findings, and the default sweep is what `scripts/reify-audit-predone-wrapper.sh` and the `/audit` skill run — so a High-capable detector there would turn both non-zero the moment any task's check row went stale. Same posture as PDIAG and PDOCCOVER.
+
+**A refuted heuristic — do not rebuild it.** The signal originally sketched for this defect (intersect a row's `paths` with the task's `metadata.files` and flag paths the task's description says it deletes or relocates) was validated against both precedent tasks and fails three ways: it is **direction-blind** (task #5791's `files` holds both the old and the new `arg_acceptance.rs`, so it fires identically on the defect and on its landed fix), it **false-positives** on the cross-crate `lib.rs`/`mod.rs` pairs that nearly every multi-crate Rust task touches, and it has **zero recall on the canonical precedent** — #5799, which permanently blocked #5919, involved no relocation at all and rewrote *lines* in paths with no same-basename sibling. Reading the description prose instead would be an ad-hoc parser over meaningful strings. Path resolvability was chosen because it is deterministic, has no false-positive mode, and is what actually surfaced the live defects on #5778 and #5762.
+
 ## 6. Intervention vocabulary (Q-F-3)
 
 Severity ladder:
