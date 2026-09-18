@@ -128,6 +128,12 @@ _VALUE_FORBIDDEN_MATCH_KEYS = frozenset(
     {"exit_code", "stderr_contains", "stdout_contains"}
 )
 
+# Kinds that ask `reify eval <fixture>` and differ only in what they read off
+# the result: `ir` looks at the exit code and stderr signature, `value` at the
+# printed value.  One arm builds both, so the shared argv cannot drift into two
+# spellings of one question.
+_EVAL_PROBE_KINDS = frozenset({"ir", "value"})
+
 # Sentinel injected into stderr by run_probe() when the probe could not be
 # launched at all — any launch failure (ENOENT missing, EACCES not executable,
 # ENOTDIR bad path component), i.e. the whole OSError family, not FileNotFoundError
@@ -879,13 +885,13 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
     """Construct the exact command argv for a probe.
 
     Binary resolution (used by run_probe; also injectable via env overrides):
-        grammar  → TREE_SITTER_BIN (default "tree-sitter")
-        check/ir → REIFY_BIN (default "reify")
+        grammar          → TREE_SITTER_BIN (default "tree-sitter")
+        check/ir/value   → REIFY_BIN (default "reify")
 
     Command shapes:
-        grammar  → [tree-sitter, parse, --quiet, <abs-fixture>]
-        check    → [reify, check, <abs-fixture>]
-        ir       → [reify, eval, <abs-fixture>]
+        grammar    → [tree-sitter, parse, --quiet, <abs-fixture>]
+        check      → [reify, check, <abs-fixture>]
+        ir, value  → [reify, eval, <abs-fixture>]  (_EVAL_PROBE_KINDS)
 
     Fixture-path resolution: build_command() resolves probe.fixture to an
     absolute path via os.path.join(repo_root, probe.fixture) so that the path
@@ -923,7 +929,7 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
     if probe.probe_kind == "check":
         return [reify_bin, "check", fixture]
 
-    if probe.probe_kind == "ir":
+    if probe.probe_kind in _EVAL_PROBE_KINDS:
         return [reify_bin, "eval", fixture]
 
     # Should not reach here after load_probe_set validation, but be defensive.
