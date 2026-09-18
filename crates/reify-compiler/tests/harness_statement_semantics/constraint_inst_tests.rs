@@ -1039,7 +1039,7 @@ structure S {
 // resolves (`constraint_def_compile_tests.rs` pins the def-side
 // `Some(Option(Enum("Zq")))`), and the only one that was user-visibly BROKEN
 // before rather than merely under-typed. Resolving it activates #4546's arg
-// check on a shape that had none, so the two cases below pin the consequence
+// check on a shape that had none, so the three cases below pin the consequence
 // users actually see.
 
 /// The `some(..)` spelling must be accepted for an `Option<Zq>` param.
@@ -1086,6 +1086,39 @@ structure S {
 "#,
         1,
         "a bare Zq.Close variant passed to an Option<Enum(Zq)> param",
+    );
+}
+
+/// A bare `none` is REJECTED for an `Option<Zq>` param. This pins TODAY's
+/// behaviour, not a desired contract: `expr.rs` types a bare `none` as
+/// `Option<Real>` ("contextual override happens at param/let sites") and the
+/// constraint-arg binding site applies no such override, so #4546's check
+/// compares `Option<Real>` against `Option<Enum(Zq)>`.
+///
+/// MEASURED: the cause is enum-independent and pre-existing — `param g :
+/// Option<Length>` + `K(g: none)` fails identically ("expected
+/// Option<Scalar[m]>, got Option<Real>"). Task 6416 only makes `Option<Zq>`
+/// reach the check at all; before it, the def site emitted a spurious `unknown
+/// type 'Option'`. Contextual typing of `none` here is filed as follow-up
+/// ticket tkt_0RTT1BWK4518B7W6XX74XSE79D — flip the expected count to 0 when it
+/// lands.
+#[test]
+fn bare_none_arg_for_option_typed_enum_param_is_rejected_today() {
+    assert_arg_type_mismatches(
+        r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Option<Zq>
+    true
+}
+structure S {
+    constraint K(g: none)
+}
+"#,
+        1,
+        "a bare `none` passed to an Option<Enum(Zq)> param (today's behaviour: \
+         `none` defaults to Option<Real>)",
     );
 }
 
