@@ -2885,6 +2885,13 @@ fn hydraulic_port_trait_surface() {
 /// max_load and max_torque are Option-defaults in MechanicalPort → omitted here.
 ///
 /// This is the PRD §7 ζ signal: "reify check accepts the multi-domain HydraulicPort."
+/// That is ALL it owns — it asserts Error-severity only. The same source is kept
+/// in two other places, each owning a different claim, and a re-migration of the
+/// enum annotations has to move all three: `examples/stdlib/ports_breadth.ri`
+/// (the corpus site) and
+/// `struct_ctor_field_conformance_tests.rs::migrated_hydro_conformer_port_body_stays_clean`
+/// (zero diagnostics of any severity plus the port's member count, i.e. the
+/// widened param-default conformance walk staying silent).
 ///
 /// RED: HydraulicPort absent → compile error on unknown trait.
 #[test]

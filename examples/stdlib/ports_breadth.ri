@@ -67,6 +67,11 @@ structure def AsymmetricRig {
 // compile time confirms the FluidPort+MechanicalPort diamond resolves.
 // (Mirrors the proven ζ conformer shape in
 // ports_stdlib_compile.rs::hydraulic_port_concrete_conformer_multidomain_compiles.)
+// A third copy lives inline at
+// struct_ctor_field_conformance_tests.rs::migrated_hydro_conformer_port_body_stays_clean,
+// which owns the "widened param-default conformance walk stays silent" claim.
+// The enum annotations below are load-bearing for that claim; re-migrating them
+// has to move all three copies.
 
 structure def HydroConformer {
     port p : in HydraulicPort {
