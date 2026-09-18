@@ -78,6 +78,10 @@ class TestScaffold(unittest.TestCase):
 
 _REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
 _EXAMPLE_PROBE_SET = os.path.join(_REPO_ROOT, "tests", "prd-gate", "example-probe-set.json")
+_CORPUS_PROBE_SET = os.path.join(_REPO_ROOT, "tests", "prd-gate", "corpus-probe-set.json")
+_VALUE_CELLS_FIXTURE = os.path.join(
+    "tests", "prd-gate", "fixtures", "value_clean_eval_cells.ri"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +292,293 @@ class TestProbeSetRoundTrip(unittest.TestCase):
         probes = pcc.load_probe_set(text)
         kinds = {p.probe_kind for p in probes}
         self.assertEqual(kinds, {"grammar", "check", "ir"})
+
+
+# ---------------------------------------------------------------------------
+# #6876 step-01 (RED): the "value" probe kind — load-time schema and the
+# non-vacuity contract.
+# ---------------------------------------------------------------------------
+
+class TestValueProbeSchema(unittest.TestCase):
+    """load_probe_set's handling of the fourth probe kind, "value".
+
+    A `value` probe asserts something about the VALUE `reify eval` printed on a
+    clean (exit 0) run.  Its whole reason to exist is that `ir`/absent is
+    exit-code-only on that branch, so the load-time job here is to refuse any
+    `value` probe that would be armed-but-vacuous — no predicate, no capture
+    group, or no numeric constraint — rather than let it report a confident
+    PASS having asserted nothing.
+    """
+
+    def _make_probe_set_text(self, probe_dicts):
+        return json.dumps({"probes": probe_dicts})
+
+    def _value_probe(self, stdout_value=None, **overrides):
+        """A minimal well-formed `value` probe dict, with targeted overrides."""
+        match = {}
+        if stdout_value is not None:
+            match["stdout_value"] = stdout_value
+        probe = {
+            "capability": "damping ratio is a finite in-range number",
+            "probe_kind": "value",
+            "fixture": "tests/prd-gate/fixtures/value_clean_eval_cells.ri",
+            "expected": {"observation": "present", "match": match},
+        }
+        probe.update(overrides)
+        return probe
+
+    def _load_one(self, probe_dict):
+        return pcc.load_probe_set(self._make_probe_set_text([probe_dict]))[0]
+
+    def _assert_rejected(self, probe_dict, *needles):
+        with self.assertRaises(ValueError) as ctx:
+            pcc.load_probe_set(self._make_probe_set_text([probe_dict]))
+        message = str(ctx.exception)
+        for needle in needles:
+            self.assertIn(needle, message)
+        return message
+
+    # ── ACCEPT ────────────────────────────────────────────────────────────────
+
+    def test_value_kind_is_valid(self):
+        """"value" is a member of the valid probe-kind vocabulary."""
+        self.assertIn("value", pcc._VALID_PROBE_KINDS)
+
+    def test_accepts_bounded_predicate(self):
+        spec = {"pattern": r"X = ([0-9.]+)", "min": 0.01, "max": 0.03}
+        probe = self._load_one(self._value_probe(spec))
+        self.assertEqual(probe.probe_kind, "value")
+        self.assertEqual(probe.expected["match"]["stdout_value"], spec)
+
+    def test_accepts_explicit_group_index(self):
+        spec = {"pattern": r"(\w+) = ([0-9.]+)", "group": 2, "min": 0.01}
+        probe = self._load_one(self._value_probe(spec))
+        loaded = probe.expected["match"]["stdout_value"]
+        self.assertEqual(loaded["group"], 2)
+        self.assertIsInstance(loaded["group"], int)
+
+    def test_accepts_named_group(self):
+        spec = {"pattern": r"X = (?P<val>[0-9.]+)", "group": "val", "finite": True}
+        probe = self._load_one(self._value_probe(spec))
+        self.assertEqual(probe.expected["match"]["stdout_value"]["group"], "val")
+
+    def test_accepts_finite_alone(self):
+        """`finite: true` with no bounds is a complete constraint on its own."""
+        spec = {"pattern": r"X = (\S+)", "finite": True}
+        probe = self._load_one(self._value_probe(spec))
+        self.assertEqual(probe.expected["match"]["stdout_value"], spec)
+
+    def test_accepts_min_alone_and_max_alone(self):
+        for spec in (
+            {"pattern": r"X = ([0-9.]+)", "min": 0.01},
+            {"pattern": r"X = ([0-9.]+)", "max": 0.03},
+        ):
+            with self.subTest(spec=spec):
+                probe = self._load_one(self._value_probe(spec))
+                self.assertEqual(probe.expected["match"]["stdout_value"], spec)
+
+    def test_stdout_value_preserved_verbatim(self):
+        """Nested keys and their python types survive the load unchanged."""
+        spec = {
+            "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
+            "group": 1,
+            "min": 0.01,
+            "max": 0.03,
+            "finite": True,
+        }
+        loaded = self._load_one(self._value_probe(spec)).expected["match"]["stdout_value"]
+        self.assertEqual(loaded, spec)
+        self.assertIsInstance(loaded["group"], int)
+        self.assertIsInstance(loaded["min"], float)
+        self.assertIsInstance(loaded["finite"], bool)
+
+    def test_round_trip_preserves_stdout_value(self):
+        spec = {"pattern": r"X = ([0-9.]+)", "group": 1, "min": 0.01, "max": 0.03}
+        probes = pcc.load_probe_set(self._make_probe_set_text([self._value_probe(spec)]))
+        reloaded = pcc.load_probe_set(pcc.dump_probe_set(probes))
+        self.assertEqual(len(reloaded), 1)
+        self.assertEqual(reloaded[0].probe_kind, "value")
+        self.assertEqual(reloaded[0].expected["match"]["stdout_value"], spec)
+        self.assertEqual(reloaded[0].expected, probes[0].expected)
+
+    # ── REJECT: the predicate is missing entirely ─────────────────────────────
+
+    def test_rejects_value_probe_with_no_match(self):
+        probe = self._value_probe()
+        del probe["expected"]["match"]
+        self._assert_rejected(probe, "probe[0]", "stdout_value")
+
+    def test_rejects_value_probe_with_empty_match(self):
+        self._assert_rejected(self._value_probe(), "probe[0]", "stdout_value")
+
+    def test_rejects_non_dict_stdout_value(self):
+        for bogus in ("a string", 42, ["a", "list"], None):
+            with self.subTest(bogus=bogus):
+                probe = self._value_probe()
+                probe["expected"]["match"]["stdout_value"] = bogus
+                self._assert_rejected(probe, "probe[0]", "stdout_value")
+
+    # ── REJECT: the locator half is unusable ──────────────────────────────────
+
+    def test_rejects_missing_pattern(self):
+        self._assert_rejected(self._value_probe({"min": 0.01}), "probe[0]", "pattern")
+
+    def test_rejects_empty_pattern(self):
+        self._assert_rejected(
+            self._value_probe({"pattern": "", "min": 0.01}), "probe[0]", "pattern"
+        )
+
+    def test_rejects_non_string_pattern(self):
+        self._assert_rejected(
+            self._value_probe({"pattern": 7, "min": 0.01}), "probe[0]", "pattern"
+        )
+
+    def test_rejects_uncompilable_pattern(self):
+        self._assert_rejected(
+            self._value_probe({"pattern": "([0-9", "min": 0.01}), "probe[0]", "pattern"
+        )
+
+    def test_rejects_pattern_with_zero_capture_groups(self):
+        """A pattern that only locates cannot yield a value to test."""
+        self._assert_rejected(
+            self._value_probe({"pattern": "damping_ratio = 0.018", "min": 0.01}),
+            "probe[0]",
+            "capture group",
+        )
+
+    def test_rejects_unknown_named_group(self):
+        self._assert_rejected(
+            self._value_probe(
+                {"pattern": r"X = (?P<val>[0-9.]+)", "group": "missing", "min": 0.01}
+            ),
+            "probe[0]",
+            "group",
+        )
+
+    def test_rejects_out_of_range_group_index(self):
+        self._assert_rejected(
+            self._value_probe({"pattern": r"X = ([0-9.]+)", "group": 3, "min": 0.01}),
+            "probe[0]",
+            "group",
+        )
+
+    def test_rejects_bad_group_type(self):
+        for bogus in (1.5, [1], None):
+            with self.subTest(bogus=bogus):
+                self._assert_rejected(
+                    self._value_probe(
+                        {"pattern": r"X = ([0-9.]+)", "group": bogus, "min": 0.01}
+                    ),
+                    "probe[0]",
+                    "group",
+                )
+
+    # ── REJECT: no numeric constraint (the core non-vacuity rule) ─────────────
+
+    def test_rejects_locate_only_predicate(self):
+        """Pattern but no min/max/finite: the probe asserts nothing about the value."""
+        message = self._assert_rejected(
+            self._value_probe({"pattern": r"X = ([0-9.]+)"}), "probe[0]"
+        )
+        for constraint in ("min", "max", "finite"):
+            self.assertIn(constraint, message)
+
+    def test_rejects_group_only_predicate(self):
+        self._assert_rejected(
+            self._value_probe({"pattern": r"X = ([0-9.]+)", "group": 1}), "probe[0]"
+        )
+
+    # ── REJECT: constraint types and ordering ─────────────────────────────────
+
+    def test_rejects_non_numeric_min(self):
+        self._assert_rejected(
+            self._value_probe({"pattern": r"X = ([0-9.]+)", "min": "0.01"}),
+            "probe[0]",
+            "min",
+        )
+
+    def test_rejects_non_numeric_max(self):
+        self._assert_rejected(
+            self._value_probe({"pattern": r"X = ([0-9.]+)", "max": [3]}),
+            "probe[0]",
+            "max",
+        )
+
+    def test_rejects_non_bool_finite(self):
+        for bogus in ("true", 1, 0):
+            with self.subTest(bogus=bogus):
+                self._assert_rejected(
+                    self._value_probe({"pattern": r"X = ([0-9.]+)", "finite": bogus}),
+                    "probe[0]",
+                    "finite",
+                )
+
+    def test_rejects_min_greater_than_max(self):
+        self._assert_rejected(
+            self._value_probe({"pattern": r"X = ([0-9.]+)", "min": 0.03, "max": 0.01}),
+            "probe[0]",
+            "min",
+            "max",
+        )
+
+    def test_accepts_min_equal_to_max(self):
+        """An exact-equality assertion is a legitimate, non-empty interval."""
+        spec = {"pattern": r"X = ([0-9.]+)", "min": 0.018, "max": 0.018}
+        probe = self._load_one(self._value_probe(spec))
+        self.assertEqual(probe.expected["match"]["stdout_value"], spec)
+
+    # ── REJECT: `match` keys that belong to the other kinds ───────────────────
+
+    def test_rejects_exit_code_on_value_probe(self):
+        """exit 0 is structural to the kind — a second spelling of it would drift."""
+        probe = self._value_probe({"pattern": r"X = ([0-9.]+)", "min": 0.01})
+        probe["expected"]["match"]["exit_code"] = 0
+        self._assert_rejected(probe, "probe[0]", "exit_code")
+
+    def test_rejects_stderr_contains_on_value_probe(self):
+        probe = self._value_probe({"pattern": r"X = ([0-9.]+)", "min": 0.01})
+        probe["expected"]["match"]["stderr_contains"] = "EvalError"
+        self._assert_rejected(probe, "probe[0]", "stderr_contains")
+
+    def test_rejects_stdout_contains_on_value_probe(self):
+        """A stdout assertion on a value probe goes through `pattern`."""
+        probe = self._value_probe({"pattern": r"X = ([0-9.]+)", "min": 0.01})
+        probe["expected"]["match"]["stdout_contains"] = "damping_ratio"
+        self._assert_rejected(probe, "probe[0]", "stdout_contains")
+
+    # ── REJECT: stdout_value on a kind that would silently ignore it ──────────
+
+    def test_rejects_stdout_value_on_other_kinds(self):
+        """Armed-but-vacuous is the exact shape this kind exists to close."""
+        for kind in ("grammar", "check", "ir"):
+            with self.subTest(kind=kind):
+                probe = self._value_probe({"pattern": r"X = ([0-9.]+)", "min": 0.01})
+                probe["probe_kind"] = kind
+                self._assert_rejected(probe, "probe[0]", "stdout_value", kind)
+
+    # ── REGRESSION: the three existing kinds are untouched ────────────────────
+
+    def test_existing_three_kinds_still_load(self):
+        text = json.dumps({"probes": TestProbeSetRoundTrip.PROBE_DICTS})
+        probes = pcc.load_probe_set(text)
+        self.assertEqual([p.probe_kind for p in probes], ["grammar", "check", "ir"])
+        for probe in probes:
+            self.assertNotIn("stdout_value", probe.expected["match"])
+
+    def test_bogus_kind_still_rejected_and_lists_four_kinds(self):
+        probe = dict(TestProbeSetRoundTrip.PROBE_DICTS[0], probe_kind="nonsense")
+        message = self._assert_rejected(probe, "nonsense")
+        for kind in ("grammar", "check", "ir", "value"):
+            self.assertIn(kind, message)
+
+    def test_corpus_probe_set_carries_no_stdout_value(self):
+        """#4609's delta corpus is unchanged by this task."""
+        with open(_CORPUS_PROBE_SET) as fh:
+            probes = pcc.load_probe_set(fh.read())
+        self.assertEqual(len(probes), 3)
+        for probe in probes:
+            self.assertNotEqual(probe.probe_kind, "value")
+            self.assertNotIn("stdout_value", probe.expected.get("match", {}))
 
 
 # ---------------------------------------------------------------------------
