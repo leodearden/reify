@@ -36,7 +36,7 @@ use faer::sparse::SparseRowMat;
 use crate::assembly::tet::tet_p1_centroid;
 use crate::boundary::dirichlet::DirichletBc;
 use crate::constitutive::IsotropicElastic;
-use crate::interpolation::{LocatableTet, locate_element_p1};
+use crate::interpolation::point_in_tet_p1;
 use crate::result::{element_stress_p1, tet_volume_p1};
 use crate::solver::{CgResult, CgSolverOptions, SolverMode, solve_cg};
 
@@ -88,9 +88,24 @@ pub enum QoiError {
         /// The offending radius, as supplied.
         radius: f64,
     },
-    /// The direction (or stress normal) has zero length, so `d · u` — and
-    /// hence the dual load — would be identically zero.
-    ZeroDirection,
+    /// The direction (or stress normal) cannot be normalized to a unit
+    /// vector, so the functional it would define does not exist.
+    ///
+    /// Two inputs land here, and the name covers both because the check that
+    /// rejects them is one question — "does this vector have a unit form?":
+    ///
+    /// * **Zero length.** `d · u` — and hence the dual load — would be
+    ///   identically zero. This is C4's named `direction = vec3(0,0,0)` case.
+    /// * **Non-finite, or of non-finite squared length.** A `NaN` or `±inf`
+    ///   component (or a magnitude so large that `‖d‖²` overflows) makes the
+    ///   normalization itself `NaN`, and a `NaN` direction is exactly the
+    ///   value this module's contract says is unrepresentable. Calling that
+    ///   "zero length" — as the predecessor variant's name and message both
+    ///   did — misdescribes the input a caller then has to debug.
+    NonNormalizableDirection {
+        /// The offending direction, as supplied.
+        direction: [f64; 3],
+    },
     /// No element centroid lies within the ball, and `at` itself lies inside
     /// no element of this mesh.
     PointOutsideBody {
@@ -145,10 +160,11 @@ impl fmt::Display for QoiError {
                 "quantity-of-interest radius must be finite and strictly \
                  positive, got {radius}",
             ),
-            QoiError::ZeroDirection => write!(
+            QoiError::NonNormalizableDirection { direction } => write!(
                 f,
-                "quantity-of-interest direction has zero length; the \
-                 functional and its dual load would both be identically zero",
+                "quantity-of-interest direction ({}, {}, {}) has no unit \
+                 form: it must be finite and of strictly positive length",
+                direction[0], direction[1], direction[2],
             ),
             QoiError::PointOutsideBody { at } => write!(
                 f,
@@ -275,7 +291,7 @@ struct ContributingSet {
 /// 1. `radius` finite and strictly positive, else
 ///    [`QoiError::NonPositiveRadius`].
 /// 2. `direction`'s L2 norm finite and strictly positive, else
-///    [`QoiError::ZeroDirection`].
+///    [`QoiError::NonNormalizableDirection`].
 /// 3. NORMALIZE `direction`, and hand that unit vector to every consumer
 ///    through [`ContributingSet`]. Normalizing here rather than asserting
 ///    unit length removes the precondition altogether: a caller mapping a
@@ -351,7 +367,7 @@ fn resolve(
         + direction[1] * direction[1]
         + direction[2] * direction[2];
     if !norm_sq.is_finite() || norm_sq <= 0.0 {
-        return Err(QoiError::ZeroDirection);
+        return Err(QoiError::NonNormalizableDirection { direction });
     }
     let norm = norm_sq.sqrt();
     let unit = [
@@ -426,21 +442,39 @@ const LOCATE_BARYCENTRIC_SLACK: f64 = 1e-9;
 /// The LOWEST-indexed element of `mesh` containing `at`, or `None` when `at`
 /// lies outside the body.
 ///
-/// The owned per-element node arrays must outlive the `LocatableTet` view
-/// that borrows them, which is why they are materialized into a local
-/// binding rather than built inline in the `map`.
-///
 /// On a shared face several elements contain `at`; the lowest index wins,
-/// which is [`locate_element_p1`]'s documented rule. Any deterministic
-/// tie-break would do — what matters is that it IS deterministic, since the
-/// alternative is a QoI whose contributing set depends on element ordering.
+/// which is [`crate::interpolation::locate_element_p1`]'s documented rule.
+/// Any deterministic tie-break would do — what matters is that it IS
+/// deterministic, since the alternative is a QoI whose contributing set
+/// depends on element ordering.
+///
+/// # Scanned in place, not through `locate_element_p1`
+///
+/// That primitive takes a `&[LocatableTet]`, which this mesh representation
+/// cannot produce without materializing the whole thing: one `Vec` of owned
+/// per-element node arrays (96 B/element) for the views to borrow, plus the
+/// `Vec` of views. Calling the same [`point_in_tet_p1`] predicate at the
+/// same [`LOCATE_BARYCENTRIC_SLACK`] over the same ascending index order is
+/// the identical linear scan — `locate_element_p1` is a `for` loop around
+/// exactly this predicate — so the result is bit-identical while the two
+/// allocations disappear.
+///
+/// That matters because this is not a rare path: the containment fallback
+/// fires whenever the QoI radius is smaller than the local element spacing
+/// (§5.1 supports that as an ordinary configuration), and `resolve` runs at
+/// least twice per adaptive iteration — once for `evaluate`, once for
+/// `dual_load`. On a 500k-element mesh the discarded form cost ~100 MB of
+/// transient allocation per refinement iteration for a query that needs
+/// none.
+///
+/// Still O(n_elements) per query. If a caller ever issues MANY queries
+/// against one mesh, the answer is
+/// [`crate::interpolation::TetSpatialIndex`] — an O(log n) BVH documented as
+/// returning bit-identical results — not a return to the allocating form.
 fn locate_containing_element(mesh: P1TetMeshRef<'_>, at: [f64; 3]) -> Option<usize> {
-    let owned: Vec<[[f64; 3]; 4]> = mesh.tets.iter().map(|t| tet_nodes(mesh, t)).collect();
-    let locatable: Vec<LocatableTet<'_>> = owned
+    mesh.tets
         .iter()
-        .map(|nodes| LocatableTet { phys_nodes: nodes })
-        .collect();
-    locate_element_p1(&locatable, at, LOCATE_BARYCENTRIC_SLACK)
+        .position(|tet| point_in_tet_p1(&tet_nodes(mesh, tet), at, LOCATE_BARYCENTRIC_SLACK))
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +515,8 @@ pub struct LocalDisplacementQoi {
     pub radius: f64,
     /// Direction the displacement is projected onto. NORMALIZED on resolve,
     /// so a non-unit vector states a direction rather than a scale factor; a
-    /// zero vector is [`QoiError::ZeroDirection`].
+    /// vector with no unit form — zero, or non-finite — is
+    /// [`QoiError::NonNormalizableDirection`].
     pub direction: [f64; 3],
 }
 
@@ -587,10 +622,11 @@ pub struct LocalNormalStressQoi {
     pub radius: f64,
     /// Normal of the plane the stress is resolved across. NORMALIZED on
     /// resolve — which matters more here than for a displacement, since
-    /// `n·σ·n` scales QUADRATICALLY in `‖n‖`. A zero vector is
-    /// [`QoiError::ZeroDirection`] — the same variant a zero displacement
-    /// direction yields, since in both cases it is the vector the functional
-    /// projects onto that has vanished.
+    /// `n·σ·n` scales QUADRATICALLY in `‖n‖`. A vector with no unit form —
+    /// zero, or non-finite — is [`QoiError::NonNormalizableDirection`], the
+    /// same variant a displacement direction yields, since in both cases it
+    /// is the vector the functional projects onto that has no direction to
+    /// give.
     pub normal: [f64; 3],
 }
 
@@ -692,7 +728,7 @@ impl QuantityOfInterest for LocalNormalStressQoi {
 /// functional cannot be sensitive to a residual there.
 ///
 /// This is deliberately ONE loop rather than half of
-/// [`apply_dirichlet_row_elimination`]. That function's other half — folding
+/// [`crate::apply_dirichlet_row_elimination`]. That function's other half — folding
 /// the eliminated columns into the right-hand side — must NOT run here: `k`
 /// arrives already row-eliminated, so those columns are already gone, and
 /// applying the correction a second time would corrupt `g`.
@@ -712,13 +748,20 @@ impl QuantityOfInterest for LocalNormalStressQoi {
 ///
 /// # Panics
 ///
-/// If `k.nrows() != 3 · mesh.coords.len()`. That is exactly the stale-state
-/// desynchronisation the note above describes — a `(k, bcs)` pair eliminated
-/// on the pre-remesh mesh, handed the post-remesh one — and it is checked
-/// HERE because the BC-zeroing loop would otherwise index `g` out of bounds
-/// first, reporting a bare offset that names neither the operator nor the
-/// mesh. [`apply_dirichlet_row_elimination`] and [`solve_cg`] assert the
-/// same shape with the same diagnostic.
+/// Both arms of the stale-state desynchronisation the note above describes —
+/// a `(k, bcs)` pair eliminated on the pre-remesh mesh, handed the
+/// post-remesh one — checked HERE so the BC-zeroing loop cannot index `g`
+/// out of bounds first and report a bare offset naming neither the operator,
+/// the BC set, nor the mesh:
+///
+/// * If `k.nrows() != 3 · mesh.coords.len()`, i.e. the OPERATOR and the mesh
+///   disagree. [`crate::apply_dirichlet_row_elimination`] and [`solve_cg`] assert
+///   the same shape with the same diagnostic.
+/// * If any `bcs[i].dof` is beyond the dual load's last entry, i.e. the BC
+///   SET and the mesh disagree. The operator check cannot see this one: `k`
+///   and `mesh` can agree perfectly while `bcs` is the set carried over from
+///   a finer pre-remesh mesh, and that is exactly the case that used to
+///   reach a bare slice-index panic.
 ///
 /// # Errors
 ///
@@ -748,6 +791,17 @@ pub fn solve_dual_cg(
         3 * mesh.coords.len(),
     );
     let mut g = qoi.dual_load(mesh, material, u)?;
+    if let Some(bad) = bcs.iter().find(|bc| bc.dof >= g.len()) {
+        panic!(
+            "Dirichlet BC constrains dof {} but the dual load has only {} \
+             entries ({} nodes × 3); the operator, the BC set and the mesh \
+             must all come from the SAME solve — see \"No warm start across \
+             meshes\" above",
+            bad.dof,
+            g.len(),
+            mesh.coords.len(),
+        );
+    }
     for bc in bcs {
         g[bc.dof] = 0.0;
     }
@@ -758,7 +812,6 @@ pub fn solve_dual_cg(
 mod tests {
     use super::*;
     use crate::constitutive::IsotropicElastic;
-    use crate::interpolation::point_in_tet_p1;
 
     fn dimensionless_steel_like() -> IsotropicElastic {
         IsotropicElastic {
@@ -898,6 +951,44 @@ mod tests {
         }
     }
 
+    /// Every direction/normal input that has no unit form, and so must reach
+    /// [`QoiError::NonNormalizableDirection`].
+    ///
+    /// Shared by the displacement and normal-stress error matrices, because
+    /// the arm they exercise is literally shared — one `resolve`. Listing the
+    /// cases once is what keeps the two matrices from drifting into covering
+    /// different halves of the same contract.
+    ///
+    /// The zero vector is C4's named case. The rest are the non-finite ones,
+    /// which the predecessor variant routed here under the name
+    /// `ZeroDirection`: correct routing, wrong diagnosis. The last entry is
+    /// finite componentwise but has `‖d‖²` overflow to `+inf`, so it fails
+    /// the same normalizability question by a different route.
+    fn unusable_directions() -> [[f64; 3]; 6] {
+        [
+            [0.0, 0.0, 0.0],
+            [f64::NAN, 0.0, 0.0],
+            [f64::INFINITY, 0.0, 0.0],
+            [f64::NEG_INFINITY, 0.0, 0.0],
+            [1.0, 0.0, f64::NAN],
+            [1e200, 1e200, 1e200],
+        ]
+    }
+
+    /// Bit patterns of a direction's three components, so a payload carrying
+    /// `NaN` can be compared for exact identity.
+    ///
+    /// `QoiError`'s derived `PartialEq` inherits `f64`'s, under which
+    /// `NaN != NaN` — the same reason `assert_both_directions_reject` takes a
+    /// predicate rather than a `QoiError`.
+    fn direction_bits(direction: &[f64; 3]) -> [u64; 3] {
+        [
+            direction[0].to_bits(),
+            direction[1].to_bits(),
+            direction[2].to_bits(),
+        ]
+    }
+
     /// BT4 / C4 — `LocalDisplacementQoi` returns a TYPED [`QoiError`] from
     /// both `evaluate` and `dual_load` for every unresolvable input, never a
     /// panic and never a silently zero `g`.
@@ -909,17 +1000,22 @@ mod tests {
     ///   positive* payload field; a default "small" radius was rejected
     ///   because it silently reintroduces the point delta whose divergence
     ///   §3 measured.
-    /// * `direction = [0,0,0]` → [`QoiError::ZeroDirection`].
+    /// * `direction = [0,0,0]`, and `direction` with a non-finite component
+    ///   (NaN, ±inf) → [`QoiError::NonNormalizableDirection`], each naming
+    ///   the offending vector. Both are covered because both reach the same
+    ///   arm and the variant's name has to be true of each: a NaN direction
+    ///   reported as "zero length" misdescribes the input a caller is then
+    ///   sent to debug.
     /// * `at` outside every element, with a radius too small to catch any
     ///   centroid → [`QoiError::PointOutsideBody`].
     ///
-    /// # The zero-direction case pins the check ORDER
+    /// # The non-normalizable cases pin the check ORDER
     ///
-    /// `resolve` NORMALIZES the direction, so a zero vector has to reach the
-    /// typed error *before* that division. Reversed, C4's named
+    /// `resolve` NORMALIZES the direction, so a vector with no unit form has
+    /// to reach the typed error *before* that division. Reversed, C4's named
     /// `direction = vec3(0,0,0)` case would come back as a `NaN`-direction
-    /// ball mean instead of [`QoiError::ZeroDirection`] — a `NaN` the
-    /// module's contract says is unrepresentable. That is why the ordering
+    /// ball mean instead of [`QoiError::NonNormalizableDirection`] — a `NaN`
+    /// the module's contract says is unrepresentable. That is why the ordering
     /// inside `resolve` is fixed and documented rather than incidental.
     ///
     /// # TDD red→green
@@ -953,15 +1049,22 @@ mod tests {
             );
         }
 
-        assert_both_directions_reject(
-            &LocalDisplacementQoi {
-                at: good_at,
-                radius: 0.1,
-                direction: [0.0, 0.0, 0.0],
-            },
-            "direction = [0,0,0]",
-            |e| *e == QoiError::ZeroDirection,
-        );
+        for bad_direction in unusable_directions() {
+            assert_both_directions_reject(
+                &LocalDisplacementQoi {
+                    at: good_at,
+                    radius: 0.1,
+                    direction: bad_direction,
+                },
+                &format!("direction = {bad_direction:?}"),
+                // Bitwise payload comparison, so the NaN cases pin the
+                // offending vector just as tightly as the zero one.
+                |e| {
+                    matches!(e, QoiError::NonNormalizableDirection { direction }
+                             if direction_bits(direction) == direction_bits(&bad_direction))
+                },
+            );
+        }
 
         let far_outside = [100.0, 100.0, 100.0];
         assert_both_directions_reject(
@@ -2200,9 +2303,10 @@ mod tests {
     /// validation path, only the shared helper's expectations would still
     /// hold here.
     ///
-    /// A zero `normal` maps to [`QoiError::ZeroDirection`], the same variant
-    /// a zero displacement direction produces: in both cases it is the vector
-    /// the functional projects onto that has vanished.
+    /// A `normal` with no unit form — zero, or non-finite — maps to
+    /// [`QoiError::NonNormalizableDirection`], the same variant a
+    /// displacement direction produces: in both cases it is the vector the
+    /// functional projects onto that has no direction to give.
     #[test]
     fn local_normal_stress_qoi_returns_typed_error_from_both_directions_for_every_unresolvable_input()
     {
@@ -2224,15 +2328,20 @@ mod tests {
             );
         }
 
-        assert_both_directions_reject(
-            &LocalNormalStressQoi {
-                at: good_at,
-                radius: 0.1,
-                normal: [0.0, 0.0, 0.0],
-            },
-            "normal = [0,0,0]",
-            |e| *e == QoiError::ZeroDirection,
-        );
+        for bad_normal in unusable_directions() {
+            assert_both_directions_reject(
+                &LocalNormalStressQoi {
+                    at: good_at,
+                    radius: 0.1,
+                    normal: bad_normal,
+                },
+                &format!("normal = {bad_normal:?}"),
+                |e| {
+                    matches!(e, QoiError::NonNormalizableDirection { direction }
+                             if direction_bits(direction) == direction_bits(&bad_normal))
+                },
+            );
+        }
 
         let far_outside = [100.0, 100.0, 100.0];
         assert_both_directions_reject(

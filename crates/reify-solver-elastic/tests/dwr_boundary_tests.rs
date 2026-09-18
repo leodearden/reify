@@ -1136,6 +1136,65 @@ fn solve_dual_cg_zeroes_the_dual_load_at_constrained_dofs_and_refuses_an_unresol
     );
 }
 
+/// A BC set that outruns the mesh is reported by name, not as a bare slice
+/// index.
+///
+/// `solve_dual_cg` already asserts `k.nrows() == 3 · mesh.coords.len()`
+/// precisely so the zeroing loop cannot index `g` out of bounds first — but
+/// that assert cannot see THIS desync. `k` and `mesh` agree here perfectly;
+/// it is `bcs` that disagrees, which is exactly the shape of the stale-state
+/// case the function's own doc describes (a BC set carried over from a finer
+/// pre-remesh mesh). Without the bound the next line panics inside the
+/// standard library, naming neither the operator, the BC set nor the mesh.
+///
+/// The fixture keeps every real BC and appends one dof just past the last
+/// one the mesh has, so the only thing wrong is the thing under test.
+#[test]
+#[should_panic(expected = "Dirichlet BC constrains dof")]
+fn solve_dual_cg_names_a_bc_dof_beyond_the_mesh_rather_than_indexing_out_of_bounds() {
+    let material = IsotropicElastic {
+        youngs_modulus: 1.0,
+        poisson_ratio: 0.3,
+    };
+    let opts = CgSolverOptions::default();
+    let (lx, ly, lz) = (2.0_f64, 1.0, 1.0);
+    let (nodes, conns) = box_p1_mesh(lx, ly, lz, 2, 1, 1);
+    let mesh = P1TetMeshRef {
+        coords: &nodes,
+        tets: &conns,
+    };
+    let tol = 1e-9;
+    let end = end_face_nodes(&nodes, lx, tol);
+    let raw_f = rhs_from_point_loads(nodes.len(), &distributed_tip_load(&end, 1.0e-3));
+    let (k, _f, mut bcs, primal) = assemble_eliminate_and_solve(
+        &nodes,
+        &conns,
+        &material,
+        dirichlet_fix_face(&nodes, 0, 0.0, tol),
+        &raw_f,
+        opts.clone(),
+    );
+    bcs.push(DirichletBc {
+        dof: 3 * nodes.len(),
+        value: 0.0,
+    });
+
+    let _ = solve_dual_cg(
+        &k,
+        &LocalDisplacementQoi {
+            at: [lx, ly / 2.0, lz / 2.0],
+            radius: 0.6 * ly,
+            direction: [0.0, -1.0, 0.0],
+        },
+        mesh,
+        &material,
+        primal.u(),
+        &bcs,
+        opts,
+        SolverMode::Deterministic,
+    );
+}
+
 // ─── BT4 at the SEAM level: an unresolvable QoI ends the loop (§5.5) ───────
 
 /// An [`AdaptiveProblem`] whose `refine` remeshes onto a SMALLER domain,
