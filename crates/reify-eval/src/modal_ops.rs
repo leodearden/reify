@@ -3152,6 +3152,44 @@ fn extract_loss_factor(val: &Value) -> Option<f64> {
 /// (`n_modes = 10`, `tol = 1e-9`, `max_iters = 200`, `sigma = 0`) when the value
 /// is not a StructureInstance or a field is missing / malformed. Mirrors
 /// buckling's `extract_buckling_options`.
+///
+/// # σ is in EIGENVALUE (λ) space
+///
+/// The returned σ is in the same space [`EigenSolverOptions::sigma`] and
+/// [`EigenSolverResult::shift`] document, whose rustdoc states that unit
+/// conversion is the CALLER's job — and this trampoline is that caller.
+///
+/// On this branch the conversion is the identity: `ModalOptions.sigma : Real` is
+/// ALREADY λ-space (`modal_analysis.ri`'s `sigma` field note — "spectral-shift
+/// origin (in eigenvalue units)"), so the read is a pass-through and there is NO
+/// unit crossing here. That is the surface-agnostic contract PRD §7.1 names:
+/// `EigenSolverOptions.sigma` receives λ-space, so leaves α and β never learn
+/// which author-facing surface fed them.
+///
+/// If #6097 later retypes the surface to `shift_frequency : Frequency`, the
+/// `λ = (2π·f)²` conversion belongs HERE, at the trampoline, via the declared
+/// inverse helper in `crates/reify-stdlib/src/modal/free_vibration.rs` — never
+/// as a bare inline `2.0 * PI * f` in this file, which INV-AD-4
+/// (`boundaries-declare-angle-convention`) makes a defect even when the number
+/// it computes is right.
+///
+/// # Which value shapes σ accepts, and which it refuses
+///
+/// A `Real`-typed `.ri` param does not arrive as one Rust variant: a literal
+/// `sigma: 2` arrives as [`Value::Int`], and a value that has been through the
+/// dimensional machinery arrives as a DIMENSIONLESS [`Value::Scalar`]. All
+/// three are accepted, the same `tolerated` discipline [`extract_loss_factor`]
+/// spells out one knob up. The shape list is kept EXPLICIT rather than widened
+/// to `Value::Scalar { .. }` because the dimension gate is the load-bearing
+/// part: [`read_scalar_si`] is dimension-BLIND.
+///
+/// A DIMENSIONED `Scalar` — notably a `Scalar<Frequency>` — is refused and falls
+/// back to the default. That shape is #6097's future `shift_frequency` surface,
+/// and reading 300 Hz as `λ = 300` would be a silent 4π²-and-square error:
+/// strictly WORSE than dropping the value, because a wrong shift returns a
+/// plausible-looking spectrum from the wrong band rather than an obviously
+/// unshifted one. Converting it here would also duplicate #6097's scope and
+/// manufacture the INV-AD-4 crossing this branch deliberately does not have.
 fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
     let default_n_modes = 10_usize;
     let default_tol = 1e-9_f64;
@@ -3181,8 +3219,20 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_max_iters,
     };
+    // Gate on the VARIANT (and, for `Scalar`, on the DIMENSION), then convert
+    // through `read_scalar_si` so the tolerated spellings cannot drift apart
+    // from it. A non-finite σ still falls back: it would poison `K − σM`.
     let sigma = match data.fields.get("sigma") {
-        Some(Value::Real(r)) if r.is_finite() => *r,
+        Some(raw @ (Value::Real(_) | Value::Int(_))) => {
+            let s = read_scalar_si(raw);
+            if s.is_finite() { s } else { default_sigma }
+        }
+        Some(raw @ Value::Scalar { dimension, .. })
+            if *dimension == DimensionVector::DIMENSIONLESS =>
+        {
+            let s = read_scalar_si(raw);
+            if s.is_finite() { s } else { default_sigma }
+        }
         _ => default_sigma,
     };
     (n_modes, tol, max_iters, sigma)
