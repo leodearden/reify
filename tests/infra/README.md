@@ -51,11 +51,14 @@ assert "test_<name>.py exits 0" python3 "$SCRIPT_DIR/test_<name>.py"
 `test_sn_gate.sh`, `test_prd_capability_check.sh`,
 `test_prd_decompose_verify.sh` or `test_reify_overlap_detector.sh`.
 
-Two things a `.py` also drops out from under, both `.sh`-scoped by
-construction: the wall-clock upper-bound ratchet
-(`test_no_new_wallclock_upper_bounds.sh`) and the deadline-capable-suite
-derivation (`test_slot_timeout_marker.sh` Section F). Making `test_*.py`
-discovery native — which would retire this wrapper idiom — is task #7445.
+One thing a `.py` still drops out from under, `.sh`-scoped by construction:
+the wall-clock upper-bound ratchet (`test_no_new_wallclock_upper_bounds.sh`),
+task #7445. The deadline-capable-suite derivation
+(`test_slot_timeout_marker.sh` Sections F and G) no longer does — since task
+#7626 it follows a delegating wrapper into its `.py` sibling and reads the
+two together, so a ported member keeps its roster place and its
+non-vacuity check. Making `test_*.py` discovery native — which would retire
+this wrapper idiom — is task #7445.
 
 ## Shared test helpers
 

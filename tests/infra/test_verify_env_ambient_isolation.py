@@ -162,10 +162,12 @@ def run_under_ambient(yaml_path, budget_secs, grace_secs, cmd, base_env=None):
 
     stdout and stderr are MERGED here, unconditionally. The bash original left
     the merge to each call site so that test_slot_timeout_marker.sh's Section G
-    could see the redirect; that derivation reads bash text and cannot see
-    either shape in Python, so the choice is made once, where it is visible to
-    a reader, instead of being spread over call sites for a reader that no
-    longer exists.
+    could see the redirect; here the choice is made once, in the single spawn
+    funnel, where it is visible to a reader. That reader is not hypothetical:
+    since task #7626 Section G reads THIS call's kwargs directly, and
+    `stderr=subprocess.STDOUT` counts as a diversion only because
+    `stdout=subprocess.PIPE` is on the same call. Deleting either one turns
+    G1 RED for this member.
     """
     env = dict(os.environ if base_env is None else base_env)
     env.update(verify_env_exports(yaml_path))
