@@ -817,8 +817,18 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
         exit ≠ 0, asserted signature (stderr_contains in match) in stderr → PRESENT
         exit ≠ 0, signature absent → INDETERMINATE
 
+    value (the clean-eval mirror of ir, asymmetric the other way):
+        exit 0, stdout_value predicate satisfied → PRESENT
+        exit 0, predicate not satisfied → ABSENT
+        exit ≠ 0 → INDETERMINATE
+            A non-zero exit means no value was produced, so "the capability is
+            absent" and "the fixture or harness is broken" are indistinguishable;
+            answering ABSENT there would manufacture a confident negative finding
+            out of a broken probe.  That is the mirror image of the exit-code-only
+            vacuity this kind exists to close, so it is refused too.
+
     Args:
-        probe_kind: "grammar", "check", or "ir".
+        probe_kind: "grammar", "check", "ir", or "value".
         run: Captured subprocess output (exit_code, stdout, stderr).
         match: Match predicate dict from the probe's expected.match field.
 
@@ -865,6 +875,13 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
         if sig and sig in run.stderr:
             return PRESENT
         return INDETERMINATE
+
+    if probe_kind == "value":
+        if run.exit_code != 0:
+            return INDETERMINATE
+        if stdout_value_satisfied(run, match[_VALUE_PREDICATE_KEY]):
+            return PRESENT
+        return ABSENT
 
     # Unknown kind — this shouldn't happen after validation, but be safe
     return _HARNESS_ERROR
