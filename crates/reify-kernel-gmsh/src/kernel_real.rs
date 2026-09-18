@@ -329,7 +329,7 @@ impl GmshKernel {
     ///
     /// A failure at the mesher is the one that does not read its stream from
     /// here, and the call site does not make that obvious:
-    /// [`init::mesh_generate_with_recovery`] recycles libgmsh on failure, and
+    /// `init::mesh_generate_with_recovery` recycles libgmsh on failure, and
     /// the captured stream lives inside libgmsh, so it reads the diagnosis
     /// before the teardown and hands back an error that already carries it.
     pub fn mesh_to_volume(

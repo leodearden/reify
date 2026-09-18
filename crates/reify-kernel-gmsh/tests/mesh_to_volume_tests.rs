@@ -498,12 +498,16 @@ fn out_of_bounds_index_errors() {
 
 /// The success-path half of "stop the capture on EVERY exit path".
 ///
-/// MEASURED: one unit-cube `mesh_to_volume` emits 95 captured lines, so a
-/// success path that left the capture armed would leave all 95 buffered for
+/// MEASURED: one unit-cube `mesh_to_volume` emits 82 captured lines, so a
+/// success path that left the capture armed would leave all 82 buffered for
 /// the next caller in this process to report as its own — and this read
 /// would find them. `logger_stop` drains, so empty is the witness that the
-/// guard fired. The error path is covered by the failure test above plus
-/// `log_capture_tests::log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop`.
+/// guard fired. The error path is covered by
+/// `log_capture_tests::log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop`
+/// and, end to end, by
+/// `mesher_poison_recovery::a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error`
+/// — which lives there because it needs a deliberate mesher failure, kept out
+/// of this binary.
 #[test]
 fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
     let cube = unit_cube_mesh();

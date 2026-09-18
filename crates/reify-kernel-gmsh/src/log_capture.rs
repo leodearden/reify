@@ -10,7 +10,7 @@
 //! drain is measured, and pinned by
 //! `tests/ffi_smoke_tests.rs::gmsh_logger_captures_mesh_generate_output_even_with_terminal_silenced`'s
 //! post-stop assertion). One SUCCESSFUL `mesh_to_volume` on a unit cube
-//! measured 95 captured lines. So:
+//! measured 82 captured lines. So:
 //!
 //! > **Whoever arms the capture must stop it before returning — on every
 //! > exit path, early `?`-returns included.**
@@ -51,16 +51,16 @@
 //! [`crate::kernel_real::GmshKernel::mesh_to_volume`] does — pays for the
 //! buffering on its SUCCESS path too, where not one line is ever read.
 //!
-//! That cost is accepted, on measurement rather than assumption. Replicating
-//! `mesh_to_volume`'s gmsh sequence on a unit cube at three mesh sizes and
-//! reading the capture just before stopping it: 1,160 tets → 113 lines /
-//! 4.8 KB; 4,575 tets → 120 lines / 5.1 KB; 63,746 tets → 133 lines /
-//! 5.8 KB. Fifty-five times the elements cost 18% more log — gmsh narrates
-//! meshing PHASES, not elements. The absolute counts shift with mesh size
-//! and with where the capture is read (the 95 above is the same span at the
-//! size `mesh_to_volume` auto-derives); what these three points establish is
-//! the SLOPE. So the buffer is kilobytes on any mesh this kernel produces,
-//! and `drop` frees them at the end of the call that allocated them.
+//! That cost is accepted, on measurement rather than assumption. Reading the
+//! capture inside `mesh_to_volume` itself, just before it returns a unit
+//! cube: 188 tets → 82 lines / 3.7 KB; 4,613 tets → 100 lines / 4.7 KB;
+//! 63,645 tets → 112 lines / 5.3 KB. Three hundred times the elements cost
+//! 37% more log — gmsh narrates meshing PHASES, not elements. The first of
+//! those is the size `mesh_to_volume` auto-derives, and is the same 82 quoted
+//! above; the absolute counts move with mesh size and with where in the call
+//! the capture is read, so what these three points establish is the SLOPE. So
+//! the buffer is kilobytes on any mesh this kernel produces, and `drop` frees
+//! them at the end of the call that allocated them.
 //!
 //! Two ways of paying less were considered and declined. Arming only when a
 //! caller opts in puts the diagnosis behind a flag that would have to be set
@@ -74,12 +74,12 @@ use reify_ir::GeometryError;
 
 /// How many captured lines [`annotated`] appends — the most recent ones.
 ///
-/// Picked from measurement, not taste. Failing runs probed through
-/// `mesh_to_volume` captured 21 lines (zero-area triangle), 28 (single
-/// triangle) and 66 (unit cube missing one face); a successful unit cube
-/// captured 95. A 40-line tail therefore keeps a small failing run's
-/// capture ENTIRE, and for a larger one keeps the part that carries the
-/// diagnosis — gmsh states its conclusion at the END of the stream.
+/// Picked from measurement, not taste. Failing runs through `mesh_to_volume`
+/// captured 19 lines (zero-area triangle), 26 (single open triangle) and 50
+/// (unit cube missing one face); a successful unit cube captured 82. A
+/// 40-line tail therefore keeps a small failing run's capture ENTIRE — the
+/// first two arrive whole — and for a larger one keeps the part that carries
+/// the diagnosis, since gmsh states its conclusion at the END of the stream.
 ///
 /// A cap is needed at all because the capture has no ceiling of its own
 /// (see the module doc): how much gmsh narrates is gmsh's choice, and the
@@ -97,6 +97,13 @@ pub const MAX_APPENDED_LOG_LINES: usize = 40;
 /// Pure: takes the lines already read, calls no gmsh function, and needs no
 /// lock — which is what lets the format be tested without touching the
 /// process-global capture switch.
+///
+/// Two callers. [`LogCapture::annotate`] folds in the LIVE capture, for a
+/// failure that leaves libgmsh standing. `init::mesh_generate_with_recovery`
+/// folds in a copy it read before recycling libgmsh, because the capture
+/// lives inside the library it destroys — see its "Why the diagnosis is read
+/// here", which is also why the mesher failure is deliberately outside
+/// `mesh_to_volume`'s `LogCapture` seam.
 ///
 /// Two inputs are passed through untouched: an empty `lines` (so a
 /// best-effort arm that failed costs the caller nothing but the capture it
@@ -166,7 +173,9 @@ pub fn annotated(err: GeometryError, lines: &[String]) -> GeometryError {
 /// `drop` stops the outer one's capture and drains the buffer out from under
 /// it, leaving the outer `annotate` with nothing. Arm at most one per lock
 /// hold. Today there is exactly one call site,
-/// [`crate::kernel_real::GmshKernel::mesh_to_volume`].
+/// [`crate::kernel_real::GmshKernel::mesh_to_volume`] — and its seam
+/// deliberately does not span the one call that recycles libgmsh, which
+/// annotates its own failure instead.
 pub struct LogCapture<'g>(std::marker::PhantomData<&'g crate::init::GmshGuard>);
 
 impl<'g> LogCapture<'g> {

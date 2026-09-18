@@ -34,9 +34,11 @@
 //! [`crate::log_capture::LogCapture`], which
 //! [`crate::kernel_real::GmshKernel::mesh_to_volume`] arms so a meshing
 //! failure reports gmsh's own diagnosis rather than only the last ERROR
-//! line `gmshLoggerGetLastError` supplies. Those three carry no marker: a
-//! non-test workspace caller is itself the exemption, so a marker claiming
-//! they have none would be both false and redundant.
+//! line `gmshLoggerGetLastError` supplies. [`logger_get`] has a second
+//! production caller, `init::mesh_generate_with_recovery`, which
+//! reads the capture before it recycles libgmsh. Those three carry no
+//! marker: a non-test workspace caller is itself the exemption, so a marker
+//! claiming they have none would be both false and redundant.
 //!
 //! Concrete precedent: diagnosing #6200 (`classify_surfaces` at exactly 90°
 //! finding 2 model surfaces instead of 6, HXT building 206 tets while the
@@ -951,7 +953,14 @@ pub fn logger_stop() -> Result<(), GeometryError> {
 ///
 /// Measured edge cases: if the logger was never started, this returns an
 /// empty `Vec` with `ierr=0` (not an error); likewise after [`logger_stop`]
-/// has drained the buffer. `gmshLoggerGet` returns a `char***` — gmsh
+/// has drained the buffer. Across a library recycle (measured on libgmsh
+/// 4.15.2, task #6969): between `gmshFinalize` and the next `gmshInitialize`
+/// this returns `ierr=1`, and AFTER the re-initialize the lines captured
+/// before the finalize are still present — the buffer outlives the library
+/// that logged into it. Gmsh documents neither, which is why
+/// `init::mesh_generate_with_recovery` reads before it tears the
+/// library down rather than relying on either. `gmshLoggerGet` returns a
+/// `char***` — gmsh
 /// allocates both the outer array of `log_n` pointers and every string it
 /// points at, so both levels are freed here (the outer array via
 /// [`take_gmsh_buf`], each string via `gmshFree`) before `check_ierr`,

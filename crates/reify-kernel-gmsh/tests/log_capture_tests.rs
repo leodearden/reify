@@ -201,11 +201,10 @@ fn log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop() {
 
     let annotated_err = {
         let capture = LogCapture::armed(&guard);
-        // `ffi::clear()` is the "something that logs" on purpose. It needs no
-        // geometry, costs ~0ms, and — unlike any `mesh_generate` — cannot be
-        // silenced by the mesher-poisoning hazard its sibling test in this
-        // binary provokes (see that test's "Why this test is not in
-        // mesh_to_volume_tests.rs"). It also doubles as this test's cleanup.
+        // `ffi::clear()` is the "something that logs" on purpose: it needs no
+        // geometry and costs ~0ms, where every mesher in this crate costs
+        // seconds to say the same thing about the guard. It also doubles as
+        // this test's cleanup.
         ffi::clear().expect("ffi::clear failed");
         capture.annotate(GeometryError::OperationFailed("boom".into()))
     };
