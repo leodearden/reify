@@ -160,11 +160,10 @@ fn two_voxels_past_the_band_edge_declines_to_measure_at_every_alignment() {
             .expect("the analytic slab is a structurally valid Regular3D field");
         assert!(
             mask.voxels.is_empty(),
-            "medial mask is non-empty {} voxels past the band edge \
+            "medial mask is non-empty two voxels past the band edge \
              (voxels-per-thickness {voxels_per_thickness}, offset {offset}); \
              the nearest-to-mid voxel sits at |φ| ≥ {} > nb·h = {}, so the band \
              filter must have dropped every candidate — got {} voxels",
-            2,
             0.5 * thickness - 0.5 * WINDOW_H,
             options.narrow_band_half_width_voxels * WINDOW_H,
             mask.voxels.len()
