@@ -570,7 +570,17 @@ pub(crate) fn eigensolve_modal(
     // only on the dense path (the Lanczos path's Cholesky/LU discriminator
     // yields a boolean, not an inertia count). Do not "improve" this into a
     // fabricated number.
-    if eig.shift_skipped_modes {
+    //
+    // Suppressed on a FAULTED solve, the same predicate shape and for the same
+    // reason as `W_ModalConvergence` just above. BOTH non-`None` faults carry
+    // `shift_skipped_modes == true` at σ ≠ 0 — the refusal via
+    // `conservative_shift_provenance(σ)` and the over-ceiling degenerate return
+    // — while holding ZERO eigenpairs, so the flag alone would describe a result
+    // that does not exist as "a window". The gate is therefore on the FAULT,
+    // not on the flag and not on σ: at σ ≠ 0 below λ₁ the flag is ESTABLISHED
+    // false by a successful Cholesky, which is the case a `σ != 0.0` test would
+    // get wrong.
+    if eig.shift_skipped_modes && fault == ModalSolveFault::None {
         diagnostics.push(
             Diagnostic::warning(format!(
                 "W_ShiftSkippedModes: the shift sigma = {} skipped mode(s) below \
