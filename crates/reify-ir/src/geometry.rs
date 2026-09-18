@@ -953,22 +953,32 @@ pub enum GeometryOp {
     /// docs-desyncing change for cosmetic gain. So `Rotate`'s "the `_rad`
     /// suffix IS the contract" is discharged HERE, by this comment, instead.
     /// The rename was CONSIDERED AND DECLINED (#6521); the absence is
-    /// a recorded decision, not an oversight, and #5779 below supersedes the
-    /// question anyway: once a position is typed `Angle`, a suffix asserting a
-    /// raw-f64 convention would be actively wrong.
+    /// a recorded decision, not an oversight. That cross-crate ground is the
+    /// WHOLE of it: the eval gate below does NOT supersede the question, since
+    /// `required_angle_args` hands back `[f64; N]` — these two fields are
+    /// still raw SI-radian `f64` on the far side of it, so a `_rad` suffix
+    /// would still be type-accurate, and is declined for the silent-rename
+    /// reason alone.
     ///
-    /// **Ungated today.** A dimensioned `90deg` literal is resolved to radians
+    /// **GATED at eval.** A dimensioned `90deg` literal is resolved to radians
     /// in the units layer (`reify-core/src/units.rs`: `deg` = PI/180 tagged
-    /// `DimensionVector::ANGLE`), but a BARE number is accepted silently as
-    /// radians — `curve_arc` reads both positions through `eval_named_arg_f64`,
-    /// which takes `Value::as_f64`'s SI magnitude and ignores the dimension
-    /// tag. That is a deliberate triage decision rather than an omission (see
-    /// the note in `curve_arc` itself), and both positions are chartered
-    /// (currently DEFERRED) for the `angle_spec()` typed-`Angle` gate by #5779,
-    /// leaf γ of `docs/prds/v0_6/angle-units-surface-convergence.md`. Deferred
-    /// is non-terminal, so the charter stands — but the gate is parked, not
-    /// in flight, and the ungated behaviour above is the status quo until it
-    /// moves.
+    /// `DimensionVector::ANGLE`), and a BARE number is REJECTED rather than
+    /// read silently as radians: `curve_arc` (`reify-eval/src/geometry_ops.rs`)
+    /// reads BOTH positions through `required_angle_args(["start_angle",
+    /// "end_angle"], ..)`, which classifies each against `angle_spec()` and,
+    /// on a dimensionless one, pushes the contract-C1 `Diagnostic::error`
+    /// coded `DimensionedArgRejected` ("expects Angle, got Real; pass a
+    /// dimensioned angle such as `45deg` or `1.5rad`") and drops the op. It is
+    /// the GROUP reader, so a pair of bare angles is named in ONE rebuild
+    /// rather than one slot per rebuild. What reaches these two fields is
+    /// therefore always an ACCEPTED SI-radian magnitude.
+    ///
+    /// **Which task landed it: #6924** (done), which delivered leaves γ/δ/ε of
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` in one pass. The
+    /// CHARTERING ids — #5779 (leaf γ, these two positions) and #5780 (leaf δ,
+    /// [`GeometryOp::Draft`]'s angle) — are still status=deferred, so they stay
+    /// citable as the charter, but the shipped behaviour does not live there;
+    /// do not read a deferred leaf as a statement that this gate is parked.
     Arc {
         center: [f64; 3],
         radius: f64,
@@ -1054,6 +1064,16 @@ pub enum GeometryOp {
         /// `draft_angle_dimensioned_matches_bare_real_volume`
         /// (`reify-kernel-occt/src/lib.rs`).
         ///
+        /// Since the gate below landed, that equivalence reaches only
+        /// DIRECTLY-CONSTRUCTED IR — which is exactly what both pins build.
+        /// `required_angle_value` re-wraps the ACCEPTED radians through
+        /// `reify_ir::Value::angle`, so a bare `Value::Real` no longer arrives
+        /// here from eval at all. The equivalence still holds and still
+        /// matters — it is what lets the kernel read this field with a
+        /// tag-blind `extract_f64`, and lets a test hand-build the op either
+        /// way — but it is no longer what decides how an author's bare number
+        /// is read.
+        ///
         /// **Not pinned:** that a draft angle of `0.1` means 0.1 RADIANS
         /// rather than 0.1 degrees. Both tests above prove tag-transparency,
         /// not magnitude, and `draft_angle_on_box` is a smoke test that
@@ -1062,12 +1082,17 @@ pub enum GeometryOp {
         /// numeric oracle over OCCT draft geometry, and is filed as #7119
         /// rather than guessed at here.
         ///
-        /// **Ungated today**, like [`GeometryOp::Arc`]'s two angles: a bare
-        /// number is silently radians. `draft.angle` is chartered (currently
-        /// DEFERRED, like Arc's #5779) for the `angle_spec()` typed-`Angle`
-        /// gate by #5780, leaf δ of
+        /// **GATED at eval**, like [`GeometryOp::Arc`]'s two angles: a bare
+        /// number is REJECTED, not read silently as radians. `modify_draft`
+        /// (`reify-eval/src/geometry_ops.rs`) reads this slot through
+        /// `required_angle_value("angle", ..)`, above the plane resolution —
+        /// leaf δ's breadcrumb there records why that ONE read is the whole
+        /// gate, and that the `eval_arg` closure it replaced "died with the
+        /// change", so no ungated route from eval into this field survives.
+        /// Landed under #6924 (done); #5780, leaf δ of
         /// `docs/prds/v0_6/angle-units-surface-convergence.md` (whose C1
-        /// gated-position list carries this position and Arc's together).
+        /// gated-position list carries this position and Arc's together), is
+        /// still status=deferred and is the CHARTER cite, not the delivery one.
         angle: Value,
         plane: GeometryHandleId,
     },
