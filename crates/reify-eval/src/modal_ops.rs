@@ -5866,6 +5866,210 @@ mod tests {
         );
     }
 
+    /// Every `W_ShiftSkippedModes` diagnostic on a modal result, keyed on the
+    /// typed code rather than on prose — the convention this file's existing
+    /// shift assertions already follow.
+    fn shift_skipped_warnings(result: &ModalCoreResult) -> Vec<&Diagnostic> {
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::ShiftSkippedModes))
+            .collect()
+    }
+
+    /// δ (#7261): the shift-provenance warning must not stand beside a solve
+    /// that returned NOTHING.
+    ///
+    /// `solve_generalized_eigen` sets `shift_skipped_modes` from
+    /// `conservative_shift_provenance(sigma)` — i.e. `sigma != 0.0` — on the
+    /// refused branch, because that branch computed no spectrum and C5 forbids
+    /// ESTABLISHING `false` without evidence. So the flag is `true` here while
+    /// the result holds ZERO eigenpairs.
+    ///
+    /// Emitting "the result is a window around sigma" beside "the solve returned
+    /// nothing" is a confidently wrong statement about a result that does not
+    /// exist — the same defect class as `W_ModalConvergence` standing beside the
+    /// refusal and advising "raise max_iters", which β already fences off. The
+    /// gate therefore keys on the FAULT, not on the flag and not on σ.
+    ///
+    /// The `E_ShiftAtEigenvalue` half is asserted too, so this test cannot pass
+    /// by the refusal itself having regressed into a silent success.
+    #[test]
+    fn shift_skipped_modes_is_not_claimed_beside_a_refused_solve() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 3);
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            result.frequencies.is_empty(),
+            "the premise of this test is a solve that returned nothing; got {:?}",
+            result.frequencies,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ShiftAtEigenvalue)),
+            "the refusal must still be raised, or this test passes for the wrong \
+             reason; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "a refused solve holds no eigenpairs, so it cannot be described as a \
+             window around σ; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): σ = 0 can never raise the shift-provenance warning.
+    ///
+    /// `shift_provenance_from_factorization` and `conservative_shift_provenance`
+    /// both start from `sigma != 0.0`, so the flag is unconditionally `false` on
+    /// an unshifted solve. Pins that the warning is about WHERE σ was put, not
+    /// raised by every shift-capable solve — and asserts the control actually
+    /// solved, since a silent empty result would witness nothing.
+    #[test]
+    fn shift_skipped_modes_is_silent_at_sigma_zero() {
+        let (assembly, bcs) = laplacian_modal_assembly();
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma: 0.0,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "the control must actually solve, or it witnesses nothing",
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "an unshifted solve skips nothing by construction; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): THE DISCRIMINATING NEGATIVE — σ ≠ 0 below the first mode is
+    /// silent.
+    ///
+    /// With `0 < σ < λ₁`, `K − σM` stays positive definite, so Cholesky
+    /// SUCCEEDS and `shift_provenance_from_factorization` ESTABLISHES `false`
+    /// from real evidence rather than defaulting to it. Nothing was skipped:
+    /// the returned set is still the bottom of the spectrum.
+    ///
+    /// A naive `if sigma != 0.0` emission would wrongly fire here. This test is
+    /// what pins that δ READS the C5 flag rather than re-deriving a rule of its
+    /// own from σ, and it is the guard rail that keeps the fault gate from being
+    /// written too wide.
+    #[test]
+    fn shift_skipped_modes_is_silent_for_a_shift_below_the_first_mode() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 1) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "a shift below λ₁ is a healthy solve and must return modes; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "no eigenvalue lies between 0 and σ = {sigma}, so nothing was \
+             skipped; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): the positive case at unit granularity, independent of the FEA
+    /// fixture.
+    ///
+    /// σ placed strictly BETWEEN λ₃ and λ₄ with `n_modes = 2` makes `K − σM`
+    /// indefinite: Cholesky fails, LU wins, and
+    /// `shift_provenance_from_factorization` reports `true` — while the solve
+    /// still returns modes, so there is a real result to describe as a window.
+    /// The midpoint keeps σ off both eigenvalues, so this exercises the skipped
+    /// path rather than β's refusal.
+    #[test]
+    fn shift_skipped_modes_warns_once_for_a_shift_above_the_first_mode() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = (laplacian_lambda(N_FREE, 3) + laplacian_lambda(N_FREE, 4)) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "this is a SUCCESSFUL shifted solve — the window it returns is the \
+             thing the warning describes; got {:?}",
+            result.diagnostics,
+        );
+
+        let warnings = shift_skipped_warnings(&result);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "a skipped-mode window must be reported EXACTLY once; got {:?}",
+            result.diagnostics,
+        );
+        assert_eq!(
+            warnings[0].severity,
+            Severity::Warning,
+            "inspecting a band around σ is legitimate, so this stays advisory",
+        );
+        assert!(
+            warnings[0].message.starts_with("W_ShiftSkippedModes:"),
+            "consumers key on the prefix, not the prose; got {:?}",
+            warnings[0].message,
+        );
+        assert!(
+            warnings[0].message.contains(&sigma.to_string()),
+            "the warning must NAME σ = {sigma} so a reader never has to infer \
+             which shift produced the window; got {:?}",
+            warnings[0].message,
+        );
+    }
+
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
     /// the usual elastic fields, optionally carrying a `density` scalar. Mirrors
     /// the runtime material shape the trampoline reads (cf. buckling's
