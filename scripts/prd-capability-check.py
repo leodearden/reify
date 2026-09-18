@@ -7,14 +7,21 @@ Committed-probe-set format (JSON):
         "probes": [
             {
                 "capability": "<human name for the capability being probed>",
-                "probe_kind": "grammar" | "check" | "ir",
+                "probe_kind": "grammar" | "check" | "ir" | "value",
                 "fixture": "<repo-relative path to the .ri fixture file>",
                 "expected": {
                     "observation": "present" | "absent",
                     "match": {
                         "exit_code": <int>,          // optional
                         "stderr_contains": "<str>",  // optional
-                        "stdout_contains": "<str>"   // optional
+                        "stdout_contains": "<str>",  // optional
+                        "stdout_value": {            // value kind ONLY, required there
+                            "pattern": "<regex with >=1 capture group>",
+                            "group": <int|str>,      // optional, default 1
+                            "min": <number>,         // optional, inclusive
+                            "max": <number>,         // optional, inclusive
+                            "finite": <bool>         // optional
+                        }
                     }
                 }
             },
@@ -32,6 +39,14 @@ Probe kinds and dispatch:
                exit 0 clean → ABSENT (sound by determinism §6 G6(b))
                exit ≠ 0 WITH asserted signature in stderr → PRESENT
                exit ≠ 0 WITHOUT asserted signature → INDETERMINATE → UNPROVABLE
+    value    — `reify eval <fixture>` (same argv as ir; the kind names the
+               observation model, not the command)
+               exit 0 AND the stdout_value predicate holds → PRESENT
+               exit 0 AND it does not hold → ABSENT
+               exit ≠ 0 → INDETERMINATE → UNPROVABLE
+               Exists because ir's clean branch is exit-code-only: it answers
+               ABSENT on exit 0 without consulting match at all, so a premise
+               about the printed VALUE bound as ir/absent asserts nothing.
 
 Verdicts:
     PASS          — observed matches expected
@@ -59,7 +74,9 @@ import argparse
 import errno
 import hashlib
 import json
+import math
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -87,8 +104,29 @@ UNPROVABLE = "UNPROVABLE"
 # Valid constants for validation
 # ---------------------------------------------------------------------------
 
-_VALID_PROBE_KINDS = frozenset({"grammar", "check", "ir"})
+_VALID_PROBE_KINDS = frozenset({"grammar", "check", "ir", "value"})
 _VALID_OBSERVATIONS = frozenset({"present", "absent"})
+
+# ---------------------------------------------------------------------------
+# "value"-kind vocabulary — named once so no spelling is duplicated
+# ---------------------------------------------------------------------------
+
+# The one match key a value probe carries, and the only kind that may carry it.
+_VALUE_PREDICATE_KEY = "stdout_value"
+
+# Which stdout line and which capture within it to read.
+_VALUE_LOCATOR_KEYS = frozenset({"pattern", "group"})
+
+# What must then be true of that capture.  At least one is mandatory: a value
+# probe carrying none of them locates a number and asserts nothing about it.
+_VALUE_CONSTRAINT_KEYS = frozenset({"min", "max", "finite"})
+
+# match keys a value probe may NOT carry.  exit 0 is structural to the kind, so
+# a second spelling of it could contradict the arm that enforces it; stdout and
+# stderr assertions belong in `pattern`, which is the half that gets checked.
+_VALUE_FORBIDDEN_MATCH_KEYS = frozenset(
+    {"exit_code", "stderr_contains", "stdout_contains"}
+)
 
 # Sentinel injected into stderr by run_probe() when the probe could not be
 # launched at all — any launch failure (ENOENT missing, EACCES not executable,
@@ -383,7 +421,7 @@ def _grammar_probe_env(repo_root: str) -> Dict[str, str]:
 class Probe:
     """A single capability probe record from the committed probe-set JSON."""
     capability: str
-    probe_kind: str                   # "grammar" | "check" | "ir"
+    probe_kind: str                   # "grammar" | "check" | "ir" | "value"
     fixture: str                      # repo-relative path to the .ri fixture
     expected: Dict[str, Any]          # {observation: str, match: dict}
 
@@ -392,14 +430,137 @@ class Probe:
 # Probe-set serialization
 # ---------------------------------------------------------------------------
 
+def _is_number(value: Any) -> bool:
+    """True for a real JSON number.  bool is an int in Python but not a bound."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _validate_value_predicate(index: int, match: Dict[str, Any]) -> None:
+    """Reject any `value` probe that would be armed but assert nothing.
+
+    This is the whole point of the kind: `ir`/absent already answers on the exit
+    code alone, so a `value` probe that locates nothing, captures nothing, or
+    constrains nothing would report a confident PASS having looked at no value —
+    the same vacuity in a new costume.  Every defect is refused here, at load,
+    where the probe set is still a document the author can fix.
+
+    Raises ValueError naming probe[index], the offending key, and why it is a
+    defect.  Returns None when the predicate is well formed, which is the
+    precondition stdout_value_satisfied() relies on.
+    """
+    where = f"probe[{index}]"
+
+    if _VALUE_PREDICATE_KEY not in match:
+        raise ValueError(
+            f"{where} is a value probe with no match.{_VALUE_PREDICATE_KEY}; "
+            "a value probe must say which stdout value it asserts, or it "
+            "asserts nothing beyond the exit code that 'ir' already covers"
+        )
+
+    spec = match[_VALUE_PREDICATE_KEY]
+    if not isinstance(spec, dict):
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} must be an object, "
+            f"got {type(spec).__name__}"
+        )
+
+    forbidden = sorted(_VALUE_FORBIDDEN_MATCH_KEYS & set(match))
+    if forbidden:
+        raise ValueError(
+            f"{where} is a value probe carrying match.{forbidden[0]}; a value "
+            f"probe's exit 0 is structural to the kind and its stdout assertion "
+            f"goes through {_VALUE_PREDICATE_KEY}.pattern, so "
+            f"{', '.join(forbidden)} would be a second, drifting spelling"
+        )
+
+    unknown = sorted(set(spec) - _VALUE_LOCATOR_KEYS - _VALUE_CONSTRAINT_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} has unknown key "
+            f"'{unknown[0]}'; a misspelled constraint would be silently "
+            f"ignored, leaving the probe armed but vacuous.  Valid keys: "
+            f"{sorted(_VALUE_LOCATOR_KEYS | _VALUE_CONSTRAINT_KEYS)}"
+        )
+
+    pattern = spec.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} needs a non-empty string "
+            f"'pattern' naming the stdout line to read, got {pattern!r}"
+        )
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} 'pattern' does not compile "
+            f"as a regex: {exc}"
+        ) from exc
+    if compiled.groups < 1:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} 'pattern' has no capture "
+            "group; a pattern that only locates a line yields no value to test"
+        )
+
+    group = spec.get("group", 1)
+    if isinstance(group, str):
+        if group not in compiled.groupindex:
+            raise ValueError(
+                f"{where} match.{_VALUE_PREDICATE_KEY} 'group' names "
+                f"'{group}', which the pattern does not define; it has "
+                f"{sorted(compiled.groupindex)}"
+            )
+    elif isinstance(group, int) and not isinstance(group, bool):
+        if not 1 <= group <= compiled.groups:
+            raise ValueError(
+                f"{where} match.{_VALUE_PREDICATE_KEY} 'group' is {group}, "
+                f"outside the pattern's 1..{compiled.groups} capture groups"
+            )
+    else:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} 'group' must be a capture "
+            f"index (int) or a named group (str), got {type(group).__name__}"
+        )
+
+    constraints = _VALUE_CONSTRAINT_KEYS & set(spec)
+    if not constraints:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} carries no numeric "
+            "constraint, so it asserts nothing about the value it captures — "
+            f"add {' , '.join(sorted(_VALUE_CONSTRAINT_KEYS))}"
+        )
+
+    for bound in ("min", "max"):
+        if bound in spec and not _is_number(spec[bound]):
+            raise ValueError(
+                f"{where} match.{_VALUE_PREDICATE_KEY} '{bound}' must be a "
+                f"number, got {spec[bound]!r}"
+            )
+    if "finite" in spec and not isinstance(spec["finite"], bool):
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} 'finite' must be a boolean, "
+            f"got {spec['finite']!r}"
+        )
+    if "min" in spec and "max" in spec and spec["min"] > spec["max"]:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} has min {spec['min']} above "
+            f"max {spec['max']}; no value can satisfy an empty interval"
+        )
+
+
 def load_probe_set(text: str) -> List[Probe]:
     """Parse a committed-probe-set JSON string into a list of Probe objects.
 
     Raises ValueError if the structure is invalid:
     - missing top-level 'probes' key
     - missing required fields (capability, probe_kind, fixture, expected)
-    - unknown probe_kind (must be grammar|check|ir)
+    - unknown probe_kind (must be grammar|check|ir|value)
     - unknown observation value (must be present|absent)
+    - a vacuous or malformed value-kind predicate, or a stdout_value on a kind
+      that would silently ignore it (see _validate_value_predicate)
+
+    This is the single validation site: prd-decompose-verify.py's bind_premises
+    routes its assembled probe set through here rather than re-checking, so a
+    premise the D3 workflow binds is held to exactly this contract.
     """
     try:
         obj = json.loads(text)
@@ -448,6 +609,22 @@ def load_probe_set(text: str) -> List[Probe]:
         # Ensure 'match' key exists (default to empty dict if absent)
         if "match" not in expected:
             expected = dict(expected, match={})
+
+        match = expected["match"]
+        if not isinstance(match, dict):
+            raise ValueError(
+                f"probe[{i}] expected.match must be an object, "
+                f"got {type(match).__name__}"
+            )
+        if probe_kind == "value":
+            _validate_value_predicate(i, match)
+        elif _VALUE_PREDICATE_KEY in match:
+            raise ValueError(
+                f"probe[{i}] is a '{probe_kind}' probe carrying "
+                f"match.{_VALUE_PREDICATE_KEY}, which only the 'value' kind "
+                "consults; leaving it here would arm a predicate nothing ever "
+                "evaluates"
+            )
 
         probes.append(Probe(
             capability=raw["capability"],
