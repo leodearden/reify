@@ -1564,6 +1564,76 @@ structure Bolt {
         }
     }
 
+    /// (a) A plain unit adds no information beyond its signature, so no
+    /// conversion line may appear — the same "only when it adds information"
+    /// rule the type-alias arm applies to its resolves-to line.
+    ///
+    /// Probe-verified compiled values: `unit hoop : Length` yields
+    /// `CompiledUnit { factor: 1.0, offset: None }`.
+    #[test]
+    fn hover_on_unit_without_conversion_omits_conversion_line() {
+        let source = "unit hoop : Length\n";
+        let position = Position::new(0, 6); // on 'hoop'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("unit hoop : Length"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            !md.contains("SI"),
+            "a factor-1 offset-free unit must emit no conversion line, got: {md}"
+        );
+    }
+
+    /// (b) A conversion factor is information the signature does not carry — the
+    /// signature line is identical for `unit hoopm : Length` and
+    /// `unit hoopm : Length = 0.001`, so the factor must be surfaced.
+    ///
+    /// Probe-verified: `CompiledUnit { factor: 0.001, offset: None }`.
+    #[test]
+    fn hover_on_unit_with_conversion_shows_factor() {
+        let source = "unit hoopm : Length = 0.001\n";
+        let position = Position::new(0, 6); // on 'hoopm'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("unit hoopm : Length"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            md.contains("0.001"),
+            "the SI conversion factor must be surfaced, got: {md}"
+        );
+    }
+
+    /// (c) An affine unit carries BOTH a factor and an offset, and the offset is
+    /// the half a reader most needs (it is why the unit is not a pure scaling).
+    ///
+    /// Probe-verified: `unit hoopC : Temperature = 1 offset 273.15` yields
+    /// `CompiledUnit { factor: 1.0, offset: Some(273.15) }` — note the factor is
+    /// 1.0 here, so an implementation gating the whole line on `factor != 1.0`
+    /// would drop the offset silently. That is exactly what this case pins.
+    #[test]
+    fn hover_on_affine_unit_shows_factor_and_offset() {
+        let source = "unit hoopC : Temperature = 1 offset 273.15\n";
+        let position = Position::new(0, 6); // on 'hoopC'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("unit hoopC : Temperature"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            md.contains("273.15"),
+            "the affine offset must be surfaced, got: {md}"
+        );
+        // Pinned against the rendered factor token, not a bare `1`: `273.15`
+        // already contains a `1`, so a bare-digit assertion would pass even with
+        // the factor half dropped entirely.
+        assert!(
+            md.contains("\u{d7}1"),
+            "the conversion factor must be surfaced alongside the offset, got: {md}"
+        );
+    }
+
     /// The `type` keyword itself must have a hover description, like every other
     /// declaration-introducing keyword. Task #6341.
     #[test]
