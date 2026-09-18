@@ -23,9 +23,10 @@
 use std::collections::HashMap;
 
 use reify_ast::{
-    ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody, ImportKind,
-    KeyedSubMemberEntry, MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl,
-    TypeExpr, TypeExprKind, WhereClause,
+    ConnectDecl, Declaration, Expr, ExprKind, FieldSource, FnDef, ForallConnectBody,
+    ForallConstraintBody, ImportKind, KeyedSubMemberEntry, MAX_MEMBER_NESTING_DEPTH, MemberDecl,
+    ParsedModule, StringPart, SubDecl, TraitBoundRef, TypeExpr, TypeExprKind, TypeParamDecl,
+    VariantPayload, WhereClause,
 };
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{
@@ -243,12 +244,13 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
 /// #5579), the inline `at … where { }` relate-block relations (task δ 4384),
 /// and the `where` guard condition.
 ///
-/// Both `collect_uses_in_sub` (use-collection) and the `MemberDecl::Sub` arm
-/// of `cursor_on_member_segment` (`.member`-segment refusal) consume this
-/// instead of re-listing `SubDecl`'s fields themselves, so the two scanners
+/// Both [`for_each_member_direct_expr`] (the shared member-expression
+/// enumeration every use walker composes with) and the `MemberDecl::Sub` arm of
+/// `cursor_on_member_segment` (`.member`-segment refusal) consume this instead
+/// of re-listing `SubDecl`'s fields themselves, so the two scanners
 /// cannot drift apart the way they already have twice — `relate_relations`
 /// (task δ 4384) and `index_domain` (#5481/#5579) were each added to
-/// `collect_uses_in_sub` without a matching guard clause in
+/// `collect_uses`' sub walk without a matching guard clause in
 /// `cursor_on_member_segment`, silently letting a `.member` segment on that
 /// field mis-resolve to an unrelated same-named binding instead of refusing.
 ///
@@ -261,8 +263,8 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
 /// binder-introducing field is deliberately not itself a use site here; see
 /// the "Known limitation" doc comment on `collect_idents_in_expr`).
 ///
-/// Excludes `body` and `keyed_members.overrides`: both consumers recurse into
-/// those separately, at `depth + 1`/nested-scope depth, since they open a
+/// Excludes `body` and `keyed_members.overrides`: both consumers reach them
+/// separately, via [`for_each_child_scope`], since they open a
 /// nested member scope rather than being a direct expression of this `sub`.
 /// Each keyed entry's OWN direct expression (`param_overrides`) is not a
 /// `SubDecl`-level field, so it is not part of this iterator either — it is
@@ -278,7 +280,7 @@ fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         is_collection: _,
         // Guard condition folded directly into the chain below, unlike every
         // other member kind's `where` (which routes through
-        // `collect_uses_in_where`) — see `collect_uses_in_sub`'s doc comment.
+        // `visit_where_condition`) — see this function's doc comment.
         where_clause,
         // Nested member scope, not a direct expression — both consumers
         // recurse into it separately at depth + 1 (see doc comment above).
@@ -888,171 +890,317 @@ fn resolve_use(offset: usize, bindings: &[Binding]) -> usize {
 /// Walk every value-bearing member of `members`, pushing the span of each
 /// `ExprKind::Ident` whose name equals `name`.
 ///
-/// Covers every expression-bearing member kind so the reference set is complete
-/// (Invariant 2): param/let/constraint/objective expressions and their `where`
-/// clauses, constraint-instantiation args, sub constructor args / specialization
-/// overrides / pose / body, port frames and bodies, guarded `where`/`else`
-/// branches, `forall` connect/constraint bodies, bare connect/chain elements,
-/// and match-arm decl clusters. Recursion into nested member lists is bounded by
-/// [`MAX_MEMBER_NESTING_DEPTH`], mirroring `reify_ast::find_named_member_span`.
+/// The member fan-out itself is not written here: [`for_each_member_direct_expr`]
+/// yields a member's own expressions and [`for_each_child_scope`] yields the
+/// nested member lists it opens, so this function is only "an ident use is any
+/// `Ident` in any of those expressions". Recursion into nested member lists is
+/// bounded by [`MAX_MEMBER_NESTING_DEPTH`], mirroring
+/// `reify_ast::find_named_member_span`.
 ///
-/// Associated functions (`MemberDecl::Fn`) are intentionally NOT walked: a fn
-/// body opens its own parameter scope (its params can shadow an entity binding),
-/// which this single-file foundation does not model, so collecting uses there
-/// could produce false positives (Invariant 1). Deferred to a later phase.
+/// Associated functions (`MemberDecl::Fn`) are intentionally NOT walked — see
+/// [`for_each_member_direct_expr`]'s doc comment for why, and for the reason the
+/// type-position walk does not inherit that restriction.
 fn collect_uses(members: &[MemberDecl], name: &str, depth: usize, out: &mut Vec<SourceSpan>) {
     if depth > MAX_MEMBER_NESTING_DEPTH {
         return;
     }
     for member in members {
-        match member {
-            MemberDecl::Param(p) => {
-                if let Some(default) = &p.default {
-                    collect_idents_in_expr(default, name, out);
-                }
-                collect_uses_in_where(&p.where_clause, name, out);
-            }
-            MemberDecl::Let(l) => {
-                collect_idents_in_expr(&l.value, name, out);
-                collect_uses_in_where(&l.where_clause, name, out);
-            }
-            MemberDecl::Constraint(c) => {
-                collect_idents_in_expr(&c.expr, name, out);
-                collect_uses_in_where(&c.where_clause, name, out);
-            }
-            MemberDecl::ConstraintInst(c) => {
-                for (_, arg) in &c.args {
-                    collect_idents_in_expr(arg, name, out);
-                }
-                collect_uses_in_where(&c.where_clause, name, out);
-            }
-            MemberDecl::Sub(s) => collect_uses_in_sub(s, name, depth, out),
-            MemberDecl::Minimize(m) => {
-                collect_idents_in_expr(&m.expr, name, out);
-                collect_uses_in_where(&m.where_clause, name, out);
-            }
-            MemberDecl::Maximize(m) => {
-                collect_idents_in_expr(&m.expr, name, out);
-                collect_uses_in_where(&m.where_clause, name, out);
-            }
-            // Recurse into guarded branches so uses inside `where`/`else` blocks
-            // are collected (and later resolved to their innermost binding); the
-            // guard condition itself is an outer-scope expression.
-            MemberDecl::GuardedGroup(g) => {
-                collect_idents_in_expr(&g.condition, name, out);
-                collect_uses(&g.members, name, depth + 1, out);
-                collect_uses(&g.else_members, name, depth + 1, out);
-            }
-            // Ports carry an optional placement frame and a nested member body.
-            MemberDecl::Port(p) => {
-                if let Some(frame) = &p.frame_expr {
-                    collect_idents_in_expr(frame, name, out);
-                }
-                collect_uses(&p.members, name, depth + 1, out);
-            }
-            MemberDecl::Connect(c) => collect_uses_in_connect(c, name, out),
-            MemberDecl::Chain(c) => {
-                for el in &c.elements {
-                    collect_idents_in_expr(el, name, out);
-                }
-            }
-            MemberDecl::ForallConnect(f) => {
-                collect_idents_in_expr(&f.collection, name, out);
-                match &f.body {
-                    ForallConnectBody::Connect(c) => collect_uses_in_connect(c, name, out),
-                    ForallConnectBody::Chain(c) => {
-                        for el in &c.elements {
-                            collect_idents_in_expr(el, name, out);
-                        }
-                    }
-                }
-            }
-            MemberDecl::ForallConstraint(f) => {
-                collect_idents_in_expr(&f.collection, name, out);
-                match &f.body {
-                    ForallConstraintBody::Constraint(c) => {
-                        collect_idents_in_expr(&c.expr, name, out);
-                        collect_uses_in_where(&c.where_clause, name, out);
-                    }
-                    ForallConstraintBody::Instantiation(c) => {
-                        for (_, arg) in &c.args {
-                            collect_idents_in_expr(arg, name, out);
-                        }
-                        collect_uses_in_where(&c.where_clause, name, out);
-                    }
-                }
-            }
-            // Match-arm decl clusters (spec §6.4): the discriminant is an
-            // outer-scope expression; each arm's member is recursed as a child.
-            MemberDecl::MatchArmDeclGroup(g) => {
-                collect_idents_in_expr(&g.discriminant, name, out);
-                for arm in &g.arms {
-                    collect_uses(std::slice::from_ref(&*arm.member), name, depth + 1, out);
-                }
-            }
-            // A member-level `relate { … }` block: collect uses in each relation
-            // expression (task δ 4384), mirroring Chain's element walk.
-            MemberDecl::Relate(r) => {
-                for rel in &r.relations {
-                    collect_idents_in_expr(rel, name, out);
-                }
-            }
-            // See the fn-body note above — intentionally not walked.
-            MemberDecl::Fn(_) => {}
-            // Type-only / expression-free members: nothing to collect.
-            MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
-        }
-    }
-}
-
-/// Collect uses inside an optional `where` clause condition.
-fn collect_uses_in_where(where_clause: &Option<WhereClause>, name: &str, out: &mut Vec<SourceSpan>) {
-    if let Some(w) = where_clause {
-        collect_idents_in_expr(&w.condition, name, out);
-    }
-}
-
-/// Collect uses inside a `connect`/`chain` declaration: both port-ref endpoints
-/// and every named connector parameter value.
-fn collect_uses_in_connect(c: &ConnectDecl, name: &str, out: &mut Vec<SourceSpan>) {
-    collect_idents_in_expr(&c.left.expr, name, out);
-    collect_idents_in_expr(&c.right.expr, name, out);
-    for (_, param) in &c.params {
-        collect_idents_in_expr(param, name, out);
-    }
-}
-
-/// Collect uses inside a `sub` declaration: every direct expression
-/// `sub_direct_exprs` enumerates (see its doc comment for the field list and
-/// anti-drift rationale), each keyed block's own `param_overrides`
-/// expressions (`keyed_entry_param_override_exprs`), plus any nested
-/// specialization-body / keyed-block-overrides members (depth-bounded).
-///
-/// `index_binder` (the `i` in `sub xs[i in 0..4] = …`, task #5481 α) is
-/// deliberately NOT registered as a new local binding site here — see the
-/// doc comment on `sub_direct_exprs` for the rationale (mirrors the existing
-/// `ExprKind::Quantifier` precedent).
-fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<SourceSpan>) {
-    for expr in sub_direct_exprs(s) {
-        collect_idents_in_expr(expr, name, out);
-    }
-    if let Some(body) = &s.body {
-        collect_uses(body, name, depth + 1, out);
-    }
-    for entry in &s.keyed_members {
-        for expr in keyed_entry_param_override_exprs(entry) {
+        for_each_member_direct_expr(member, &mut |expr| {
             collect_idents_in_expr(expr, name, out);
+        });
+        for_each_child_scope(member, |child| collect_uses(child, name, depth + 1, out));
+    }
+}
+
+/// Enumerate every DIRECT (non-nested-scope) expression carried by `member`, in
+/// source order: param/let/constraint/objective expressions and their `where`
+/// clauses, constraint-instantiation args, a sub's constructor args /
+/// specialization overrides / pose / index domain / relate relations, a port's
+/// placement frame, a guarded group's condition, bare connect/chain elements,
+/// `forall` connect/constraint bodies, a match-arm cluster's discriminant, and a
+/// member-level `relate` block's relations.
+///
+/// The member half of this module's two-part traversal skeleton: this function
+/// yields a member's own expressions, [`for_each_child_scope`] yields the nested
+/// member lists it opens, and each member walker here is one of the two composed
+/// with a visitor. One enumeration rather than one per walker is what stops a
+/// newly-added expression-bearing field from being walked by one scanner and
+/// silently missed by another — the drift [`sub_direct_exprs`]' doc comment
+/// records having already happened twice.
+///
+/// The match is WILDCARD-FREE, so a new `MemberDecl` variant is a compile error
+/// here rather than a silently unwalked expression.
+///
+/// `MemberDecl::Fn` yields NOTHING. An associated function's body opens its own
+/// parameter scope (its params can shadow an entity binding), which this
+/// single-file value-reference foundation does not model, so collecting value
+/// uses there could produce false positives (Invariant 1). The TYPE-position
+/// walk does not inherit that restriction — a signature's types are not scoped
+/// by the function's params — so [`collect_decl_name_uses_in_members`] reaches a
+/// `Fn` through its own arm instead of through this enumeration.
+///
+/// The visitor is `&mut dyn FnMut` rather than a generic parameter because its
+/// callers recurse through it; a generic would monomorphise without end.
+fn for_each_member_direct_expr(member: &MemberDecl, visit: &mut dyn FnMut(&Expr)) {
+    match member {
+        MemberDecl::Param(p) => {
+            if let Some(default) = &p.default {
+                visit(default);
+            }
+            visit_where_condition(&p.where_clause, visit);
         }
-        collect_uses(&entry.overrides, name, depth + 1, out);
+        MemberDecl::Let(l) => {
+            visit(&l.value);
+            visit_where_condition(&l.where_clause, visit);
+        }
+        MemberDecl::Constraint(c) => {
+            visit(&c.expr);
+            visit_where_condition(&c.where_clause, visit);
+        }
+        MemberDecl::ConstraintInst(c) => {
+            for (_, arg) in &c.args {
+                visit(arg);
+            }
+            visit_where_condition(&c.where_clause, visit);
+        }
+        // `body` and each keyed entry's `overrides` open nested member scopes and
+        // so belong to `for_each_child_scope`, not here; `sub_direct_exprs`'
+        // doc comment carries the field-set rationale for both halves.
+        MemberDecl::Sub(s) => {
+            for expr in sub_direct_exprs(s) {
+                visit(expr);
+            }
+            for entry in &s.keyed_members {
+                for expr in keyed_entry_param_override_exprs(entry) {
+                    visit(expr);
+                }
+            }
+        }
+        MemberDecl::Minimize(m) => {
+            visit(&m.expr);
+            visit_where_condition(&m.where_clause, visit);
+        }
+        MemberDecl::Maximize(m) => {
+            visit(&m.expr);
+            visit_where_condition(&m.where_clause, visit);
+        }
+        // A guard condition is an OUTER-scope expression; the `where`/`else`
+        // branches it guards are child scopes.
+        MemberDecl::GuardedGroup(g) => visit(&g.condition),
+        // A port's placement frame is a direct expression; its member body is a
+        // child scope.
+        MemberDecl::Port(p) => {
+            if let Some(frame) = &p.frame_expr {
+                visit(frame);
+            }
+        }
+        MemberDecl::Connect(c) => visit_connect_exprs(c, visit),
+        MemberDecl::Chain(c) => {
+            for el in &c.elements {
+                visit(el);
+            }
+        }
+        MemberDecl::ForallConnect(f) => {
+            visit(&f.collection);
+            match &f.body {
+                ForallConnectBody::Connect(c) => visit_connect_exprs(c, visit),
+                ForallConnectBody::Chain(c) => {
+                    for el in &c.elements {
+                        visit(el);
+                    }
+                }
+            }
+        }
+        MemberDecl::ForallConstraint(f) => {
+            visit(&f.collection);
+            match &f.body {
+                ForallConstraintBody::Constraint(c) => {
+                    visit(&c.expr);
+                    visit_where_condition(&c.where_clause, visit);
+                }
+                ForallConstraintBody::Instantiation(c) => {
+                    for (_, arg) in &c.args {
+                        visit(arg);
+                    }
+                    visit_where_condition(&c.where_clause, visit);
+                }
+            }
+        }
+        // Match-arm decl clusters (spec §6.4): the discriminant is an
+        // outer-scope expression; each arm's member is a child scope.
+        MemberDecl::MatchArmDeclGroup(g) => visit(&g.discriminant),
+        // A member-level `relate { … }` block (task δ 4384), mirroring Chain's
+        // element walk.
+        MemberDecl::Relate(r) => {
+            for rel in &r.relations {
+                visit(rel);
+            }
+        }
+        // See the `MemberDecl::Fn` paragraph in this function's doc comment.
+        MemberDecl::Fn(_) => {}
+        // Type-only / expression-free members.
+        MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
+    }
+}
+
+/// Visit an optional `where` clause's condition expression.
+fn visit_where_condition(where_clause: &Option<WhereClause>, visit: &mut dyn FnMut(&Expr)) {
+    if let Some(w) = where_clause {
+        visit(&w.condition);
+    }
+}
+
+/// Visit a `connect`/`chain` declaration's expressions: both port-ref endpoints
+/// and every named connector parameter value.
+fn visit_connect_exprs(c: &ConnectDecl, visit: &mut dyn FnMut(&Expr)) {
+    visit(&c.left.expr);
+    visit(&c.right.expr);
+    for (_, param) in &c.params {
+        visit(param);
+    }
+}
+
+/// Enumerate every DIRECT sub-expression of `expr`, in source order.
+///
+/// The crate's single exhaustive `ExprKind` child enumeration, shared by the two
+/// expression walkers that need it: [`collect_idents_in_expr`] (value uses) and
+/// [`collect_type_name_uses_in_expr`] (type positions on lambda params). The
+/// match is WILDCARD-FREE, so a new `ExprKind` variant is a compile error here
+/// rather than a silently-dropped subtree in both walkers at once.
+///
+/// Only `Expr`-typed children are yielded. The non-expression parts an
+/// expression carries — a member-access `.segment`, a qualified access's member,
+/// a match arm's patterns, a lambda's parameter list, a quantifier's binder —
+/// are not sub-expressions and are the visiting walker's own business (the
+/// lambda parameter list is exactly why [`collect_type_name_uses_in_expr`]
+/// inspects `expr` itself before delegating here).
+///
+/// The visitor is `&mut dyn FnMut` rather than a generic parameter because both
+/// callers recurse through it; a generic would monomorphise without end.
+fn for_each_direct_subexpr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
+    match &expr.kind {
+        ExprKind::BinOp { left, right, .. } => {
+            visit(left);
+            visit(right);
+        }
+        ExprKind::UnOp { operand, .. } => visit(operand),
+        ExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                visit(arg);
+            }
+        }
+        // The base of a member access (`h` in `h.diameter`) is an identifier use
+        // of the sub/port/binding; the `.member` segment is a field name, not an
+        // expression.
+        ExprKind::MemberAccess { object, .. } => visit(object),
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            visit(condition);
+            visit(then_branch);
+            visit(else_branch);
+        }
+        ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
+            for item in items {
+                visit(item);
+            }
+        }
+        ExprKind::MapLiteral(entries) => {
+            for (k, v) in entries {
+                visit(k);
+                visit(v);
+            }
+        }
+        ExprKind::IndexAccess { object, index } => {
+            visit(object);
+            visit(index);
+        }
+        ExprKind::Match { discriminant, arms } => {
+            visit(discriminant);
+            for arm in arms {
+                visit(&arm.body);
+            }
+        }
+        ExprKind::Lambda { body, .. } => visit(body),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            visit(collection);
+            visit(predicate);
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            visit(base);
+            for arg in args {
+                visit(arg);
+            }
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => visit(qualifier),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            visit(object);
+            visit(qualified);
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            if let Some(l) = lower {
+                visit(l);
+            }
+            if let Some(u) = upper {
+                visit(u);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            visit(object);
+            for arg in args {
+                visit(arg);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for arg in args {
+                visit(arg);
+            }
+        }
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                visit(v);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Hole(e) = part {
+                    visit(e);
+                }
+            }
+        }
+        // `auto(seed = expr, …)` params carry value expressions that reference
+        // real bindings, so they are children — otherwise find-references/rename
+        // silently miss occurrences inside `auto(seed = x)`, leaving a dangling
+        // reference after rename (mirrors substitute_expr; geometric-relations δ,
+        // 4384).
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                visit(v);
+            }
+        }
+        // Leaves with no sub-expressions.
+        ExprKind::Ident(_)
+        | ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Undef => {}
     }
 }
 
 /// Recursively push the span of every `ExprKind::Ident(name)` in `expr`.
 ///
 /// Covers every `ExprKind` that contains sub-expressions so no in-scope use is
-/// missed (Invariant 2). The match is exhaustive (no wildcard) so a new
-/// `ExprKind` variant is a compile error here rather than a silently-dropped
-/// reference.
+/// missed (Invariant 2); the child enumeration itself lives in
+/// [`for_each_direct_subexpr`], whose wildcard-free match is what makes a new
+/// `ExprKind` variant a compile error rather than a silently-dropped reference.
 ///
 /// Known limitation: binder-introducing expressions (`Lambda` params,
 /// `Quantifier` variables, `Match` pattern binders) open their own value scope,
@@ -1060,124 +1208,12 @@ fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<Sour
 /// completeness; a binder that shadows `name` is therefore not handled here and
 /// is deferred along with the other nested-scope cases.
 fn collect_idents_in_expr(expr: &Expr, name: &str, out: &mut Vec<SourceSpan>) {
-    match &expr.kind {
-        ExprKind::Ident(ident) => {
-            if ident == name {
-                out.push(expr.span);
-            }
-        }
-        ExprKind::BinOp { left, right, .. } => {
-            collect_idents_in_expr(left, name, out);
-            collect_idents_in_expr(right, name, out);
-        }
-        ExprKind::UnOp { operand, .. } => collect_idents_in_expr(operand, name, out),
-        ExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_idents_in_expr(arg, name, out);
-            }
-        }
-        // The base of a member access (`h` in `h.diameter`) is an identifier use
-        // of the sub/port/binding; the `.member` segment is a field name, not a
-        // tracked binding, so it is not recursed into.
-        ExprKind::MemberAccess { object, .. } => collect_idents_in_expr(object, name, out),
-        ExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_idents_in_expr(condition, name, out);
-            collect_idents_in_expr(then_branch, name, out);
-            collect_idents_in_expr(else_branch, name, out);
-        }
-        ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
-            for item in items {
-                collect_idents_in_expr(item, name, out);
-            }
-        }
-        ExprKind::MapLiteral(entries) => {
-            for (k, v) in entries {
-                collect_idents_in_expr(k, name, out);
-                collect_idents_in_expr(v, name, out);
-            }
-        }
-        ExprKind::IndexAccess { object, index } => {
-            collect_idents_in_expr(object, name, out);
-            collect_idents_in_expr(index, name, out);
-        }
-        ExprKind::Match { discriminant, arms } => {
-            collect_idents_in_expr(discriminant, name, out);
-            for arm in arms {
-                collect_idents_in_expr(&arm.body, name, out);
-            }
-        }
-        ExprKind::Lambda { body, .. } => collect_idents_in_expr(body, name, out),
-        ExprKind::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            collect_idents_in_expr(collection, name, out);
-            collect_idents_in_expr(predicate, name, out);
-        }
-        ExprKind::AdHocSelector { base, args, .. } => {
-            collect_idents_in_expr(base, name, out);
-            for arg in args {
-                collect_idents_in_expr(arg, name, out);
-            }
-        }
-        ExprKind::QualifiedAccess { qualifier, .. } => collect_idents_in_expr(qualifier, name, out),
-        ExprKind::InstanceQualifiedAccess { object, qualified } => {
-            collect_idents_in_expr(object, name, out);
-            collect_idents_in_expr(qualified, name, out);
-        }
-        ExprKind::Range { lower, upper, .. } => {
-            if let Some(l) = lower {
-                collect_idents_in_expr(l, name, out);
-            }
-            if let Some(u) = upper {
-                collect_idents_in_expr(u, name, out);
-            }
-        }
-        ExprKind::TraitMethodCall { object, args, .. } => {
-            collect_idents_in_expr(object, name, out);
-            for arg in args {
-                collect_idents_in_expr(arg, name, out);
-            }
-        }
-        ExprKind::TraitStaticCall { args, .. } => {
-            for arg in args {
-                collect_idents_in_expr(arg, name, out);
-            }
-        }
-        ExprKind::VariantConstruct { fields, .. } => {
-            for (_, v) in fields {
-                collect_idents_in_expr(v, name, out);
-            }
-        }
-        ExprKind::InterpolatedString(parts) => {
-            for part in parts {
-                if let StringPart::Hole(e) = part {
-                    collect_idents_in_expr(e, name, out);
-                }
-            }
-        }
-        // `auto(seed = expr, …)` params carry value expressions that reference
-        // real bindings, so recurse — otherwise find-references/rename silently
-        // miss occurrences inside `auto(seed = x)`, leaving a dangling reference
-        // after rename (mirrors substitute_expr; geometric-relations δ, 4384).
-        ExprKind::Auto { params, .. } => {
-            for (_, v) in params {
-                collect_idents_in_expr(v, name, out);
-            }
-        }
-        // Leaves with no sub-expressions.
-        ExprKind::NumberLiteral { .. }
-        | ExprKind::QuantityLiteral { .. }
-        | ExprKind::StringLiteral(_)
-        | ExprKind::BoolLiteral(_)
-        | ExprKind::EnumAccess { .. }
-        | ExprKind::Undef => {}
+    if let ExprKind::Ident(ident) = &expr.kind
+        && ident == name
+    {
+        out.push(expr.span);
     }
+    for_each_direct_subexpr(expr, &mut |child| collect_idents_in_expr(child, name, out));
 }
 
 /// Classify a value binding by its initializer: a binding initialized to the
@@ -1392,13 +1428,14 @@ pub fn compute_document_highlights(
 
 /// Collect every declaration-name reference to `name` within a SINGLE parsed
 /// document: the home declaration's name token (when `name` is declared in this
-/// document) plus each USE-SITE token across every entity's members, recursing
-/// into nested scopes. Ascending by `span.start`.
+/// document) plus each USE-SITE token in every top-level declaration, recursing
+/// into members and nested scopes. Ascending by `span.start`.
 ///
 /// Use-site categories collected here:
 /// - `sub _ = name` construction sites (κ design decision).
-/// - TYPE POSITIONS — `param p : Name`, `let l : Name`, `sub _ = Wrapper<Name>`
-///   (#6539), via [`collect_type_name_uses`].
+/// - TYPE POSITIONS — `param p : Name`, `fn f() -> Name`, `type H = Name`,
+///   `structure S : Name`, `|p: Name| …` and every other root
+///   [`collect_decl_name_uses_in_decl`] fans out over (#6539).
 ///
 /// All of them are structurally invisible to
 /// `collect_uses`/`collect_idents_in_expr`: `SubDecl.structure_name` is a plain
@@ -1408,33 +1445,257 @@ pub fn compute_document_highlights(
 /// for why the value-binding path is the wrong home. The home declaration token
 /// is located via goto_def's `find_declaration_name_span` so a declaration's
 /// rename/reference token is uniform with go-to-definition.
-fn collect_structure_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> Vec<SourceSpan> {
+///
+/// CAVEAT — the one type reference this traversal cannot locate.
+/// `TypeParamDecl.bounds` is a `Vec<String>` carrying no spans of its own (only
+/// the enclosing `TypeParamDecl.span`), so the `Numeric` in `structure S<T:
+/// Numeric>` is a real reference that no span in the AST identifies, and it is
+/// NOT collected. A trait renamed cross-file therefore leaves such a bound
+/// stale, exactly as the pre-#6539 type-annotation gap did. Closing it needs a
+/// spanned bound in the AST (`Vec<SpannedIdent>`, as `TraitDecl.refinements`
+/// already uses), not a change here.
+fn collect_decl_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> Vec<SourceSpan> {
     let mut spans = Vec::new();
     // Home declaration token (`structure Name` / `occurrence def Name` / …),
     // present only when `name` is declared in THIS document.
     if let Some(decl_token) = crate::goto_def::find_declaration_name_span(source, name) {
         spans.push(decl_token);
     }
-    // Every `sub _ = name` construction site across all entities' members.
     for decl in &parsed.declarations {
-        if let Some(members) = entity_members(decl) {
-            collect_sub_structure_uses(members, source, name, 0, &mut spans);
-        }
+        collect_decl_name_uses_in_decl(decl, source, name, &mut spans);
     }
     spans.sort_by_key(|s| s.start);
     spans
 }
 
-/// Push the name-token span of each `MemberDecl::Sub` whose `structure_name`
-/// equals `name`, recursing into nested member-list scopes (guarded branches,
-/// port bodies, sub specialization bodies / keyed overrides, match-arm members)
-/// exactly as `collect_uses` does — depth-bounded by `MAX_MEMBER_NESTING_DEPTH`
-/// — so a construction site nested inside a `where`/port/sub block is not missed.
+/// Push every span at which `decl` REFERENCES a declaration named `name` — never
+/// `decl`'s own name token, which [`collect_decl_name_spans`] supplies once.
 ///
-/// The emitted span is `name_token_span(source, sub.span, name)`: the first
-/// whole-word `name` token within the `sub` statement, i.e. the structure-name
-/// (construction) token in `sub binding = Name(...)`.
-fn collect_sub_structure_uses(
+/// The declaration half of the use-site fan-out, and the single place the root
+/// set is written down: every `TypeExpr` root reachable from a top-level
+/// declaration is reached from here, directly or through
+/// [`collect_decl_name_uses_in_members`]. The match is WILDCARD-FREE over all 14
+/// `Declaration` variants, so a new declaration kind is a compile error here
+/// rather than a silently uncollected use site — the same forcing-function
+/// design as `analysis::decl_name_and_span`.
+///
+/// Both reference collectors share it: the home document walks every
+/// declaration, and an importing document walks the same set once its import
+/// exposes `name` under that same local name
+/// ([`collect_importer_structure_references`]). Sharing one fan-out is what
+/// keeps the two from disagreeing about what a use site is.
+fn collect_decl_name_uses_in_decl(
+    decl: &Declaration,
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    match decl {
+        Declaration::Structure(s) => {
+            collect_type_param_uses(&s.type_params, source, name, out);
+            collect_trait_bound_uses(&s.trait_bounds, source, name, out);
+            collect_decl_name_uses_in_members(&s.members, source, name, 0, out);
+        }
+        Declaration::Occurrence(o) => {
+            collect_type_param_uses(&o.type_params, source, name, out);
+            collect_trait_bound_uses(&o.trait_bounds, source, name, out);
+            collect_decl_name_uses_in_members(&o.members, source, name, 0, out);
+        }
+        // `TraitDecl.refinements` is a `Vec<SpannedIdent>`, the one type
+        // reference in the AST that already carries its own exact name-token
+        // span — so it is pushed verbatim, with no narrowing and no source scan.
+        Declaration::Trait(t) => {
+            collect_type_param_uses(&t.type_params, source, name, out);
+            for refinement in &t.refinements {
+                if refinement.name == name {
+                    out.push(refinement.span);
+                }
+            }
+            collect_decl_name_uses_in_members(&t.members, source, name, 0, out);
+        }
+        // `PurposeParam.entity_kind` is deliberately not a use site: it is an
+        // entity-KIND keyword (`Structure`, `Occurrence`), not a reference to a
+        // declaration, so collecting it would let a rename rewrite unrelated
+        // text. `PurposeDef.structures` / `.defaults` are reached separately.
+        Declaration::Purpose(p) => {
+            collect_type_param_uses(&p.type_params, source, name, out);
+            collect_decl_name_uses_in_members(&p.members, source, name, 0, out);
+        }
+        Declaration::Enum(e) => {
+            collect_type_param_uses(&e.type_params, source, name, out);
+            for variant in &e.variants {
+                match &variant.payload {
+                    VariantPayload::Named(fields) => {
+                        for (_, ty) in fields {
+                            collect_type_name_uses(ty, source, name, out);
+                        }
+                    }
+                    VariantPayload::Unit => {}
+                }
+            }
+        }
+        Declaration::Function(f) => collect_fn_name_uses(f, source, name, out),
+        Declaration::Field(f) => {
+            collect_type_name_uses(&f.domain_type, source, name, out);
+            collect_type_name_uses(&f.codomain_type, source, name, out);
+            match &f.source {
+                FieldSource::Analytical { expr } | FieldSource::Composed { expr } => {
+                    collect_type_name_uses_in_expr(expr, source, name, out);
+                }
+                FieldSource::Sampled { config } => {
+                    for (_, expr) in config {
+                        collect_type_name_uses_in_expr(expr, source, name, out);
+                    }
+                }
+                // Path/format/grid are `Option<String>` literals, not
+                // expressions and not declaration references.
+                FieldSource::Imported { .. } => {}
+            }
+        }
+        Declaration::Constraint(c) => {
+            collect_type_param_uses(&c.type_params, source, name, out);
+            for param in &c.params {
+                if let Some(ty) = &param.type_expr {
+                    collect_type_name_uses(ty, source, name, out);
+                }
+                if let Some(default) = &param.default {
+                    collect_type_name_uses_in_expr(default, source, name, out);
+                }
+            }
+            for predicate in &c.predicates {
+                collect_type_name_uses_in_expr(predicate, source, name, out);
+            }
+        }
+        Declaration::Unit(u) => collect_type_name_uses(&u.dimension_type, source, name, out),
+        Declaration::TypeAlias(a) => {
+            collect_type_param_uses(&a.type_params, source, name, out);
+            collect_type_name_uses(&a.type_expr, source, name, out);
+        }
+        Declaration::Default(d) => {
+            collect_type_name_uses(&d.type_expr, source, name, out);
+            collect_type_name_uses_in_expr(&d.value, source, name, out);
+        }
+        Declaration::Joint(j) => {
+            collect_type_param_uses(&j.type_params, source, name, out);
+            for param in &j.params {
+                collect_type_name_uses(&param.type_expr, source, name, out);
+                if let Some(default) = &param.default {
+                    collect_type_name_uses_in_expr(default, source, name, out);
+                }
+            }
+            for dof in &j.dof {
+                collect_type_name_uses(&dof.type_expr, source, name, out);
+                if let Some(range) = &dof.range {
+                    collect_type_name_uses_in_expr(range, source, name, out);
+                }
+            }
+            for expr in &j.body {
+                collect_type_name_uses_in_expr(expr, source, name, out);
+            }
+        }
+        // An import's entity token IS a reference, but admitting it here would
+        // key on a bare name match; scope soundness (Invariant 1) requires
+        // keying on the RESOLVED target module instead, which is
+        // `collect_importer_structure_references`' job. A `module` declaration
+        // names a module path, never a declaration.
+        Declaration::Import(_) | Declaration::Module(_) => {}
+    }
+}
+
+/// Push every reference to `name` inside a function definition: its type
+/// parameters' defaults, each parameter's declared type and default expression,
+/// the return type, and the body's `let` annotations and expressions.
+///
+/// Shared by the top-level `Declaration::Function` arm and the `MemberDecl::Fn`
+/// arm (a trait's associated function), which are the same `FnDef` in two
+/// positions.
+fn collect_fn_name_uses(f: &FnDef, source: &str, name: &str, out: &mut Vec<SourceSpan>) {
+    collect_type_param_uses(&f.type_params, source, name, out);
+    for param in &f.params {
+        collect_type_name_uses(&param.type_expr, source, name, out);
+        if let Some(default) = &param.default {
+            collect_type_name_uses_in_expr(default, source, name, out);
+        }
+    }
+    if let Some(return_type) = &f.return_type {
+        collect_type_name_uses(return_type, source, name, out);
+    }
+    if let Some(body) = &f.body {
+        for binding in &body.let_bindings {
+            if let Some(ty) = &binding.type_expr {
+                collect_type_name_uses(ty, source, name, out);
+            }
+            collect_type_name_uses_in_expr(&binding.value, source, name, out);
+        }
+        collect_type_name_uses_in_expr(&body.result_expr, source, name, out);
+    }
+}
+
+/// Push every reference to `name` in a type-parameter list — each parameter's
+/// DEFAULT type (`<T = Name>`), recursively.
+///
+/// `TypeParamDecl.bounds` is NOT reached: it is a `Vec<String>` with no spans of
+/// its own, so a bound reference cannot be located from the AST at all. That
+/// residual is stated once, on [`collect_decl_name_spans`].
+fn collect_type_param_uses(
+    type_params: &[TypeParamDecl],
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    for type_param in type_params {
+        if let Some(default) = &type_param.default {
+            collect_type_name_uses(default, source, name, out);
+        }
+    }
+}
+
+/// Push the name-token span of every trait bound in `bounds` that references
+/// `name` (`structure S : Name`, `occurrence def O : Container<Name>`),
+/// recursing into each bound's type arguments.
+///
+/// `TraitBoundRef.span` covers the WHOLE bound, name and type arguments
+/// together, so the token is always narrowed with [`name_token_span`] — unlike
+/// `TraitDecl.refinements`, whose `SpannedIdent` already carries the exact name
+/// token.
+fn collect_trait_bound_uses(
+    bounds: &[TraitBoundRef],
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    for bound in bounds {
+        if references_decl_name(&bound.name, name) {
+            out.push(name_token_span(source, bound.span, name));
+        }
+        for arg in &bound.type_args {
+            collect_type_name_uses(arg, source, name, out);
+        }
+    }
+}
+
+/// Push the name-token span of each use site of `name` among `members`,
+/// recursing into nested member-list scopes (guarded branches, port bodies, sub
+/// specialization bodies / keyed overrides, match-arm members) exactly as
+/// `collect_uses` does — depth-bounded by [`MAX_MEMBER_NESTING_DEPTH`] — so a
+/// use nested inside a `where`/port/sub block is not missed.
+///
+/// Three categories, and the match over them is WILDCARD-FREE so a new
+/// `MemberDecl` variant is a compile error rather than a silently uncollected
+/// use site:
+/// - a `sub binding = Name(...)` CONSTRUCTION site, whose `structure_name` is a
+///   plain `String`; the emitted span is the first whole-word `name` token
+///   inside the `sub` statement, i.e. the construction token;
+/// - a TYPE POSITION on a member that declares one (`param`/`let` annotations, a
+///   sub's type arguments, an associated type's default, a `port`'s trait, an
+///   associated function's whole signature and body);
+/// - a lambda parameter's type annotation anywhere in the member's own
+///   expressions, reached via [`for_each_member_direct_expr`].
+///
+/// `MemberDecl::Fn` is walked here even though `for_each_member_direct_expr`
+/// yields nothing for it — see that function's doc comment for why the value
+/// walk stops at a fn body and the type walk does not.
+fn collect_decl_name_uses_in_members(
     members: &[MemberDecl],
     source: &str,
     name: &str,
@@ -1464,15 +1725,69 @@ fn collect_sub_structure_uses(
                     collect_type_name_uses(ty, source, name, out);
                 }
             }
-            _ => {}
+            MemberDecl::AssociatedType(a) => {
+                if let Some(ty) = &a.default_type {
+                    collect_type_name_uses(ty, source, name, out);
+                }
+            }
+            MemberDecl::Fn(f) => collect_fn_name_uses(f, source, name, out),
+            // `PortDecl.type_name` names a TRAIT (the compiler looks it up in
+            // the trait registry, entity.rs), so it is a real reference to a
+            // top-level declaration. It is a plain `String` with no span of its
+            // own, so the token is narrowed out of the port's span.
+            MemberDecl::Port(p) => {
+                if p.type_name == name {
+                    out.push(name_token_span(source, p.span, name));
+                }
+            }
+            // Expression-only members: any type reference they carry is a
+            // lambda parameter annotation, collected below through
+            // `for_each_member_direct_expr` rather than arm by arm.
+            MemberDecl::Constraint(_)
+            | MemberDecl::ConstraintInst(_)
+            | MemberDecl::Minimize(_)
+            | MemberDecl::Maximize(_)
+            | MemberDecl::GuardedGroup(_)
+            | MemberDecl::Connect(_)
+            | MemberDecl::Chain(_)
+            | MemberDecl::MetaBlock(_)
+            | MemberDecl::ForallConnect(_)
+            | MemberDecl::ForallConstraint(_)
+            | MemberDecl::MatchArmDeclGroup(_)
+            | MemberDecl::Relate(_) => {}
         }
-        // Recurse into the SAME nested member-list scopes `collect_uses`
-        // descends into (via `for_each_child_scope`), so a `sub` construction
-        // site inside a guarded/port/sub/match scope is also collected.
+        for_each_member_direct_expr(member, &mut |expr| {
+            collect_type_name_uses_in_expr(expr, source, name, out);
+        });
         for_each_child_scope(member, |child| {
-            collect_sub_structure_uses(child, source, name, depth + 1, out);
+            collect_decl_name_uses_in_members(child, source, name, depth + 1, out);
         });
     }
+}
+
+/// Push every TYPE-position reference to `name` written inside an expression.
+///
+/// `LambdaParam.type_expr` (`|p: Name| …`) is the only `TypeExpr` root an
+/// expression can carry, so this walk inspects each node for a lambda and
+/// otherwise just descends. It is a type walk, not a value walk: an
+/// `ExprKind::Ident` equal to `name` is NOT collected here, because a bare
+/// identifier in value position names a binding, not a declaration.
+fn collect_type_name_uses_in_expr(
+    expr: &Expr,
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    if let ExprKind::Lambda { params, .. } = &expr.kind {
+        for param in params {
+            if let Some(ty) = &param.type_expr {
+                collect_type_name_uses(ty, source, name, out);
+            }
+        }
+    }
+    for_each_direct_subexpr(expr, &mut |child| {
+        collect_type_name_uses_in_expr(child, source, name, out);
+    });
 }
 
 /// Push the name-token span of every reference to `name` appearing in TYPE
@@ -1502,19 +1817,17 @@ fn collect_sub_structure_uses(
 /// (`lower_parameterized_type` spans the entire node). The bare case therefore
 /// pushes `ty.span` directly — authoritative by construction, with no source
 /// scan and no exposure to [`name_token_span`]'s empty-span miss fallback —
-/// while the parameterized case must narrow.
+/// while every other shape must narrow.
 fn collect_type_name_uses(ty: &TypeExpr, source: &str, name: &str, out: &mut Vec<SourceSpan>) {
     match &ty.kind {
         TypeExprKind::Named {
-            name: type_name,
+            name: written,
             type_args,
         } => {
-            if type_name == name {
-                if type_args.is_empty() {
-                    out.push(ty.span);
-                } else {
-                    out.push(name_token_span(source, ty.span, name));
-                }
+            if written == name && type_args.is_empty() {
+                out.push(ty.span);
+            } else if references_decl_name(written, name) {
+                out.push(name_token_span(source, ty.span, name));
             }
             for arg in type_args {
                 collect_type_name_uses(arg, source, name, out);
@@ -1550,6 +1863,20 @@ fn collect_type_name_uses(ty: &TypeExpr, source: &str, name: &str, out: &mut Vec
         TypeExprKind::IntegerLiteral(_) => {}
         TypeExprKind::Auto { .. } => {}
     }
+}
+
+/// Whether a type name spelled `written` in source refers to the declaration
+/// named `name`.
+///
+/// Two spellings do. The bare name is the obvious one. The NAMESPACED form
+/// (`pp.Hole`) is the trap: `ts_parser::namespaced_name_text` dot-JOINS the
+/// qualifier and the name into a single `String`, so a bare declaration name
+/// never equals it and, without this comparison, an ordinary-looking use is
+/// silently dropped — invisible to find-references and left stale by a rename.
+/// Only the LAST segment is ever emitted as a span, because renaming the
+/// declaration rewrites `Hole` and never the `pp.` qualifier.
+fn references_decl_name(written: &str, name: &str) -> bool {
+    written == name || written.rsplit('.').next().unwrap_or(written) == name
 }
 
 /// Whether import `kind` brings an entity named `name` into local scope under
@@ -1707,12 +2034,12 @@ fn collect_importer_structure_references(
             _ => {}
         }
     }
-    // Construction sites only when imported under the same (non-aliased) name.
+    // Use sites only when imported under the same (non-aliased) name — and then
+    // the SAME fan-out the home document uses, so the two documents cannot
+    // disagree about what counts as a use of the entity.
     if exposes_under_same_name {
         for decl in &parsed.declarations {
-            if let Some(members) = entity_members(decl) {
-                collect_sub_structure_uses(members, doc_source, name, 0, &mut spans);
-            }
+            collect_decl_name_uses_in_decl(decl, doc_source, name, &mut spans);
         }
     }
     spans.sort_by_key(|s| s.start);
@@ -1777,7 +2104,7 @@ pub fn compute_references_cross_file(
             let home_parsed =
                 reify_syntax::parse(&home_source, reify_core::ModulePath::single("_home"));
             let home_decl = crate::goto_def::find_declaration_name_span(&home_source, &name);
-            for span in collect_structure_name_spans(&home_source, &home_parsed, &name) {
+            for span in collect_decl_name_spans(&home_source, &home_parsed, &name) {
                 // include_declaration=false drops the home declaration token.
                 if !include_declaration && Some(span) == home_decl {
                     continue;
@@ -1833,24 +2160,27 @@ fn classify_top_level_decl(source: &str, name: &str) -> Option<RefSymbolKind> {
 }
 
 /// Whether a cross-file home of `kind` is renameable in κ: every single-file
-/// value-member kind ([`is_renameable`]) PLUS `Structure`/`Occurrence` — the
-/// declaration kinds whose construction sites (`sub _ = Name`) κ tracks across
-/// the import graph. `Trait`/`Enum`/`Fn`/`Variant` are OUT of κ scope (their use
-/// sites are type-annotation / refinement positions κ does not collect, so a
-/// rename would be unsound) and refuse. Shared by [`prepare_rename_cross_file`]
-/// and the cross-file rename producer so the two agree on what is renameable.
+/// value-member kind ([`is_renameable`]) PLUS `Structure`/`Occurrence`.
+/// `Trait`/`Enum`/`Fn`/`Variant` refuse. Shared by
+/// [`prepare_rename_cross_file`] and the cross-file rename producer so the two
+/// agree on what is renameable.
 ///
-/// CAVEAT — the same type-position gap applies to the ADMITTED Structure/
-/// Occurrence kinds: κ collects only the declaration token and `sub _ = Name`
-/// construction sites (κ design decision #3). If a structure name ALSO appears
-/// in a type-annotation / refinement position (e.g. `param p: Name`), renaming
-/// the structure rewrites the decl + construction sites but leaves that
-/// type-position use stale. Because Invariant 5 only checks that buffers
-/// re-PARSE clean, such a rename parses fine yet references a now-nonexistent
-/// name. Admitting Structure/Occurrence is sound for the κ signal (construction
-/// across an import); extending the collector to type positions — or refusing
-/// when such uses exist — is a clean follow-up that does not change the
-/// substrate.
+/// THE ADMISSION RULE: a kind is renameable cross-file only when EVERY use-site
+/// form for that kind is collected. [`compute_rename_cross_file`] uses the
+/// reference set as its exact EDIT set, so an uncollected use is left stale by
+/// the rename — and Invariant 5 does not catch it, because it only checks that
+/// the edited buffers re-PARSE clean, which a dangling name does.
+///
+/// Structure/Occurrence satisfy the rule. [`collect_decl_name_spans`] collects
+/// the declaration token, every `sub _ = Name` construction site AND every type
+/// position (#6539) — which closes the type-annotation / refinement staleness
+/// this doc comment used to record here as a live rename hazard. Its one
+/// residual, `TypeParamDecl.bounds`, is stated in that function's CAVEAT.
+///
+/// The refused kinds are refused because the rule has not been DISCHARGED for
+/// them, not because their type positions are uncollected: a trait, enum or
+/// function name is also used in value position (`E.Variant`, `f(x)`), which a
+/// different collector answers for.
 fn is_renameable_cross_file(kind: RefSymbolKind) -> bool {
     is_renameable(kind) || matches!(kind, RefSymbolKind::Structure | RefSymbolKind::Occurrence)
 }
@@ -1938,7 +2268,7 @@ pub fn prepare_rename_cross_file(
 /// SCOPE — declaration + construction sites only. For a Structure/Occurrence
 /// home the edit set covers the declaration token, import entity tokens, and
 /// `sub _ = Name` (construction) sites — NOT type-annotation / refinement
-/// positions (see [`is_renameable_cross_file`] and [`collect_structure_name_spans`]).
+/// positions (see [`is_renameable_cross_file`] and [`collect_decl_name_spans`]).
 /// If a structure name also appears in such a position the rename rewrites the
 /// decl + construction sites but leaves that use stale; the buffers still
 /// re-PARSE clean (Invariant 5 only checks parse-cleanliness) yet now reference
@@ -2289,7 +2619,7 @@ mod tests {
     fn collect_references_reaches_indexed_sub_domain_use() {
         // `n` is used only inside the indexer clause's domain expression
         // (`sub xs[i in 0..n] = …`), never in the sub's args/pose/where. Before
-        // this fix, `collect_uses_in_sub` never walked `SubDecl::index_domain`,
+        // this fix, the sub use-walk never walked `SubDecl::index_domain`,
         // so a find-references/rename query rooted at the `param n` decl missed
         // this use entirely (silent miss — no compile error, since #5481 added
         // the AST fields with zero struct-pattern destructures elsewhere).
@@ -2333,7 +2663,7 @@ structure S {
 
     // --- task #5579 (amendment): index_binder shadow — pin the deliberate
     // current behavior (reviewer-surfaced gap: neither `sub_direct_exprs` nor
-    // `collect_uses_in_sub`'s doc comment previously had a test observing the
+    // its consumers' doc comments previously had a test observing the
     // consequence of NOT registering `index_binder` as a binding site) ---
 
     #[test]
@@ -2400,7 +2730,7 @@ structure S {
         // `member_access_field_segment_refuses_in_inline_relate_block`, which
         // only exercises the separate `cursor_on_member_segment` refusal
         // guard and would stay green even if the
-        // `for rel in &s.relate_relations` walk in `collect_uses_in_sub`
+        // `for rel in &s.relate_relations` walk in the sub use-walk
         // (now folded into `sub_direct_exprs`) were deleted.
         let source = "\
 structure S {
@@ -2555,7 +2885,7 @@ structure S {
         // from `collect_references_reaches_sub_spec_param_override_use` above,
         // which covers the sub-level `spec_param_overrides` of a plain
         // (non-keyed) specialization body. Before this fix, neither
-        // `collect_uses_in_sub` nor `cursor_on_member_segment`'s
+        // the sub use-walk nor `cursor_on_member_segment`'s
         // `MemberDecl::Sub` arm walked any keyed entry's `param_overrides` —
         // the identical silent find-references/rename miss this task closes
         // for `index_domain`, just one level deeper (inside `keyed_members`).
@@ -4107,7 +4437,7 @@ structure S {
     // --- κ step-1 (task 4210): single-file structure-name collector ---
 
     #[test]
-    fn collect_structure_name_spans_decl_plus_same_file_sub_uses() {
+    fn collect_decl_name_spans_decl_plus_same_file_sub_uses() {
         // `SubDecl.structure_name` is a plain `String` field, structurally
         // invisible to the Expr-walking `collect_uses`/`collect_idents_in_expr`.
         // The dedicated structure-name collector must surface the home
@@ -4140,7 +4470,7 @@ structure Assembly {
         // hole[0]=`structure Hole` decl token, hole[1]=`sub a = Hole`,
         // hole[2]=`sub b = Hole`.
 
-        let spans = collect_structure_name_spans(source, &parsed, "Hole");
+        let spans = collect_decl_name_spans(source, &parsed, "Hole");
         assert_eq!(
             spans,
             vec![
@@ -4178,7 +4508,7 @@ structure Assembly {
             "[{label}] fixture must hold a declaration AND at least one use, or it \
              asserts nothing:\n{source}"
         );
-        let got = collect_structure_name_spans(source, &parsed, name);
+        let got = collect_decl_name_spans(source, &parsed, name);
         assert_eq!(
             got, expected,
             "[{label}] every occurrence of {name:?} must be collected, each span \
@@ -4222,6 +4552,14 @@ structure Assembly {
                 ),
                 "Hole",
             ),
+            // The same root reached the other way — through a MEMBER's own
+            // expression rather than a top-level declaration's — since the two
+            // are separate legs of the fan-out and either could rot alone.
+            (
+                "LambdaParam.type_expr (member expression)",
+                format!("{DECL}structure A {{\n    let f = |p: Hole| 1.0\n}}"),
+                "Hole",
+            ),
             // The two non-`TypeExpr` type references. `TraitDecl.refinements` is a
             // `Vec<SpannedIdent>` carrying exact per-name spans; `trait_bounds` is
             // a `Vec<TraitBoundRef>` whose `span` covers the whole bound and must
@@ -4243,6 +4581,16 @@ structure Assembly {
                 "trait Physical { param mass : Mass }\noccurrence def O : Physical {\n    param mass : Mass = 1kg\n}"
                     .to_string(),
                 "Physical",
+            ),
+            // A third non-`TypeExpr` type reference, beyond the two the plan
+            // named: a port's type is a TRAIT name, resolved against the trait
+            // registry by the compiler (`entity.rs`'s port-type check), so a
+            // trait rename that left it behind would break the port.
+            (
+                "PortDecl.type_name",
+                "trait Flange { param d : Length }\nstructure A {\n    port mount : Flange { param d: Length = 5mm }\n}"
+                    .to_string(),
+                "Flange",
             ),
         ];
         for (label, source, name) in rows {
@@ -4402,14 +4750,16 @@ structure Assembly {
 
     // --- task #6539: declaration names used in TYPE POSITION ---
 
-    /// The `is_renameable_cross_file` CAVEAT, made executable.
+    /// The `is_renameable_cross_file` CAVEAT, made executable — and retired.
     ///
-    /// That doc block names this exact hazard: "If a structure name ALSO appears
-    /// in a type-annotation / refinement position (e.g. `param p: Name`),
-    /// renaming the structure rewrites the decl + construction sites but leaves
-    /// that type-position use stale." Structure is an ALREADY-ADMITTED kind, so
-    /// this test needs no oracle widening — it is RED for the collector reason
-    /// alone, which is what makes it the right first assertion of workstream D.
+    /// That doc block used to name this exact hazard: "If a structure name ALSO
+    /// appears in a type-annotation / refinement position (e.g. `param p:
+    /// Name`), renaming the structure rewrites the decl + construction sites but
+    /// leaves that type-position use stale." The quote is kept here because this
+    /// test is what discharged it; the CAVEAT itself now records the collector's
+    /// one remaining residual instead. Structure is an ALREADY-ADMITTED kind, so
+    /// this test needed no oracle widening — it was RED for the collector reason
+    /// alone, which is what made it the right first assertion of workstream D.
     ///
     /// FIXTURE DISCIPLINE: cleanliness is asserted BEFORE anything else, and the
     /// `param p : Hole` annotation is asserted to be present IN THE AST rather
@@ -4765,14 +5115,14 @@ structure Assembly {
         // names UNIFORMLY across all kinds, via its own scanner
         // (`analysis::decl_name_and_span` + `goto_def::decl_name_token`). It did
         // NOT widen `goto_def::find_declaration_name_span`, which feeds the
-        // references home oracle here: `collect_structure_name_spans`,
+        // references home oracle here: `collect_decl_name_spans`,
         // `resolve_cross_file_home` step 2, and the cross-file rename producer.
         //
         // WHY THAT SEPARATION MUST HOLD: the five kinds below are now navigable
         // by same-file goto-def but are NOT collectible as uses.
         // `collect_uses`/`collect_idents_in_expr` walk `ExprKind::Ident` in
         // EXPRESSIONS only, never type expressions, and
-        // `collect_structure_name_spans` adds only `sub _ = Name` construction
+        // `collect_decl_name_spans` adds only `sub _ = Name` construction
         // sites. A rename built on that reference set moves the DECLARATION
         // token while silently missing every type-position use — and because
         // Invariant 5 only checks that edited buffers re-PARSE clean, such a

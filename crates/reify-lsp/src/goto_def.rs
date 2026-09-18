@@ -355,7 +355,7 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// # This helper feeds REFERENCES, not just cross-file goto-def
 ///
 /// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
-/// the `collect_structure_name_spans` home token, `resolve_cross_file_home`
+/// the `collect_decl_name_spans` home token, `resolve_cross_file_home`
 /// step 2, and the cross-file rename producer.
 ///
 /// Its kind list is therefore DELIBERATELY NARROWER than
@@ -419,7 +419,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// - `references.rs::compute_references_cross_file` uses the value only to drop
 ///   the declaration token when `include_declaration = false`; with no token to
 ///   drop, that filter is a no-op. Inert.
-/// - `references.rs::collect_structure_name_spans` pushes this token into the
+/// - `references.rs::collect_decl_name_spans` pushes this token into the
 ///   span set that `compute_rename_cross_file` turns into edits. A refusal
 ///   silently OMITS it, so a rename driven from an IMPORTING document (where
 ///   the home resolves through the import arm, never consulting this function)
