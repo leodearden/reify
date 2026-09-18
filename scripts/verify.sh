@@ -831,6 +831,29 @@ if [ "$DF_VERIFY_ROLE" = "offline" ]; then
     _OFFLINE_HEAVY_SELECT=" -E \"(${REIFY_HEAVY_NEXTEST_FILTER})\" --run-ignored all"
 fi
 
+# Offline --no-fail-fast fragment (task 7423/α, PRD verify-confirm-failed-
+# self-discovery §4.1.3): the offline recording pass must run its WHOLE heavy
+# set even after an early failure, because the confirm-manifest it feeds is
+# only sound if it names EVERY failing test. Under nextest's default fail-fast
+# the tests scheduled after the first failure are not run and are not even
+# attributed as skipped, so the recorded failed-set silently under-captures —
+# empirically verified, not merely prudent.
+#
+# A SEPARATE fragment, deliberately NOT folded into _OFFLINE_HEAVY_SELECT
+# above: the retry path strips that fragment's filterset with
+# `${_eff_offline_select##* -E \"*\"}` (see emit_nextest_pass), which keeps
+# the trailing ` --run-ignored all` but would relocate anything appended after
+# it. Keeping the flag in its own variable makes it invariant under that strip.
+#
+# Role-scoped to offline only, so task/merge/background keep their deliberate
+# fail-fast posture (a gate SHOULD stop at the first red). Empty on every
+# other role => those plans stay byte-for-byte identical — the same
+# empty-or-leading-space idiom as the two fragments above.
+_OFFLINE_NO_FAIL_FAST=""
+if [ "$DF_VERIFY_ROLE" = "offline" ]; then
+    _OFFLINE_NO_FAIL_FAST=" --no-fail-fast"
+fi
+
 # retry_failed_only (task 5287, PRD verify-retry-failed-only §4/§6, task α):
 # consume a dark-factory-supplied "failed-only" retry subset so a merge-gate
 # retry re-runs ONLY the did-not-pass tests against the warm _merge-verify
@@ -2546,7 +2569,7 @@ emit_nextest_pass() {
                 fi
             fi
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_eff_gate_exclude}${_eff_offline_select}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_eff_gate_exclude}${_eff_offline_select}${_OFFLINE_NO_FAIL_FAST}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
     else
         # LOUD no-nextest full-fallback (never-silent invariant, PRD §4.3): the
         # cargo-test fallback plan has no `-E` filterset support, so an eligible
