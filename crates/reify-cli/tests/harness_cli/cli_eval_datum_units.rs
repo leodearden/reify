@@ -17,11 +17,12 @@
 //! the CLI's exit gate is a pure `Severity::Error` fold — so without the classifier
 //! arm the gate is invisible to the author. These rows pin the 0 -> 1 flip.
 //!
-//! The assertions anchor on the message HEAD only (builtin + argument + expectation
-//! + `got` shape). Byte-identity with `ArgRejection::message` is pinned at the unit
-//! level by reify-stdlib's `length_rejection_wording_is_the_shared_arg_rejection_template`,
-//! so repeating the whole sentence here would buy nothing and duplicate a contract
-//! that already has an owner.
+//! The assertions anchor on the message HEAD only (builtin + argument +
+//! expectation + `got` shape). Byte-identity with `ArgRejection::message` is
+//! pinned at the unit level by reify-stdlib's
+//! `length_rejection_wording_is_the_shared_arg_rejection_template`, so repeating
+//! the whole sentence here would buy nothing and duplicate a contract that
+//! already has an owner.
 
 use crate::common;
 
