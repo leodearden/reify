@@ -3362,8 +3362,11 @@ _g_scan() {  # <logical-lines-file> <site-ERE> [dialect] -> "<sites> <unredirect
     # THREE OPENER KINDS, each a real in-tree shape:
     #   subst    a line ending in $( -- stdout is diverted into a variable,
     #            which is what makes an inner 2>&1 a diversion rather than a
-    #            leak. Shape at test_run_all_content_skip.sh:80-87 and :380-388,
-    #            and test_verify_env_ambient_isolation.sh:172-178.
+    #            leak. Shape at test_run_all_content_skip.sh:80-87 and :380-388.
+    #            It USED to cite test_verify_env_ambient_isolation.sh:172-178 as
+    #            a second instance; task 7626 ported that member to Python, so
+    #            the shape there is now a pyspawn block and the citation would
+    #            be false. Its Python successor is the pyspawn kind below.
     #   body     a line ending in "bash -c" plus a quote -- an inline script
     #            body, closed by a line starting with that quote, whose capture
     #            sits on that closing line. A real in-tree shape
@@ -3595,10 +3598,11 @@ printf '%s\n' \
 # The merge rule and its STDOUT PRECONDITION. `2>&1` is a diversion only if
 # stdout is itself diverted; with stdout inherited it is the leak, not a fix
 # (the same reason D4's grammar rejects it outright). The positive shape is at
-# test_run_all_content_skip.sh:80-87 and :380-388 and
-# test_verify_env_ambient_isolation.sh:172-178 -- `2>&1` IS on the invocation
+# test_run_all_content_skip.sh:80-87 and :380-388 -- `2>&1` IS on the invocation
 # line, but its legitimacy is only knowable from the enclosing `$(` opener,
 # and these carry no backslash continuation for the joiner to merge.
+# test_verify_env_ambient_isolation.sh:172-178 was a second instance until task
+# 7626 ported that member; G2h2 is the same precondition in the Python dialect.
 printf '%s\n' \
     'bash "$G_PROBE" --pool 2>&1 || _rc=$?' \
     > "$G_CTRL_MERGE_BARE"
