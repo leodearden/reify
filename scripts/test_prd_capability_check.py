@@ -582,6 +582,184 @@ class TestValueProbeSchema(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# #6876 step-05 (RED): stdout_value_satisfied() — the pure value predicate
+# ---------------------------------------------------------------------------
+
+class TestStdoutValuePredicate(unittest.TestCase):
+    """The stdout half of a value probe, in isolation — no subprocesses.
+
+    stdout_value_satisfied(run, spec) locates a capture in run.stdout, parses it
+    as a float, and applies the spec's bounds.  It reads run.stdout and nothing
+    else: the exit code is the OTHER half of the observation, decided by
+    observe(), and mixing the two here would put the answer in two places.
+    """
+
+    # The real three-line shape `reify eval` prints for value_clean_eval_cells.ri.
+    CELLS = (
+        "ValueCleanEvalCells.damping_ratio = 0.018\n"
+        "ValueCleanEvalCells.degenerate_ratio = 0\n"
+        "ValueCleanEvalCells.undef_ratio = undef\n"
+    )
+
+    def _run(self, stdout, exit_code=0, stderr=""):
+        return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    def _check(self, stdout, spec):
+        return pcc.stdout_value_satisfied(self._run(stdout), spec)
+
+    # ── locating the capture ──────────────────────────────────────────────────
+
+    def test_match_in_range_is_true(self):
+        self.assertTrue(
+            self._check("X = 0.018\n", {"pattern": r"X = ([0-9.]+)", "min": 0.01})
+        )
+
+    def test_pattern_absent_is_false(self):
+        self.assertFalse(
+            self._check("Y = 0.018\n", {"pattern": r"X = ([0-9.]+)", "min": 0.01})
+        )
+
+    def test_empty_stdout_is_false(self):
+        self.assertFalse(
+            self._check("", {"pattern": r"X = ([0-9.]+)", "min": 0.01})
+        )
+
+    def test_selects_the_right_line_of_many(self):
+        spec = {
+            "pattern": r"degenerate_ratio = ([-+0-9.eE]+)",
+            "min": -0.5,
+            "max": 0.5,
+        }
+        self.assertTrue(self._check(self.CELLS, spec))
+
+    def test_greedy_capture_does_not_span_lines(self):
+        """No re.DOTALL: `.+` must stop at the newline.
+
+        With DOTALL the capture would swallow the next two cells and fail to
+        parse, so a True here is what proves the flag is off.
+        """
+        spec = {"pattern": r"damping_ratio = (.+)", "min": 0.01, "max": 0.03}
+        self.assertTrue(self._check(self.CELLS, spec))
+
+    def test_group_defaults_to_one(self):
+        spec = {"pattern": r"(\w+) = ([0-9.]+)", "min": 0.0}
+        # group 1 is the NAME, which does not parse as a float.
+        self.assertFalse(self._check("damping = 0.018\n", spec))
+
+    def test_explicit_group_index_selects_capture(self):
+        spec = {"pattern": r"(\w+) = ([0-9.]+)", "group": 2, "min": 0.01, "max": 0.03}
+        self.assertTrue(self._check("damping = 0.018\n", spec))
+
+    def test_named_group_selects_capture(self):
+        spec = {
+            "pattern": r"\w+ = (?P<val>[0-9.]+)",
+            "group": "val",
+            "min": 0.01,
+            "max": 0.03,
+        }
+        self.assertTrue(self._check("damping = 0.018\n", spec))
+
+    def test_empty_capture_is_false(self):
+        """A group that participated but matched nothing yields no value."""
+        spec = {"pattern": r"X = ([0-9.]*)", "min": 0.0}
+        self.assertFalse(self._check("X = \n", spec))
+
+    def test_non_participating_optional_group_is_false(self):
+        spec = {"pattern": r"X = (?:([0-9.]+)|undef)", "min": 0.0}
+        self.assertFalse(self._check("X = undef\n", spec))
+
+    # ── numeric constraints: bounds are INCLUSIVE ─────────────────────────────
+
+    def test_min_only(self):
+        spec = {"pattern": r"X = ([0-9.]+)", "min": 0.01}
+        self.assertTrue(self._check("X = 0.018\n", spec))
+        self.assertFalse(self._check("X = 0.002\n", spec))
+
+    def test_max_only(self):
+        spec = {"pattern": r"X = ([0-9.]+)", "max": 0.03}
+        self.assertTrue(self._check("X = 0.018\n", spec))
+        self.assertFalse(self._check("X = 0.31\n", spec))
+
+    def test_bounds_are_inclusive_at_both_ends(self):
+        spec = {"pattern": r"X = ([0-9.]+)", "min": 0.01, "max": 0.03}
+        self.assertTrue(self._check("X = 0.01\n", spec))
+        self.assertTrue(self._check("X = 0.03\n", spec))
+
+    def test_just_outside_either_bound_is_false(self):
+        spec = {"pattern": r"X = ([0-9.]+)", "min": 0.01, "max": 0.03}
+        self.assertFalse(self._check("X = 0.009\n", spec))
+        self.assertFalse(self._check("X = 0.031\n", spec))
+
+    def test_degenerate_zero_fails_a_lower_bound(self):
+        """The motivating #6876 defect: a clean eval that printed 0."""
+        spec = {"pattern": r"degenerate_ratio = ([-+0-9.eE]+)", "min": 0.01}
+        self.assertFalse(self._check(self.CELLS, spec))
+
+    # ── tokens that are not numbers ───────────────────────────────────────────
+
+    def test_unparseable_token_is_false(self):
+        for stdout in ("X = undef\n", "X = m\n", "X = \n"):
+            with self.subTest(stdout=stdout):
+                self.assertFalse(
+                    self._check(stdout, {"pattern": r"X = (\S*)", "min": -1e9})
+                )
+
+    def test_non_finite_tokens_are_false_under_a_bare_min(self):
+        """Finiteness is STRUCTURAL, not opt-in.
+
+        float("inf") >= 0.01 is True in Python, so a bounds-only check would
+        wave inf straight through — re-opening a vacuity hole inside the kind
+        that exists to close one.
+        """
+        spec = {"pattern": r"X = (\S+)", "min": 0.01}
+        for token in ("nan", "inf", "-inf", "Infinity"):
+            with self.subTest(token=token):
+                self.assertFalse(self._check(f"X = {token}\n", spec))
+
+    def test_finite_alone_accepts_a_number_and_rejects_garbage(self):
+        spec = {"pattern": r"X = (\S+)", "finite": True}
+        self.assertTrue(self._check("X = 0.018\n", spec))
+        self.assertTrue(self._check("X = -12345.0\n", spec))
+        self.assertFalse(self._check("X = undef\n", spec))
+        self.assertFalse(self._check("X = inf\n", spec))
+
+    def test_undef_cell_fails_a_finiteness_assertion(self):
+        """The 'prints garbage with exit 0' case, on the real fixture shape."""
+        spec = {"pattern": r"undef_ratio = (\S+)", "finite": True}
+        self.assertFalse(self._check(self.CELLS, spec))
+
+    def test_scientific_and_signed_notation_parse(self):
+        spec = {"pattern": r"X = (\S+)", "min": 0.01, "max": 0.03}
+        self.assertTrue(self._check("X = 1.8e-2\n", spec))
+        self.assertTrue(self._check("X = +0.018\n", spec))
+        self.assertFalse(
+            self._check("X = -0.5\n", {"pattern": r"X = (\S+)", "min": 0.0})
+        )
+        self.assertTrue(
+            self._check("X = -0.5\n", {"pattern": r"X = (\S+)", "max": 0.0})
+        )
+
+    # ── purity ────────────────────────────────────────────────────────────────
+
+    def test_reads_only_stdout(self):
+        """exit_code and stderr must not reach the answer."""
+        spec = {"pattern": r"X = ([0-9.]+)", "min": 0.01, "max": 0.03}
+        clean = pcc.stdout_value_satisfied(self._run("X = 0.018\n"), spec)
+        noisy = pcc.stdout_value_satisfied(
+            self._run("X = 0.018\n", exit_code=99, stderr="EvalError everywhere\n"),
+            spec,
+        )
+        self.assertTrue(clean)
+        self.assertEqual(clean, noisy)
+
+    def test_returns_a_plain_bool(self):
+        spec = {"pattern": r"X = ([0-9.]+)", "min": 0.01}
+        self.assertIsInstance(
+            pcc.stdout_value_satisfied(self._run("X = 0.018\n"), spec), bool
+        )
+
+
+# ---------------------------------------------------------------------------
 # step-03 (RED): pure verdict() truth table
 # ---------------------------------------------------------------------------
 
