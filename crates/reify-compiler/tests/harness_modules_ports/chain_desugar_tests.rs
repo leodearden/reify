@@ -549,3 +549,113 @@ structure def S {
         "invalid port reference",
     );
 }
+
+/// The dotted element is the remedy every §6.2 diagnostic prescribes, so it is
+/// the highest-traffic path through inference and the one that must not break:
+/// the designer has named the port, and it reaches `compile_connection`
+/// untouched.
+#[test]
+fn chain_dotted_element_resolves_verbatim() {
+    let source = r#"
+trait Air { param d : Length }
+occurrence def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub a = Vent()
+    sub b = Vent()
+    chain a.outlet -> b.inlet
+}
+"#;
+
+    let module = compile_source(source);
+    assert_no_error_diagnostics(&module.diagnostics, "chain desugaring");
+
+    let s = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    let endpoints: Vec<(&str, &str)> = s
+        .connections
+        .iter()
+        .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+        .collect();
+    assert_eq!(endpoints, vec![("a.outlet", "b.inlet")]);
+}
+
+/// The escape hatch has a cost, and this is it. A named port is taken verbatim
+/// in BOTH of its element's roles, so dotting an INTERIOR element pins one port
+/// for the hop that arrives and the hop that leaves — and an `in` port cannot
+/// source the next hop.
+///
+/// `chain a -> b.inlet -> c` is therefore `a.outlet -> b.inlet` followed by
+/// `b.inlet -> c.inlet`, and the second hop is rejected on direction. Splitting
+/// into explicit `connect` statements is what the spec sends the designer to.
+#[test]
+fn chain_dotted_interior_element_pins_that_port_in_both_roles() {
+    let source = r#"
+trait Air { param d : Length }
+occurrence def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub a = Vent()
+    sub b = Vent()
+    sub c = Vent()
+    chain a -> b.inlet -> c
+}
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error — the leaving hop is In -> In; got: {:?}",
+        errors
+    );
+    assert!(
+        errors[0].message.contains("incompatible port directions"),
+        "pinning an `in` port as a source should fail on direction, got: {}",
+        errors[0].message
+    );
+}
+
+/// An element whose sub is missing from `sub_port_directions` is handed back
+/// untouched, not diagnosed here — per that map's absence contract a miss means
+/// "not resolvable at this point in the compile", which covers a typo as well
+/// as a child declared later in the module (#7374).
+///
+/// So `compile_connection`'s pre-existing `undefined port` error is what the
+/// designer sees, and no §6.2 diagnostic is added on top of it. This pins the
+/// silent pass deliberately, so that narrowing it later is a visible change.
+#[test]
+fn chain_element_absent_from_sub_port_directions_passes_through() {
+    let source = r#"
+trait Air { param d : Length }
+structure def S {
+    sub a = Vent()
+    sub b = Vent()
+    chain a -> b
+}
+structure def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+}
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "undefined port 'a' in connect statement",
+            "undefined port 'b' in connect statement",
+        ]
+    );
+    assert_no_diagnostic(&module.diagnostics, Severity::Error, "chain element");
+}
