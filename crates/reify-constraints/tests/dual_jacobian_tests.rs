@@ -460,14 +460,20 @@ fn a_chain_of_dependent_cells_propagates_through_every_hop_in_stored_order() {
 }
 
 // ---------------------------------------------------------------------------
-// (3) The auto's own tangent survives the fold
+// (3) A direct and a derived read of the same auto sum in one row
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_fold_never_clobbers_an_auto_params_own_seed_column() {
-    // The residual reads BOTH the auto directly and a derived cell, so if the
-    // fold overwrote the auto's seed the direct term's contribution would
-    // vanish.  r = q + line_cost − 12, ∂r/∂q = 1 + 3 = 4.
+fn a_direct_and_a_derived_read_of_the_same_auto_sum_in_one_row() {
+    // NOT the collision backstop.  `line_cost`'s `ValueCellId` can never equal
+    // the auto `q`, so the guard in `fold_dependent_duals` is unreachable from
+    // here and `∂r/∂q = 4` holds identically whether or not that guard exists.
+    // What this DOES pin is additivity across the two routes a row can reach an
+    // auto by.  The backstop itself is asserted in `dual_jacobian.rs`'s own
+    // `mod tests`, against the reporting body, because the wrapper's
+    // `debug_assert!` unwinds before an integration test could inspect it.
+    //
+    // r = q + line_cost − 12, ∂r/∂q = 1 + 3 = 4.
     let params = vec![auto("q", dl())];
     let mut base = ValueMap::new();
     base.insert(cell("unit_cost"), Value::Real(3.0));

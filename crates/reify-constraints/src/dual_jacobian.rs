@@ -367,3 +367,128 @@ fn fold_dependent_duals(
     }
     (env, prelude)
 }
+
+#[cfg(test)]
+mod tests {
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_expr::{Seeds, Tangent};
+    use reify_ir::{AutoParam, BinOp, Value, ValueMap};
+    use reify_test_support::builders::expr::{binop, literal, value_ref_typed};
+
+    use super::{CompiledExpr, fold_dependent_duals_skipping_collisions};
+
+    const ENT: &str = "part";
+
+    fn cell(name: &str) -> ValueCellId {
+        ValueCellId::new(ENT, name)
+    }
+
+    fn ty() -> Type {
+        Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }
+    }
+
+    fn auto(name: &str) -> AutoParam {
+        AutoParam { id: cell(name), param_type: ty(), bounds: None, free: false }
+    }
+
+    fn dref(name: &str) -> CompiledExpr {
+        value_ref_typed(ENT, name, ty())
+    }
+
+    /// `2 * <name>` — a cell whose tangent is non-flat, so a binding that lands
+    /// is visible in the overlay and one that is skipped is visible by its
+    /// absence.
+    fn twice(name: &str) -> CompiledExpr {
+        binop(BinOp::Mul, literal(Value::Real(2.0)), dref(name))
+    }
+
+    fn values_with(pairs: &[(&str, f64)]) -> ValueMap {
+        let mut values = ValueMap::new();
+        for (name, v) in pairs {
+            values.insert(cell(name), Value::Real(*v));
+        }
+        values
+    }
+
+    #[test]
+    fn a_dependent_cell_colliding_with_an_auto_is_reported_and_skipped() {
+        // The invariant whose failure is SILENT: an auto's tangent IS its seed
+        // column `e_j`, and the overlay OUTRANKS the seed columns, so binding
+        // an auto here would replace that basis vector with a computed one and
+        // the solver would report a solved value for a direction it never
+        // probed.  BOTH halves are asserted, because reporting without skipping
+        // would still clobber the column.
+        let params = [auto("q")];
+        let dependent = vec![(cell("q"), twice("q"))];
+        let values = values_with(&[("q", 5.0)]);
+        let seeds = Seeds::new(&[cell("q")]);
+
+        let (env, _prelude, collisions) = fold_dependent_duals_skipping_collisions(
+            &values, &params, &dependent, &[], None, &seeds,
+        );
+
+        assert_eq!(collisions, vec![cell("q")], "the colliding id is reported, in stored order");
+        assert!(
+            env.get(&cell("q")).is_none(),
+            "the auto's seed column must SURVIVE: leaving `q` unbound in the overlay is what \
+             keeps the basis vector e_j outranked by nothing"
+        );
+    }
+
+    #[test]
+    fn a_collision_does_not_renumber_its_successors_sites() {
+        // `enumerate` runs over the WHOLE slice, so a skipped entry leaves its
+        // index spent rather than shifting everyone after it down one.  The
+        // contract is stated in a comment at the loop head and checked by
+        // nothing; a site must stay put across a change that has nothing to do
+        // with it.
+        let params = [auto("q")];
+        let values = values_with(&[("q", 5.0), ("a", 3.0)]);
+        let seeds = Seeds::new(&[cell("q")]);
+
+        // `d` sits at index 1 in both lists; only the entry BEFORE it differs.
+        let with_collision = vec![(cell("q"), twice("q")), (cell("d"), twice("a"))];
+        let without = vec![(cell("other"), twice("a")), (cell("d"), twice("a"))];
+
+        let (_e1, prelude_collided, collisions) = fold_dependent_duals_skipping_collisions(
+            &values, &params, &with_collision, &[], None, &seeds,
+        );
+        let (_e2, prelude_clean, none) = fold_dependent_duals_skipping_collisions(
+            &values, &params, &without, &[], None, &seeds,
+        );
+
+        assert_eq!(collisions, vec![cell("q")]);
+        assert!(none.is_empty());
+        assert_eq!(
+            prelude_collided.signature_key(),
+            prelude_clean.signature_key(),
+            "a skipped entry must not renumber the sites of the entries after it"
+        );
+    }
+
+    #[test]
+    fn no_collision_returns_an_empty_vector_and_the_ordinary_overlay() {
+        // The only correct steady state, which also keeps the reporting body
+        // honest about the common path: an empty vector, and every cell bound.
+        let params = [auto("q")];
+        let dependent = vec![(cell("b"), twice("q")), (cell("c"), twice("b"))];
+        let values = values_with(&[("q", 5.0), ("b", 10.0)]);
+        let seeds = Seeds::new(&[cell("q")]);
+
+        let (env, _prelude, collisions) = fold_dependent_duals_skipping_collisions(
+            &values, &params, &dependent, &[], None, &seeds,
+        );
+
+        assert!(collisions.is_empty(), "the steady state reports nothing");
+        assert_eq!(
+            env.get(&cell("b")),
+            Some(&Tangent::Scalar(vec![2.0])),
+            "b = 2q binds ∂b/∂q = 2"
+        );
+        assert_eq!(
+            env.get(&cell("c")),
+            Some(&Tangent::Scalar(vec![4.0])),
+            "c = 2b chains through the RUNNING overlay to ∂c/∂q = 4"
+        );
+    }
+}
