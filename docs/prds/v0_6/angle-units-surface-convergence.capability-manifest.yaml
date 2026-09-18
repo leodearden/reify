@@ -57,7 +57,9 @@ tasks:
   - name: angle-spec-absent-today
     binding: capability→producer (this leaf) — grep:crates/reify-ir/src/arg_acceptance.rs:298
       density_spec, :337 length_spec, :635 accept_arg; no angle_spec anywhere in the
-      repo
+      repo AT DECOMPOSE — since DELIVERED, pub fn angle_spec() at
+      crates/reify-ir/src/arg_acceptance.rs:411 (re-measured 2026-09-18, task 7550;
+      anchors re-measured against main @ ea896581d1, not bd10b6d0e1)
     verdict: PASS
     delivered_check:
       kind: grep
