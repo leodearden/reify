@@ -414,6 +414,7 @@ fn resolve_chain_endpoint(
                 "chain element '{name}' names a whole collection, not one occurrence; \
                  chain its elements, e.g. 'forall v in {name}: chain v -> ...'"
             ))
+            .with_code(DiagnosticCode::ChainElementNotAnOccurrence)
             .with_label(DiagnosticLabel::new(
                 elem.span,
                 "names a collection, not one occurrence",
@@ -457,6 +458,7 @@ fn resolve_chain_endpoint(
             "chain element '{name}' {found}; name the port explicitly on that element, \
              e.g. '{name}.<port>'"
         ))
+        .with_code(DiagnosticCode::ChainPortNotUnique)
         .with_label(DiagnosticLabel::new(
             elem.span,
             format!("no unique port usable as '{dir}'"),

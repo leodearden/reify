@@ -53,9 +53,11 @@ The `@` operator creates ad-hoc ports by designating geometric regions.
 
 ## Chain Statement
 
-Sugar for connecting sequential occurrences. Each element contributes its sole
-`out` port where it sources a hop and its sole `in` port where it receives one,
-so given `occurrence def Step { port stock : in Workpiece  port part : out Workpiece }`:
+Sugar for connecting sequential occurrences. Each element contributes a port
+usable as `out` where it sources a hop and one usable as `in` where it receives
+one; candidates are tiered, so ports declared in the needed direction win and an
+element declaring none in that direction falls back to its `bidi` ports. Given
+`occurrence def Step { port stock : in Workpiece  port part : out Workpiece }`:
 ```reify-fragment
 chain casting -> machining -> heat_treat -> finishing
 // Desugars to:
@@ -64,9 +66,11 @@ connect machining.part -> heat_treat.stock
 connect heat_treat.part -> finishing.stock
 ```
 
-An element with several ports in the direction its role needs — or none — is a
+An element offering several candidate ports for its role — or none — is a
 compile error. Name the port on that element instead (`chain casting.part ->
 machining`); any element may be dotted, but a named port is used verbatim in
 both of that element's roles, so naming one on an interior element pins it for
-the hop arriving and the hop leaving alike. The same inference applies inside a
-`forall … : chain …` body.
+the hop arriving and the hop leaving alike. An element must denote exactly one
+occurrence: naming a `List<T>`/`Keyed<T>` sub without an indexer is an error —
+index it (`vents[0]`) or chain its occurrences with `forall v in vents: chain v
+-> hub`. The same inference applies inside a `forall … : chain …` body.
