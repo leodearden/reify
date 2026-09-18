@@ -3104,8 +3104,9 @@ G_MEMBERS=(
     # (LIB=lib_slot_acquire.sh, SEM=lib_test_semaphore.sh,
     # OCCT=cargo-test-occt-gated.sh), whose WAIT defaults are finite.
     test_slot_event_log.sh
-    # Route test_occt_flock_gate.sh -- itself a behavioural D_MEMBERS entry --
-    # exec'd at :177 by its literal path.
+    # Route test_occt_flock_gate.sh -- itself a behavioural D_MEMBERS entry.
+    # PORTED TO PYTHON (task 7626): the site that must divert is no longer in
+    # this file -- see G_SCAN below.
     test_verify_env_ambient_isolation.sh
     # DECLARED, NOT DERIVABLE, and this is the member Section G exists for. Its
     # capability route is F_WAIT_RE (`export REIFY_TEST_SEMAPHORE_WAIT="$wait"`
@@ -3127,14 +3128,16 @@ G_SITE=(
     '"\$REAL_RUN_ALL"'
     '"\$RUN_ALL"'
     '"\$(SEM|OCCT|LIB)"'
-    '"\$SCRIPT_DIR/test_occt_flock_gate\.sh"'
+    'subprocess\.Popen\('
     '"\$REPO_ROOT/scripts/verify\.sh"'
 )
 # Index-aligned with G_MEMBERS: the file whose SOURCE actually holds that
 # member's deadline-capable invocation. EMPTY means "the member itself", which
-# is the case for eight of the nine.
+# is the case for seven of the nine. The DIALECT is not a fourth column: the
+# G3/G1 loop derives it from this entry's extension, so it cannot drift from
+# the file it describes.
 #
-# THE ONE INDIRECTION, and why it is not optional.
+# INDIRECTION 1, and why it is not optional.
 # test_run_all_ambient_isolation.sh reaches its deadline SECOND-ORDER: TARGET is
 # bound at :93, handed to `ambient_isolation_check_one` at :366, and exec'd at
 # run_all_ambient_isolation_lib.sh:73/:92 as `bash "$_target" 2>&1` inside an
@@ -3146,9 +3149,26 @@ G_SITE=(
 # member itself gives 1 site / 1 unredirected; scanning the lib for the site it
 # really execs gives 2 sites / 0 unredirected.
 #
-# THE HONEST LIMITATION: this indirection is DECLARED, not derived from Section
+# INDIRECTION 2 (task 7626), and why its SITE is the spawn and not the target.
+# test_verify_env_ambient_isolation.sh is now a thin wrapper over a `.py`
+# sibling, which is where its deadline-capable invocation of
+# test_occt_flock_gate.sh lives. Its derived ROUTE is unchanged and still
+# via:test_occt_flock_gate.sh (FC6b pins it) -- but in Python ARGV IS DATA and
+# the spawn is the exec. The argv list `["bash", str(NESTED_SUITE)]` (:520)
+# carries no stream disposition whatsoever, so asserting on it could only ever
+# produce the same false RED that Section G already refuses to raise on
+# test_run_all_ambient_isolation.sh's forwarding call, one indirection up. The
+# leak property lives entirely at run_under_ambient's single Popen funnel
+# (:175-178), which is what this row therefore names. MEASURED: scanning the
+# `.py` for the spawn gives 1 site / 0 unredirected; the `.sh` wrapper has none
+# of either, which is precisely the vacuity G3 caught when the port landed.
+#
+# THE HONEST LIMITATION, and it now covers BOTH rows: this indirection is
+# DECLARED, not derived from Section
 # F's exec-forwarding-lib rule (F_FWD_LIB_MAP), which already knows how to
-# recognise such a lib. A new forwarding hop therefore needs a human edit here.
+# recognise such a lib, nor from the `.py` sibling Section F's own delegation
+# rule already follows. A new hop of either kind therefore needs a human edit
+# here.
 # What keeps that from being SILENT is the pair G0 (a new static-only member
 # cannot go uncovered) and G3 (a member whose site moved cannot pass
 # vacuously) -- the same two guards that make the whole declared table
@@ -3156,7 +3176,9 @@ G_SITE=(
 G_SCAN=(
     ''
     run_all_ambient_isolation_lib.sh
-    '' '' '' '' '' '' ''
+    '' '' '' '' ''
+    test_verify_env_ambient_isolation.py
+    ''
 )
 
 # G0 FIRST -- the COMPLETENESS assert, before any per-member check.
