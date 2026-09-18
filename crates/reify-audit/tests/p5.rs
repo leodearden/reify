@@ -121,6 +121,7 @@ mod tests {
             Pattern::PDsSentinel,
             Pattern::PDiag,
             Pattern::PDocCover,
+            Pattern::PDeliveredCheckPath,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -136,6 +137,7 @@ mod tests {
                 Pattern::PDsSentinel => {}
                 Pattern::PDiag => {}
                 Pattern::PDocCover => {}
+                Pattern::PDeliveredCheckPath => {}
             }
         }
 
@@ -155,6 +157,10 @@ mod tests {
                 table: "events".to_string(),
                 key: "k".to_string(),
             },
+            EvidenceRef::DeliveredCheck {
+                check_name: "c".to_string(),
+                paths: vec!["p".to_string()],
+            },
         ];
         for r in refs {
             match r {
@@ -162,6 +168,7 @@ mod tests {
                 EvidenceRef::Commit { sha: _, subject: _ } => {}
                 EvidenceRef::MetadataFiles { entries: _ } => {}
                 EvidenceRef::RunsDb { table: _, key: _ } => {}
+                EvidenceRef::DeliveredCheck { check_name: _, paths: _ } => {}
             }
         }
 

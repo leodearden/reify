@@ -240,6 +240,33 @@ pub enum Pattern {
     ///
     /// Reference: `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §(b) / leaf γ.
     PDocCover,
+    /// PDCHECK — `delivered_checks` dead-path lane: a non-terminal task's
+    /// `kind: grep` capability-check row whose pathspec no longer resolves
+    /// against the tracked-file set. TWO finding kinds, carried as a stable
+    /// summary prefix (PTODO's `kind`-as-prefix convention above) and split on
+    /// the row's `expect` polarity, because both readings of the runner's rc=1
+    /// on an empty pathspec are silent but they are opposite defects:
+    ///
+    /// - `delivered-check-unsatisfiable-path` (**High**) — `expect: present`
+    ///   and every path in the row absent. rc=1 reads as FAILED, so every
+    ///   dependent blocks forever at `DEP_CAPABILITY_NOT_DELIVERED`.
+    /// - `delivered-check-vacuous-absent-path` (**Medium**) — `expect: absent`
+    ///   and every path absent. The identical rc=1 reads as PASSED, so the
+    ///   check succeeds while asserting nothing.
+    ///
+    /// Quantified over the WHOLE row: a multi-`paths` row runs as ONE
+    /// `git grep -E -e <pattern> <ref> -- <paths...>`, an ANY-match, so one
+    /// dead path among live ones leaves the row satisfiable and yields no
+    /// finding. Rename-vs-delete changes only the repair hint and is carried as
+    /// [`EvidenceRef`], not as a third and fourth kind.
+    ///
+    /// **Opt-in only** (`is_some_and`, mirroring PDIAG/PDOCCOVER): the High
+    /// kind moves the process exit code, which is the High-severity count.
+    /// Reads `ls_files()` plus a read-only `.taskmaster/tasks/tasks.db`; never
+    /// contacts jcodemunch.
+    ///
+    /// Reference: `docs/architecture-audit/f-infra-design.md` §5.
+    PDeliveredCheckPath,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -253,6 +280,15 @@ pub enum EvidenceRef {
     Commit { sha: String, subject: String },
     /// One or more entries from a task's `metadata.files`.
     MetadataFiles { entries: Vec<String> },
+    /// One row of a task's `metadata.delivered_checks`, located by its `name`
+    /// — the handle a fixer needs to find the row — plus the `paths` pathspec
+    /// the row asserts over.
+    ///
+    /// Deliberately NOT [`EvidenceRef::MetadataFiles`], whose doc above pins
+    /// its meaning to "entries from a task's `metadata.files`": a
+    /// delivered_check row is a different thing with a different repair, and
+    /// collapsing the two would make the fixer guess which they were handed.
+    DeliveredCheck { check_name: String, paths: Vec<String> },
     /// A row in `data/orchestrator/runs.db`. `key` is a free-form locator
     /// (e.g. `"task_id=3242"`) — humans, not parsers, consume this.
     RunsDb { table: String, key: String },

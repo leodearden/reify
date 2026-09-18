@@ -1,6 +1,126 @@
-//! PDCHECK — `delivered_checks` dead-path lane.
+//! PDCHECK — the `delivered_checks` dead-path lane.
 //!
-//! (Step 1 lands the row-classifier tests only; the implementation follows.)
+//! A task's `metadata.delivered_checks` rows are the capability contract its
+//! dependents block on: the orchestrator runs each `kind: grep` row and gates
+//! the task's done-flip on the result. A row whose pathspec no longer resolves
+//! is therefore a latent outage, and WHICH outage depends on the row's
+//! `expect` polarity, because both readings of the runner's rc=1 are silent:
+//!
+//! - `expect: present` — rc=1 on an empty pathspec reads as FAILED, so every
+//!   dependent blocks forever at `DEP_CAPABILITY_NOT_DELIVERED`.
+//! - `expect: absent` — the identical rc=1 reads as PASSED, so the check
+//!   succeeds while asserting nothing.
+//!
+//! # The ANY-match quantifier
+//!
+//! A multi-`paths` row is run as ONE
+//! `git grep -E -e <pattern> <ref> -- <paths...>`, so it matches when ANY path
+//! matches; it is NOT a per-path conjunction. One dead path among live ones
+//! therefore leaves the row perfectly satisfiable. This lane consequently
+//! quantifies over the WHOLE row — every path must be absent — and yields at
+//! most one verdict per row. Quantifying per path instead would flag every
+//! multi-path row carrying a single stale entry and drown the real signal.
+//!
+//! That contract lives in dark-factory
+//! (`orchestrator/src/orchestrator/delivered_checks.py::_run_grep_check`) and
+//! is stated here because it cannot be re-derived from this tree, which parses
+//! `delivered_checks` nowhere else.
+
+use std::collections::HashSet;
+
+/// Wire spelling of the only `kind` this lane reads. `script` and `manual`
+/// rows carry no grep pathspec, so their `paths` assert nothing about path
+/// resolvability.
+const GREP_KIND: &str = "grep";
+const EXPECT_PRESENT: &str = "present";
+const EXPECT_ABSENT: &str = "absent";
+
+/// What is wrong with a row whose every path is dead. The two arms are the
+/// `expect`-polarity asymmetry described in the module doc — one is an outage,
+/// the other a silent hole — so they are different defects, not one defect at
+/// two severities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// `expect: present` against a wholly dead pathspec: rc=1 reads as FAILED
+    /// and blocks every dependent at mark-done.
+    Unsatisfiable,
+    /// `expect: absent` against a wholly dead pathspec: rc=1 reads as PASSED,
+    /// so the check succeeds while asserting nothing.
+    VacuousAbsent,
+}
+
+/// One `metadata.delivered_checks` row, holding only what this lane reads.
+///
+/// Parsed permissively: the producer of this JSON lives in another repo, so a
+/// missing, null or wrongly-typed field lands as `None` / empty rather than
+/// failing the row. Every such shape is inert at [`classify_row`], which is
+/// what keeps the lane from inventing a finding on a row it cannot read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveredCheckRow {
+    /// The row's `name` — the key diagnostic, and the handle a fixer needs to
+    /// locate the row inside the task's metadata.
+    pub name: String,
+    pub kind: Option<String>,
+    pub expect: Option<String>,
+    pub pattern: Option<String>,
+    pub paths: Vec<String>,
+}
+
+impl DeliveredCheckRow {
+    /// `None` only when `value` is not a JSON object — the one shape that is
+    /// not a row at all. Every other malformation is absorbed into a field.
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let obj = value.as_object()?;
+        let text = |key: &str| obj.get(key).and_then(|v| v.as_str()).map(str::to_string);
+        Some(Self {
+            name: text("name").unwrap_or_default(),
+            kind: text("kind"),
+            expect: text("expect"),
+            pattern: text("pattern"),
+            paths: obj
+                .get("paths")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+    }
+}
+
+/// The lane's whole predicate: one row against the tracked-file set.
+///
+/// `Option<Verdict>` rather than a collection because a finding is per ROW —
+/// see the ANY-match quantifier in the module doc. Path membership is decided
+/// by [`crate::ptodo::path_present_in_tracked`] rather than a bare
+/// `tracked.contains`, so a trailing-slash or DIRECTORY pathspec that still
+/// holds tracked files counts as present; sharing that predicate with PTODO's
+/// ζ lane is also what stops the two lanes' membership tests from drifting.
+pub fn classify_row(row: &DeliveredCheckRow, tracked: &HashSet<String>) -> Option<Verdict> {
+    if row.kind.as_deref() != Some(GREP_KIND) {
+        return None;
+    }
+    let verdict = match row.expect.as_deref() {
+        Some(EXPECT_PRESENT) => Verdict::Unsatisfiable,
+        Some(EXPECT_ABSENT) => Verdict::VacuousAbsent,
+        // An absent or unrecognised polarity says nothing about how the
+        // runner's rc=1 would be read, so there is no defect to name.
+        _ => return None,
+    };
+    // An EMPTY pathspec greps the whole tree, so it is never a dead-path row;
+    // and one live path satisfies the row under the ANY-match rule.
+    if row.paths.is_empty()
+        || row
+            .paths
+            .iter()
+            .any(|p| crate::ptodo::path_present_in_tracked(p, tracked))
+    {
+        return None;
+    }
+    Some(verdict)
+}
 
 #[cfg(test)]
 mod tests {

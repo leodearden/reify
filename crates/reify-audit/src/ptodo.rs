@@ -1409,7 +1409,14 @@ fn is_terminal_status(status: &str) -> bool {
 /// directory is never a member of the `git ls-files` set, yet
 /// `git log -1 -- <dir>` returns non-empty — without this guard, every
 /// directory citation would produce a false-positive finding.
-fn path_present_in_tracked(path: &str, tracked: &std::collections::HashSet<String>) -> bool {
+///
+/// `pub(crate)` because [`crate::pdcheck`] now depends on it for exactly that
+/// FP class over `delivered_checks[].paths`; sharing it keeps the two lanes'
+/// membership tests from drifting apart.
+pub(crate) fn path_present_in_tracked(
+    path: &str,
+    tracked: &std::collections::HashSet<String>,
+) -> bool {
     // Strip at most one trailing slash for both exact-match and prefix checks.
     let path = path.trim_end_matches('/');
     if tracked.contains(path) {
