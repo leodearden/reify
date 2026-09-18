@@ -362,4 +362,153 @@ assert "C8: diagnostics go to stderr, never stdout (malformed-XML case says some
     bash -c '[ -n "$1" ]' \
     _ "$EX_ERR"
 
+# ===========================================================================
+# Section D (leaf β) — the recording pass's inline manifest write.
+#   B1  a complete recording writes exactly the failing set + a tree-pinned sidecar
+#   B1b a zero-failure recording writes an EMPTY manifest, not an absent one
+#   B8  an UNCLEAN recording (killed / timed out) writes nothing
+#   B11 a FAIL-FAST recording writes nothing, at the same exit code 100
+#
+# HOW THESE STAY HERMETIC. Running the whole offline plan would build the
+# workspace and run npm. Instead each case takes the REAL nextest command
+# string verify.sh emits — byte for byte, from `--print-plan`, the faithful
+# oracle several suites already pin — and executes THAT with a stub `cargo`
+# first on PATH. The stub plants a chosen JUnit report and exits a chosen
+# code, so the fused write logic runs for real against controlled inputs.
+#
+# B11 IS THE HEADLINE. A fail-fast pass that stops after its first failure
+# ALSO exits 100, so the exit code alone cannot tell a truncated failed-set
+# from a complete one. B11 drives role=task (no --no-fail-fast) with the
+# IDENTICAL fixture and the IDENTICAL exit code 100 and asserts nothing is
+# written — proving the gate discriminates on fail-fast activity, not on the
+# exit code.
+# ===========================================================================
+echo ""
+echo "--- Section D (leaf β): recording-run manifest write-gate (B1/B1b/B8/B11) ---"
+
+STUB_BIN="$WORK/stub-bin"
+mkdir -p "$STUB_BIN"
+cat > "$STUB_BIN/cargo" <<'STUB_EOF'
+#!/usr/bin/env bash
+# Stub `cargo` for tests/infra/test_verify_confirm_failed.sh Section D only.
+# Plants a chosen JUnit report where nextest would have written one, then
+# exits a chosen code. Never invokes the real cargo.
+set -u
+mkdir -p "$(dirname "$REIFY_TEST_STUB_JUNIT_DEST")"
+if [ -n "${REIFY_TEST_STUB_JUNIT_SRC:-}" ]; then
+    cp "$REIFY_TEST_STUB_JUNIT_SRC" "$REIFY_TEST_STUB_JUNIT_DEST"
+fi
+exit "${REIFY_TEST_STUB_RC:-0}"
+STUB_EOF
+chmod +x "$STUB_BIN/cargo"
+
+CONFIRM_MANIFEST="$WORK/confirm-manifest-release.txt"
+CONFIRM_SIDECAR="$WORK/confirm-sidecar-release.json"
+CONFIRM_JUNIT="$WORK/junit/reify-confirm.xml"
+
+# run_recording <role> <stub-rc> <junit-fixture-or-empty> -> sets REC_RC.
+#
+# Resolves the plan with the confirm paths pointed at $WORK (so nothing writes
+# into the lane's target/), lifts out the --workspace nextest command, and
+# executes exactly that string with the stub cargo first on PATH.
+run_recording() {
+    local _role="$1" _stub_rc="$2" _fixture="$3"
+    local _plan _cmd
+    _plan="$(
+        DF_VERIFY_ROLE="$_role" \
+        REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$CONFIRM_MANIFEST" \
+        REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$CONFIRM_SIDECAR" \
+        REIFY_VERIFY_CONFIRM_JUNIT="$CONFIRM_JUNIT" \
+        bash "$VERIFY_SH" test --profile release --print-plan 2>/dev/null
+    )" || true
+    # First plain nextest line (the `if test -f gui/...` guarded gui pass is
+    # excluded — it is a different pass, and role=task narrows its release
+    # selector to `-p <crate>` rather than `--workspace`, so match on the
+    # subcommand rather than on the selector).
+    #
+    # `--print-plan` emits a PLACEHOLDER config path containing '<' and '>',
+    # which is a hermeticity feature of print mode (no temp file is created)
+    # but would parse as shell redirections here. Rewrite it to a scratch path;
+    # the stub cargo never reads it.
+    _cmd="$(printf '%s\n' "$_plan" | grep -E '(^| )cargo nextest run ' | grep -v '^if test ' | head -n1 || true)"
+    _cmd="$(printf '%s\n' "$_cmd" | sed "s#--config-file [^ ]*#--config-file $WORK/nextest-stub.toml#")"
+    if [ -z "$_cmd" ]; then
+        REC_RC=127
+        return 0
+    fi
+    rm -f "$CONFIRM_JUNIT"
+    REC_RC=0
+    (
+        cd "$REPO_ROOT"
+        PATH="$STUB_BIN:$PATH" \
+        REIFY_TEST_STUB_JUNIT_DEST="$CONFIRM_JUNIT" \
+        REIFY_TEST_STUB_JUNIT_SRC="$_fixture" \
+        REIFY_TEST_STUB_RC="$_stub_rc" \
+        bash -c "$_cmd"
+    ) >/dev/null 2>&1 || REC_RC=$?
+}
+
+# --- B1: a complete recording (rc=100, 2 failures) ---
+rm -f "$CONFIRM_MANIFEST" "$CONFIRM_SIDECAR"
+run_recording offline 100 "$FIX/a-two-failures.xml"
+
+assert "D1 (B1): a complete offline recording writes a manifest naming exactly the 2 failing bare IDs" \
+    bash -c '[ -f "$1" ] && [ "$(cat "$1")" = "tests::probe_fail_three
+tests::probe_fail_two" ]' \
+    _ "$CONFIRM_MANIFEST"
+
+assert "D2 (B1): the same recording stamps a confirm-owned sidecar whose tree_oid == git rev-parse HEAD:" \
+    bash -c '[ -f "$1" ] && [ "$(sed -n "s/.*\"tree_oid\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -n1)" = "$2" ]' \
+    _ "$CONFIRM_SIDECAR" "$(git -C "$REPO_ROOT" rev-parse HEAD:)"
+
+assert "D3 (B1): the recording pass re-exits with the nextest pass's OWN exit code (100), so a red pass stays red" \
+    test "$REC_RC" -eq 100
+
+# --- B1b: a zero-failure recording writes an EMPTY manifest, not an absent one ---
+rm -f "$CONFIRM_MANIFEST" "$CONFIRM_SIDECAR"
+run_recording offline 0 "$FIX/f-all-pass.xml"
+
+assert "D4 (B1b): a zero-failure recording writes an EMPTY manifest (present, not absent — absent would mean 'never recorded')" \
+    bash -c '[ -f "$1" ] && [ ! -s "$1" ]' \
+    _ "$CONFIRM_MANIFEST"
+
+assert "D5 (B1b): a green recording still exits 0" \
+    test "$REC_RC" -eq 0
+
+# --- B8: an UNCLEAN recording writes nothing and preserves what was there ---
+PRIOR_CONTENT='tests::previously_recorded'
+for _unclean_rc in 124 137; do
+    printf '%s\n' "$PRIOR_CONTENT" > "$CONFIRM_MANIFEST"
+    run_recording offline "$_unclean_rc" "$FIX/a-two-failures.xml"
+
+    assert "D6 (B8): an unclean recording (exit $_unclean_rc) leaves the pre-existing manifest byte-unchanged" \
+        bash -c '[ "$(cat "$1")" = "$2" ]' \
+        _ "$CONFIRM_MANIFEST" "$PRIOR_CONTENT"
+
+    rm -f "$CONFIRM_MANIFEST"
+    run_recording offline "$_unclean_rc" "$FIX/a-two-failures.xml"
+
+    assert "D7 (B8): an unclean recording (exit $_unclean_rc) with no prior manifest writes none" \
+        bash -c '[ ! -f "$1" ]' \
+        _ "$CONFIRM_MANIFEST"
+done
+
+# --- B11: the fail-fast write-gate, the headline assertion ---
+printf '%s\n' "$PRIOR_CONTENT" > "$CONFIRM_MANIFEST"
+run_recording task 100 "$FIX/a-two-failures.xml"
+
+assert "D8 (B11): with --no-fail-fast NOT active, the IDENTICAL fixture at the IDENTICAL exit code 100 leaves the pre-existing manifest byte-unchanged" \
+    bash -c '[ "$(cat "$1")" = "$2" ]' \
+    _ "$CONFIRM_MANIFEST" "$PRIOR_CONTENT"
+
+rm -f "$CONFIRM_MANIFEST" "$CONFIRM_SIDECAR"
+run_recording task 100 "$FIX/a-two-failures.xml"
+
+assert "D9 (B11): with --no-fail-fast NOT active, no manifest is written at all (a truncated failed-set is never recorded as if complete)" \
+    bash -c '[ ! -f "$1" ]' \
+    _ "$CONFIRM_MANIFEST"
+
+assert "D10 (B11): the fail-fast recording still propagates its own exit code (100) unchanged" \
+    test "$REC_RC" -eq 100
+
 test_summary
