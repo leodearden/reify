@@ -3278,12 +3278,22 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-eval/src/relate_solve.rs` (the zero-auto static-
     /// verification arm of `solve_scopes`, DIC α).
     ///
-    /// Canonical message form:
-    /// `"relate: 2 relations not satisfied by the subs' fixed \
-    /// placements: concentric(bush.bore_axis, plate.boss_axis) off by 30 mm; \
-    /// flush(bush.seat_plane, plate.top_plane) off by 5 mm"` — ONE aggregated
-    /// Error per relate block naming the full violated set, never one per
-    /// relation.
+    /// Canonical message form — the real text of the `dic_relate_static_violated`
+    /// fixture's Error, pasted from
+    /// `verify_static_scope_aggregates_violations_into_one_error`:
+    /// `"relate: 2 relations not satisfied by the subs' fixed placements: \
+    /// `concentric` requires bush.bore_axis and plate.boss_axis coincident \
+    /// (0 mm apart) — off by 30 mm; `flush` requires bush.seat_plane and \
+    /// plate.top_plane coplanar (flush, 0 mm offset) — off by 5 mm"` — ONE
+    /// aggregated Error per relate block naming the full violated set, never one
+    /// per relation. Each item names the relation, its operands, the geometric
+    /// demand, and the measured MAGNITUDE in the unit the residual row carries
+    /// (mm / degrees / a bare number).
+    ///
+    /// Only the header, up to the colon, is pinned by test
+    /// (`verify_static_scope_headers_agree_in_number_at_both_sites`); the per-item
+    /// tail here is illustrative. An earlier version of this example showed a
+    /// wording the code never emitted.
     ///
     /// Emitted as `Severity::Error` when a relate scope has ZERO `at auto` subs
     /// — so there is nothing to solve for — and at least one of its relations
@@ -3313,17 +3323,27 @@ pub enum DiagnosticCode {
     /// verification arm of `solve_scopes`, DIC α).
     ///
     /// Canonical message form:
-    /// `"relate: 1 relation could not be statically verified: \
-    /// tangent(a.axis, b.plane, 4mm) — no residual model for these operand \
-    /// kinds"` — ONE aggregated Warning per relate block naming the full
-    /// unverifiable set.
+    /// `"relate: 1 relation could not be statically verified: `tangent` on \
+    /// a.axis and b.plane could not be checked: there is no residual model for \
+    /// `tangent` over these operand kinds"` — ONE aggregated Warning per relate
+    /// block naming the full unverifiable set. Each item carries the REASON: an
+    /// undecided relation's whole value to a reader is why it could not be
+    /// decided.
+    ///
+    /// Only the header, up to the colon, is pinned by test
+    /// (`verify_static_scope_headers_agree_in_number_at_both_sites`); the per-item
+    /// tail here is illustrative. An earlier version of this example showed a
+    /// wording the code never emitted.
     ///
     /// Emitted as `Severity::Warning` when a zero-auto relate scope carries a
     /// relation whose satisfaction this arm cannot DECIDE, rather than one it
     /// decided negatively. Two sources:
-    /// 1. The relation contributes no residual rows at all — an uncurated
-    ///    relation name, an operand shape with no residual model, or a
-    ///    `Value::Undef` / unrealized operand datum.
+    /// 1. The relation was not MEASURED — no residual model covers its
+    ///    name/operand-kind combination, an operand did not realize
+    ///    (`Value::Undef` / absent), or it carries fewer than two realized sub
+    ///    datums to compare (the `ground(sub)`/`fix(sub)` desugar's `self.frame`
+    ///    anchor is the reachable case). The message says WHICH; the ordered arm
+    ///    list lives with the code, in `verify_static_scope`.
     /// 2. An operand's sub carries a concrete `at <pose>` placement. Realized
     ///    datums are keyed by `(structure, member)` and are the structure's LOCAL
     ///    datums in its OWN identity frame — a declared sub pose is never

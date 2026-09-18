@@ -2759,10 +2759,14 @@ structure PerpendicularScope {
     /// different verb forms" — pinning only the broken site lets the other drift
     /// back in unobserved.
     ///
-    /// The expected strings are the canonical message forms documented on
-    /// [`DiagnosticCode::RelateStaticViolated`] and
-    /// [`DiagnosticCode::RelateStaticUnverifiable`], so this pins the code TO the
-    /// doc rather than inventing a third wording.
+    /// The expected strings are the HEADER PREFIXES of the canonical message forms
+    /// documented on [`DiagnosticCode::RelateStaticViolated`] and
+    /// [`DiagnosticCode::RelateStaticUnverifiable`], so no third wording is
+    /// invented here. What is pinned is ONLY that prefix, up to the colon — the
+    /// per-item tail those doc examples go on to show is not under test. Saying so
+    /// is the point: the earlier claim that this "pins the code TO the doc" was
+    /// read as a doc↔code binding, and under it BOTH examples drifted from the
+    /// emitted text and stayed stale until a reader compared them by hand.
     #[test]
     fn verify_static_scope_headers_agree_in_number_at_both_sites() {
         // Each case below renders exactly one aggregate, so the sole message IS
