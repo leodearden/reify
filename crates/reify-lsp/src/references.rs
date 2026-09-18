@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use reify_ast::{
-    ConnectDecl, Declaration, Expr, ExprKind, FieldSource, FnDef, ForallConnectBody,
+    ConnectDecl, Declaration, DefaultDecl, Expr, ExprKind, FieldSource, FnDef, ForallConnectBody,
     ForallConstraintBody, ImportKind, KeyedSubMemberEntry, MAX_MEMBER_NESTING_DEPTH, MemberDecl,
     ParsedModule, StringPart, SubDecl, TraitBoundRef, TypeExpr, TypeExprKind, TypeParamDecl,
     VariantPayload, WhereClause,
@@ -1492,14 +1492,24 @@ fn collect_decl_name_uses_in_decl(
 ) {
     match decl {
         Declaration::Structure(s) => {
-            collect_type_param_uses(&s.type_params, source, name, out);
-            collect_trait_bound_uses(&s.trait_bounds, source, name, out);
-            collect_decl_name_uses_in_members(&s.members, source, name, 0, out);
+            collect_entity_body_uses(
+                &s.type_params,
+                &s.trait_bounds,
+                &s.members,
+                source,
+                name,
+                out,
+            );
         }
         Declaration::Occurrence(o) => {
-            collect_type_param_uses(&o.type_params, source, name, out);
-            collect_trait_bound_uses(&o.trait_bounds, source, name, out);
-            collect_decl_name_uses_in_members(&o.members, source, name, 0, out);
+            collect_entity_body_uses(
+                &o.type_params,
+                &o.trait_bounds,
+                &o.members,
+                source,
+                name,
+                out,
+            );
         }
         // `TraitDecl.refinements` is a `Vec<SpannedIdent>`, the one type
         // reference in the AST that already carries its own exact name-token
@@ -1513,13 +1523,39 @@ fn collect_decl_name_uses_in_decl(
             }
             collect_decl_name_uses_in_members(&t.members, source, name, 0, out);
         }
+        // A purpose has THREE child regions, not one. `members` is the obvious
+        // one; `structures` (a `structure def` lexically nested in the body,
+        // kept out of `members` by task 4639) and `defaults` (kept out by task
+        // 4496) are sibling vecs that no member walk can reach, which is why
+        // `entity_members` — whose contract is a single `&[MemberDecl]` — is
+        // NOT the place to close this and is deliberately left alone.
+        //
         // `PurposeParam.entity_kind` is deliberately not a use site: it is an
         // entity-KIND keyword (`Structure`, `Occurrence`), not a reference to a
         // declaration, so collecting it would let a rename rewrite unrelated
-        // text. `PurposeDef.structures` / `.defaults` are reached separately.
+        // text.
         Declaration::Purpose(p) => {
             collect_type_param_uses(&p.type_params, source, name, out);
             collect_decl_name_uses_in_members(&p.members, source, name, 0, out);
+            for default in &p.defaults {
+                collect_default_decl_uses(default, source, name, out);
+            }
+            // A purpose-nested structure is a first-class entity body — the
+            // compiler registers its name in the MODULE-level structure
+            // namespace and compiles it into the same template table as a
+            // top-level one (pre_pass.rs, entities_phase.rs) — so its body is
+            // walked exactly like a top-level structure's, sharing one home
+            // rather than a second copy that could drift.
+            for nested in &p.structures {
+                collect_entity_body_uses(
+                    &nested.type_params,
+                    &nested.trait_bounds,
+                    &nested.members,
+                    source,
+                    name,
+                    out,
+                );
+            }
         }
         Declaration::Enum(e) => {
             collect_type_param_uses(&e.type_params, source, name, out);
@@ -1571,10 +1607,7 @@ fn collect_decl_name_uses_in_decl(
             collect_type_param_uses(&a.type_params, source, name, out);
             collect_type_name_uses(&a.type_expr, source, name, out);
         }
-        Declaration::Default(d) => {
-            collect_type_name_uses(&d.type_expr, source, name, out);
-            collect_type_name_uses_in_expr(&d.value, source, name, out);
-        }
+        Declaration::Default(d) => collect_default_decl_uses(d, source, name, out),
         Declaration::Joint(j) => {
             collect_type_param_uses(&j.type_params, source, name, out);
             for param in &j.params {
@@ -1600,6 +1633,37 @@ fn collect_decl_name_uses_in_decl(
         // names a module path, never a declaration.
         Declaration::Import(_) | Declaration::Module(_) => {}
     }
+}
+
+/// Push every reference to `name` inside an entity body — its type parameters'
+/// defaults, its trait bounds and its members.
+///
+/// Takes the three slices rather than a declaration, because the three entity
+/// bodies that share this shape are three distinct types: `StructureDef`,
+/// `OccurrenceDef`, and a `StructureDef` nested in a `PurposeDef`. One home for
+/// the walk keeps a purpose-nested structure from being walked less thoroughly
+/// than a top-level one, which is the shape of gap #6539 exists to close.
+fn collect_entity_body_uses(
+    type_params: &[TypeParamDecl],
+    trait_bounds: &[TraitBoundRef],
+    members: &[MemberDecl],
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    collect_type_param_uses(type_params, source, name, out);
+    collect_trait_bound_uses(trait_bounds, source, name, out);
+    collect_decl_name_uses_in_members(members, source, name, 0, out);
+}
+
+/// Push every reference to `name` in an ambient-default declaration: the type it
+/// applies to and its value expression.
+///
+/// Shared by the top-level `Declaration::Default` arm and `PurposeDef.defaults`,
+/// which are the same `DefaultDecl` at the two positions the grammar allows.
+fn collect_default_decl_uses(d: &DefaultDecl, source: &str, name: &str, out: &mut Vec<SourceSpan>) {
+    collect_type_name_uses(&d.type_expr, source, name, out);
+    collect_type_name_uses_in_expr(&d.value, source, name, out);
 }
 
 /// Push every reference to `name` inside a function definition: its type
