@@ -514,4 +514,101 @@ assert "D9 (B11): with --no-fail-fast NOT active, no manifest is written at all 
 assert "D10 (B11): the fail-fast recording still propagates its own exit code (100) unchanged" \
     test "$REC_RC" -eq 100
 
+# ===========================================================================
+# Section E (leaf γ) — the --confirm-failed flag surface.
+#
+# THIS IS THE LIVE DEFECT. dark-factory's offline lane already calls
+# `run-offline-deep.sh --test-threads=1 --confirm-failed` in production; today
+# verify.sh's parser falls through to its unknown-argument arm, dumps usage to
+# stderr and exits 64, so every confirmation call the lane makes fails.
+#
+# E1/E4 run the real entry point with a `timeout` guard. The flag's own code
+# path must return promptly on a vacuous manifest (nothing recorded → nothing
+# to confirm), so a hang here is itself the failure: without the guard a
+# regression that let --confirm-failed fall through to a real test run would
+# stall this suite for hours instead of reporting.
+# ===========================================================================
+echo ""
+echo "--- Section E (leaf γ): --confirm-failed flag surface ---"
+
+# run_verify <timeout-secs> <args...> -> sets V_RC and V_OUT (streams MERGED,
+# exactly as dark-factory captures them).
+run_verify() {
+    local _timeout="$1"; shift
+    V_RC=0
+    V_OUT="$(cd "$REPO_ROOT" && timeout "$_timeout" bash "$VERIFY_SH" "$@" 2>&1)" || V_RC=$?
+}
+
+# Point the confirm state at an empty scratch dir so these invocations resolve
+# a vacuous (absent) manifest and return immediately without running anything.
+export REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG="$WORK/absent-debug.txt"
+export REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE="$WORK/absent-release.txt"
+export REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG="$WORK/absent-debug.json"
+export REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE="$WORK/absent-release.json"
+export REIFY_VERIFY_CONFIRM_JUNIT="$WORK/absent-junit.xml"
+
+run_verify 120 test --confirm-failed
+assert "E1: 'verify.sh test --confirm-failed' is ACCEPTED (does not exit 64 — the live lane defect)" \
+    bash -c '[ "$1" -ne 64 ]' \
+    _ "$V_RC"
+
+assert "E2: 'test --confirm-failed' output contains no 'unknown argument'" \
+    bash -c '! printf "%s\n" "$1" | grep -q "unknown argument"' \
+    _ "$V_OUT"
+
+assert "E3: 'test --confirm-failed' output does not dump the usage text (no 'Usage:' / 'Options:')" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "^(Usage|Options):"' \
+    _ "$V_OUT"
+
+assert "E4: 'test --confirm-failed' returned promptly (not killed by the 120s guard — it must not fall through to a real test run)" \
+    bash -c '[ "$1" -ne 124 ] && [ "$1" -ne 137 ]' \
+    _ "$V_RC"
+
+run_verify 120 all --confirm-failed
+assert "E5: 'verify.sh all --confirm-failed' is ACCEPTED (valid for action in {test, all})" \
+    bash -c '[ "$1" -ne 64 ]' \
+    _ "$V_RC"
+
+# The flag narrows a previously-recorded TEST failure set, so it is meaningless
+# for the single-pass lint/typecheck actions. Rejected in the same strict style
+# --profile and --scope use for an invalid value.
+for _bad_action in lint typecheck; do
+    run_verify 120 "$_bad_action" --confirm-failed
+    assert "E6/$_bad_action: 'verify.sh $_bad_action --confirm-failed' exits 64 (valid only for action in {test, all})" \
+        bash -c '[ "$1" -eq 64 ]' \
+        _ "$V_RC"
+done
+
+run_verify 60 --help
+assert "E7: --help documents --confirm-failed" \
+    bash -c 'printf "%s\n" "$1" | grep -q -- "--confirm-failed"' \
+    _ "$V_OUT"
+
+# E8 catches a specific, silent regression: usage() is `sed -n '<start>,<end>p'`
+# over this script's own header, so INSERTING header lines without widening the
+# range truncates the usage text from the bottom — the new flag would be
+# documented while an existing tail line silently disappeared. The frozen
+# string below is the header's last usage line as of task 7423; if a future
+# header edit is meant to move the window's end, update this constant
+# deliberately rather than letting the truncation pass unnoticed.
+USAGE_LAST_LINE='    (else cargo uses its own per-process job pool). Role→FIFO selection:'
+assert "E8: the usage window is not truncated — its frozen last line is still the LAST line of --help" \
+    bash -c '[ "$(printf "%s\n" "$1" | tail -n1)" = "$2" ]' \
+    _ "$V_OUT" "$USAGE_LAST_LINE"
+
+# E9 resolves PRD §11's open question. --confirm-failed self-drives the
+# REIFY_VERIFY_RETRY_* pipeline, so an externally-set REIFY_VERIFY_RETRY_SCOPE
+# is two callers driving one consumption pipeline with different subsets.
+# Refuse loudly rather than invent a silent precedence between them.
+V_RC=0
+V_OUT="$(cd "$REPO_ROOT" && REIFY_VERIFY_RETRY_SCOPE=failed_only timeout 120 bash "$VERIFY_SH" test --confirm-failed 2>&1)" || V_RC=$?
+
+assert "E9: --confirm-failed together with an externally-set REIFY_VERIFY_RETRY_SCOPE exits 64 (ambiguous double-drive, refused loudly)" \
+    bash -c '[ "$1" -eq 64 ]' \
+    _ "$V_RC"
+
+assert "E9b: that refusal says so on a 'verify.sh: ERROR' line naming the conflicting variable" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^verify\.sh: ERROR\b.*REIFY_VERIFY_RETRY_SCOPE"' \
+    _ "$V_OUT"
+
 test_summary
