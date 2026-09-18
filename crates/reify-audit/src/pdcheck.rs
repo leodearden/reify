@@ -41,7 +41,7 @@ const EXPECT_ABSENT: &str = "absent";
 /// the other a silent hole — so they are different defects, not one defect at
 /// two severities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
+enum Verdict {
     /// `expect: present` against a wholly dead pathspec: rc=1 reads as FAILED
     /// and blocks every dependent at mark-done.
     Unsatisfiable,
@@ -77,20 +77,20 @@ impl Verdict {
 /// failing the row. Every such shape is inert at [`classify_row`], which is
 /// what keeps the lane from inventing a finding on a row it cannot read.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveredCheckRow {
+struct DeliveredCheckRow {
     /// The row's `name` — the key diagnostic, and the handle a fixer needs to
     /// locate the row inside the task's metadata.
-    pub name: String,
-    pub kind: Option<String>,
-    pub expect: Option<String>,
-    pub pattern: Option<String>,
-    pub paths: Vec<String>,
+    name: String,
+    kind: Option<String>,
+    expect: Option<String>,
+    pattern: Option<String>,
+    paths: Vec<String>,
 }
 
 impl DeliveredCheckRow {
     /// `None` only when `value` is not a JSON object — the one shape that is
     /// not a row at all. Every other malformation is absorbed into a field.
-    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+    fn from_json(value: &serde_json::Value) -> Option<Self> {
         let obj = value.as_object()?;
         let text = |key: &str| obj.get(key).and_then(|v| v.as_str()).map(str::to_string);
         Some(Self {
@@ -119,7 +119,7 @@ impl DeliveredCheckRow {
 /// `tracked.contains`, so a trailing-slash or DIRECTORY pathspec that still
 /// holds tracked files counts as present; sharing that predicate with PTODO's
 /// ζ lane is also what stops the two lanes' membership tests from drifting.
-pub fn classify_row(row: &DeliveredCheckRow, tracked: &HashSet<String>) -> Option<Verdict> {
+fn classify_row(row: &DeliveredCheckRow, tracked: &HashSet<String>) -> Option<Verdict> {
     if row.kind.as_deref() != Some(GREP_KIND) {
         return None;
     }
@@ -313,10 +313,11 @@ fn build_finding(id: i64, row: &DeliveredCheckRow, verdict: Verdict, dead: &[Dea
         severity: verdict.severity(),
         task_id: id.to_string(),
         summary: format!(
-            "{kind}: task #{id} check '{name}' (expect={polarity}) names no tracked path: {paths}{hint}",
+            "{kind}: task #{id} check '{name}' (expect={polarity}, pattern '{pattern}') names no tracked path: {paths}{hint}",
             kind = verdict.kind(),
             name = row.name,
             polarity = row.expect.as_deref().unwrap_or_default(),
+            pattern = row.pattern.as_deref().unwrap_or_default(),
             paths = row.paths.join(", "),
         ),
         evidence,

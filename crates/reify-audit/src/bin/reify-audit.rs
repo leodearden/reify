@@ -8,7 +8,7 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDIAG|PDOCCOVER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
+//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDIAG|PDOCCOVER|PDCHECK`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
 //!   `PDIAG` is the INV-SF-6 codes-mandatory ratchet — opt-in only, and one of
 //!   the restricted detectors that move the exit code (see
 //!   `docs/notes/diagnostic-severity-policy.md`).
@@ -77,7 +77,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDIAG|PDOCCOVER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDIAG|PDOCCOVER|PDCHECK Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
     let _ = writeln!(out, "                           PDIAG: INV-SF-6 codes-mandatory ratchet (opt-in; see docs/notes/diagnostic-severity-policy.md)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
@@ -355,10 +355,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     if !matches!(
                         tok,
                         "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" | "PTODO"
-                            | "PDSSENTINEL" | "PDIAG" | "PDOCCOVER"
+                            | "PDSSENTINEL" | "PDIAG" | "PDOCCOVER" | "PDCHECK"
                     ) {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, PDSSENTINEL, PDIAG, or PDOCCOVER",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, PDSSENTINEL, PDIAG, PDOCCOVER, or PDCHECK",
                             tok
                         ));
                     }
@@ -652,6 +652,26 @@ fn run_pdoccover(args: &Args) -> bool {
     args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDOCCOVER"))
 }
 
+/// Opt-in dispatch predicate for PDCHECK (task #7550): true only when
+/// `PDCHECK` is in the comma-separated `--pattern` set.
+///
+/// `is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER/PDIAG/PDOCCOVER — NOT the
+/// `is_none_or` default-sweep shape P1/P2/P5/PTODO use. The shape is otherwise
+/// indistinguishable from an oversight, so: `delivered-check-unsatisfiable-path`
+/// is High by design (a dead `expect: present` pathspec blocks every dependent
+/// forever at mark-done, which IS the gate), the process exit code is the
+/// High-severity count (see `high_severity_exit_code`), and the no-`--pattern`
+/// default sweep is what `scripts/reify-audit-predone-wrapper.sh` and the
+/// /audit skill run — so a High-capable detector there would turn both non-zero
+/// the moment any task's check row went stale.
+///
+/// Reads the tracked-file list via `ls_files` plus a read-only
+/// `.taskmaster/tasks/tasks.db`, never jcodemunch — hence deliberately absent
+/// from `needs_jcodemunch` and `JCODEMUNCH_BACKED`.
+fn run_pdcheck(args: &Args) -> bool {
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDCHECK"))
+}
+
 // -----------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------
@@ -900,6 +920,13 @@ fn main() -> ExitCode {
         let run_pdoccover = run_pdoccover(&args);
         if run_pdoccover {
             all.extend(reify_audit::pdoccover::check(&ctx));
+        }
+        // PDCHECK delivered_checks dead-path lane: `ls_files` plus a read-only
+        // open of .taskmaster/tasks/tasks.db, no jcodemunch. OPT-IN — see
+        // `run_pdcheck` for why a High-capable detector may not join the
+        // default sweep. Degrades fail-soft when that DB is absent.
+        if run_pdcheck(&args) {
+            all.extend(reify_audit::pdcheck::check(&ctx));
         }
         all
     };
