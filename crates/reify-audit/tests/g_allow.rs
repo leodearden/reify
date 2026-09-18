@@ -42,6 +42,8 @@
 //!
 //! None can notice another going vacuous. Retire them together or not at all.
 
+use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Output};
 
 use reify_test_support::run_orphan_audit;
@@ -482,36 +484,49 @@ fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, 
     common::git_env::poison_with_hook_git_env(&mut poisoned_cmd, &decoy);
 
     // Premise: `audit_command` returns an ALREADY-sanitized command (its
-    // three `env_remove`s recorded as `(key, None)`), so the poison just
-    // applied above is layered ON TOP of that sanitize. std's `CommandEnv` is
-    // one map keyed by var name, so the later `.env(..)` call wins over the
-    // earlier `.env_remove(..)` — assert that here rather than leave the
-    // reader to derive it from std's docs. Filtering `get_envs()` to `Some`
-    // entries and checking each points inside `decoy`'s tempdir avoids a
-    // fourth copy of the GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE list, whose one
-    // home is `common::git_env::hook_git_env`.
-    let decoy_root = decoy.work_tree().to_string_lossy().into_owned();
-    let poisoned_values: Vec<(String, String)> = poisoned_cmd
+    // `env_remove`s recorded as `(key, None)`), so the poison just applied
+    // above is layered ON TOP of that sanitize. std's `CommandEnv` is one map
+    // keyed by var name, so the later `.env(..)` call wins over the earlier
+    // `.env_remove(..)` — assert that here rather than leave the reader to
+    // derive it from std's docs.
+    //
+    // Scoped to `reify_audit::git_env::REPO_REDIRECT_VARS` MEMBERSHIP, not to
+    // every `Some(..)` entry on `poisoned_cmd`: `audit_command`'s documented
+    // contract is only that it applies `sanitize`, never that it sets no env
+    // var of its own, so a future legitimate `.env(..)` in
+    // `build_audit_command` (an `LC_ALL`, a `REIFY_*` knob, an explicit
+    // `PATH`) must not be blamed on this poison. This filters `get_envs()`
+    // rather than iterating `REPO_REDIRECT_VARS` and requiring each member
+    // present: that set is wider than what the poison actually applies —
+    // `GIT_OBJECT_DIRECTORY` is a redirect var `sanitize` removes but
+    // `poison_with_hook_git_env` never sets — so requiring every member to be
+    // `Some(..)` here would fail on it. Filtering also avoids a fourth copy of
+    // the GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE list, whose one home is
+    // `common::git_env::hook_git_env`. `Path::starts_with`, not a string
+    // prefix, so a sibling tempdir named `<decoy>-x` cannot satisfy it.
+    let decoy_root = decoy.work_tree();
+    let poisoned_redirect_vars: Vec<(String, PathBuf)> = poisoned_cmd
         .get_envs()
         .filter_map(|(name, value)| {
-            value.map(|v| {
-                (
-                    name.to_string_lossy().into_owned(),
-                    v.to_string_lossy().into_owned(),
-                )
-            })
+            let is_redirect_var = reify_audit::git_env::REPO_REDIRECT_VARS
+                .iter()
+                .any(|redirect| OsStr::new(redirect) == name);
+            if !is_redirect_var {
+                return None;
+            }
+            value.map(|v| (name.to_string_lossy().into_owned(), PathBuf::from(v)))
         })
         .collect();
     assert!(
-        !poisoned_values.is_empty(),
-        "poisoning a command audit_command already sanitized left no Some(..) \
-         env var at all on poisoned_cmd — the poison did not survive being \
-         layered onto the sanitize, so neither run below would demonstrate \
-         anything"
+        !poisoned_redirect_vars.is_empty(),
+        "poisoning a command audit_command already sanitized left no \
+         Some(..) value for any REPO_REDIRECT_VARS member on poisoned_cmd — \
+         the poison did not survive being layered onto the sanitize, so \
+         neither run below would demonstrate anything"
     );
-    for (name, value) in &poisoned_values {
+    for (name, value) in &poisoned_redirect_vars {
         assert!(
-            value.starts_with(decoy_root.as_str()),
+            value.starts_with(decoy_root),
             "poisoned env var {name} = {value:?} does not point inside the \
              decoy repo {decoy_root:?} — poison_with_hook_git_env's env(..) \
              calls did not win over audit_command's earlier env_remove(..) \
