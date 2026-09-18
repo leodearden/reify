@@ -463,3 +463,89 @@ fn assert_chain_over_an_unindexed_collection_is_refused(source: &str) {
          `vents.outlet` names no instance that exists"
     );
 }
+
+/// A keyed sub's element name is serialized as `vents["a.b"]`, so deciding an
+/// element's SHAPE by scanning that string for a `.` misreads a key that
+/// happens to contain one as an already-dotted port reference and skips
+/// inference.
+///
+/// The consequence is not a missing connection but a phantom one: the endpoint
+/// `vents["a.b"]` names no port, and the compat constraint over it reports
+/// itself satisfied. So assert the endpoint STRINGS — an errors-only
+/// assertion passes today and would pin the phantom.
+#[test]
+fn chain_element_keyed_by_a_key_containing_a_dot_still_infers() {
+    let source = r#"
+trait Air { param d : Length }
+occurrence def Vent {
+    param size : Length = 4mm
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+}
+occurrence def Hub {
+    port feed : in Air { param d : Length = 5mm }
+    port vent : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : Keyed<Vent> { "a.b" => { size = 5mm } }
+    sub hub = Hub()
+    chain vents["a.b"] -> hub
+}
+"#;
+
+    let module = compile_source(source);
+    assert_no_error_diagnostics(&module.diagnostics, "chain desugaring");
+
+    let s = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    let endpoints: Vec<(&str, &str)> = s
+        .connections
+        .iter()
+        .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+        .collect();
+    assert_eq!(endpoints, vec![(r#"vents["a.b"].outlet"#, "hub.feed")]);
+}
+
+/// An ad-hoc selector is not a shape §6.2 inference can resolve, so the
+/// element must be handed back untouched and diagnosed by the `connect` path
+/// in its own words — `undefined port 'a'`, the same thing plain `connect`
+/// says about this source today.
+///
+/// What it must NOT produce is `invalid port reference in connect statement`:
+/// that fires because inference wraps the selector in a `MemberAccess` its own
+/// serializer cannot read back, so the compiler ends up diagnosing an
+/// expression it synthesized rather than the one the author wrote.
+///
+/// Scope bound: sub-name selectors are already an error under plain `connect`,
+/// so this is a diagnostic-quality fix, not the restoration of a working shape.
+#[test]
+fn chain_element_with_an_ad_hoc_selector_is_handed_back_verbatim() {
+    let source = r#"
+trait Air { param d : Length }
+occurrence def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub a = Vent()
+    sub b = Vent()
+    chain a@face(top_surface) -> b
+}
+"#;
+
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| d.message.contains("'a'")),
+        "the selector's own element should be named; got: {:?}",
+        errors
+    );
+    assert_no_diagnostic(
+        &module.diagnostics,
+        Severity::Error,
+        "invalid port reference",
+    );
+}
