@@ -44,14 +44,23 @@ wholesale.
     "probes": [
         {
             "capability": "<human name for the capability being probed>",
-            "probe_kind": "grammar" | "check" | "ir",
+            "probe_kind": "grammar" | "check" | "ir" | "value",
             "fixture": "<repo-relative path to the .ri fixture file>",
             "expected": {
                 "observation": "present" | "absent",
                 "match": {
                     "exit_code": <int>,          // optional
                     "stderr_contains": "<str>",  // optional
-                    "stdout_contains": "<str>"   // optional
+                    "stdout_contains": "<str>",  // optional
+
+                    // value kind ONLY — required there, rejected elsewhere
+                    "stdout_value": {
+                        "pattern": "<regex with >=1 capture group>",  // required
+                        "group": <int|str>,      // optional, default 1
+                        "min": <number>,         // optional, inclusive
+                        "max": <number>,         // optional, inclusive
+                        "finite": <bool>         // optional
+                    }
                 }
             }
         }
@@ -59,9 +68,10 @@ wholesale.
 }
 ```
 
-**All `match` fields are optional.** An empty `match: {}` object means "no
-specific criterion" (used for grammar probes, where observation is determined
-by exit code alone).
+**All `match` fields are optional except on a `value` probe.** An empty
+`match: {}` object means "no specific criterion" (used for grammar probes, where
+observation is determined by exit code alone).  A `value` probe is the one kind
+with a mandatory predicate — see [`match` predicate semantics](#match-predicate-semantics).
 
 ## Probe kinds
 
@@ -70,6 +80,25 @@ by exit code alone).
 | `grammar` | `tree-sitter parse --quiet <fixture>` (CWD = `tree-sitter-reify/`) | exit 0 → **PRESENT** (no parse errors); exit 1 with `(ERROR` in output → **ABSENT**; "Failed to load language" in stderr → **HARNESS ERROR** |
 | `check` | `reify check <fixture>` | `match` predicate satisfied → **PRESENT**; predicate not satisfied → **ABSENT** |
 | `ir` | `reify eval <fixture>` (eval-error proxy) | exit 0 → **ABSENT** (sound by determinism); exit ≠ 0 with asserted `stderr_contains` signature → **PRESENT**; exit ≠ 0 without signature → **INDETERMINATE** → UNPROVABLE |
+| `value` | `reify eval <fixture>` (same argv as `ir` — the kind names the observation model, not the command) | exit 0 and the `stdout_value` capture satisfies the constraint → **PRESENT**; exit 0 otherwise → **ABSENT**; exit ≠ 0 → **INDETERMINATE** → UNPROVABLE |
+
+`value` is asymmetric the opposite way from `ir`. A non-zero exit means no value
+was produced, so "the capability is absent" and "the fixture or harness is
+broken" are indistinguishable — answering ABSENT there would manufacture a
+confident negative finding out of a broken probe.
+
+### Why `value` exists (task #6876)
+
+`ir` is **exit-code-only on the clean branch**: it returns ABSENT on exit 0
+*before consulting `match` at all*. So a premise of the shape "eval exits 0 **and**
+prints a finite, in-range frequency", bound as `ir` + `observation: absent`, is
+vacuous with respect to the value half — it PASSes on a fixture that printed `0`
+or `undef`, and there was no way to state the other half at all.
+
+`fixtures/value_clean_eval_cells.ri` is the standing evidence: on one exit-0 run
+it prints a correct value, a degenerate `0`, and an `undef`. An `ir`/absent probe
+PASSes on it regardless; `value` probes over the same three cells observe
+PRESENT, ABSENT and ABSENT respectively.
 
 ## Verdicts
 
@@ -105,6 +134,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | `fixtures/arrow_type.ri` | grammar | No arrow-type grammar production (3979 class) — `param f : (Length) -> Length` → tree-sitter exits 1 |
 | `fixtures/revolute_silent_accept.ri` | check | §3 4575 silent-accept — `revolute("not-an-axis", …)` → `reify check` exits 0, no rejection diagnostic |
 | `fixtures/ir_clean_eval.ri` | ir | Clean eval baseline — `reify eval` exits 0 with no error |
+| `fixtures/value_clean_eval_cells.ri` | value | #6876 worked example and vacuity evidence — one exit-0 run printing `damping_ratio = 0.018` (in range → PRESENT), `degenerate_ratio = 0` (out of range → ABSENT), `undef_ratio = undef` (not a number → ABSENT). An `ir`/absent probe PASSes on all three. |
 | `fixtures/transform3_unresolved.ri` | check | 4577 — `param t : Transform3` → was exit 1, "unresolved type: Transform3"; **removed from corpus** (task 4577 landed Transform3 resolver — probe flipped PASS) |
 | `fixtures/typeparam_member_access.ri` | check | 4437 — `constraint item.length > 5mm` (type-param bounded) → exit 1, "member access not yet supported: .length" |
 | `fixtures/purpose_nested_structure.ri` | grammar | 4497 — nested `structure` inside `purpose {}` → was tree-sitter exit 1 (MISSING "}"); **removed from corpus** (grammar production landed — probe flipped PASS) |
@@ -115,7 +145,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 
 | File | Description |
 |---|---|
-| `example-probe-set.json` | Example showing all three probe kinds (used in README and docs) |
+| `example-probe-set.json` | Example showing all four probe kinds (used in README and docs). Pinned one-row-per-kind against `_VALID_PROBE_KINDS`, so a new kind reds until the example covers it. |
 | `corpus-probe-set.json` | δ historical-false-premise regression corpus — 3 rows, all FAIL |
 | `compiler-type-hygiene-probe-set.json` | §8 boundary-table integration gate (task λ/5070) — 7 rows, **all PASS**: grammar (`SpecLike<Foo>` parses) + 3 flipped POST-state rejections (`E_TYPE_ARG_ON_TRAIT` / `is undefined for operand kinds` / `must be a comparable kind`) + 3 end-to-end integration-fixture rows. Gated by `tests/infra/test_prd_gate_compiler_type_hygiene.sh` (all-PASS, tree-sitter skip-guarded). |
 
@@ -128,6 +158,33 @@ All set fields must hold simultaneously (AND semantics). An empty `match: {}` me
 - `exit_code`: the process exit code must equal this integer
 - `stderr_contains`: this string must appear in stderr
 - `stdout_contains`: this string must appear in stdout
+
+### `stdout_value` (value probes only)
+
+`re.search(pattern, stdout)` → take `group` (default `1`) → parse it as a float →
+apply the bounds. Any step failing makes the observation ABSENT. Two invariants
+are enforced at **load** time, so a malformed predicate is a usage error (exit
+64) rather than a silently-passing probe:
+
+1. **A `value` probe must carry a constraint.** `pattern` alone locates a number
+   and asserts nothing about it, so `stdout_value` without at least one of
+   `min` / `max` / `finite` is rejected — as is a `pattern` with no capture
+   group, an uncompilable `pattern`, a `group` the pattern does not define, and
+   a misspelled constraint key.
+2. **Finiteness is structural, not opt-in.** `float("inf") >= 0.01` is `True` in
+   Python, so a bounds-only check would admit `inf`. Every capture must parse as
+   a *finite* float regardless of whether `finite` is set; `finite: true` is
+   simply how you say "a finite number, bounds irrelevant".
+
+`exit_code` / `stderr_contains` / `stdout_contains` are **rejected** on a `value`
+probe: exit 0 is structural to the kind, and a stdout assertion belongs in
+`pattern`. Conversely `stdout_value` is rejected on a `grammar`/`check`/`ir`
+probe, where nothing would ever evaluate it — armed but vacuous.
+
+A `value` result carries its evidence: both the text renderer (a `value:` line)
+and `--json` (a `value_observation` object, present on value rows only) report
+which token was captured and which constraint it failed, so "captured `0`, below
+`min`" is distinguishable from "the pattern never matched".
 
 ## Historical-false-premise regression corpus (δ)
 

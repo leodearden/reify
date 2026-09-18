@@ -74,7 +74,7 @@ const PREMISES_SCHEMA = {
                 properties: {
                     text:           { type: "string" },
                     assertion_kind: { type: "string",
-                                      enum: ["rejection", "parses", "resolves", "produces", "ir"] },
+                                      enum: ["rejection", "parses", "resolves", "produces", "ir", "value"] },
                     fixture:        { type: "string" },
                     match:          { type: "object" },
                     capability:     { type: "string" },
@@ -385,7 +385,22 @@ Instructions:
    - "parses":    tree-sitter parses the fixture without errors
    - "resolves":  reify check passes (exit_code:0)
    - "produces":  reify eval exits non-zero with this signature in stderr
-   - "ir":        reify eval exits 0 (clean, no error) — observation=absent
+   - "ir":        reify eval exits 0 (clean, no error) — observation=absent.
+                  This proves ONLY "eval exits 0, clean".  It CANNOT see what
+                  was printed: the ir arm answers on exit 0 without reading the
+                  match dict at all.
+   - "value":     reify eval exits 0 AND the value it printed satisfies a
+                  numeric constraint.  Any premise asserting the printed value
+                  is finite / nonzero / in range / equals X must use "value",
+                  NOT "ir" — bound as "ir" such a premise asserts only that
+                  eval did not crash, and passes on a fixture that printed 0 or
+                  undef.
+                  A "value" premise's match must be:
+                    {"stdout_value": {"pattern": "<regex with >=1 capture
+                      group>", "group": <int|str, optional, default 1>,
+                      "min": <number>, "max": <number>, "finite": <bool>}}
+                  with AT LEAST ONE of min/max/finite — a pattern alone asserts
+                  nothing about the value and is rejected at bind time.
 5. Each premise needs a fixture path (repo-relative). If the leaf doesn't
    specify one, you may need to reference an existing fixture in
    tests/prd-gate/fixtures/ or note that a new fixture is needed.
