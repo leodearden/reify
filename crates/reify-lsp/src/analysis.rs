@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use reify_compiler::{CompiledModule, CompiledTypeAlias, EntityKind, ValueCellKind};
+use reify_compiler::{CompiledModule, CompiledTypeAlias, CompiledUnit, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
 use reify_ast::{Declaration, ParsedModule};
@@ -321,6 +321,25 @@ impl AnalysisContext {
     /// `None` while still compiling clean. Task #6341.
     pub fn find_type_alias(&self, name: &str) -> Option<&CompiledTypeAlias> {
         self.compiled.type_aliases.iter().find(|a| a.name == name)
+    }
+
+    /// Look up a user-declared unit by name in the compiled module.
+    ///
+    /// Scoped to the OPEN DOCUMENT's own declarations, the same way
+    /// [`Self::find_type_alias`] is, and for a directly verifiable reason:
+    /// `compile_builder/units_phase.rs` seeds every stdlib prelude unit into
+    /// `ctx.unit_registry` and pushes only the module's OWN `unit` declarations
+    /// onto `compiled_units`, so no LSP surface built on this can leak a stdlib
+    /// unit.
+    ///
+    /// `None` here is expected and non-exceptional, not an error: a module-local
+    /// unit whose name duplicates a prelude unit is rejected with "duplicate unit
+    /// declaration ... already defined in stdlib prelude" and never pushed, so the
+    /// declaration exists in the AST while the compiled entry does not. Callers
+    /// must degrade (render the signature alone) rather than treat it as a bug.
+    /// Task #6500.
+    pub fn find_unit(&self, name: &str) -> Option<&CompiledUnit> {
+        self.compiled.units.iter().find(|u| u.name == name)
     }
 
     /// Return value cell members for a specific structure/occurrence: (name, kind, type).

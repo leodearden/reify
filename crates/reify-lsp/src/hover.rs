@@ -189,7 +189,20 @@ pub fn compute_hover_in_context(
                 return Some(make_hover_markdown(md));
             }
             reify_ast::Declaration::Unit(u) if u.name == word => {
-                let md = format!("```reify\n{}\n```", format_unit_signature(u));
+                let mut md = format!("```reify\n{}\n```", format_unit_signature(u));
+                // Surface the compiler's SI conversion additively, but only when it
+                // adds information. The signature line is identical for
+                // `unit hoopm : Length` and `unit hoopm : Length = 0.001`, so a
+                // non-unity factor or any offset is information the signature does
+                // not carry; a factor of exactly 1 with no offset is not, and the
+                // line would be noise. Same rule as the TypeAlias arm's
+                // resolves-to line above. `find_unit` returning None is expected
+                // for a prelude-duplicate name -- the signature still renders.
+                if let Some(unit) = ctx.find_unit(&u.name)
+                    && let Some(line) = format_si_conversion(unit)
+                {
+                    md.push_str(&format!("\n\n{line}"));
+                }
                 return Some(make_hover_markdown(md));
             }
             _ => {}
@@ -266,6 +279,27 @@ pub(crate) fn format_type_alias_signature(t: &reify_ast::TypeAliasDecl) -> Strin
 /// until one does. Task #6500.
 fn format_unit_signature(u: &reify_ast::UnitDecl) -> String {
     format!("unit {} : {}", u.name, u.dimension_type)
+}
+
+/// Render a compiled unit's SI conversion as `SI: x{factor}` (with a real
+/// multiplication sign) -- plus `, offset {offset}` for an affine unit -- or
+/// `None` when the conversion adds nothing to the signature line.
+///
+/// The `None` case is `factor == 1.0 && offset.is_none()`: a unit that is
+/// exactly its dimension's SI base. Note the two halves are gated TOGETHER, not
+/// independently: `unit hoopC : Temperature = 1 offset 273.15` compiles to
+/// `factor: 1.0, offset: Some(273.15)`, so gating on `factor != 1.0` alone would
+/// drop the offset -- the half a reader most needs, since it is why the unit is
+/// not a pure scaling. Task #6500.
+fn format_si_conversion(unit: &reify_compiler::CompiledUnit) -> Option<String> {
+    if unit.factor == 1.0 && unit.offset.is_none() {
+        return None;
+    }
+    let mut line = format!("SI: \u{d7}{}", unit.factor);
+    if let Some(offset) = unit.offset {
+        line.push_str(&format!(", offset {offset}"));
+    }
+    Some(line)
 }
 
 /// Render a type-parameter list as `<T, U: Numeric, V: A + B = Int>`, or the empty
