@@ -21964,6 +21964,69 @@ fn commit_parameter_discards_a_live_preview_when_the_write_back_is_refused() {
     );
 }
 
+#[test]
+fn commit_parameter_preserves_an_existing_staleness_banner_when_the_write_back_is_refused() {
+    // The staleness sibling of
+    // `commit_parameter_discards_a_live_preview_when_the_write_back_is_refused`
+    // — same disk-divergence trigger, one extra precondition — and it needs its
+    // own test because the discard is a `commit_state` path like any other.
+    // γ's ledger restores its OWN failure surfaces before handing back the
+    // refusal; `commit_parameter` then recompiles the canonical source to drop
+    // the preview, and that successful `commit_state` clears `compile_failure`
+    // and `last_reload_error` unconditionally — including a banner that
+    // predates the commit entirely.
+    //
+    // The sibling assertions around here only ever check `!is_stale()` on a
+    // session that was never stale, which cannot fail whatever the restore
+    // does. This one starts the session STALE, so the assertion has a
+    // direction to regress in. That direction matters most on exactly this
+    // arm: disk divergence is the MOST common refusal, and it is also what a
+    // failed hot reload produces — so the banner silently cleared would be
+    // precisely the one the user just earned, with `is_stale()` then claiming
+    // a sync with a reload that never succeeded.
+    let (_dir, path, mut session) = writeback_session();
+
+    session.record_reload_error("boom".to_string());
+    assert!(
+        session.is_stale(),
+        "precondition: the session must start stale for this test to mean anything"
+    );
+
+    session
+        .preview_parameter("Part.width", "120mm")
+        .expect("preview_parameter should succeed");
+
+    // The same trigger as the sibling: another writer lands between the preview
+    // and the commit, so γ refuses before anything reaches disk.
+    let external_text = format!("{}\n// an external editor was here\n", writeback_source());
+    std::fs::write(&path, &external_text).expect("external write should succeed");
+
+    let err = session
+        .commit_parameter("Part.width", "150mm")
+        .expect_err("a diverged file must be REFUSED rather than clobbered");
+    assert!(
+        err.contains("no longer matches the source this session compiled"),
+        "precondition: the failure must be the divergence REFUSAL, got: {err}"
+    );
+
+    assert!(
+        session.is_stale(),
+        "a refused commit must leave the staleness banner standing — its discard \
+         recompile SUCCEEDS, and `commit_state` would otherwise clear a banner \
+         this call never earned the right to clear"
+    );
+    assert_eq!(
+        session.reload_error(),
+        Some("boom"),
+        "the banner left standing must be the ORIGINAL one, not a replacement"
+    );
+    assert!(
+        session.compile_failure_for_test().is_none(),
+        "the discard must not leave diagnostics either — its own recompile of the \
+         canonical source succeeds cleanly"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // task 5097 δ — EngineSession::holds_rejected_source (the write-back interlock)
 // ─────────────────────────────────────────────────────────────────────────────
