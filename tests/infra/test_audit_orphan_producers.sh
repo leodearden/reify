@@ -71,6 +71,8 @@ pub mod comment_header_target;
 pub mod comment_header_probe;
 pub mod cfg_comment_target;
 pub mod cfg_comment_probe;
+pub mod cfg_block_comment_target;
+pub mod cfg_block_comment_probe;
 pub mod cfg_marker_guard;
 pub mod cfg_string_target;
 pub mod cfg_string_probe;
@@ -308,6 +310,33 @@ cat > "$FIXTURE/crates/reify-fixture/src/cfg_comment_probe.rs" <<'RUST'
 #[allow(dead_code)] // used in #[cfg(test)] and by downstream tasks
 pub fn cfg_comment_probe() -> i32 {
     cfg_comment_target()
+}
+RUST
+
+# cfg_block_comment_probe.rs / cfg_block_comment_target.rs -- the same
+# MENTION, one line further out of reach: interior to a multi-line `/* ... */`
+# BLOCK comment.  Distinct from the `//` pair above on both halves of the
+# mechanism.  The stripper blanks the mention from its cross-line
+# `block_comment` state, carried in from a PREVIOUS line, rather than from a
+# `//` it can see on the line itself; and the mask's skip loop cannot
+# recognise the comment's continuation lines from raw text at all -- its
+# prefix checks know only `//` and `#[` -- so it reaches them through the
+# code view, the same path the comment_header_* pair above pins from the
+# opposite direction.  Pre-fix the mention opened a mask, the skip loop
+# walked the rest of the comment, landed on the `pub fn` below and masked it
+# whole, taking its cross-file call with it.  Two files, no G-allow marker on
+# either, and the call kept off the declaration line: all for the reasons
+# spelled out on the cfg_comment_* pair.
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_block_comment_target.rs" <<'RUST'
+pub fn cfg_block_comment_target() -> i32 { 12 }
+RUST
+
+cat > "$FIXTURE/crates/reify-fixture/src/cfg_block_comment_probe.rs" <<'RUST'
+/* History: this helper used to live
+   behind #[cfg(test)], and the note is
+   kept now that it is production code. */
+pub fn cfg_block_comment_probe() -> i32 {
+    cfg_block_comment_target()
 }
 RUST
 
@@ -577,9 +606,10 @@ assert "comment_header_target (block comment between #[cfg(test)] and its item h
 # cfg(test) attribute detection: literal/comment-aware mask START
 #
 # The section above pins what happens INSIDE a mask (where it ends); this one
-# pins whether a mask should have started at all.  In all three shapes the
-# attribute is merely MENTIONED -- in a line comment, in a marker's reason
-# text, in a string literal -- and none of them should open a mask.
+# pins whether a mask should have started at all.  In all four shapes the
+# attribute is merely MENTIONED -- in a line comment, inside a multi-line
+# block comment, in a marker's reason text, in a string literal -- and none
+# of them should open a mask.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- cfg(test) attribute detection: literal/comment-aware mask START ---"
@@ -589,6 +619,12 @@ assert "cfg_comment_probe (#[cfg(test)] only mentioned in a line comment above i
 
 assert "cfg_comment_target (its sole caller sits under that spurious mask) is not orphan" \
     assert_not_orphan cfg_comment_target
+
+assert "cfg_block_comment_probe (#[cfg(test)] only mentioned inside a multi-line block comment above it) is flagged orphan, not swallowed by a spurious mask" \
+    assert_orphan cfg_block_comment_probe
+
+assert "cfg_block_comment_target (its sole caller sits under that spurious mask) is not orphan" \
+    assert_not_orphan cfg_block_comment_target
 
 assert "cfg_marker_guard (G-allow reason text mentions #[cfg(test)]) is allow-listed, not swallowed" \
     assert_allowed cfg_marker_guard
