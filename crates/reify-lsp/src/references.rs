@@ -23,10 +23,10 @@
 use std::collections::HashMap;
 
 use reify_ast::{
-    ConnectDecl, Declaration, DefaultDecl, Expr, ExprKind, FieldSource, FnDef, ForallConnectBody,
-    ForallConstraintBody, ImportKind, KeyedSubMemberEntry, MAX_MEMBER_NESTING_DEPTH, MemberDecl,
-    ParsedModule, StringPart, SubDecl, TraitBoundRef, TypeExpr, TypeExprKind, TypeParamDecl,
-    VariantPayload, WhereClause,
+    ConnectDecl, ConstraintInstDecl, Declaration, DefaultDecl, Expr, ExprKind, FieldSource, FnDef,
+    ForallConnectBody, ForallConstraintBody, ImportKind, KeyedSubMemberEntry,
+    MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl, TraitBoundRef,
+    TypeExpr, TypeExprKind, TypeParamDecl, VariantPayload, WhereClause,
 };
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{
@@ -1433,6 +1433,7 @@ pub fn compute_document_highlights(
 ///
 /// Use-site categories collected here:
 /// - `sub _ = name` construction sites (κ design decision).
+/// - `constraint Name(…)` instantiations (#6539).
 /// - TYPE POSITIONS — `param p : Name`, `fn f() -> Name`, `type H = Name`,
 ///   `structure S : Name`, `|p: Name| …` and every other root
 ///   [`collect_decl_name_uses_in_decl`] fans out over (#6539).
@@ -1744,12 +1745,14 @@ fn collect_trait_bound_uses(
 /// `collect_uses` does — depth-bounded by [`MAX_MEMBER_NESTING_DEPTH`] — so a
 /// use nested inside a `where`/port/sub block is not missed.
 ///
-/// Three categories, and the match over them is WILDCARD-FREE so a new
+/// Four categories, and the match over them is WILDCARD-FREE so a new
 /// `MemberDecl` variant is a compile error rather than a silently uncollected
 /// use site:
 /// - a `sub binding = Name(...)` CONSTRUCTION site, whose `structure_name` is a
 ///   plain `String`; the emitted span is the first whole-word `name` token
 ///   inside the `sub` statement, i.e. the construction token;
+/// - a `constraint Name(...)` INSTANTIATION, whose `name` is a plain `String`
+///   for the same reason and is narrowed the same way;
 /// - a TYPE POSITION on a member that declares one (`param`/`let` annotations, a
 ///   sub's type arguments, an associated type's default, a `port`'s trait, an
 ///   associated function's whole signature and body);
@@ -1804,11 +1807,25 @@ fn collect_decl_name_uses_in_members(
                     out.push(name_token_span(source, p.span, name));
                 }
             }
+            // `constraint Foo(x: w)` — a CONSTRAINT-DEF INSTANTIATION. Twins
+            // the `Sub` arm above: `ConstraintInstDecl.name` is a plain
+            // `String`, so the instantiation name never appears as an
+            // `ExprKind::Ident` and is invisible to every ident walk.
+            MemberDecl::ConstraintInst(c) => {
+                collect_constraint_inst_uses(c, source, name, out);
+            }
+            // `forall v in coll: constraint Foo(…)` carries the SAME
+            // `ConstraintInstDecl` one level in, so it is the same use site and
+            // shares the same arm rather than being a second, driftable copy.
+            MemberDecl::ForallConstraint(f) => {
+                if let ForallConstraintBody::Instantiation(c) = &f.body {
+                    collect_constraint_inst_uses(c, source, name, out);
+                }
+            }
             // Expression-only members: any type reference they carry is a
             // lambda parameter annotation, collected below through
             // `for_each_member_direct_expr` rather than arm by arm.
             MemberDecl::Constraint(_)
-            | MemberDecl::ConstraintInst(_)
             | MemberDecl::Minimize(_)
             | MemberDecl::Maximize(_)
             | MemberDecl::GuardedGroup(_)
@@ -1816,7 +1833,6 @@ fn collect_decl_name_uses_in_members(
             | MemberDecl::Chain(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::ForallConnect(_)
-            | MemberDecl::ForallConstraint(_)
             | MemberDecl::MatchArmDeclGroup(_)
             | MemberDecl::Relate(_) => {}
         }
@@ -1826,6 +1842,29 @@ fn collect_decl_name_uses_in_members(
         for_each_child_scope(member, |child| {
             collect_decl_name_uses_in_members(child, source, name, depth + 1, out);
         });
+    }
+}
+
+/// Push the name-token span of a `constraint Name(…)` instantiation when it
+/// instantiates `name`.
+///
+/// `ConstraintInstDecl.name` is a plain `String` with no span of its own, so the
+/// token is narrowed out of the instantiation's span — the first whole-word
+/// `name` inside `constraint Name(args…)`, which is the instantiation token.
+/// Exactly the treatment `SubDecl.structure_name` gets, for exactly the same
+/// reason.
+///
+/// Shared by the `MemberDecl::ConstraintInst` arm and the
+/// `ForallConstraintBody::Instantiation` arm, which carry the same struct at two
+/// nesting levels.
+fn collect_constraint_inst_uses(
+    c: &ConstraintInstDecl,
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    if c.name == name {
+        out.push(name_token_span(source, c.span, name));
     }
 }
 
@@ -4813,9 +4852,20 @@ structure Assembly {
             ),
             // Also through the purpose regions step-14 opened, so the two legs
             // are pinned as composing rather than each working alone.
+            //
+            // It must be a purpose-NESTED STRUCTURE, not the purpose body
+            // itself: measured, `constraint Foo(x: 1mm)` written directly in a
+            // purpose body lowers to `MemberDecl::Constraint` wrapping an
+            // `ExprKind::FunctionCall`, NOT to a `ConstraintInst` — the
+            // instantiation form is a structure-body form. A `FunctionCall`'s
+            // callee is a `String` with no span of its own, so that spelling is
+            // a separate, pre-existing use-site gap (filed as a follow-up), not
+            // this arm's business.
             (
-                "instantiated in a purpose body",
-                format!("{DECL}purpose P(subject : Structure) {{\n    constraint Foo(x: 1mm)\n}}"),
+                "instantiated in a purpose-nested structure",
+                format!(
+                    "{DECL}purpose P(subject : Structure) {{\n    structure def Nested {{\n        constraint Foo(x: 1mm)\n    }}\n}}"
+                ),
             ),
         ];
         for (label, source) in rows {
@@ -4825,14 +4875,16 @@ structure Assembly {
                 "[{label}] fixture must parse clean, got {:?} for:\n{source}",
                 parsed.errors
             );
-            let mut found_inst = false;
-            for decl in &parsed.declarations {
-                if let Some(members) = entity_members(decl) {
-                    found_inst |= members
-                        .iter()
-                        .any(|m| matches!(m, MemberDecl::ConstraintInst(c) if c.name == "Foo"));
-                }
-            }
+            let instantiates_foo = |members: &[MemberDecl]| {
+                members
+                    .iter()
+                    .any(|m| matches!(m, MemberDecl::ConstraintInst(c) if c.name == "Foo"))
+            };
+            let found_inst = parsed.declarations.iter().any(|decl| {
+                entity_members(decl).is_some_and(instantiates_foo)
+                    || matches!(decl, Declaration::Purpose(p)
+                        if p.structures.iter().any(|n| instantiates_foo(&n.members)))
+            });
             assert!(
                 found_inst,
                 "[{label}] fixture must really contain a `constraint Foo(…)` \
