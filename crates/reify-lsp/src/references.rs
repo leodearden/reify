@@ -4152,6 +4152,164 @@ structure Assembly {
         );
     }
 
+    /// Every collected span must cover EXACTLY the target name, and the collected
+    /// set must be every whole-word occurrence of it in the fixture.
+    ///
+    /// Both halves matter. The set equality is the completeness half: each
+    /// fixture below is written so that every occurrence of the target is either
+    /// the declaration token or the one use under test, so a missed use is a
+    /// missing element. The exact-cover check is the RENAME-SAFETY half:
+    /// `compute_rename_cross_file` uses the reference set as its exact edit set,
+    /// so a span one byte too wide — `Box<Hole>` instead of `Hole`, or `pp.Hole`
+    /// instead of its last segment — is a DESTRUCTIVE edit, not a cosmetic one.
+    fn assert_collects_every_occurrence(label: &str, source: &str, name: &str) {
+        let parsed = reify_syntax::parse(source, ModulePath::single("t"));
+        assert!(
+            parsed.errors.is_empty(),
+            "[{label}] fixture must parse clean, got {:?} for:\n{source}",
+            parsed.errors
+        );
+        let expected: Vec<SourceSpan> = occurrences(source, name)
+            .into_iter()
+            .map(|at| span_of(at, name))
+            .collect();
+        assert!(
+            expected.len() >= 2,
+            "[{label}] fixture must hold a declaration AND at least one use, or it \
+             asserts nothing:\n{source}"
+        );
+        let got = collect_structure_name_spans(source, &parsed, name);
+        assert_eq!(
+            got, expected,
+            "[{label}] every occurrence of {name:?} must be collected, each span \
+             covering exactly the name token:\n{source}"
+        );
+    }
+
+    /// AXIS 1 — every `TypeExpr` ROOT reachable from a top-level declaration.
+    ///
+    /// Each row was probe-verified to parse clean, and each names the AST field
+    /// the use travels through. A root missing from `collect_decl_name_uses`'s
+    /// fan-out is a silently uncollected use site, which for an admitted kind is
+    /// a stale rename.
+    #[test]
+    fn type_position_use_is_collected_from_every_type_expr_root() {
+        const DECL: &str = "structure Hole {\n    param d: Length = 1mm\n}\n";
+        // (label + the AST field under test, source tail, target name)
+        let rows: &[(&str, String, &str)] = &[
+            ("FnDef.return_type", format!("{DECL}fn mk(x: Length) -> Hole {{ x }}"), "Hole"),
+            ("FnParam.type_expr", format!("{DECL}fn id(h: Hole) -> Hole {{ h }}"), "Hole"),
+            (
+                "FieldDef.domain_type",
+                format!("{DECL}field def f : Hole -> Real {{ source = analytical {{ |p| p }} }}"),
+                "Hole",
+            ),
+            ("UnitDecl.dimension_type", format!("{DECL}unit hoop : Hole"), "Hole"),
+            ("TypeAliasDecl.type_expr", format!("{DECL}type H = Hole"), "Hole"),
+            ("DefaultDecl.type_expr", format!("{DECL}default Hole = 1"), "Hole"),
+            (
+                "JointDofField.type_expr",
+                format!("{DECL}joint ball(c: Point, d: Point) with orientation: Hole = coincident(c, d)"),
+                "Hole",
+            ),
+            ("TypeParamDecl.default", format!("{DECL}type Foo<T = Hole> = T"), "Hole"),
+            ("AssociatedTypeDecl.default_type", format!("{DECL}trait T1 {{ type A = Hole }}"), "Hole"),
+            ("VariantPayload::Named", format!("{DECL}enum E {{ V {{ h: Hole }} }}"), "Hole"),
+            (
+                "LambdaParam.type_expr",
+                format!(
+                    "{DECL}field def f : Point3 -> Real {{ source = analytical {{ |p: Hole| 1.0 }} }}"
+                ),
+                "Hole",
+            ),
+            // The two non-`TypeExpr` type references. `TraitDecl.refinements` is a
+            // `Vec<SpannedIdent>` carrying exact per-name spans; `trait_bounds` is
+            // a `Vec<TraitBoundRef>` whose `span` covers the whole bound and must
+            // be narrowed.
+            (
+                "TraitDecl.refinements",
+                "trait Physical { param mass : Mass }\ntrait Solid : Physical { param v : Volume }"
+                    .to_string(),
+                "Physical",
+            ),
+            (
+                "StructureDef.trait_bounds",
+                "trait Physical { param mass : Mass }\nstructure S : Physical {\n    param mass : Mass = 1kg\n}"
+                    .to_string(),
+                "Physical",
+            ),
+            (
+                "OccurrenceDef.trait_bounds",
+                "trait Physical { param mass : Mass }\noccurrence def O : Physical {\n    param mass : Mass = 1kg\n}"
+                    .to_string(),
+                "Physical",
+            ),
+        ];
+        for (label, source, name) in rows {
+            assert_collects_every_occurrence(label, source, name);
+        }
+    }
+
+    /// AXIS 2 — every type-expression FORM, i.e. every shape the recursion and
+    /// the name-narrowing rule must handle.
+    ///
+    /// `DimensionalOp` is exercised through a type alias rather than a `param`
+    /// annotation: `param p : Hole / Time` is a probe-verified SYNTAX ERROR (a
+    /// dimensional operator is not accepted in param-annotation position), so the
+    /// alias root is the only place the form is reachable.
+    ///
+    /// The NAMESPACED row is the subtle one. `ts_parser`'s `namespaced_name_text`
+    /// dot-JOINS `pp.Hole` into the single `String` "pp.Hole", so a bare
+    /// declaration name never equals it and the use is silently dropped — while
+    /// the user sees a perfectly ordinary reference. The emitted span must be the
+    /// LAST SEGMENT alone, since that is the token a rename may rewrite.
+    #[test]
+    fn type_position_use_is_collected_for_every_type_expression_form() {
+        const DECL: &str = "structure Hole {\n    param d: Length = 1mm\n}\n";
+        let rows: &[(&str, String, &str)] = &[
+            (
+                "Named with type_args (Box<Hole> \u{2014} span covers the brackets, must narrow)",
+                format!("{DECL}structure A {{\n    param p : Box<Hole>\n}}"),
+                "Hole",
+            ),
+            (
+                "DimensionalOp (Hole / Time)",
+                format!("{DECL}type Q = Hole / Time"),
+                "Hole",
+            ),
+            (
+                "Function ((Hole) -> Real)",
+                format!("{DECL}structure A {{\n    param p : (Hole) -> Real\n}}"),
+                "Hole",
+            ),
+            (
+                "QualifiedAssoc (Hole::Material)",
+                format!("{DECL}structure A {{\n    param p : Hole::Material\n}}"),
+                "Hole",
+            ),
+            (
+                "namespaced (pp.Hole \u{2014} dot-joined into one String)",
+                format!("{DECL}structure A {{\n    param p : pp.Hole\n}}"),
+                "Hole",
+            ),
+            (
+                "SubDecl.type_args (Wrap<Hole>)",
+                format!("{DECL}structure A {{\n    sub s = Wrap<Hole>()\n}}"),
+                "Hole",
+            ),
+            (
+                "nested guarded scope",
+                format!(
+                    "{DECL}structure A {{\n    param f : Bool = true\n    where f {{\n        param p : Hole\n    }}\n}}"
+                ),
+                "Hole",
+            ),
+        ];
+        for (label, source, name) in rows {
+            assert_collects_every_occurrence(label, source, name);
+        }
+    }
+
     // --- κ step-3 (task 4210): cross-file structure references from any signal cursor ---
 
     /// Sort `Location`s by (uri, start line, start char) so cross-file reference
