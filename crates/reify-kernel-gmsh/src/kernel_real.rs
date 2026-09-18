@@ -509,10 +509,10 @@ impl GmshKernel {
         let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
         ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-        // One seam for the whole model-building span above: `log_capture`
-        // folds gmsh's own Info/Warning stream into whatever error surfaces,
-        // because `gmshLoggerGetLastError` — all the `ffi` macro can annotate
-        // with — holds only the last ERROR line.
+        // One seam for the model-building span inside `build_meshable_region`:
+        // `log_capture` folds gmsh's own Info/Warning stream into whatever
+        // error surfaces there, because `gmshLoggerGetLastError` — all the
+        // `ffi` macro can annotate with — holds only the last ERROR line.
         build_meshable_region(&_guard).map_err(|e| log_capture.annotate(e))?;
 
         // Tet meshing. Routed through `init::mesh_generate_with_recovery` so a
