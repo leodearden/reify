@@ -1179,20 +1179,22 @@ impl Engine {
         // OLD geometry and would silently be served by a subsequent
         // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
         // `topology_attribute_table` reset-at-hook-point pattern
-        // (engine_build.rs:531/406): the engine cannot prove which
-        // cached entries survive a given edit without per-cell input-cone
-        // analysis we do not currently maintain, so we conservatively flush
-        // the entire cache on every edit. The next `build()` /
-        // `build_snapshot()` cold-misses on every realization and re-populates
-        // the cache from kernel execution. Pinned by
+        // (`TopologyAttributeTable::default()` reset in
+        // `Engine::reset_per_build_state`, engine_build.rs): the engine
+        // cannot prove which cached entries survive a given edit without
+        // per-cell input-cone analysis we do not currently maintain, so we
+        // conservatively flush the entire cache on every edit. The next
+        // `build()` / `build_snapshot()` cold-misses on every realization
+        // and re-populates the cache from kernel execution. Pinned by
         // `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
-        // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-17).
+        // (task 2874, step-17).
         //
         // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the analogous one in `Engine::edit_source` (engine_edit.rs around
-        // line 1920). Removing either reset, or reordering either function
-        // body so the reset moves AFTER any state mutation that could fail
-        // (which would let a stale cache leak when the edit returns Err),
+        // the `self.clear_realization_cache()` call near the entry of
+        // `Engine::edit_source`. Removing either reset, or
+        // reordering either function body so the reset moves AFTER any
+        // state mutation that could fail (which would let a stale cache
+        // leak when the edit returns Err),
         // silently regresses the auto-invalidation hook. Both resets MUST
         // co-exist near function entry; the symmetry is independently pinned
         // by the test pair listed above plus
@@ -1205,8 +1207,7 @@ impl Engine {
         // so the reset semantics are defined in exactly one place. The
         // public mutator is the same primitive a production caller would
         // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`
-        // in `tests/tolerance_wiring_e2e.rs`.
+        // `clear_realization_cache_public_api_resets_cache_for_production_callers`.
         self.clear_realization_cache();
         // Reset the test-instrumentation diff snapshot. The "most recent
         // edit_source call" invariant on `Engine::last_diff_value_cells()`
@@ -3210,16 +3211,18 @@ impl Engine {
         // changed) and would silently be served by a subsequent `build()` /
         // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
         // `topology_attribute_table` reset-at-hook-point pattern
-        // (engine_build.rs:531/406) and the parallel reset in
-        // `edit_param`. Pinned by
+        // (`TopologyAttributeTable::default()` reset in
+        // `Engine::reset_per_build_state`, engine_build.rs) and the
+        // parallel reset in `edit_param`. Pinned by
         // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-        // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-19).
+        // (task 2874, step-19).
         //
         // **Contract-lock (task 2874 step-20)**: this reset is symmetric with
-        // the analogous one in `Engine::edit_param` (engine_edit.rs around
-        // line 846). Removing either reset, or reordering either function
-        // body so the reset moves AFTER any state mutation that could fail
-        // (which would let a stale cache leak when the edit returns Err),
+        // the `self.clear_realization_cache()` call near the entry of
+        // `Engine::edit_param`. Removing either reset, or
+        // reordering either function body so the reset moves AFTER any
+        // state mutation that could fail (which would let a stale cache
+        // leak when the edit returns Err),
         // silently regresses the auto-invalidation hook. Both resets MUST
         // co-exist near function entry; the symmetry is independently pinned
         // by the test pair listed above plus
@@ -3232,8 +3235,7 @@ impl Engine {
         // so the reset semantics are defined in exactly one place. The
         // public mutator is the same primitive a production caller would
         // invoke for out-of-band cache invalidation — see
-        // `clear_realization_cache_public_api_resets_cache_for_production_callers`
-        // in `tests/tolerance_wiring_e2e.rs`.
+        // `clear_realization_cache_public_api_resets_cache_for_production_callers`.
         self.clear_realization_cache();
         // selective-realization-eviction β (#4729): the changed-realization
         // set describes exactly ONE edit, so clear it at entry — symmetric
