@@ -4,15 +4,10 @@
 //! §7.7.
 //!
 //! This module is the adapter between `reify-expr`'s dual evaluator and the
-//! solver's own notion of a trial point.  It publishes exactly one call, and
-//! three consumers are waiting for it:
-//!
-//! - **η (#6675)** — the Gauss-Newton / Levenberg-Marquardt step, which needs
-//!   `J` with columns in `auto_params` order and the `‖Jᵀr‖` stationarity
-//!   certificate;
-//! - **μ (#6680)** — the reduced gradient, which is this same call with a
-//!   single objective expression;
-//! - **λ (#6679)** — the per-row [`BranchRecord`]s.
+//! solver's own notion of a trial point.  Three consumers are waiting for it:
+//! **η (#6675)** needs `J` with columns in `auto_params` order and the `‖Jᵀr‖`
+//! stationarity certificate, **μ (#6680)** the same call with a single
+//! objective expression, **λ (#6679)** the per-row [`BranchRecord`]s.
 //!
 //! # What this module deliberately does NOT do
 //!
@@ -21,17 +16,12 @@
 //! `+1e-12` kinks, or `PENALTY_WEIGHT` — replacing the loop is η's job, and a
 //! half-replacement would leave two solvers disagreeing about the same model.
 //!
-//! # Branch records: ε emits, λ interprets
-//!
-//! Every row carries the non-smooth branches its traversal actually took (PRD
-//! §7.7, "Kinks — active-branch (Clarke) Jacobian").  Emitting that record is
-//! ε's job and it ends there.  Everything downstream of it is λ (#6679)'s:
-//! assembling the Clarke Jacobian, contracting the trust region when the
-//! signature changes, raising `W_SOLVER_NONSMOOTH_STALL` after K alternations
-//! between two signatures, and choosing the derivative-free fallback.  ε
-//! deliberately takes none of those decisions — a derivative source that also
-//! decided when to distrust itself would be answering a question only the
-//! optimiser has the context to answer.
+//! It also only EMITS branch records (PRD §7.7, "Kinks — active-branch (Clarke)
+//! Jacobian").  Assembling the Clarke Jacobian, contracting the trust region on
+//! a signature change, raising `W_SOLVER_NONSMOOTH_STALL` after K alternations
+//! and choosing the derivative-free fallback are all λ's: a derivative source
+//! that also decided when to distrust itself would be answering a question only
+//! the optimiser has the context to answer.
 //!
 //! **A note λ needs:** a `KinkSite` is a STRUCTURAL child-index path, not a
 //! `SourceSpan` — `CompiledExpr` carries no general span field (only
@@ -41,15 +31,11 @@
 //! `ConstraintNodeId`, which `reify-constraints` already carries alongside
 //! every `CompiledExpr`.
 //!
-//! # Reuse, not re-implementation
-//!
 //! The trial point is materialised by the solver's own
 //! [`crate::solver::build_trial_values`] and the context by
-//! [`crate::solver::ctx_with`] — the site whose doc comment already designates
-//! it "the single place a `reify_expr::EvalContext` is constructed in the
-//! solver".  Routing the dual path through both is what guarantees the Jacobian
-//! is taken at *the same point the solver is standing on*, rather than at a
-//! reconstruction of it that could drift.
+//! [`crate::solver::ctx_with`], so the Jacobian is taken at *the same point the
+//! solver is standing on* rather than at a reconstruction of it that could
+//! drift.
 
 use reify_expr::{
     BranchRecord, DEPENDENT_MARKER, DualEnv, KinkSite, NonDifferentiable, Seeds, Tangent,
@@ -141,11 +127,13 @@ impl std::fmt::Display for JacobianError {
     }
 }
 
-impl std::error::Error for JacobianError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.cause)
-    }
-}
+// The cause is flattened into `Display` and deliberately NOT also reported
+// through `source()`: doing both renders the reason twice under any
+// chain-aware printer, and reify has none — every caller prints `{err}`, so
+// the flattened message is the one that has to carry the detail.  A consumer
+// that wants the cause TYPED reads the `cause` field, which is strictly more
+// useful than the `&dyn Error` a `source()` could hand back.
+impl std::error::Error for JacobianError {}
 
 /// Assemble the Jacobian of `residual_exprs` with respect to `auto_params`, at
 /// the trial point `x`.
@@ -157,6 +145,15 @@ impl std::error::Error for JacobianError {
 /// Derivatives are `d(SI)/d(SI)`: the dual carries `si_value` tangents, so a
 /// column needs no unit bookkeeping. Rescaling columns for conditioning is ζ's
 /// concern, not ε's; ε's contract is that the raw SI derivative is right.
+///
+/// # Panics
+///
+/// `x` must be as long as `auto_params`, and `auto_params` ids must be UNIQUE:
+/// both are the positional column mapping, and a repeated id has no single
+/// column to be.  Checked rather than assumed because the failure is silent —
+/// [`Seeds`] keeps a duplicate's FIRST column while `build_trial_values` keeps
+/// its LAST value, so the derivative would be attributed to one column and
+/// taken at the other point.
 ///
 /// # Errors
 ///
@@ -175,10 +172,68 @@ pub fn residual_jacobian(
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Result<Jacobian, JacobianError> {
+    // Seed columns in `auto_params` order — this IS the column order.
+    let columns: Vec<ValueCellId> = auto_params.iter().map(|p| p.id.clone()).collect();
+    residual_jacobian_with_seeds(
+        &Seeds::new(&columns),
+        auto_params,
+        residual_exprs,
+        base_values,
+        x,
+        dependent_cells,
+        functions,
+        dispatch,
+    )
+}
+
+/// [`residual_jacobian`] against a CALLER-OWNED seed set, so an iterating
+/// consumer can hoist it out of its loop.
+///
+/// η (#6675) calls this once per Gauss-Newton / Levenberg-Marquardt trial
+/// point with a seed set that is CONSTANT for the whole solve, and a `Seeds`
+/// owns the `depends_on_seed` / `subtree_has_kink` memos.  Those two predicates
+/// are pure functions of `(subtree, seed set)` — structural only, with no
+/// dependence on the trial VALUES — so one `Seeds` is sound across every point
+/// of a solve, and rebuilding it per point would throw away exactly the memos
+/// that stop a cold descent re-walking each node's subtree.
+///
+/// # Panics
+///
+/// On [`residual_jacobian`]'s two preconditions, and on a `seeds` that is not
+/// seeded on exactly `auto_params`, in order — a seed set is the column
+/// contract, so one that disagrees would label every column with another
+/// variable's name.
+#[allow(clippy::too_many_arguments)]
+pub fn residual_jacobian_with_seeds(
+    seeds: &Seeds,
+    auto_params: &[AutoParam],
+    residual_exprs: &[CompiledExpr],
+    base_values: &ValueMap,
+    x: &[f64],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    functions: &[CompiledFunction],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Result<Jacobian, JacobianError> {
     assert_eq!(
         auto_params.len(),
         x.len(),
         "auto_params and x must have the same length — the mapping is positional"
+    );
+    // A hard assert, like its neighbour above and unlike the fold's drift
+    // backstop below: there is no value-path sibling to stay quieter than, and
+    // the damage lands in release, where η runs.
+    if let Some(id) = repeated_auto_id(auto_params) {
+        panic!(
+            "auto_params names {id:?} twice — column j IS auto_params[j], so a repeated id has \
+             no single column to be: its derivative would be attributed to the FIRST column \
+             while `build_trial_values` stands the solve at the LAST one's value"
+        );
+    }
+    assert!(
+        seeds.columns().len() == auto_params.len()
+            && seeds.columns().iter().zip(auto_params).all(|(c, p)| *c == p.id),
+        "seeds must be seeded on exactly `auto_params`, in order — every row is reported as \
+         ∂r/∂auto_params[j] in column j"
     );
 
     // The same trial point the solver itself would stand on, built by the same
@@ -187,17 +242,18 @@ pub fn residual_jacobian(
         build_trial_values(base_values, auto_params, x, dependent_cells, functions, dispatch);
     let ctx = ctx_with(&values, functions, dispatch);
 
-    // Seed columns in `auto_params` order — this IS the column order.
-    let columns: Vec<ValueCellId> = auto_params.iter().map(|p| p.id.clone()).collect();
-    let seeds = Seeds::new(&columns);
-
     // The derivative sibling of the value fold `build_trial_values` just ran.
     // It hands back the dependent cells' own branch records as well as their
     // tangents: a kink inside a derived cell is a kink on every row that reads
     // it, and a record that stopped at the residual's own root would report
     // "smooth" for a point sitting on a clamp bound one hop away.
-    let (env, dependent_prelude) =
-        fold_dependent_duals(&values, auto_params, dependent_cells, functions, dispatch, &seeds);
+    //
+    // Colliding ids come back reported rather than asserted on: the drift alarm
+    // is `solver::fold_dependent_cells`', which `build_trial_values` has just
+    // run over this same slice with this same predicate.  The SKIP is the half
+    // that matters here, and it is asserted directly in `mod tests`.
+    let (env, dependent_prelude, _collisions) =
+        fold_dependent_duals(&values, auto_params, dependent_cells, functions, dispatch, seeds);
 
     let mut rows = Vec::with_capacity(residual_exprs.len());
     let mut residuals = Vec::with_capacity(residual_exprs.len());
@@ -208,8 +264,17 @@ pub fn residual_jacobian(
         // `jacobian_row_with_env` only ever pushes, so the residual's own sites
         // land after the prelude's and `signature_key` / `differs_from` need no
         // change to see a dependent-cell flip.
+        //
+        // Every row gets its OWN copy, which is R×K small clones per evaluation
+        // (K = prelude entries, and K = 0 for every non-clustered solve).  That
+        // is deliberate: a flattened row record is self-contained, so λ can
+        // read, compare or prune one row without having to remember to fold a
+        // shared prefix back in — and forgetting that fold is precisely the
+        // under-reporting the prelude exists to prevent.  An `Rc`-shared prefix
+        // is what to reach for if a cluster ever carries enough dependent-cell
+        // kinks for those clones to show up next to the traversal itself.
         let mut record = dependent_prelude.clone();
-        match jacobian_row_with_env(expr, &ctx, &seeds, &env, &mut record) {
+        match jacobian_row_with_env(expr, &ctx, seeds, &env, &mut record) {
             Ok((value, row)) => {
                 residuals.push(value);
                 rows.push(row);
@@ -222,125 +287,61 @@ pub fn residual_jacobian(
     Ok(Jacobian { rows, residuals, branch_records })
 }
 
-/// The derivative sibling of [`crate::solver::fold_dependent_cells`].
+/// The first `auto_params` id that appears more than once, if any.
 ///
-/// `build_trial_values` has already folded the dependent cells' VALUES into
-/// `values`; this recomputes the same cells' TANGENTS into a [`DualEnv`]
-/// overlay, so a residual that reads a derived cell resolves to that cell's
-/// real derivative instead of `Tangent::Zero`.
-///
-/// It also returns the cells' own [`BranchRecord`]s, concatenated in stored
-/// order, each re-sited under `[DEPENDENT_MARKER, k]` for its `enumerate`
-/// index `k`.  A cell that could NOT be differentiated carries its REASON the
-/// same way — bound alongside the poisoned tangent and re-sited under the same
-/// prefix — so `JacobianError::cause` names the construct inside the derived
-/// cell rather than a generic root-sited fallback, and names it only to the
-/// rows that read that cell.  That prefix is what keeps a derived cell's kink separately
-/// addressable from the residual's own and from its sibling cells' — the
-/// reserved segment can never be a structural child index, so a dependent-cell
-/// site can never alias a real node.
-///
-/// # Why EVERY cell's record, not just the bound ones
-///
-/// A cell's record is collected whether or not its tangent is bound.  The fold
-/// below binds no `Tangent::Zero` — at the residual root, unbound and
-/// zero-bound resolve identically — but a zero-tangent cell can still flip a
-/// branch and JUMP its value: `if q > 5 then 100 else 200` is flat on both
-/// sides and discontinuous between them, which is precisely the point η must
-/// not secant across.  Collecting only bound cells would miss exactly the case
-/// the record exists to catch.
-///
-/// # Deliberate over-reporting
-///
-/// Every row carries every dependent cell's branches, including cells that row
-/// does not read.  That is the safe direction, and it is cheap: a dependent
-/// cell is in the slice because the CLUSTER's residuals depend on it.
-/// Under-reporting is the defect being fixed here — it tells η a kinked row is
-/// smooth.  Over-reporting only makes η contract a trust region it could have
-/// kept, and makes λ see an alternation slightly sooner.
-///
-/// The value fold's doc comment warns "do NOT copy this body into a caller",
-/// and this is not a copy: the values are consumed as `build_trial_values` left
-/// them, and only the tangent half is computed here.  Everything the two folds
-/// share — membership, stored order, the auto-collision backstop — is stated
-/// once in each and MEANS the same thing, because both consume the same
-/// `dependent_cells` slice.
-///
-/// `dependent_cells` is consumed IN STORED ORDER against a RUNNING overlay, so
-/// an earlier dependent cell's tangent is visible to a later one.  That order
-/// is a topologically-sorted guarantee produced once by `build_dependent_cells`
-/// (reify-eval) and CONSUMED here — never re-derived, so the two can never
-/// disagree.
-///
-/// # INVARIANTS
-///
-/// - An empty `dependent_cells` returns an empty overlay, and an empty overlay
-///   is indistinguishable from no overlay at all — so every non-clustered solve
-///   takes exactly the path it took before.
-/// - The fold must NEVER bind an auto param's own cell.  An auto's tangent IS
-///   its seed column `e_j`, and the overlay OUTRANKS the seed columns — it is
-///   the inner scope, so a callee's parameter can shadow an outer seed — which
-///   means binding an auto here would not be dead, it would silently replace
-///   that basis vector with a computed one.  Membership already excludes autos
-///   by construction, so this is a backstop against upstream DRIFT — enforced
-///   rather than assumed, because a clobbered auto column is silent: the solver
-///   would report a solved value for a direction it never actually probed.
-#[inline]
-fn fold_dependent_duals(
-    values: &ValueMap,
-    auto_params: &[AutoParam],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-    seeds: &Seeds,
-) -> (DualEnv, BranchRecord) {
-    let (env, prelude, collisions) = fold_dependent_duals_skipping_collisions(
-        values,
-        auto_params,
-        dependent_cells,
-        functions,
-        dispatch,
-        seeds,
-    );
-    debug_assert!(
-        collisions.is_empty(),
-        "fold_dependent_duals: dependent cell(s) {collisions:?} — each collides with an auto \
-         param — reify-eval's `build_dependent_cells` excludes autos by construction, so this \
-         means upstream membership drifted. Skipping the entries to keep the auto's seed column."
-    );
-    (env, prelude)
+/// A linear scan, for the same reason `build_trial_values`' own collision guard
+/// is one: at the expected 1–3 autos (`WHOLE_MODEL_CLUSTER_DIM_CAP` = 12 is the
+/// ceiling) it beats building a set, and this runs once per trial point.
+fn repeated_auto_id(auto_params: &[AutoParam]) -> Option<&ValueCellId> {
+    auto_params
+        .iter()
+        .enumerate()
+        .find(|(i, p)| auto_params[..*i].iter().any(|earlier| earlier.id == p.id))
+        .map(|(_, p)| &p.id)
 }
 
-/// [`fold_dependent_duals`]' body, reporting rather than asserting: folds the
-/// list exactly as the wrapper's contract describes and RETURNS, in stored
-/// order, the ids it skipped because they collide with an auto param.
+/// The derivative sibling of [`crate::solver::fold_dependent_cells`]: that fold
+/// has already put the dependent cells' VALUES into `values`, and this
+/// recomputes the same cells' TANGENTS into a [`DualEnv`] overlay, so a
+/// residual that reads a derived cell resolves to that cell's real derivative
+/// instead of `Tangent::Zero`.
 ///
-/// The derivative sibling of `solver::fold_dependent_cells_skipping_collisions`
-/// (review #5721), split for the same reason and mirrored leaf for leaf: the
-/// SKIP half of the collision contract — "pass the entry over and keep the
-/// auto's own seed column" — is not assertable through the wrapper, because in
-/// a debug build the `debug_assert!` unwinds before any caller can inspect the
-/// result, and the skip is the ONLY behaviour that can ever run in production.
+/// Membership, consumption in STORED topological order, and the rule that a
+/// cell colliding with an auto param is skipped are the value fold's contract,
+/// stated once on [`crate::solver::fold_dependent_cells`] and consumed here
+/// over the same slice.  Colliding ids are RETURNED rather than asserted on:
+/// that fold's `debug_assert!` has already run over this slice under the same
+/// predicate, so a second alarm would be unreachable, while the skip stays
+/// observable in both profiles.
 ///
-/// Do NOT call this from production code — the one production caller is the
-/// wrapper, which keeps the debug alarm. That rule is enforced by the
-/// VISIBILITY, not by this paragraph: the function is private rather than
-/// `pub(crate)`, so a future sibling module cannot pick the alarm-free variant
-/// and quietly drop the drift alarm the split exists to strengthen. The only
-/// other caller is this file's `mod tests`, reaching it through `super::`, so
-/// private is sufficient.
+/// Three things belong to the tangent half alone:
 ///
-/// The `debug_assert!` is DELIBERATELY retained rather than promoted to a hard
-/// `assert!` or a `JacobianError`. The value fold and the dual fold are ONE
-/// contract seen twice, and having the derivative sibling fail LOUDER than the
-/// value sibling on identical input would be a worse defect than the one this
-/// fixes: the solver would refuse a Jacobian for a trial point whose values
-/// folded perfectly well.
+/// - **Why an auto must never be bound.** An auto's tangent IS its seed column
+///   `e_j`, and the overlay OUTRANKS the seed columns — it is the inner scope,
+///   so a callee's parameter can shadow an outer seed — which means binding an
+///   auto here would not be dead, it would silently replace that basis vector
+///   with a computed one and leave the solver reporting a solved value for a
+///   direction it never probed.
+/// - **Why EVERY cell's record, not just the bound ones.** The fold binds no
+///   `Tangent::Zero` (at the residual root, unbound and zero-bound resolve
+///   identically), but a zero-tangent cell can still flip a branch and JUMP its
+///   value: `if q > 5 then 100 else 200` is flat on both sides and
+///   discontinuous between them, which is exactly what η must not secant
+///   across.
+/// - **Why every row carries every cell's branches**, including cells it does
+///   not read.  Over-reporting only makes η contract a trust region it could
+///   have kept; under-reporting tells η a kinked row is smooth.
 ///
-/// An empty returned vector is the ONLY correct steady state; a non-empty one
-/// means reify-eval's `build_dependent_cells` membership drifted.
+/// Records — and the REASON a cell could not be differentiated — are re-sited
+/// under `[DEPENDENT_MARKER, k]` for the `enumerate` index `k`, so a derived
+/// cell's kink is separately addressable from the residual's own and from its
+/// siblings', and `JacobianError::cause` names the construct inside the derived
+/// cell rather than a generic root-sited fallback.  An empty `dependent_cells`
+/// returns an empty overlay, which is indistinguishable from no overlay at all,
+/// so every non-clustered solve keeps precisely the sites it had before this
+/// fold existed.
 #[inline]
-fn fold_dependent_duals_skipping_collisions(
+fn fold_dependent_duals(
     values: &ValueMap,
     auto_params: &[AutoParam],
     dependent_cells: &[(ValueCellId, CompiledExpr)],
@@ -352,9 +353,8 @@ fn fold_dependent_duals_skipping_collisions(
     let mut env = DualEnv::new();
     let mut prelude = BranchRecord::new();
     if dependent_cells.is_empty() {
-        // No cells, no prefix block, not even an empty one — a non-clustered
-        // solve keeps precisely the sites it had before this fold existed, and
-        // `Vec::new()` does not allocate, so it stays allocation-free too.
+        // Not even an empty prefix block, and `Vec::new()` does not allocate,
+        // so the non-clustered path stays allocation-free.
         return (env, prelude, collisions);
     }
     debug_assert!(
@@ -369,18 +369,13 @@ fn fold_dependent_duals_skipping_collisions(
     // a change that has nothing to do with it.
     for (k, (id, expr)) in dependent_cells.iter().enumerate() {
         if auto_params.iter().any(|p| &p.id == id) {
-            // Reported, not asserted: the wrapper raises the drift alarm, and
-            // leaving the cell UNBOUND here is what preserves the auto's seed
-            // column `e_j` — the overlay outranks the seed columns, so a
-            // binding would silently replace that basis vector with a computed
-            // one.
+            // Leaving the cell UNBOUND is what preserves the auto's own seed
+            // column `e_j`; reporting it is how a caller can see the drift.
             collisions.push(id.clone());
             continue;
         }
         // The VALUE is already in `values` (folded by `build_trial_values`), so
-        // only the tangent is taken here; the primal this produces is
-        // necessarily the same one, because both come from the same evaluator
-        // over the same map.
+        // only the tangent is taken here.
         //
         // The cell is evaluated against the RUNNING overlay, so TANGENT chaining
         // composes for free.  Records do NOT nest, and the distinction matters:
@@ -431,7 +426,7 @@ mod tests {
     use reify_ir::{AutoParam, BinOp, Value, ValueMap};
     use reify_test_support::builders::expr::{binop, literal, value_ref_typed};
 
-    use super::{CompiledExpr, fold_dependent_duals_skipping_collisions};
+    use super::{CompiledExpr, fold_dependent_duals, repeated_auto_id};
 
     const ENT: &str = "part";
 
@@ -467,6 +462,21 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_auto_param_is_detected_and_the_repeat_is_named() {
+        // The precondition `residual_jacobian_with_seeds` panics on, checked
+        // here in both profiles: `Seeds` keeps a duplicate's FIRST column while
+        // `build_trial_values` keeps its LAST value, so an unchecked repeat is
+        // a derivative attributed to one column and taken at another point.
+        assert_eq!(repeated_auto_id(&[auto("q"), auto("r")]), None, "distinct ids are fine");
+        assert_eq!(
+            repeated_auto_id(&[auto("q"), auto("r"), auto("q")]),
+            Some(&cell("q")),
+            "the REPEAT is named, so the panic can say which cell"
+        );
+        assert_eq!(repeated_auto_id(&[]), None, "an empty solve has nothing to repeat");
+    }
+
+    #[test]
     fn a_dependent_cell_colliding_with_an_auto_is_reported_and_skipped() {
         // The invariant whose failure is SILENT: an auto's tangent IS its seed
         // column `e_j`, and the overlay OUTRANKS the seed columns, so binding
@@ -479,7 +489,7 @@ mod tests {
         let values = values_with(&[("q", 5.0)]);
         let seeds = Seeds::new(&[cell("q")]);
 
-        let (env, _prelude, collisions) = fold_dependent_duals_skipping_collisions(
+        let (env, _prelude, collisions) = fold_dependent_duals(
             &values, &params, &dependent, &[], None, &seeds,
         );
 
@@ -506,10 +516,10 @@ mod tests {
         let with_collision = vec![(cell("q"), twice("q")), (cell("d"), twice("a"))];
         let without = vec![(cell("other"), twice("a")), (cell("d"), twice("a"))];
 
-        let (_e1, prelude_collided, collisions) = fold_dependent_duals_skipping_collisions(
+        let (_e1, prelude_collided, collisions) = fold_dependent_duals(
             &values, &params, &with_collision, &[], None, &seeds,
         );
-        let (_e2, prelude_clean, none) = fold_dependent_duals_skipping_collisions(
+        let (_e2, prelude_clean, none) = fold_dependent_duals(
             &values, &params, &without, &[], None, &seeds,
         );
 
@@ -524,14 +534,14 @@ mod tests {
 
     #[test]
     fn no_collision_returns_an_empty_vector_and_the_ordinary_overlay() {
-        // The only correct steady state, which also keeps the reporting body
-        // honest about the common path: an empty vector, and every cell bound.
+        // The only correct steady state, which also keeps the fold honest about
+        // the common path: an empty vector, and every cell bound.
         let params = [auto("q")];
         let dependent = vec![(cell("b"), twice("q")), (cell("c"), twice("b"))];
         let values = values_with(&[("q", 5.0), ("b", 10.0)]);
         let seeds = Seeds::new(&[cell("q")]);
 
-        let (env, _prelude, collisions) = fold_dependent_duals_skipping_collisions(
+        let (env, _prelude, collisions) = fold_dependent_duals(
             &values, &params, &dependent, &[], None, &seeds,
         );
 

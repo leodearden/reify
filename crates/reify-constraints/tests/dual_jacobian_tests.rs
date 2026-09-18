@@ -20,7 +20,7 @@ use reify_expr::{EvalContext, NonDifferentiable, eval_expr};
 use reify_ir::{AutoParam, BinOp, CompiledExpr, CompiledFunction, Value, ValueMap};
 use reify_test_support::builders::expr::{binop, fn_call, literal, value_ref_typed};
 
-use reify_constraints::residual_jacobian;
+use reify_constraints::{residual_jacobian, residual_jacobian_with_seeds};
 
 const ENT: &str = "model";
 
@@ -365,6 +365,100 @@ fn a_residual_with_an_unsupported_seed_dependent_construct_refuses_by_row() {
         err.to_string().contains("residual 1"),
         "the row INDEX must survive into the message η shows the user: {err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (7) Preconditions on the positional column mapping
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "column j IS auto_params[j]")]
+fn a_repeated_auto_param_panics_rather_than_attributing_one_variable_to_two_columns() {
+    // Unchecked, this is silent and wrong rather than loud: `Seeds` keeps a
+    // duplicate's FIRST column (column 1 stays permanently 0.0) while
+    // `build_trial_values` keeps its LAST value (the solve stands at x[1]), so
+    // `q·q` at x = [2, 7] reports residual 49 with row [14, 0] — a derivative
+    // attributed to one column and taken at the other's point, and η would step
+    // x_0 believing it moves the residual.
+    let q = || aref("q", DimensionVector::DIMENSIONLESS);
+    let params = vec![
+        auto("q", DimensionVector::DIMENSIONLESS),
+        auto("q", DimensionVector::DIMENSIONLESS),
+    ];
+    let residual = binop(BinOp::Mul, q(), q());
+    let _ = residual_jacobian(
+        &params,
+        &[residual],
+        &ValueMap::new(),
+        &[2.0, 7.0],
+        &[],
+        &[],
+        None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "seeds must be seeded on exactly `auto_params`, in order")]
+fn a_hoisted_seed_set_that_disagrees_with_the_auto_params_panics_rather_than_mislabelling() {
+    // The hoisted entry point cannot infer the column order from `seeds`
+    // alone — it IS the contract — so a seed set in the wrong order would
+    // report ∂/∂h in the column every consumer reads as ∂/∂w.
+    let (params, residuals, base, x) = two_auto_model();
+    let swapped = reify_expr::Seeds::new(&[cell("h"), cell("w")]);
+    let _ = residual_jacobian_with_seeds(
+        &swapped, &params, &residuals, &base, &x, &[], &[], None,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (8) A caller-owned seed set, hoisted across trial points
+// ---------------------------------------------------------------------------
+
+#[test]
+fn one_seed_set_reused_across_trial_points_gives_exactly_what_a_fresh_one_would() {
+    // η holds ONE seed set for a whole solve, so the memos a `Seeds` carries
+    // (`depends_on_seed`, `subtree_has_kink`) are filled at the first trial
+    // point and read at every later one.  Both are structural — pure functions
+    // of (subtree, seed set) — so a warmed set must produce EXACTLY what a cold
+    // one does at a DIFFERENT point.  A memo that had captured anything about
+    // the point it was filled at would surface here as a stale row.
+    let (params, residuals, base, _) = two_auto_model();
+    let seeds = reify_expr::Seeds::new(&[cell("w"), cell("h")]);
+    for x in [vec![3.0, 4.0], vec![0.5, 9.0], vec![3.0, 4.0]] {
+        let hoisted =
+            residual_jacobian_with_seeds(&seeds, &params, &residuals, &base, &x, &[], &[], None)
+                .expect("this model is differentiable at every one of these points");
+        assert_eq!(
+            hoisted,
+            jac(&params, &residuals, &base, &x),
+            "a warmed seed set must not change any answer at x = {x:?}"
+        );
+    }
+}
+
+#[test]
+fn a_refused_row_leaves_nothing_behind_for_the_next_call_through_the_same_seeds() {
+    // A `Seeds` also owns the FIRST-WINS refusal slot, which is per TRAVERSAL
+    // rather than per point — the state a hoisted seed set is most likely to
+    // carry across a boundary it should not.  A refusal at one trial point must
+    // not reach the next call as a phantom `JacobianError`.
+    let (params, residuals, base, x) = two_auto_model();
+    let seeds = reify_expr::Seeds::new(&[cell("w"), cell("h")]);
+    // `[w, h][0]` — the same undifferentiable construct section (6) refuses on.
+    let bad = index_access(
+        reify_test_support::builders::expr::list_expr(vec![
+            aref("w", DimensionVector::LENGTH),
+            aref("h", DimensionVector::LENGTH),
+        ]),
+        literal(Value::Int(0)),
+    );
+
+    residual_jacobian_with_seeds(&seeds, &params, &[bad], &base, &x, &[], &[], None)
+        .expect_err("the premise: this row refuses");
+    let after =
+        residual_jacobian_with_seeds(&seeds, &params, &residuals, &base, &x, &[], &[], None)
+            .expect("a differentiable model must not inherit the previous call's refusal");
+    assert_eq!(after, jac(&params, &residuals, &base, &x));
 }
 
 // ===========================================================================
@@ -1098,11 +1192,24 @@ fn an_optimized_compute_dispatched_call_is_refused_by_row_not_silently_flattened
     )
     .expect_err("a compute-dispatched call carries no derivative");
     assert_eq!(err.row, 0);
-    let msg = err.to_string();
-    assert!(
-        msg.contains("optimized"),
-        "the refusal must name the compute dispatch, since that is what η has to act on: {msg}"
-    );
+    // The TYPED cause, the way every sibling refusal test pins one: a substring
+    // check would keep passing if the refusal changed variant, lost its site,
+    // or degraded to a root-sited generic message that merely happened to
+    // mention the word.
+    match &err.cause {
+        NonDifferentiable::UnsupportedKind { kind, site } => {
+            assert_eq!(
+                *kind, "an `@optimized` compute-dispatched function",
+                "the refusal must name the compute dispatch, since that is what η acts on"
+            );
+            assert_eq!(
+                *site,
+                reify_expr::KinkSite::root(),
+                "the dispatched call IS this residual, so the refusal sits at its root"
+            );
+        }
+        other => panic!("expected the dispatch's own cause, got {other:?}"),
+    }
 }
 
 #[test]

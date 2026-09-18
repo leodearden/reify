@@ -51,11 +51,14 @@ pub use sketch::{
 // is private and the crate root is the ONLY path to it, so
 // `reify_constraints::residual_jacobian` is not merely the preferred spelling
 // — it is the reachable one.  `Jacobian` names `reify_expr` types in its
-// public shape (`BranchRecord`, `KinkSite`); a consumer reads those from
-// reify-expr, which η (#6675), μ (#6680) and λ (#6679) all depend on anyway.
-// Passing them through a second crate root is a surface to add when a consumer
-// asks for it, not before.
-pub use dual_jacobian::{Jacobian, JacobianError, residual_jacobian};
+// public shape (`BranchRecord`, `KinkSite`), and `residual_jacobian_with_seeds`
+// — the variant an iterating consumer hoists its `Seeds` through — names one
+// more; a consumer reads those from reify-expr, which η (#6675), μ (#6680) and
+// λ (#6679) all depend on anyway.  Passing them through a second crate root is
+// a surface to add when a consumer asks for it, not before.
+pub use dual_jacobian::{
+    Jacobian, JacobianError, residual_jacobian, residual_jacobian_with_seeds,
+};
 pub use solver::DimensionalSolver;
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can
 // compute the λ=0 Chebyshev-centre reference independently of the tradeoff blend
