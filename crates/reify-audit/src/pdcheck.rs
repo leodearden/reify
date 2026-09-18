@@ -26,7 +26,8 @@
 //! is stated here because it cannot be re-derived from this tree, which parses
 //! `delivered_checks` nowhere else.
 
-use std::collections::HashSet;
+use crate::{EvidenceRef, Finding, GitCommit, GitOps, Pattern, Severity};
+use std::collections::{HashMap, HashSet};
 
 /// Wire spelling of the only `kind` this lane reads. `script` and `manual`
 /// rows carry no grep pathspec, so their `paths` assert nothing about path
@@ -47,6 +48,26 @@ pub enum Verdict {
     /// `expect: absent` against a wholly dead pathspec: rc=1 reads as PASSED,
     /// so the check succeeds while asserting nothing.
     VacuousAbsent,
+}
+
+impl Verdict {
+    /// The finding `kind`, carried as a stable summary prefix rather than as a
+    /// per-kind [`Pattern`] variant — PTODO's convention.
+    fn kind(self) -> &'static str {
+        match self {
+            Verdict::Unsatisfiable => "delivered-check-unsatisfiable-path",
+            Verdict::VacuousAbsent => "delivered-check-vacuous-absent-path",
+        }
+    }
+
+    /// High for the outage (a permanently blocked dependent), Medium for the
+    /// silent hole (a check that passes while asserting nothing).
+    fn severity(self) -> Severity {
+        match self {
+            Verdict::Unsatisfiable => Severity::High,
+            Verdict::VacuousAbsent => Severity::Medium,
+        }
+    }
 }
 
 /// One `metadata.delivered_checks` row, holding only what this lane reads.
@@ -120,6 +141,209 @@ pub fn classify_row(row: &DeliveredCheckRow, tracked: &HashSet<String>) -> Optio
         return None;
     }
     Some(verdict)
+}
+
+/// A dead path of a flagged row, together with what git knows about it: the
+/// last commit that touched it, and the still-tracked path it was renamed to
+/// if there is one.
+struct DeadPath {
+    path: String,
+    commit: GitCommit,
+    rename_target: Option<String>,
+}
+
+/// The lane: for each non-terminal master task, classify every
+/// `metadata.delivered_checks` row against the tracked-file set.
+///
+/// Structurally parallel to [`crate::ptodo::resolve_inverse`] — same
+/// `tag = 'master'` query, same terminal-status skip, same permissive metadata
+/// parse, same per-run git memo caches, same `.filter(path_present_in_tracked)`
+/// guard on a rename target so no advertised path is one the reader cannot
+/// open. Two deliberate divergences from that lane:
+///
+/// 1. Iteration is per ROW with an all-paths-absent quantifier, not per path,
+///    because a row's `paths` are ONE ANY-match pathspec (see the module doc).
+///    `resolve_inverse`'s per-entry iteration is correct only because each
+///    `metadata.files` entry stands alone.
+/// 2. The finding kind comes from the row's `expect` polarity, not from
+///    rename-vs-delete; that axis changes only the repair hint, which is
+///    carried as evidence.
+///
+/// A row all of whose paths are absent but NONE of which git has ever seen is
+/// presumed to name files the task will CREATE, and passes — the same
+/// load-bearing arm `resolve_inverse` documents, and what keeps healthy
+/// post-state rows quiet.
+///
+/// Findings are sorted by (task id as integer, check name) for determinism.
+/// Fail-soft on DB errors, propagated as `Err` for the caller to degrade.
+// G-allow: test-facing thin pub fn — its callers are the tests/pdcheck.rs integration test binary (a SEPARATE crate, so `pub(crate)` would break it) and `check` in this module. Mirrors ptodo::resolve_inverse's pub-for-integration-test pattern.
+pub fn resolve_delivered_check_paths(
+    conn: &rusqlite::Connection,
+    git: &dyn GitOps,
+    tracked: &HashSet<String>,
+) -> rusqlite::Result<Vec<Finding>> {
+    let mut stmt = conn.prepare("SELECT id, status, metadata FROM tasks WHERE tag = 'master'")?;
+
+    let rows: Vec<(i64, String, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut out: Vec<Finding> = Vec::new();
+    // Per-run caches, for the reason `resolve_inverse` measured: one relocated
+    // file is routinely cited by several related tasks, and each miss is a
+    // subprocess spawn.
+    let mut git_cache: HashMap<String, Option<GitCommit>> = HashMap::new();
+    let mut rename_cache: HashMap<(String, String), Option<String>> = HashMap::new();
+
+    for (id, status, metadata_opt) in rows {
+        if crate::ptodo::is_terminal_status(&status) {
+            continue;
+        }
+
+        // NULL / malformed / missing key / non-array / non-object row → empty,
+        // graceful. The producer lives in another repo; nothing here may panic
+        // on a shape it does not recognise.
+        let check_rows: Vec<DeliveredCheckRow> = metadata_opt
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
+            .and_then(|v| v.get("delivered_checks").and_then(|a| a.as_array()).cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(DeliveredCheckRow::from_json)
+            .collect();
+
+        for row in check_rows {
+            let Some(verdict) = classify_row(&row, tracked) else {
+                continue;
+            };
+
+            // Every path in the row is absent. Ask git which of them ever
+            // existed: a path with no history is presumed to-be-created, and a
+            // row of only such paths is not a finding.
+            let dead: Vec<DeadPath> = row
+                .paths
+                .iter()
+                .filter_map(|path| {
+                    let commit = git_cache
+                        .entry(path.clone())
+                        .or_insert_with(|| git.last_commit_for_path(path))
+                        .clone()?;
+                    let rename_target = rename_cache
+                        .entry((path.clone(), commit.sha.clone()))
+                        .or_insert_with(|| git.rename_target_for_path(path, &commit.sha))
+                        .clone()
+                        // Never advertise a target the reader cannot open.
+                        // `path_present_in_tracked`, not a bare `contains`, so
+                        // this test cannot drift from the cited-path one.
+                        .filter(|t| crate::ptodo::path_present_in_tracked(t, tracked));
+                    Some(DeadPath { path: path.clone(), commit, rename_target })
+                })
+                .collect();
+            if dead.is_empty() {
+                continue;
+            }
+
+            out.push(build_finding(id, &row, verdict, &dead));
+        }
+    }
+
+    out.sort_by(|a, b| {
+        let id_a = a.task_id.parse::<i64>().unwrap_or(i64::MAX);
+        let id_b = b.task_id.parse::<i64>().unwrap_or(i64::MAX);
+        id_a.cmp(&id_b).then_with(|| check_name_of(a).cmp(&check_name_of(b)))
+    });
+    Ok(out)
+}
+
+/// This lane's sort key within a task: the flagged row's `name`, read back out
+/// of the evidence that carries it.
+fn check_name_of(finding: &Finding) -> String {
+    finding
+        .evidence
+        .iter()
+        .find_map(|e| match e {
+            EvidenceRef::DeliveredCheck { check_name, .. } => Some(check_name.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// One finding per flagged row. The repair hint names the first dead path that
+/// was renamed somewhere still tracked, since that is the one a fixer can act
+/// on; evidence carries every dead path's commit and target.
+fn build_finding(id: i64, row: &DeliveredCheckRow, verdict: Verdict, dead: &[DeadPath]) -> Finding {
+    // Name the source path in the hint too: with several dead paths in one row
+    // a bare target leaves the fixer guessing which path it replaces.
+    let hint = match dead.iter().find(|d| d.rename_target.is_some()) {
+        Some(DeadPath { path, rename_target: Some(target), commit }) => {
+            format!(" — repoint '{path}' to '{target}' (renamed in {})", commit.sha)
+        }
+        _ => format!(
+            " — '{}' last touched in {}",
+            dead[0].path, dead[0].commit.sha
+        ),
+    };
+
+    let mut evidence = vec![EvidenceRef::DeliveredCheck {
+        check_name: row.name.clone(),
+        paths: row.paths.clone(),
+    }];
+    for entry in dead {
+        if let Some(target) = &entry.rename_target {
+            evidence.push(EvidenceRef::File { path: target.clone() });
+        }
+        if !evidence
+            .iter()
+            .any(|e| matches!(e, EvidenceRef::Commit { sha, .. } if *sha == entry.commit.sha))
+        {
+            evidence.push(EvidenceRef::Commit {
+                sha: entry.commit.sha.clone(),
+                subject: entry.commit.subject.clone(),
+            });
+        }
+    }
+
+    Finding {
+        pattern: Pattern::PDeliveredCheckPath,
+        severity: verdict.severity(),
+        task_id: id.to_string(),
+        summary: format!(
+            "{kind}: task #{id} check '{name}' (expect={polarity}) names no tracked path: {paths}{hint}",
+            kind = verdict.kind(),
+            name = row.name,
+            polarity = row.expect.as_deref().unwrap_or_default(),
+            paths = row.paths.join(", "),
+        ),
+        evidence,
+    }
+}
+
+/// [`crate::AuditContext`] entry point.
+///
+/// Degrades fail-soft: a missing or unreadable `.taskmaster/tasks/tasks.db` is
+/// an absent OPTIONAL substrate, so it yields zero findings behind one stderr
+/// breadcrumb naming the resolved path rather than an error exit. The exit
+/// class is untouched — 125 is reserved for genuine arg/IO misconfig.
+pub fn check(ctx: &crate::AuditContext) -> Vec<Finding> {
+    let tracked: HashSet<String> = ctx.git.ls_files().into_iter().collect();
+    let db_path = crate::ptodo::tasks_db_path(&ctx.project_root);
+    match crate::ptodo::open_tasks_db(&db_path)
+        .and_then(|conn| resolve_delivered_check_paths(&conn, ctx.git, &tracked))
+    {
+        Ok(findings) => findings,
+        Err(_) => {
+            eprintln!(
+                "reify-audit: tasks.db unreachable at '{}' — PDCHECK delivered_checks dead-path lane skipped; this is NOT a clean bill of health",
+                db_path.display()
+            );
+            Vec::new()
+        }
+    }
 }
 
 #[cfg(test)]

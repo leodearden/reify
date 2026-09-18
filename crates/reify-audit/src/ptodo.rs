@@ -1391,7 +1391,10 @@ pub fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
 /// a non-terminal task carrying `do_not_complete == true` is classified as
 /// `parked-on-anchor` (Medium) rather than live (task ι, #4644). η flips
 /// `orphaned` to High; β keeps all other liveness kinds Medium.
-fn is_terminal_status(status: &str) -> bool {
+///
+/// `pub(crate)` because [`crate::pdcheck`] now applies the same skip: only a
+/// task that can still land can block a dependent.
+pub(crate) fn is_terminal_status(status: &str) -> bool {
     status == "done" || status == "cancelled"
 }
 
