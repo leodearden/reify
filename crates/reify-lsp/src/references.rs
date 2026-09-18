@@ -4658,6 +4658,61 @@ structure Assembly {
         }
     }
 
+    /// AXIS 3 — the two child regions of a PURPOSE that no collector reaches.
+    ///
+    /// `entity_members` admits Structure|Occurrence|Trait|Purpose, so a purpose's
+    /// `members` are walked — but a `PurposeDef` has THREE child regions, and the
+    /// other two are sibling vecs it never sees: `structures: Vec<StructureDef>`
+    /// (a structure lexically nested in the purpose body, kept out of `members`
+    /// by task 4639) and `defaults: Vec<DefaultDecl>` (kept out by task 4496,
+    /// each carrying a real `DefaultDecl.type_expr` type reference).
+    ///
+    /// Every use below is therefore invisible today: a construction site, a type
+    /// annotation and an ambient default, none of them exotic. This is the
+    /// surface workstreams D and C share — a cross-file oracle that resolved a
+    /// purpose-nested name while these uses stayed uncollected would rename the
+    /// declaration and leave every one of them stale, which is precisely the
+    /// hazard the collectors-before-oracle rule exists to prevent.
+    #[test]
+    fn use_inside_a_purpose_body_is_collected() {
+        const DECL: &str = "structure Hole {\n    param d: Length = 1mm\n}\n";
+        let rows: &[(&str, String, &str)] = &[
+            (
+                "PurposeDef.structures — `sub s = Hole()` construction site",
+                format!(
+                    "{DECL}purpose P() {{\n    structure def Nested {{\n        sub s = Hole()\n    }}\n}}"
+                ),
+                "Hole",
+            ),
+            (
+                "PurposeDef.structures — `param p : Hole` type annotation",
+                format!(
+                    "{DECL}purpose P() {{\n    structure def Nested {{\n        param p : Hole\n    }}\n}}"
+                ),
+                "Hole",
+            ),
+            (
+                "PurposeDef.defaults — `default Hole = …`",
+                format!("{DECL}purpose P() {{\n    default Hole = 1\n}}"),
+                "Hole",
+            ),
+            // All three at once, in a purpose that also takes a param, so the
+            // three regions are pinned as coexisting rather than only one at a
+            // time — a fan-out that handled each alone but dropped one when the
+            // others were present would still be caught.
+            (
+                "all three regions together",
+                format!(
+                    "{DECL}purpose P(subject : Structure) {{\n    default Hole = 1\n    structure def Nested {{\n        param p : Hole\n        sub s = Hole()\n    }}\n}}"
+                ),
+                "Hole",
+            ),
+        ];
+        for (label, source, name) in rows {
+            assert_collects_every_occurrence(label, source, name);
+        }
+    }
+
     // --- κ step-3 (task 4210): cross-file structure references from any signal cursor ---
 
     /// Sort `Location`s by (uri, start line, start char) so cross-file reference
