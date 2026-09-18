@@ -1,8 +1,9 @@
-//! Pin: the 14 remaining `pub fn` surfaced as new-since-baseline orphans by the
-//! 2026-05-16 G-tool audit must each carry a `// G-allow:` marker citing
-//! the tracked owner task.  The 14 functions span 5 crates:
-//! reify-compiler, reify-eval, reify-kernel-occt, reify-solver-elastic,
-//! reify-ir.
+//! Pin: each `pub fn` surfaced as a new-since-baseline orphan by the
+//! 2026-05-16 G-tool audit must carry a `// G-allow:` marker citing the
+//! tracked owner task.  Which functions and crates those are is the `PINS`
+//! table below and nothing else: rows leave one at a time as their owners
+//! wire consumers, so a count or crate list repeated up here would only
+//! drift against it.
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test new_orphans_2026_05_16_g_allow`
@@ -28,22 +29,11 @@
 //! name — search for it in this file when
 //! `assert_eq!(matching_allowed.len(), 1)` fires unexpectedly.
 //!
-//! One row left by a route that contract did not anticipate, and the exception
-//! is worth recording so the next reader does not read it as a violation.
-//! `capability_kind` (`crates/reify-ir/src/geometry.rs`) was removed with no
-//! consumer-wiring commit, because its consumer had been wired all along:
-//! `gate_query_capability` in `crates/reify-eval/src/geometry_ops.rs` calls
-//! `query.capability_kind()` from production, non-test code — exactly the
-//! "capability-dispatch arm" its own `// G-allow:` marker named in advance.
-//! The audit could not see that call edge: the line comment directly above
-//! `gate_query_capability` merely MENTIONS `#[cfg(test)]`, and the orphan
-//! script decided where a `cfg(test)` mask starts from raw line text, so the
-//! comment opened a mask over the whole function and hid both it and its call.
-//! Making that decision literal-aware revealed the edge and moved
-//! `capability_kind` to `callers: 1`.  The contract's precondition — confirm a
-//! real call edge was wired — was therefore satisfied by an existing call site
-//! rather than a new one, and its prescribed action, delete the row, applied
-//! unchanged.
+//! Exception on record, so a reader tracing that contract does not read one
+//! removal as a violation: `capability_kind` left with no consumer-wiring
+//! commit because its consumer had been wired all along, hidden from the
+//! audit by a spurious `cfg(test)` mask.  Reasoning: `git log --grep
+//! capability_kind`.
 //!
 //! Graceful skip: if `python3`, `git`, or the audit script are absent
 //! from PATH/disk the test prints a note to stderr and returns without
