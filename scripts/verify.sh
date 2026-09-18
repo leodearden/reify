@@ -1424,8 +1424,25 @@ confirm_failed_run() {
             _sidecar_oid="$(sed -n 's/.*"tree_oid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_sidecar" 2>/dev/null | head -n1)"
         fi
         if [ -z "$_tree_oid" ] || [ -z "$_sidecar_oid" ] || [ "$_sidecar_oid" != "$_tree_oid" ]; then
-            echo "confirm: skipping $_profile — recorded tree ${_sidecar_oid:-<absent>} != current ${_tree_oid:-<unknown>}" >&2
-            continue
+            # REFUSE, do not skip. A skip would produce the vacuous empty
+            # output, and empty is the wire encoding of "confirmed clean" —
+            # reporting a clean tree we never actually examined.
+            #
+            # ACCEPTED LIMITATION, recorded deliberately: on the wire, "cannot
+            # confirm (tree drift)" and "genuinely confirmed clean" collapse to
+            # the same dark-factory observation ([], logged as intermittent
+            # nondeterminism), because the banner is on its reject-to-[] list.
+            # That is strictly better than the status quo, where EVERY
+            # confirmation call collapses to [] unconditionally, but it is not
+            # the three-state contract the PRD (§6.8/§11) would prefer. Making
+            # the two distinguishable needs a dark-factory-side ConfirmationRunner
+            # change; reify cannot surface it unilaterally, and it is named as
+            # follow-up rather than half-built here.
+            #
+            # Both OIDs are named because a refusal that names only one side
+            # tells an operator that something drifted but not from what.
+            _refusal="confirm refused: tree drift — the $_profile manifest was recorded against tree ${_sidecar_oid:-<absent>}, but HEAD's tree is now ${_tree_oid:-<unknown>}"
+            break
         fi
 
         # A SUBSHELL: the generator's failure handler exits, and that must end
