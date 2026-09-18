@@ -517,6 +517,27 @@ fn guarded_block_body_leading_operator_continuation_is_rejected() {
     assert_one_member_continuation_error_at("guarded-block body", source, "- 3mm", "-");
 }
 
+/// `guarded_block` is the only container with TWO brace pairs (the `where`
+/// body and the `else` body), and `members_of` slices between the FIRST `{`
+/// and the LAST `}` — so both bodies' members fall out of one slice, and the
+/// intervening `}`, `else`, `{` are anonymous and filtered away. That is the
+/// subtlest line in `members_of`; this test pins it by putting the join in the
+/// `else` body, which the no-`else` fixtures above never reach.
+#[test]
+fn guarded_block_else_body_leading_operator_continuation_is_rejected() {
+    let source = concat!(
+        "structure S {\n",
+        "  where c {\n",
+        "    let a = 1mm\n",
+        "  } else {\n",
+        "    let b = 2mm\n",
+        "    - 3mm\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at("guarded-block else body", source, "- 3mm", "-");
+}
+
 /// `occurrence_definition` shares `repeat($._member)` with
 /// `structure_definition` (grammar.js:512 and :525), so it is vulnerable to
 /// exactly the same join.
@@ -632,6 +653,73 @@ fn derived_body_leading_operator_continuation_is_rejected() {
         "}\n",
     );
     assert_one_member_continuation_error_at("derived body", source, "- 3mm", "-");
+}
+
+/// `joint_body`'s block arm repeats `relation_member` verbatim
+/// (grammar.js:799-802), the same item `relate_block` uses — so it carries the
+/// same join. Worth its own fixture rather than reasoning by analogy: the rule
+/// has a brace-less alternative (`field('result', $._expression)`), and
+/// `members_of` returns nothing for a body with no `{`/`}` children, so this is
+/// exactly the kind of entry that could sit in `MEMBER_LIST_CONTAINERS` doing
+/// nothing while every other test stayed green.
+#[test]
+fn joint_body_leading_operator_continuation_is_rejected() {
+    let source = "joint J() with angle : Angle = {\n  a.b\n  - 3mm\n}\n";
+    assert_one_member_continuation_error_at("joint body", source, "- 3mm", "-");
+}
+
+/// `specialization_body` (grammar.js:1121-1125) repeats
+/// `choice($.param_assignment, $._member)`, and `param_assignment` is
+/// `name = <expression>` — a trailing expression, so it absorbs the next line
+/// exactly as a `let` does.
+#[test]
+fn specialization_body_leading_operator_continuation_is_rejected() {
+    let source = concat!(
+        "structure S {\n",
+        "  sub a : T {\n",
+        "    p = 1mm\n",
+        "    - 3mm\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at("specialization body", source, "- 3mm", "-");
+}
+
+/// `keyed_member_block` (grammar.js:1146-1150) is covered but CANNOT host the
+/// ordinary join, and that is a measured claim rather than an assumption: a
+/// `keyed_member_entry` is `"key" => <specialization_body>`, so every entry
+/// ends in `}` and has no trailing expression for the next line to attach to.
+///
+/// Both halves are asserted, because "no diagnostic" on its own is also what
+/// an entry that is never visited looks like. The second half splits one entry
+/// across two rows so its `=>` is row-leading at the entry's own column: that
+/// IS reported, which proves the container is live rather than inert.
+#[test]
+fn keyed_member_block_entries_cannot_join_but_the_container_is_live() {
+    let clean = concat!(
+        "structure S {\n",
+        "  sub a : T {\n",
+        "    \"k\" => { p = 1mm }\n",
+        "    \"j\" => { p = 2mm }\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_no_member_continuation_error("adjacent keyed entries", clean);
+
+    let split = concat!(
+        "structure S {\n",
+        "  sub a : T {\n",
+        "    \"k\"\n",
+        "    => { p = 1mm }\n",
+        "  }\n",
+        "}\n",
+    );
+    assert_one_member_continuation_error_at(
+        "keyed entry split across rows",
+        split,
+        "=> { p = 1mm }",
+        "=>",
+    );
 }
 
 // ── (g) grammar-drift guard ─────────────────────────────────────────────────

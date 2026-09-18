@@ -162,8 +162,13 @@ use reify_core::SourceSpan;
 ///     (`crates/reify-syntax/tests/harness_syntax/member_continuation_ambiguity_tests.rs`),
 ///     which re-derives the sites from `grammar.js` and requires each to be
 ///     covered here or excluded below with a reason.
-///   - the per-container must-error tests in the same file, which catch a
-///     removed entry.
+///   - a per-container test in the same file for EVERY entry below, which
+///     catches a removed one. Each is a must-error fixture, except the two
+///     containers where no join can form: `keyed_member_block` (every entry
+///     ends in `}`) and `match_arm_decl_block` (`,`-separated arms with no
+///     expression tail) instead pin that fact as a negative — and
+///     `keyed_member_block`'s also asserts a row-split entry IS reported, so
+///     "no diagnostic" cannot be confused with "never visited".
 pub const MEMBER_LIST_CONTAINERS: &[&str] = &[
     // repeat($._member) — grammar.js:512
     "structure_definition",
