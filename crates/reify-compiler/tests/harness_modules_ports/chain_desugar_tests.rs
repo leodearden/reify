@@ -4,6 +4,12 @@
 //! each hop is desugared to that sub's unique port in the direction the hop needs.
 //! Lives apart from `connect_compile_tests.rs`, which already carries the explicit
 //! `connect` surface at 2368 lines.
+//!
+//! Inference is per-INSTANCE: an element must denote one occurrence, so a
+//! collection or keyed sub named without an indexer is refused rather than
+//! inferred. The INDEXED forms it refuses to cover — `vents[0]`, which `forall`
+//! substitution produces, and `vents["intake"]` — must keep inferring, and
+//! `forall_chain_elements_infer_default_ports` is the standing guard for that.
 
 use reify_core::*;
 use reify_test_support::{
@@ -355,5 +361,105 @@ structure def S {
         s.connections.is_empty(),
         "a hop with an unresolved endpoint must not be emitted, got: {:?}",
         s.connections
+    );
+}
+
+/// A collection sub names N occurrences, not one, so there is no single
+/// endpoint to infer. Refusing is the whole point: inferring `vents.outlet`
+/// yields a compat constraint over a node that does not exist — the real
+/// instances are `vents[0].outlet` and `vents[1].outlet` — and it reports
+/// "All constraints satisfied" over that phantom.
+///
+/// Before §6.2 inference existed this source was a hard `undefined port
+/// 'vents'`, so the diagnostic is mandatory: returning no endpoint silently
+/// would trade the phantom for a missing error.
+#[test]
+fn chain_over_a_collection_sub_without_an_indexer_is_an_error() {
+    let source = r#"
+trait Air { param d : Length }
+occurrence def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+}
+occurrence def Hub {
+    port feed : in Air { param d : Length = 5mm }
+    port vent : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    constraint vents.count == 2
+    sub hub = Hub()
+    chain vents -> hub
+}
+"#;
+
+    assert_chain_over_an_unindexed_collection_is_refused(source);
+}
+
+/// The keyed half of the same rule. Keyed subs have `is_collection == false`
+/// and so are ABSENT from `collection_sub_names`, living in `keyed_sub_keys`
+/// instead — a refusal that consults only the former lets this shape through
+/// to the identical phantom.
+#[test]
+fn chain_over_a_keyed_sub_without_an_indexer_is_an_error() {
+    let source = r#"
+trait Air { param d : Length }
+occurrence def Vent {
+    param size : Length = 4mm
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+}
+occurrence def Hub {
+    port feed : in Air { param d : Length = 5mm }
+    port vent : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : Keyed<Vent> { "intake" => { size = 5mm } }
+    sub hub = Hub()
+    chain vents -> hub
+}
+"#;
+
+    assert_chain_over_an_unindexed_collection_is_refused(source);
+}
+
+/// The collection and keyed cases differ only in how `vents` is declared, so
+/// both assert the same three things: one error naming the sub, a remedy that
+/// prescribes the per-element `forall` form, and no connection at all —
+/// emitting the hop is what manufactures the phantom endpoint.
+fn assert_chain_over_an_unindexed_collection_is_refused(source: &str) {
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error — only `vents` is unindexed, `hub` is a plain sub; got: {:?}",
+        errors
+    );
+
+    let message = &errors[0].message;
+    for expected in ["'vents'", "forall"] {
+        assert!(
+            message.contains(expected),
+            "refusal should name {expected}, got: {message}"
+        );
+    }
+    assert_no_diagnostic(&module.diagnostics, Severity::Error, "undefined port");
+
+    let s = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    let endpoints: Vec<(&str, &str)> = s
+        .connections
+        .iter()
+        .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+        .collect();
+    assert_eq!(
+        endpoints,
+        Vec::<(&str, &str)>::new(),
+        "an unindexed collection element must emit no connection; \
+         `vents.outlet` names no instance that exists"
     );
 }
