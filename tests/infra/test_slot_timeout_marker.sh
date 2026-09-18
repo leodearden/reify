@@ -3810,6 +3810,141 @@ assert "G2g3: ... and a REVERSED 2>&1 >file still leaks, because fd 2 is aimed a
     test "$G2G3_N" -eq 1
 
 echo ""
+echo "--- G2h: the PYTHON dialect -- diversion is a KWARG, not a redirect ---"
+
+# WHY A DIALECT AND NOT AN ALTERNATION. Section F now follows a delegating
+# wrapper into its `.py` sibling (FC8), so a ported member's deadline-capable
+# invocation can live in Python -- and there the leak property is not written
+# with `2>` at all. It is carried by the spawn call's KWARGS:
+# `stderr=subprocess.PIPE/DEVNULL` and `capture_output=True` are the straight
+# diversions, `stderr=subprocess.STDOUT` is the merge, and the merge is a
+# diversion only when stdout is itself diverted -- exactly G2d's precondition,
+# spelled in another language.
+#
+# THE MERGE BRANCH TAKES NO ORDER TEST, and that is a deliberate difference
+# from bash rather than an omission. G2g3 pins that `2>&1 >file` LEAKS, because
+# fd 2 is aimed at whatever fd 1 is AT THAT MOMENT -- the inherited stdout --
+# and only then does fd 1 move. Python kwargs carry no such ordering: they are
+# collected into one mapping and applied by a single call, so
+# `stderr=..., stdout=...` and the reverse are the same call. G2h3 is the
+# standing fixture that pins the difference, so a future reader cannot
+# "restore symmetry" with bash and silently start flagging a correct spawn.
+#
+# THE SITE IS THE SPAWN CALL, NOT THE ARGV LIST, and the reason is the same one
+# the G_SCAN preamble gives for the forwarding-lib indirection: in Python argv
+# is DATA. `["bash", str(NESTED)]` carries no stream disposition whatsoever, so
+# asserting on it could only ever produce a false RED. The leak property lives
+# entirely at the spawn.
+#
+# Fixtures are PRINTF'd into $TMPG like every other control in this section,
+# and driven straight through _g_sites/_g_unredirected. The `py` argument is
+# the DIALECT; every existing control above passes none and so keeps the bash
+# default, which is what makes their byte-identical counts a real claim.
+G_PY_CTRL_MULTI_CAP="$TMPG/ctrl-py-multiline-captured.cmds"
+G_PY_CTRL_MULTI_MERGE="$TMPG/ctrl-py-multiline-merge-stdout-inherited.cmds"
+G_PY_CTRL_MULTI_REV="$TMPG/ctrl-py-multiline-kwargs-reversed.cmds"
+G_PY_CTRL_LINE_DEVNULL="$TMPG/ctrl-py-line-devnull.cmds"
+G_PY_CTRL_LINE_CAPOUT="$TMPG/ctrl-py-line-capture-output.cmds"
+G_PY_CTRL_LINE_BARE="$TMPG/ctrl-py-line-no-stream-kwargs.cmds"
+G_PY_CTRL_SITE='subprocess\.(Popen|run)\('
+
+# THE REAL PORT'S SHAPE, transcribed from run_under_ambient: the spawn opens on
+# one line and its kwargs sit on the NEXT. This is the one structural
+# difference from the three bash opener kinds -- a subshell and an inline body
+# are stamped by their CLOSER, but a Python call's disposition is in its BODY,
+# and the closer `)` carries nothing at all.
+printf '%s\n' \
+    'proc = subprocess.Popen(' \
+    '    cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,' \
+    '    text=True, errors="replace", start_new_session=True,' \
+    ')' \
+    > "$G_PY_CTRL_MULTI_CAP"
+
+# ITS LOAD-BEARING MIRROR, the exact Python analogue of G2d1: the same merge
+# with stdout left INHERITED. Merging into the stream run_all Phase 3 re-emits
+# IS the leak, not a fix, in either language.
+printf '%s\n' \
+    'proc = subprocess.Popen(' \
+    '    cmd, env=env, stderr=subprocess.STDOUT,' \
+    '    text=True, errors="replace", start_new_session=True,' \
+    ')' \
+    > "$G_PY_CTRL_MULTI_MERGE"
+
+# THE ORDER FIXTURE. Same two kwargs as the first fixture, written the other way
+# round. Still captured -- see the no-order-test note above.
+printf '%s\n' \
+    'proc = subprocess.Popen(' \
+    '    cmd, env=env, stderr=subprocess.STDOUT, stdout=subprocess.PIPE,' \
+    '    text=True, errors="replace", start_new_session=True,' \
+    ')' \
+    > "$G_PY_CTRL_MULTI_REV"
+
+# LINE-LOCAL SPAWNS, which need no block machinery at all -- the existing
+# line-local branch handles them once the dialect EREs are in play.
+printf '%s\n' \
+    'subprocess.run(["bash", str(NESTED)], stderr=subprocess.DEVNULL, check=True)' \
+    > "$G_PY_CTRL_LINE_DEVNULL"
+# `capture_output=True` is the third in-tree idiom and diverts BOTH streams in
+# one token. Live at test_flake_density_report.py:83.
+printf '%s\n' \
+    'subprocess.run([sys.executable, str(TOOL_PATH)], capture_output=True, text=True)' \
+    > "$G_PY_CTRL_LINE_CAPOUT"
+printf '%s\n' \
+    'subprocess.run(["bash", str(NESTED)], check=True)' \
+    > "$G_PY_CTRL_LINE_BARE"
+
+# SITES ASSERTED ALONGSIDE EVERY ZERO, the G3-before-G1 discipline applied to
+# the controls themselves: a fixture the site ERE cannot see yields 0
+# unredirected for the wrong reason, and would stay green through any
+# regression. Counts precomputed into plain variables, `test` as the checker.
+G2H1_SITES="$(_g_sites "$G_PY_CTRL_MULTI_CAP" "$G_PY_CTRL_SITE" py)"
+G2H1_N="$(_g_unredirected "$G_PY_CTRL_MULTI_CAP" "$G_PY_CTRL_SITE" py)"
+G2H2_N="$(_g_unredirected "$G_PY_CTRL_MULTI_MERGE" "$G_PY_CTRL_SITE" py)"
+G2H3_SITES="$(_g_sites "$G_PY_CTRL_MULTI_REV" "$G_PY_CTRL_SITE" py)"
+G2H3_N="$(_g_unredirected "$G_PY_CTRL_MULTI_REV" "$G_PY_CTRL_SITE" py)"
+G2H4_SITES="$(_g_sites "$G_PY_CTRL_LINE_DEVNULL" "$G_PY_CTRL_SITE" py)"
+G2H4_N="$(_g_unredirected "$G_PY_CTRL_LINE_DEVNULL" "$G_PY_CTRL_SITE" py)"
+G2H5_SITES="$(_g_sites "$G_PY_CTRL_LINE_CAPOUT" "$G_PY_CTRL_SITE" py)"
+G2H5_N="$(_g_unredirected "$G_PY_CTRL_LINE_CAPOUT" "$G_PY_CTRL_SITE" py)"
+G2H6_N="$(_g_unredirected "$G_PY_CTRL_LINE_BARE" "$G_PY_CTRL_SITE" py)"
+
+assert "G2h1a: the multi-line spawn OPENER is itself the site, so G2h1b's zero is not vacuous (got $G2H1_SITES sites)" \
+    test "$G2H1_SITES" -eq 1
+assert "G2h1b: a multi-line spawn whose kwargs divert stdout and merge stderr into it is NOT flagged -- the capture is in the call BODY, which no bash opener kind stamps (got $G2H1_N unredirected)" \
+    test "$G2H1_N" -eq 0
+assert "G2h2: ... but the same merge with stdout left INHERITED still IS -- the Python analogue of G2d1, and block tolerance is not blanket here either (got $G2H2_N unredirected)" \
+    test "$G2H2_N" -eq 1
+assert "G2h3a: the reversed-kwargs fixture is a site too (got $G2H3_SITES sites)" \
+    test "$G2H3_SITES" -eq 1
+assert "G2h3b: ... and the SAME two kwargs written in the other order are still captured -- Python kwargs carry no ordering, so this branch deliberately takes no order test, unlike bash's G2g3 (got $G2H3_N unredirected)" \
+    test "$G2H3_N" -eq 0
+assert "G2h4a: the one-line spawn is a site, so G2h4b's zero is not vacuous (got $G2H4_SITES sites)" \
+    test "$G2H4_SITES" -eq 1
+assert "G2h4b: a one-line spawn diverting stderr to DEVNULL is NOT flagged -- G asserts the LEAK property, so destroying the evidence satisfies it here exactly as 2>/dev/null does at G2e1 (got $G2H4_N unredirected)" \
+    test "$G2H4_N" -eq 0
+assert "G2h5a: the capture_output fixture is a site too (got $G2H5_SITES sites)" \
+    test "$G2H5_SITES" -eq 1
+assert "G2h5b: ... and capture_output=True alone is a diversion -- one token moving BOTH streams, the third in-tree idiom (got $G2H5_N unredirected)" \
+    test "$G2H5_N" -eq 0
+assert "G2h6: a one-line spawn with NO stream kwargs at all IS flagged (got $G2H6_N unredirected)" \
+    test "$G2H6_N" -eq 1
+
+# --- TIER SEPARATION, the G2e analogue for the two DIALECTS. G2e keeps
+# Section G's laxer diversion grammar from leaking into D4's file-only one;
+# these keep the two LANGUAGES from leaking into each other. Both reuse a
+# fixture an assert above has already proved reads ZERO under its OWN dialect,
+# so each pair says exactly one thing: the answer CHANGED because the dialect
+# did. Under an implementation that merely bolted the Python EREs onto the bash
+# grammar as an alternation, both would read 0 and both asserts would be RED.
+G2H7_N="$(_g_unredirected "$G_CTRL_CAP" "$G_CTRL_SITE" py)"
+G2H8_N="$(_g_unredirected "$G_PY_CTRL_LINE_DEVNULL" "$G_PY_CTRL_SITE")"
+
+assert "G2h7: a BASH capture (G2b's own fixture, 0 unredirected under bash) is NOT a capture under the python dialect -- 2> means nothing there (got $G2H7_N unredirected)" \
+    test "$G2H7_N" -eq 1
+assert "G2h8: ... and symmetrically a PYTHON capture (G2h4b's fixture, 0 unredirected under py) is not one under the bash default -- a kwarg is not a redirect (got $G2H8_N unredirected)" \
+    test "$G2H8_N" -eq 1
+
+echo ""
 echo "--- G3/G1: every static-only roster member, over its own source ---"
 
 for _g_i in "${!G_MEMBERS[@]}"; do
