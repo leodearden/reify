@@ -3201,6 +3201,61 @@ mod tests {
         }
     }
 
+    /// The outline's forcing function, and the reason the kind list cannot
+    /// silently rot again.
+    ///
+    /// Drives the WHOLE shared [`NAMED_DECL_SNIPPETS`] table rather than a
+    /// hand-listed subset, so a kind newly admitted to
+    /// [`decl_name_and_span`] — which `named_decl_snippets_cover_every_named_kind`
+    /// already forces a table row for — is exercised here the moment that row
+    /// lands, with no edit to this test. THIS TEST IS WHAT A NEWLY-ADMITTED
+    /// VARIANT MUST SATISFY: give it a `symbol_kind_for` arm (the compiler
+    /// demands that much) and a `NAMED_DECL_SNIPPETS` row, and the outline is
+    /// covered.
+    ///
+    /// It pins the WIRING, not the per-kind `SymbolKind` choice, which is
+    /// `document_symbols_include_every_remaining_named_kind`'s job: every named
+    /// declaration yields exactly one top-level symbol whose name, range and
+    /// selection_range are the ones `decl_name_and_span` + `name_selection_range`
+    /// produce. A future refactor that recomputes any of those three locally —
+    /// the SPOT violation #6533 exists to undo — reds here.
+    #[test]
+    fn every_named_decl_snippet_yields_one_symbol_agreeing_with_decl_name_and_span() {
+        for (source, expected_name) in NAMED_DECL_SNIPPETS {
+            let parsed = parse_one_clean(source, "test");
+            let decl = &parsed.declarations[0];
+            let (name, span) = decl_name_and_span(decl).unwrap_or_else(|| {
+                panic!("NAMED_DECL_SNIPPETS row must parse to a NAMED kind: {source}")
+            });
+
+            let symbols = compute_document_symbols_from_parsed(&parsed, source);
+            assert_eq!(
+                symbols.len(),
+                1,
+                "one named declaration \u{2192} one top-level symbol for {source:?}, got: {:?}",
+                symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+            );
+            let sym = &symbols[0];
+            assert_eq!(sym.name, *expected_name, "symbol name for {source:?}");
+            assert_eq!(
+                sym.name, name,
+                "the symbol's name must be decl_name_and_span's, not a local \
+                 recomputation: {source:?}"
+            );
+            assert_eq!(
+                sym.range,
+                span_to_range(source, span),
+                "the symbol's range must be decl_name_and_span's span: {source:?}"
+            );
+            assert_eq!(
+                sym.selection_range,
+                name_selection_range(source, span, name),
+                "the symbol's selection_range must be name_selection_range's: {source:?}"
+            );
+            assert_selection_on_name(source, sym);
+        }
+    }
+
     #[test]
     fn compute_document_symbols_sub_port_and_guarded() {
         use tower_lsp::lsp_types::SymbolKind;
