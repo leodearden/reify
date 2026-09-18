@@ -660,89 +660,104 @@ pub fn compute_document_symbols_from_parsed(
 ) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
     for decl in &parsed.declarations {
-        match decl {
-            Declaration::Structure(s) => {
-                symbols.push(make_symbol(
-                    &s.name,
-                    SymbolKind::STRUCT,
-                    span_to_range(source, s.span),
-                    name_selection_range(source, s.span, &s.name),
-                    children_or_none(members_to_symbols(source, &s.members)),
-                ));
-            }
-            Declaration::Occurrence(o) => {
-                symbols.push(make_symbol(
-                    &o.name,
-                    SymbolKind::CLASS,
-                    span_to_range(source, o.span),
-                    name_selection_range(source, o.span, &o.name),
-                    children_or_none(members_to_symbols(source, &o.members)),
-                ));
-            }
-            Declaration::Trait(t) => {
-                symbols.push(make_symbol(
-                    &t.name,
-                    SymbolKind::INTERFACE,
-                    span_to_range(source, t.span),
-                    name_selection_range(source, t.span, &t.name),
-                    children_or_none(members_to_symbols(source, &t.members)),
-                ));
-            }
-            Declaration::Enum(e) => {
-                // Each variant becomes an ENUM_MEMBER child. Named-payload
-                // variant fields (`Circle { radius: Length }`) are not expanded
-                // into grandchildren for this task.
-                let variants = e
-                    .variants
-                    .iter()
-                    .map(|v| {
-                        make_symbol(
-                            &v.name,
-                            SymbolKind::ENUM_MEMBER,
-                            span_to_range(source, v.span),
-                            name_selection_range(source, v.span, &v.name),
-                            None,
-                        )
-                    })
-                    .collect();
-                symbols.push(make_symbol(
-                    &e.name,
-                    SymbolKind::ENUM,
-                    span_to_range(source, e.span),
-                    name_selection_range(source, e.span, &e.name),
-                    children_or_none(variants),
-                ));
-            }
-            Declaration::Function(f) => {
-                symbols.push(make_symbol(
-                    &f.name,
-                    SymbolKind::FUNCTION,
-                    span_to_range(source, f.span),
-                    name_selection_range(source, f.span, &f.name),
-                    None,
-                ));
-            }
-            Declaration::TypeAlias(t) => {
-                // SymbolKind has no TypeAlias member; TYPE_PARAMETER is the
-                // conventional LSP mapping for a type alias (rust-analyzer maps
-                // its own SymbolKind::TypeAlias the same way). Task #6341.
-                symbols.push(make_symbol(
-                    &t.name,
-                    SymbolKind::TYPE_PARAMETER,
-                    span_to_range(source, t.span),
-                    name_selection_range(source, t.span, &t.name),
-                    None,
-                ));
-            }
-            // All other top-level declarations are not navigable symbols:
-            // Import, Unit, Constraint (ConstraintDef), Field, Purpose, and
-            // Module have no stable jump target and are skipped. Type aliases
-            // used to be listed here; since #6341 they emit a TYPE_PARAMETER
-            // symbol in the arm just above.
-            _ => {}
-        }
+        // Name and span come from `decl_name_and_span`, the crate's single home
+        // for "what name does this top-level declaration declare" — so the
+        // outline cannot drift from goto-def about either. `None` is the three
+        // kinds that declare no name of their own (Import, Module, Default),
+        // which are exactly the kinds with no meaningful outline label.
+        let Some((name, span)) = decl_name_and_span(decl) else {
+            continue;
+        };
+        symbols.push(make_symbol(
+            name,
+            symbol_kind_for(decl),
+            span_to_range(source, span),
+            name_selection_range(source, span, name),
+            children_or_none(symbol_children(source, decl)),
+        ));
     }
     symbols
+}
+
+/// Map a top-level declaration to its LSP [`SymbolKind`].
+///
+/// Wildcard-free over all 14 `Declaration` variants, and that is the
+/// load-bearing part: a new variant becomes a COMPILE ERROR here, forcing an
+/// explicit kind decision. The previous shape — one 14-arm match that computed
+/// kind, children, name and span together and ended in `_ => {}` — is how the
+/// outline silently lost Field, Purpose, Constraint, Unit and Joint as the
+/// parser grew them (#6533).
+///
+/// The three UNNAMED kinds are unreachable from
+/// [`compute_document_symbols_from_parsed`], which skips them on
+/// [`decl_name_and_span`]'s `None`. They still get explicit arms rather than a
+/// shared wildcard, so admitting one to the outline later is a decision made
+/// here rather than a default inherited by accident.
+fn symbol_kind_for(decl: &Declaration) -> SymbolKind {
+    match decl {
+        Declaration::Structure(_) => SymbolKind::STRUCT,
+        Declaration::Occurrence(_) => SymbolKind::CLASS,
+        Declaration::Trait(_) => SymbolKind::INTERFACE,
+        Declaration::Enum(_) => SymbolKind::ENUM,
+        Declaration::Function(_) => SymbolKind::FUNCTION,
+        // SymbolKind has no TypeAlias member; TYPE_PARAMETER is the conventional
+        // LSP mapping for a type alias (rust-analyzer maps its own
+        // SymbolKind::TypeAlias the same way). Task #6341.
+        Declaration::TypeAlias(_) => SymbolKind::TYPE_PARAMETER,
+        // A named mapping over a domain — the closest LSP analogue to a property.
+        Declaration::Field(_) => SymbolKind::PROPERTY,
+        // A named region enclosing other declarations, which is what NAMESPACE
+        // means in LSP.
+        Declaration::Purpose(_) => SymbolKind::NAMESPACE,
+        // A named relation, not a value.
+        Declaration::Constraint(_) => SymbolKind::OPERATOR,
+        // A named fixed quantity.
+        Declaration::Unit(_) => SymbolKind::CONSTANT,
+        // A named parameterized construction.
+        Declaration::Joint(_) => SymbolKind::METHOD,
+        // Unreachable from the outline (see doc above); NULL is the LSP
+        // "no meaningful kind" value, never rendered.
+        Declaration::Import(_) => SymbolKind::NULL,
+        Declaration::Module(_) => SymbolKind::NULL,
+        Declaration::Default(_) => SymbolKind::NULL,
+    }
+}
+
+/// Build a declaration's child symbols.
+///
+/// Only the container kinds have any: structure/occurrence/trait expose their
+/// members, and an enum exposes its variants. Every other kind is a LEAF and
+/// returns empty, which [`children_or_none`] turns into `children: None` rather
+/// than `Some(vec![])`.
+///
+/// Deliberately a wildcard match, unlike [`symbol_kind_for`]: "has no children"
+/// is the right DEFAULT for a new declaration kind, whereas "has no symbol
+/// kind" is not — a new variant that needs children will be noticed because its
+/// members are missing from the outline, while a new variant silently mapped to
+/// some arbitrary kind would not.
+fn symbol_children(source: &str, decl: &Declaration) -> Vec<DocumentSymbol> {
+    match decl {
+        Declaration::Structure(s) => members_to_symbols(source, &s.members),
+        Declaration::Occurrence(o) => members_to_symbols(source, &o.members),
+        Declaration::Trait(t) => members_to_symbols(source, &t.members),
+        // Each variant becomes an ENUM_MEMBER child. Named-payload variant
+        // fields (`Circle { radius: Length }`) are not expanded into
+        // grandchildren.
+        Declaration::Enum(e) => e
+            .variants
+            .iter()
+            .map(|v| {
+                make_symbol(
+                    &v.name,
+                    SymbolKind::ENUM_MEMBER,
+                    span_to_range(source, v.span),
+                    name_selection_range(source, v.span, &v.name),
+                    None,
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Convert a possibly-empty child list into the `children` field of a
@@ -2994,26 +3009,37 @@ mod tests {
         }
     }
 
+    /// RENAMED from `compute_document_symbols_fn_and_excludes_non_symbol_decls`
+    /// by #6972, which is also why its `unit` assertion inverted. The old name
+    /// and body encoded the pre-#6533 skip set — "import + unit are NOT
+    /// navigable symbols" — which was never a rule, only the reach of a `_ => {}`
+    /// wildcard. The skip set is now exactly the kinds that declare no name of
+    /// their own, which `decl_name_and_span` decides; `import` is one, `unit` is
+    /// not.
     #[test]
-    fn compute_document_symbols_fn_and_excludes_non_symbol_decls() {
+    fn compute_document_symbols_excludes_only_unnamed_decls() {
         use tower_lsp::lsp_types::SymbolKind;
-        let source = "import std.math\nunit meter : Length\nfn area(w: Length) -> Length { w }";
+        let source = "import std.math\nunit hoop : Length\nfn area(w: Length) -> Length { w }";
         let symbols = compute_document_symbols(source, &test_uri());
-        // import + unit are NOT navigable symbols; only the fn is.
         assert_eq!(
-            symbols.len(),
-            1,
-            "only the fn should be a symbol (import + unit excluded), got: {:?}",
-            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
+            symbols
+                .iter()
+                .map(|s| (s.name.as_str(), s.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("hoop", SymbolKind::CONSTANT),
+                ("area", SymbolKind::FUNCTION)
+            ],
+            "the import is skipped as an unnamed kind; the unit and the fn are \
+             symbols, in source order"
         );
-        let area = &symbols[0];
-        assert_eq!(area.name, "area");
-        assert_eq!(area.kind, SymbolKind::FUNCTION);
+        let area = &symbols[1];
         assert!(
             area.children.is_none() || area.children.as_ref().unwrap().is_empty(),
             "fn is a leaf symbol (params are not surfaced as children)"
         );
         assert_selection_on_name(source, area);
+        assert_selection_on_name(source, &symbols[0]);
     }
 
     // --- task #6341: type aliases as document symbols ---
