@@ -1714,4 +1714,98 @@ mod tests {
              refusal (exit 125)"
         );
     }
+
+    // -------------------------------------------------------------------
+    // PDCHECK (task #7550) — delivered_checks dead-path lane
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn parse_args_accepts_pdcheck_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PDCHECK".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PDCHECK must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PDCHECK"),
+            "parsed pattern must be Some(\"PDCHECK\")"
+        );
+    }
+
+    /// The token must work as a NON-LEADING member of a comma-separated union,
+    /// not just alone — validation is per token, selection is set membership.
+    #[test]
+    fn parse_args_accepts_pdcheck_in_comma_list() {
+        let args = parse_args(&["--pattern".to_string(), "P1,PDCHECK".to_string()])
+            .expect("--pattern P1,PDCHECK must parse successfully");
+        let val = args.pattern.as_deref().expect("pattern must be Some");
+        let tokens: Vec<&str> = val.split(',').map(str::trim).collect();
+        assert!(tokens.contains(&"PDCHECK"), "tokens must contain PDCHECK; got: {tokens:?}");
+        assert!(
+            run_pdcheck(&make_args(false, Some("P1,PDCHECK"))),
+            "P1,PDCHECK must enable PDCHECK"
+        );
+    }
+
+    /// An accepted-but-undiscoverable pattern is a usability bug: the error
+    /// message at the validator is the only place a user learns the vocabulary.
+    #[test]
+    fn parse_args_unknown_pattern_lists_pdcheck() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
+        assert!(
+            err.contains("PDCHECK"),
+            "error must list PDCHECK as a valid pattern; got: {err}"
+        );
+    }
+
+    /// `--help` must list PDCHECK on the `--pattern` line, for the same
+    /// discoverability reason.
+    #[test]
+    fn usage_text_lists_pdcheck() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("PDCHECK"),
+            "--help must list PDCHECK on the --pattern line; got:\n{usage}"
+        );
+    }
+
+    /// PDCHECK is OPT-IN. The no-`--pattern` case being FALSE is the
+    /// load-bearing assertion: `delivered-check-unsatisfiable-path` is High by
+    /// design and the exit code is the High-severity count, so joining the
+    /// default sweep would turn `scripts/reify-audit-predone-wrapper.sh`, the
+    /// /audit skill and verify non-zero.
+    #[test]
+    fn pdcheck_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !run_pdcheck(&make_args(false, None)),
+            "PDCHECK must NOT run in the no-`--pattern` default sweep: its High \
+             findings drive the exit code, so every bare `reify-audit` \
+             invocation would start exiting non-zero"
+        );
+        assert!(
+            run_pdcheck(&make_args(false, Some("PDCHECK"))),
+            "PDCHECK must activate when --pattern PDCHECK is given"
+        );
+        assert!(
+            !run_pdcheck(&make_args(false, Some("P2"))),
+            "PDCHECK must be excluded when a named non-PDCHECK pattern is given"
+        );
+    }
+
+    /// PDCHECK is `ls_files` plus a read-only sqlite open — never the
+    /// jcodemunch serve, so it must not force a connect.
+    #[test]
+    fn needs_jcodemunch_pdcheck_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PDCHECK"))),
+            "PDCHECK reads the tracked-file list and .taskmaster/tasks/tasks.db; \
+             it must not open a jcodemunch connection"
+        );
+        assert!(
+            !JCODEMUNCH_BACKED.contains(&"PDCHECK"),
+            "PDCHECK must not be listed in JCODEMUNCH_BACKED — that would route \
+             a PDCHECK-only run through jcodemunch_only_run_set's staleness \
+             refusal (exit 125)"
+        );
+    }
 }
