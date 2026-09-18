@@ -1,95 +1,135 @@
 #!/usr/bin/env bash
 # tests/infra/test_occt_deps_preflight.sh
 #
-# Guard for the OCCT arm of scripts/check-manifold-deps.sh (task #6343).
+# Guard for the NATIVE-DEP PREFLIGHT arms of scripts/check-manifold-deps.sh —
+# all three of them: OCCT (task #6343), Gmsh and OpenVDB (task #6493).
 #
-# WHY this guard exists. `reify_build_utils::find(NativeDep::Occt)` returns
-# `None` when EITHER the header dir or the lib dir is unresolved, and
-# `crates/reify-kernel-occt/build.rs` responds with a `cargo:warning` plus a
-# bare `return` — no `has_occt` cfg. That silently DELETES the crate's
-# `#[cfg(all(test, has_occt))]` modules and its ~25 `#![cfg(has_occt)]`
-# integration binaries: the suite reports ZERO tests, not zero failures, and
-# the verify gate stays green. This test pins the preflight that converts that
-# vacuity into a red gate.
+# FILENAME IS DELIBERATELY UNCHANGED despite the widened scope.
+# tests/infra/run-all-classification.manifest and
+# scripts/verify-pipeline-infra-tests.txt both already reference this path;
+# renaming would churn two gates for no behavioural gain.
+#
+# WHY this guard exists: a missing native dep is SILENT, not merely cryptic,
+# and all three build.rs scripts stay deliberately fail-OPEN — so the GATE
+# lives outside the build, in scripts/check-manifold-deps.sh. That script's
+# header states the mechanism under "THE SILENT-VACUITY RULE"; this file pins
+# the preflight that converts the vacuity into a red gate.
 #
 # Script under test: scripts/check-manifold-deps.sh (emitted by
-# scripts/verify.sh as a plan entry whenever RUN_RUST=1, so the arm it guards
-# runs on every --scope all / merge-gate verify).
+# scripts/verify.sh as a plan entry whenever RUN_RUST=1, so the arms it guards
+# run on every --scope all / merge-gate verify).
 #
-# Assertions:
+# Sections:
+#   0. SELF-CHECK, the harness itself. The needle-containment primitive
+#      `_out_contains` must report a PRESENT needle as a match and a genuinely
+#      absent one as a miss, and must contain no `|` pipeline at all
+#      (deterministic structural pin on the hazard CLASS). A
+#      `printf | grep -q` under this file's `set -o pipefail` reports a MATCH
+#      as a MISS ~0.14% of the time — grep short-circuits, the builtin writer
+#      takes SIGPIPE, pipefail surfaces the 141. Also pins that a needle miss
+#      EMITS evidence, and that a match emits nothing (the green output shape
+#      is byte-parsed by run_all.sh's cause_hint and dark-factory's
+#      classifier).
 #   1. scripts/check-manifold-deps.sh exists and is executable.
-#   2. ABSENCE: both override dirs empty => non-zero, output names OCCT.
-#   3. LIB-ONLY MISSING: headers present, libs absent => non-zero, output
+#   2. OCCT ABSENCE: both override dirs empty => non-zero, output names OCCT.
+#   3. OCCT LIB-ONLY MISSING: headers present, libs absent => non-zero, output
 #      names libTKernel.so and the offending lib dir.
-#   4. INCLUDE-ONLY MISSING: libs present, headers absent => non-zero, output
-#      names Standard_Failure.hxx and the offending include dir. This is the
-#      mixed case that silently produces a stub build.
-#   5. PARITY, DATA (anti-drift): the marker-delimited OCCT declarations in
+#   4. OCCT INCLUDE-ONLY MISSING: libs present, headers absent => non-zero,
+#      output names Standard_Failure.hxx and the offending include dir. This is
+#      the mixed case that silently produces a stub build.
+#   5. PARITY, DATA (anti-drift), OCCT: the marker-delimited declarations in
 #      scripts/check-manifold-deps.sh equal `NativeDep::Occt`'s arms in
 #      crates/reify-build-utils/src/lib.rs — both candidate lists INCLUDING
 #      ORDER (system paths must stay ahead of /opt/reify-deps' OCCT 7.9) and
 #      both sentinel names. Rust is the source of truth; bash is a declared
-#      mirror. Both parses must yield a non-empty result, so a renamed anchor
+#      mirror. Every parse must yield a non-empty result, so a renamed anchor
 #      fails loudly instead of passing vacuously.
-#   6. PARITY, SNAP FALLBACK: the same mirror one layer down — the default of
+#      PARITY, SNAP FALLBACK: the same mirror one layer down — the default of
 #      the guard's OCCT_SNAP_ROOT equals the literal in
 #      find_dir_with_override's `read_dir(..)`, and the guard's
 #      sentinel -> subdir `case` equals that fn's `match sentinel` arms, order
 #      included. Declaration-level, because on a host that HAS system OCCT the
 #      candidate loop short-circuits before either side's fallback ever runs.
-#   7. ACCEPTED SONAME + RECORDING: a Debian-shaped chain whose first-level
-#      link target carries the FIRST value of OCCT_ACCEPTED_SONAMES => exit 0,
-#      AND the guard prints the resolved version and both resolved dirs. That
-#      [ok] line is the arm's "which OCCT produced this green result" half, so
-#      it is asserted rather than left to `>/dev/null`.
-#   8. PATCH-SHAPED SONAME: `libTKernel.so -> libTKernel.so.<accepted>.1` — a
-#      repackaging that moves the dev symlink one hop further on a
-#      functionally identical OCCT => still exit 0, and the verbatim segment
-#      is still recorded. The pin is on MAJOR.MINOR precisely so this
-#      non-event cannot hard-stop every RUN_RUST=1 verify; build.rs splices
-#      the verbatim segment, which names a file that exists.
-#   9. UNACCEPTED SONAME: version 0.0 (never a real OCCT release, so this case
-#      survives any future pin bump) => non-zero, output names OCCT, the
-#      resolved version, and the accepted set.
-#  10. CONDA-SHAPED ONE-LEVEL SYMLINK: `libTKernel.so -> libTKernel.so.7.9.3`,
-#      the exact layout live at /opt/reify-deps/lib => resolves to `7.9.3`,
-#      whose major.minor 7.9 is not accepted, so non-zero naming 7.9.3
-#      VERBATIM. Pins that the guard takes the trailing segment as-is for the
-#      record, exactly as read_soname_version documents, and projects only for
-#      the comparison.
-#  11. UNDETERMINABLE SONAME: `libTKernel.so` as a REGULAR FILE => non-zero.
-#      This is the state where find() still reports the dir resolved (it only
-#      tests .exists()), has_occt IS set, and build.rs silently falls back to
-#      the literal string "7.8" — i.e. links a version nobody verified.
-#  12. CROSS-ARTIFACT PIN: the version scripts/setup-dev.sh's OCCT block
+#   6. OCCT SONAME pin — ACCEPTED + RECORDING (a Debian-shaped chain carrying
+#      the first OCCT_ACCEPTED_SONAMES value => exit 0, and the guard prints
+#      the version and both dirs); PATCH-SHAPED (`-> ....<accepted>.1`, a
+#      repackaging of the same OCCT => still exit 0, verbatim segment still
+#      recorded — the pin is on MAJOR.MINOR precisely so this non-event cannot
+#      hard-stop every RUN_RUST=1 verify); UNACCEPTED (0.0, never a real
+#      release, so the case survives any future pin bump => non-zero naming the
+#      version and the accepted set); CONDA-SHAPED one-hop (`-> ....7.9.3`, the
+#      live /opt/reify-deps layout => names 7.9.3 VERBATIM, not 7.9);
+#      UNDETERMINABLE (sentinel is a REGULAR FILE => non-zero, because find()
+#      still reports the dir resolved, has_occt IS set, and build.rs falls back
+#      to a hard-coded version — linking something nobody verified).
+#   7. CROSS-ARTIFACT PIN: the version scripts/setup-dev.sh's OCCT block
 #      expects from dpkg projects (major.minor) into OCCT_ACCEPTED_SONAMES.
 #      Both sides are projected, so the accepted set stays free to hold a
 #      three-segment SONAME even though setup-dev.sh's `grep -oP '\d+\.\d+'`
 #      can only ever yield major.minor.
+#   8. GMSH PRESENCE: lib-only missing / include-only missing => non-zero,
+#      output names libgmsh.so or gmshc.h and the offending dir; both present
+#      => exit 0.
+#   9. OPENVDB PRESENCE: the same three, naming libopenvdb.so or the NESTED
+#      openvdb/openvdb.h sentinel.
+#  10. PARITY, DATA (anti-drift), GMSH + OPENVDB: section 5's check applied to
+#      the `gmsh-candidates` and `openvdb-candidates` blocks. Order matters
+#      here too and is the OPPOSITE of OCCT's — /opt/reify-deps must LEAD for
+#      both — and OpenVdb's lib order differs from Gmsh's, so a drift that
+#      merely swapped two entries would still resolve, just against the wrong
+#      install, silently.
+#  11. GREEN-PATH RECORDING for the two new arms: on the all-present path the
+#      guard names each dep's resolved dirs AND the SONAME read from the
+#      FIRST-level symlink target (gmsh one hop => 4.15.2; openvdb two hops =>
+#      13.0, NOT the 13.0.0 `readlink -f` would give). RECORDED only —
+#      deliberately not pinned to an accepted set, because unlike OCCT neither
+#      build.rs splices a version into any link directive. The other half of
+#      that asymmetry is pinned here too: a regular-file (non-symlink) dev
+#      sentinel is FATAL for OCCT (section 6) but must stay NON-fatal for these
+#      two — exit 0, recorded as `<Label> unknown at ` — driven from the same
+#      _mk_plainfile_lib_fixture so the two expectations cannot be silently
+#      unified by a later dedup.
+#  12. COMPLETENESS: the set of deps gated by scripts/check-manifold-deps.sh
+#      (derived from its `# BEGIN <dep>-candidates` marker-block NAMES) equals
+#      the variants of `enum NativeDep` (derived from its
+#      `// BEGIN native-dep-variants` markers). Compared as SETS — arm PRESENCE
+#      is the contract, arm order is not. This is the assert that would have
+#      caught task 6493's own finding, and the one that stops a FOURTH native
+#      dep shipping ungated.
 #
 # The accepted-SONAME value is DERIVED from the guard, never hardcoded here, so
 # a legitimate future pin bump stays a one-line diff in one file. Every derived
 # parse asserts non-empty first.
 #
 # Hermeticity: `pool`. Pure bash + filesystem — no cargo, no npm, no network.
-# Every OCCT case is driven through the OCCT_LIB_DIR / OCCT_INCLUDE_DIR
-# overrides the BUILD already honours, pointed at `mktemp -d` fixtures under
-# $_TMPDIR, so no bespoke test-only env seam is added to production code. The
-# guard is deliberately stricter than `find_dir_with_override` here (it demands
-# the sentinel inside an override rather than trusting the path), which is
-# exactly what makes those cases drivable.
+# Every case is driven through the <DEP>_LIB_DIR / <DEP>_INCLUDE_DIR overrides
+# the BUILD already honours (NativeDep::{lib_env,include_env}), pointed at
+# `mktemp -d` fixtures under $_TMPDIR, so no bespoke test-only env seam is
+# added to production code. The guard is deliberately stricter than
+# `find_dir_with_override` here (it demands the sentinel inside an override
+# rather than trusting the path), which is exactly what makes those cases
+# drivable.
 #
-# KNOWN, DELIBERATE CAVEAT: check-manifold-deps.sh is ONE script, and its
-# manifold-prebuilt and tbb-pin arms run ahead of the OCCT arm on every
-# invocation — including the tbb arm's `mkdir -p /opt/reify-deps/tbb-pin`
-# self-heal, which writes outside $_TMPDIR. So the two positive controls below
-# also depend on a healthy /opt/reify-deps, and a broken one surfaces here as
-# an OCCT-preflight failure. Every NEGATIVE case pairs its exit-code assert
-# with an output assert naming an OCCT-specific string, so those stay
-# attributable. There is deliberately no unqualified live-host probe in this
-# file: scripts/verify.sh already emits this guard as a plan entry on every
-# RUN_RUST=1 verify, which is where "is OCCT actually installed on this host"
-# is answered for real.
+# KNOWN, DELIBERATE CAVEAT: check-manifold-deps.sh is ONE script with
+# SEQUENTIAL arms — manifold prebuilt, tbb pin, OCCT, Gmsh, OpenVDB — and the
+# first failure exits, so no arm runs unless every arm ahead of it passed.
+# Consequences, in both directions:
+#   - Every Gmsh case supplies healthy OCCT fixtures, and every OpenVDB case
+#     supplies healthy OCCT *and* Gmsh fixtures. Without them a
+#     `_guard_env_exits_nonzero` assert would PASS on an upstream arm's exit
+#     and test nothing at all — the same vacuity class this file exists to
+#     close. Every NEGATIVE case additionally pairs its exit-code assert with
+#     an output assert naming a DEP-SPECIFIC string, so a failure that really
+#     came from upstream stays attributable.
+#   - The manifold-prebuilt and tbb-pin arms have no override seam, so every
+#     positive control still depends on a healthy /opt/reify-deps — including
+#     the tbb arm's `mkdir -p /opt/reify-deps/tbb-pin` self-heal, which writes
+#     outside $_TMPDIR. A broken deps tree surfaces here as a preflight
+#     failure naming the responsible arm.
+# There is deliberately no unqualified live-host probe in this file:
+# scripts/verify.sh already emits this guard as a plan entry on every
+# RUN_RUST=1 verify, which is where "are these deps actually installed on this
+# host" is answered for real.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -111,32 +151,45 @@ SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
 _TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$_TMPDIR"' EXIT
 
-echo "=== OCCT deps preflight tests ==="
+echo "=== native-dep preflight tests (OCCT + Gmsh + OpenVDB) ==="
 
 # ---------------------------------------------------------------------------
 # Fixture + invocation helpers
 # ---------------------------------------------------------------------------
 
-# _mk_include_fixture <name> — mktemp-style dir under $_TMPDIR containing the
-# OCCT include sentinel. Prints the path.
+# _mk_include_fixture <name> [<sentinel>] — dir under $_TMPDIR containing the
+# named include sentinel (default: OCCT's Standard_Failure.hxx). Prints the
+# path.
+#
+# The sentinel may be a NESTED path — OpenVDB's is `openvdb/openvdb.h`, not a
+# bare filename — so its parent dirs are created too. A flat fixture would make
+# the OpenVDB positive control fail for entirely the wrong reason.
 _mk_include_fixture() {
-    local d="$_TMPDIR/$1"
-    mkdir -p "$d"
-    : > "$d/Standard_Failure.hxx"
+    local d="$_TMPDIR/$1" sentinel="${2:-Standard_Failure.hxx}"
+    local parent="$d"
+    case "$sentinel" in */*) parent="$d/${sentinel%/*}" ;; esac
+    mkdir -p "$parent"
+    : > "$d/$sentinel"
     printf '%s' "$d"
 }
 
-# _mk_lib_fixture <name> <version> — dir under $_TMPDIR reproducing the Debian
-# two-hop OCCT chain that reify_build_utils' own unit fixture models
-# (crates/reify-build-utils/src/lib.rs, read_soname_version tests):
-#   libTKernel.so -> libTKernel.so.<v> -> libTKernel.so.<v>.1
-# so the FIRST-level link target's suffix is exactly <version>. Prints the path.
+# _mk_lib_fixture <name> <version> [<sentinel>] [<leaf>] — dir under $_TMPDIR
+# reproducing the Debian TWO-HOP chain that reify_build_utils' own unit fixture
+# models (crates/reify-build-utils/src/lib.rs, read_soname_version tests):
+#   <sentinel> -> <sentinel>.<v> -> <sentinel>.<v>.<leaf>
+# so the FIRST-level link target's suffix is exactly <version> (which is the
+# whole point: `readlink -f` would yield <v>.<leaf> instead). Sentinel defaults
+# to OCCT's libTKernel.so; leaf defaults to 1.
+#
+# <leaf> exists so a fixture can reproduce OpenVDB's LIVE chain at
+# /opt/reify-deps/lib byte-for-byte — libopenvdb.so -> libopenvdb.so.13.0 ->
+# libopenvdb.so.13.0.0 — rather than a near-miss ending in .1. Prints the path.
 _mk_lib_fixture() {
-    local d="$_TMPDIR/$1" v="$2"
+    local d="$_TMPDIR/$1" v="$2" sentinel="${3:-libTKernel.so}" leaf="${4:-1}"
     mkdir -p "$d"
-    : > "$d/libTKernel.so.$v.1"
-    ln -sfn "libTKernel.so.$v.1" "$d/libTKernel.so.$v"
-    ln -sfn "libTKernel.so.$v" "$d/libTKernel.so"
+    : > "$d/$sentinel.$v.$leaf"
+    ln -sfn "$sentinel.$v.$leaf" "$d/$sentinel.$v"
+    ln -sfn "$sentinel.$v" "$d/$sentinel"
     printf '%s' "$d"
 }
 
@@ -153,25 +206,36 @@ _mk_patchlink_lib_fixture() {
     printf '%s' "$d"
 }
 
-# _mk_conda_lib_fixture <name> <version> — dir under $_TMPDIR reproducing the
-# conda-forge / /opt/reify-deps layout: ONE level, `libTKernel.so ->
-# libTKernel.so.<v>` where <v> is itself the full three-segment version. The
-# first-level target's suffix is therefore the whole version verbatim.
+# _mk_conda_lib_fixture <name> <version> [<sentinel>] — dir under $_TMPDIR
+# reproducing the conda-forge / /opt/reify-deps layout: ONE hop,
+# `<sentinel> -> <sentinel>.<v>` where <v> is itself the full version. The
+# first-level target's suffix is therefore the whole version verbatim. This is
+# also gmsh's live shape at /opt/reify-deps/lib
+# (libgmsh.so -> libgmsh.so.4.15.2). Sentinel defaults to OCCT's libTKernel.so.
 _mk_conda_lib_fixture() {
-    local d="$_TMPDIR/$1" v="$2"
+    local d="$_TMPDIR/$1" v="$2" sentinel="${3:-libTKernel.so}"
     mkdir -p "$d"
-    : > "$d/libTKernel.so.$v"
-    ln -sfn "libTKernel.so.$v" "$d/libTKernel.so"
+    : > "$d/$sentinel.$v"
+    ln -sfn "$sentinel.$v" "$d/$sentinel"
     printf '%s' "$d"
 }
 
-# _mk_plainfile_lib_fixture <name> — dir whose libTKernel.so is a REGULAR FILE,
-# not a symlink. The sentinel exists (so find() resolves the dir and has_occt
-# IS set) but no SONAME can be read from it.
+# _mk_plainfile_lib_fixture <name> [<sentinel>] — dir whose lib sentinel is a
+# REGULAR FILE, not a symlink. The sentinel exists (so find() resolves the dir
+# and the dep's has_* cfg IS set) but no SONAME can be read from it. Sentinel
+# defaults to OCCT's libTKernel.so, matching the other _mk_*_lib_fixture
+# helpers.
+#
+# The <sentinel> parameter exists so this one fixture can drive BOTH SIDES of
+# the deliberate OCCT-vs-Gmsh/OpenVDB asymmetry on an undeterminable SONAME:
+# fatal for OCCT (section 6), NON-fatal for gmsh and openvdb (section 11). Those
+# are opposite expectations over the identical on-disk shape, so pinning them
+# from the same fixture is what makes the asymmetry a tested contract rather
+# than a comment. Prints the path.
 _mk_plainfile_lib_fixture() {
-    local d="$_TMPDIR/$1"
+    local d="$_TMPDIR/$1" sentinel="${2:-libTKernel.so}"
     mkdir -p "$d"
-    : > "$d/libTKernel.so"
+    : > "$d/$sentinel"
     printf '%s' "$d"
 }
 
@@ -182,33 +246,203 @@ _mk_empty_fixture() {
     printf '%s' "$d"
 }
 
-# _guard_exits_zero <lib_dir> <include_dir>
-_guard_exits_zero() {
-    [ -x "$GUARD" ] || return 1
-    OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2" bash "$GUARD" >/dev/null
+# --- SHARED HEALTHY DOWNSTREAM FIXTURES ------------------------------------
+#
+# Built ONCE, up here, and fed to EVERY green path in this file — including the
+# OCCT ones in sections 4 and 6, which are textually far above the sections
+# that test gmsh and openvdb.
+#
+# WHY, and it is not cosmetic: check-manifold-deps.sh is one script whose arms
+# run in declaration order, and the OCCT arm no longer exits the script when it
+# passes. So an OCCT positive control that supplies only OCCT_LIB_DIR /
+# OCCT_INCLUDE_DIR runs the Gmsh and OpenVDB arms with NO overrides at all,
+# resolving against live /opt/reify-deps. On a host where the conda env is
+# absent or half-provisioned, an OCCT assert then goes RED naming OCCT and the
+# OCCT fixture dirs — misattributed to the one dep it is not about. That is the
+# same misattribution class this file's own design notes say must not happen,
+# and section 8's Gmsh positive control already avoids it in the other
+# direction; these fixtures apply the same reasoning backwards.
+#
+# The OCCT-positional wrappers below splice these in automatically, so the
+# property holds BY CONSTRUCTION for every existing and future OCCT assert
+# rather than one call site at a time.
+#
+# KNOWN CAVEAT, unchanged: the manifold-prebuilt and tbb-pin arms have no
+# override seam at all, so they still read live host state. Gmsh and OpenVDB
+# DO have one, which is exactly why leaning on live state for them is not
+# excused by that caveat.
+
+# Gmsh's live shape at /opt/reify-deps/lib is ONE hop
+# (libgmsh.so -> libgmsh.so.4.15.2), so the fixture uses that layout.
+_GMSH_LIB_OK="$(_mk_conda_lib_fixture gmsh-lib-ok 4.15.2 libgmsh.so)"
+_GMSH_INC_OK="$(_mk_include_fixture gmsh-include-ok gmshc.h)"
+
+# OpenVDB's live shape at /opt/reify-deps/lib is TWO hops
+# (libopenvdb.so -> libopenvdb.so.13.0 -> libopenvdb.so.13.0.0), so the
+# FIRST-level target yields `13.0` — not the `13.0.0` `readlink -f` would give.
+# Its include sentinel is a NESTED path, `openvdb/openvdb.h`, not a bare
+# filename; _mk_include_fixture creates the parent dir for it.
+_OPENVDB_LIB_OK="$(_mk_lib_fixture openvdb-lib-ok 13.0 libopenvdb.so 0)"
+_OPENVDB_INC_OK="$(_mk_include_fixture openvdb-include-ok openvdb/openvdb.h)"
+
+_GMSH_OK=(GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK")
+_OPENVDB_OK=(OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK")
+
+# Every arm DOWNSTREAM of OCCT, healthy. Spliced into the OCCT-positional
+# wrappers below.
+_DOWNSTREAM_OK=("${_GMSH_OK[@]}" "${_OPENVDB_OK[@]}")
+
+# --- dep-generic guard invocation ------------------------------------------
+#
+# check-manifold-deps.sh is ONE script with SEQUENTIAL arms — manifold
+# prebuilt, tbb pin, OCCT, Gmsh, OpenVDB — and any arm exiting non-zero means
+# every arm after it never runs. A `_guard_env_exits_nonzero` assert on a
+# DOWNSTREAM dep would then PASS for entirely the wrong reason (the upstream
+# arm's exit) and test nothing at all — the same vacuity class this whole file
+# exists to close. So the env-list form below takes the FULL override set
+# explicitly, and each dep's section supplies healthy fixtures for every arm
+# ahead of it rather than relying on live host state.
+
+# _guard_run <VAR=VALUE>... — run the guard under exactly these overrides.
+# Combined stdout+stderr on stdout; the guard's own exit status is returned.
+_guard_run() {
+    env "$@" bash "$GUARD" 2>&1
 }
 
-# _guard_exits_nonzero <lib_dir> <include_dir>
+# _guard_env_exits_zero <VAR=VALUE>...
+_guard_env_exits_zero() {
+    [ -x "$GUARD" ] || return 1
+    _guard_run "$@" >/dev/null
+}
+
+# _guard_env_exits_nonzero <VAR=VALUE>...
 #
 # Guarded on `-x "$GUARD"` first: a missing or unrunnable script also exits
 # non-zero, which would otherwise false-pass every negation below.
-_guard_exits_nonzero() {
+_guard_env_exits_nonzero() {
     [ -x "$GUARD" ] || return 1
-    ! OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2" bash "$GUARD" >/dev/null 2>&1
+    ! _guard_run "$@" >/dev/null
+}
+
+# _guard_env_output_names <VAR=VALUE>... -- <needle>...
+# Combined stdout+stderr of the guard must contain every needle (literal).
+#
+# ON A MISS it ECHOES the offending needle, the guard's exit status, the full
+# override set it ran under, and the entire captured guard output, then returns
+# 1. WHY: test_helpers.sh's assert() dumps its per-assert tmpfile only when that
+# file is non-empty (`[ -s "$_f" ]`), so a helper that swallows the guard output
+# into a shell variable and returns 1 silently produces a FAIL line with NO
+# evidence attached — the reader cannot distinguish "the guard printed the wrong
+# thing" from "the guard printed nothing" from "the guard was right and the
+# harness misreported it". That gap is what kept the pipefail/SIGPIPE defect
+# (see _out_contains) unroot-caused for a full task cycle.
+#
+# Emission is on the FAILURE path ONLY, so an all-green suite stays
+# byte-for-byte unchanged — run_all.sh's cause_hint and dark-factory's
+# classifier both parse this file's green output shape. Every continuation line
+# carries the NON-whitespace `  | ` prefix test_helpers.sh documents:
+# dark-factory's slot-timeout classifier is `^[ \t]*`-anchored, so a captured
+# @@REIFY_SLOT_TIMEOUT@@ sentinel reproduced at column 0 (or merely indented)
+# would misclassify the whole merge verify as semaphore starvation.
+_guard_env_output_names() {
+    [ -x "$GUARD" ] || return 1
+    local -a envs=()
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+        envs+=("$1")
+        shift
+    done
+    [ "${1:-}" = "--" ] && shift
+    local out needle rc=0 e line
+    out="$(_guard_run "${envs[@]}")" || rc=$?
+    for needle in "$@"; do
+        if ! _out_contains "$out" "$needle"; then
+            echo "  | needle NOT FOUND in the guard output: $needle"
+            echo "  | guard exit status: $rc"
+            for e in "${envs[@]}"; do
+                echo "  | override: $e"
+            done
+            echo "  | ---- captured guard output ----"
+            # Fork-free, and deliberately NOT `printf | sed`: this is the
+            # failure path, where losing the dump to a pipefail surprise is
+            # worst. A herestring is not a pipeline, so nothing here is
+            # exposed to the hazard _out_contains documents.
+            while IFS= read -r line; do
+                echo "  | $line"
+            done <<< "$out"
+            echo "  | ---- end captured guard output ----"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# --- OCCT-positional wrappers ----------------------------------------------
+# Thin adapters over the env-list forms above, kept so the OCCT sections read
+# as they did before the file grew two more deps.
+#
+# EACH ONE SPLICES IN "${_DOWNSTREAM_OK[@]}" — the healthy Gmsh and OpenVDB
+# fixtures built at the top of this file. That is what keeps an OCCT assert
+# about OCCT: without it a positive control runs the two downstream arms with
+# no overrides, resolving against live /opt/reify-deps, and a half-provisioned
+# conda env reds an OCCT assert naming OCCT. Doing it HERE rather than at each
+# call site makes the property hold for every future OCCT assert too, and it
+# strengthens the negatives as well — a red now provably comes from the OCCT
+# arm rather than from a downstream arm the case was not testing.
+
+# _guard_exits_zero <lib_dir> <include_dir>
+_guard_exits_zero() {
+    _guard_env_exits_zero OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2" "${_DOWNSTREAM_OK[@]}"
+}
+
+# _guard_exits_nonzero <lib_dir> <include_dir>
+_guard_exits_nonzero() {
+    _guard_env_exits_nonzero OCCT_LIB_DIR="$1" OCCT_INCLUDE_DIR="$2" "${_DOWNSTREAM_OK[@]}"
+}
+
+# _out_contains <haystack> <needle> — literal (grep -F semantics) substring
+# containment, used by every output assert in this file.
+#
+# FORK-FREE BY CONSTRUCTION, and it must stay that way. The obvious
+# `printf '%s' "$haystack" | grep -qF -- "$needle"` is WRONG under this file's
+# `set -euo pipefail` (line 96): `grep -q` exits the instant it matches and
+# closes the pipe, the bash-builtin `printf` writer is then killed by SIGPIPE
+# (141), and pipefail makes the PIPELINE report printf's 141 even though grep
+# exited 0 — so a MATCH is reported as a MISS. Measured over 20000 iterations
+# on the real ~1.1KB guard payload: 28 misses, PIPESTATUS "141 0" (writer
+# killed, grep succeeded) EVERY time — 0.14% per call, ~2.8% per run across
+# this file's ~20 output asserts. That is the entire observed flake, and
+# because the miss is silent it named a DIFFERENT assertion on each run.
+#
+# The `case` form has no pipeline, so no pipefail exposure at all, and no fork.
+# The needle is QUOTED inside the pattern, which is what keeps matching LITERAL
+# (grep -F semantics) rather than glob. Section 0's
+# `_containment_has_no_pipeline` pins this deterministically — do not
+# "simplify" it back into a pipeline.
+_out_contains() {
+    case "$1" in
+        *"$2"*) return 0 ;;
+        *)      return 1 ;;
+    esac
+}
+
+# _lines_contain_exact <newline-separated-lines> <needle> — whole-LINE exact
+# containment, i.e. `grep -qxF` semantics, with the same fork-free
+# no-pipeline construction and for the same reason as _out_contains above.
+# Both sides are wrapped in a newline so the pattern can only match a COMPLETE
+# line, never a substring of one (which is exactly what `-x` buys).
+_lines_contain_exact() {
+    case $'\n'"$1"$'\n' in
+        *$'\n'"$2"$'\n'*) return 0 ;;
+        *)                return 1 ;;
+    esac
 }
 
 # _guard_output_names <lib_dir> <include_dir> <needle>...
-# Combined stdout+stderr of the guard must contain every needle (literal).
 _guard_output_names() {
     local libdir="$1" incdir="$2"
     shift 2
-    [ -x "$GUARD" ] || return 1
-    local out needle
-    out="$(OCCT_LIB_DIR="$libdir" OCCT_INCLUDE_DIR="$incdir" bash "$GUARD" 2>&1 || true)"
-    for needle in "$@"; do
-        printf '%s' "$out" | grep -qF -- "$needle" || return 1
-    done
-    return 0
+    _guard_env_output_names OCCT_LIB_DIR="$libdir" OCCT_INCLUDE_DIR="$incdir" \
+        "${_DOWNSTREAM_OK[@]}" -- "$@"
 }
 
 # _majmin_lines — MAJOR.MINOR projection of each non-empty line on stdin,
@@ -230,15 +464,22 @@ _majmin_lines() {
 # "" == "" would recreate the exact class of vacuity this task fixes.
 # ---------------------------------------------------------------------------
 
-# _rust_occt_list <fn-name> — the ordered `NativeDep::Occt => &[...]` string
-# literals from the named fn block in crates/reify-build-utils/src/lib.rs, one
-# per line. Anchored to `fn <name>` and bounded by that fn's closing brace, so
-# the four `NativeDep::Occt =>` arms in the file can never be confused.
-_rust_occt_list() {
-    awk -v fname="fn $1" '
+# _rust_dep_list <fn-name> <Variant> — the ordered
+# `NativeDep::<Variant> => &[...]` string literals from the named fn block in
+# crates/reify-build-utils/src/lib.rs, one per line. Anchored to `fn <name>`
+# and bounded by that fn's closing brace, so the several `NativeDep::<V> =>`
+# arms in the file can never be confused.
+#
+# Handles all THREE literal shapes present in that file without special-casing:
+# the one-line `NativeDep::Gmsh => &["a", "b"],` form; the multi-line
+# `NativeDep::Occt => &[` + one-string-per-line + `],` form; and the block
+# `NativeDep::OpenVdb => { &[...] }` form whose arm line itself carries no
+# literals. Only the variant string is parameterised — no parser fork per dep.
+_rust_dep_list() {
+    awk -v fname="fn $1" -v arm="NativeDep::$2 =>" '
         index($0, fname) { infn = 1; next }
         infn && /^    }$/ { exit }
-        infn && index($0, "NativeDep::Occt =>") { inarm = 1 }
+        infn && index($0, arm) { inarm = 1 }
         inarm {
             n = split($0, parts, "\"")
             for (i = 2; i <= n; i += 2) print parts[i]
@@ -247,13 +488,13 @@ _rust_occt_list() {
     ' "$RUST_SRC"
 }
 
-# _rust_occt_scalar <fn-name> — the single string literal on the
-# `NativeDep::Occt =>` arm of the named fn block. Same anchoring rules.
-_rust_occt_scalar() {
-    awk -v fname="fn $1" '
+# _rust_dep_scalar <fn-name> <Variant> — the single string literal on the
+# `NativeDep::<Variant> =>` arm of the named fn block. Same anchoring rules.
+_rust_dep_scalar() {
+    awk -v fname="fn $1" -v arm="NativeDep::$2 =>" '
         index($0, fname) { infn = 1; next }
         infn && /^    }$/ { exit }
-        infn && index($0, "NativeDep::Occt =>") {
+        infn && index($0, arm) {
             n = split($0, parts, "\"")
             if (n >= 2) print parts[2]
             exit
@@ -294,7 +535,7 @@ _bash_snap_root() {
     sed -n 's/^OCCT_SNAP_ROOT="${OCCT_SNAP_ROOT:-\(.*\)}"$/\1/p' "$GUARD" | head -1
 }
 
-# _bash_snap_map — `<sentinel> <subdir>` pairs from occt_find_dir's
+# _bash_snap_map — `<sentinel> <subdir>` pairs from dep_find_dir's
 # `case "$sentinel"`, one per line, in arm order.
 _bash_snap_map() {
     awk '
@@ -311,6 +552,51 @@ _bash_snap_map() {
             if (n >= 2) print pat, parts[2]
         }
     ' "$GUARD"
+}
+
+# _rust_native_dep_variants — the variant names of `enum NativeDep`, one per
+# line, read from INSIDE the `// BEGIN native-dep-variants` marker block in
+# crates/reify-build-utils/src/lib.rs.
+#
+# Marker-anchored rather than brace-anchored so the enum body stays the single
+# source of truth and nothing is duplicated — the markers only make it
+# parseable. An unmarked enum yields NOTHING, which the mandatory
+# anchor-integrity assert below turns into a named failure rather than a
+# silently vacuous set comparison.
+_rust_native_dep_variants() {
+    # WHOLE-LINE anchoring, not index(): the enum's own doc comment NAMES these
+    # markers in prose (explaining why they exist), and a substring match would
+    # open the block there and swallow the `#[derive(..)]` and `pub enum ..`
+    # lines as if they were variants. A marker line must be nothing but the
+    # marker.
+    awk '
+        $0 ~ /^[[:space:]]*\/\/ BEGIN native-dep-variants[[:space:]]*$/ { inblk = 1; next }
+        inblk && $0 ~ /^[[:space:]]*\/\/ END native-dep-variants[[:space:]]*$/ { exit }
+        !inblk { next }
+        {
+            line = $0
+            sub(/\/\/.*/, "", line)
+            gsub(/[[:space:],]/, "", line)
+            if (line != "") print line
+        }
+    ' "$RUST_SRC"
+}
+
+# _bash_gated_deps — the dep names scripts/check-manifold-deps.sh actually
+# gates, DERIVED from its `# BEGIN <dep>-candidates` marker-block names rather
+# than listed again here. Deriving it is the point: a fourth dep that ships
+# without a gate arm shows up as a set difference, with nothing to keep in
+# sync.
+_bash_gated_deps() {
+    sed -n 's/^# BEGIN \([a-z0-9]*\)-candidates.*/\1/p' "$GUARD"
+}
+
+# _norm_dep_set — lowercase + sort -u, so `NativeDep::OpenVdb` and the
+# `openvdb-candidates` block name compare equal. Order carries NO meaning here
+# (unlike the candidate lists, where it is the whole invariant): arm order in
+# the guard is not a contract, only arm PRESENCE is.
+_norm_dep_set() {
+    tr '[:upper:]' '[:lower:]' | sort -u
 }
 
 # _extract_bash_array <VAR> — elements of the named bash array, one per line,
@@ -341,20 +627,20 @@ _bash_guard_array() {
     _extract_bash_array "$1" < "$GUARD"
 }
 
-# _bash_occt_array <VAR> — the named array as declared INSIDE the
-# `occt-candidates` marker block, so a same-named array elsewhere in the file
-# can never satisfy the parity parse.
-_bash_occt_array() {
-    sed -n '/# BEGIN occt-candidates/,/# END occt-candidates/p' "$GUARD" \
-        | _extract_bash_array "$1"
+# _bash_block_array <block> <VAR> — the named array as declared INSIDE the
+# `# BEGIN <block>` / `# END <block>` marker block, so a same-named array
+# elsewhere in the file can never satisfy the parity parse.
+_bash_block_array() {
+    sed -n "/# BEGIN $1/,/# END $1/p" "$GUARD" \
+        | _extract_bash_array "$2"
 }
 
-# _bash_occt_scalar <VAR> — value of the named scalar assignment inside the
-# `occt-candidates` marker block.
-_bash_occt_scalar() {
-    awk -v var="$1" '
-        index($0, "# BEGIN occt-candidates") { inblk = 1; next }
-        index($0, "# END occt-candidates") { exit }
+# _bash_block_scalar <block> <VAR> — value of the named scalar assignment
+# inside that same marker block.
+_bash_block_scalar() {
+    awk -v blk="$1" -v var="$2" '
+        index($0, "# BEGIN " blk) { inblk = 1; next }
+        inblk && index($0, "# END " blk) { exit }
         !inblk { next }
         $0 ~ ("^[[:space:]]*" var "=") {
             line = $0
@@ -393,6 +679,166 @@ _setup_dev_occt_version() {
 # non-empty assert lives with the SONAME section below.
 _ACCEPTED_SONAMES="$(_bash_guard_array OCCT_ACCEPTED_SONAMES)"
 _ACCEPTED_FIRST="$(printf '%s\n' "$_ACCEPTED_SONAMES" | head -1)"
+
+# Healthy UPSTREAM OCCT, built at the DERIVED accepted version rather than a
+# hardcoded 7.8, so a legitimate future pin bump stays a one-line diff in one
+# file. Fed to every section that tests a DOWNSTREAM dep, for the mirror-image
+# reason _DOWNSTREAM_OK exists: the OCCT arm runs FIRST, so without healthy
+# OCCT overrides a `_guard_env_exits_nonzero` assert on gmsh or openvdb would
+# pass on the OCCT arm's exit and test nothing at all.
+#
+# Defined here rather than beside _DOWNSTREAM_OK only because it needs
+# $_ACCEPTED_FIRST, which is derived just above.
+_UPSTREAM_OCCT_LIB="$(_mk_lib_fixture upstream-occt-lib "$_ACCEPTED_FIRST")"
+_UPSTREAM_OCCT_INC="$(_mk_include_fixture upstream-occt-include)"
+_OCCT_OK=(OCCT_LIB_DIR="$_UPSTREAM_OCCT_LIB" OCCT_INCLUDE_DIR="$_UPSTREAM_OCCT_INC")
+
+# EVERY arm with an override seam, healthy. The all-green baseline that
+# section 12's behavioural completeness loop perturbs one dep at a time.
+_ALL_DEPS_OK=("${_OCCT_OK[@]}" "${_DOWNSTREAM_OK[@]}")
+
+# ---------------------------------------------------------------------------
+# 0. SELF-CHECK — the needle-containment primitive itself.
+#
+# Placed AHEAD of every guard case deliberately: a broken containment primitive
+# would otherwise surface as a random guard assertion failing, and be
+# attributed to the guard (or to /opt/reify-deps contention, or to arm
+# ordering) rather than to the test harness. That misattribution is exactly
+# what kept this flake unroot-caused for a full task cycle.
+#
+# WHAT IS UNDER TEST: `_out_contains` must report containment DETERMINISTICALLY.
+# A `printf | grep -q` implementation does not: `grep -q` exits the instant it
+# matches and closes the pipe, the bash-builtin `printf` writer is killed by
+# SIGPIPE (141), and `set -o pipefail` (line 96 of this file) makes the
+# PIPELINE report 141 — so a MATCH is returned as a MISS. Measured over 20000
+# iterations on the real ~1.1KB guard payload: 28 misses, PIPESTATUS "141 0"
+# (writer killed, grep succeeded) every time — 0.14% per call, ~2.8% per run
+# across this file's ~20 output asserts.
+#
+# THE REGRESSION PIN IS STRUCTURAL, NOT STATISTICAL.
+# `_containment_has_no_pipeline` reads the LIVE function body and refuses any
+# `|` at all: the hazard CLASS — every pipeline, not just the one `grep`
+# instance that happened to be measured — caught deterministically and
+# instantly. An earlier draft also ran a 5000-call stress loop against a
+# payload/needle pair proven to match; it was strictly weaker on every axis
+# (documented ~9e-4 false-pass probability, ~1s on every RUN_RUST=1 verify, and
+# blind to a non-grep pipeline) and is gone. What remains is deterministic: the
+# needle IS present (pipefail-free oracle), the primitive says so, a genuinely
+# absent needle still MISSES, and the body carries no pipeline.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 0: self-check — the needle-containment primitive is not itself flaky ---"
+
+# A real guard payload (lib resolves, headers do not), captured ONCE — the same
+# ~1.1KB stdout+stderr every output assert in this file is matched against.
+_SELF_LIB_OK="$(_mk_lib_fixture selfcheck-lib "$_ACCEPTED_FIRST")"
+_SELF_INC_MISSING="$(_mk_empty_fixture selfcheck-include)"
+_SELF_PAYLOAD="$(OCCT_LIB_DIR="$_SELF_LIB_OK" OCCT_INCLUDE_DIR="$_SELF_INC_MISSING" bash "$GUARD" 2>&1 || true)"
+_SELF_NEEDLE="Standard_Failure.hxx"
+
+assert "self-check captured a non-empty real guard payload to match against" \
+    test -n "$_SELF_PAYLOAD"
+
+# Reference oracle, asserted BEFORE the primitive is exercised so the assert
+# below can only fail because the primitive is broken, never because the needle
+# is genuinely absent. Run under `bash -c` (default shell options — no
+# pipefail) using bash's own fork-free `==` pattern match, which has no pipeline
+# and cannot take SIGPIPE.
+assert "self-check needle '$_SELF_NEEDLE' is genuinely PRESENT in that payload (bash [[ == * ]] oracle)" \
+    bash -c '[[ "$1" == *"$2"* ]]' _ "$_SELF_PAYLOAD" "$_SELF_NEEDLE"
+
+assert "_out_contains reports that genuinely PRESENT needle as a match" \
+    _out_contains "$_SELF_PAYLOAD" "$_SELF_NEEDLE"
+
+# Negative control, run in THIS shell (the primitive is a shell function, not
+# an exported command, so it is not reachable from a `bash -c` child): the
+# primitive must still MISS a needle that is genuinely absent. Without this, a
+# bare `return 0` would satisfy the positive assert above.
+_containment_negative_control() {
+    ! _out_contains "$_SELF_PAYLOAD" "__no_such_needle_6493__"
+}
+
+assert "_out_contains still reports a genuinely ABSENT needle as a miss (negative control)" \
+    _containment_negative_control
+
+# _containment_has_no_pipeline — DETERMINISTIC structural pin on the hazard
+# CLASS. `declare -f` re-renders the live function body, so this reads the
+# primitive actually in force rather than a grep of the file, and it refuses
+# ANY `|` — not merely the measured `| grep` — because every pipeline under
+# this file's `set -o pipefail` carries the identical SIGPIPE exposure. This is
+# what stops the fork-free form being "simplified" back into a pipeline.
+#
+# A `case` ALTERNATION pattern (`*a* | *b*)`) would trip it too. That is an
+# accepted and LOUD false positive: the assert dumps the body it rejected, and
+# a literal-containment primitive has no need of alternation.
+_containment_has_no_pipeline() {
+    local body
+    body="$(declare -f _out_contains)" || return 1
+    [ -n "$body" ] || return 1
+    case "$body" in
+        *'|'*)
+            echo "_out_contains' body contains a pipeline ('|'):"
+            printf '%s\n' "$body"
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+assert "_out_contains' body contains no '|' pipeline at all (no pipefail/SIGPIPE exposure)" \
+    _containment_has_no_pipeline
+
+# --- A MISS must be DIAGNOSABLE, not silent.
+#
+# tests/infra/test_helpers.sh's assert() dumps captured evidence only when the
+# checker actually wrote to its per-assert tmpfile (`[ -s "$_f" ]`). A
+# `_guard_output_names` that swallows the guard output into a shell variable
+# and then `return 1`s writes NOTHING, so the FAIL line reads
+# "  FAIL: guard output NAMES <x>" with no captured-output block at all — the
+# reader cannot tell whether the guard printed the wrong thing, printed
+# nothing, or (as it turned out) printed exactly the right thing and the
+# harness misreported it. That evidence gap is precisely why the SIGPIPE defect
+# above survived a full task cycle unroot-caused.
+#
+# Behavioural, not prose: WHETHER evidence is emitted and whether it carries
+# the two things a reader needs (which needle was missing, and what the guard
+# actually said). Exact wording is deliberately not pinned.
+_MISS_NEEDLE="__absent_needle_6493__"
+_SELF_PAYLOAD_FIRST_LINE="${_SELF_PAYLOAD%%$'\n'*}"
+
+assert "self-check has a non-empty first payload line to look for in the diagnostic" \
+    test -n "$_SELF_PAYLOAD_FIRST_LINE"
+
+# stdout AND stderr — the helper is free to use either; what matters is that
+# assert()'s tmpfile (which captures both) ends up non-empty.
+_MISS_DIAG="$(_guard_output_names "$_SELF_LIB_OK" "$_SELF_INC_MISSING" "$_MISS_NEEDLE" 2>&1 || true)"
+
+assert "_guard_output_names EMITS evidence on a needle miss (assert's on-FAIL dump has something to show)" \
+    test -n "$_MISS_DIAG"
+
+assert "that evidence NAMES the needle that was missing ('$_MISS_NEEDLE')" \
+    _out_contains "$_MISS_DIAG" "$_MISS_NEEDLE"
+
+assert "that evidence carries the CAPTURED guard output (at least its first line)" \
+    _out_contains "$_MISS_DIAG" "$_SELF_PAYLOAD_FIRST_LINE"
+
+# The other half of the contract: an all-green run must stay byte-for-byte
+# unchanged, because run_all.sh's cause_hint and dark-factory's classifier both
+# parse this file's output shape. So the helper must emit on the FAILURE path
+# only.
+_no_emission_on_match() {
+    local out
+    out="$(_guard_output_names "$_SELF_LIB_OK" "$_SELF_INC_MISSING" "$_SELF_NEEDLE" 2>&1)" || return 1
+    [ -z "$out" ] || {
+        echo "_guard_output_names emitted on the SUCCESS path, which would change"
+        echo "the green output shape run_all.sh and dark-factory parse:"
+        printf '%s\n' "$out"
+        return 1
+    }
+}
+
+assert "_guard_output_names emits NOTHING when every needle matches (green shape unchanged)" \
+    _no_emission_on_match
 
 # ---------------------------------------------------------------------------
 # 1. Guard script exists and is executable
@@ -466,63 +912,84 @@ assert "guard exits 0 when BOTH override dirs carry their sentinels (positive co
 echo ""
 echo "--- 5: parity — bash occt-candidates block mirrors NativeDep::Occt ---"
 
-_RUST_LIB_CANDS="$(_rust_occt_list lib_candidates)"
-_RUST_INC_CANDS="$(_rust_occt_list include_candidates)"
-_RUST_LIB_SENT="$(_rust_occt_scalar lib_sentinel)"
-_RUST_INC_SENT="$(_rust_occt_scalar include_sentinel)"
-
-_BASH_LIB_CANDS="$(_bash_occt_array OCCT_LIB_CANDIDATES)"
-_BASH_INC_CANDS="$(_bash_occt_array OCCT_INCLUDE_CANDIDATES)"
-_BASH_LIB_SENT="$(_bash_occt_scalar OCCT_LIB_SENTINEL)"
-_BASH_INC_SENT="$(_bash_occt_scalar OCCT_INCLUDE_SENTINEL)"
-
-# Anchor-integrity asserts FIRST: without these, a renamed fn or a dropped
-# marker block degrades every comparison below to "" == "" and the whole
-# parity section passes while guarding nothing.
-assert "Rust parse of NativeDep::Occt lib_candidates is non-empty (anchor 'fn lib_candidates' found)" \
-    test -n "$_RUST_LIB_CANDS"
-assert "Rust parse of NativeDep::Occt include_candidates is non-empty (anchor 'fn include_candidates' found)" \
-    test -n "$_RUST_INC_CANDS"
-assert "Rust parse of NativeDep::Occt lib_sentinel is non-empty (anchor 'fn lib_sentinel' found)" \
-    test -n "$_RUST_LIB_SENT"
-assert "Rust parse of NativeDep::Occt include_sentinel is non-empty (anchor 'fn include_sentinel' found)" \
-    test -n "$_RUST_INC_SENT"
-assert "bash parse of OCCT_LIB_CANDIDATES is non-empty (occt-candidates marker block found)" \
-    test -n "$_BASH_LIB_CANDS"
-assert "bash parse of OCCT_INCLUDE_CANDIDATES is non-empty (occt-candidates marker block found)" \
-    test -n "$_BASH_INC_CANDS"
-assert "bash parse of OCCT_LIB_SENTINEL is non-empty (occt-candidates marker block found)" \
-    test -n "$_BASH_LIB_SENT"
-assert "bash parse of OCCT_INCLUDE_SENTINEL is non-empty (occt-candidates marker block found)" \
-    test -n "$_BASH_INC_SENT"
-
-# Order-sensitive comparison: the priority order IS the invariant (system
-# paths ahead of /opt/reify-deps/lib, which ships gmsh's transitive OCCT 7.9).
+# _parity_diff <a> <b> — order-sensitive difference of two newline-separated
+# lists, empty when they agree. The priority ORDER is itself the invariant, so
+# a set comparison would not do: OCCT's system paths must stay ahead of
+# /opt/reify-deps' OCCT 7.9, and conversely Gmsh/OpenVDB's /opt/reify-deps must
+# stay ahead of apt's stale gmsh 4.12.1 / openvdb 10.0.1.
 _parity_diff() {
     diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") 2>&1 || true
 }
 
-_LIB_CAND_DIFF="$(_parity_diff "$_RUST_LIB_CANDS" "$_BASH_LIB_CANDS")"
-if [ -n "$_LIB_CAND_DIFF" ]; then
-    echo "  OCCT lib-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
-    printf '%s\n' "$_LIB_CAND_DIFF" | sed 's/^/    /'
-fi
-assert "bash OCCT_LIB_CANDIDATES equals NativeDep::Occt lib_candidates, order included" \
-    test -z "$_LIB_CAND_DIFF"
+# _assert_dep_parity <Variant> <block> <PREFIX>
+#
+# The whole mirror check for one native dep: Rust's `NativeDep::<Variant>` arms
+# (the single source of truth) against the `# BEGIN <block>` marker block in
+# scripts/check-manifold-deps.sh (a declared mirror), for both candidate lists
+# ORDER INCLUDED and both sentinels.
+#
+# The four ANCHOR-INTEGRITY asserts come FIRST and are mandatory. Without them
+# a renamed fn, a dropped marker block or a mistyped variant degrades every
+# comparison below to "" == "" and the whole section passes while guarding
+# NOTHING — which is the same vacuity class this file exists to close, one
+# level up.
+_assert_dep_parity() {
+    local variant="$1" block="$2" prefix="$3"
+    local rust_lib rust_inc rust_lib_sent rust_inc_sent
+    local bash_lib bash_inc bash_lib_sent bash_inc_sent
+    local lib_diff inc_diff
 
-_INC_CAND_DIFF="$(_parity_diff "$_RUST_INC_CANDS" "$_BASH_INC_CANDS")"
-if [ -n "$_INC_CAND_DIFF" ]; then
-    echo "  OCCT include-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
-    printf '%s\n' "$_INC_CAND_DIFF" | sed 's/^/    /'
-fi
-assert "bash OCCT_INCLUDE_CANDIDATES equals NativeDep::Occt include_candidates, order included" \
-    test -z "$_INC_CAND_DIFF"
+    rust_lib="$(_rust_dep_list lib_candidates "$variant")"
+    rust_inc="$(_rust_dep_list include_candidates "$variant")"
+    rust_lib_sent="$(_rust_dep_scalar lib_sentinel "$variant")"
+    rust_inc_sent="$(_rust_dep_scalar include_sentinel "$variant")"
 
-assert "bash OCCT_LIB_SENTINEL ('$_BASH_LIB_SENT') equals NativeDep::Occt lib_sentinel ('$_RUST_LIB_SENT')" \
-    test "$_BASH_LIB_SENT" = "$_RUST_LIB_SENT"
+    bash_lib="$(_bash_block_array "$block" "${prefix}_LIB_CANDIDATES")"
+    bash_inc="$(_bash_block_array "$block" "${prefix}_INCLUDE_CANDIDATES")"
+    bash_lib_sent="$(_bash_block_scalar "$block" "${prefix}_LIB_SENTINEL")"
+    bash_inc_sent="$(_bash_block_scalar "$block" "${prefix}_INCLUDE_SENTINEL")"
 
-assert "bash OCCT_INCLUDE_SENTINEL ('$_BASH_INC_SENT') equals NativeDep::Occt include_sentinel ('$_RUST_INC_SENT')" \
-    test "$_BASH_INC_SENT" = "$_RUST_INC_SENT"
+    assert "Rust parse of NativeDep::$variant lib_candidates is non-empty (anchor 'fn lib_candidates' found)" \
+        test -n "$rust_lib"
+    assert "Rust parse of NativeDep::$variant include_candidates is non-empty (anchor 'fn include_candidates' found)" \
+        test -n "$rust_inc"
+    assert "Rust parse of NativeDep::$variant lib_sentinel is non-empty (anchor 'fn lib_sentinel' found)" \
+        test -n "$rust_lib_sent"
+    assert "Rust parse of NativeDep::$variant include_sentinel is non-empty (anchor 'fn include_sentinel' found)" \
+        test -n "$rust_inc_sent"
+    assert "bash parse of ${prefix}_LIB_CANDIDATES is non-empty ($block marker block found)" \
+        test -n "$bash_lib"
+    assert "bash parse of ${prefix}_INCLUDE_CANDIDATES is non-empty ($block marker block found)" \
+        test -n "$bash_inc"
+    assert "bash parse of ${prefix}_LIB_SENTINEL is non-empty ($block marker block found)" \
+        test -n "$bash_lib_sent"
+    assert "bash parse of ${prefix}_INCLUDE_SENTINEL is non-empty ($block marker block found)" \
+        test -n "$bash_inc_sent"
+
+    lib_diff="$(_parity_diff "$rust_lib" "$bash_lib")"
+    if [ -n "$lib_diff" ]; then
+        echo "  $variant lib-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
+        printf '%s\n' "$lib_diff" | sed 's/^/    /'
+    fi
+    assert "bash ${prefix}_LIB_CANDIDATES equals NativeDep::$variant lib_candidates, order included" \
+        test -z "$lib_diff"
+
+    inc_diff="$(_parity_diff "$rust_inc" "$bash_inc")"
+    if [ -n "$inc_diff" ]; then
+        echo "  $variant include-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
+        printf '%s\n' "$inc_diff" | sed 's/^/    /'
+    fi
+    assert "bash ${prefix}_INCLUDE_CANDIDATES equals NativeDep::$variant include_candidates, order included" \
+        test -z "$inc_diff"
+
+    assert "bash ${prefix}_LIB_SENTINEL ('$bash_lib_sent') equals NativeDep::$variant lib_sentinel ('$rust_lib_sent')" \
+        test "$bash_lib_sent" = "$rust_lib_sent"
+
+    assert "bash ${prefix}_INCLUDE_SENTINEL ('$bash_inc_sent') equals NativeDep::$variant include_sentinel ('$rust_inc_sent')" \
+        test "$bash_inc_sent" = "$rust_inc_sent"
+}
+
+_assert_dep_parity Occt occt-candidates OCCT
 
 # --- 6: the same mirror one layer down — the snap-fallback ALGORITHM.
 #
@@ -543,7 +1010,7 @@ assert "bash parse of OCCT_SNAP_ROOT's default is non-empty (defaulted assignmen
     test -n "$_BASH_SNAP_ROOT"
 assert "Rust parse of the snap sentinel -> subdir map is non-empty" \
     test -n "$_RUST_SNAP_MAP"
-assert "bash parse of the snap sentinel -> subdir case is non-empty (occt_find_dir's case found)" \
+assert "bash parse of the snap sentinel -> subdir case is non-empty (dep_find_dir's case found)" \
     test -n "$_BASH_SNAP_MAP"
 
 assert "OCCT_SNAP_ROOT's default ('$_BASH_SNAP_ROOT') equals find_dir_with_override's read_dir literal ('$_RUST_SNAP_ROOT')" \
@@ -585,10 +1052,18 @@ assert "guard exits 0 for an accepted SONAME ('$_ACCEPTED_FIRST', Debian two-hop
 # The RECORDING half of the arm. Every other green-path assert runs through
 # _guard_exits_zero, which discards stdout — so without this one, deleting the
 # guard's [ok] line (or regressing it to name the wrong dir) leaves the whole
-# suite passing. That is the same "a passing suite and a deleted suite are
-# indistinguishable from outside" failure this task exists to close.
+# suite passing: the silent-vacuity rule one level up.
+#
+# The needle carries the trailing " at " so this arm's FIRST-LEVEL-only rule is
+# pinned HERE and not merely transitively. The fixture is a Debian two-hop
+# chain whose leaf is `libTKernel.so.<accepted>.1`, so a `readlink -f`
+# regression in dep_soname_ver would record "OCCT <accepted>.1 at " — and
+# "OCCT <accepted>" alone is a PREFIX of that and would pass either way.
+# Section 11's OpenVDB needle carries the separator for the identical reason;
+# without it here, that one assert would be the only thing covering the shared
+# helper's rule, which evaporates the moment anyone re-splits it per dep.
 assert "guard RECORDS the resolved OCCT version and both resolved dirs on the green path" \
-    _guard_output_names "$_SON_OK" "$_SON_INC" "OCCT $_ACCEPTED_FIRST" "$_SON_OK" "$_SON_INC"
+    _guard_output_names "$_SON_OK" "$_SON_INC" "OCCT $_ACCEPTED_FIRST at " "$_SON_OK" "$_SON_INC"
 
 # 8 — patch-shaped: the dev symlink points one hop further on a functionally
 # identical OCCT. Exact-matching the verbatim segment would make this a red
@@ -654,12 +1129,346 @@ assert "setup-dev.sh's OCCT block yields a version (anchor '# ---------- OCCT' +
 _ACCEPTED_MAJMIN="$(printf '%s\n' "$_ACCEPTED_SONAMES" | _majmin_lines)"
 _SETUP_DEV_MAJMIN="$(printf '%s\n' "$_SETUP_DEV_VER" | _majmin_lines)"
 
-if ! printf '%s\n' "$_ACCEPTED_MAJMIN" | grep -qxF -- "$_SETUP_DEV_MAJMIN"; then
+if ! _lines_contain_exact "$_ACCEPTED_MAJMIN" "$_SETUP_DEV_MAJMIN"; then
     echo "  OCCT version drift: setup-dev.sh provisions '$_SETUP_DEV_VER' (major.minor"
     echo "  $_SETUP_DEV_MAJMIN), accepted set projects to:"
     printf '%s\n' "$_ACCEPTED_MAJMIN" | sed 's/^/    /'
 fi
+# Deliberately left as a pipeline: unlike the diagnostic above, this one runs
+# in a FRESH `bash -c` child, which starts with default shell options — VERIFIED
+# `pipefail off` there, and shell options are not inherited across a `bash -c`.
+# With pipefail off the pipeline reports grep's status, so a SIGPIPE'd printf
+# cannot turn a match into a miss. Routing it through _lines_contain_exact is
+# not possible anyway: that is a shell function, not reachable from the child.
 assert "setup-dev.sh's OCCT version ('$_SETUP_DEV_VER') projects (major.minor) into OCCT_ACCEPTED_SONAMES" \
     bash -c 'printf "%s\n" "$1" | grep -qxF -- "$2"' _ "$_ACCEPTED_MAJMIN" "$_SETUP_DEV_MAJMIN"
+
+# ---------------------------------------------------------------------------
+# 8. GMSH PRESENCE — the silent-vacuity rule, one dep over (task #6493).
+#
+# crates/reify-kernel-gmsh/build.rs is byte-for-byte the fail-OPEN
+# find()/warning/return shape OCCT had before task #6343, and 81
+# has_gmsh-gated items vanish with it. The GATE therefore lives in
+# check-manifold-deps.sh, exactly as it does for OCCT.
+#
+# EVERY case supplies healthy OCCT overrides, for the sequential-arms reason
+# this file's KNOWN CAVEAT states: without them a `_guard_env_exits_nonzero`
+# assert would pass on the OCCT arm's exit and test nothing. Every negative
+# case pairs its exit-code assert with an output assert naming a GMSH-specific
+# string, so a failure that really came from upstream stays attributable.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 8: gmsh presence — missing libs / headers => red gate naming gmsh ---"
+
+# The HEALTHY fixtures for all three deps ($_OCCT_OK, $_GMSH_LIB_OK /
+# $_GMSH_INC_OK, $_OPENVDB_OK) are built once at the top of this file, because
+# the OCCT sections above need the downstream ones too. Only the MISSING
+# fixtures — which are specific to these cases — are built here.
+_GMSH_LIB_MISSING="$(_mk_empty_fixture gmsh-lib-missing)"
+_GMSH_INC_MISSING="$(_mk_empty_fixture gmsh-include-missing)"
+_OPENVDB_LIB_MISSING="$(_mk_empty_fixture openvdb-lib-missing)"
+_OPENVDB_INC_MISSING="$(_mk_empty_fixture openvdb-include-missing)"
+
+assert "guard exits NON-zero when the Gmsh lib dir lacks libgmsh.so (headers present)" \
+    _guard_env_exits_nonzero "${_OCCT_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_MISSING" GMSH_INCLUDE_DIR="$_GMSH_INC_OK"
+
+assert "guard output NAMES libgmsh.so and the offending Gmsh lib dir" \
+    _guard_env_output_names "${_OCCT_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_MISSING" GMSH_INCLUDE_DIR="$_GMSH_INC_OK" \
+        -- "libgmsh.so" "$_GMSH_LIB_MISSING"
+
+assert "guard exits NON-zero when the Gmsh include dir lacks gmshc.h (libs present)" \
+    _guard_env_exits_nonzero "${_OCCT_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_MISSING"
+
+assert "guard output NAMES gmshc.h and the offending Gmsh include dir" \
+    _guard_env_output_names "${_OCCT_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_MISSING" \
+        -- "gmshc.h" "$_GMSH_INC_MISSING"
+
+# The Gmsh positive control runs the guard to COMPLETION, so it also transits
+# the OpenVDB arm that section 9 adds downstream. It therefore supplies healthy
+# OpenVDB fixtures too ($_OPENVDB_OK, hoisted to the top of this file) —
+# leaning on live /opt/reify-deps state here would make a green Gmsh result
+# depend on a dep this section is not testing.
+
+assert "guard exits 0 when BOTH Gmsh override dirs carry their sentinels (positive control)" \
+    _guard_env_exits_zero "${_OCCT_OK[@]}" "${_OPENVDB_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK"
+
+# ---------------------------------------------------------------------------
+# 9. OPENVDB PRESENCE — the third instance of the same rule (task #6493).
+#
+# crates/reify-kernel-openvdb/build.rs is byte-for-byte gmsh's fail-OPEN shape,
+# so the GATE lives in check-manifold-deps.sh for the same reason.
+#
+# EVERY case supplies healthy OCCT *and* Gmsh overrides: both arms run AHEAD of
+# the OpenVDB arm in the same script, so without them a
+# `_guard_env_exits_nonzero` assert would pass on an upstream arm's exit and
+# test nothing. Every negative pairs its exit-code assert with an output assert
+# naming an OPENVDB-specific string, so an upstream failure stays attributable.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 9: openvdb presence — missing libs / headers => red gate naming openvdb ---"
+
+# $_GMSH_OK (healthy Gmsh overrides) is hoisted to the top of this file.
+
+assert "guard exits NON-zero when the OpenVDB lib dir lacks libopenvdb.so (headers present)" \
+    _guard_env_exits_nonzero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_MISSING" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK"
+
+assert "guard output NAMES libopenvdb.so and the offending OpenVDB lib dir" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_MISSING" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK" \
+        -- "libopenvdb.so" "$_OPENVDB_LIB_MISSING"
+
+assert "guard exits NON-zero when the OpenVDB include dir lacks openvdb/openvdb.h (libs present)" \
+    _guard_env_exits_nonzero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_MISSING"
+
+assert "guard output NAMES openvdb/openvdb.h and the offending OpenVDB include dir" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_MISSING" \
+        -- "openvdb/openvdb.h" "$_OPENVDB_INC_MISSING"
+
+assert "guard exits 0 when BOTH OpenVDB override dirs carry their sentinels (positive control)" \
+    _guard_env_exits_zero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK"
+
+# ---------------------------------------------------------------------------
+# 10. PARITY for the two new mirrors — the same anti-drift check section 5
+#     applies to OCCT, run against `gmsh-candidates` and `openvdb-candidates`.
+#
+# Rust stays the single source of truth. Order is compared, not just membership,
+# because the priority order IS the invariant on both new arms and it is the
+# OPPOSITE of OCCT's: /opt/reify-deps must lead for gmsh and openvdb (that is
+# where reify's 4.15.2 / 13.0.0 live) where it appears in NEITHER of OCCT's
+# lists (the conda env ships OCCT 7.9 as a transitive of gmsh while reify links
+# system OCCT 7.8). Gmsh's and OpenVdb's own lib orders also differ from each
+# other, so a drift that merely swapped two entries would still resolve — just
+# against the wrong install, silently.
+#
+# Every parse asserts non-empty FIRST (inside _assert_dep_parity), so a renamed
+# fn, a dropped marker block or a mistyped variant fails loudly instead of
+# degrading the comparison to "" == "" and passing while guarding nothing.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 10: parity — gmsh/openvdb marker blocks mirror their NativeDep arms ---"
+
+_assert_dep_parity Gmsh gmsh-candidates GMSH
+_assert_dep_parity OpenVdb openvdb-candidates OPENVDB
+
+# ---------------------------------------------------------------------------
+# 11. GREEN-PATH RECORDING for the two new arms (task #6493).
+#
+# Sections 8 and 9 pin only FAILURE paths, so a green Gmsh/OpenVDB result says
+# nothing about WHICH gmsh or openvdb produced it. Worse, every other
+# green-path assert in this file runs through `_guard_env_exits_zero`, which
+# discards stdout — so deleting an arm's `[ok]` line, or regressing it to name
+# the wrong dir, would leave the entire suite passing: the silent-vacuity rule
+# one level up.
+#
+# The SONAME is asserted as RECORDED ONLY. It is deliberately NOT compared
+# against an accepted set: OCCT's version pin is justified by a mechanism these
+# two do not have (crates/reify-kernel-occt/build.rs SPLICES the resolved
+# version into `dylib:+verbatim=libTK*.so.<ver>` behind a hard-coded fallback,
+# so an undeterminable SONAME silently links a version nobody verified). Gmsh
+# and OpenVDB link via plain `dylib=gmsh` / `dylib=openvdb` against the
+# unversioned dev symlink and splice no version anywhere, so there is no
+# unverified-link hazard to gate on — and a version pin would hard-stop every
+# RUN_RUST=1 verify on every lane the next time the conda env moves.
+#
+# FIRST-LEVEL RESOLUTION IS THE POINT. The fixtures reproduce the two live
+# shapes at /opt/reify-deps/lib exactly, because they differ:
+#   gmsh    ONE hop:  libgmsh.so    -> libgmsh.so.4.15.2          => 4.15.2
+#   openvdb TWO hops: libopenvdb.so -> libopenvdb.so.13.0
+#                                   -> libopenvdb.so.13.0.0       => 13.0
+# The OpenVDB needle carries the trailing " at " precisely so it CANNOT match
+# a `readlink -f` implementation, which would render "OpenVDB 13.0.0 at " —
+# "13.0" alone is a substring of "13.0.0" and would pass either way.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 11: recording — the green path names the resolved gmsh/openvdb ---"
+
+assert "guard RECORDS the resolved Gmsh version and both resolved dirs on the green path" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_OPENVDB_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_OK" GMSH_INCLUDE_DIR="$_GMSH_INC_OK" \
+        -- "Gmsh 4.15.2 at " "$_GMSH_LIB_OK" "$_GMSH_INC_OK"
+
+assert "guard RECORDS the resolved OpenVDB version and both resolved dirs on the green path" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK" \
+        -- "OpenVDB 13.0 at " "$_OPENVDB_LIB_OK" "$_OPENVDB_INC_OK"
+
+# --- the OTHER half of the asymmetry: an UNREADABLE SONAME is NOT fatal here -
+#
+# dep_presence_arm ends with `ok "$label ${ver:-unknown} at ..."`, and the
+# `unknown` branch is a load-bearing contract, not a fallback nobody meant.
+# Section 6 pins the OCCT side behaviourally (_mk_plainfile_lib_fixture =>
+# guard exits NON-zero, "could not determine"); these four asserts pin the
+# opposite expectation for gmsh and openvdb over the IDENTICAL on-disk shape,
+# from the SAME fixture, so a later refactor hoisting OCCT's hard-fail into the
+# shared helper cannot silently unify them.
+#
+# Both cases still supply healthy fixtures for every OTHER arm: an exit-0
+# assert is only meaningful if the arms ahead of AND behind this one also pass.
+_GMSH_LIB_PLAIN="$(_mk_plainfile_lib_fixture gmsh-lib-plainfile libgmsh.so)"
+_OPENVDB_LIB_PLAIN="$(_mk_plainfile_lib_fixture openvdb-lib-plainfile libopenvdb.so)"
+
+assert "guard exits 0 when libgmsh.so is a REGULAR FILE — an unreadable Gmsh SONAME is NOT fatal" \
+    _guard_env_exits_zero "${_OCCT_OK[@]}" "${_OPENVDB_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_PLAIN" GMSH_INCLUDE_DIR="$_GMSH_INC_OK"
+
+assert "guard RECORDS 'Gmsh unknown at ' rather than hard-failing on the undeterminable SONAME" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_OPENVDB_OK[@]}" \
+        GMSH_LIB_DIR="$_GMSH_LIB_PLAIN" GMSH_INCLUDE_DIR="$_GMSH_INC_OK" \
+        -- "Gmsh unknown at " "$_GMSH_LIB_PLAIN"
+
+assert "guard exits 0 when libopenvdb.so is a REGULAR FILE — an unreadable OpenVDB SONAME is NOT fatal" \
+    _guard_env_exits_zero "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_PLAIN" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK"
+
+assert "guard RECORDS 'OpenVDB unknown at ' rather than hard-failing on the undeterminable SONAME" \
+    _guard_env_output_names "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        OPENVDB_LIB_DIR="$_OPENVDB_LIB_PLAIN" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK" \
+        -- "OpenVDB unknown at " "$_OPENVDB_LIB_PLAIN"
+
+# ---------------------------------------------------------------------------
+# 12. COMPLETENESS — every NativeDep variant has a gate arm (task #6493).
+#
+# This is the assert that would have caught this task's own finding, and the
+# one that stops a FOURTH native dep from silently shipping ungated. Gmsh and
+# OpenVDB sat behind byte-for-byte the same fail-OPEN build.rs as OCCT for the
+# whole time OCCT had a gate and they did not — nothing anywhere compared the
+# two lists, so nothing could notice.
+#
+# Both sides are DERIVED, so nothing is duplicated: the bash side from the
+# `# BEGIN <dep>-candidates` marker-block NAMES already present for the parity
+# checks, the Rust side from the `// BEGIN native-dep-variants` markers around
+# the enum body. Adding a variant without an arm therefore reds HERE, at the
+# cheapest possible place.
+#
+# Compared as SETS. Order carries no meaning for this one — unlike the
+# candidate lists, where order IS the invariant — because arm PRESENCE is the
+# contract, not arm sequence.
+#
+# The two non-empty asserts and the >= 3 assert come FIRST and are mandatory:
+# without them a dropped marker on either side degrades the comparison to
+# "" == "" and this section passes while guarding nothing.
+#
+# TWO HALVES, and the second is the load-bearing one. The set comparison above
+# is LEXICAL: it reads `# BEGIN <dep>-candidates` COMMENT lines and nothing
+# more. A fourth variant shipping candidate arrays inside a correctly named
+# marker block but NO consuming presence check — no dep_find_dir call, no
+# hint+exit — would satisfy it, satisfy section 10's parity asserts, and
+# satisfy the assert message, while still shipping ungated. A DECLARED arm and
+# a GATING arm are not the same thing.
+#
+# So the loop below is BEHAVIOURAL. For each dep DERIVED from the guard's own
+# marker blocks it drives the guard with every other dep healthy and that dep's
+# lib dir (then its include dir) pointed at an EMPTY fixture, and asserts the
+# guard REDS naming that dep's declared sentinel and the offending dir. Both
+# sides are still derived — the dep names from the marker blocks, the sentinels
+# from `_bash_block_scalar` — so nothing is duplicated and a fourth dep is
+# covered the moment its block exists.
+#
+# The healthy-everything-else part is what keeps it non-vacuous: arms run in
+# declaration order and the first failure exits, so without it an UPSTREAM
+# arm's exit would satisfy the non-zero assert for a downstream dep that gates
+# nothing. The paired output assert names a DEP-SPECIFIC sentinel for the same
+# reason.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 12: completeness — every NativeDep variant has a check-manifold-deps arm ---"
+
+_RUST_VARIANTS="$(_rust_native_dep_variants)"
+_BASH_GATED="$(_bash_gated_deps)"
+
+assert "Rust parse of enum NativeDep's variants is non-empty (anchor '// BEGIN native-dep-variants' found)" \
+    test -n "$_RUST_VARIANTS"
+
+assert "bash parse of the gated dep set is non-empty ('# BEGIN <dep>-candidates' markers found)" \
+    test -n "$_BASH_GATED"
+
+_variant_count() {
+    local n
+    n="$(printf '%s\n' "$_RUST_VARIANTS" | grep -c .)" || true
+    [ "${n:-0}" -ge 3 ]
+}
+
+assert "Rust parse yields at least 3 NativeDep variants (Occt, Gmsh, OpenVdb — parse is not truncated)" \
+    _variant_count
+
+_RUST_DEP_SET="$(printf '%s\n' "$_RUST_VARIANTS" | _norm_dep_set)"
+_BASH_DEP_SET="$(printf '%s\n' "$_BASH_GATED" | _norm_dep_set)"
+
+_DEP_SET_DIFF="$(_parity_diff "$_RUST_DEP_SET" "$_BASH_DEP_SET")"
+if [ -n "$_DEP_SET_DIFF" ]; then
+    echo "  NativeDep gate coverage gap (< enum NativeDep, > check-manifold-deps.sh arms):"
+    printf '%s\n' "$_DEP_SET_DIFF" | sed 's/^/    /'
+    echo "  A variant present on the left but not the right ships a SILENT stub"
+    echo "  kernel: its build.rs emits a cargo:warning and returns without the cfg,"
+    echo "  so every gated item vanishes and the suite reports zero tests REPORTED"
+    echo "  rather than zero tests FAILED."
+fi
+assert "every enum NativeDep variant has a '# BEGIN <dep>-candidates' arm in check-manifold-deps.sh" \
+    test -z "$_DEP_SET_DIFF"
+
+# --- the behavioural half: each declared arm must actually GATE ------------
+
+# _env_replacing <VAR> <value> <env-item>... — the given VAR=VALUE override
+# list with <VAR>'s entry swapped for <value>, one item per line.
+#
+# Rebuilt rather than relying on `env` giving a later duplicate assignment
+# precedence: that IS how GNU env behaves, but it is a coreutils detail this
+# file should not silently depend on, and an explicit replace also makes the
+# failure-path `override:` dump show one value per var instead of two.
+# Fixture paths come from `mktemp -d` and contain no newlines, so a line-based
+# rendering is lossless here.
+_env_replacing() {
+    local var="$1" val="$2"
+    shift 2
+    local e
+    for e in "$@"; do
+        case "$e" in
+            "$var="*) continue ;;
+        esac
+        printf '%s\n' "$e"
+    done
+    printf '%s=%s\n' "$var" "$val"
+}
+
+_COMPLETENESS_EMPTY="$(_mk_empty_fixture completeness-empty)"
+
+# Herestring, NOT `printf | while read`: a pipeline would run the loop body in
+# a SUBSHELL and every assert's PASS/FAIL increment would be discarded with it,
+# leaving this section reporting nothing while appearing to run.
+while IFS= read -r _dep; do
+    [ -n "$_dep" ] || continue
+
+    # The uppercase form is the token the marker block, the override env vars
+    # and the sentinel/candidate names all already share, so it is derived, not
+    # listed.
+    _PREFIX="${_dep^^}"
+
+    for _half in LIB INCLUDE; do
+        _SENT="$(_bash_block_scalar "$_dep-candidates" "${_PREFIX}_${_half}_SENTINEL")"
+
+        # Mandatory, and first: an unparsed sentinel would make the output
+        # assert below match the empty needle against anything and pass while
+        # proving nothing.
+        assert "gate arm '$_dep': ${_PREFIX}_${_half}_SENTINEL parses non-empty from its marker block" \
+            test -n "$_SENT"
+
+        mapfile -t _GATE_ENVS < <(_env_replacing "${_PREFIX}_${_half}_DIR" "$_COMPLETENESS_EMPTY" "${_ALL_DEPS_OK[@]}")
+
+        assert "gate arm '$_dep' is BEHAVIOURAL: an empty ${_PREFIX}_${_half}_DIR reds the guard (every other dep healthy)" \
+            _guard_env_exits_nonzero "${_GATE_ENVS[@]}"
+
+        assert "gate arm '$_dep' names its own $_half sentinel ('$_SENT') and the offending dir — the red is attributable to $_dep" \
+            _guard_env_output_names "${_GATE_ENVS[@]}" -- "$_SENT" "$_COMPLETENESS_EMPTY"
+    done
+done <<< "$_BASH_GATED"
 
 test_summary
