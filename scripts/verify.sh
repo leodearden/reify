@@ -50,6 +50,27 @@
 #                                  byte-identical to today. Primarily the offline
 #                                  deep-test lane's parallelism knob (task 5264;
 #                                  docs/design/offline-deep-test-lane.md §6).
+#   --confirm-failed               Re-run ONLY the tests a previous recording run
+#                                  recorded as failing, and print the bare id of
+#                                  each one that STILL fails — one per line on
+#                                  stdout, with nothing else on either stream.
+#                                  Valid for test/all only.
+#                                  THE COMBINED stdout+stderr IS THE CONTRACT:
+#                                  dark-factory's offline lane spawns this with
+#                                  the two streams merged and reads every
+#                                  non-blank line as one confirmed-failing test
+#                                  id, so any stray diagnostic becomes a bogus
+#                                  test name it files a fix task against. This
+#                                  mode therefore bypasses the plan executor
+#                                  (which echoes each command) and sends its own
+#                                  diagnostics to a private log under target/.
+#                                  Prints NOTHING and exits 0 both when nothing
+#                                  was recorded and when nothing still fails —
+#                                  the two are deliberately indistinguishable on
+#                                  the wire. Exits 100 when it printed ids, and
+#                                  64 when the recorded set belongs to a
+#                                  different tree (task 7423; PRD
+#                                  verify-confirm-failed-self-discovery).
 #   -h|--help                      Show usage.
 #
 # Environment baked in (mirrors dark-factory-orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
@@ -521,7 +542,7 @@ _VERIFY_GUI_FEATURE_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_GUI_FEATU
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
 usage() {
-    sed -n '2,59p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -666,6 +687,7 @@ SCOPE="all"
 NARROW=0             # --narrow: opt-in to affected-crate narrowing for --scope staged
 INCLUDE_INFRA=0
 PRINT_PLAN=0
+CONFIRM_FAILED=0   # --confirm-failed: report which of a previously-recorded failed set still fails (task 7423). Its own code path; never reaches the plan executor.
 TEST_THREADS=""      # --test-threads=N: test-execution parallelism cap (offline lane, task 5264). Empty = unset → plan unchanged.
 TEST_THREADS_SET=0   # 1 once --test-threads is seen; lets validation reject an explicit empty value ('--test-threads=') while an UNSET flag stays valid.
 
@@ -691,6 +713,8 @@ while [ "$#" -gt 0 ]; do
             INCLUDE_INFRA=1; shift ;;
         --print-plan)
             PRINT_PLAN=1; shift ;;
+        --confirm-failed)
+            CONFIRM_FAILED=1; shift ;;
         --test-threads)
             TEST_THREADS="${2:?--test-threads requires an argument}"; TEST_THREADS_SET=1; shift 2 ;;
         --test-threads=*)
@@ -728,6 +752,27 @@ if [ "$TEST_THREADS_SET" -eq 1 ]; then
     case "$TEST_THREADS" in ''|*[!0-9]*|0*)
         echo "verify.sh: ERROR — invalid --test-threads '$TEST_THREADS' (want positive integer)" >&2; exit 64 ;;
     esac
+fi
+
+# --confirm-failed (task 7423): valid only where a recorded failed TEST set can
+# exist. lint and typecheck are single, unnarrowable passes with no such set, so
+# the flag is meaningless there — rejected in the same strict style --profile and
+# --scope use for an invalid value, rather than silently ignored.
+if [ "$CONFIRM_FAILED" -eq 1 ]; then
+    case "$ACTION" in test|all) ;; *)
+        echo "verify.sh: ERROR — --confirm-failed is valid only for action test|all (got '$ACTION')" >&2; exit 64 ;;
+    esac
+    # PRD §11's open question, resolved: REFUSE the combination rather than
+    # invent a precedence. --confirm-failed drives the REIFY_VERIFY_RETRY_*
+    # consumption pipeline itself, from a subset IT recorded; an externally-set
+    # REIFY_VERIFY_RETRY_SCOPE means a second caller is driving that same
+    # pipeline from a different subset. Either subset silently winning would be
+    # a wrong answer reported with full confidence, and the answer here is a
+    # list of test ids dark-factory files fix tasks against.
+    if [ -n "${REIFY_VERIFY_RETRY_SCOPE:-}" ]; then
+        echo "verify.sh: ERROR — --confirm-failed conflicts with REIFY_VERIFY_RETRY_SCOPE='${REIFY_VERIFY_RETRY_SCOPE}' (both drive the retry subset pipeline; refusing rather than picking one silently)" >&2
+        exit 64
+    fi
 fi
 
 # THE CLI --test-threads SEAM (task 6375).  gen-nextest-config.sh is the ONE
@@ -1004,6 +1049,19 @@ fi
 # Run all relative-path commands from the repo root, matching how both the
 # orchestrator (project_root) and the git hook ($ROOT) invoke verification.
 cd "$REPO_ROOT"
+
+# --confirm-failed dispatch (task 7423/γ). Entered as early as possible: this
+# mode never builds a plan and never reaches the plan executor, whose
+# unconditional `verify.sh: + <cmd>` echo would by itself corrupt the caller's
+# parse. Everything below this point belongs to the ordinary verify path.
+#
+# STUB, filled in by the confirm-run implementation. It already honours the
+# contract's vacuous case — nothing recorded means nothing to confirm, so print
+# nothing and exit 0 — which is also what makes the flag safe to accept before
+# the subset re-run exists: it can never fall through into a real test run.
+if [ "$CONFIRM_FAILED" -eq 1 ]; then
+    exit 0
+fi
 
 # --scope branch: resolve merge-base(main, HEAD) -> working tree diff.
 # Fail WIDE (contract C5): detached HEAD / missing local 'main' ref / any
