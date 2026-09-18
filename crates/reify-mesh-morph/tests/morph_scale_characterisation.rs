@@ -401,10 +401,10 @@ struct MorphMeasurement {
     /// P1 tet count of the source mesh (equal to the morphed mesh's, since
     /// the morph is a node-position update).
     tets: usize,
-    /// Node count of the source mesh.
+    /// Node count of the source mesh. The solve's displacement DOF count is
+    /// `3 * nodes` and is derived at the one place it is printed rather than
+    /// stored, so there is no second copy to fall out of step.
     nodes: usize,
-    /// Displacement degrees of freedom: `3 * nodes`.
-    dof: usize,
     /// Wall-clock of the `elasticity_morph` call ALONE — see [`morph_once`]
     /// for what is deliberately excluded.
     elapsed: Duration,
@@ -468,7 +468,6 @@ fn morph_once(n: usize) -> MorphMeasurement {
         n,
         tets,
         nodes,
-        dof: 3 * nodes,
         elapsed,
         result,
     }
@@ -537,12 +536,6 @@ fn morph_once_times_a_connectivity_preserving_fillet_perturbation() {
         source.vertices.len() / 3,
         "reported node count must match the fixture"
     );
-    assert_eq!(
-        measurement.dof,
-        3 * measurement.nodes,
-        "the elasticity morph carries three displacement DOF per node"
-    );
-
     assert!(
         measurement.elapsed > Duration::ZERO,
         "the clock was never read — `elapsed` is {:?}",
@@ -896,6 +889,17 @@ const MESH_SIZE_LADDER: [f64; 7] = [0.060, 0.045, 0.035, 0.028, 0.022, 0.017, 0.
 /// `tets == 0` and a wall-clock that measures how long gmsh took to give up,
 /// so pairing against one would fabricate a ratio out of a zero.
 ///
+/// An exact tie — a target equidistant between two succeeding rungs — resolves
+/// to the EARLIER rung in `entries`, which is `min_by_key`'s first-wins rule
+/// applied to a [`MESH_SIZE_LADDER`] ordered coarse -> fine. That direction is
+/// the conservative one, and deliberately so: the earlier rung is the coarser
+/// one, so it is the CHEAPER gmsh arm, and the driver prints
+/// `gmsh_wall / morph_wall`. Resolving a tie toward the coarser rung therefore
+/// understates that ratio — it can only make the morph look worse against
+/// #2953's `>=10x` premise, never better. A pairing rule that is going to be
+/// arbitrary at a tie should be arbitrary in the direction that cannot flatter
+/// the result it is used to judge.
+///
 /// Returns `Option` rather than panicking so an empty or wholly-failed ladder
 /// degrades to "no paired ratio available" and the driver still prints both
 /// raw ladders — the run's other measurements survive the loss of the join.
@@ -996,6 +1000,19 @@ fn nearest_by_tet_count_selects_the_closest_rung() {
         selected.tets, 9_000,
         "the numerically exact rung failed, so the nearest SUCCEEDING rung must be \
          chosen instead of fabricating a ratio against a failed one"
+    );
+
+    // An exact tie must resolve to the COARSER rung — the earlier one in a
+    // coarse -> fine ladder. Unpinned, this is the one input on which the
+    // selection rule is arbitrary, and the arbitrary choice has a direction:
+    // the coarser rung is the cheaper gmsh arm, so it understates the printed
+    // `gmsh/morph` ratio rather than inflating it.
+    let tied = [rung(0.035, 9_000, true), rung(0.028, 11_000, true)];
+    let tie = nearest_by_tet_count(&tied, 10_000).expect("must select");
+    assert_eq!(
+        tie.tets, 9_000,
+        "10,000 is 1,000 from both rungs; the tie must break toward the coarser \
+         one, which is the direction that cannot flatter the morph arm"
     );
 
     // A ladder with no successful rung at all is indistinguishable from an
@@ -1106,7 +1123,7 @@ fn gmsh_from_scratch_vs_morph_wall_clock_at_10k_and_100k() {
                 measurement.n,
                 measurement.tets,
                 measurement.nodes,
-                measurement.dof,
+                measurement.nodes * 3,
                 measurement.elapsed,
                 match &measurement.result {
                     Ok(_) => "Ok".to_string(),

@@ -23,14 +23,16 @@ use std::f64::consts::TAU;
 /// The split is face-conforming BETWEEN CELLS THAT NUMBER THEIR CORNERS ON
 /// THE SAME LOCAL AXES: every quad face is bisected by a diagonal through
 /// local corner 0 or local corner 6, so two neighbours related by a pure
-/// translation of the index map agree and the mesh has no T-junctions.
-///
-/// It says nothing about two cells whose local axes DISAGREE — a shared face
-/// seen as "corner 0's" from one side and "corner 6's" from the other is
-/// bisected the opposite way, and the two triangulations then fail to cancel.
-/// A multi-block generator must therefore align its blocks' local axes across
-/// every interface; [`bracket`] does, and its polar-zone corner ordering is
-/// chosen for exactly that reason.
+/// translation of the index map agree on that diagonal and the mesh has no
+/// T-junctions there. It says NOTHING about two cells whose local axes
+/// disagree: a shared face seen as "corner 0's" diagonal from one side and
+/// "corner 6's" from the other is bisected the OPPOSITE way, and the two
+/// triangulations then fail to cancel — each is seen once instead of
+/// twice, leaving a doubled interior sheet rather than a shared interface.
+/// A multi-block generator must therefore align its blocks' local axes
+/// across every interface; [`bracket`] does, and its polar-zone corner
+/// ordering (and arm-2 wedge corner order) are chosen for exactly that
+/// reason.
 pub(crate) const HEX_TO_6TETS: [[usize; 4]; 6] = [
     [0, 1, 2, 6],
     [0, 2, 3, 6],
@@ -231,38 +233,39 @@ pub fn plate_with_hole(
 ///
 /// ## Conformity
 ///
-/// The three blocks are aligned so the whole mesh is a conforming simplicial
-/// complex: every interior triangular face is shared by exactly two tets, and
-/// the boundary extracted by `boundary::boundary_surface` is a closed, orientable,
-/// genus-0 manifold surface. At n=4 that surface is 248 vertices / 738 edges /
-/// 492 triangles (V - E + F = 2), every edge at degree exactly 2.
+/// The three blocks' local axes are aligned so the whole mesh is a
+/// conforming simplicial complex: every interior triangular face is shared
+/// by exactly two tets, and the boundary is a closed, orientable, genus-0
+/// manifold (Euler characteristic `V - E + F = 2`), with every boundary
+/// edge at degree exactly 2. This is load-bearing, not cosmetic: it is
+/// what makes the P1 FEA displacement field continuous across the block
+/// interfaces (a non-conforming interface leaves the two sides' linear
+/// interpolants disagreeing in the interior of each shared quad), and it
+/// is what would let a boundary extractor hand a volume mesher a
+/// watertight input. Two places encode it, both carrying their derivation
+/// inline: the polar zone's half-turn corner ordering and arm 2's
+/// wedge-prism corner order. The executable contract is
+/// `calibration.rs::calibration_fixtures_are_conforming_simplicial_complexes`.
 ///
-/// This is load-bearing in two directions. It is what lets `boundary_surface`
-/// hand gmsh a watertight input at all, and it is what makes the P1 FEA
-/// displacement field continuous across the block interfaces — a
-/// non-conforming interface leaves the two sides' linear interpolants
-/// disagreeing in the interior of each shared quad. Two places encode it:
-/// the polar zone's half-turn corner ordering and arm 2's wedge-prism corner
-/// order; both carry the derivation inline.
+/// Measured instance of that property, for anyone checking a change against a
+/// concrete number rather than a predicate: the surface
+/// `boundary::boundary_surface` extracts at n=4 is 248 vertices / 738 edges /
+/// 492 triangles, so `V - E + F = 2`.
 ///
 /// ## Element count (P1)
 ///
-/// Closed-form for `n >= 2` (where `n_r = n_a = n_arm = n_z = n`):
-///
-/// ```text
-/// tets(n) = 18n^3 + 12n^2 - 6n
-/// ```
-///
-/// Derivation: the polar zone contributes `6*n_z*n_a*n_r` (6 tets per hex);
-/// each of the two arm zones contributes `6*(n_z*n_arm*(n_r+1) - n_z)` for
-/// its hexes plus `3*n_z` for its one wedge-bridge cell per z-layer (the
-/// `(i=0, j=n_r)` cell, meshed as a triangular prism because the corner
-/// `(0, n_r+1)` sits in the exclusion zone).
-///
-/// Calibration points used by
-/// `tests/morph_scale_characterisation.rs`: **9,936 at n=8** (the ~10K
-/// band) and **108,756 at n=18** (the ~100K band); n=17 gives 91,800.
-/// Recorded here so those two resolutions are auditable rather than magic.
+/// For `n >= 2`: `tets(n) = 18n³ + 12n² - 6n`. Derivation — the polar zone
+/// contributes `6 * n_z * n_a * n_r` (6 tets per hex); each of the two arm
+/// zones contributes `6 * (n_z * n_arm * (n_r+1) - n_z)` for its hexes plus
+/// `3 * n_z` for its one wedge-bridge cell per z-layer (the `(i=0, j=n_r)`
+/// cell, meshed as a triangular prism because corner `(0, n_r+1)` sits in
+/// the exclusion zone). At `n=1` the formula does not apply — `n_a`,
+/// `n_arm`, `n_z` are `max(n, 2)` while `n_r` is `n`, giving 108 tets
+/// rather than the formula's 24. Calibration points for the two scale
+/// bands this is audited against: **9,936 tets at n=8** and **108,756 at
+/// n=18** (n=17 gives 91,800). Consumer: task #6658's sibling task #6638,
+/// whose `tests/morph_scale_characterisation.rs` uses these scale points to
+/// characterise morph behaviour as mesh size grows.
 pub fn bracket(
     arm_length: f64,
     thickness: f64,
@@ -415,27 +418,30 @@ pub fn bracket(
 
     // Polar zone hex cells. Bottom-face CCW from +z: in the fillet quadrant,
     // angle θ runs π → 3π/2 (clockwise in xy) and r runs inward → outward.
-    // Local hex corners (i, j) with i ∈ {a, a+1}, j ∈ {k_r, k_r+1}:
+    // Local hex corners (i, j) with i ∈ {a, a+1}, j ∈ {k_r, k_r+1}, traversed
+    // a HALF TURN from the naive (a,k_r)→(a,k_r+1)→(a+1,k_r+1)→(a+1,k_r)
+    // ordering:
     //   c0 = (a+1, k_r+1),   c1 = (a+1, k_r),
     //   c2 = (a,   k_r),     c3 = (a,   k_r+1)
-    // That is the (a, k_r) traversal rotated by a half turn. The rotation is
-    // a full cycle of the bottom face, so winding — and with it the
-    // right-handedness [`HEX_TO_6TETS`] depends on — is preserved exactly.
+    // A half turn is a full cycle of the bottom face, so winding — and the
+    // right-handedness `HEX_TO_6TETS` depends on — is preserved exactly.
     //
-    // The half turn is what makes the block INTERFACES conform. [`HEX_TO_6TETS`]
-    // bisects each quad face along a diagonal through local corner 0 or local
-    // corner 6, so which diagonal a shared face receives is decided by the
-    // block's local axis directions. The polar block meets both arms along
-    // columns its `polar_label` addresses as `n_r - k_r` — its radial axis runs
-    // OPPOSITE the arms' — so the untwisted ordering bisects every interface
-    // quad the other way from the arm that shares it. Each such quad then
-    // contributed two once-occurring faces from either side instead of one
-    // matched pair: the blocks still tiled the domain without gaps, but the
-    // result was not a simplicial complex, and its tet-face boundary carried a
-    // doubled interior sheet at each interface (measured at n=4 before this
-    // rotation: 128 spurious boundary faces, 89 edges at degree 4). Reversing
-    // both in-plane axes realigns the radial axis with the arms' while keeping
-    // orientation, which is exactly the half turn below.
+    // The half turn is what makes the INTERFACES conform. `HEX_TO_6TETS`
+    // bisects every quad face along a diagonal through local corner 0 or
+    // local corner 6, so which diagonal a SHARED face receives is fixed by
+    // the block's local axis directions. The polar block meets both arms
+    // along the columns `polar_label` addresses as `n_r - k_r` — i.e. the
+    // polar block's radial axis runs OPPOSITE the arms' — so the untwisted
+    // (a, k_r) ordering bisected every interface quad the other way from
+    // the arm sharing it. Each such quad then contributed two once-occurring
+    // faces instead of one matched pair, so the blocks still tiled the domain
+    // but the result was not a simplicial complex and its tet-face boundary
+    // carried a doubled interior sheet at every interface (measured at n=4
+    // before this rotation: 128 spurious boundary faces, 89 edges at degree 4).
+    // Reversing both in-plane axes realigns the radial
+    // axis while keeping orientation: exactly this half turn. Conformity
+    // (chi = 2) is pinned by
+    // `calibration.rs::calibration_fixtures_are_conforming_simplicial_complexes`.
     let polar_label = |kz: usize, a: usize, k_r: usize| -> (&'static str, usize, usize) {
         if a == n_a {
             ("A1L", kz, n_r - k_r)
@@ -519,27 +525,21 @@ pub fn bracket(
         for j in 0..n_arm {
             for i in 0..=n_r {
                 if i == n_r && j == 0 {
-                    // Wedge: corners (n_r, 0), (n_r, 1), (n_r+1, 1).
-                    //
-                    // The corner ORDER is forced by face conformity, not by
-                    // winding. A 3-tet prism split makes its first corner low
-                    // on both of its quad faces, its last high on both, and
-                    // its middle one mixed — so the diagonals it bisects the
-                    // two interior quads with are fully determined by the
-                    // order. Arm 2's two interior quads are `{(n_r,0),(n_r,1)}`
-                    // (shared with hex `i = n_r - 1, j = 0`, which bisects it
-                    // `(n_r,0)_bottom — (n_r,1)_top`) and `{(n_r,1),(n_r+1,1)}`
-                    // (shared with hex `i = n_r, j = 1`, which bisects it
-                    // `(n_r,1)_bottom — (n_r+1,1)_top`). Only the order below
-                    // reproduces BOTH; every cyclic rotation of it misses one,
-                    // leaving a doubled interior sheet at that quad.
-                    //
-                    // That order traverses the triangle CW from +z (arm 2's
-                    // wedge is the diagonal mirror of arm 1's), so each tet is
-                    // emitted with its first two vertices swapped. A swap
-                    // changes only the vertex ORDER, never the vertex SET — so
-                    // the four faces, and hence the conformity established
-                    // above, are untouched while the volume becomes positive.
+                    // Wedge: corners (n_r, 0), (n_r, 1), (n_r+1, 1). The
+                    // corner ORDER is forced by face conformity, not by
+                    // winding. A 3-tet prism split makes its first corner
+                    // low on BOTH quad faces, its last high on BOTH, and
+                    // its middle one mixed, so the order alone determines
+                    // both interior diagonals. Arm 2's two interior quads
+                    // are `{(n_r,0),(n_r,1)}` (shared with hex `i=n_r-1,
+                    // j=0`) and `{(n_r,1),(n_r+1,1)}` (shared with hex
+                    // `i=n_r, j=1`); only this order reproduces both —
+                    // every cyclic rotation misses one. That order
+                    // traverses CW from +z, hence the first-two-vertex
+                    // swap on every tet below: a swap changes vertex
+                    // ORDER, never the vertex SET, so the four faces (and
+                    // the conformity this establishes) are untouched while
+                    // the volume stays positive.
                     let p0_b = look(arm2_label(kz, n_r, 0));
                     let p1_b = look(arm2_label(kz, n_r, 1));
                     let p2_b = look(arm2_label(kz, n_r + 1, 1));

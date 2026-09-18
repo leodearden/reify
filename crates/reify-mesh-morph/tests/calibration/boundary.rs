@@ -7,8 +7,27 @@
 //! actually need a surface `#[path]`-include this file, so an unused
 //! function here shows up as dead code instead of being absorbed by
 //! `fixtures.rs`'s blanket `#![allow(dead_code)]`.
+//!
+//! ## Known duplication, and why the collapse is deferred
+//!
+//! `reify_solver_elastic::boundary_surface_mesh` (`volume_refine.rs`) is the
+//! library equivalent of [`boundary_surface`] — same three passes, and
+//! reachable from here without a new dependency edge, since
+//! `reify-solver-elastic` is already a normal `[dependencies]` entry of this
+//! crate. It post-dates this branch's merge-base, so the duplication only
+//! becomes real once this branch rebases.
+//!
+//! The swap is deliberately NOT made here. This harness's deliverable is a
+//! recorded measurement table, and the two extractors need not emit boundary
+//! triangles in the same ORDER — that order is what gmsh receives, so
+//! changing extractors changes the input to the timed region and invalidates
+//! every number in `docs/notes/morph-vs-remesh-scale-characterisation.md`
+//! until the whole ladder is re-run. Collapsing the two (together with the
+//! conformity assertions that `tests/calibration/mesh_asserts.rs` now covers
+//! on main) is tracked as separate follow-up work, where a re-measurement can
+//! be budgeted for.
 
-use reify_ir::{ElementOrderTag, Mesh, VolumeMesh};
+use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 use std::collections::HashMap;
 
 /// Extract the outward-wound boundary triangle surface of a tetrahedral
@@ -40,10 +59,19 @@ use std::collections::HashMap;
 /// conditions, and both fail loudly in this module's existing style.
 pub fn boundary_surface(mesh: &VolumeMesh) -> Mesh {
     let tets = mesh.tet_indices().unwrap_or_else(|| {
+        // Name the family rather than print a `Debug` discriminant (opaque) or
+        // the connectivity itself (a whole index table).
+        let (family, per_element, indices) = match &mesh.connectivity {
+            VolumeConnectivity::Tet { indices, .. } => ("Tet", 4, indices.len()),
+            VolumeConnectivity::Hex { indices } => ("Hex", 8, indices.len()),
+            VolumeConnectivity::Wedge { indices } => ("Wedge", 6, indices.len()),
+        };
         panic!(
-            "boundary_surface: mesh has no tet connectivity (got {:?}); only \
-             tetrahedral meshes have a well-defined tet-face boundary",
-            std::mem::discriminant(&mesh.connectivity)
+            "boundary_surface: mesh has no tet connectivity (got {family}, \
+             {} elements over {} vertices); only tetrahedral meshes have a \
+             well-defined tet-face boundary",
+            indices / per_element,
+            mesh.vertices.len() / 3
         )
     });
 
@@ -176,4 +204,56 @@ fn orient_outward(mesh: &VolumeMesh, tri: [u32; 3], opposite: u32) -> [u32; 3] {
     } else {
         tri
     }
+}
+
+/// A single unit tet's worth of vertex positions — enough to make a mesh
+/// whose connectivity is the only thing under test.
+fn four_positions() -> Vec<f32> {
+    vec![
+        0.0, 0.0, 0.0, //
+        1.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, //
+        0.0, 0.0, 1.0,
+    ]
+}
+
+fn mesh_with(connectivity: VolumeConnectivity) -> VolumeMesh {
+    VolumeMesh {
+        vertices: four_positions(),
+        connectivity,
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// `boundary_surface` must reject a non-tet mesh rather than treat its index
+/// table as tets.
+///
+/// Hex and wedge tables have no tet-face decomposition at all, so there is no
+/// meaningful boundary to return and the guard is the only correct answer.
+#[test]
+#[should_panic(expected = "mesh has no tet connectivity")]
+fn boundary_surface_rejects_non_tet_connectivity() {
+    let hex = mesh_with(VolumeConnectivity::Hex {
+        indices: vec![0, 1, 2, 3, 0, 1, 2, 3],
+    });
+    let _ = boundary_surface(&hex);
+}
+
+/// `boundary_surface` must reject a P2 tet table rather than walk it in
+/// 4-index chunks.
+///
+/// This is the guard's load-bearing case and the reason it is an assertion
+/// rather than a comment: a P2 table re-grouped into 4-tuples spanning
+/// element boundaries yields a garbage face multiset that can still satisfy
+/// [`Mesh::validate`], so without the assert the failure is silent rather
+/// than loud.
+#[test]
+#[should_panic(expected = "P2 tet connectivity carries 10 nodes/elem")]
+fn boundary_surface_rejects_p2_tet_connectivity() {
+    let p2 = mesh_with(VolumeConnectivity::Tet {
+        indices: (0..10).map(|i| i % 4).collect(),
+        order: ElementOrderTag::P2,
+    });
+    let _ = boundary_surface(&p2);
 }

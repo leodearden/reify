@@ -32,8 +32,15 @@ reify-compiler.workspace = true
 reify-test-support.workspace = true
 # `tests/morph_scale_characterisation.rs` calls `GmshKernel::mesh_to_volume`
 # directly for the from-scratch tetrahedralisation arm. Deliberately NO
-# feature flags: plain tetrahedralisation needs neither `mesh-morph` nor
-# `stub_register` (the latter would register the gmsh kernel in the
-# inventory and perturb other binaries' registry assertions).
+# feature flags, because plain tetrahedralisation needs neither `mesh-morph`
+# nor `stub_register`.
+#
+# Omitting `stub_register` does NOT keep the gmsh kernel out of the
+# `inventory` registry on a real-FFI host: `reify-kernel-gmsh`'s
+# `inventory::submit!` is gated on `cfg(any(has_gmsh, feature =
+# "stub_register"))` (`crates/reify-kernel-gmsh/src/register.rs`), so wherever
+# `has_gmsh` is set the registration fires regardless of this feature. That is
+# harmless here only because no `reify-mesh-morph` test binary asserts on the
+# kernel registry — a claim to re-check before adding one.
 reify-kernel-gmsh.workspace = true
 serde_json = { workspace = true }
