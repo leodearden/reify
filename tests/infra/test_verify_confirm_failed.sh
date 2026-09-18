@@ -431,7 +431,10 @@ run_recording() {
     # but would parse as shell redirections here. Rewrite it to a scratch path;
     # the stub cargo never reads it.
     _cmd="$(printf '%s\n' "$_plan" | grep -E '(^| )cargo nextest run ' | grep -v '^if test ' | head -n1 || true)"
-    _cmd="$(printf '%s\n' "$_cmd" | sed "s#--config-file [^ ]*#--config-file $WORK/nextest-stub.toml#")"
+    # `[^ ;]*`, not `[^ ]*`: the placeholder is the LAST token before the `;`
+    # that separates the nextest pass from the fused manifest write, and a
+    # space-only character class would swallow that separator too.
+    _cmd="$(printf '%s\n' "$_cmd" | sed "s#--config-file [^ ;]*#--config-file $WORK/nextest-stub.toml#")"
     if [ -z "$_cmd" ]; then
         REC_RC=127
         return 0

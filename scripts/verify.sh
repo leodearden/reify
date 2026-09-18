@@ -285,6 +285,41 @@
 #   Out of α's scope: the @@REIFY_RETRY_SCOPE=failed_only@@ honest marker is
 #   emitted by sibling task δ (tests/infra/test_verify_retry_failed_only.sh).
 #
+# --confirm-failed state (task 7423, PRD verify-confirm-failed-self-discovery).
+# The offline lane RECORDS which tests failed, then CONFIRMS which of them
+# still fail. These name the three artifacts that carry the answer between the
+# two runs; all default under target/ and exist to be redirected by hermetic
+# tests. See the block beside _CONFIRM_MANIFEST_DEBUG for why each is shaped
+# the way it is.
+#   REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG / _RELEASE
+#                                — the recorded failing bare test ids for that
+#                                  profile (defaults
+#                                  target/reify-confirm-failed-<profile>.txt).
+#                                  Written by the recording pass, read by
+#                                  --confirm-failed as the subset to re-run.
+#                                  An EMPTY file means "recorded, zero
+#                                  failures"; an ABSENT one means "never
+#                                  recorded" — the confirm run treats both as
+#                                  print-nothing-exit-0, but only the empty
+#                                  case is a positive observation.
+#   REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG / _RELEASE
+#                                — the tree OID that manifest was recorded
+#                                  against (defaults
+#                                  target/reify-confirm-failed-<profile>.json),
+#                                  in the attempt-0 stamp's {tree_oid,
+#                                  profiles, timestamp} shape so one reader
+#                                  idiom covers both.
+#   REIFY_VERIFY_CONFIRM_JUNIT   — where nextest writes its JUnit report
+#                                  (default
+#                                  target/nextest/default/reify-confirm.xml),
+#                                  per the [profile.default.junit] table
+#                                  scripts/gen-nextest-config.sh appends. NOT
+#                                  profile-qualified: the path resolves under
+#                                  the NEXTEST profile, and only `default` is
+#                                  declared, so a --profile both run's two
+#                                  passes share one report — which is why the
+#                                  manifest write is fused into each pass.
+#
 # OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
@@ -869,6 +904,36 @@ fi
 # hermetic tests. Relative default is resolved against REPO_ROOT (verify.sh
 # cds there before build_plan/execute).
 _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attempt.json}"
+
+# --confirm-failed state (task 7423, PRD verify-confirm-failed-self-discovery
+# §4.1.2/§4.2/§6.4). Three artifacts, all under target/ and all overridable
+# for hermetic tests, mirroring _ATTEMPT_SIDECAR_PATH's convention above:
+#
+#   MANIFEST — the failing bare test ids a recording run observed. Written by
+#     the recording pass, read by the confirm run as the subset to re-run.
+#   SIDECAR  — the tree OID that manifest was recorded against, in the
+#     attempt-0 stamp's {tree_oid, profiles, timestamp} shape so verify.sh's
+#     existing tolerant reader parses it unchanged.
+#   JUNIT    — where nextest writes its report, per the [profile.default.junit]
+#     table gen-nextest-config.sh appends. NOT cargo-profile-qualified: `path`
+#     resolves under target/nextest/<NEXTEST-profile>/, and this repo declares
+#     only the `default` nextest profile, so a --profile both run's debug and
+#     release passes share ONE report file. That is exactly why the manifest
+#     write is fused into each pass's own command below — each pass must
+#     extract before the next overwrites.
+#
+# DISTINCT PATHS, never target/reify-verify-attempt.json: that file is gated to
+# DF_VERIFY_ROLE=merge and is never written under the offline role, so sharing
+# it would silently pin nothing for this lane.
+#
+# Manifest and sidecar ARE profile-qualified, per PRD §11's collision note and
+# following the per-profile precedent of REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_
+# DEBUG/_RELEASE: a --profile both run records two independent failed-sets.
+_CONFIRM_MANIFEST_DEBUG="${REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG:-target/reify-confirm-failed-debug.txt}"
+_CONFIRM_MANIFEST_RELEASE="${REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE:-target/reify-confirm-failed-release.txt}"
+_CONFIRM_SIDECAR_DEBUG="${REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG:-target/reify-confirm-failed-debug.json}"
+_CONFIRM_SIDECAR_RELEASE="${REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE:-target/reify-confirm-failed-release.json}"
+_CONFIRM_JUNIT_PATH="${REIFY_VERIFY_CONFIRM_JUNIT:-target/nextest/default/reify-confirm.xml}"
 # Precomputed once in add_test_passes (before the profile loop); initialized
 # here so emit_nextest_pass stays nounset-safe (set -u) on any call path.
 # _RETRY_SUBSET_ELIGIBLE: the caller asked for the narrowed retry scope
@@ -2570,6 +2635,48 @@ emit_nextest_pass() {
             fi
         fi
         cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_eff_gate_exclude}${_eff_offline_select}${_OFFLINE_NO_FAIL_FAST}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
+        # Confirm-manifest write, FUSED INLINE into this pass's own command
+        # (task 7423/β, PRD §4.1.2). Two independent constraints force the
+        # fusion rather than a later `add` line:
+        #   - the write needs THIS pass's own exit code, which exists only
+        #     inside this command and is unobservable from any later line; and
+        #   - the plan executor stops on the first non-zero command, so on a
+        #     red pass — the interesting case — no later line runs at all.
+        #
+        # THE B11 WRITE-GATE IS THIS `if`, evaluated at plan-BUILD time. The
+        # manifest is only sound when nextest ran the WHOLE set, which is what
+        # --no-fail-fast buys; a fail-fast pass truncated after its first
+        # failure also exits 100 and is indistinguishable by exit code. Gating
+        # on the same variable that decides whether the flag reaches nextest
+        # makes "the flag was active" and "a manifest may be written" ONE fact
+        # rather than two that could drift. A runtime role re-check would be
+        # that second fact, and would be wrong the moment the fragment's own
+        # role scoping changes (--confirm-failed is deliberately not
+        # role-gated). When the fragment is empty this whole branch is skipped
+        # and the emitted command is byte-identical to today.
+        #
+        # The remaining half of the gate — "did nextest exit 0 or 100?" — is
+        # owned by confirm-failed-manifest.sh, so those two magic numbers live
+        # in exactly one place rather than in this emitted string.
+        if [ -n "$_OFFLINE_NO_FAIL_FAST" ]; then
+            local _confirm_profile="debug"
+            case "$rel" in *release*) _confirm_profile="release" ;; esac
+            local _confirm_manifest="$_CONFIRM_MANIFEST_DEBUG" _confirm_sidecar="$_CONFIRM_SIDECAR_DEBUG"
+            if [ "$_confirm_profile" = "release" ]; then
+                _confirm_manifest="$_CONFIRM_MANIFEST_RELEASE"
+                _confirm_sidecar="$_CONFIRM_SIDECAR_RELEASE"
+            fi
+            # A SUBSHELL, so the trailing `exit` ends this plan line and not
+            # verify.sh itself: reaper_run_in_pgroup normally evaluates a plan
+            # line in a background subshell, but under the break-glass knob
+            # REIFY_PROC_REAPER_DISABLE=1 it evaluates in the MAIN shell, where
+            # a bare `exit` would terminate the whole gate mid-plan.
+            #
+            # The recorder's own stdout is folded onto stderr: this pass's
+            # stdout is not a wire contract today, but the confirm run's is,
+            # and the two share this helper.
+            cmd="( ${cmd}; _confirm_rc=\$?; ./scripts/confirm-failed-manifest.sh record --nextest-rc \"\$_confirm_rc\" --junit \"${_CONFIRM_JUNIT_PATH}\" --manifest \"${_confirm_manifest}\" --sidecar \"${_confirm_sidecar}\" --profiles \"${_confirm_profile}\" >&2 || true; exit \$_confirm_rc )"
+        fi
     else
         # LOUD no-nextest full-fallback (never-silent invariant, PRD §4.3): the
         # cargo-test fallback plan has no `-E` filterset support, so an eligible
@@ -2601,7 +2708,7 @@ emit_nextest_pass() {
     # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
     # wedge the slot after the test pass exits (2026-04-20 wedge class).
     # Harmless no-op on the merge-exempt path.
-    add "$cmd 9<&-"  # ld-ok: cargo — $cmd is the built nextest/cargo test command; needs OCCT
+    add "$cmd 9<&-"  # ld-ok: cargo — $cmd is the built nextest/cargo test command (plus, under the offline role, the fused confirm-manifest write); needs OCCT
 }
 
 add_test_passes() {
