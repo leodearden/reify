@@ -4777,6 +4777,98 @@ structure Assembly {
         }
     }
 
+    /// AXIS 4 — a CONSTRAINT-DEF instantiation, the third declaration-name use
+    /// site whose name is a plain `String` rather than an expression.
+    ///
+    /// `ConstraintInstDecl { name: String, args, where_clause, span, … }`, and
+    /// `for_each_member_direct_expr` yields only its `args` and `where_clause`,
+    /// so the instantiation NAME is structurally invisible to every ident walk —
+    /// the exact same shape as `SubDecl.structure_name`, which is why this
+    /// traversal exists at all.
+    ///
+    /// WHAT THIS ASSERTS AND WHAT IT DELIBERATELY DOES NOT. The subject here is
+    /// the COLLECTOR, so the use site is asserted exactly: present, and spanning
+    /// the name token alone rather than the whole member statement — the
+    /// rename-safety property, since `compute_rename_cross_file` uses the
+    /// reference set as its exact edit set. The DECLARATION token is the
+    /// ORACLE's to supply, and `find_declaration_name_span` does not admit
+    /// `Constraint` today (measured: it returns `None` for `constraint def
+    /// Foo`), so the declaration half is asserted as an IMPLICATION — if the
+    /// oracle offers a home token, the set carries it. That is vacuously true
+    /// now and becomes a real assertion when the oracle widens, which keeps this
+    /// test green across that change instead of pinning a state about to move.
+    ///
+    /// Non-vacuity: the fixture is asserted to parse clean AND to really contain
+    /// a `MemberDecl::ConstraintInst` named `Foo`, so grammar drift fails loudly
+    /// here instead of turning the whole test into a pass over an empty AST.
+    #[test]
+    fn constraint_def_instantiation_is_collected_as_a_use_site() {
+        const DECL: &str = "constraint def Foo {\n    param x : Length\n    x > 0mm\n}\n";
+        let rows: &[(&str, String)] = &[
+            (
+                "instantiated in a structure member",
+                format!(
+                    "{DECL}structure A {{\n    param w : Length = 1mm\n    constraint Foo(x: w)\n}}"
+                ),
+            ),
+            // Also through the purpose regions step-14 opened, so the two legs
+            // are pinned as composing rather than each working alone.
+            (
+                "instantiated in a purpose body",
+                format!("{DECL}purpose P(subject : Structure) {{\n    constraint Foo(x: 1mm)\n}}"),
+            ),
+        ];
+        for (label, source) in rows {
+            let parsed = reify_syntax::parse(source, ModulePath::single("t"));
+            assert!(
+                parsed.errors.is_empty(),
+                "[{label}] fixture must parse clean, got {:?} for:\n{source}",
+                parsed.errors
+            );
+            let mut found_inst = false;
+            for decl in &parsed.declarations {
+                if let Some(members) = entity_members(decl) {
+                    found_inst |= members
+                        .iter()
+                        .any(|m| matches!(m, MemberDecl::ConstraintInst(c) if c.name == "Foo"));
+                }
+            }
+            assert!(
+                found_inst,
+                "[{label}] fixture must really contain a `constraint Foo(…)` \
+                 instantiation member, or this test asserts nothing:\n{source}"
+            );
+
+            let use_at = *occurrences(source, "Foo")
+                .last()
+                .expect("fixture mentions Foo");
+            let got = collect_decl_name_spans(source, &parsed, "Foo");
+            assert!(
+                got.contains(&span_of(use_at, "Foo")),
+                "[{label}] the instantiation name token at {use_at} must be \
+                 collected, got {got:?}:\n{source}"
+            );
+            // Rename safety: the whole member statement is `constraint Foo(x: w)`,
+            // so a span wider than the name is a destructive edit set.
+            for span in &got {
+                assert_eq!(
+                    &source[span.start as usize..span.end as usize],
+                    "Foo",
+                    "[{label}] every collected span must cover exactly the name \
+                     token, got {span:?}:\n{source}"
+                );
+            }
+            // The declaration half, as an implication over the oracle.
+            if let Some(home) = crate::goto_def::find_declaration_name_span(source, "Foo") {
+                assert!(
+                    got.contains(&home),
+                    "[{label}] once the oracle offers a home token it must be in \
+                     the reference set, got {got:?}:\n{source}"
+                );
+            }
+        }
+    }
+
     // --- κ step-3 (task 4210): cross-file structure references from any signal cursor ---
 
     /// Sort `Location`s by (uri, start line, start char) so cross-file reference
