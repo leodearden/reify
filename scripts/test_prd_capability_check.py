@@ -968,6 +968,171 @@ class TestObservation(unittest.TestCase):
 # step-07 (RED): evaluate() over injected synthetic runs
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# #6876 step-07 (RED): observe()'s "value" arm and the vacuity-closure contrast
+# ---------------------------------------------------------------------------
+
+class TestValueObservation(unittest.TestCase):
+    """observe()'s fourth arm — this is the #6876 vector, stated as a test.
+
+    Same run, same exit 0: `ir` cannot see the value and `value` can.  The
+    contrast tests below build ONE ProbeRun and read it through both arms, so
+    the vacuous-pass and the real-fail are provably about the same evidence
+    rather than about two conveniently-different fixtures.
+    """
+
+    _DAMPING = {"pattern": r"damping_ratio = ([-+0-9.eE]+)", "min": 0.01, "max": 0.03}
+
+    def _run(self, exit_code, stdout="", stderr=""):
+        return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    def _value(self, spec):
+        return {"stdout_value": spec}
+
+    # ── the observation model ─────────────────────────────────────────────────
+
+    def test_exit_zero_predicate_satisfied_is_present(self):
+        run = self._run(0, stdout="damping_ratio = 0.018\n")
+        self.assertEqual(
+            pcc.observe("value", run, self._value(self._DAMPING)), pcc.PRESENT
+        )
+
+    def test_exit_zero_value_out_of_range_is_absent(self):
+        run = self._run(0, stdout="damping_ratio = 0\n")
+        self.assertEqual(
+            pcc.observe("value", run, self._value(self._DAMPING)), pcc.ABSENT
+        )
+
+    def test_exit_zero_pattern_missing_is_absent(self):
+        run = self._run(0, stdout="something_else = 0.018\n")
+        self.assertEqual(
+            pcc.observe("value", run, self._value(self._DAMPING)), pcc.ABSENT
+        )
+
+    def test_exit_zero_undef_capture_is_absent(self):
+        run = self._run(0, stdout="damping_ratio = undef\n")
+        spec = {"pattern": r"damping_ratio = (\S+)", "finite": True}
+        self.assertEqual(pcc.observe("value", run, self._value(spec)), pcc.ABSENT)
+
+    def test_nonzero_exit_is_indeterminate_even_with_satisfying_stdout(self):
+        """An eval error means no value was produced.
+
+        "capability absent" and "fixture/harness broken" are indistinguishable
+        on that branch, so reporting ABSENT would manufacture a confident
+        negative finding out of a broken probe — the mirror image of the
+        vacuity this kind exists to close.  Asserted with stdout that WOULD
+        satisfy the predicate, so nothing but the exit code can be deciding it.
+        """
+        for code in (1, 101):
+            with self.subTest(exit_code=code):
+                run = self._run(code, stdout="damping_ratio = 0.018\n")
+                self.assertEqual(
+                    pcc.observe("value", run, self._value(self._DAMPING)),
+                    pcc.INDETERMINATE,
+                )
+
+    def test_nonzero_exit_with_empty_stdout_is_indeterminate(self):
+        run = self._run(1, stderr="EvalError: boom\n")
+        self.assertEqual(
+            pcc.observe("value", run, self._value(self._DAMPING)),
+            pcc.INDETERMINATE,
+        )
+
+    # ── the universal sentinels still beat the kind dispatch ──────────────────
+
+    def test_binary_not_found_is_harness_error_not_indeterminate(self):
+        run = self._run(127, stderr=pcc._BINARY_NOT_FOUND_SENTINEL)
+        self.assertEqual(
+            pcc.observe("value", run, self._value(self._DAMPING)),
+            pcc._HARNESS_ERROR,
+        )
+
+    def test_timeout_is_harness_error_not_indeterminate(self):
+        run = self._run(124, stderr=pcc._PROBE_TIMEOUT_SENTINEL)
+        self.assertEqual(
+            pcc.observe("value", run, self._value(self._DAMPING)),
+            pcc._HARNESS_ERROR,
+        )
+
+    # ── verdict() composition ─────────────────────────────────────────────────
+
+    def test_verdict_composition(self):
+        self.assertEqual(pcc.verdict(pcc.PRESENT, "present"), pcc.PASS)
+        self.assertEqual(pcc.verdict(pcc.ABSENT, "present"), pcc.FAIL)
+        self.assertEqual(pcc.verdict(pcc.INDETERMINATE, "present"), pcc.UNPROVABLE)
+
+    # ── THE VACUITY-CLOSURE CONTRACT ──────────────────────────────────────────
+
+    def test_degenerate_zero_ir_passes_vacuously_but_value_fails(self):
+        """One run, exit 0, printing the motivating `damping_ratio: 0` defect."""
+        run = self._run(0, stdout="ValueCleanEvalCells.degenerate_ratio = 0\n")
+
+        ir_obs = pcc.observe("ir", run, {"stderr_contains": "EvalError"})
+        self.assertEqual(ir_obs, pcc.ABSENT)
+        self.assertEqual(pcc.verdict(ir_obs, "absent"), pcc.PASS)
+
+        value_obs = pcc.observe(
+            "value",
+            run,
+            self._value(
+                {"pattern": r"degenerate_ratio = ([-+0-9.eE]+)", "min": 0.01}
+            ),
+        )
+        self.assertEqual(value_obs, pcc.ABSENT)
+        self.assertEqual(pcc.verdict(value_obs, "present"), pcc.FAIL)
+
+    def test_undef_cell_ir_passes_vacuously_but_value_fails(self):
+        """The same contrast for 'prints garbage with exit 0'."""
+        run = self._run(0, stdout="ValueCleanEvalCells.undef_ratio = undef\n")
+
+        ir_obs = pcc.observe("ir", run, {"stderr_contains": "EvalError"})
+        self.assertEqual(ir_obs, pcc.ABSENT)
+        self.assertEqual(pcc.verdict(ir_obs, "absent"), pcc.PASS)
+
+        value_obs = pcc.observe(
+            "value",
+            run,
+            self._value({"pattern": r"undef_ratio = (\S+)", "finite": True}),
+        )
+        self.assertEqual(value_obs, pcc.ABSENT)
+        self.assertEqual(pcc.verdict(value_obs, "present"), pcc.FAIL)
+
+    # ── REGRESSION: the three existing arms, on the same synthetic runs ───────
+
+    def test_existing_arms_undisturbed(self):
+        clean = self._run(0, stdout="damping_ratio = 0.018\n")
+        self.assertEqual(pcc.observe("ir", clean, {}), pcc.ABSENT)
+        self.assertEqual(
+            pcc.observe("ir", clean, {"stderr_contains": "EvalError"}), pcc.ABSENT
+        )
+
+        signed = self._run(1, stderr="EvalError: contract violated\n")
+        self.assertEqual(
+            pcc.observe("ir", signed, {"stderr_contains": "EvalError"}), pcc.PRESENT
+        )
+        unsigned = self._run(1, stderr="something unrelated\n")
+        self.assertEqual(
+            pcc.observe("ir", unsigned, {"stderr_contains": "EvalError"}),
+            pcc.INDETERMINATE,
+        )
+
+        self.assertEqual(
+            pcc.observe("check", self._run(1), {"exit_code": 1}), pcc.PRESENT
+        )
+        self.assertEqual(
+            pcc.observe("check", self._run(0), {"exit_code": 1}), pcc.ABSENT
+        )
+
+        self.assertEqual(pcc.observe("grammar", self._run(0), {}), pcc.PRESENT)
+        self.assertEqual(pcc.observe("grammar", self._run(1), {}), pcc.ABSENT)
+        load_failure = self._run(
+            1, stderr=f"{pcc._GRAMMAR_LOAD_FAILURE_MARKER}: reify\n"
+        )
+        self.assertEqual(
+            pcc.observe("grammar", load_failure, {}), pcc._HARNESS_ERROR
+        )
+
+
 class TestEvaluate(unittest.TestCase):
     """Tests for evaluate() over injected synthetic ProbeRun fixtures.
 
