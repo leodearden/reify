@@ -4827,11 +4827,18 @@ mod tests {
             "set_fea_case_on_engine_and_refresh_baseline must refresh last_state to S1"
         );
 
-        // A normal command now runs: set_parameter changes exactly one cell
-        // (width) — unrelated to the FEA-case switch itself.
+        // A normal command now runs: a parameter edit changes exactly one
+        // cell (width) — unrelated to the FEA-case switch itself.
+        //
+        // The TRANSIENT cadence, because this session was built by
+        // `load_from_source` and so has no on-disk `.ri` for the durable one
+        // to write; `set_parameter_impl` would refuse it (task 5099 η). The
+        // baseline-freshness claim under test is indifferent to which cadence
+        // produced S2 — it only needs one command's worth of engine mutation
+        // to diff.
         let s2 =
-            crate::commands::set_parameter_impl(&engine, "FeaMultiCaseBracket.width", "150mm")
-                .expect("set_parameter_impl must succeed");
+            crate::commands::preview_parameter_impl(&engine, "FeaMultiCaseBracket.width", "150mm")
+                .expect("preview_parameter_impl must succeed");
 
         // The normal command's delta is computed against the FRESH (S1)
         // baseline, so it must be minimal: it must NOT re-report the
@@ -4844,7 +4851,8 @@ mod tests {
                 .iter()
                 .any(|v| v.cell_id == "FeaMultiCaseBracket.length"),
             "fresh-baseline delta must be MINIMAL: it must NOT re-report \
-             'FeaMultiCaseBracket.length', which set_parameter never touched"
+             'FeaMultiCaseBracket.length', which the parameter edit never \
+             touched"
         );
     }
 
