@@ -435,7 +435,7 @@ fn resolve_chain_endpoint(
     if candidates.is_empty() {
         candidates = declared_in(reify_core::PortDirection::Bidi);
     }
-    let dir = direction_word(needed);
+    let dir = needed.as_str();
     let found = match candidates.as_slice() {
         [port] => {
             return Some(reify_ast::Expr {
@@ -473,16 +473,6 @@ fn resolve_chain_endpoint(
 /// instead.
 fn names_many_occurrences(ctx: &ConnectContext, sub: &str) -> bool {
     ctx.scope.collection_sub_names.contains(sub) || ctx.scope.keyed_sub_keys.contains_key(sub)
-}
-
-/// The source spelling of a port direction, for diagnostics that quote it back.
-fn direction_word(direction: reify_core::PortDirection) -> &'static str {
-    use reify_core::PortDirection::*;
-    match direction {
-        In => "in",
-        Out => "out",
-        Bidi => "bidi",
-    }
 }
 
 /// Compile a single connection (from connect statement or chain desugaring).
