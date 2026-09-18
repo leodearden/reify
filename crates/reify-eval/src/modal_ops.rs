@@ -492,9 +492,10 @@ pub(crate) fn eigensolve_modal(
     // implementation able to report two at once can send an author to fix the
     // wrong thing. [`ModalSolveFault`] carries the rationale.
     //
-    // TODO(#7261): δ owns the FULL surfacing of the shift fault — the λ-space
-    // surface conversion, `ShiftSkippedModes`, and the `.ri` fixture pair. Only
-    // the refusal lands here, so δ verifies and extends rather than builds.
+    // δ (#7261) landed the rest of the shift's surfacing beside this match: the
+    // λ-space read in `extract_eigen_knobs` and the `W_ShiftSkippedModes`
+    // provenance warning below. The refusal stays HERE, in the fault match,
+    // because it is a fault; the warning is deliberately not a fourth arm.
     match fault {
         ModalSolveFault::None => {}
         // The `W_ModalRigidBodyMode` prefix is deliberate: the model IS
@@ -552,6 +553,33 @@ pub(crate) fn eigensolve_modal(
              the result is partial (raise max_iters/tol or lower n_modes).",
             n_modes_out, eigen_opts.n_modes,
         )));
+    }
+
+    // Shift provenance (PRD contract clause C5): the returned set is a WINDOW
+    // around σ, not the bottom of the spectrum, because some eigenvalue lies
+    // between zero and σ and is absent from it. Advisory, not an error —
+    // inspecting a band around σ is a legitimate use.
+    //
+    // σ is named from `eig.shift` — the shift ACTUALLY used, per that field's
+    // contract — never from `eigen_opts.sigma`: a caller must not have to infer
+    // which σ was applied.
+    //
+    // The count is OMITTED from α's template. `EigenSolverResult` carries only
+    // the C5 BOOLEAN; there is no count field to read, and α's rustdoc records
+    // that omitting the count is always correct while including it is correct
+    // only on the dense path (the Lanczos path's Cholesky/LU discriminator
+    // yields a boolean, not an inertia count). Do not "improve" this into a
+    // fabricated number.
+    if eig.shift_skipped_modes {
+        diagnostics.push(
+            Diagnostic::warning(format!(
+                "W_ShiftSkippedModes: the shift sigma = {} skipped mode(s) below \
+                 it; the result is a window around sigma, not the bottom of the \
+                 spectrum",
+                eig.shift,
+            ))
+            .with_code(DiagnosticCode::ShiftSkippedModes),
+        );
     }
 
     ModalCoreResult {
