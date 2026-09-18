@@ -2379,8 +2379,29 @@ impl EngineSession {
         // for the reason `apply_param_to_source`'s own rollback arm gives: a
         // session left silently inconsistent is worse than a loud compound
         // error. The original refusal stays first, and readable.
+        //
+        // The discard is a `commit_state` path like any other — the one thing
+        // `apply_param_to_source`'s rollback arm does not already say, because
+        // there the recompile is visibly part of the write. So an error path
+        // that returns without restoring silently clears a banner that PREDATES
+        // this commit entirely. The snapshot is taken here, AFTER the write-back
+        // returned its refusal, precisely because γ's error arms have already
+        // restored their own surfaces by now: it therefore holds exactly the
+        // state that ledger deliberately left. It is a tuple, so the
+        // `compile_failure` half rides along and a live-edit failure the user is
+        // still looking at survives a refused parameter write too.
+        let failure_surface = (self.compile_failure.clone(), self.last_reload_error.clone());
         match self.discard_parameter_preview() {
-            Ok(_) => Err(refusal),
+            Ok(_) => {
+                // Ok arm only, for the reason the rollback arm one level down
+                // gives: a discard recompile that FAILED has just had
+                // `record_compile_failure` store a diagnostic about a real,
+                // current inconsistency, and overwriting it with the
+                // pre-refusal snapshot would hide the very state the combined
+                // error below is shouting about.
+                (self.compile_failure, self.last_reload_error) = failure_surface;
+                Err(refusal)
+            }
             Err(discard_err) => Err(format!(
                 "{refusal}; the pending preview could not be discarded either: {discard_err}"
             )),
