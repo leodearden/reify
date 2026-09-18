@@ -888,6 +888,483 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Task 7174 probes: port-block param defaults must reach
+// `check_param_default_conformance`.
+//
+// `CompiledPort.members` (port-body `param`s) is a list DISJOINT from
+// `TopologyTemplate.value_cells`. `reify_ast::decl::collect_param_default_candidates`'s
+// doc comment is where the disjointness is justified — cited by SYMBOL, never by
+// line, because a raw line range in another crate rots on that module's next
+// edit. `check_param_default_conformance` walked only
+// `value_cells`, so a `Geometry`/`String`/`StructureRef` param default written
+// inside a `port { … }` block compiled with ZERO diagnostics — measured on this
+// branch. `SRC_CTX_PORT_MEMBER_DEFAULT` above already proves the sibling
+// call-site ctor entry (`Widget(label: 42)` as an EXPRESSION) reaches port
+// bodies; these probes cover the missing param-DEFAULT entry.
+//
+// Every probe below OBSERVES the diagnostic firing (code + severity + a message
+// naming the composite `<port>.<param>`) — the task's negative-assertion
+// requirement flags a "stays silent" probe as vacuous before the fix (the walk
+// sees no port cells at all, so absence proves nothing). The zero-diagnostic
+// no-false-positive fence is added separately, after the fix lands.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SRC_PORT_MEMBER_GEOMETRY_DEFAULT: &str = r#"module test.port_geometry
+trait P {}
+structure def Root {
+    port mount : P {
+        param region : Geometry = 5mm
+    }
+}
+"#;
+
+/// `Type::Geometry` arm: a port-member `Geometry` param defaulted to a
+/// dimensioned scalar (`5mm`) must warn — the task's MEASURED repro fixture.
+///
+/// RED today: `check_param_default_conformance` only walks `value_cells`, so
+/// this port-body default is invisible to it and the module compiles with
+/// zero ctor-conformance diagnostics.
+#[test]
+fn port_member_geometry_param_default_warns() {
+    let module = compile_source_with_stdlib(SRC_PORT_MEMBER_GEOMETRY_DEFAULT);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "port-block Geometry param default with a non-geometry expression must emit \
+         exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "Geometry param-default mismatch must carry TypeNotConformingToStructureRef, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains("mount.region"),
+        "message must name the composite port-member param 'mount.region', got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        diags[0].message.contains("Geometry") && diags[0].message.contains("non-geometry"),
+        "message must state the Geometry/non-geometry mismatch, got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        !diags[0].labels.is_empty(),
+        "diagnostic must carry a label span, got: {:?}",
+        diags[0]
+    );
+    assert!(
+        !diags[0].labels[0].span.is_empty(),
+        "label span must be non-empty (anchored at the port-body param declaration), got: {:?}",
+        diags[0].labels[0].span
+    );
+}
+
+const SRC_PORT_MEMBER_STRING_DEFAULT_GIVEN_INT: &str = r#"module test.port_string
+trait P {}
+structure def Root {
+    port mount : P {
+        param label : String = 42
+    }
+}
+"#;
+
+/// General concrete-leaf arm: a port-member `String` param defaulted to an
+/// `Int` literal must warn `ArgTypeMismatch`, identically to the top-level
+/// sibling `param_default_string_given_int_warns_arg_type_mismatch`.
+///
+/// RED today: same walk gap as the Geometry probe above.
+#[test]
+fn port_member_string_param_default_given_int_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_PORT_MEMBER_STRING_DEFAULT_GIVEN_INT,
+        "mount.label",
+        "port member String ← Int",
+    );
+}
+
+const SRC_PORT_MEMBER_STRUCTUREREF_DEFAULT_GIVEN_STRING: &str = r#"module test.port_structref
+structure def Widget { param label : String }
+trait P {}
+structure def Root {
+    port mount : P {
+        param part : Widget = "nope"
+    }
+}
+"#;
+
+/// `Type::StructureRef` arm: a port-member `Widget` (StructureRef) param
+/// defaulted to a `String` literal must warn — a clearly-incompatible
+/// primitive default, not the intentionally-lenient StructureRef↔StructureRef
+/// case ([`structureref_param_default_with_different_structureref_silently_accepted`]
+/// in `conformance/mod.rs`, which this probe deliberately does not disturb).
+///
+/// RED today: same walk gap as the Geometry probe above.
+#[test]
+fn port_member_structureref_param_default_given_string_warns() {
+    let module = compile_source_with_stdlib(SRC_PORT_MEMBER_STRUCTUREREF_DEFAULT_GIVEN_STRING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "port-block StructureRef param default with an incompatible primitive default \
+         must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "expected TypeNotConformingToStructureRef, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains("mount.part"),
+        "message must name the composite port-member param 'mount.part', got: {:?}",
+        diags[0].message
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 7174 parity fence: a port-body param default must diagnose IDENTICALLY
+// to the same param written at structure top level.
+//
+// Before the fix the port form emitted strictly FEWER diagnostics than its
+// top-level twin in every case below (the walk never saw `CompiledPort.members`),
+// so each row here is a genuine RED-before / GREEN-after observation and not a
+// restatement of the single-arm probes above. Comparing over the FULL
+// `module.diagnostics` — not just the ctor-conformance subset — is what also
+// makes the fence prove the fix does not DOUBLE-report: `check_param_default_type`
+// (the Error-severity declared-vs-initializer check in `entity.rs`) and
+// `check_param_default_conformance` stay complementary at the port site exactly
+// as they already are at the top level.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One parity row: the same param-default mismatch written both ways, plus the
+/// `(severity, code)` sequence BOTH forms must produce, in emission order.
+struct PortParityCase {
+    label: &'static str,
+    /// `structure def Root { param … }`.
+    top_level_src: &'static str,
+    /// `structure def Root { port mount : P { param … } }`.
+    port_src: &'static str,
+    expected: &'static [(Severity, DiagnosticCode)],
+}
+
+/// Compile both halves of `case` and assert they diagnose identically.
+///
+/// Three assertions, in the order that makes a failure self-diagnosing:
+/// 1. the TOP-LEVEL form matches `case.expected` — the non-vacuity pin, so a
+///    future change that silences BOTH sites fails here rather than sliding
+///    through a both-empty parity comparison;
+/// 2. the PORT form matches the same sequence — the parity claim itself;
+/// 3. each message pair is byte-identical once the port form's `mount.` member
+///    prefix is normalized away.
+///
+/// (3) is deliberately exact rather than a `contains` check: the composite
+/// `<port>.<param>` name is the ONLY licensed difference between the two
+/// surfaces, so anything else — a different hint clause, a different rendered
+/// type — is drift. Every fixture in this block names its port `mount`, which
+/// is what makes the one-line normalization sufficient.
+///
+/// All three run over the FULL `module.diagnostics`, deliberately overriding this
+/// file's [`ctor_conformance_diags`] narrowing convention. That is not a slip:
+/// the Error half of row 1 is `ParamDefaultTypeMismatch`, which is NOT in
+/// `CTOR_CONFORMANCE_CODES`, so a filtered comparison could not see it at all and
+/// the no-double-report claim above would silently evaporate into a
+/// Warning-only check. The cost the convention exists to avoid is accepted, not
+/// denied — an unrelated future `W_*` on these fixtures reds this helper — and
+/// is kept small by every fixture it drives being a three-line inline source
+/// carrying the `module test.<name>` prologue.
+///
+/// Returns the PORT half's compiled module, so a caller pinning anything further
+/// about the port diagnostics (the rendered fallback type below) reads it off the
+/// compile this helper already paid for rather than compiling the whole stdlib a
+/// third time — the same convention as
+/// [`assert_single_arg_type_mismatch_warning_in`].
+fn assert_port_parity_with_top_level(case: &PortParityCase) -> CompiledModule {
+    let PortParityCase {
+        label,
+        top_level_src,
+        port_src,
+        expected,
+    } = case;
+    let top = compile_source_with_stdlib(top_level_src);
+    let port = compile_source_with_stdlib(port_src);
+
+    let expected: Vec<(Severity, Option<DiagnosticCode>)> =
+        expected.iter().map(|(s, c)| (*s, Some(*c))).collect();
+    let shape = |m: &CompiledModule| -> Vec<(Severity, Option<DiagnosticCode>)> {
+        m.diagnostics.iter().map(|d| (d.severity, d.code)).collect()
+    };
+
+    assert_eq!(
+        shape(&top),
+        expected,
+        "{label}: top-level form must produce the measured diagnostic sequence \
+         (non-vacuity pin), got: {:#?}",
+        top.diagnostics
+    );
+    assert_eq!(
+        shape(&port),
+        expected,
+        "{label}: port-body form must produce the SAME diagnostic sequence as its \
+         top-level twin, got: {:#?}",
+        port.diagnostics
+    );
+    for (i, (t, p)) in top.diagnostics.iter().zip(&port.diagnostics).enumerate() {
+        assert_eq!(
+            p.message.replace("'mount.", "'"),
+            t.message,
+            "{label}: diagnostic {i} must read identically at both sites modulo the \
+             'mount.' member prefix; port: {:?}, top level: {:?}",
+            p.message,
+            t.message
+        );
+    }
+    port
+}
+
+const PORT_PARITY_CASES: &[PortParityCase] = &[
+    PortParityCase {
+        label: "Length ← 5kg (wrong dimension)",
+        top_level_src: "module test.parity_dim\n\
+                        structure def Root {\n    param w : Length = 5kg\n}\n",
+        port_src: "module test.parity_dim\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param w : Length = 5kg\n    }\n}\n",
+        // Two COMPLEMENTARY emitters, not a double-report: the Error is
+        // `check_param_default_type`'s declared-vs-initializer dimension rule,
+        // the Warning is the ctor-conformance walk this task widened.
+        expected: &[
+            (Severity::Error, DiagnosticCode::ParamDefaultTypeMismatch),
+            (Severity::Warning, DiagnosticCode::ArgTypeMismatch),
+        ],
+    },
+    PortParityCase {
+        label: "Length ← 5 (bare Int at a dimensioned param)",
+        top_level_src: "module test.parity_bare\n\
+                        structure def Root {\n    param w : Length = 5\n}\n",
+        port_src: "module test.parity_bare\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param w : Length = 5\n    }\n}\n",
+        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+    },
+    PortParityCase {
+        label: "String ← 42 (general concrete leaf)",
+        top_level_src: "module test.parity_str\n\
+                        structure def Root {\n    param label : String = 42\n}\n",
+        port_src: "module test.parity_str\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param label : String = 42\n    }\n}\n",
+        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+    },
+];
+
+/// The fence: every mismatch shape in [`PORT_PARITY_CASES`] diagnoses the same
+/// way inside a `port { }` block as it does at structure top level.
+///
+/// Driven off one table so the rows cannot drift apart — adding a fourth shape
+/// is a table row, not a fourth copy of the assertions.
+#[test]
+fn port_param_default_diagnostics_match_top_level() {
+    for case in PORT_PARITY_CASES {
+        assert_port_parity_with_top_level(case);
+    }
+}
+
+/// An UNANNOTATED port-body param takes the `Type::dimensionless_scalar()`
+/// language fallback, so an enum default at it warns `Enum(…)` vs `Real` — the
+/// same fallback, and the same warning, as the unannotated top-level form.
+///
+/// This is the behaviour that forces `examples/stdlib/ports_breadth.ri`'s two
+/// enum port params to carry annotations. Pinning it here stops a future "just
+/// silence unannotated port params" patch from quietly re-diverging the two
+/// sites: whether the defaults-to-`Real` fallback should warn at all is a
+/// pre-existing, site-INDEPENDENT language question, and this probe forces any
+/// answer to move both sites together.
+#[test]
+fn port_unannotated_param_default_takes_real_fallback_like_top_level() {
+    let case = PortParityCase {
+        label: "unannotated param ← Color.Red (dimensionless-scalar fallback)",
+        top_level_src: "module test.parity_unann\nenum Color { Red, Green }\n\
+                        structure def Root {\n    param c = Color.Red\n}\n",
+        port_src: "module test.parity_unann\nenum Color { Red, Green }\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param c = Color.Red\n    }\n}\n",
+        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+    };
+    let port = assert_port_parity_with_top_level(&case);
+
+    // Pin the rendered fallback type too: parity alone would survive the
+    // fallback changing from `Real` to something else at BOTH sites. Read off
+    // the module the helper already compiled — re-compiling `case.port_src` here
+    // would pay for the whole stdlib prelude a third time to learn nothing new.
+    assert_eq!(
+        port.diagnostics[0].message,
+        "argument 'mount.c' has type 'Enum(Color)' but param 'mount.c' requires type 'Real'",
+        "unannotated port param must report the dimensionless-scalar fallback as 'Real'"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 7174 no-false-positive fence.
+//
+// HONEST FRAMING, so nobody later reads these as acceptance probes: they are
+// REGRESSION FENCES and they are NOT red before the fix. Pre-fix the walk saw no
+// port cells at all, so their silence proved nothing. The task's
+// negative-assertion requirement is discharged by the OBSERVING probes above
+// (the three single-arm probes and the parity fence, all measured red-before /
+// green-after).
+//
+// Their value is forward: widening the walk widens what it JUDGES, so each arm
+// it now reaches for port cells must be pinned against over-firing on a
+// legitimate port-body default.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Assert `source` compiles with ZERO diagnostics of any severity, and that the
+/// port it declares really did compile `expected_members` member cells.
+///
+/// The member-count check is what keeps the zero-assertion honest. A bare
+/// "no diagnostics" probe passes just as well when the port body was dropped on
+/// the floor, or when the fixture stopped parsing the way it reads — the exact
+/// failure modes a silence-based fence is blind to. Pinning the count asserts
+/// the walk was actually HANDED these cells and chose to stay quiet.
+///
+/// Zero diagnostics of ANY severity, not the ctor-conformance subset — the same
+/// deliberate override of this file's [`ctor_conformance_diags`] convention that
+/// [`assert_port_parity_with_top_level`] makes, for the same reason. The emitter
+/// a well-typed port default is next most likely to over-fire at is the
+/// complementary `check_param_default_type`, whose `ParamDefaultTypeMismatch` is
+/// not in `CTOR_CONFORMANCE_CODES`; narrowing would put it out of view. The
+/// accepted cost is an unrelated future `W_*` on these fixtures reading as a red
+/// here, which is why both carry the `module test.<name>` prologue.
+fn assert_port_body_compiles_clean(
+    source: &str,
+    port_name: &str,
+    expected_members: usize,
+    label: &str,
+) {
+    let module = compile_source_with_stdlib(source);
+    assert!(
+        module.diagnostics.is_empty(),
+        "{label}: a port body whose param defaults are all well-typed must compile \
+         with zero diagnostics, got: {:#?}",
+        module.diagnostics
+    );
+    let members: Vec<usize> = module
+        .templates
+        .iter()
+        .flat_map(|t| &t.ports)
+        .filter(|p| p.name == port_name)
+        .map(|p| p.members.len())
+        .collect();
+    assert_eq!(
+        members,
+        vec![expected_members],
+        "{label}: expected exactly one port named {port_name:?} carrying \
+         {expected_members} member cells — without this the zero-diagnostic \
+         assertion above would pass vacuously on a dropped port body"
+    );
+}
+
+const SRC_PORT_BODY_ALL_DEFAULTS_WELL_TYPED: &str = r#"module test.port_clean
+enum Color { Red, Green }
+trait P {}
+structure def Widget { param label : String }
+structure def Root {
+    port mount : P {
+        param label : String = "ok"
+        param n : Int = 3
+        param w : Length = 5mm
+        param region : Geometry = box(1mm, 2mm, 3mm)
+        param part : Widget = Widget(label: "ok")
+        param c : Color = Color.Red
+    }
+}
+"#;
+
+/// Every arm the widened walk now reaches for port cells, given a LEGITIMATE
+/// default, stays silent — one default per arm:
+///
+/// - general concrete-leaf: `String = "ok"`, `Int = 3`, `Length = 5mm`
+/// - `Type::Geometry`: `Geometry = box(…)`, which also covers the GHR-γ
+///   scalar-placeholder path (geometry constructors compile to a dimensionless
+///   scalar, so a naive `type_compatible(Geometry, …)` would reject them)
+/// - `Type::StructureRef`: `Widget = Widget(label: "ok")`
+/// - annotated enum: `Color = Color.Red` — the shape the corpus was migrated to
+#[test]
+fn port_body_well_typed_param_defaults_stay_clean() {
+    assert_port_body_compiles_clean(
+        SRC_PORT_BODY_ALL_DEFAULTS_WELL_TYPED,
+        "mount",
+        6,
+        "well-typed port body, one default per walk arm",
+    );
+}
+
+const SRC_MIGRATED_HYDRO_CONFORMER: &str = r#"module test.migrated_hydro
+import std.ports.fluid
+
+structure def HydroConformer {
+    port p : in HydraulicPort {
+        param pressure : Pressure = 101325Pa
+        param flow_rate : VolumetricFlowRate = 1gal / 1s
+        param medium : String = "hydraulic_oil"
+        param fluid_type : FluidType = FluidType.Liquid
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
+        )
+        param fitting_type : FittingStandard = FittingStandard.NPT
+    }
+}
+"#;
+
+/// The MIGRATED `HydroConformer` shape — real stdlib enum types (`FluidType`,
+/// `FittingStandard`) annotated on port params under `import std.ports.fluid` —
+/// is clean.
+///
+/// This is the inline twin of the `examples/stdlib/ports_breadth.ri` migration:
+/// a cross-module enum annotation is the one part of the migration an inline
+/// `enum Color { … }` fixture cannot exercise, and it is the part that would
+/// break if enum resolution inside a port body ever regressed to the
+/// dimensionless-scalar fallback the un-annotated form takes.
+///
+/// THREE hand-kept copies of this source exist, one per claim — a re-migration
+/// of the annotations has to move all three:
+///
+/// - `examples/stdlib/ports_breadth.ri` — the corpus site, judged by
+///   `no_example_emits_ctor_field_conformance_diagnostics`;
+/// - `ports_stdlib_compile.rs::hydraulic_port_concrete_conformer_multidomain_compiles`
+///   — the ζ signal that the FluidPort+MechanicalPort diamond resolves,
+///   asserting Error-severity only;
+/// - this one — zero diagnostics of ANY severity plus the port's member count.
+///
+/// They are kept separate rather than folded into the ζ fixture because that
+/// would make the ports harness assert on the ctor-conformance walk, coupling
+/// two surfaces that fail for unrelated reasons.
+#[test]
+fn migrated_hydro_conformer_port_body_stays_clean() {
+    assert_port_body_compiles_clean(
+        SRC_MIGRATED_HYDRO_CONFORMER,
+        "p",
+        6,
+        "migrated HydroConformer (annotated stdlib enum port params)",
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Step-11 probes: per-family false-positive fences + α-value-floor guards.
 //
 // The general concrete-leaf arm shipped with a NEGATIVE skip list (`!matches!(
