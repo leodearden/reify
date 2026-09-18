@@ -40,12 +40,7 @@ structure def Pipeline {
 "#;
 
     let module = compile_source(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_no_error_diagnostics(&module.diagnostics, "chain desugaring");
 
     let pipeline = module
         .templates
@@ -99,11 +94,7 @@ structure def Pipeline {
 "#;
 
     let module = compile_source(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = errors_only(&module);
     assert_eq!(
         errors.len(),
         1,
@@ -153,11 +144,7 @@ structure def Pipeline {
 "#;
 
     let module = compile_source(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = errors_only(&module);
     assert_eq!(
         errors.len(),
         1,
@@ -214,12 +201,7 @@ structure def S {
 "#;
 
     let module = compile_source(source);
-    let errors: Vec<_> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_no_error_diagnostics(&module.diagnostics, "chain desugaring");
 
     let s = module
         .templates
