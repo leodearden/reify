@@ -4560,8 +4560,12 @@ static VolumeMeasurement compute_volume_arm(const TopoDS_Shape& shape) {
     GProp_GProps props;
     BRepGProp::VolumeProperties(shape, props);
     const double vol = props.Mass();
-    // BRepGProp::VolumeProperties returns 0 for some parametric surfaces
-    // (e.g. revolution surfaces). Fall back to mesh-based computation.
+    // Guard is BITWISE, not a tolerance: an FP-noise volume is a measurement,
+    // not an absent one. On OCCT 7.8 a revolution-surface solid integrates to a
+    // correct non-zero volume, so the only Rust-constructible shape that reaches
+    // the fallback is an empty compound, for which both arms return 0.0. Pinned
+    // by volume_measurement_reports_exact_for_real_solids and
+    // volume_measurement_fallback_guard_is_bitwise_not_tolerance.
     if (vol == 0.0 && shape.ShapeType() <= TopAbs_SOLID) {
         return VolumeMeasurement{mesh_based_volume(shape, 0.01), true};
     }
@@ -5159,6 +5163,9 @@ double curve_curvature_at(const OcctShape& shape, double px, double py, double p
     });
 }
 
+/// No tessellation fallback here (no mesh-based inertia integrator exists):
+/// at zero mass this returns the degenerate ORIGIN rather than failing.
+/// `query_volume_measurement`'s `tessellation_fallback` flag discriminates.
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
@@ -5560,6 +5567,9 @@ bool geo_equiv_topo_sample(const OcctShape& a, const OcctShape& b,
     });
 }
 
+/// No tessellation fallback here (no mesh-based inertia integrator exists):
+/// at zero mass this returns the degenerate ZERO rather than failing.
+/// `query_volume_measurement`'s `tessellation_fallback` flag discriminates.
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
     return wrap_occt_call("query_moment_of_inertia", [&]() {
         GProp_GProps props;
@@ -5569,6 +5579,9 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
     });
 }
 
+/// No tessellation fallback here (no mesh-based inertia integrator exists):
+/// at zero mass this returns the degenerate ALL-ZERO TENSOR rather than failing.
+/// `query_volume_measurement`'s `tessellation_fallback` flag discriminates.
 InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     // wrap_occt_call wraps only BRepGProp::VolumeProperties — the sole OCCT call that may
     // legitimately throw (Standard_Failure or std::exception).  MatrixOfInertia() and
