@@ -39,13 +39,13 @@ mod common;
 /// helper's assertion message says so — always diagnose against the clean
 /// parent run first.
 ///
-/// The floor of 11 is today's selection (10 real tests + this one). It exists
+/// The floor of 13 is today's selection (12 real tests + this one). It exists
 /// because libtest exits 0 on a zero-match filter; with an empty filter that
 /// cannot happen today, but the floor also catches a test being deleted or
 /// moved out of this binary, which would silently shrink the proof.
 #[test]
 fn real_git_ops_helpers_survive_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env(&[""], 11);
+    common::git_env::replay_self_under_hook_git_env(&[""], 13);
 }
 
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.
@@ -753,5 +753,112 @@ fn changed_paths_in_commit_reports_both_sides_of_a_rename() {
          un-landed branch-tip leg has the identical false-refusal defect; got: {:?}",
         tip_sha,
         tip,
+    );
+}
+
+// -----------------------------------------------------------------------
+// The fallible gitignore seam: "not ignored" vs "could not tell"
+// -----------------------------------------------------------------------
+
+/// Pin that a gitignore probe git never answered is reported as `Err`, on the
+/// latched call as much as on the first.
+///
+/// A non-git tempdir is the fixture the two `cli.rs` breadcrumb tests already
+/// rely on: `git check-ignore` exits 128 there, which is neither 0 (ignored)
+/// nor 1 (not ignored).
+///
+/// The SECOND probe is the load-bearing assertion. `gitignore_unavailable` is
+/// a per-instance BREADCRUMB budget — it exists so N files against a broken
+/// repo emit one diagnostic rather than N. It is not a claim that the answer
+/// is known, so the short-circuit it guards must stay silent without becoming
+/// a silent `Ok(false)`: a latched call is still an unanswered question. Were
+/// it to answer `Ok(false)`, a task whose FIRST file latched the flag would
+/// arm the gate's advisory channel while every later file read as
+/// "answered: not ignored" — the exact fail-safe inversion this closes, one
+/// call later.
+///
+/// The third pair pins that the infallible seam is unchanged: every existing
+/// caller still sees `false`, and both `cli.rs` breadcrumb tests keep their
+/// exactly-one-breadcrumb expectation.
+#[test]
+fn try_is_gitignored_reports_an_unanswered_probe_as_err() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    // Deliberately NOT a git repo, and one instance so the latch is live.
+    let git = RealGitOps::new(root);
+
+    assert!(
+        git.try_is_gitignored("some/path.rs").is_err(),
+        "git did not answer, so the fallible seam must say so rather than \
+         collapsing to Ok(false)",
+    );
+    assert!(
+        git.try_is_gitignored("other/path.rs").is_err(),
+        "the latched short-circuit suppresses the repeated BREADCRUMB only — it \
+         must never downgrade an unanswered question to Ok(false)",
+    );
+
+    assert!(
+        !git.is_gitignored("some/path.rs"),
+        "the infallible seam keeps its fail-safe `false`, unchanged",
+    );
+    assert!(
+        !git.is_gitignored("other/path.rs"),
+        "the infallible seam keeps its fail-safe `false`, unchanged",
+    );
+}
+
+/// Pin that a `metadata.files` entry beginning with `-` is ANSWERED rather
+/// than poisoning the gitignore probe for the rest of the process.
+///
+/// `metadata.files` is hand-authored and nothing normalises it, so an entry
+/// like `--weird-file` reaches `git check-ignore` verbatim. Without an
+/// end-of-options `--` separator git parses it as an option and exits 129 —
+/// neither 0 (ignored) nor 1 (not ignored) — which latches `RealGitOps`'s
+/// per-instance breadcrumb budget and short-circuits EVERY later probe on that
+/// instance. The CLI constructs exactly one `RealGitOps` per invocation, so
+/// that latch is process-wide: `P5MetadataFilesGitignored` goes silent for the
+/// rest of the run, and at the pre-done gate the unfiltered entry stays in the
+/// declared set that a blocking refusal is built from.
+///
+/// The SECOND probe is the load-bearing assertion: it reads the latch's
+/// consequence through the public seam rather than the private `AtomicBool`,
+/// so it would still fail if the suppression were reintroduced by some other
+/// mechanism.
+///
+/// Asserted through the FALLIBLE seam because that is where `Ok(false)` and
+/// `Err` are distinguishable — the distinction the pre-done gate acts on. The
+/// infallible seam's `false`/`true` follows from these two by its
+/// `unwrap_or(false)` default, so it needs no test of its own.
+///
+/// Must be a real-git test: a mock returns whatever the fixture seeded, so it
+/// is structurally incapable of catching a defect in git's argv.
+#[test]
+fn try_is_gitignored_answers_for_a_leading_dash_path() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+    write_file(root, ".gitignore", "ignored.txt\n");
+    git_commit(root, "base commit");
+    write_file(root, "ignored.txt", "build artefact\n");
+
+    let git = RealGitOps::new(root);
+
+    assert_eq!(
+        git.try_is_gitignored("--weird-file"),
+        Ok(false),
+        "a declared entry beginning with `-` must reach git as a PATH — git RAN \
+         and answered \"not ignored\", rather than exiting 129 on an unknown \
+         option",
+    );
+    assert_eq!(
+        git.try_is_gitignored("ignored.txt"),
+        Ok(true),
+        "a genuinely-gitignored path must still be answered AFTER a \
+         leading-dash entry was probed — otherwise the first entry latched the \
+         instance and silenced every later probe. Also proves the Ok(false) \
+         above is not a constant",
     );
 }

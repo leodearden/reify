@@ -1532,29 +1532,30 @@ mod alias_to_entity_type_other_emit_sites {
     }
 }
 
-// ─── task 6259: the three positions that own a PRIVATE enum namespace ───────
+// ─── task 6259: the positions that own a PRIVATE enum namespace ────────────
 //
 // The deferred use-site arm (`resolve_type_expr_with_aliases_kinded`) resolves
 // an unresolved non-parametric alias's body by RECURSING into itself, so the
 // body's ENUM-ness is only visible where the ambient enum set
-// (`RESOLUTION_ENUM_NAMES`, installed by `EnumNameScope`) is live. That scope is
-// installed at exactly two places — struct-param resolution (`entity.rs`) and
-// fn param/return resolution (`functions.rs`).
+// (`RESOLUTION_ENUM_NAMES`, installed by `EnumNameScope`) is live. Which sites
+// install one, and which own a PRIVATE enum namespace instead, is inventoried
+// once on `unresolved_alias_body_name` in `type_resolution.rs`; `grep -rn
+// 'EnumNameScope::new' crates/` is the authority. Do not restate it here — this
+// module only needs the two facts below.
 //
-// These THREE positions install no such scope. Each instead owns a PRIVATE enum
-// namespace, consulted by a post-hoc `.or_else(..)` fallback keyed on the OUTER
-// name — which is the ALIAS name `AL`, never the body name `Zq` — so the body's
-// enum-ness is structurally unreachable there:
+// TWO positions install no scope, and their private namespace is consulted by a
+// post-hoc `.or_else(..)` fallback keyed on the OUTER name — the ALIAS name
+// `AL`, never the body name `Zq` — so the body's enum-ness is structurally
+// unreachable at `enums_phase.rs` (enum variant payload) and `traits.rs` (trait
+// member param). Those two rows are this module's live subject.
 //
-//   * enum variant payload  — `compile_builder/enums_phase.rs`, the
-//                             `enum_names.contains(name)` arm.
-//   * trait member param    — `traits.rs`, the `resolve_enum_type_with_args`
-//                             fallback in `resolve_trait_member_type_annotation`.
-//   * constraint def param  — `compile_builder/defs_phase.rs`, the
-//                             `resolve_enum_type(name, enum_defs)` clause of the
-//                             unknown-type guard.
+// The THIRD position 6259 covered — constraint def param, `defs_phase.rs` —
+// installs a scope since task 6416. Its row is kept below for its historical
+// RED, and its tests still run: the parity contract still holds there, it is
+// just no longer satisfied at `ty: None`. (The module name below is likewise
+// 6259-era, describing the position set as it stood then.)
 //
-// MEASURED RED on this branch, `enum Zq` body via `type AL = Zq`:
+// MEASURED RED as of task 6259, `enum Zq` body via `type AL = Zq`:
 //
 //   position              | direct        | via alias
 //   ----------------------+---------------+---------------------------------
@@ -1562,7 +1563,10 @@ mod alias_to_entity_type_other_emit_sites {
 //   trait member param    | Param(Enum)   | Param(Error) + `unresolved type in
 //                         |               | trait 'Tq': AL`
 //   constraint def param  | ty: None,     | ty: None + spurious `unknown type
-//                         | clean         | 'AL' in param 'g' ...`
+//   [SUPERSEDED by 6416]  | clean         | 'AL' in param 'g' ...`
+//
+// The constraint-def row is HISTORICAL: after task 6416 BOTH columns of that row
+// read `Some(Enum("Zq"))`, clean (measured). The other two rows stand.
 //
 // The variant-payload row is the reason every row asserts the RESOLVED TYPE and
 // not merely the diagnostics: there, the alias spelling is SILENTLY wrong — a
@@ -1580,20 +1584,45 @@ mod alias_to_entity_type_other_emit_sites {
 // defect to the enum namespace specifically, and they will catch a fix that
 // regresses the working half.
 //
-// CONSTRAINT-DEF ROW, READ BEFORE "STRENGTHENING": for the ENUM body, `ty` is
-// `None` on BOTH sides. The direct path's `resolve_enum_type` guard only
-// SUPPRESSES the diagnostic — it never populates `ty`. So the parity target
-// there is `ty == None` AND zero errors; do NOT assert `Some(Enum("Zq"))`, which
-// would over-specify beyond parity and demand instantiation-time work this task
-// deliberately leaves out of scope.
+// PARITY CANNOT DETECT A REVERT — READ BEFORE DELETING THE ABSOLUTE LOCKS:
+//
+// Every assertion in this module compares `alias_ty` against `direct_ty` —
+// pure PARITY, never an absolute value. Reverting task 6416's `EnumNameScope`
+// install collapses BOTH sides of the constraint-def row to `None` together, so
+// parity still holds (MEASURED during 6416: with the install commented out
+// in-tree, all 4 tests here still PASS). The tests that most look like they
+// guard that fix are provably blind to its revert. That is a property of parity
+// assertions, not a defect in them — but it means parity alone is not a
+// regression lock.
+//
+// The revert-detectors are ABSOLUTE-value locks living elsewhere — the task-6416
+// sections of `tests/constraint_def_compile_tests.rs` (def-side `ty` values) and
+// `tests/constraint_inst_tests.rs` (instantiation-site diagnostic counts). Named
+// by section rather than by test, because nothing keeps a cross-file test name
+// honest.
+//
+// Do NOT weaken those to parity comparisons, and do not delete them as
+// duplicating this module — they are the only thing that fails if the scope
+// install is removed. Rationale for the install itself lives with the
+// `RESOLUTION_ENUM_NAMES` thread-local in `type_resolution.rs`; it is not
+// repeated here.
+//
+// For the two REMAINING scope-free positions (enum variant payload, trait member
+// param) the parity target is whatever the DIRECT spelling stores, and asserting
+// an absolute value there would over-specify. If a future task installs a scope
+// at one of them, it must — as 6416 did for the constraint-def row — add its own
+// absolute-value locks, because these parity tests will not notice.
 mod alias_to_entity_type_private_enum_namespaces {
     use super::*;
     use reify_compiler::RequirementKind;
     use reify_ir::VariantPayload;
     use reify_test_support::compile_source_with_stdlib;
 
-    /// One of the three declared-type positions that consults a private enum
-    /// namespace instead of installing `EnumNameScope`.
+    /// A declared-type position covered by task 6259's parity harness.
+    ///
+    /// NOT a uniform set any more: `ConstraintDefParam` installs an
+    /// `EnumNameScope` since task 6416, while the other two still consult a
+    /// private enum namespace instead. See the module header.
     #[derive(Clone, Copy)]
     pub(super) enum Position {
         EnumVariantPayload,

@@ -11,6 +11,13 @@ use tower_lsp::lsp_types::{DocumentSymbol, Range, SymbolKind, Url};
 
 use crate::convert::{is_ident_byte, offset_to_position, span_to_range};
 
+/// Fixtures and helpers shared by several modules' `tests`, in their own file
+/// so no production module carries test data. Declared here, next to the
+/// `decl_name_and_span` oracle whose per-kind table is the largest of them.
+#[cfg(test)]
+#[path = "test_fixtures.rs"]
+pub(crate) mod test_fixtures;
+
 /// Extract a module name from a file URI.
 ///
 /// e.g., `file:///path/to/test.ri` → `"test"`.
@@ -507,6 +514,56 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
     None
 }
 
+/// The name a top-level [`Declaration`] declares, paired with the
+/// declaration's own statement span — or `None` for the kinds that declare
+/// no name of their own.
+///
+/// The match is deliberately **exhaustive with no `_` wildcard arm**, and that
+/// is the load-bearing part of the design: a new `Declaration` variant becomes
+/// a COMPILE ERROR here, forcing an explicit named-vs-unnamed decision instead
+/// of a silent omission. Every other declaration scan in this crate is a
+/// per-kind allowlist ending in `_`, and each of them silently dropped kinds as
+/// the parser grew them.
+///
+/// The returned span is the whole declaration statement, NOT the name token —
+/// narrow it with [`name_token_span`] when a jump target is wanted.
+///
+/// SCOPE — same-file go-to-definition (task 6388); `goto_def::resolve_decl_name`
+/// is its one production consumer. The other scans are NOT migrated onto it,
+/// for two different reasons:
+/// - `goto_def::find_declaration_name_span` and
+///   `references::classify_top_level_decl` MUST stay narrower — they feed
+///   rename/references, and widening them corrupts a rename. The argument and
+///   the measurement behind it live on the guard test
+///   `references::tests::rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
+/// - [`compute_document_symbols_from_parsed`] carries no such hazard; its
+///   allowlist is simply UN-MIGRATED, because adopting this pair would need a
+///   `SymbolKind` decision per newly-admitted kind and would change the
+///   outline. Tracked as #6533.
+pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
+    let named = match decl {
+        Declaration::Structure(s) => (s.name.as_str(), s.span),
+        Declaration::Occurrence(o) => (o.name.as_str(), o.span),
+        Declaration::Enum(e) => (e.name.as_str(), e.span),
+        Declaration::Function(f) => (f.name.as_str(), f.span),
+        Declaration::Trait(t) => (t.name.as_str(), t.span),
+        Declaration::Field(f) => (f.name.as_str(), f.span),
+        Declaration::Purpose(p) => (p.name.as_str(), p.span),
+        Declaration::Constraint(c) => (c.name.as_str(), c.span),
+        Declaration::Unit(u) => (u.name.as_str(), u.span),
+        Declaration::TypeAlias(t) => (t.name.as_str(), t.span),
+        Declaration::Joint(j) => (j.name.as_str(), j.span),
+        // Binds a path/entity, not a new name — goto-def's cross-file Phase 0
+        // owns the cursor-in-import case.
+        Declaration::Import(_) => return None,
+        // A dotted module path, not a declared name.
+        Declaration::Module(_) => return None,
+        // Binds an EXISTING type to a value; introduces no new name.
+        Declaration::Default(_) => return None,
+    };
+    Some(named)
+}
+
 /// Recursively count Param, Let, and Constraint members, including those
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
 ///
@@ -804,12 +861,16 @@ fn make_symbol(
 ///
 /// Declaration AST nodes carry only `name: String` plus the full declaration
 /// span (no separate name-token span), so the name's byte offset must be
-/// recovered from the source. LSP requires `selection_range ⊆ range` and ideally
-/// on the name token; this performs a *word-boundary* search bounded to the
-/// declaration's own span, falling back to `span.start` when the name cannot be
-/// located (defensive; should not happen for well-formed declarations).
+/// recovered from the source — via [`name_token_span`], the crate's single
+/// name-token locator, which matches whole-word and only within the
+/// declaration's own span. LSP requires `selection_range ⊆ range` and ideally on
+/// the name token; [`name_token_span`]'s empty-span fallback (no whole-word
+/// match inside the span) degrades to `span.start` here, which still satisfies
+/// the subset invariant (defensive; should not happen for well-formed
+/// declarations).
 fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
-    let name_offset = find_name_offset_in_span(source, span, name);
+    let token = name_token_span(source, span, name);
+    let name_offset = if token.is_empty() { span.start } else { token.start };
     // Clamp the selection end to the declaration span's end so the LSP
     // `selection_range ⊆ range` invariant holds even for degenerate or
     // error-recovery spans shorter than the name. When the name is located
@@ -824,57 +885,6 @@ fn name_selection_range(source: &str, span: SourceSpan, name: &str) -> Range {
     }
 }
 
-/// Find the byte offset of `name` as a *whole identifier* within
-/// `[span.start, span.end)`, returning `span.start` if no word-boundary match
-/// is found.
-///
-/// A naive substring search is unsafe — e.g. the member name `a` would match
-/// inside the `param` keyword — so a match must have non-identifier neighbours
-/// (or a source boundary) on both sides. Search bounds are clamped to the
-/// source length and snapped forward to UTF-8 character boundaries, mirroring
-/// the safety pattern in `convert::offset_to_position` and
-/// `goto_def::find_name_offset_in_decl`.
-fn find_name_offset_in_span(source: &str, span: SourceSpan, name: &str) -> u32 {
-    if name.is_empty() {
-        return span.start;
-    }
-    let len = source.len();
-    let mut start = (span.start as usize).min(len);
-    let mut end = (span.end as usize).min(len);
-    // Snap both ends forward to valid UTF-8 boundaries so the slice is valid
-    // even when tree-sitter error-recovery spans land mid-character.
-    while start < len && !source.is_char_boundary(start) {
-        start += 1;
-    }
-    while end < len && !source.is_char_boundary(end) {
-        end += 1;
-    }
-    if start >= end {
-        return span.start;
-    }
-
-    let hay = &source[start..end];
-    let bytes = source.as_bytes();
-    let name_len = name.len();
-    let mut search_from = 0usize;
-    while search_from < hay.len() {
-        let Some(rel) = hay[search_from..].find(name) else {
-            break;
-        };
-        let abs = start + search_from + rel; // absolute byte offset of the match
-        // Left and right neighbours must be non-identifier bytes (or source
-        // boundaries) for this to be a whole-word match.
-        let left_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
-        let right = abs + name_len;
-        let right_ok = right >= len || !is_ident_byte(bytes[right]);
-        if left_ok && right_ok {
-            return abs as u32;
-        }
-        search_from += rel + 1;
-    }
-    span.start
-}
-
 /// Narrow a member-statement span down to the span of just its NAME identifier
 /// token.
 ///
@@ -887,14 +897,20 @@ fn find_name_offset_in_span(source: &str, span: SourceSpan, name: &str) -> u32 {
 /// same-named token from a sibling member.
 ///
 /// The declaration name always follows its leading keyword
-/// (`param`/`let`/`sub`/`port`), so the first whole-word match is the declaration
-/// token. Whole-word matching (rather than the bare substring search in
-/// `goto_def::find_name_offset_in_decl`) guards against a longer identifier that
-/// merely contains `name` as a substring. The UTF-8 char-boundary snap mirrors
+/// (`param`/`let`/`sub`/`port` for a member, `structure`/`fn`/`enum`/`trait`/
+/// `occurrence def` for a top-level declaration), so the first whole-word match
+/// is the declaration token. Whole-word matching guards against a longer
+/// identifier that merely contains `name` as a substring — a bare substring
+/// search finds the `a` of `param` and, worse, the `s` of `structure` before
+/// the `s` of `structure s`. The UTF-8 char-boundary snap mirrors
 /// `convert::offset_to_position`.
 ///
-/// Reused by `references.rs` for the declaration name-token span, the
-/// `include_declaration` token, and the prepare/compute-rename declaration path.
+/// The crate's single name-token locator; no second implementation of this
+/// search exists. Consumers disagree only on how they treat the empty-span
+/// fallback, which is what makes that fallback the risky thing to change:
+/// `goto_def::decl_name_token` maps it to `None` (a zero-width jump target is
+/// useless), `name_selection_range` degrades it to the declaration start, and
+/// `references.rs` propagates it into the rename/references span set.
 pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> SourceSpan {
     let mut start = (member_span.start as usize).min(source.len());
     // Snap forward to a valid UTF-8 boundary if we landed mid-character.
@@ -934,6 +950,7 @@ pub fn name_token_span(source: &str, member_span: SourceSpan, name: &str) -> Sou
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::test_fixtures::{NAMED_DECL_SNIPPETS, parse_one_clean};
     use reify_core::{DiagnosticCode, DimensionVector, Severity};
     use tower_lsp::lsp_types::Url;
 
@@ -2545,6 +2562,135 @@ mod tests {
         assert!(decl.is_none(), "empty declarations should return None");
     }
 
+    // --- decl_name_and_span free function tests (task 6388) ---
+
+    #[test]
+    fn decl_name_and_span_returns_name_and_span_for_every_named_kind() {
+        for (source, expected_name) in NAMED_DECL_SNIPPETS {
+            let parsed = parse_one_clean(source, "test");
+
+            let got = decl_name_and_span(&parsed.declarations[0]);
+            let (name, span) = got.unwrap_or_else(|| {
+                panic!("decl_name_and_span returned None for named kind, source: {source}")
+            });
+            assert_eq!(name, *expected_name, "name mismatch for source: {source}");
+            assert!(
+                span.start < span.end,
+                "span must be non-empty for source: {source}, got {span:?}"
+            );
+            let sliced = &source[span.start as usize..span.end as usize];
+            assert!(
+                sliced.contains(expected_name),
+                "declaration span {span:?} sliced to {sliced:?} must contain \
+                 {expected_name:?} for source: {source}"
+            );
+        }
+    }
+
+    /// Map a parsed declaration to a dense index over the NAMED `Declaration`
+    /// variants — a SECOND wildcard-free match, existing only so that adding a
+    /// variant is a compile error here too.
+    ///
+    /// [`decl_name_and_span`]'s exhaustive match forces a new variant to get an
+    /// explicit named-vs-unnamed decision; it does not force the FIXTURE that
+    /// exercises it. Pairing it with this index lets
+    /// `named_decl_snippets_cover_every_named_kind` detect a DUPLICATE or a GAP
+    /// in [`NAMED_DECL_SNIPPETS`]'s coverage, and lets that test assert the two
+    /// matches AGREE on which kinds are named.
+    ///
+    /// What the pair still cannot see: a variant given both a named arm and the
+    /// next free index but no snippet row leaves the indices dense, so the
+    /// coverage assertion stays green. Closing that needs an enumeration of the
+    /// variants themselves, which Rust does not offer without a derive.
+    fn kind_index(decl: &Declaration) -> Option<u8> {
+        match decl {
+            Declaration::Structure(_) => Some(0),
+            Declaration::Occurrence(_) => Some(1),
+            Declaration::Enum(_) => Some(2),
+            Declaration::Function(_) => Some(3),
+            Declaration::Trait(_) => Some(4),
+            Declaration::Field(_) => Some(5),
+            Declaration::Purpose(_) => Some(6),
+            Declaration::Constraint(_) => Some(7),
+            Declaration::Unit(_) => Some(8),
+            Declaration::TypeAlias(_) => Some(9),
+            Declaration::Joint(_) => Some(10),
+            Declaration::Import(_) => None,
+            Declaration::Module(_) => None,
+            Declaration::Default(_) => None,
+        }
+    }
+
+    #[test]
+    fn named_decl_snippets_cover_every_named_kind() {
+        let mut seen: Vec<u8> = Vec::new();
+        for (source, expected_name) in NAMED_DECL_SNIPPETS {
+            let parsed = parse_one_clean(source, "test");
+            let decl = &parsed.declarations[0];
+
+            // The two wildcard-free matches must agree on which kinds are
+            // named. Both force an arm for a new variant, but nothing forces
+            // those arms to say the same thing: a kind admitted as named by
+            // `decl_name_and_span` and mapped to None here would silently need
+            // no snippet row.
+            assert_eq!(
+                kind_index(decl).is_some(),
+                decl_name_and_span(decl).is_some(),
+                "`kind_index` and `decl_name_and_span` disagree on whether this \
+                 kind is named: {source}"
+            );
+
+            let index = kind_index(decl).unwrap_or_else(|| {
+                panic!(
+                    "row {expected_name:?} parsed to an UNNAMED declaration kind, \
+                     so it covers none of the named kinds: {source}"
+                )
+            });
+            assert!(
+                !seen.contains(&index),
+                "two rows parse to the same kind (index {index}), which leaves \
+                 another named kind with no snippet at all: {source}"
+            );
+            seen.push(index);
+        }
+
+        assert_eq!(
+            seen.len(),
+            NAMED_DECL_SNIPPETS.len(),
+            "every row must contribute a kind index"
+        );
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..seen.len() as u8).collect::<Vec<u8>>(),
+            "NAMED_DECL_SNIPPETS must hold exactly one snippet per NAMED \
+             Declaration variant, with no gap in `kind_index`'s numbering. A \
+             variant newly admitted to `decl_name_and_span` and `kind_index` \
+             needs a row here too, or \
+             `decl_name_and_span_returns_name_and_span_for_every_named_kind` and \
+             `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind` \
+             silently under-cover it."
+        );
+    }
+
+    #[test]
+    fn decl_name_and_span_returns_none_for_unnamed_kinds() {
+        // The three variants that declare no name of their own: Import binds a
+        // path/entity, Module is a dotted path, Default binds an existing type.
+        let unnamed = [
+            "import parts.Hole",
+            "module a.b.c",
+            "default Material = steel",
+        ];
+        for source in unnamed {
+            let parsed = parse_one_clean(source, "test");
+            assert!(
+                decl_name_and_span(&parsed.declarations[0]).is_none(),
+                "unnamed declaration kind must yield None for source: {source}"
+            );
+        }
+    }
+
     // --- depth-limit tests for find_named_member_span ---
 
     /// Build a member tree with `depth` levels of GuardedGroup nesting,
@@ -3074,6 +3220,44 @@ fn area(w: Length) -> Length { w }"#;
             source.find("beta"),
         );
         assert!(span.is_empty(), "fallback span must be empty");
+    }
+
+    // --- name_token_span robustness: clamp / UTF-8-snap / start==len ---
+    //
+    // goto_def had its own name-token locator with a parallel set of these
+    // tests; task 7529 collapsed the two locators into this one, so the
+    // hardening is pinned here, at the primitive that performs it.
+
+    #[test]
+    fn name_token_span_start_beyond_source_len_falls_back_without_panic() {
+        // A span start past the end of the source must not panic on the slice.
+        let source = "structure Foo { }"; // 17 bytes
+        let span = name_token_span(source, SourceSpan::new(100, 120), "Foo");
+        assert_eq!(span, SourceSpan::empty(100));
+        assert!(span.is_empty(), "out-of-range start must fall back to empty");
+    }
+
+    #[test]
+    fn name_token_span_start_on_continuation_byte_snaps_forward() {
+        // "aéb" = [0x61, 0xC3, 0xA9, 0x62]; byte 2 is the continuation byte 0xA9,
+        // so the span start lands mid-character and must snap forward rather
+        // than panic on a non-boundary slice.
+        let source = "a\u{00E9}b Foo";
+        assert!(!source.is_char_boundary(2), "fixture: byte 2 must be mid-char");
+        let span = name_token_span(source, SourceSpan::new(2, source.len() as u32), "Foo");
+        let start = source.find("Foo").unwrap() as u32;
+        assert_eq!(span, SourceSpan::new(start, start + 3));
+        assert_eq!(&source[span.start as usize..span.end as usize], "Foo");
+    }
+
+    #[test]
+    fn name_token_span_start_exactly_source_len_falls_back_without_panic() {
+        // An empty trailing slice must not panic.
+        let source = "structure Foo { }";
+        let len = source.len() as u32;
+        let span = name_token_span(source, SourceSpan::new(len, len), "Foo");
+        assert_eq!(span, SourceSpan::empty(len));
+        assert!(span.is_empty(), "start == source.len() must fall back to empty");
     }
 
     // ── undef_cause_line tests ─────────────────────────────────────────────────

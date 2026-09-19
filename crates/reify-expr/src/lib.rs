@@ -5,8 +5,11 @@
 #![allow(clippy::mutable_key_type)]
 
 mod analysis;
+mod branch_signature;
 mod calculus;
 mod complex;
+mod dual;
+mod dual_eval;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
@@ -14,6 +17,23 @@ mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
+
+// Task #6672 (solver-unification ε): the forward-mode AD surface.  The three
+// modules are PRIVATE and these flat re-exports are the only path to them, so
+// `reify_expr::Tangent` is not merely the preferred spelling over
+// `reify_expr::dual::Tangent` — it is the reachable one, and consumers (η
+// #6675, μ #6680, λ #6679) cannot drift into using both for the same type.
+// Same reasoning, and the same shape, as `reify_constraints`' private
+// `dual_jacobian`.
+pub use branch_signature::{
+    BranchChoice, BranchEntry, BranchRecord, CALLEE_MARKER, DEPENDENT_MARKER,
+    RESERVED_PATH_SEGMENTS, KinkKind, KinkSite, ReductionKind, first_divergence,
+};
+pub use dual::{DualValue, Tangent};
+pub use dual_eval::{
+    DualEnv, NonDifferentiable, Seeds, eval_dual, eval_dual_with_env, jacobian_row,
+    jacobian_row_with_env,
+};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -602,10 +622,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     }
                     let result = reify_stdlib::eval_builtin(&function.name, &evaluated_args);
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
-                    // case (`linear_combine`) / AffineMap-constructor / inverse-
-                    // dynamics / iso_it_tolerance builtin returns `Value::Undef`,
-                    // classify and emit its specific diagnostic into the ctx sink.
-                    // The five name families are disjoint, so at most one diagnose
+                    // case (`linear_combine`) / AffineMap-constructor or
+                    // transform_exp / inverse-dynamics / iso_it_tolerance /
+                    // orient_exp builtin returns `Value::Undef`, classify and emit
+                    // its specific diagnostic into the ctx sink.
+                    // The six name families are disjoint, so at most one diagnose
                     // helper fires for a single Undef. Consolidated into one
                     // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
@@ -1879,9 +1900,11 @@ fn interp_render(value: &Value) -> String {
 }
 
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
-/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β),
-/// inverse-dynamics body mass, and ISO tolerancing — for a builtin call whose
-/// `result` is `Value::Undef`.
+/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β)
+/// plus the `transform_exp` twist-angular dimension gate (#6080),
+/// inverse-dynamics body mass, ISO tolerancing, and the `orient_exp`
+/// rotation-vector dimension gate (#6080) — for a builtin call whose `result` is
+/// `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -1892,11 +1915,12 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The five name families (stackup math builtins / `"linear_combine"` /
-/// `affine_*` constructors / inverse-dynamics / `"iso_it_tolerance"`) are
-/// disjoint, so at most one of the five classifiers returns `Some` for any
-/// single `Undef`; each returns `None` for every other name or for valid input,
-/// making this a cheap no-op for ordinary builtins.
+/// The six name families (stackup math builtins / `"linear_combine"` /
+/// `affine_*` constructors + `"transform_exp"` / inverse-dynamics /
+/// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
+/// six classifiers returns `Some` for any single `Undef`; each returns `None`
+/// for every other name or for valid input, making this a cheap no-op for
+/// ordinary builtins.
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
     if !matches!(result, Value::Undef) {
@@ -1915,6 +1939,8 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     }
     // AffineMap-constructor warnings: `affine_scale` zero (degenerate, det=0) or
     // dimensioned scale factor (the linear part of an affine map is dimensionless).
+    // Also the #6080 Error for a `transform_exp` twist whose `angular` half is
+    // not Vector3<Angle> — same classifier, different severity per arm.
     if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
@@ -1927,6 +1953,14 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     // Severity::Error instead of a silent Undef. Post-Undef-only, same
     // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
     if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
+    // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
+    // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
+    // spelling, so this Severity::Error is the migration mechanism for that
+    // breaking change rather than a silent Undef. Post-Undef-only, same
+    // (name,&[Value])->Option<Diagnostic> shape as the five above.
+    if let Some(diag) = reify_stdlib::orientation_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
 }
@@ -4043,7 +4077,7 @@ fn negate_components(components: &[Value], wrap: fn(Vec<Value>) -> Value) -> Val
 /// Recursively negate a value.  Handles all negatable variants: Int, Real,
 /// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
 /// Point negation is explicitly undefined (spec 3.3.1).
-fn negate_value(v: Value) -> Value {
+pub(crate) fn negate_value(v: Value) -> Value {
     match v {
         Value::Int(_) | Value::Real(_) | Value::Scalar { .. } | Value::Complex { .. } => {
             neg_scalar(v)
@@ -4143,7 +4177,7 @@ fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> 
     }
 }
 
-fn eval_add(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a + b),
@@ -4247,7 +4281,7 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_sub(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a - b),
@@ -4429,7 +4463,7 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
     }
 }
 
-fn eval_mul(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
         (Value::Real(a), Value::Real(b)) => Value::Real(a * b),
@@ -4706,7 +4740,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_div(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
     // Check for division by zero
     if let Some(denom) = rv.as_f64()
         && (denom == 0.0 || denom.is_nan())
@@ -4857,7 +4891,7 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_mod(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Int(a), Value::Int(b)) => {
             if *b == 0 {
@@ -4877,7 +4911,7 @@ fn eval_mod(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_pow(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     // Compute the raw result, then sanitize NaN/Inf → Undef.
     //
     // Rationale: the value-level `^` operator must satisfy the same
@@ -4928,7 +4962,7 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
     sanitize::sanitize_value(result)
 }
 
-fn eval_eq(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_eq(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
@@ -4996,14 +5030,14 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
     }
 }
 
-fn eval_ne(lv: &Value, rv: &Value) -> Value {
+pub(crate) fn eval_ne(lv: &Value, rv: &Value) -> Value {
     match eval_eq(lv, rv) {
         Value::Bool(b) => Value::Bool(!b),
         other => other,
     }
 }
 
-fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
+pub(crate) fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
     match (lv, rv) {
         // Scalar-vs-Scalar: compare dimensions first
         (

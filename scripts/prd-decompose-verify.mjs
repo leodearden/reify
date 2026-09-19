@@ -218,6 +218,88 @@ function normalizeLeaves(rawArgs, warn) {
 }
 
 // ---------------------------------------------------------------------------
+// leafLabelFor — a leaf's display label (task #7369)
+//
+// SPOT: the single definition of "what a leaf is called for display purposes".
+// Both the per-leaf pipeline (Stage 1, which has a live leaf) and the
+// dropped-leaf labelling below (which has no live leafLabel — the leaf was
+// dropped before Stage 1 could compute one, but the ORIGINAL leaf object is
+// still available by index) derive it the same way.
+// ---------------------------------------------------------------------------
+
+function leafLabelFor(leaf, idx) {
+    if (leaf == null) return `leaf-${idx}`;
+    return typeof leaf === "string" ? leaf
+        : (leaf.signal || leaf.text || `leaf-${idx}`);
+}
+
+// ---------------------------------------------------------------------------
+// droppedLeafLabels — name the leaves the pipeline could not adjudicate
+// (task #7369)
+//
+// A leaf whose Enumerate/Prove/Adversary/Synthesize stage raised is dropped to
+// null by the pipeline AT ITS ORIGINAL INDEX — leaf_verdicts stays the same
+// length as leaves, with a hole at every dropped position. Each hole's own
+// position is therefore always knowable, so — unlike the pre-fix arithmetic —
+// no index guessing is needed to find it. The label AT that position is
+// leafLabelFor(leaves[j], j): the leaf's own signal/text, falling back to the
+// index only when the leaf has neither.
+//
+// The label carries the index explicitly (`<dropped-leaf:${j}:...>`), not
+// just the name: two dropped leaves can share an identical signal, and the
+// index is what lines this label up with both the per-leaf `[idx] ...` log
+// line below and the runtime's own `pipeline[<index>] failed: ...` record.
+//
+// Defense in depth (task #7369 review): the above assumes leaf_verdicts is
+// really leaves.length long. That contract lives in the pipeline() runtime,
+// outside this file, and nothing here can pin it. If it's ever violated by a
+// runtime that COMPACTS failures out of the array instead of nulling them in
+// place, leaf_verdicts comes back shorter than leaves — the submitted leaves
+// past its end have no hole to find, and would otherwise vanish with no
+// label and no count. Name that gap explicitly so a batch that lost leaves
+// this way still blocks instead of silently reporting PASS. (A leaf_verdicts
+// LONGER than leaves is a different, benign case already handled above —
+// leafLabelFor's own null guard labels the unmatched index — not a leaf
+// going unrepresented, so it is not treated as a violation here.)
+// ---------------------------------------------------------------------------
+
+function droppedLeafLabels(leaves, leaf_verdicts) {
+    const labels = leaf_verdicts
+        .map((v, j) => (v ? null : `<dropped-leaf:${j}:${leafLabelFor(leaves[j], j)}>`))
+        .filter(Boolean);
+    if (leaf_verdicts.length < leaves.length) {
+        labels.push(
+            `<dropped-leaf:contract-violation:${leaves.length - leaf_verdicts.length}>`);
+    }
+    return labels;
+}
+
+// ---------------------------------------------------------------------------
+// batchVerdict — the one shape every return path constructs (task #7369
+// review, SPOT)
+//
+// The zero-leaf early return and the aggregation tail used to be two
+// independent object literals for the same 13-key consumer contract; a field
+// added to one silently missed the other — exactly the class of bug task
+// #7369 fixed for the dropped-leaf labels themselves. Routing both paths
+// through one function means the key set exists in exactly one place: adding
+// a 14th field here makes it appear (at worst as `undefined`, which is
+// visible) on both paths, rather than silently absent on one.
+// ---------------------------------------------------------------------------
+
+function batchVerdict({
+    blocks, blocking, leaf_verdicts, summary, disposition,
+    leaves_total, leaves_probed, leaves_unenumerated, leaves_not_verified,
+    unenumerated_leaves, not_verified_leaves, malformed_records, fixture_absent_records,
+}) {
+    return {
+        blocks, blocking, leaf_verdicts, summary, disposition,
+        leaves_total, leaves_probed, leaves_unenumerated, leaves_not_verified,
+        unenumerated_leaves, not_verified_leaves, malformed_records, fixture_absent_records,
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Main workflow body
 //
 // The Workflow harness wraps this script body in an async function and takes
@@ -240,7 +322,26 @@ const _wfResult = await (async function runWorkflow() {
 
     if (leaves.length === 0) {
         log("No leaves provided — γ verification skipped."); // eslint-disable-line no-undef
-        return { blocks: false, leaf_verdicts: [], summary: "No leaves to verify." };
+        // Zero leaves is vacuously PASS by the same rule the aggregation tail
+        // applies below: nothing blocked, and there is no unenumerated/
+        // not-verified/malformed/fixture-absent leaf to make it INCOMPLETE.
+        // Built via batchVerdict (task #7369 review) so this path can never
+        // drift from the tail's key set again.
+        return batchVerdict({
+            blocks: false,
+            blocking: [],
+            leaf_verdicts: [],
+            summary: "No leaves to verify.",
+            disposition: "PASS",
+            leaves_total: 0,
+            leaves_probed: 0,
+            leaves_unenumerated: 0,
+            leaves_not_verified: 0,
+            unenumerated_leaves: [],
+            not_verified_leaves: [],
+            malformed_records: 0,
+            fixture_absent_records: 0,
+        });
     }
 
     log(`γ verification: ${leaves.length} leaf(ves)`); // eslint-disable-line no-undef
@@ -261,8 +362,7 @@ const _wfResult = await (async function runWorkflow() {
 
         // Stage 1: Enumerator — extract premises from leaf signal
         async (leaf, originalLeaf, idx) => {
-            const leafLabel = typeof leaf === "string" ? leaf
-                : (leaf.signal || leaf.text || `leaf-${idx}`);
+            const leafLabel = leafLabelFor(leaf, idx);
 
             const enumerated = await agent( // eslint-disable-line no-undef
                 `You are the Enumerator for γ decompose-phase verification (PRD §11 γ).
@@ -493,11 +593,17 @@ REQUIRED by the schema — report 0/0, because nothing was adjudicated):
     // (agent death, malformed output) is dropped to null by the pipeline and
     // filtered out above.  Treating 'could not evaluate' as PASS is a false
     // negative for a verification gate — block instead.
-    const dropped = leaves.length - filtered.length;
-    const droppedBlocking = Array.from({ length: dropped }, (_, i) => {
-        const originalIdx = leaf_verdicts.findIndex((v, j) => !v && j >= (leaves.length - dropped - i));
-        return `<dropped-leaf:${originalIdx >= 0 ? originalIdx : "?"}>`;
-    });
+    //
+    // `dropped` is droppedBlocking.length, not a second, independent length-
+    // diff check: pipeline() is documented to return an array of exactly
+    // leaves.length, with null at each failed item's own index, so under that
+    // contract leaves.length - filtered.length and the count of named holes
+    // are the same fact read two ways. droppedLeafLabels() itself guards the
+    // case where that contract is violated (see its own comment), so
+    // `dropped` stays the one number a reader needs even then, rather than
+    // adding a second count that could silently drift from `blocking`.
+    const droppedBlocking = droppedLeafLabels(leaves, leaf_verdicts);
+    const dropped = droppedBlocking.length;
 
     const anyBlocks = dropped > 0 || filtered.some(v => v.blocks);
     const allBlocking = [
@@ -512,7 +618,13 @@ REQUIRED by the schema — report 0/0, because nothing was adjudicated):
     // zero-premise leaves reported "γ PASS — all N leaf(ves) verified".  These
     // counters make the basis of the verdict readable straight off the return,
     // without opening journal.jsonl.
-    const leaves_total = filtered.length;
+    //
+    // `leaves_total` is the SUBMITTED batch size (leaves.length), not the
+    // survivor count: a leaf the pipeline dropped is still part of "how big
+    // was this batch", and BLOCKS already names it in `blocking` — shrinking
+    // the denominator to `filtered.length` made a batch that lost leaves read
+    // as full coverage (task #7369 review).
+    const leaves_total = leaves.length;
     const unenumerated_leaves = filtered
         .filter(v => v.disposition === "UNENUMERATED")
         .map(v => v.leafLabel);
@@ -567,8 +679,9 @@ REQUIRED by the schema — report 0/0, because nothing was adjudicated):
 
     log(summary); // eslint-disable-line no-undef
 
-    return {
+    return batchVerdict({
         blocks: anyBlocks,
+        blocking: allBlocking,
         leaf_verdicts: filtered,
         summary,
         disposition,
@@ -580,7 +693,7 @@ REQUIRED by the schema — report 0/0, because nothing was adjudicated):
         not_verified_leaves,
         malformed_records,
         fixture_absent_records,
-    };
+    });
 
 })();
 return _wfResult;

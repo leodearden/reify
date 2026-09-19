@@ -110,6 +110,12 @@ mod engine_tolerance;
 mod geometry_ops;
 #[cfg(test)]
 mod registry_drift_tests;
+// Task 6013 (registry ψ): the executed static-vs-runtime parity harness for the
+// builtin-signature registry. In-crate for the same reason as the sibling above
+// — it asserts against the private `value_type_kind_matches`, unreachable from
+// an integration test. See that module's header for PRD open question 5.
+#[cfg(test)]
+mod registry_parity_tests;
 // Task #4673 (geom-dispatch-registry L4): cfg-gated cross-crate test seam exposing
 // a 1:1 delegate to the `pub(crate)` `geometry_ops::compile_geometry_op` for the
 // characterization/golden harness in `tests/compile_geometry_op_characterization.rs`.

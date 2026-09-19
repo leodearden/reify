@@ -16,24 +16,29 @@ module mirror_bare_origin
 // in `crates/reify-compiler/src/builtin_signatures.rs`.  Read it there.
 // The fixture stays deliberately BARE either way — only the route changed.
 //
-// Verified baselines, MEASURED on this file at task 5662 (binary built from
-// task/5662 with the two new slots NOT yet landed; re-measured unchanged after
-// they land — the value form is unaffected by them, which is the point):
+// Verified baseline, RE-MEASURED on this file at task 5746 (units-length ε, R11
+// — `docs/prds/v0_6/units-length-gate-completion.md`), which is what changed the
+// stderr below.  ε requires `plane_yz`'s offset to be a Length, so `plane_yz(0)`
+// is now rejected at the PRODUCER and `mirror` never receives a Plane at all:
+// the consumer-side ox/oy/oz triple this fixture used to elicit is no longer
+// reached on this route, and ONE producer rejection replaces it.  The fixture
+// stays deliberately BARE — it is now a test OF that gate.
 //
 //   reify check <this file>                                          exit 0
 //     stdout: "  OK MirrorBareOrigin#constraint[0]"
 //             "All constraints satisfied."
-//     stderr: error: mirror: ox argument expects Length, got Int; pass a
+//     stderr: error: plane_yz: offset argument expects Length, got Int; pass a
 //                    dimensioned length such as `5mm`
-//             error: mirror: oy argument expects Length, got Real; ...
-//             error: mirror: oz argument expects Length, got Real; ...
-//             error: failed to compile geometry operation: mirror: missing or
-//                    non-Length argument 'ox' for mirror        [exactly ONCE]
+//             error: failed to compile geometry operation: mirror: expected a
+//                    Plane value, got undef                     [exactly ONCE]
 //             error: failed to compile geometry operation: unresolvable
 //                    GeomRef::Step(1) — index out of bounds or INVALID handle
 //
-//   (oy/oz read `Real`, not `Int`, because only the offset argument is the
-//   bare literal; `plane_yz` fills the other two origin components with 0.0.)
+//   The `expected a Plane value` line is the compile-gate diagnostic the
+//   `missing or non-Length argument 'ox'` line used to be, and it inherits the
+//   internal duplication that makes the dedup pin load-bearing: `reify eval` and
+//   `reify build` on this file were both measured printing it TWICE, while
+//   `check` prints it once.
 //
 // Before leaf β, that stderr was EMPTY — `check` never realized geometry for a
 // module carrying no Conforms / RepresentationWithin / DFMRule constraint.  Leaf

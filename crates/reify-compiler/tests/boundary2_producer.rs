@@ -1427,8 +1427,13 @@ fn compile_minimize_objective() {
 /// Compile maximize → TopologyTemplate.objective is Some(Maximize(...)).
 #[test]
 fn compile_maximize_objective() {
+    // `w` is `auto` so the objective reaches a solver variable through the
+    // `let`; with two literal params it would be structurally inert
+    // (E_OBJECTIVE_INERT, #5417) and the zero-diagnostics assertion below would
+    // fail. The lowering shape under test — one Maximize term over a ValueRef
+    // to the `let` — is unchanged.
     let source = r#"structure S {
-    param w: Length = 80mm
+    param w: Length = auto
     param h: Length = 100mm
     let volume = w * h
     maximize volume

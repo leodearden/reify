@@ -850,9 +850,11 @@ pub fn solve_elastic_static_trampoline(
             // for the shell path (PRD §7). Undef = honest-absence sentinel,
             // consistent with the tet convention for frame/shell_channels.
             ("divergence".to_string(), Value::Undef),
-            // task 4565/β: gradient and curl are tet-only derivative channels.
+            // task 4565/β: gradient and curl are tet-only derivative channels;
+            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set.
             ("gradient".to_string(), Value::Undef),
             ("curl".to_string(), Value::Undef),
+            ("rotation".to_string(), Value::Undef),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -1196,6 +1198,12 @@ pub fn solve_elastic_static_trampoline(
     let stress_field = super::sampled_stress_field(stress_sf);
     let div_field = super::sampled_divergence_field(div_sf);
     let grad_field = super::sampled_gradient_field(grad_sf);
+    // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
+    // here rather than resampled independently — note there is deliberately NO
+    // 6th entry in the `resample_multi_nodal_to_grid` call above, so the channel
+    // costs no extra BVH pass and shares curl's grid bit-identically. Derived
+    // BEFORE `curl_sf` is moved into `sampled_curl_field` below.
+    let rotation_field = super::sampled_rotation_field(super::rotation_sf_from_curl(&curl_sf));
     let curl_field = super::sampled_curl_field(curl_sf);
 
     // ── A-posteriori adaptive refinement (task 4902; v1 mesh-free UNIFORM
@@ -1400,7 +1408,7 @@ pub fn solve_elastic_static_trampoline(
                     bc_override.clone(),
                 );
                 let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-                    .expect("CantileverAdaptiveProblem::refine is Infallible");
+                    .expect("CantileverAdaptiveProblem's AdaptiveProblem seam is Infallible");
                 // Perf-cost visibility (reviewer_comprehensive/performance,
                 // task 4902 amendment): `refine` uniformly doubles all three
                 // grid axes per iteration (~8x DOF growth), so an
@@ -1595,6 +1603,10 @@ pub fn solve_elastic_static_trampoline(
         // Shell path emits Undef (PRD §7).
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
+        // ruling #6164: rotation = ∇×u / 2, the designated crossing where the
+        // radian enters (Vector3<Angle>). Derived from the curl SampledField at
+        // wrap time and stored nowhere. Shell path emits Undef (PRD §7).
+        ("rotation".to_string(), rotation_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -2199,6 +2211,13 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// | solve_time_ms     | (not stored in Value)                          | `0`             |
 /// | aposteriori       | see below (task #4942)                         | `None`          |
 ///
+/// `rotation` is intentionally ABSENT from this table: it is not extracted and
+/// not persisted. Ruling #6164 derives it from the `curl` slab at wrap time
+/// (`value_from_elastic_result`), because it is a pure ×½ of a slab already on
+/// the wire and the binary header is frozen (`curl_len` at a fixed byte offset,
+/// byte-exact golden test). So this direction needs no `rotation` arm, and
+/// existing persisted entries gain a correct `.rotation` for free.
+///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
 /// is set to `Vec::new()` on extraction; `value_from_elastic_result` does not
@@ -2464,9 +2483,24 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(sf) => super::sampled_gradient_field(sf),
         None => Value::Undef,
     };
-    let curl_field = match build_sf(er.curl.clone(), "curl") {
-        Some(sf) => super::sampled_curl_field(sf),
-        None => Value::Undef,
+    // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
+    // never persisted — the compute-contract wire header is frozen (`curl_len`
+    // at a fixed byte offset, byte-exact golden test), and rotation is a pure
+    // ×½ of a slab already on the wire. Deriving here means every EXISTING
+    // persisted cache entry gains a correct `.rotation` for free, with no
+    // format version bump and no new `elastic_result_from_value` extract arm.
+    //
+    // ONE `build_sf` feeds BOTH channels, mirroring the live tet path's single
+    // `curl_sf`. Splitting them into two independent `match` arms would both
+    // rebuild the slab twice on the cache-HIT path (the cheap one) and let a
+    // future edit to curl's reconstruction land on one arm only, silently
+    // desynchronising the two channels.
+    let (curl_field, rotation_field) = match build_sf(er.curl.clone(), "curl") {
+        Some(sf) => {
+            let rotation = super::sampled_rotation_field(super::rotation_sf_from_curl(&sf));
+            (super::sampled_curl_field(sf), rotation)
+        }
+        None => (Value::Undef, Value::Undef),
     };
 
     // shell_channels: None → Value::Undef; Some(ch) → ShellStress StructureInstance.
@@ -2520,6 +2554,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("divergence".to_string(), div_field),
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
+        ("rotation".to_string(), rotation_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -3495,7 +3530,7 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
     /// same `Infallible` for its synthetic stubs).
     type Error = std::convert::Infallible;
 
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         // The refinement loop is interruptible at CG granularity: a cancel
         // raised mid-loop bails out of the current solve and is turned into
         // `ComputeOutcome::Cancelled` by the wiring site's post-loop check. A
@@ -3548,11 +3583,12 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         self.last_global_indicator = zz.global_relative_energy_error;
         self.last_n_dofs = n_dofs;
 
-        AdaptiveEstimate {
-            global_indicator: zz.global_relative_energy_error,
+        Ok(AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
             per_element: zz.per_element,
             n_dofs,
-        }
+            qoi: None,
+        })
     }
 
     fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
@@ -3760,7 +3796,7 @@ impl RealizedAdaptiveProblem {
     /// fail on its first solve. Making that promise real in the SIGNATURE (an
     /// earlier revision returned `Self` and swallowed the rejection into an
     /// empty `current_sizes`) is what keeps `solve_and_estimate` free of a
-    /// degenerate arm that would have reported `global_indicator: 0.0` — read
+    /// degenerate arm that would have reported `relative_error: 0.0` — read
     /// by `run_adaptive_refinement` as "converged with zero error" on a mesh
     /// that was never solved.
     #[allow(clippy::too_many_arguments)]
@@ -3817,7 +3853,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
     ///
     /// Never touches `surface` — only `refine` does — so this runs in a
     /// gmsh-free build exactly as it does in a gmsh build.
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         // REUSE: `volume_mesh_to_solver_mesh` already performs both the P1
         // gate AND the orphan-vertex compaction that real gmsh output demands
         // (an element-unreferenced node gets no stiffness contribution,
@@ -3826,9 +3862,9 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         // `new` returns `None` for a non-widenable seed and `refine` raises a
         // `RefineError` for a non-widenable remesh result, so `self.volume_mesh`
         // is always widenable here. An earlier revision carried a "degrade
-        // honestly" arm returning `global_indicator: 0.0`; that was the opposite
+        // honestly" arm returning `relative_error: 0.0`; that was the opposite
         // of honest — `run_adaptive_refinement` tests
-        // `est.global_indicator <= budget.target_accuracy` FIRST, so 0.0 reads as
+        // `est.relative_error <= budget.target_accuracy` FIRST, so 0.0 reads as
         // `Converged { final_indicator: 0.0 }` and the caller is told the solve
         // converged perfectly on a mesh that was never solved
         // (reviewer_comprehensive amendment).
@@ -3889,11 +3925,12 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         self.last_global_indicator = zz.global_relative_energy_error;
         self.last_n_dofs = n_dofs;
 
-        AdaptiveEstimate {
-            global_indicator: zz.global_relative_energy_error,
+        Ok(AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
             per_element: zz.per_element,
             n_dofs,
-        }
+            qoi: None,
+        })
     }
 
     /// Consume the Dörfler-marked set by remeshing the volume under a
@@ -6103,7 +6140,7 @@ mod tests {
     /// step-11 RED (task 4902): `CantileverAdaptiveProblem::solve_and_estimate`
     /// solves the coarse isotropic cantilever (tip load) at its current grid
     /// resolution and reports a Z-Z `AdaptiveEstimate`:
-    /// - `global_indicator` finite and in `[0, 1)` — this MEASURES the
+    /// - `relative_error` finite and in `[0, 1)` — this MEASURES the
     ///   empirical η_global magnitude the step-15 e2e converged-target `0.9`
     ///   must exceed (achievability basis for e2e case (a); see plan design
     ///   decisions — error energy cannot exceed solution energy in relative
@@ -6112,7 +6149,7 @@ mod tests {
     /// - `per_element.len()` == the solve's tet count.
     /// - `n_dofs` == `3 * n_nodes`.
     /// - the problem records `last_global_indicator` == the returned
-    ///   `global_indicator` (threaded into `aposteriori_adaptive_fields` even
+    ///   `relative_error` (threaded into `aposteriori_adaptive_fields` even
     ///   on a budget-capped `NotConverged` outcome — see step-7/8).
     ///
     /// RED: `CantileverAdaptiveProblem` does not exist yet → compile-fail
@@ -6136,12 +6173,14 @@ mod tests {
             None,
         );
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
 
         assert!(
-            est.global_indicator.is_finite() && (0.0..1.0).contains(&est.global_indicator),
-            "global_indicator must be finite and in [0, 1), got {}",
-            est.global_indicator
+            est.relative_error.is_finite() && (0.0..1.0).contains(&est.relative_error),
+            "relative_error must be finite and in [0, 1), got {}",
+            est.relative_error
         );
 
         // Default synthetic_grid_counts(1.0, 0.1) = (nx=60, ny=1, nz=6).
@@ -6160,8 +6199,8 @@ mod tests {
         );
 
         assert_eq!(
-            problem.last_global_indicator, est.global_indicator,
-            "the problem must record the returned global_indicator"
+            problem.last_global_indicator, est.relative_error,
+            "the problem must record the returned relative_error"
         );
     }
 
@@ -6235,7 +6274,9 @@ mod tests {
         // `refine` ran at least once: a fresh solve_and_estimate at the
         // problem's now-current (post-loop) grid resolution must report
         // strictly more dofs than the initial resolution.
-        let final_est = problem.solve_and_estimate();
+        let final_est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         assert!(
             final_est.n_dofs > initial_dofs,
             "expected refine() to have grown the mesh past the initial {} dofs, got {}",
@@ -9737,6 +9778,23 @@ mod tests {
                 "curl".to_string(),
                 super::super::sampled_curl_field(make_sf("curl", 3, 500.0)),
             ),
+            // ruling #6164: the live tet path emits a `rotation` channel derived
+            // from the curl SampledField (= curl/2), so the round-trip fixture
+            // must carry it too — it models what production actually produces.
+            //
+            // NOTE this makes the round trip a second, stronger guard on the
+            // derive: `elastic_result_from_value` deliberately does NOT extract
+            // rotation (no rotation slab is persisted — the wire header is
+            // frozen), so hash identity holds ONLY IF `value_from_elastic_result`
+            // re-derives byte-for-byte the same field from the curl slab. If the
+            // derive ever drifted between the live and cache paths, this test
+            // would red.
+            (
+                "rotation".to_string(),
+                super::super::sampled_rotation_field(super::super::rotation_sf_from_curl(
+                    &make_sf("curl", 3, 500.0),
+                )),
+            ),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -11924,7 +11982,9 @@ mod tests {
         )
         .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
 
         assert_eq!(
             est.per_element.len(),
@@ -11936,13 +11996,13 @@ mod tests {
             "n_dofs must be 3 * the POST-COMPACTION node count",
         );
         assert!(
-            est.global_indicator.is_finite() && est.global_indicator >= 0.0,
-            "global_indicator must be finite and non-negative, got {}",
-            est.global_indicator,
+            est.relative_error.is_finite() && est.relative_error >= 0.0,
+            "relative_error must be finite and non-negative, got {}",
+            est.relative_error,
         );
         assert_eq!(
-            problem.last_global_indicator, est.global_indicator,
-            "the problem must record the returned global_indicator",
+            problem.last_global_indicator, est.relative_error,
+            "the problem must record the returned relative_error",
         );
         assert_eq!(
             problem.last_n_dofs, est.n_dofs,
@@ -12062,7 +12122,9 @@ mod tests {
 
         let mut problem = gmsh_realized_problem(0.05);
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         let marked = reify_solver_elastic::mark_dorfler(&est.per_element, DORFLER_THETA);
         assert!(
             !marked.is_empty(),
@@ -12124,7 +12186,9 @@ mod tests {
         // from the same seed is what proves the growth above was driven by the
         // MARKS and not merely by re-meshing.
         let mut unmarked = gmsh_realized_problem(0.05);
-        unmarked.solve_and_estimate();
+        unmarked
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         unmarked
             .refine(&[])
             .expect("an empty marked set must still remesh cleanly");
@@ -12751,5 +12815,229 @@ mod tests {
             ),
             "expected SizeHintsLengthMismatch, got: {err:?}",
         );
+    }
+    // ── ruling #6164: the `rotation` derivative channel ───────────────────────
+    //
+    // step-5 RED. `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the
+    // radian enters the elastic-result algebra. It is DERIVED from the `curl`
+    // SampledField at wrap time in every production path and STORED IN NONE —
+    // see `rotation_sf_from_curl`'s doc comment for the wire-format reason.
+    //
+    // These three tests pin all three production paths, plus the negative
+    // no-wire-change guarantee.
+
+    /// Shared helper: pull the `SampledField` out of a `Value::Field { Sampled }`,
+    /// asserting the source kind on the way through.
+    fn rot6164_sampled(v: &Value, what: &str) -> SampledField {
+        match v {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "{what} must be a Sampled field"
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf.clone(),
+                    other => panic!("{what} lambda must be Value::SampledField, got {other:?}"),
+                }
+            }
+            other => panic!("{what} must be Value::Field, got {other:?}"),
+        }
+    }
+
+    // The `rotation == curl/2 on the bit-identical grid` assertion is
+    // enumerated ONCE, beside `rotation_sf_from_curl` itself, so the tet path
+    // and the cache-reconstruction path below cannot drift apart from each
+    // other or from the wrapper unit test.
+    use super::super::assert_rotation_is_half_of;
+
+    /// (a) TET path — the live `solve_elastic_static_trampoline` tet/solid route
+    /// must emit a `"rotation"` key whose SampledField is the `"curl"` field
+    /// halved element-wise, bit-exactly, on the bit-identical grid.
+    ///
+    /// `shell_force=Off` forces the tet route deterministically (same idiom as
+    /// `trampoline_consumes_realized_volume_mesh`).
+    ///
+    /// This test ALSO carries the "no 6th resample entry" guarantee: unit tests
+    /// build in debug, so the `debug_assert_eq!(sampled.len(), 5)` in the tet
+    /// path is live here. Bumping `resample_multi_nodal_to_grid` to a 6th entry
+    /// to resample rotation independently would trip that assert and red this
+    /// test — which is exactly the intent (rotation costs no extra BVH pass).
+    ///
+    /// RED: nothing writes a `"rotation"` key yet.
+    #[test]
+    fn rotation_channel_tet_path_is_curl_halved() {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        let curl_v = fields
+            .get("curl")
+            .expect("tet ElasticResult must carry a curl field");
+        let rot_v = fields
+            .get("rotation")
+            .expect("tet ElasticResult must carry a rotation field (ruling #6164)");
+
+        let curl_sf = rot6164_sampled(curl_v, "curl");
+        let rot_sf = rot6164_sampled(rot_v, "rotation");
+        assert!(
+            !curl_sf.data.is_empty(),
+            "fixture sanity: the tet curl channel must be populated"
+        );
+        assert_rotation_is_half_of(&rot_sf, &curl_sf, "tet");
+
+        // The declared codomain is the whole point: Vector3<Angle>, not
+        // vec3(dimensionless_scalar()) like curl.
+        match rot_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::angle()),
+                "rotation codomain must be Vector3<Angle> (ruling #6164)"
+            ),
+            other => panic!("rotation must be Value::Field, got {other:?}"),
+        }
+        match curl_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                "curl codomain must STAY Vector3<Real> — ruling #6164 HALF 1 \
+                 decides curl is dimensionless; retyping it would put a radian \
+                 into the operator algebra"
+            ),
+            other => panic!("curl must be Value::Field, got {other:?}"),
+        }
+    }
+
+    /// (b) SHELL path — derivative channels are out of scope for the shell
+    /// solver (PRD §7), so `rotation` joins divergence/gradient/curl in the
+    /// honest-absence `Value::Undef` convention.
+    ///
+    /// RED: the shell fields map has no `"rotation"` key at all, so the
+    /// `.expect` fires.
+    #[test]
+    fn rotation_channel_shell_path_is_undef() {
+        // Same 50mm × 10mm × 1mm steel-flexure fixture as
+        // `shell_route_trampoline_populates_shell_channels`.
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.05),
+            shell9_make_len(0.01),
+            shell9_make_len(0.001),
+            shell9_make_point_loads(10.0),
+            shell9_make_supports(),
+            shell9_make_options("On"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        // Fixture sanity: confirm this really is the shell route.
+        assert!(
+            matches!(fields.get("curl"), Some(Value::Undef)),
+            "fixture sanity: the shell route must emit curl=Undef"
+        );
+        assert!(
+            matches!(
+                fields.get("shell_channels"),
+                Some(Value::StructureInstance(_))
+            ),
+            "fixture sanity: the shell route must emit a real ShellStress"
+        );
+
+        assert!(
+            matches!(
+                fields
+                    .get("rotation")
+                    .expect("shell ElasticResult must carry a rotation key (ruling #6164)"),
+                Value::Undef
+            ),
+            "shell rotation must be Value::Undef — honest-absence, matching the \
+             divergence/gradient/curl convention (PRD §7)"
+        );
+    }
+
+    /// (c) CACHE-RECONSTRUCTION path — THE LOAD-BEARING ONE.
+    ///
+    /// `value_from_elastic_result` rebuilds an `ElasticResult` `Value` from the
+    /// persisted compute-contract record. That record carries a `curl` slab and
+    /// NO rotation slab — and it never will, because the binary wire header is
+    /// frozen (`curl_len` at a fixed byte offset, byte-exact golden test).
+    ///
+    /// This test proves that deriving rotation at wrap time means EXISTING
+    /// persisted cache entries gain a correct `.rotation` for free: an `er` with
+    /// only a curl slab must reconstruct to a rotation field bit-identical to
+    /// what the live tet path produces from the same data.
+    ///
+    /// RED: the cache fields map has no `"rotation"` key yet.
+    #[test]
+    fn rotation_channel_cache_reconstruction_derives_from_curl_slab() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        // Regular3D grid, 1 division per axis -> 2 nodes per axis -> 8 nodes.
+        let n_nodes = 8usize;
+        // Deliberately non-power-of-two curl values so a halving bug cannot
+        // hide behind a coincidentally exact result.
+        let curl: Vec<f64> = (0..n_nodes * 3).map(|i| 3.0 + i as f64 * 5.0).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: (0..n_nodes * 9).map(|i| i as f64 * 0.5).collect(),
+            curl: curl.clone(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let curl_sf = rot6164_sampled(
+            d.fields.get("curl").expect("reconstructed curl field"),
+            "curl",
+        );
+        let rot_sf = rot6164_sampled(
+            d.fields
+                .get("rotation")
+                .expect("reconstructed ElasticResult must carry a rotation field (ruling #6164)"),
+            "rotation",
+        );
+        assert_eq!(
+            curl_sf.data, curl,
+            "fixture sanity: the curl slab must round-trip unchanged"
+        );
+        assert_rotation_is_half_of(&rot_sf, &curl_sf, "cache");
+
+        // Cross-path identity: the cache route must produce exactly what the
+        // live tet route's wrap step produces from the same curl SampledField.
+        let live = super::super::rotation_sf_from_curl(&curl_sf);
+        assert_eq!(
+            rot_sf.data, live.data,
+            "cache-reconstructed rotation must be bit-identical to the live tet \
+             path's derive from the same curl data"
+        );
+        assert_eq!(rot_sf.name, live.name);
     }
 }

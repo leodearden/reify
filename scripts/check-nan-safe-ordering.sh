@@ -42,9 +42,10 @@
 # reify-kernel-gmsh, reify-fdm, reify-shell-extract, reify-mesh-morph, plus
 # reify-eval's compute_targets/ and modal_ops.rs — the task 5093 spec — AND
 # reify-stdlib, added by task #6376 once its four class-A sites were hardened
-# and its three class-B sites annotated. That widening was HALF of decision
-# 9's trigger: reify-constraints is named by the same trigger and is still
-# excluded, pending its own follow-up ticket.
+# and its three class-B sites annotated, AND reify-constraints, added by task
+# #6377 once `eval_objective_set` was made to fail closed on a non-finite
+# accumulator. Those two tasks are the two halves of decision 9's widening
+# trigger; with #6377 landed the trigger is FULLY fired.
 #
 # THE RULE behind that list (so a new crate can be judged, not guessed): the
 # covered scope is the PHYSICAL/GEOMETRIC NUMERIC SOLVE PATH. Cache-eviction
@@ -62,11 +63,11 @@
 #
 # WARNING: this scope is NARROWER than INV-FEA-3's registry wording used to
 # suggest ("numeric crates"), and decision 9's 2026-08-20 census found
-# genuinely UNGUARDED sites outside it (reify-constraints and reify-eval's
-# engine_build.rs — reify-stdlib was on this list until task #6376 hardened
-# it and brought it into scope above) owned by filed follow-up hardening,
-# NOT by this gate. Do not read this gate's green as evidence that they are
-# safe.
+# genuinely UNGUARDED sites outside it. Only reify-eval's engine_build.rs now
+# remains there, owned by filed follow-up hardening and NOT by this gate — do
+# not read this gate's green as evidence that it is safe. (reify-stdlib was on
+# that list until task #6376 hardened it, and reify-constraints until task
+# #6377 did; both are now in scope above.)
 #
 # PRODUCTION-CODE VIEW: each raw line is reduced to its production code by a
 # single LEFT-TO-RIGHT LEXER (`_strip_line`), not a comment-tail regex strip.
@@ -81,14 +82,22 @@
 # over-extending it (swallowing a production hazard below) or releasing it
 # early (false-REDing a legitimate test-module hazard).
 #
-# Measured on this gate's own 121-file scan set: no file's brace-depth
-# bookkeeping ends the file mid-drift (both views return depth to 0 by EOF),
-# but the per-line view diverges from the old raw-$0 view on 508 lines across
-# 40 of the 121 files (worst: reify-fdm/src/toolpath.rs, 187 lines) — so the
-# bookkeeping was drifting mid-file even though it happened to re-balance by
-# EOF. The fix is verdict-neutral on the live tree: both the old and the
-# lexed view flag 0 sites across all 121 files today. This closes a latent
-# hazard, not a live bug.
+# Measured WHEN THIS LEXER LANDED, on the 121-file scan set of the day (task
+# 5093/5159 era — the scan set has grown twice since; do NOT read 121 as a
+# current figure, and do not inline a fresh one here either, because it goes
+# stale on every widening. The authoritative count and its measurement history
+# live in docs/prds/compute-fea-hardening.md decision 9, "Measured widening
+# cost"): no file's brace-depth bookkeeping ended the file mid-drift (both
+# views returned depth to 0 by EOF), but the per-line view diverged from the
+# old raw-$0 view on 508 lines across 40 of those 121 files (worst:
+# reify-fdm/src/toolpath.rs, 187 lines) — so the bookkeeping was drifting
+# mid-file even though it happened to re-balance by EOF. The fix was
+# verdict-neutral on the tree of the day: both the old and the lexed view
+# flagged 0 sites across all 121 files. This closes a latent hazard, not a
+# live bug. The old raw-$0 view no longer exists in this script, so the
+# divergence half of that measurement is historical and not re-measurable;
+# the balance half IS, and was re-measured on 2026-09-01 against the current
+# (post-#6376/#6377) scan set — every file still ends balanced, no WARN.
 #
 # EXCLUDED:
 #   - comments and string literals, per the PRODUCTION-CODE VIEW above;
@@ -156,6 +165,7 @@ SCOPE_PATHSPECS=(
     'crates/reify-eval/src/compute_targets/*.rs'
     'crates/reify-eval/src/modal_ops.rs'
     'crates/reify-stdlib/*.rs'
+    'crates/reify-constraints/*.rs'
 )
 
 # Tracked .rs sources in scope, minus integration-test dirs (tests/ excluded per
@@ -378,10 +388,11 @@ function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
 # per the `carried_in && code == ""` skip above, likely went entirely
 # unscanned. That fails SILENTLY toward GREEN (an unscanned line cannot be
 # flagged), so it is surfaced here rather than left to discover itself.
-# Verdict-neutral (a warning, not a failure): this gate's own 121-file scan
-# set measurably ends every file balanced today (see PRODUCTION-CODE VIEW
-# above), so promoting this to a hard failure once that is trusted tree-wide
-# is a follow-up, not a day-one behavior change.
+# Verdict-neutral (a warning, not a failure): this gate's own scan set
+# measurably ends every file balanced today — re-measured 2026-09-01 on the
+# current set, see PRODUCTION-CODE VIEW above — so promoting this to a hard
+# failure once that is trusted tree-wide is a follow-up, not a day-one
+# behavior change.
 END {
     if (in_str || in_raw || in_block > 0 || depth != 0)
         printf "WARN: %s: lexer state unbalanced at EOF (str=%d raw=%d block=%d depth=%d)\n", FILENAME, in_str, in_raw, in_block, depth > "/dev/stderr"

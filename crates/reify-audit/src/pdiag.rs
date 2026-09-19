@@ -1,0 +1,2858 @@
+//! PDIAG — codes-mandatory ratchet for diagnostic construction sites.
+//!
+//! ## Purpose
+//!
+//! `INV-SF-6 diagnostics-carry-codes` (`docs/legibility/design-invariants.md`
+//! §INV-SF-6) requires every *emitted* Warning/Error to carry a
+//! `DiagnosticCode`. Code-less diagnostics cannot be gated, filtered, counted
+//! or de-noised systematically, and force message-substring hacks downstream —
+//! the CLI's `E_DFM_` message-prefix escalation exists only because its
+//! co-resident Error diagnostics are code-less.
+//!
+//! This detector holds the line at the current backlog: it scans tracked Rust
+//! source for `Diagnostic::error(...)` / `Diagnostic::warning(...)`
+//! construction sites with no `.with_code(...)` attached, counts them per
+//! file, and compares against a committed baseline manifest
+//! (`crates/reify-audit/pdiag-baseline.txt`). Counts may only **decrease**.
+//! Migrating the existing backlog is opportunistic, per PRD §6 decision 3 —
+//! enforcement is for *new* sites.
+//!
+//! ## Heuristic
+//!
+//! Pure line scan over `&str` — no `syn`/AST, no `regex`, no `walkdir`. Their
+//! absence from `crates/reify-audit/Cargo.toml` is a deliberate design
+//! invariant this module inherits from `ptodo.rs` and `pdssentinel.rs`.
+//!
+//! Each occurrence of an anchor token (`Diagnostic::error(` /
+//! `Diagnostic::warning(`, whitespace-tolerant before the paren) on a
+//! non-comment line is one site. `Diagnostic::info(` is deliberately NOT an
+//! anchor: INV-SF-6 scopes the rule to Warning/Error, and coding an `Info` is
+//! welcome but not required.
+//!
+//! A site counts as **coded** when `.with_code(` appears at or after the
+//! anchor position on the anchor line, or on any of the next
+//! `PDIAG_CODE_WINDOW` non-comment lines. The probe is the bare token
+//! `.with_code(` and NOT `.with_code(DiagnosticCode::` — real sites pass a
+//! severity-dispatched variable (`crates/reify-eval/src/compute_targets/
+//! fea_diagnostics.rs:53`).
+//!
+//! ## Why a bounded line window and not brace/paren matching
+//!
+//! Most sites do NOT fit on one line — multi-line `format!` wrapping is the
+//! norm — so both mechanics were run over the real corpus and diffed. The
+//! decisive result: a strict paren-depth chain scan is *wrong* on the
+//! `if {...} else {...}.with_code(code)` severity-dispatch shape, which closes
+//! its constructor paren before the chain resumes, so paren-matching declares
+//! a coded site code-less (a false RED). Every other disagreement between the
+//! two sits in a `#[cfg(test)]` body this detector excludes anyway. The counts
+//! behind that comparison are a dated snapshot in
+//! `docs/notes/diagnostic-severity-policy.md` appendix A.
+//!
+//! ## Accepted residual imprecision
+//!
+//! Every entry below is deliberate, and all but TWO are *permissive* — they
+//! under-count, so they can weaken the gate but not manufacture a RED. The two
+//! honest exceptions are the first bullet (a quoted anchor IS counted) and the
+//! tail of the comment-mask bullet (a string-literal `/*` can mask a site's own
+//! `.with_code(` line, which [`code_in_window`] then never sees). Both are
+//! accepted rather than lexed away because neither occurs in the swept corpus
+//! and one `pdiag:allow` clears either. (Two FURTHER false-RED routes were
+//! real defects and are closed rather than accepted: a nested `/* /* */ */`
+//! region reading as live code, by [`comment_mask`]'s depth counter; and a
+//! type whose name merely ENDS in `Diagnostic` — `FeaDiagnostic::error(` —
+//! anchoring as a site, by [`anchor_positions`]' left word boundary.)
+//!
+//! - An anchor token inside a string literal on a code line is counted as a
+//!   site (none observed in the corpus; `pdiag:allow` escapes it). This is the
+//!   first of the two entries here that err toward a false RED.
+//! - An unrelated `.with_code(` inside a site's window can mark it coded — a
+//!   handful of sites repo-wide, all of them in `#[cfg(test)]` code this
+//!   detector excludes (appendix A).
+//!   "Permissive" understates it: unlike the other entries here, this one can
+//!   also mask a BRAND-NEW code-less site placed above an existing coded one,
+//!   which is a hole in the hard gate rather than mere imprecision. It is the
+//!   sibling of the escape leak [`escape_in_window`] closes, left standing
+//!   because the two probes need opposite bounds (see that function's docs),
+//!   and is tracked as its own work item — #5887.
+//! - The SAME-LINE half of that probe has the same hole in the other
+//!   direction. [`scan_file`] probes rightwards from the anchor so an EARLIER
+//!   constructor's code cannot mark a later one, but the converse stands: in
+//!   `push(Diagnostic::error(m)); push(Diagnostic::warning(m2).with_code(c));`
+//!   the first anchor's rightward slice contains the second's `.with_code(`,
+//!   so a brand-new code-less site parked to the LEFT of a coded one on one
+//!   line is censused as coded. Bounding the scan at the next anchor on the
+//!   line is NOT the fix — it would false-RED the one-line severity-dispatch
+//!   shape `if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }
+//!   .with_code(c)`, whose code attaches after both constructors. Same work
+//!   item as the bullet above — #5887.
+//! - The comment mask is line-granular and keyed on each line's FIRST
+//!   non-whitespace token, so nothing mid-line is ever stripped. That is
+//!   deliberate: stripping `//`-to-end-of-line would let a `//` inside a string
+//!   literal (`"a//b"`) swallow a real `.with_code(` and produce a false RED.
+//!   The cost is that a `//` or `/*` inside a string literal can still nudge
+//!   the block-region state (a string-literal `/*` opens a region rustc would
+//!   not and then needs a `*/` to pop it; a stray `*/` at depth zero is simply
+//!   ignored). Masking MORE lines is permissive in every direction but ONE:
+//!   [`code_in_window`] SKIPS masked lines, so a spurious region opened on an
+//!   ANCHOR line that swallows the `.with_code(` below it censuses a genuinely
+//!   coded site as code-less — `Diagnostic::error(format!("p {}", "/*"))` with
+//!   its `.with_code(c);` on the next line. That is this list's second
+//!   false-RED route; latent rather than live (no swept file ends at non-zero
+//!   depth, and no masked line in the corpus carries a `.with_code(`), and
+//!   `pdiag:allow` clears it.
+//! - A `.with_code(` sitting in a trailing `//` comment on the anchor line
+//!   itself marks the site coded. Permissive, and vanishingly rare.
+//! - The `* ` block-comment-continuation form also matches a WRAPPED
+//!   ARITHMETIC continuation (`let x = a\n    * b\n    + c;`), so such a line
+//!   is masked as comment-only, so the window budget counts "non-comment
+//!   lines" as this mask defines them and not strictly 15 lines of CODE.
+//!   Permissive in every direction except the one the comment-mask bullet
+//!   names: a masked line consumes no window budget (widening the code probe's
+//!   reach), cannot terminate an escape scan, and hides any anchor of its own
+//!   from the census — but it hides its own `.with_code(` too. Corpus
+//!   incidence is a dated snapshot (`docs/notes/diagnostic-severity-policy.md`
+//!   appendix A) rather than a claim about the current tree; re-measure it
+//!   before re-measuring [`PDIAG_CODE_WINDOW`].
+//! - Brace counting for the `#[cfg(test)]` skip is literal-unaware: an
+//!   unbalanced `{` or `}` inside a string literal or a trailing comment can
+//!   drift the depth counter. The blast radius is bounded to where a skip
+//!   region ends, and the committed baseline is generated by this same
+//!   scanner, so drift on existing code is self-consistent rather than RED.
+//!   A NEW file that trips it has `pdiag:allow` as its escape.
+//!
+//! ## Scope
+//!
+//! `crates/<name>/src/**.rs` and `gui/src-tauri/src/**.rs`, minus
+//! `SCOPE_EXCLUDE_PREFIXES`, minus any `tests/`-segment path / `tests.rs` /
+//! `*_tests.rs` file, minus `#[cfg(test)]` module bodies. INV-SF-6 governs
+//! *emitted* diagnostics; test scaffolding that fabricates a `Diagnostic` to
+//! assert on is out of scope by construction, not by exemption.
+//!
+//! ## Escape hatch
+//!
+//! A trailing `// pdiag:allow — reason` on the anchor line, or below it within
+//! the site's window, suppresses the site. Only the substring `pdiag:allow` is
+//! load-bearing — the reason prose is for humans, exactly as `ptodo:allow`
+//! treats it (`ptodo.rs::line_escaped`). The spelling is fixed by PRD §3
+//! Leg C (`docs/prds/v0_6/eradicate-silent-undef.md:153`) as a deliberate
+//! mirror of `ptodo:allow`. The archetype of a legitimate escape is
+//! `crates/reify-stdlib/src/dfm.rs:174-200`, whose severity-parameterized
+//! `{I,W,E}_DFM_*` message-prefix convention is documented as code-less by
+//! design.
+//!
+//! The escape is **forward-scoped and doubly bounded** — by the window, and by
+//! the next constructor. An escape sitting ABOVE a constructor does not
+//! suppress it, and an escape reaches back only as far as the nearest
+//! constructor above it, so ONE escape covers EXACTLY ONE site and a run of
+//! constructors needs an escape each. Both bounds exist for the same reason: a
+//! reviewed opt-out must never silently cover a site its author did not review.
+//! Without the second bound, adding a code-less constructor within 15
+//! non-comment lines above an existing escape bypassed this hard gate outright
+//! ([`escape_in_window`]).
+//!
+//! "Nearest constructor above" is resolved per ANCHOR, not per line
+//! ([`escaped_anchors`]) — one line can hold two constructors (the real
+//! `if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }` shape), so
+//! a trailing escape covers the right-hand one only and the left-hand one needs
+//! its own. Gating the whole line instead was the same hole by a second route:
+//! a new code-less constructor parked beside a reviewed one was silently
+//! absorbed. Unlike the code probe, the escape probe DOES see
+//! comment-only lines: an escape is a comment by its very nature, so a
+//! `// pdiag:allow` on its own line inside the window is honoured, and an
+//! anchor merely quoted in a comment does not bound anything.
+//!
+//! ## Severity posture
+//!
+//! Unlike PTODO's warn-first Medium lanes, a PDIAG ratchet violation is
+//! **High** and therefore moves the process exit code (`high_severity_exit_code`
+//! in `src/bin/reify-audit.rs`) — that is the hard gate PRD §8 boundary row 8
+//! requires. Under-count and orphan-row verdicts are Medium (exit-neutral), so
+//! an opportunistic fix never turns a diff RED.
+//!
+//! A High summary also names the LINE of every code-less site in the file
+//! ([`format_site_lines`], capped at [`PDIAG_SUMMARY_LINE_CAP`]). The ratchet
+//! compares counts and cannot know which constructor was added, so the list is
+//! the whole file's — intersect it with the diff. The Medium summaries carry
+//! no lines: their remedy is regeneration, not an edit at a site.
+//!
+//! Reference: `docs/prds/v0_6/eradicate-silent-undef.md` §3 Leg C, §6.7-6.8,
+//! §7 "PDIAG baseline", §8 row 8. Remediation recipe for a RED diff:
+//! `docs/notes/diagnostic-severity-policy.md` §3.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+
+/// One `Diagnostic::error(...)` / `Diagnostic::warning(...)` construction site.
+///
+/// `coded` is the detector's whole verdict for the site: a site with
+/// `coded == false` is what the per-file ratchet counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Site {
+    /// 1-based line number of the constructor token.
+    line: usize,
+    /// A `.with_code(` attaches to this constructor.
+    coded: bool,
+}
+
+/// The anchor constructor paths, whitespace-tolerant before the open paren.
+///
+/// `Diagnostic::info` is deliberately absent: INV-SF-6 scopes codes-mandatory
+/// to Warning/Error (see the module header). The `Diagnostic::` qualifier is
+/// part of the token, which is what makes the 37 `ErrorRef::new(..)` sites and
+/// `ErrorRef::with_code` (`crates/reify-ir/src/value.rs`) harmless.
+const ANCHOR_IDENTS: &[&str] = &["Diagnostic::error", "Diagnostic::warning"];
+
+/// The code-attachment probe — the BARE method token, deliberately not
+/// `.with_code(DiagnosticCode::`. Real sites pass a severity-dispatched
+/// variable (`crates/reify-eval/src/compute_targets/fea_diagnostics.rs:53`),
+/// and probing the enum path would miss them and manufacture a false RED.
+const CODE_PROBE: &str = ".with_code(";
+
+/// How many NON-COMMENT lines below a constructor are searched for its
+/// `.with_code(`.
+///
+/// Two facts fix the value, both established by measurement rather than
+/// judgement, and neither of them a claim about the tree as it stands today —
+/// the numbers behind them are a dated snapshot in
+/// `docs/notes/diagnostic-severity-policy.md` appendix A, which also carries
+/// the re-measurement recipe:
+///
+/// 1. 15 is the WIDEST constructor -> `.with_code(` gap in the corpus that
+///    resolves to the site's OWN attachment, so it covers every observed offset
+///    with ZERO headroom. That bound moves: it was 13 when this detector was
+///    written. Counting non-comment lines rather than physical ones means an
+///    interleaved doc block cannot push a real attachment out of reach.
+/// 2. Widening is NOT free. Past 15 the extra reach stops finding own-chain
+///    attachments and starts letting an UNRELATED neighbouring constructor's
+///    `.with_code(` mark a site coded — the imprecision the module header
+///    enumerates — so a wider window silently RETIRES real code-less sites from
+///    the hard gate, whole files included.
+///
+/// So the window trades hard-gate COVERAGE for headroom, and 15 is the largest
+/// value that retires nothing. The residual false-RED risk in the other
+/// direction is handled where it belongs —
+/// `docs/notes/diagnostic-severity-policy.md` §3(a) names the bound and its
+/// remedies, so an author hit by it is not left guessing.
+///
+/// Closing the leak properly (bounding the code probe below, as
+/// [`escape_in_window`] bounds the escape probe above) is what would make
+/// widening safe. It is not a one-line change — the two probes need opposite
+/// bounds, see that function's docs — and is tracked as #5887.
+const PDIAG_CODE_WINDOW: usize = 15;
+
+/// The per-site opt-out token, spelled as a deliberate mirror of PTODO's
+/// `ptodo:allow` (PRD §3 Leg C, `docs/prds/v0_6/eradicate-silent-undef.md:153`).
+const PDIAG_ALLOW: &str = "pdiag:allow";
+
+/// `true` when `line` carries the per-site opt-out.
+///
+/// Mirrors `ptodo.rs::line_escaped` exactly: only the bare [`PDIAG_ALLOW`]
+/// substring is load-bearing and the trailing `— reason` prose is never
+/// parsed. Machine-checking the prose would only teach authors to write
+/// whatever placates the checker; the reason is there for the human reviewing
+/// the diff that introduces the escape.
+fn line_escaped(line: &str) -> bool {
+    line.contains(PDIAG_ALLOW)
+}
+
+/// Per-line comment mask: `mask[i]` is `true` when line `i` is comment-only and
+/// therefore invisible to BOTH anchoring and the `.with_code(` probe.
+///
+/// Line-granular and keyed on the line's first non-whitespace token, which is
+/// what keeps it safe without a lexer: nothing mid-line is ever stripped, so a
+/// `//` or `/*` inside a string literal can never TRUNCATE a real
+/// `.with_code(`. A line is comment-only when it begins inside an unclosed
+/// `/* ... */` region, or its first non-whitespace token is `//` (covering
+/// `///` and `//!`), `/*`, or `* ` (a block-comment continuation — the
+/// trailing space keeps `*out = ...` deref expressions live).
+///
+/// Over-masking is NOT unconditionally safe, though, because
+/// [`code_in_window`] skips masked lines outright: a line this mask wrongly
+/// marks as comment hides its own `.with_code(` from the code probe, so a
+/// coded site is censused as code-less. A string-literal `/*` on an anchor
+/// line reaches exactly that (module header, comment-mask bullet); it is
+/// latent in the corpus today and `pdiag:allow` clears it.
+///
+/// The trailing space does NOT separate a block-comment continuation from a
+/// WRAPPED MULTIPLICATION (`let x = a\n    * b\n    + c;`), which is masked
+/// too — 19 such lines exist in the swept corpus. The effect is permissive
+/// only (see the module header's residual-imprecision list); tightening it
+/// would mean tracking block-comment adjacency, which buys nothing today.
+///
+/// The region state is a DEPTH COUNTER, not a boolean, because Rust block
+/// comments nest: in `/* outer /* inner */ still outer */` the first `*/`
+/// closes only the inner comment. A boolean cleared the region there and
+/// declared the remaining outer-comment lines live code — the UNDER-masking
+/// false RED, and a real defect until this counter closed it: commenting out a
+/// diagnostic-emitting block that already contains a `/* … */` note censused
+/// the commented-out constructor as a real code-less site, a hard-gate High on
+/// a new file. Depth-counting matches rustc's own left-to-right pairing.
+/// [`crate::pdoccover`] tracks the same depth for its (quote-aware, mid-line-
+/// stripping) purposes; sharing one tracker would mean exporting it across
+/// detectors and inheriting a stripping policy this mask deliberately refuses,
+/// so the two stay separate and the divergence is stated here instead.
+fn comment_mask(lines: &[&str]) -> Vec<bool> {
+    let mut mask = Vec::with_capacity(lines.len());
+    let mut depth = 0usize;
+    for line in lines {
+        let started_in_block = depth > 0;
+        // Walk the line for `/*` / `*/` tokens to carry the region state
+        // forward. `//` ends the scan: the rest of the line is a comment, so a
+        // `/*` after it must not open a region.
+        // Byte comparison rather than `&line[i..]` slicing: `/` and `*` are
+        // ASCII and so can never be a UTF-8 continuation byte, which keeps an
+        // em-dash in a comment from panicking on a non-boundary index.
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let pair = (bytes[i], bytes.get(i + 1).copied());
+            if depth > 0 {
+                // Nested opener FIRST: inside a region, `/*` deepens it and
+                // only the matching `*/` pops back out. A stray `*/` at depth
+                // 0 is ignored rather than underflowing.
+                if pair == (b'/', Some(b'*')) {
+                    depth += 1;
+                    i += 2;
+                    continue;
+                }
+                if pair == (b'*', Some(b'/')) {
+                    depth -= 1;
+                    i += 2;
+                    continue;
+                }
+            } else if pair == (b'/', Some(b'*')) {
+                depth = 1;
+                i += 2;
+                continue;
+            } else if pair == (b'/', Some(b'/')) {
+                break;
+            }
+            i += 1;
+        }
+
+        let head = line.trim_start();
+        mask.push(
+            started_in_block
+                || head.starts_with("//")
+                || head.starts_with("/*")
+                || head.starts_with("* ")
+                || head == "*",
+        );
+    }
+    mask
+}
+
+/// Byte offsets of every anchor constructor occurrence in `line`, ascending.
+///
+/// An occurrence counts only when it is a whole identifier at BOTH ends:
+///
+/// - **Right.** The next non-whitespace character after the path is `(` — so
+///   `Diagnostic::error_with_span(` and a bare `Diagnostic::error` used as a
+///   function value are both correctly non-anchors, while the
+///   `Diagnostic::error (msg)` spacing survives (this repo has no rustfmt
+///   gate, see CLAUDE.md § Formatting).
+/// - **Left.** The byte before the match is not `[A-Za-z0-9_]`, so a DIFFERENT
+///   type whose name merely ENDS in `Diagnostic` — `FeaDiagnostic::error(` —
+///   is not an anchor. Without this the type would census as a code-less site
+///   and a new file carrying one would be a `NewFile` High: a false RED over a
+///   constructor INV-SF-6 does not govern. `:` is deliberately NOT a boundary
+///   breaker, so a fully-qualified `reify_core::Diagnostic::error(` still
+///   anchors.
+fn anchor_positions(line: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for ident in ANCHOR_IDENTS {
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find(ident) {
+            let at = from + rel;
+            let after = at + ident.len();
+            // `at` is a char boundary, so byte `at - 1` is either a whole
+            // ASCII char or the tail of a multi-byte one; the latter is not
+            // ASCII-alphanumeric and so reads as a boundary, which is right —
+            // no Rust path segment can end in a non-ASCII identifier char and
+            // then continue into `Diagnostic` without a `_`.
+            let left_boundary = at == 0 || {
+                let prev = line.as_bytes()[at - 1];
+                !prev.is_ascii_alphanumeric() && prev != b'_'
+            };
+            if left_boundary && line[after..].trim_start().starts_with('(') {
+                out.push(at);
+            }
+            from = after;
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Per-file scan: one [`Site`] per anchor occurrence, in source order.
+///
+/// A site is **coded** when `.with_code(` appears at or after the anchor
+/// position on the anchor line, or anywhere on the next [`PDIAG_CODE_WINDOW`]
+/// non-comment lines. Comment lines are invisible to both anchoring and the
+/// probe, and do not consume window budget.
+///
+/// Two suppressions layer on top of that:
+///
+/// - **`#[cfg(test)]` block skip.** A recognised test-only `cfg` attribute
+///   (see [`is_cfg_test_attr`]) arms a *pending* skip; the skip proper starts
+///   at the brace the attributed item opens and ends when brace depth returns
+///   to the level it was armed at, so it is brace-scoped rather than
+///   rest-of-file and nested braces cannot end it early. A pending skip is
+///   CANCELLED by a blockless item (`#[cfg(test)] use crate::x;`) — without
+///   that, the next unrelated brace anywhere below would start a bogus skip
+///   and silently swallow production sites. An unbalanced file simply runs the
+///   suppression to EOF: terminating, and in the permissive direction.
+/// - **`pdiag:allow` escape.** Accounted PER ANCHOR, not per line
+///   ([`escaped_anchors`]): an escape token binds to the nearest anchor at or
+///   before it on its own line, and an escape BELOW the line covers only the
+///   line's LAST anchor — the nearest constructor above it — within the
+///   forward window and before the next constructor
+///   ([`escape_in_window`]). One escape therefore covers exactly one site
+///   even on a line carrying two constructors.
+///
+/// Pure `&str` operations throughout: no `syn`, no `regex`.
+fn scan_file(content: &str) -> Vec<Site> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mask = comment_mask(&lines);
+    // Anchors are derived ONCE per line for the whole file and then threaded
+    // through exactly as the comment mask is. Both consumers need them — this
+    // loop for the sites themselves, `escape_in_window` for its terminator —
+    // and deriving them twice both re-ran `anchor_positions` up to
+    // `PDIAG_CODE_WINDOW` times per site and risked the two anchoring rules
+    // drifting apart. An anchor-free line's `Vec` never allocates.
+    let anchors: Vec<Vec<usize>> = lines.iter().map(|line| anchor_positions(line)).collect();
+    let mut out = Vec::new();
+
+    // `#[cfg(test)]` skip state. `skip_base` holds the brace depth the active
+    // skip was armed at; the skip ends when depth returns to it.
+    let mut depth: usize = 0;
+    let mut skip_base: Option<usize> = None;
+    let mut pending = false;
+
+    for (i, line) in lines.iter().enumerate() {
+        // Comment lines are invisible to anchoring, to the code probe and to
+        // brace bookkeeping alike — but they do NOT clear a pending skip, so
+        // `#[cfg(test)]` / `// note` / `mod tests {` still arms correctly.
+        if mask[i] {
+            continue;
+        }
+
+        if skip_base.is_none() && !pending && is_cfg_test_attr(line.trim_start()) {
+            pending = true;
+        }
+
+        // Resolve a pending skip against THIS line: the first `{` below the
+        // attribute opens the block, a `;` with no brace means the attributed
+        // item has no block at all.
+        if pending {
+            if line.contains('{') {
+                skip_base = Some(depth);
+                pending = false;
+            } else if line.contains(';') {
+                pending = false;
+            }
+        }
+
+        // Evaluated AFTER arming so the `mod tests {` line itself is inside
+        // its own block, and BEFORE the depth update so the closing `}` line
+        // is too.
+        if skip_base.is_none() && !anchors[i].is_empty() {
+            let escaped = escaped_anchors(line, &anchors[i], || {
+                escape_in_window(&lines, &mask, &anchors, i)
+            });
+            for (k, &at) in anchors[i].iter().enumerate() {
+                if escaped[k] {
+                    continue;
+                }
+                // Probe from the anchor rightwards so a `.with_code(`
+                // belonging to an EARLIER constructor on the same line
+                // cannot code a later one.
+                let coded = line[at..].contains(CODE_PROBE) || code_in_window(&lines, &mask, i);
+                out.push(Site { line: i + 1, coded });
+            }
+        }
+
+        // `saturating_sub` is the whole defence against a truncated or
+        // brace-unbalanced file: depth floors at zero instead of underflowing.
+        let (opens, closes) = brace_delta(line);
+        depth = depth.saturating_add(opens).saturating_sub(closes);
+        if skip_base.is_some_and(|base| depth <= base) {
+            skip_base = None;
+        }
+    }
+    out
+}
+
+/// `true` when a `.with_code(` appears on one of the [`PDIAG_CODE_WINDOW`]
+/// non-comment lines below `anchor_line` (a 0-based index into `lines`).
+fn code_in_window(lines: &[&str], mask: &[bool], anchor_line: usize) -> bool {
+    let mut budget = PDIAG_CODE_WINDOW;
+    for (line, is_comment) in lines.iter().zip(mask).skip(anchor_line + 1) {
+        if *is_comment {
+            continue;
+        }
+        if line.contains(CODE_PROBE) {
+            return true;
+        }
+        budget -= 1;
+        if budget == 0 {
+            return false;
+        }
+    }
+    false
+}
+
+/// Which of `line`'s `anchors` (byte offsets, ascending) a `pdiag:allow`
+/// covers.
+///
+/// The escape is accounted PER ANCHOR because the suppression rule is
+/// per-site: one reviewed opt-out covers exactly one constructor. Gating the
+/// whole line — as this did before — meant a single escape suppressed BOTH
+/// sites on the real `if bad { Diagnostic::error(m) } else {
+/// Diagnostic::warning(m) }` shape, so a brand-new code-less constructor
+/// could be parked beside a reviewed one and silently absorbed. Same failure
+/// direction as the backwards leak [`escape_in_window`] closes, reached by a
+/// different route.
+///
+/// Two binding rules, both inherited from the escape's forward scoping:
+///
+/// - An escape token ON the line binds to the nearest anchor at or before it,
+///   so a trailing `// pdiag:allow` covers the LAST constructor on the line
+///   and nothing to its left. A token sitting before every anchor covers
+///   nothing — an escape never reaches forwards, and a line whose FIRST
+///   token is a comment is masked out well before this point anyway.
+/// - An escape BELOW the line (`window`, evaluated lazily because it walks up
+///   to [`PDIAG_CODE_WINDOW`] lines) covers only the line's last anchor: that
+///   is the nearest constructor above it, exactly as
+///   [`escape_in_window`]'s own terminator defines the relationship.
+fn escaped_anchors(line: &str, anchors: &[usize], window: impl FnOnce() -> bool) -> Vec<bool> {
+    let mut covered = vec![false; anchors.len()];
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find(PDIAG_ALLOW) {
+        let at = from + rel;
+        if let Some(k) = anchors.iter().rposition(|&anchor| anchor < at) {
+            covered[k] = true;
+        }
+        from = at + PDIAG_ALLOW.len();
+    }
+    // Only the last anchor can be covered from below, so the window probe is
+    // skipped entirely when that one already carries its own escape.
+    if let Some(last) = covered.last_mut()
+        && !*last
+        && window()
+    {
+        *last = true;
+    }
+    covered
+}
+
+/// `true` when a `pdiag:allow` appears below `anchor_line` (a 0-based index
+/// into `lines`) within BOTH bounds: at most [`PDIAG_CODE_WINDOW`] non-comment
+/// lines down, and no further than the next constructor.
+///
+/// Two deliberate divergences from [`code_in_window`]:
+///
+/// - Comment-only lines are *probed* here (an escape is a comment by nature, so
+///   a standalone `// pdiag:allow` in the window must be honoured) while still
+///   costing no window budget, exactly as they cost none for the code probe.
+/// - The scan TERMINATES at the next non-comment line carrying an anchor, so an
+///   escape reaches back only to the nearest constructor above it — one escape
+///   covers exactly one site. Without it, one reviewed opt-out suppressed every
+///   unescaped constructor within 15 non-comment lines above it, and adding a
+///   code-less site just above an existing escape silently bypassed the
+///   INV-SF-6 hard gate.
+///
+/// Both orderings inside the loop are load-bearing. The anchor check runs
+/// BEFORE [`line_escaped`], so a line carrying both a later anchor and its own
+/// trailing escape terminates the scan instead of leaking that escape upwards
+/// — that lower site's own escape is resolved positionally by
+/// [`escaped_anchors`], on the line itself. And the `!*is_comment` guard
+/// mirrors [`scan_file`]'s own anchoring rule,
+/// so an anchor token merely QUOTED in a comment cannot truncate a legitimate
+/// escape's reach (this module's header quotes `Diagnostic::error(` a dozen
+/// times).
+///
+/// [`code_in_window`] deliberately gets NO such terminator: its failure
+/// direction is opposite. An over-reaching escape silently suppresses a new
+/// site — a hole in the hard gate — while an over-reaching code probe only
+/// mis-marks a site coded, which the module header documents as accepted
+/// permissive imprecision. Terminating the code probe at the next anchor would
+/// also break the real `if {…} else {…}.with_code(code)` severity-dispatch
+/// shape, where the first anchor must reach past the second to the shared
+/// trailing code attachment.
+fn escape_in_window(
+    lines: &[&str],
+    mask: &[bool],
+    anchors: &[Vec<usize>],
+    anchor_line: usize,
+) -> bool {
+    let mut budget = PDIAG_CODE_WINDOW;
+    for j in (anchor_line + 1)..lines.len() {
+        let is_comment = mask[j];
+        if !is_comment && !anchors[j].is_empty() {
+            return false;
+        }
+        if line_escaped(lines[j]) {
+            return true;
+        }
+        if is_comment {
+            continue;
+        }
+        budget -= 1;
+        if budget == 0 {
+            return false;
+        }
+    }
+    false
+}
+
+/// `true` when `trimmed` (a line already `trim_start`ed) is a test-only `cfg`
+/// attribute whose item body this detector suppresses.
+///
+/// Measured against the real corpus — the shapes that carry a bare `test`
+/// predicate are `#[cfg(test)]` (506), `#[cfg(any(test, feature = "…"))]` (72)
+/// and `#[cfg(all(test, …))]` (6). The rule recognises the first two:
+///
+/// - `#[cfg(all(test, …))]` is deliberately NOT recognised. Zero such blocks
+///   in the tree contain a `Diagnostic::{error,warning}` constructor, so
+///   recognising it would buy nothing today, and *under*-skipping is the safe
+///   direction: an unskipped site is merely counted into the baseline.
+/// - ANY attribute containing `not(` MUST never arm the skip — a negated
+///   `test` predicate describes the *production* build, and suppressing that
+///   body would blind the ratchet to exactly the sites INV-SF-6 governs. The
+///   exclusion is an explicit `not(` rejection and NOT a consequence of the
+///   prefix tests, which only reach the leading forms: `#[cfg(not(test))]` and
+///   the tree's real `#[cfg(not(any(test, feature = "test-instrumentation")))]`
+///   fail both prefixes, but `#[cfg(any(not(test), …))]` passes the
+///   `#[cfg(any(` one and presents a bare `test` predicate to
+///   [`has_bare_test_predicate`] — its `(` / `)` neighbours are not predicate
+///   glue. Zero such attributes exist in the corpus today; the rejection
+///   closes the hole before one can open it. Rejecting the whole `not(`-
+///   bearing family is also right on its merits: a body reachable when `test`
+///   is OFF (`any(test, not(feature = "x"))`) is a production body, and
+///   *under*-skipping only ever counts a site into the baseline.
+/// - `#[cfg(feature = "test-fixtures")]` (38) is likewise not recognised: a
+///   feature-gated body can be present in a production build.
+fn is_cfg_test_attr(trimmed: &str) -> bool {
+    if trimmed.contains("not(") {
+        return false;
+    }
+    trimmed.starts_with("#[cfg(test)]")
+        || (trimmed.starts_with("#[cfg(any(") && has_bare_test_predicate(trimmed))
+}
+
+/// `true` when `attr` contains the `test` cfg predicate as a whole token.
+///
+/// The neighbour test is what separates the bare predicate in
+/// `any(test, feature = "test-support")` from the `test` inside the feature
+/// NAME beside it — matching the substring alone would treat every
+/// `feature = "test-*"` gate as test-only.
+fn has_bare_test_predicate(attr: &str) -> bool {
+    let bytes = attr.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = attr[from..].find("test") {
+        let at = from + rel;
+        let end = at + "test".len();
+        let before = at.checked_sub(1).map(|i| bytes[i]);
+        let after = bytes.get(end).copied();
+        if !is_predicate_glue(before) && !is_predicate_glue(after) {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// Bytes that make an adjacent `test` part of a LARGER token: an identifier
+/// character, a `-` (`feature = "test-support"`) or a quote (`feature = "test"`,
+/// a feature name rather than the cfg predicate).
+fn is_predicate_glue(b: Option<u8>) -> bool {
+    matches!(b, Some(c) if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'"')
+}
+
+/// `(opening, closing)` brace counts for one line.
+///
+/// Literal-unaware by design — see the module header's residual-imprecision
+/// note. The counter only ever decides where a `#[cfg(test)]` skip region
+/// ends, so drift cannot escape that bounded blast radius.
+fn brace_delta(line: &str) -> (usize, usize) {
+    let opens = line.bytes().filter(|b| *b == b'{').count();
+    let closes = line.bytes().filter(|b| *b == b'}').count();
+    (opens, closes)
+}
+
+/// Path prefixes exempt from the sweep, mirroring `ptodo.rs`'s
+/// `ALLOWLIST_PREFIXES`, which closes the identical hazard
+/// for the TODO detector.
+const SCOPE_EXCLUDE_PREFIXES: &[&str] = &[
+    // SELF-MATCH. The detector's own crate carries anchor tokens as DATA: this
+    // module's header quotes `Diagnostic::error(` repeatedly, `pdssentinel.rs`
+    // alone carries 10 more in its doc comments, and the `tests/fixtures/`
+    // trees exist to be scanned. Sweeping it would ratchet the tool against
+    // its own documentation — every clarifying comment a future maintainer
+    // adds would turn the merge gate RED.
+    "crates/reify-audit/",
+    // Pure test scaffolding: 28 constructor sites that exist to fabricate a
+    // `Diagnostic` for an assertion. INV-SF-6 governs EMITTED diagnostics, and
+    // this crate emits none — it is out of scope by construction, not by
+    // exemption.
+    "crates/reify-test-support/",
+];
+
+/// `true` when `path` — repo-root-relative, the form [`crate::GitOps::ls_files`]
+/// returns — is production Rust the codes-mandatory ratchet sweeps.
+///
+/// Four independent gates, all plain `str` work (no `walkdir`, no `glob` — see
+/// the module header on why this crate stays dependency-free):
+///
+/// 1. `.rs` extension, anchored at the end of the path.
+/// 2. Under `crates/<name>/src/` or `gui/src-tauri/src/` — the two trees that
+///    emit diagnostics at runtime. A `src/` segment ALONE is not enough
+///    (`tree-sitter-reify/src/parser.c`), and `build.rs` is excluded because a
+///    build script emits nothing a user ever sees.
+/// 3. Not under a [`SCOPE_EXCLUDE_PREFIXES`] entry.
+/// 4. Not a test locus: no `tests` path segment, and the file stem is neither
+///    `tests` nor `*_tests`. The stem rule is load-bearing rather than
+///    belt-and-braces — `crates/reify-eval/src/engine_build/tests.rs` carries
+///    its `#[cfg(test)]` on the `mod tests;` declaration in the PARENT file,
+///    so `scan_file`'s block skip can never see the attribute from inside the
+///    file it governs.
+///
+/// `pub` because the manifest grammar leans on it: [`parse_baseline`] rejects a
+/// row this predicate refuses (no live scan could ever clear it), and the
+/// baseline tests drive that rule directly rather than waiting for a
+/// hand-edited manifest to exhibit it.
+// G-allow: pub for the cross-crate integration test tests/pdiag_baseline.rs, which drives this sweep-scope rule directly; production callers (parse_baseline, live_counts) are same-file, and the orphan audit counts only cross-file call sites
+pub fn is_swept_path(path: &str) -> bool {
+    if !path.ends_with(".rs") {
+        return false;
+    }
+    if SCOPE_EXCLUDE_PREFIXES.iter().any(|p| path.starts_with(p)) {
+        return false;
+    }
+
+    let mut segments = path.split('/');
+    let in_gui = path.starts_with("gui/src-tauri/src/");
+    // `crates/<name>/src/…`: exactly the third segment must be `src`, so
+    // `crates/reify-eval/build.rs` and `crates/reify-eval/tests/…` are out.
+    let in_crate_src = segments.next() == Some("crates")
+        && segments.next().is_some()
+        && segments.next() == Some("src")
+        && segments.next().is_some();
+    if !in_gui && !in_crate_src {
+        return false;
+    }
+
+    let mut parts = path.rsplit('/');
+    let file = parts.next().unwrap_or(path);
+    if parts.any(|segment| segment == "tests") {
+        return false;
+    }
+    let stem = file.strip_suffix(".rs").unwrap_or(file);
+    stem != "tests" && !stem.ends_with("_tests")
+}
+
+/// The remediation doc every High finding cites.
+///
+/// Held in ONE place because three consumers must agree on it: this rendering,
+/// the doc itself, and `tests/infra/test_reify_audit_pdiag.sh`'s grep. A
+/// literal repeated across all three would rot the moment the doc moves.
+const SEVERITY_POLICY_DOC: &str = "docs/notes/diagnostic-severity-policy.md";
+
+/// The baseline manifest, repo-root-relative.
+const BASELINE_PATH: &str = "crates/reify-audit/pdiag-baseline.txt";
+
+/// The SINGLE canonical regenerator every Medium advisory names — hand-editing
+/// the manifest is how a ratchet quietly stops ratcheting.
+const BASELINE_GEN_BIN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen";
+
+/// The `#` preamble every generated manifest carries.
+///
+/// It exists so the three things a reader needs — how to regenerate, where the
+/// policy lives, and the fact that regenerating is not a fix — travel WITH the
+/// file. A manifest found in a diff without them invites exactly the
+/// re-bless-the-regression move the ratchet exists to prevent.
+///
+/// `pub`, and paired with [`render_baseline`], because this text is not
+/// decoration: [`parse_baseline`] treats `#` lines as comments, so a manifest
+/// whose preamble was stripped parses perfectly and ratchets normally while
+/// having lost the entire deterrent. Nothing but a direct byte comparison can
+/// see that, and a test can only make it when the constant is reachable —
+/// which it was not while this lived inside `src/bin/pdiag-baseline-gen.rs`.
+///
+/// The tree-bound rule is spelled out here rather than only in the policy doc
+/// because its reader is an agent mid-landing, looking at this file in a diff:
+/// a regeneration replayed onto another base is stale, and the preamble is the
+/// only place that fact travels with the bytes it invalidates.
+pub const BASELINE_HEADER: &str = "\
+# PDIAG baseline — per-file allowance of code-less Diagnostic::error/warning
+# construction sites (INV-SF-6 diagnostics-carry-codes).
+#
+# GENERATED — do not hand-edit. Regenerate with:
+#   cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \\
+#     > crates/reify-audit/pdiag-baseline.txt
+#
+# Counts may only DECREASE. A row going up, or a new file appearing here, is a
+# hard-gate (High) finding from `reify-audit --pattern PDIAG`.
+#
+# Regenerating is NOT a remediation — it just re-blesses the new sites. If your
+# diff went RED, the three real fixes (attach a DiagnosticCode / take the
+# reviewed `// pdiag:allow — reason` opt-out / fix the sites and shrink the row
+# IN THE SAME COMMIT) are in docs/notes/diagnostic-severity-policy.md §3. The
+# one exception is a pure MOVE or RENAME, where regenerating IS the fix — §3(d).
+#
+# A regeneration is valid for EXACTLY the tree it ran against. Any later
+# rebase, merge, amend or cherry-pick — including one the merge queue performs
+# — is a different tree and invalidates it. Counts below are ABSOLUTE, so a
+# file your branch never touched can drift underneath you. Re-verify on the
+# COMMITTED tree, after the commit and after any such replay:
+#   git status --porcelain    # must be empty
+#   cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . \\
+#     | diff -u crates/reify-audit/pdiag-baseline.txt -
+# An empty diff is the proof; a green captured before the commit is not. See
+# docs/notes/diagnostic-severity-policy.md §3 \"Regeneration is tree-bound\".
+#
+# Format: `<repo-relative-path> <count>`, ascending by path, no zero rows.
+";
+
+/// Parse the baseline manifest into `path -> allowed code-less count`.
+///
+/// Grammar: one `<repo-relative-path> <count>` row per line, strictly ascending
+/// by path, with `#`-comment and blank lines ignored — deliberately the same
+/// two-field comment-stripped shape as
+/// `tests/infra/run-all-classification.manifest`, so the format is already
+/// familiar in-repo.
+///
+/// Every rejection below closes a way the ratchet could quietly stop
+/// ratcheting, so all of them are hard errors rather than skipped rows:
+///
+/// - **count `0` or non-numeric.** A clean file has NO row; a `0` row would be
+///   a second spelling of the same state and would make an orphan-row
+///   advisory unrepresentable.
+/// - **a path outside [`is_swept_path`].** The live scan can never produce it,
+///   so it would sit in the manifest forever as a permanent advisory. Failing
+///   at parse time is how a scope narrowing gets noticed instead of
+///   accumulating.
+/// - **a duplicate path.** Silent last-wins would let a bad merge double a
+///   file's allowance. Checked BEFORE the ordering rule: strict ascension
+///   already rejects any repeat (an adjacent one as `path <= previous`, a
+///   non-adjacent one because it cannot be ascending either), so testing it
+///   afterwards left the specific message unreachable and the rule pinned only
+///   by accident.
+/// - **rows out of order.** Sorted order is what keeps a regenerated
+///   baseline's diff down to the lines that actually changed. The `<=` is
+///   deliberately kept rather than narrowed to `<` now that duplicates are
+///   caught above it: it is what makes the ordering rule self-sufficient if the
+///   duplicate check is ever moved or dropped.
+///
+/// The error string names the offending line number — this is read by whoever
+/// just broke the build, not by a parser.
+///
+/// `pub` so `tests/pdiag_baseline.rs` can drive every rule above over synthetic
+/// content. Without that, the grammar would only ever be exercised by whatever
+/// rows the committed manifest happens to hold — and would go quietly inert as
+/// the backlog is migrated toward an empty file.
+pub fn parse_baseline(content: &str) -> Result<BTreeMap<String, u32>, String> {
+    let mut out: BTreeMap<String, u32> = BTreeMap::new();
+    let mut previous: Option<&str> = None;
+
+    for (index, raw) in content.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let number = index + 1;
+
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [path, count] = fields[..] else {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: expected `<path> <count>`, found {} field(s): {line:?}",
+                fields.len()
+            ));
+        };
+
+        let count: u32 = count
+            .parse()
+            .map_err(|_| format!("{BASELINE_PATH}:{number}: count {count:?} is not a number"))?;
+        if count == 0 {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: count 0 is not a row — delete the line for {path}"
+            ));
+        }
+        if !is_swept_path(path) {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: {path} is outside the PDIAG sweep, so no live scan can \
+                 ever clear it — delete the row and regenerate with `{BASELINE_GEN_BIN}`"
+            ));
+        }
+        if out.contains_key(path) {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: duplicate row for {path} — one row per file; \
+                 regenerate with `{BASELINE_GEN_BIN}`"
+            ));
+        }
+        if previous.is_some_and(|last| path <= last) {
+            return Err(format!(
+                "{BASELINE_PATH}:{number}: {path} is out of ascending order (after {}) — \
+                 regenerate with `{BASELINE_GEN_BIN}`",
+                previous.unwrap_or_default()
+            ));
+        }
+        out.insert(path.to_string(), count);
+        previous = Some(path);
+    }
+    Ok(out)
+}
+
+/// One per-file outcome of comparing the live scan against the baseline.
+///
+/// Split four ways rather than into a single "differs" verdict because the two
+/// halves have opposite severities: the ratchet direction gates the merge,
+/// while the slack direction is a housekeeping advisory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RatchetVerdict {
+    /// More code-less sites than the baseline allows. The ratchet violation.
+    Exceeded { path: String, live: u32, baseline: u32 },
+    /// A file with code-less sites and no baseline row at all — new code,
+    /// which is exactly what enforcement is for (PRD §6 decision 3 leaves the
+    /// existing backlog to opportunistic migration).
+    NewFile { path: String, live: u32 },
+    /// Fewer sites than the baseline allows: someone fixed some. Advisory.
+    Stale { path: String, live: u32, baseline: u32 },
+    /// A baseline row whose file now has no code-less sites — fully fixed,
+    /// renamed or deleted. Advisory.
+    OrphanRow { path: String, baseline: u32 },
+}
+
+/// How many site line numbers a High summary spells out before eliding the
+/// tail.
+///
+/// A `NewFile` verdict on a big file can carry a hundred sites, and an
+/// `Exceeded` names EVERY code-less site in the file rather than only the new
+/// ones (the detector compares counts, so it cannot know which constructor was
+/// added). A dozen is enough to intersect against a diff by eye; past that the
+/// list stops being a hint and becomes a wall. The elision says how many were
+/// dropped so the number in the summary and the number of lines listed never
+/// silently disagree.
+const PDIAG_SUMMARY_LINE_CAP: usize = 12;
+
+/// ` at line 118` / ` at lines 118, 204, 511` / ` at lines … (+7 more)` — the
+/// clause a High summary appends after its site count. Empty for an empty
+/// slice, so a verdict with no census entry renders exactly as it did before
+/// lines were threaded through.
+fn format_site_lines(lines: &[usize]) -> String {
+    match lines {
+        [] => String::new(),
+        [one] => format!(" at line {one}"),
+        _ => {
+            let shown: Vec<String> =
+                lines.iter().take(PDIAG_SUMMARY_LINE_CAP).map(usize::to_string).collect();
+            let elided = lines.len().saturating_sub(shown.len());
+            let more = if elided > 0 { format!(" (+{elided} more)") } else { String::new() };
+            format!(" at lines {}{more}", shown.join(", "))
+        }
+    }
+}
+
+impl RatchetVerdict {
+    /// The file this verdict is about.
+    fn path(&self) -> &str {
+        match self {
+            Self::Exceeded { path, .. }
+            | Self::NewFile { path, .. }
+            | Self::Stale { path, .. }
+            | Self::OrphanRow { path, .. } => path,
+        }
+    }
+
+    /// High == hard gate. The CLI's exit code IS the count of High findings
+    /// (`high_severity_exit_code`, `src/bin/reify-audit.rs`), so High is the
+    /// only lever that can turn a diff RED — which is why the two slack
+    /// verdicts are deliberately Medium. A High under-count would make every
+    /// opportunistic fix and every file deletion merge-blocking.
+    fn severity(&self) -> Severity {
+        match self {
+            Self::Exceeded { .. } | Self::NewFile { .. } => Severity::High,
+            Self::Stale { .. } | Self::OrphanRow { .. } => Severity::Medium,
+        }
+    }
+
+    /// Render to a [`Finding`]. High summaries carry both site remediations
+    /// (attach a code, or take the reviewed opt-out) and Medium summaries the
+    /// exact regeneration command, so no finding is a dead end. `NewFile` adds
+    /// the third: a moved or renamed file has no site to edit — every one of
+    /// its sites predates the move — and regeneration is the sanctioned fix
+    /// there, which is the one case where a High is answered that way.
+    ///
+    /// `lines` is the census's list of code-less site lines for this verdict's
+    /// path ([`Census::sites`]), spelled into the two High summaries by
+    /// [`format_site_lines`]. The Medium summaries ignore it: their remedy is
+    /// regeneration, not an edit at a site. An empty slice renders nothing, so
+    /// an `OrphanRow` — which by construction has no census entry — is
+    /// unchanged.
+    fn into_finding(self, lines: &[usize]) -> Finding {
+        let severity = self.severity();
+        let path = self.path().to_string();
+        let at = format_site_lines(lines);
+        let summary = match &self {
+            Self::Exceeded { path, live, baseline } => format!(
+                "pdiag-ratchet: {path} has {live} code-less Diagnostic::error/warning site(s){at}, \
+                 baseline allows {baseline} — attach a DiagnosticCode (see {SEVERITY_POLICY_DOC}) \
+                 or add a trailing `// {PDIAG_ALLOW} — reason`"
+            ),
+            Self::NewFile { path, live } => format!(
+                "pdiag-ratchet: {path} is new to the baseline and has {live} code-less \
+                 Diagnostic::error/warning site(s){at} — attach a DiagnosticCode (see \
+                 {SEVERITY_POLICY_DOC}) or add a trailing `// {PDIAG_ALLOW} — reason`; \
+                 if this file was MOVED or RENAMED, regenerate instead \
+                 ({SEVERITY_POLICY_DOC} §3(d))"
+            ),
+            Self::Stale { path, live, baseline } => format!(
+                "pdiag-baseline-stale: {path} is down to {live} code-less site(s) from a baseline \
+                 of {baseline} — exit-neutral; tighten the ratchet with `{BASELINE_GEN_BIN}`"
+            ),
+            Self::OrphanRow { path, baseline } => format!(
+                "pdiag-baseline-stale: {path} has no code-less sites left but still holds a \
+                 baseline row allowing {baseline} — exit-neutral; drop the row with \
+                 `{BASELINE_GEN_BIN}`"
+            ),
+        };
+        Finding {
+            pattern: Pattern::PDiag,
+            severity,
+            // Structural detectors key `task_id` by path (`ptodo.rs::check`) —
+            // there is no task to attribute a source-shape finding to.
+            task_id: path.clone(),
+            summary,
+            evidence: vec![EvidenceRef::File { path }],
+        }
+    }
+}
+
+/// Compare the live per-file code-less counts against the baseline.
+///
+/// `live` carries ONLY files with at least one code-less site, so a file
+/// absent from both maps is the (overwhelmingly common) clean steady state and
+/// produces nothing. Verdicts come out in path order across all four kinds,
+/// which is what makes the CLI's output and the infra gate's assertions stable
+/// run to run.
+fn ratchet(
+    live: &BTreeMap<String, u32>,
+    baseline: &BTreeMap<String, u32>,
+) -> Vec<RatchetVerdict> {
+    let paths: BTreeSet<&String> = live.keys().chain(baseline.keys()).collect();
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let path = path.clone();
+            match (live.get(&path).copied(), baseline.get(&path).copied()) {
+                (Some(live), Some(baseline)) if live > baseline => {
+                    Some(RatchetVerdict::Exceeded { path, live, baseline })
+                }
+                (Some(live), Some(baseline)) if live < baseline => {
+                    Some(RatchetVerdict::Stale { path, live, baseline })
+                }
+                (Some(_), Some(_)) => None,
+                (Some(live), None) => Some(RatchetVerdict::NewFile { path, live }),
+                (None, Some(baseline)) => Some(RatchetVerdict::OrphanRow { path, baseline }),
+                (None, None) => None,
+            }
+        })
+        .collect()
+}
+
+/// The finding a manifest that will not parse produces.
+///
+/// High, and returned INSTEAD of the ratchet's verdicts: a baseline the
+/// detector cannot read is not a baseline that "allows everything". Silently
+/// falling back to a permissive comparison is precisely the vacuous-pass
+/// failure mode `scripts/check-infra-classification-manifest.sh` was written
+/// to forbid, so the corrupt manifest is itself the finding.
+fn malformed_baseline_finding(err: &str) -> Finding {
+    Finding {
+        pattern: Pattern::PDiag,
+        severity: Severity::High,
+        // Path-keyed like every other PDIAG finding (`ptodo.rs::check`).
+        task_id: BASELINE_PATH.to_string(),
+        summary: format!(
+            "pdiag-baseline-unreadable: {BASELINE_PATH} does not parse — {err}. The ratchet \
+             cannot run against a manifest it cannot read, so this is a hard gate rather \
+             than a silent pass; regenerate with `{BASELINE_GEN_BIN}`"
+        ),
+        evidence: vec![EvidenceRef::File { path: BASELINE_PATH.to_string() }],
+    }
+}
+
+/// The finding a DEGENERATE census produces — the enumeration reached zero
+/// swept files while the manifest still holds rows.
+///
+/// High, and returned INSTEAD of the ratchet's verdicts, for the same reason
+/// [`malformed_baseline_finding`] is: the ratchet has two inputs, and losing
+/// either one must fail loud rather than resolve to a permissive comparison.
+/// [`crate::RealGitOps::ls_files`] degrades to an empty list on ANY git failure
+/// — spawn error, non-zero exit, non-UTF-8 output — so without this branch a
+/// PDIAG run outside a worktree (or against a broken `git`) would report every
+/// committed row as an exit-neutral Medium `OrphanRow` advisory and exit 0.
+/// That is an all-clear from a run that scanned nothing, which is precisely the
+/// vacuous pass the baseline branch exists to prevent.
+///
+/// Deliberately NOT fired when the baseline is empty too: a hermetic fixture
+/// tree that legitimately tracks nothing has no rows to orphan and nothing to
+/// be wrong about, and a false RED there would be its own kind of noise.
+fn empty_census_finding(rows: usize) -> Finding {
+    Finding {
+        pattern: Pattern::PDiag,
+        severity: Severity::High,
+        // Path-keyed like every other PDIAG finding — the manifest is the
+        // artifact whose enforcement just became unverifiable.
+        task_id: BASELINE_PATH.to_string(),
+        summary: format!(
+            "pdiag-census-empty: git enumeration returned no swept files, yet {BASELINE_PATH} \
+             holds {rows} row(s). The ratchet cannot compare a manifest against a census it \
+             never took, so this is a hard gate rather than {rows} silent orphan-row \
+             advisories and a clean exit. Check that the run is inside the git worktree and \
+             that `git ls-files` succeeds there; regenerate with `{BASELINE_GEN_BIN}` only \
+             once enumeration works again"
+        ),
+        evidence: vec![EvidenceRef::File { path: BASELINE_PATH.to_string() }],
+    }
+}
+
+/// Census the working tree: `swept path -> code-less site count`, for every
+/// tracked file with at least one.
+///
+/// This is the detector's ONE derivation of "how much code-less diagnostic
+/// debt does each file carry", shared by both consumers: [`check`] diffs it
+/// against the committed manifest, and `src/bin/pdiag-baseline-gen.rs` renders
+/// it verbatim as that manifest. Keeping generation and enforcement on the same
+/// scan is what makes a regenerated baseline necessarily agreeable to the
+/// ratchet that checks it — the PRD §6.6 invariant, mirroring how
+/// `ptodo-baseline-gen` calls `ptodo::fingerprint` rather than re-deriving.
+///
+/// The generator cannot be built on [`check`] instead: a file sitting exactly
+/// at its baseline row produces no finding at all, and the four verdict
+/// variants carry deltas rather than absolute counts. Hence the seam.
+///
+/// Two properties the manifest grammar depends on:
+///
+/// - Files with **zero** code-less sites are OMITTED, never stored as `0`.
+///   [`ratchet`] reads presence here as "has a backlog", and [`parse_baseline`]
+///   rejects a `0` row outright — a clean file has no row.
+/// - An unreadable source file (absent from the working tree, non-UTF-8) is
+///   skipped, contributing nothing. `ls_files()` and the tree can legitimately
+///   disagree mid-rebase, and inventing a count there would be a false RED
+///   (`ptodo.rs::check`'s `read_to_string` arm takes the same line).
+///
+/// Deliberately blind to the manifest: the census must be reconstructible from
+/// the tree alone, or the generator could never regenerate from scratch.
+///
+/// The count-only face of [`census_summary`], which is what the generator now
+/// calls: it needs the swept-file total as well, to refuse rather than render
+/// over the manifest when the enumeration comes back empty.
+// G-allow: the census seam's count-only face — consumed by tests/pdiag_baseline.rs (seam + on-demand byte-identity checks) and pdiag::test_support::Fixture::counts; the generator takes census_summary, whose swept total its degenerate-census refusal needs
+pub fn live_counts(ctx: &AuditContext) -> BTreeMap<String, u32> {
+    census_summary(ctx).1
+}
+
+/// [`live_counts`], plus the number of swept files the enumeration actually
+/// reached — the fact that tells "the tree is clean" apart from "the census
+/// never happened".
+///
+/// Exists because BOTH halves of the ratchet have to fail loud on a vanished
+/// census, not just [`check`]. [`crate::RealGitOps::ls_files`] degrades to
+/// `vec![]` on any git failure, and the generator's documented recipe redirects
+/// stdout straight over the committed manifest
+/// (`… > crates/reify-audit/pdiag-baseline.txt`) — so a run outside the
+/// worktree, with a mistyped `--project-root`, or against a broken `git` would
+/// otherwise render a header-only file over the ratchet's own manifest and exit
+/// 0. `src/bin/pdiag-baseline-gen.rs` refuses on `swept == 0` for exactly the
+/// reason [`empty_census_finding`] is a High rather than a pile of orphan-row
+/// advisories.
+///
+/// The count is swept files, not counted ones: a tree whose every diagnostic
+/// already carries a code is clean and yields an empty map with a non-zero
+/// sweep, which is a legitimate manifest (the end state the ratchet is aimed
+/// at) and must stay writable.
+pub fn census_summary(ctx: &AuditContext) -> (usize, BTreeMap<String, u32>) {
+    let Census { swept, sites } = census(ctx);
+    (swept, counts_of(&sites))
+}
+
+/// Render a census as the manifest's bytes: [`BASELINE_HEADER`], then one
+/// `<path> <count>` row per entry, ascending by path.
+///
+/// The rendering half of the same one-derivation posture [`live_counts`] gives
+/// the census. `src/bin/pdiag-baseline-gen.rs` is now literally
+/// `print!("{}", render_baseline(&live_counts(&ctx)))`, so the bytes the
+/// generator writes, the bytes the round-trip test round-trips, and the bytes
+/// the idempotency check compares against the committed file all come from
+/// here. A format change cannot land in one and not the others.
+///
+/// Ascending order is inherited from `BTreeMap`'s iteration rather than
+/// imposed by a sort — which is also the order [`parse_baseline`] requires, so
+/// the two are the same fact stated once. Files with zero code-less sites carry
+/// no entry and therefore no row: a clean file's ABSENCE is the only spelling
+/// of clean, and `parse_baseline` rejects a `0` row outright.
+///
+/// Emits the preamble even for an EMPTY census — the end state the ratchet is
+/// aimed at. A zero-row manifest is exactly when a reader most needs to be told
+/// not to hand-edit it.
+pub fn render_baseline(counts: &BTreeMap<String, u32>) -> String {
+    let mut out = String::from(BASELINE_HEADER);
+    for (path, count) in counts {
+        out.push_str(&format!("{path} {count}\n"));
+    }
+    out
+}
+
+/// One census pass: the per-file code-less SITE LINES, plus how many swept
+/// files the enumeration actually reached.
+struct Census {
+    /// Swept paths `ls_files()` yielded — INCLUDING clean ones, which
+    /// contribute no `sites` entry. Zero here means the enumeration itself
+    /// came back empty, which is a different fact from "the tree is clean";
+    /// [`check`] is the consumer that has to tell those two apart.
+    swept: usize,
+    /// `swept path -> 1-based line of each code-less site`, ascending, files
+    /// with zero sites omitted.
+    ///
+    /// Lines rather than a bare count because [`scan_file`] already computes
+    /// them and a High finding that names only a count makes the author
+    /// re-derive by hand which constructor the scanner considered code-less —
+    /// a non-trivial exercise given the [`PDIAG_CODE_WINDOW`] window, the
+    /// comment mask and the per-anchor escape binding. The manifest grammar is
+    /// unchanged: the count is `.len()` ([`counts_of`]).
+    sites: BTreeMap<String, Vec<usize>>,
+}
+
+/// The per-file counts a census renders into the manifest: `sites.len()` per
+/// entry.
+///
+/// The ONE place the line list collapses to the manifest's `u32`, so
+/// [`live_counts`], [`census_summary`] and [`check`]'s ratchet input can never
+/// disagree about what a row means.
+fn counts_of(sites: &BTreeMap<String, Vec<usize>>) -> BTreeMap<String, u32> {
+    sites.iter().map(|(path, lines)| (path.clone(), lines.len() as u32)).collect()
+}
+
+/// The single working-tree pass behind BOTH [`live_counts`] and [`check`].
+///
+/// Split out purely so `check` can see `swept` without a second `ls_files()`
+/// call — [`crate::RealGitOps`] shells out to `git` per call, and two
+/// enumerations could disagree with each other mid-rebase, which would be a
+/// worse foundation for a hard gate than one possibly-stale answer.
+fn census(ctx: &AuditContext) -> Census {
+    let mut swept = 0usize;
+    let mut sites: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for path in ctx.git.ls_files() {
+        if !is_swept_path(&path) {
+            continue;
+        }
+        swept += 1;
+        let content = match std::fs::read_to_string(ctx.project_root.join(&path)) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+        // Source order, which `scan_file` already guarantees — the order a
+        // reader will walk the file in.
+        let codeless: Vec<usize> =
+            scan_file(&content).iter().filter(|site| !site.coded).map(|site| site.line).collect();
+        if !codeless.is_empty() {
+            sites.insert(path, codeless);
+        }
+    }
+    Census { swept, sites }
+}
+
+/// PDIAG entry point — see the module header for the heuristic and scope.
+///
+/// Purely structural: censuses the tree through [`live_counts`] (the
+/// `ls_files()` git seam plus working-tree reads) and diffs it against the
+/// committed manifest. Never touches jcodemunch or the task DB (the posture
+/// `pdssentinel.rs` documents). That is what keeps the detector's verdict a
+/// function of the tree alone.
+///
+/// The IO fail-safes are *permissive on individual inputs, loud whenever a
+/// whole side of the comparison goes missing*:
+///
+/// - An unreadable **source** file (absent from the working tree, non-UTF-8)
+///   is skipped, contributing no count — see [`live_counts`], which owns that
+///   half. One file is not the census.
+/// - An unreadable **baseline** is an EMPTY baseline, so every code-less file
+///   surfaces as a `NewFile` High. The inverse convention — treat a missing
+///   manifest as "nothing to check" — is the vacuous pass this gate exists to
+///   prevent. A baseline that will not PARSE is a High of its own
+///   ([`malformed_baseline_finding`]).
+/// - An **empty census** against a populated manifest is a High of its own
+///   ([`empty_census_finding`]) rather than a pile of orphan-row advisories:
+///   `ls_files()` fails soft to `vec![]`, and the ratchet reads that as "every
+///   baselined file was deleted" — an exit-0 all-clear from a run that scanned
+///   nothing. Symmetry matters here: BOTH inputs to the ratchet now fail loud
+///   when they vanish wholesale, so a green PDIAG means the detector looked.
+pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    let Census { swept, sites } = census(ctx);
+    let live = counts_of(&sites);
+
+    // Resolved under `ctx.project_root`, never `CARGO_MANIFEST_DIR`, so the
+    // CLI-level fixture trees can point the whole detector at a tempdir —
+    // exactly how ptodo resolves its task DB.
+    let baseline = match std::fs::read_to_string(ctx.project_root.join(BASELINE_PATH)) {
+        Ok(content) => match parse_baseline(&content) {
+            Ok(baseline) => baseline,
+            Err(err) => return vec![malformed_baseline_finding(&err)],
+        },
+        Err(_) => BTreeMap::new(),
+    };
+
+    // Guard on the ENUMERATION, not on `live`: a tree whose every diagnostic
+    // already carries a code is clean, has an empty `live`, and must stay
+    // green. Only `swept == 0` — nothing to scan at all — is degenerate.
+    if swept == 0 && !baseline.is_empty() {
+        return vec![empty_census_finding(baseline.len())];
+    }
+
+    // The census's line lists are carried through to rendering so a High names
+    // WHERE the code-less constructors are, not just how many there are. A
+    // verdict whose path has no census entry (`OrphanRow`, by construction) gets
+    // an empty slice and renders exactly as before.
+    ratchet(&live, &baseline)
+        .into_iter()
+        .map(|verdict| {
+            let lines = sites.get(verdict.path()).map_or(&[][..], Vec::as_slice);
+            verdict.into_finding(lines)
+        })
+        .collect()
+}
+
+// -----------------------------------------------------------------------
+// Test support — the ONE PDIAG fixture, shared by both suites
+// -----------------------------------------------------------------------
+
+/// The tempdir-backed [`check`]/[`live_counts`] fixture.
+///
+/// Shared by this module's unit tests and `tests/pdiag_baseline.rs`, which
+/// previously carried near-identical copies — including the nine-field
+/// [`AuditContext`] literal, which had to be edited in both places whenever
+/// the context gained a field.
+///
+/// Gated behind `feature = "test-support"` exactly like [`crate::MockGitOps`],
+/// which the crate self-pulls in its own `[dev-dependencies]` so integration
+/// tests see it.
+///
+/// The fixture BORROWS its root rather than owning a `tempfile::TempDir`:
+/// `tempfile` is a dev-dependency, and a `feature = "test-support"` item in the
+/// library is compiled as an ordinary dependency (where dev-deps are not in
+/// scope) when an integration test pulls the crate in. Each caller therefore
+/// owns the tempdir and passes `tmp.path()`. That is also why the fixture reads
+/// real files: the enumeration seam is `ls_files()`, but content comes from the
+/// working tree (the `ptodo.rs::check` posture), so the missing-file and non-UTF-8
+/// fail-safe branches stay reachable rather than mocked away.
+#[cfg(any(test, feature = "test-support"))]
+// G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+pub mod test_support {
+    use super::{BASELINE_PATH, census_summary, check, live_counts};
+    use crate::{AuditContext, Finding, MockGitOps, MockJCodemunchOps, Severity};
+    use rusqlite::Connection;
+    use std::collections::{BTreeMap, HashMap};
+    use std::path::Path;
+
+    /// A working tree at `root` plus the exact set of paths `ls_files()` reports.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub struct Fixture<'a> {
+        root: &'a Path,
+        tracked: Vec<String>,
+    }
+
+    impl<'a> Fixture<'a> {
+        /// Empty tree at `root` — caller owns the `tempfile::TempDir`.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn new(root: &'a Path) -> Self {
+            Self { root, tracked: Vec::new() }
+        }
+
+        /// The tree root, for tests that assert on the tree itself.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn root(&self) -> &Path {
+            self.root
+        }
+
+        /// Write `content` at `path` and track it.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn write(&mut self, path: &str, content: &str) -> &mut Self {
+            self.write_bytes(path, content.as_bytes())
+        }
+
+        /// Write raw `bytes` at `path` and track it — the non-UTF-8 lane.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn write_bytes(&mut self, path: &str, bytes: &[u8]) -> &mut Self {
+            self.put(path, bytes);
+            self.tracked.push(path.to_string());
+            self
+        }
+
+        /// Write `content` at `path` WITHOUT tracking it — a data file the
+        /// census must be blind to (a planted manifest, a stray artifact).
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn write_untracked(&mut self, path: &str, content: &str) -> &mut Self {
+            self.put(path, content.as_bytes());
+            self
+        }
+
+        /// Track a path WITHOUT creating it — the `ls_files`/working-tree skew
+        /// a mid-rebase or just-deleted file produces.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn track_only(&mut self, path: &str) -> &mut Self {
+            self.tracked.push(path.to_string());
+            self
+        }
+
+        /// Plant the baseline manifest at its canonical in-tree location. Not
+        /// tracked: the manifest is data, never a swept source file.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn baseline(&mut self, content: &str) -> &mut Self {
+            self.write_untracked(BASELINE_PATH, content)
+        }
+
+        /// [`live_counts`] over this tree — the generator's census seam.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn counts(&self) -> BTreeMap<String, u32> {
+            self.with_ctx(live_counts)
+        }
+
+        /// [`census_summary`] over this tree — [`counts`](Self::counts) plus the
+        /// swept-file total the generator's degenerate-census refusal keys on.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn summary(&self) -> (usize, BTreeMap<String, u32>) {
+            self.with_ctx(census_summary)
+        }
+
+        /// [`check`] over this tree — the detector end to end.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn run(&self) -> Vec<Finding> {
+            self.with_ctx(check)
+        }
+
+        /// `(task_id, severity)` per finding, in emission order.
+        // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+        pub fn keys(&self) -> Vec<(String, Severity)> {
+            self.run().into_iter().map(|f| (f.task_id, f.severity)).collect()
+        }
+
+        fn put(&self, path: &str, bytes: &[u8]) {
+            let full = self.root.join(path);
+            std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&full, bytes).expect("write");
+        }
+
+        /// The nine-field `AuditContext` literal, spelled ONCE. Everything
+        /// except `project_root` and `git` is inert for PDIAG — the detector is
+        /// purely structural and never reads the DB or the jcodemunch seam.
+        fn with_ctx<R>(&self, f: impl FnOnce(&AuditContext) -> R) -> R {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            let jc = MockJCodemunchOps::new();
+            let mut git = MockGitOps::new();
+            git.set_ls_files(self.tracked.clone());
+            let ctx = AuditContext {
+                project_root: self.root.to_path_buf(),
+                conn: &conn,
+                git: &git,
+                jcodemunch: &jc,
+                task_metadata: HashMap::new(),
+                target_task_id: None,
+                window: None,
+                now: None,
+                producer_branch: None,
+            };
+            f(&ctx)
+        }
+    }
+
+    /// `n` code-less constructor sites, one per line — the dominant real shape
+    /// (`crates/reify-eval/src/geometry_ops.rs`).
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn codeless_src(n: usize) -> String {
+        (0..n).map(|i| format!("    out.push(Diagnostic::error(format!(\"boom {i}\")));\n")).collect()
+    }
+
+    /// `n` sites that each carry a code on the same line.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn coded_src(n: usize) -> String {
+        (0..n)
+            .map(|i| {
+                format!("    out.push(Diagnostic::error(format!(\"boom {i}\")).with_code(code));\n")
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{Fixture, codeless_src};
+    use super::*;
+
+    /// Terse view of a scan: one `(line, coded)` pair per site, in scan order.
+    fn sites(content: &str) -> Vec<(usize, bool)> {
+        scan_file(content).into_iter().map(|s| (s.line, s.coded)).collect()
+    }
+
+    /// `Vec<(usize, bool)>`-typed empty expectation (inference needs the hint).
+    fn none() -> Vec<(usize, bool)> {
+        Vec::new()
+    }
+
+    /// Join `lines` into a file body. Window-offset arithmetic stays legible
+    /// when each source line is its own array element.
+    fn file(lines: &[&str]) -> String {
+        lines.join("\n")
+    }
+
+    /// A constructor followed by `n - 1` filler chain lines and then a
+    /// `.with_code(` — i.e. the code lands exactly `n` lines below the anchor.
+    fn with_code_at_offset(n: usize) -> Vec<(usize, bool)> {
+        let mut lines = vec!["    let d = Diagnostic::error(msg)".to_string()];
+        lines.extend((1..n).map(|_| "        .with_label(l)".to_string()));
+        lines.push("        .with_code(c);".to_string());
+        let body = lines.join("\n");
+        sites(&body)
+    }
+
+    // -- single-line core -------------------------------------------------
+
+    #[test]
+    fn single_line_codeless_push_is_one_uncoded_site() {
+        // Real shape: crates/reify-eval/src/geometry_ops.rs.
+        let src = "        diagnostics.push(Diagnostic::warning(rej.message(&x, name)));";
+        assert_eq!(sites(src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn same_line_with_code_is_coded() {
+        // Real shape: crates/reify-eval/src/dispatcher.rs:376.
+        let src = "    Diagnostic::error(message).with_code(DiagnosticCode::PinnedKernelMissing)";
+        assert_eq!(sites(src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn with_code_probe_is_the_bare_token_not_the_enum_path() {
+        // `crates/reify-eval/src/compute_targets/fea_diagnostics.rs:53` passes a
+        // severity-dispatched *variable*, so probing `.with_code(DiagnosticCode::`
+        // would miss it and manufacture a false RED — the worst failure mode for
+        // a merge gate. The probe is deliberately the bare `.with_code(` token.
+        let src = "    Diagnostic::error(msg).with_code(code)";
+        assert_eq!(sites(src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn info_constructor_is_not_an_anchor() {
+        // INV-SF-6 scopes codes-mandatory to Warning/Error; `Info` is the debug
+        // tier (`DiagnosticCode::HexWedgeForceTet`'s doc in
+        // crates/reify-core/src/diagnostics.rs) and is not
+        // code-mandatory, so it yields no site at all.
+        let src = "    let d = Diagnostic::info(msg);";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn two_constructors_on_one_line_are_two_sites() {
+        let src = "    let d = if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) };";
+        assert_eq!(sites(src), vec![(1, false), (1, false)]);
+    }
+
+    #[test]
+    fn error_ref_receiver_is_not_an_anchor() {
+        // `ErrorRef::with_code` (crates/reify-ir/src/value.rs:4387) is a
+        // different receiver; anchoring on the `Diagnostic::` ctor token makes
+        // the 37 `ErrorRef::new` sites harmless.
+        let src = "    ErrorRef::new(span, msg).with_code(DiagnosticCode::Foo)";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn a_type_whose_name_ends_in_diagnostic_is_not_an_anchor() {
+        // The left word boundary in `anchor_positions`. Without it any type
+        // ending in `Diagnostic` censuses as a code-less site, and a new file
+        // introducing one goes RED as a `NewFile` High over a constructor
+        // INV-SF-6 does not govern.
+        let src = "    out.push(FeaDiagnostic::error(msg));";
+        assert_eq!(sites(src), none());
+        let src = "    out.push(ShellDiagnostic::warning(msg));";
+        assert_eq!(sites(src), none());
+        let src = "    out.push(my_diagnostic::error(msg));";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn a_fully_qualified_path_still_anchors() {
+        // `:` is not a boundary breaker — the module qualifier in front of the
+        // type must keep anchoring, or the boundary check above would trade
+        // one false RED for a hole in the gate.
+        let src = "    reify_core::Diagnostic::error(msg)";
+        assert_eq!(sites(src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn whitespace_between_ident_and_paren_still_anchors() {
+        // rustfmt is not a gate in this repo (see CLAUDE.md § Formatting), so
+        // the anchor match tolerates whitespace before the open paren.
+        let src = "    Diagnostic::error (msg)";
+        assert_eq!(sites(src), vec![(1, false)]);
+    }
+
+    // -- bounded forward window -------------------------------------------
+
+    #[test]
+    fn multi_line_format_without_code_is_one_uncoded_site() {
+        // The DOMINANT real shape (crates/reify-eval/src/geometry_ops.rs:183):
+        // only ~16% of the corpus fits on one line, so a single-line-only
+        // scanner would under-count by ~84%.
+        let src = file(&[
+            "            diagnostics.push(Diagnostic::warning(format!(",
+            "                \"unit {} rejected: {}\",",
+            "                name, why",
+            "            )));",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn with_code_three_lines_below_is_coded() {
+        // Real shape: crates/reify-eval/src/geometry_ops.rs:122.
+        let src = file(&[
+            "        let d = Diagnostic::error(format!(",
+            "            \"bad {}\",",
+            "        ))",
+            "        .with_code(DiagnosticCode::BadThing);",
+        ]);
+        assert_eq!(sites(&src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn real_corpus_multiline_chain_offset_is_coded() {
+        // A 13-line constructor -> `.with_code(` gap is a real landed shape.
+        // The widest such gap in the corpus is 15 (see PDIAG_CODE_WINDOW's
+        // doc, which carries the per-window census), pinned by the boundary
+        // test below; this one guards the mid-range chain that motivated a
+        // windowed probe at all. Either MUST be coded, or the detector
+        // manufactures a false RED on landed code.
+        assert_eq!(with_code_at_offset(13), vec![(1, true)]);
+    }
+
+    #[test]
+    fn window_edge_is_pinned_in_both_directions() {
+        // PDIAG_CODE_WINDOW = 15, and the measured worst case in the corpus
+        // is ALSO 15 — zero headroom, deliberately (see the constant's docs:
+        // widening to 25 would retire 12 real code-less sites through the
+        // unrelated-`.with_code(`-in-window leak). Pinning BOTH sides makes a
+        // future widening a deliberate, evidence-anchored edit rather than an
+        // accident, and pins the exact boundary the severity-policy doc's
+        // §3(a) remedy tells authors about.
+        assert_eq!(with_code_at_offset(15), vec![(1, true)], "offset 15 is the last in-window line");
+        assert_eq!(with_code_at_offset(16), vec![(1, false)], "offset 16 is past the window");
+    }
+
+    #[test]
+    fn if_else_severity_dispatch_shape_is_coded() {
+        // crates/reify-eval/src/compute_targets/fea_diagnostics.rs:48-53. This
+        // is the shape a paren-depth chain scan gets WRONG: both constructor
+        // parens close before the chain resumes, so depth-matching declares a
+        // coded site code-less. The line window handles it.
+        let src = file(&[
+            "    let mut diag = if failure.is_error() {",
+            "        Diagnostic::error(m)",
+            "    } else {",
+            "        Diagnostic::warning(m)",
+            "    }",
+            "    .with_code(code);",
+        ]);
+        assert_eq!(sites(&src), vec![(2, true), (4, true)]);
+    }
+
+    #[test]
+    fn with_label_in_the_window_does_not_code_the_site() {
+        // crates/reify-compiler/src/arg_check.rs:24 — a labelled but code-less
+        // diagnostic is exactly what the ratchet exists to count.
+        let src = file(&[
+            "    diagnostics.push(",
+            "        Diagnostic::error(msg)",
+            "            .with_label(DiagnosticLabel::new(span, msg)),",
+            "    );",
+        ]);
+        assert_eq!(sites(&src), vec![(2, false)]);
+    }
+
+    // -- comment exclusion -------------------------------------------------
+
+    #[test]
+    fn line_comment_forms_yield_no_sites() {
+        // ~86 doc/line-comment occurrences repo-wide would otherwise inflate
+        // the counts (crates/reify-eval/src/engine_build.rs carries several
+        // constructors quoted inside `//` comments).
+        let src = file(&[
+            "// Diagnostic::error(m) — quoted in a line comment",
+            "    /// Diagnostic::warning(m) — quoted in a doc comment",
+            "//! Diagnostic::error(m) — quoted in an inner doc comment",
+        ]);
+        assert_eq!(sites(&src), none());
+    }
+
+    #[test]
+    fn block_comment_region_yields_no_sites_and_ends_at_its_close() {
+        let src = file(&[
+            "/**",
+            " * Diagnostic::error(m) — quoted in a block comment.",
+            " * Diagnostic::warning(m) — likewise.",
+            " */",
+            "let real = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn block_comment_opened_and_closed_inline_does_not_swallow_the_rest() {
+        // The region tracker must return to "live" at `*/`, or every anchor
+        // after an inline `/* note */` on a code line would be lost.
+        let src = "    let x = 1; /* note */ diagnostics.push(Diagnostic::error(m));";
+        assert_eq!(sites(src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn nested_block_comment_keeps_the_region_open_past_the_inner_close() {
+        // Rust block comments NEST. A boolean region flag cleared on the inner
+        // `*/` and declared the rest of the OUTER comment live code, censusing
+        // a commented-out constructor as a real code-less site — a false RED on
+        // a new file, and the exact shape produced by commenting out a block
+        // that already contains a `/* … */` note.
+        let src = file(&[
+            "/* outer",
+            "   /* inner */",
+            "   diagnostics.push(Diagnostic::error(msg));",
+            "*/",
+            "let real = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn nested_block_comment_reopens_live_code_only_at_the_outer_close() {
+        // The complement of the test above: depth must return to zero exactly
+        // once, so an anchor on the outer closing line's tail is live again and
+        // one `*/` too few keeps everything masked.
+        let closed = file(&[
+            "/* a /* b */ c */",
+            "let y = Diagnostic::warning(m);",
+        ]);
+        assert_eq!(sites(&closed), vec![(2, false)]);
+
+        // One `*/` short: the outer region is still open, so the line below is
+        // masked and contributes nothing.
+        let unclosed = file(&["/* a /* b */ c", "let y = Diagnostic::warning(m);"]);
+        assert_eq!(sites(&unclosed), none());
+    }
+
+    #[test]
+    fn commented_out_with_code_does_not_code_the_site() {
+        // The CHOSEN rule, asserted explicitly: comment lines are invisible to
+        // the `.with_code(` probe as well as to anchoring. A code that has been
+        // commented out is not attached, so the site still counts.
+        let src = file(&[
+            "    let d = Diagnostic::error(msg)",
+            "        // .with_code(DiagnosticCode::WasHere) — removed, needs reinstating",
+            "        .with_label(l);",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn comment_lines_do_not_consume_the_window_budget() {
+        // The window spans the next PDIAG_CODE_WINDOW NON-COMMENT lines, so an
+        // interleaved doc-comment block cannot push a real `.with_code(` out of
+        // reach. Errs permissive, never toward a false RED.
+        let mut lines = vec!["    let d = Diagnostic::error(msg)".to_string()];
+        lines.extend((0..10).map(|i| format!("        // filler note {i}")));
+        lines.extend((0..14).map(|_| "        .with_label(l)".to_string()));
+        lines.push("        .with_code(c);".to_string());
+        // Physical offset 25, but only the 15th non-comment line — in window.
+        assert_eq!(sites(&lines.join("\n")), vec![(1, true)]);
+    }
+
+    // -- #[cfg(test)] block exclusion --------------------------------------
+
+    #[test]
+    fn cfg_test_module_body_is_skipped_but_the_rest_of_the_file_is_not() {
+        // The skip is BRACE-SCOPED, not "rest of file": 151 in-src
+        // `#[cfg(test)]` sites exist repo-wide, and INV-SF-6 governs EMITTED
+        // diagnostics — test scaffolding emits nothing.
+        let src = file(&[
+            "fn emit() {",
+            "    diagnostics.push(Diagnostic::error(m));",
+            "}",
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn fixture() {",
+            "        let d = Diagnostic::error(m);",
+            "    }",
+            "}",
+            "",
+            "fn emit_more() {",
+            "    diagnostics.push(Diagnostic::warning(m));",
+            "}",
+        ]);
+        assert_eq!(sites(&src), vec![(2, false), (13, false)]);
+    }
+
+    #[test]
+    fn cfg_any_test_module_body_is_skipped() {
+        let src = file(&[
+            "#[cfg(any(test, feature = \"test-support\"))]",
+            "mod support {",
+            "    fn fixture() { let d = Diagnostic::error(m); }",
+            "}",
+            "let live = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn nested_braces_inside_a_test_module_do_not_end_the_skip_early() {
+        let src = file(&[
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn t() {",
+            "        match x {",
+            "            A => { let d = Diagnostic::error(m); }",
+            "        }",
+            "    }",
+            "    fn u() {",
+            "        let d = Diagnostic::warning(m);",
+            "    }",
+            "}",
+            "let live = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(12, false)]);
+    }
+
+    #[test]
+    fn cfg_test_on_a_plain_fn_is_skipped_too() {
+        // The CHOSEN rule, asserted explicitly: the skip arms on the attribute
+        // and closes with the brace block that attribute introduces, so it
+        // covers `fn` and `impl` items as well as `mod`. A `#[cfg(test)] fn`
+        // is absent from a production build and therefore emits nothing.
+        let src = file(&[
+            "#[cfg(test)]",
+            "fn helper() {",
+            "    let d = Diagnostic::error(m);",
+            "}",
+            "let live = Diagnostic::warning(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn cfg_test_item_with_no_block_does_not_arm_a_runaway_skip() {
+        // `#[cfg(test)] use ...;` opens no block. If the pending skip survived
+        // it, the NEXT unrelated brace in the file would start a bogus skip and
+        // silently swallow production sites.
+        let src = file(&[
+            "#[cfg(test)]",
+            "use crate::fixtures::Thing;",
+            "",
+            "fn emit() {",
+            "    diagnostics.push(Diagnostic::error(m));",
+            "}",
+        ]);
+        assert_eq!(sites(&src), vec![(5, false)]);
+    }
+
+    #[test]
+    fn a_negated_test_predicate_never_arms_the_skip() {
+        // The negative side of `is_cfg_test_attr`, which is where a hard-gate
+        // hole would hide: a body the skip swallows is invisible to the
+        // ratchet forever. All three shapes below reach a PRODUCTION build.
+
+        // (i) The tree's real shape — `crates/reify-eval/src/engine_build.rs`
+        //     :3398 and :4122 carry
+        //     `#[cfg(not(any(test, feature = "test-instrumentation")))]`.
+        let src = file(&[
+            "#[cfg(not(any(test, feature = \"test-instrumentation\")))]",
+            "mod prod {",
+            "    fn emit() { let d = Diagnostic::error(m); }",
+            "}",
+        ]);
+        assert_eq!(sites(&src), vec![(3, false)]);
+
+        // (ii) Bare negation.
+        let src = file(&["#[cfg(not(test))]", "fn emit() {", "    let d = Diagnostic::error(m);", "}"]);
+        assert_eq!(sites(&src), vec![(3, false)]);
+
+        // (iii) `any(not(test), …)` — the shape the `#[cfg(any(` prefix test
+        //       does NOT exclude on its own: `not(test)` presents a bare `test`
+        //       predicate whose `(`/`)` neighbours are not predicate glue, so
+        //       without the explicit `not(` rejection this armed the skip and
+        //       silently dropped the body from the census. Absent from the
+        //       corpus today — pinned so introducing one cannot open the hole.
+        let src = file(&[
+            "#[cfg(any(not(test), feature = \"emit\"))]",
+            "mod prod {",
+            "    fn emit() { let d = Diagnostic::warning(m); }",
+            "}",
+        ]);
+        assert_eq!(sites(&src), vec![(3, false)]);
+    }
+
+    #[test]
+    fn a_feature_gate_that_merely_mentions_test_never_arms_the_skip() {
+        // `#[cfg(feature = "test-fixtures")]` (38 in-tree) is a FEATURE name
+        // that happens to start with `test`, not the `test` cfg predicate — a
+        // feature-gated body can be present in a production build. This is the
+        // case `is_predicate_glue` exists for, and the branch a refactor of it
+        // is most likely to break.
+        for attr in [
+            "#[cfg(feature = \"test-fixtures\")]",
+            "#[cfg(feature = \"test\")]",
+            "#[cfg(any(feature = \"test-support\", feature = \"other\"))]",
+        ] {
+            let src = file(&[attr, "mod gated {", "    fn emit() { let d = Diagnostic::error(m); }", "}"]);
+            assert_eq!(sites(&src), vec![(3, false)], "{attr} must not arm the skip");
+        }
+    }
+
+    #[test]
+    fn unbalanced_test_module_terminates_at_eof_without_panicking() {
+        // A truncated file must terminate rather than spin or index past the
+        // end. Suppressing to EOF is the permissive direction.
+        let src = file(&[
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn t() {",
+            "        let d = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), none());
+
+        // A stray closing brace must not underflow the depth counter.
+        let src2 = file(&["}", "}", "let live = Diagnostic::error(m);"]);
+        assert_eq!(sites(&src2), vec![(3, false)]);
+    }
+
+    // -- pdiag:allow escape -------------------------------------------------
+
+    #[test]
+    fn escape_on_the_anchor_line_suppresses_the_site() {
+        let src = "    let d = Diagnostic::error(\"x\"); // pdiag:allow — legacy message-prefix convention";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn escape_on_a_continuation_line_in_the_window_suppresses_the_site() {
+        // The 84%-of-corpus multi-line shape: the constructor line is a poor
+        // place to hang a trailing comment, so the escape must be reachable
+        // from anywhere in the site's own window.
+        let src = file(&[
+            "    diagnostics.push(Diagnostic::warning(format!(",
+            "        \"E_DFM_THIN_WALL: {} < {}\",",
+            "        actual, min",
+            "    ))); // pdiag:allow — the E_DFM_ message prefix carries the code",
+        ]);
+        assert_eq!(sites(&src), none());
+    }
+
+    #[test]
+    fn escape_needs_no_reason_prose() {
+        // Only the `pdiag:allow` substring is load-bearing; the trailing reason
+        // is for humans, exactly as `ptodo.rs::line_escaped` treats
+        // `ptodo:allow`.
+        let src = "    let d = Diagnostic::error(m); // pdiag:allow";
+        assert_eq!(sites(src), none());
+    }
+
+    #[test]
+    fn escape_is_forward_scoped_and_does_not_leak() {
+        // An escape ABOVE a constructor does not suppress it — a reviewed
+        // opt-out must not silently cover unrelated code above where it sits.
+        let src = file(&[
+            "// pdiag:allow — this sentence documents the escape, it does not apply it",
+            "",
+            "let d = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(3, false)]);
+
+        // Nor does it reach further than the code probe does from below.
+        let mut lines = vec!["let d = Diagnostic::error(m);".to_string()];
+        lines.extend((0..15).map(|_| "let x = 1;".to_string()));
+        lines.push("// pdiag:allow — 16 non-comment lines below, out of reach".to_string());
+        assert_eq!(sites(&lines.join("\n")), vec![(1, false)]);
+    }
+
+    #[test]
+    fn escape_does_not_reach_backwards_past_an_earlier_constructor() {
+        // The hard gate's load-bearing hole. The escape's forward window used
+        // to run its full length regardless of what sat between, so ONE
+        // reviewed `pdiag:allow` suppressed every unescaped constructor within
+        // 15 non-comment lines ABOVE it. Adding a code-less site just above an
+        // existing opt-out was therefore a silent INV-SF-6 bypass — available
+        // to any author, invisible to every other test in this suite.
+        //
+        // The rule: an escape reaches back only to the nearest constructor
+        // above it, so one escape covers exactly one site.
+
+        // (i) Consecutive anchors, escape trailing the LOWER one. The upper
+        //     site is brand new and unreviewed; it must survive.
+        let src = file(&[
+            "    let a = Diagnostic::error(m);",
+            "    let b = Diagnostic::error(m); // pdiag:allow — reviewed, this site only",
+        ]);
+        assert_eq!(
+            sites(&src),
+            vec![(1, false)],
+            "the lower site's own escape must not absorb the unescaped site above it"
+        );
+
+        // (ii) The same shape with plain lines between. The escape is still
+        //      well inside the upper site's raw 15-line window, and still must
+        //      not reach it.
+        let src = file(&[
+            "    let a = Diagnostic::error(m);",
+            "    let x = 1;",
+            "    let y = 2;",
+            "    let b = Diagnostic::error(m); // pdiag:allow — reviewed",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false)]);
+
+        // (iii) A STANDALONE escape comment below a second constructor. The
+        //       terminator is the intervening anchor, not the escape's own
+        //       line, so the comment-line escape shape is bounded identically.
+        let src = file(&[
+            "    let a = Diagnostic::error(m);",
+            "    let b = Diagnostic::warning(m);",
+            "    // pdiag:allow — reviewed, applies to the constructor above",
+        ]);
+        assert_eq!(
+            sites(&src),
+            vec![(1, false)],
+            "a standalone escape below `b` covers `b`, never `a`"
+        );
+
+        // (iv) Termination is coded-agnostic: a CODED constructor bounds the
+        //      escape exactly as an uncoded one does. `a` reads back as coded
+        //      here only through the CODE probe's own documented permissive
+        //      reach (module header, "an unrelated `.with_code(` inside a
+        //      site's window can mark it coded"), which is a separate and
+        //      lower-severity gap. What this case pins is that `a` is still a
+        //      SITE at all — the escape did not delete it.
+        let src = file(&[
+            "    let a = Diagnostic::error(m);",
+            "    let b = Diagnostic::warning(m).with_code(c);",
+            "    // pdiag:allow — reviewed, applies to the constructor above",
+        ]);
+        assert_eq!(sites(&src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn an_escape_covers_one_site_on_a_two_constructor_line_too() {
+        // The second route to the same hard-gate hole. The escape test used to
+        // gate the whole `for at in anchors` loop, so on the real
+        // `if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }`
+        // shape (pinned by `two_constructors_on_one_line_are_two_sites`) ONE
+        // reviewed opt-out suppressed BOTH sites — a brand-new code-less
+        // constructor could be parked beside a reviewed one and silently
+        // absorbed. Accounting is per ANCHOR: an escape binds to the nearest
+        // constructor at or before it, on the line exactly as below it.
+
+        // (i) A trailing escape covers the LAST constructor on the line only.
+        let src = "    let d = if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) }; \
+// pdiag:allow — reviewed, this site only";
+        assert_eq!(
+            sites(src),
+            vec![(1, false)],
+            "the trailing escape must not absorb the constructor to its left"
+        );
+
+        // (ii) A run of constructors needs an escape EACH — on one line as
+        //      much as across many.
+        let src = "    f(Diagnostic::error(m) /* pdiag:allow */, Diagnostic::warning(m)); // pdiag:allow";
+        assert_eq!(sites(src), none());
+
+        // (iii) An escape BELOW the line covers only the line's last anchor:
+        //       that is the nearest constructor above it, which is exactly the
+        //       relationship `escape_in_window`'s terminator already defines.
+        let src = file(&[
+            "    let d = if bad { Diagnostic::error(m) } else { Diagnostic::warning(m) };",
+            "    // pdiag:allow — reviewed, applies to the constructor above",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false)]);
+
+        // (iv) An escape sitting before EVERY anchor on the line covers
+        //      nothing — the escape never reaches forwards, on its own line any
+        //      more than from the line above (`escape_is_forward_scoped_and_
+        //      does_not_leak`). The fixture leads with real code deliberately:
+        //      a line whose FIRST token opens a comment is comment-masked, so
+        //      it carries no site to suppress in the first place.
+        let src = "    let x = 1; /* pdiag:allow — reviewed */ let d = Diagnostic::error(m);";
+        assert_eq!(sites(src), vec![(1, false)]);
+    }
+
+    #[test]
+    fn bounding_the_escape_does_not_narrow_it_to_the_anchor_line() {
+        // Negative controls for the case above: the bound is "the next
+        // constructor", NOT "the anchor line". Both legitimate opt-out shapes
+        // must keep working, or the fix has over-reached and every reviewed
+        // multi-line escape in the tree turns RED.
+
+        // (i) Trailing the anchor line itself. `escaped_anchors` resolves this
+        //     positionally on the line, so the lazy `escape_in_window` probe is
+        //     never even called.
+        let src = "    let d = Diagnostic::error(m); // pdiag:allow — reviewed";
+        assert_eq!(sites(src), none());
+
+        // (ii) A standalone escape below a MULTI-LINE constructor with no
+        //      intervening anchor — the `tests/fixtures/pdiag/…/
+        //      scenario03_escaped.rs` shape, and the whole reason the escape
+        //      probe sees comment lines at all.
+        let src = file(&[
+            "    out.push(Diagnostic::warning(format!(",
+            "        \"W_DFM_DRAFT_ANGLE below {} degrees\",",
+            "        1.5",
+            "    )));",
+            "    // pdiag:allow — DFM prefix convention",
+        ]);
+        assert_eq!(sites(&src), none());
+
+        // (iii) An anchor token merely QUOTED in a comment must not truncate a
+        //       legitimate escape's reach. Not hypothetical: this module's own
+        //       header quotes `Diagnostic::error(` a dozen times, so the
+        //       terminator has to share `scan_file`'s comment-mask discipline.
+        let src = file(&[
+            "    out.push(Diagnostic::warning(msg));",
+            "    /// Prose naming Diagnostic::error( as an example, not code.",
+            "    // pdiag:allow — DFM prefix convention",
+        ]);
+        assert_eq!(sites(&src), none());
+    }
+
+    // -- scope predicate ----------------------------------------------------
+    //
+    // The predicate takes the repo-root-relative form `GitOps::ls_files()`
+    // returns. Paths below are REAL tracked paths (checked against
+    // `git ls-files`) unless the case comment calls them out as a SHAPE — a
+    // form not in the tree today, pinned so a future refactor cannot widen or
+    // narrow the sweep unnoticed.
+
+    #[test]
+    fn crate_src_and_gui_src_tauri_rust_files_are_swept() {
+        // The two production trees INV-SF-6 governs. `annotations/schema.rs`
+        // pins that nesting below `src/` is fine, and `lib.rs` that a crate
+        // root is nothing special.
+        for path in [
+            "crates/reify-eval/src/geometry_ops.rs",
+            "crates/reify-compiler/src/annotations/schema.rs",
+            "crates/reify-stdlib/src/dfm.rs",
+            "crates/reify-core/src/lib.rs",
+            "gui/src-tauri/src/engine.rs",
+        ] {
+            assert!(is_swept_path(path), "{path} must be swept");
+        }
+    }
+
+    #[test]
+    fn non_rust_extensions_are_not_swept() {
+        // `Diagnostic::error(` is a Rust token; a `.c`/`.sh`/`.md` hit is
+        // prose or a different language. `tree-sitter-reify/src/parser.c` also
+        // pins that a `src/` segment alone does not put a file in scope. The
+        // `.rs.orig` case is a SHAPE — an editor/merge artefact, checking that
+        // the extension test anchors at the END of the path rather than
+        // matching `.rs` anywhere in it.
+        for path in [
+            "scripts/foo.sh",
+            "docs/x.md",
+            "tree-sitter-reify/src/parser.c",
+            "crates/reify-eval/src/geometry_ops.rs.orig",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
+
+    #[test]
+    fn the_detectors_own_crate_is_excluded_to_prevent_self_match() {
+        // SELF-MATCH is not hypothetical: `pdssentinel.rs` alone carries 10
+        // literal `Diagnostic::error` tokens in its doc comments, and this
+        // module's own header carries more. Mirrors ptodo's ALLOWLIST_PREFIXES
+        // (`ptodo.rs::ALLOWLIST_PREFIXES`), which closes the identical hazard.
+        for path in [
+            "crates/reify-audit/src/pdiag.rs",
+            "crates/reify-audit/src/pdssentinel.rs",
+            "crates/reify-audit/tests/cli.rs",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
+
+    #[test]
+    fn the_test_support_crate_is_excluded() {
+        // 28 constructor sites, 100% test scaffolding: `reify-test-support`
+        // exists to fabricate diagnostics for assertions, and emits none.
+        assert!(!is_swept_path("crates/reify-test-support/src/helpers.rs"));
+    }
+
+    #[test]
+    fn paths_with_a_tests_segment_are_not_swept() {
+        // INV-SF-6 governs EMITTED diagnostics. Leaving test trees in scope
+        // manufactures a recurring false RED for every future test author.
+        // `.../engine_build/tests/mod.rs` is the SHAPE, not a tracked path —
+        // no `tests/` directory exists under any `crates/*/src/` today, and
+        // pinning it keeps a future refactor from silently widening the sweep.
+        for path in [
+            "crates/reify-eval/tests/harness_engine.rs",
+            "gui/src-tauri/src/tests/engine_tests.rs",
+            "crates/reify-eval/src/engine_build/tests/mod.rs",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
+
+    #[test]
+    fn tests_rs_and_underscore_tests_rs_file_stems_are_not_swept() {
+        // The in-`src` inline-test convention: a sibling `tests.rs` module or
+        // a `*_tests.rs` file. Both are `#[cfg(test)]`-gated at their `mod`
+        // declaration, so `scan_file`'s block skip never sees the attribute
+        // from inside the file — the path predicate is the only guard.
+        for path in [
+            "crates/reify-eval/src/engine_build/tests.rs",
+            "crates/reify-eval/src/geometry_ops/tests.rs",
+            "crates/reify-eval/src/engine_build/diagnose_topology_correspondence_drops_tests.rs",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
+
+    #[test]
+    fn rust_outside_crate_src_and_gui_src_tauri_is_not_swept() {
+        // Build scripts (10 tracked `build.rs` files) run at compile time and
+        // emit no runtime diagnostic. The bare `build.rs` and the workspace
+        // root `xtask/src/main.rs` are SHAPES — neither is tracked today —
+        // pinned so a future top-level Rust tree cannot drift into scope
+        // unnoticed.
+        for path in [
+            "crates/reify-eval/build.rs",
+            "crates/reify-cli/build.rs",
+            "build.rs",
+            "xtask/src/main.rs",
+        ] {
+            assert!(!is_swept_path(path), "{path} must not be swept");
+        }
+    }
+
+    // -- baseline manifest parsing ------------------------------------------
+
+    /// Build a count map from `(path, count)` pairs.
+    fn counts(rows: &[(&str, u32)]) -> BTreeMap<String, u32> {
+        rows.iter().map(|(p, n)| ((*p).to_string(), *n)).collect()
+    }
+
+    #[test]
+    fn an_empty_baseline_parses_to_an_empty_map() {
+        // The §6.4 zero-residual end state, and the state the very first
+        // generated baseline would have if the backlog were already clean.
+        assert_eq!(parse_baseline("").unwrap(), BTreeMap::new());
+        assert_eq!(parse_baseline("\n").unwrap(), BTreeMap::new());
+    }
+
+    #[test]
+    fn well_formed_rows_parse_in_path_order() {
+        let content = "crates/reify-compiler/src/expr.rs 68\ncrates/reify-eval/src/geometry_ops.rs 137\n";
+        assert_eq!(
+            parse_baseline(content).unwrap(),
+            counts(&[
+                ("crates/reify-compiler/src/expr.rs", 68),
+                ("crates/reify-eval/src/geometry_ops.rs", 137),
+            ])
+        );
+    }
+
+    #[test]
+    fn comment_and_blank_lines_are_ignored() {
+        // Same stripping style as tests/infra/run-all-classification.manifest,
+        // so a reader who knows one manifest already knows this one.
+        let content = "# pdiag baseline — regenerate, never hand-edit\n\
+                       \n   \n\
+                          # indented comment\n\
+                       crates/reify-eval/src/geometry_ops.rs 137\n";
+        assert_eq!(
+            parse_baseline(content).unwrap(),
+            counts(&[("crates/reify-eval/src/geometry_ops.rs", 137)])
+        );
+    }
+
+    #[test]
+    fn a_row_without_exactly_two_fields_is_rejected() {
+        for bad in [
+            "crates/reify-eval/src/geometry_ops.rs\n",
+            "crates/reify-eval/src/geometry_ops.rs 137 extra\n",
+        ] {
+            assert!(parse_baseline(bad).is_err(), "must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_non_numeric_or_zero_count_is_rejected() {
+        // Zero is not "a clean file" — a clean file simply has NO row. Letting
+        // a `0` row through would give two spellings of the same state and
+        // make an orphan-row advisory unrepresentable.
+        for bad in [
+            "crates/reify-eval/src/geometry_ops.rs many\n",
+            "crates/reify-eval/src/geometry_ops.rs -1\n",
+            "crates/reify-eval/src/geometry_ops.rs 0\n",
+        ] {
+            assert!(parse_baseline(bad).is_err(), "must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_path_outside_the_sweep_is_rejected() {
+        // A row the live scan can never produce would sit in the baseline
+        // forever as a permanent orphan-row advisory. Rejecting it at parse
+        // time is how a scope narrowing gets noticed instead of accumulating.
+        for bad in [
+            "crates/reify-audit/src/pdiag.rs 3\n",
+            "crates/reify-eval/tests/harness_engine.rs 3\n",
+            "docs/notes/diagnostic-severity-policy.md 3\n",
+        ] {
+            assert!(parse_baseline(bad).is_err(), "must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_duplicate_path_is_rejected() {
+        // Silently last-wins would let a bad merge double a file's allowance.
+        // The DUPLICATE message must be the one that fires: the ordering rule
+        // rejects a repeat too (`path <= previous`), so a bare `is_err()`
+        // assertion here passed while exercising the wrong rule entirely and
+        // left the duplicate branch unreachable dead code.
+        for content in [
+            // Adjacent — the shape the ordering rule would otherwise claim.
+            "crates/reify-eval/src/geometry_ops.rs 137\n\
+             crates/reify-eval/src/geometry_ops.rs 200\n",
+            // Non-adjacent, and note the rows ARE ascending up to the repeat.
+            "crates/reify-compiler/src/expr.rs 68\n\
+             crates/reify-eval/src/geometry_ops.rs 137\n\
+             crates/reify-compiler/src/expr.rs 70\n",
+        ] {
+            let err = parse_baseline(content).expect_err("a duplicate row must be rejected");
+            assert!(
+                err.contains("duplicate row for"),
+                "the duplicate rule must be the one that fires, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rows_out_of_ascending_order_are_rejected() {
+        // Sorted order is what makes a regenerated baseline diff readably —
+        // an unsorted file turns a one-line count change into a whole-file
+        // rewrite the next time the generator runs.
+        let content = "crates/reify-eval/src/geometry_ops.rs 137\n\
+                       crates/reify-compiler/src/expr.rs 68\n";
+        assert!(parse_baseline(content).is_err());
+    }
+
+    // -- ratchet comparison -------------------------------------------------
+
+    const GEOM: &str = "crates/reify-eval/src/geometry_ops.rs";
+
+    #[test]
+    fn identical_live_and_baseline_yield_no_verdicts() {
+        let both = counts(&[(GEOM, 137)]);
+        assert_eq!(ratchet(&both, &both), Vec::new());
+    }
+
+    #[test]
+    fn live_above_baseline_is_an_exceeded_verdict() {
+        let verdicts = ratchet(&counts(&[(GEOM, 4)]), &counts(&[(GEOM, 3)]));
+        assert_eq!(
+            verdicts,
+            vec![RatchetVerdict::Exceeded {
+                path: GEOM.to_string(),
+                live: 4,
+                baseline: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_file_with_sites_and_no_baseline_row_is_a_new_file_verdict() {
+        // The common shape for NEW code: enforcement is for new sites, and a
+        // brand-new file with a code-less diagnostic is exactly that.
+        let verdicts = ratchet(&counts(&[(GEOM, 2)]), &BTreeMap::new());
+        assert_eq!(
+            verdicts,
+            vec![RatchetVerdict::NewFile {
+                path: GEOM.to_string(),
+                live: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn live_below_baseline_is_a_stale_advisory() {
+        let verdicts = ratchet(&counts(&[(GEOM, 2)]), &counts(&[(GEOM, 3)]));
+        assert_eq!(
+            verdicts,
+            vec![RatchetVerdict::Stale {
+                path: GEOM.to_string(),
+                live: 2,
+                baseline: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_baseline_row_with_no_live_sites_is_an_orphan_row_advisory() {
+        // The file was fully fixed, renamed or deleted.
+        let verdicts = ratchet(&BTreeMap::new(), &counts(&[(GEOM, 3)]));
+        assert_eq!(
+            verdicts,
+            vec![RatchetVerdict::OrphanRow {
+                path: GEOM.to_string(),
+                baseline: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_clean_file_with_no_baseline_row_yields_nothing() {
+        // The steady state for the overwhelming majority of the tree: a live
+        // map only ever carries files with at least one code-less site.
+        assert_eq!(ratchet(&BTreeMap::new(), &BTreeMap::new()), Vec::new());
+    }
+
+    #[test]
+    fn only_exceeded_and_new_file_are_high() {
+        // The exit code IS the High count (`high_severity_exit_code`,
+        // in src/bin/reify-audit.rs), so High is the ONLY hard-gate lever.
+        // Under-count and orphan rows stay Medium and exit-neutral —
+        // otherwise every opportunistic fix and every file deletion would turn
+        // a diff RED, which is the exact thrash class esc-5252-1/5260/5266/5288
+        // came from.
+        let path = GEOM.to_string();
+        for high in [
+            RatchetVerdict::Exceeded { path: path.clone(), live: 4, baseline: 3 },
+            RatchetVerdict::NewFile { path: path.clone(), live: 2 },
+        ] {
+            assert_eq!(high.severity(), Severity::High, "{high:?} must gate");
+        }
+        for medium in [
+            RatchetVerdict::Stale { path: path.clone(), live: 2, baseline: 3 },
+            RatchetVerdict::OrphanRow { path: path.clone(), baseline: 3 },
+        ] {
+            assert_eq!(medium.severity(), Severity::Medium, "{medium:?} must not gate");
+        }
+    }
+
+    #[test]
+    fn high_findings_cite_the_policy_doc_and_the_escape() {
+        // A merge gate that only says "no" is a tax. Every RED summary must
+        // carry both remediations: attach a code (the doc explains which), or
+        // escape the site with a reviewed opt-out.
+        for high in [
+            RatchetVerdict::Exceeded { path: GEOM.to_string(), live: 4, baseline: 3 },
+            RatchetVerdict::NewFile { path: GEOM.to_string(), live: 2 },
+        ] {
+            let finding = high.into_finding(&[118, 204]);
+            assert_eq!(finding.severity, Severity::High);
+            assert_eq!(finding.pattern, Pattern::PDiag);
+            assert_eq!(finding.task_id, GEOM);
+            assert_eq!(finding.evidence, vec![EvidenceRef::File { path: GEOM.to_string() }]);
+            for needle in [GEOM, SEVERITY_POLICY_DOC, PDIAG_ALLOW, "at lines 118, 204"] {
+                assert!(
+                    finding.summary.contains(needle),
+                    "{needle} missing from {:?}",
+                    finding.summary
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn high_summaries_name_the_code_less_lines_singly_plurally_and_elided() {
+        // The count alone forces the author to re-derive which constructor the
+        // scanner called code-less — a non-trivial exercise given the window,
+        // the comment mask and the per-anchor escape binding.
+        assert_eq!(format_site_lines(&[]), "");
+        assert_eq!(format_site_lines(&[7]), " at line 7");
+        assert_eq!(format_site_lines(&[7, 19, 22]), " at lines 7, 19, 22");
+
+        // Past the cap the tail is elided WITH its size, so the listed lines and
+        // the summary's own site count never silently disagree.
+        let many: Vec<usize> = (1..=PDIAG_SUMMARY_LINE_CAP + 3).collect();
+        let rendered = format_site_lines(&many);
+        assert!(rendered.ends_with("(+3 more)"), "{rendered}");
+        // One separator fewer than the lines listed — i.e. exactly the cap.
+        assert_eq!(
+            rendered.matches(", ").count(),
+            PDIAG_SUMMARY_LINE_CAP - 1,
+            "exactly the cap is listed: {rendered}"
+        );
+        assert!(
+            !rendered.contains(&format!(", {}", PDIAG_SUMMARY_LINE_CAP + 1)),
+            "the line past the cap must be elided, not listed: {rendered}"
+        );
+    }
+
+    #[test]
+    fn medium_findings_name_the_regeneration_command() {
+        // The advisory is only actionable if it says how to clear itself.
+        for medium in [
+            RatchetVerdict::Stale { path: GEOM.to_string(), live: 2, baseline: 3 },
+            RatchetVerdict::OrphanRow { path: GEOM.to_string(), baseline: 3 },
+        ] {
+            let finding = medium.into_finding(&[118, 204]);
+            assert_eq!(finding.severity, Severity::Medium);
+            assert_eq!(finding.task_id, GEOM);
+            for needle in [GEOM, BASELINE_GEN_BIN] {
+                assert!(
+                    finding.summary.contains(needle),
+                    "{needle} missing from {:?}",
+                    finding.summary
+                );
+            }
+            // The slack verdicts are cleared by REGENERATING, not by editing a
+            // site, so listing lines there would be a pointer to nowhere.
+            assert!(
+                !finding.summary.contains("at line"),
+                "a Medium advisory must not list site lines: {:?}",
+                finding.summary
+            );
+        }
+    }
+
+    #[test]
+    fn verdicts_are_emitted_in_path_order_across_kinds() {
+        // Deterministic output is what makes the infra gate's assertions and a
+        // human's diff review stable run to run.
+        let a = "crates/reify-compiler/src/expr.rs";
+        let b = "crates/reify-eval/src/geometry_ops.rs";
+        let c = "crates/reify-stdlib/src/dfm.rs";
+        let verdicts = ratchet(&counts(&[(b, 9), (a, 1)]), &counts(&[(b, 2), (c, 4)]));
+        let paths: Vec<&str> = verdicts.iter().map(RatchetVerdict::path).collect();
+        assert_eq!(paths, vec![a, b, c]);
+    }
+
+    // -- detector entry point -----------------------------------------------
+
+    // The `check(...)` fixture and `codeless_src` live in `super::test_support`
+    // so `tests/pdiag_baseline.rs` drives the identical harness. Each caller
+    // owns the tempdir; see that module on why the fixture borrows its root.
+
+    #[test]
+    fn live_count_equal_to_the_baseline_row_is_clean() {
+        // The steady state the ratchet exists to hold: the backlog is exactly
+        // as large as the manifest says, so nothing is reported at all.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.write(GEOM, &codeless_src(2)).baseline(&format!("{GEOM} 2\n"));
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn live_count_over_the_baseline_row_is_one_high_finding() {
+        // Someone added a code-less site to a file that already had one. This
+        // is the ratchet violation the merge gate exists to catch.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.write(GEOM, &codeless_src(2)).baseline(&format!("{GEOM} 1\n"));
+        let findings = fx.run();
+        assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PDiag);
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.task_id, GEOM);
+        assert_eq!(f.evidence, vec![EvidenceRef::File { path: GEOM.to_string() }]);
+    }
+
+    #[test]
+    fn a_swept_file_with_no_baseline_row_is_high() {
+        // A brand-new file carrying code-less diagnostics — precisely the
+        // "enforcement is for new sites" case of PRD §6 decision 3.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.write(GEOM, &codeless_src(2)).baseline("");
+        assert_eq!(fx.keys(), vec![(GEOM.to_string(), Severity::High)]);
+    }
+
+    #[test]
+    fn a_high_finding_names_the_live_scan_s_code_less_lines() {
+        // End to end: the census's line numbers reach the summary, so an author
+        // who trips the gate is told WHICH constructors the scanner called
+        // code-less instead of re-deriving them by hand against the window, the
+        // comment mask and the escape binding.
+        let src = "// header\n\
+                       let x = 1;\n\
+                       out.push(Diagnostic::error(m));\n\
+                       let y = 2;\n\
+                       out.push(Diagnostic::warning(m));\n";
+        for (baseline, needle) in
+            [(format!("{GEOM} 1\n"), "site(s) at lines 3, 5,"), (String::new(), "site(s) at lines 3, 5 ")]
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut fx = Fixture::new(tmp.path());
+            fx.write(GEOM, src).baseline(&baseline);
+            let findings = fx.run();
+            assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
+            assert_eq!(findings[0].severity, Severity::High);
+            assert!(
+                findings[0].summary.contains(needle),
+                "{needle:?} missing from {:?}",
+                findings[0].summary
+            );
+        }
+    }
+
+    #[test]
+    fn coded_sites_never_reach_the_ratchet() {
+        // A file whose every constructor carries a code has no live row at
+        // all, so an absent baseline row is the correct steady state — not a
+        // NewFile violation.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.write(GEOM, "    Diagnostic::error(msg).with_code(DiagnosticCode::X);")
+            .baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn out_of_scope_tracked_files_are_never_swept() {
+        // `is_swept_path` is enforced by `check`, not just unit-tested in
+        // isolation: the detector's own crate (10 literal `Diagnostic::error`
+        // tokens in pdssentinel.rs doc comments alone), test-support, and any
+        // `tests/`-segment path must contribute nothing even with an empty
+        // baseline that would otherwise flag every one of them.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        let src = codeless_src(3);
+        fx.write("crates/reify-audit/src/pdiag.rs", &src)
+            .write("crates/reify-test-support/src/helpers.rs", &src)
+            .write("crates/reify-eval/tests/harness_engine.rs", &src)
+            .write("crates/reify-eval/src/engine_build/tests.rs", &src)
+            .write("scripts/not-rust.sh", &src)
+            .baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn cfg_test_bodies_do_not_reach_the_ratchet() {
+        // INV-SF-6 governs EMITTED diagnostics. Counting inline test
+        // scaffolding would manufacture a recurring false RED for every future
+        // test author, so the in-src `#[cfg(test)]` exclusion must survive the
+        // trip through `check`, not just `scan_file`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.write(
+            GEOM,
+            &file(&[
+                "#[cfg(test)]",
+                "mod tests {",
+                "    fn t() {",
+                "        Diagnostic::error(\"boom\");",
+                "    }",
+                "}",
+            ]),
+        )
+        .baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn a_tracked_path_absent_from_disk_is_skipped() {
+        // ls_files() and the working tree can disagree (a deletion staged but
+        // not yet reflected, a mid-rebase tree). Fail-safe: skip, never panic
+        // and never invent a count. Mirrors `ptodo.rs::check`'s `read_to_string` arm.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.track_only(GEOM).baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn a_non_utf8_tracked_file_is_skipped() {
+        // `read_to_string` fails on invalid UTF-8; the detector must degrade
+        // to "no sites here" rather than unwrapping.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.write_bytes(GEOM, &[0x66, 0x6f, 0xff, 0xfe, 0x6f]).baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn an_absent_baseline_fails_loud_rather_than_vacuously_passing() {
+        // The mirror-image bug — missing manifest => nothing to compare =>
+        // silent pass — is exactly what
+        // scripts/check-infra-classification-manifest.sh:41-57 refuses to
+        // allow. An absent baseline is an EMPTY baseline, so every code-less
+        // file is a NewFile violation and the gate goes RED.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.write(GEOM, &codeless_src(2));
+        assert!(
+            !fx.root().join(BASELINE_PATH).exists(),
+            "fixture must leave the baseline absent"
+        );
+        assert_eq!(fx.keys(), vec![(GEOM.to_string(), Severity::High)]);
+    }
+
+    #[test]
+    fn a_malformed_baseline_is_a_single_high_finding_naming_the_error() {
+        // A corrupt manifest must never be readable as "allows everything".
+        // One High finding, so the exit code moves, and it names both the
+        // manifest and the parse error so the fix is obvious.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.write(GEOM, &codeless_src(2)).baseline("this row has three fields\n");
+        let findings = fx.run();
+        assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PDiag);
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.evidence, vec![EvidenceRef::File { path: BASELINE_PATH.to_string() }]);
+        for needle in [BASELINE_PATH, BASELINE_GEN_BIN] {
+            assert!(f.summary.contains(needle), "{needle} missing from {:?}", f.summary);
+        }
+        // The parse error itself must survive into the summary — a bare "the
+        // baseline is malformed" would leave the reader to bisect the file.
+        let err = parse_baseline("this row has three fields\n").unwrap_err();
+        assert!(
+            f.summary.contains(&err),
+            "parse error {err:?} missing from {:?}",
+            f.summary
+        );
+    }
+
+    #[test]
+    fn an_empty_census_against_a_populated_baseline_is_a_single_high_finding() {
+        // The mirror of the malformed-baseline branch, on the OTHER input.
+        // `RealGitOps::ls_files()` fails soft to `vec![]` on any git failure
+        // (lib.rs `run_or_warn`), and an empty census makes every committed row
+        // an exit-neutral Medium OrphanRow — the ratchet would report "all
+        // clear" from a run that scanned nothing at all.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        let gone = "crates/reify-stdlib/src/dfm.rs";
+        // No tracked files whatsoever: the degenerate enumeration.
+        fx.baseline(&format!("{GEOM} 2\n{gone} 1\n"));
+        let findings = fx.run();
+        assert_eq!(
+            findings.len(),
+            1,
+            "an empty census must be ONE hard finding, not one advisory per \
+             orphaned row; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PDiag);
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.task_id, BASELINE_PATH);
+        assert_eq!(f.evidence, vec![EvidenceRef::File { path: BASELINE_PATH.to_string() }]);
+        // Names the manifest, the row count it could not verify, and the way
+        // back — a bare "census empty" would leave the reader guessing whether
+        // the tree or the tool is at fault.
+        for needle in [BASELINE_PATH, BASELINE_GEN_BIN, "2 row(s)"] {
+            assert!(f.summary.contains(needle), "{needle} missing from {:?}", f.summary);
+        }
+    }
+
+    #[test]
+    fn tracked_files_all_out_of_scope_still_count_as_an_empty_census() {
+        // "Swept" is post-`is_swept_path`. A run that enumerated only the
+        // detector's own crate and a shell script reached zero files it could
+        // ever have a verdict about, so the manifest is just as unverified as
+        // if `ls_files()` had returned nothing.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.write("crates/reify-audit/src/pdiag.rs", &codeless_src(3))
+            .write("scripts/not-rust.sh", &codeless_src(3))
+            .baseline(&format!("{GEOM} 2\n"));
+        let findings = fx.run();
+        assert_eq!(findings.len(), 1, "expected the census guard, got {findings:?}");
+        assert_eq!(findings[0].severity, Severity::High);
+        assert!(findings[0].summary.contains("pdiag-census-empty"));
+    }
+
+    #[test]
+    fn a_clean_tree_is_not_a_degenerate_census() {
+        // The sharp edge of the guard: `live` is empty here too, but the
+        // enumeration DID reach a swept file — every diagnostic in it simply
+        // carries a code. Guarding on `live.is_empty()` instead of on the
+        // enumeration would turn the ratchet's own success state RED, and the
+        // orphan row must still surface as its ordinary Medium advisory.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        let gone = "crates/reify-stdlib/src/dfm.rs";
+        fx.write(GEOM, "    Diagnostic::error(msg).with_code(DiagnosticCode::X);")
+            .baseline(&format!("{gone} 4\n"));
+        assert_eq!(fx.keys(), vec![(gone.to_string(), Severity::Medium)]);
+    }
+
+    #[test]
+    fn an_empty_census_against_an_empty_baseline_stays_silent() {
+        // Nothing tracked AND nothing baselined: there is no row whose
+        // enforcement just went unverified, so the guard must not manufacture
+        // a finding. Hermetic fixture trees rely on this staying quiet.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.baseline("");
+        assert_eq!(fx.run(), Vec::new());
+    }
+
+    #[test]
+    fn a_malformed_baseline_outranks_an_empty_census() {
+        // Both inputs are broken at once. The parse error is the more
+        // actionable of the two — it names a line — and reporting the census
+        // guard instead would send the reader looking at `git` when the file
+        // in front of them will not parse.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        fx.baseline("this row has three fields\n");
+        let findings = fx.run();
+        assert_eq!(findings.len(), 1, "expected exactly one finding, got {findings:?}");
+        assert!(
+            findings[0].summary.contains("pdiag-baseline-unreadable"),
+            "expected the parse error, got {:?}",
+            findings[0].summary
+        );
+    }
+
+    #[test]
+    fn findings_are_emitted_in_path_order() {
+        // Stable output across runs is what lets the infra gate and a human
+        // reviewer diff two runs at all. ls_files() order is deliberately
+        // scrambled relative to path order here.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        let a = "crates/reify-compiler/src/expr.rs";
+        let b = "crates/reify-eval/src/geometry_ops.rs";
+        let c = "crates/reify-stdlib/src/dfm.rs";
+        fx.write(c, &codeless_src(1))
+            .write(a, &codeless_src(1))
+            .write(b, &codeless_src(1))
+            .baseline("");
+        let paths: Vec<String> = fx.run().into_iter().map(|f| f.task_id).collect();
+        assert_eq!(paths, vec![a, b, c]);
+    }
+
+    #[test]
+    fn an_under_count_and_an_orphan_row_stay_exit_neutral() {
+        // Both slack directions reach `check` as Medium advisories. If either
+        // were High, deleting a file or fixing one site would block a merge.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut fx = Fixture::new(tmp.path());
+        let fixed = "crates/reify-compiler/src/expr.rs";
+        let gone = "crates/reify-stdlib/src/dfm.rs";
+        fx.write(fixed, &codeless_src(1))
+            .baseline(&format!("{fixed} 3\n{gone} 4\n"));
+        assert_eq!(
+            fx.keys(),
+            vec![
+                (fixed.to_string(), Severity::Medium),
+                (gone.to_string(), Severity::Medium),
+            ]
+        );
+    }
+}

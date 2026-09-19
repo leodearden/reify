@@ -3044,6 +3044,9 @@ impl OcctKernel {
                 plane,
             } => {
                 // not length-semantic: ANGLE, not LENGTH — PRD 3's surface, not this one.
+                // The magnitude taken is SI RADIANS and crosses to the FFI
+                // unconverted; this line is where the dimension tag is
+                // discarded. Contract: `GeometryOp::Draft.angle` (INV-AD-4).
                 let angle_rad = extract_f64(angle)?;
                 if faces.is_empty() {
                     // 3-arg / empty-selection back-compat: draft ALL draftable

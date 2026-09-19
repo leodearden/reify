@@ -3,10 +3,18 @@
 Mechanizes G3 + G6 for every leaf of `docs/prds/v0_6/angle-units-surface-convergence.md`.
 Built at decompose, **2026-07-29**, against `main` @ `bd10b6d0e1`.
 
-**Drift status:** `git diff --name-only dc83d4fd60..bd10b6d0e1 -- crates/ tree-sitter-reify/
-examples/ gui/` is **EMPTY** — the PRD was authored at `dc83d4fd60` and no source file has moved
-since, so every §3 file:line anchor holds verbatim. Everything in §Corrections is an *author-time
-measurement* re-measured this session, not drift.
+**Drift status (as of decompose, `bd10b6d0e1`):** `git diff --name-only dc83d4fd60..bd10b6d0e1
+-- crates/ tree-sitter-reify/ examples/ gui/` was **EMPTY** — the PRD was authored at `dc83d4fd60`
+and no source file had moved since, so every §3 file:line anchor held verbatim. Everything in
+§Corrections is an *author-time measurement* re-measured that session, not drift.
+
+**Re-anchored 2026-09-18 (task #7550), against `main` @ `ea896581d1`:** that no-drift claim no
+longer holds. `crates/reify-eval/src/arg_acceptance.rs` moved to `crates/reify-ir/` (task #5791's
+decompose), so the §3 anchors naming it are re-measured against TODAY's tree rather than
+`bd10b6d0e1` — read them as-of the re-anchor date, not as-of decompose. One decompose-time PREMISE
+went with it: `angle_spec` is no longer absent repo-wide (see the §3 row below). The verdicts
+themselves are left as the decompose-time record; re-adjudicating them belongs with the producing
+task's status, not here.
 
 **Probe vectors.** `target/release/reify` (built 2026-07-28 20:47; freshness verified — no
 `crates/**/*.rs` or `stdlib/*.ri` is newer) via `reify eval` / `reify check`; `tree-sitter parse
@@ -292,7 +300,7 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `arg_acceptance` has `length_spec`/`density_spec`/`accept_arg` and **no** `angle_spec` | `grep:crates/reify-eval/src/arg_acceptance.rs:86,103,117`; `angle_spec` absent repo-wide | PASS |
+| `arg_acceptance` has `length_spec`/`density_spec`/`accept_arg` and **no** `angle_spec` | `grep:crates/reify-ir/src/arg_acceptance.rs:298,337,635`; `angle_spec` absent repo-wide **at decompose** — since DELIVERED, `pub fn angle_spec()` at `crates/reify-ir/src/arg_acceptance.rs:411` (re-measured 2026-09-18, #7550) | PASS *as of `bd10b6d0e1`* |
 | **the ANGLE rejection mechanism fires today** (G6 branch 4) | `probe: reify eval faces_by_normal(b,0.0,0.0,1.0,0.01)` → **exit 1**, `error: faces_by_normal: tol argument expects Angle, got Real` | PASS — rejection observed |
 | the hint is absent today (what β adds is observable) | same probe: **no** `pass a dimensioned angle` clause; `grep:geometry_ops.rs:8755` `resolve_scalar_dim_arg`, call site `:8767-8771` passes `migration_hint: None` | PASS |
 | the shared `DiagnosticCode` | `producer:task-5743` (PRD 1 β: *"introduce ONE shared DiagnosticCode … PRDs 3 and 5 reuse this code"*) — **upstream** | PASS |

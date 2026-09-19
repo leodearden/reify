@@ -1,9 +1,24 @@
 // Fixture (builtin-signature-registry leaf omega): PRE-STATE BASELINE for
 // the hole the registry closes. `line` is a genuinely nonexistent builtin
-// (zero compiler/eval registrations), yet this file passes `reify check`
-// exit 0 with ZERO diagnostics — the terminal first-arg fallback types it
-// silently (expr.rs:3568-3584; task 5371 observation). After omega lands
+// (zero compiler/eval registrations), yet this file still passes `reify check`
+// exit 0 — the terminal first-arg fallback types it from its first argument
+// (expr.rs:3568-3584; task 5371 observation). After omega lands
 // (fallback deleted), this fixture MUST fail check with E_UnresolvedFunction.
+//
+// UPDATED by #5371: this file no longer compiles with ZERO diagnostics, as the
+// line above claimed until #5371 landed. It now emits exactly one
+// Severity::Warning carrying DiagnosticCode::UnresolvedFunction, and zero
+// Errors — so exit 0 AND the typing are both unchanged, and the pre-state this
+// fixture exists to hold (a nonexistent callee that still type-checks) is
+// intact. #5997 flips that Warning to an Error behind a break-glass env knob;
+// omega (#6014) then deletes the fallback that types it.
+//
+// The behaviour is pinned by unresolved_function_tests::
+// the_original_line_observation_now_warns, which compiles this same source
+// INLINE rather than referencing this file's path from Rust — deliberately, so
+// the fixture is not dragged into verify.sh's _RUST_COUPLED_RI_FIXTURES, which
+// would assert a coupling that does not exist. Do not "helpfully" replace that
+// inline copy with a path reference (esc-5371-4).
 module unknown_fn_silent_accept_baseline
 
 structure def UnknownFnSilentAccept {

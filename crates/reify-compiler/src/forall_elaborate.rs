@@ -840,10 +840,16 @@ pub(crate) fn elaborate_forall_connect(
                 // needed for diagnostic provenance.
             }
             // Per-element chain desugaring: substitute every chain element,
-            // then emit pairwise Forward connections via `windows(2)`. Mirror
-            // the plain `MemberDecl::Chain` arm at entity.rs:1304-1342, but
-            // anchor every emitted connection's span at `decl.span` so
-            // per-element diagnostics cite the forall site.
+            // then hand the result to `chain_hops` (connect.rs), which owns
+            // the spec §6.2 element resolution this arm shares with the
+            // entity-member site. Every emitted connection is anchored at
+            // `decl.span` rather than at the chain body's own span, so
+            // `compile_connection`'s diagnostics cite the forall the designer
+            // wrote. `chain_hops`' own §6.2 diagnostics are labelled at the
+            // element instead — for the substituted bound variable, that is
+            // the span its binding carries: the collection expression's when
+            // the forall iterates a sub collection, a list item's own when it
+            // iterates a literal list.
             ForallConnectBody::Chain(cd) => {
                 // Edge case: fewer than two elements is a malformed chain.
                 // Emit the standard chain diagnostic once per element-iteration
@@ -878,7 +884,7 @@ pub(crate) fn elaborate_forall_connect(
                     .map(|e| substitute_expr(e, &bindings))
                     .collect();
 
-                for pair in substituted_elements.windows(2) {
+                for (source, dest) in chain_hops(&ctx, &substituted_elements, diagnostics) {
                     let mut acc = ConnectAccumulator {
                         constraints,
                         constraint_index,
@@ -891,9 +897,9 @@ pub(crate) fn elaborate_forall_connect(
                     compile_connection(
                         &ctx,
                         &ConnectInput {
-                            left_expr: &pair[0],
+                            left_expr: &source,
                             operator: reify_ast::ConnectOp::Forward,
-                            right_expr: &pair[1],
+                            right_expr: &dest,
                             connector_type: None,
                             params: &[],
                             port_mappings: &[],

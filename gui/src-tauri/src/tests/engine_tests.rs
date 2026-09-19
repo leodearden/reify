@@ -14,7 +14,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, MergedTraitDefs, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, find_moi_principal_constraint,
@@ -6188,7 +6188,8 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
     // BEFORE step-16 fix: this call recurses infinitely → stack overflow.
     // AFTER step-16 fix: the is_recursive check stops recursion and returns
     // a sub node with empty children.
-    let node = build_template_node(a_template, "A", &compiled, None, false);
+    let node =
+        build_template_node(a_template, "A", &compiled, &MergedTraitDefs::empty(), None, false);
 
     let sub_x = node
         .children
@@ -6232,8 +6233,10 @@ fn build_template_node_mutual_recursion_does_not_stack_overflow() {
     // BEFORE step-16 fix: A → B → A → … stack overflow.
     // AFTER step-16 fix: A.b has empty children (B is_recursive), B.a has
     // empty children (A is_recursive).
-    let node_a = build_template_node(a_template, "A", &compiled, None, false);
-    let node_b = build_template_node(b_template, "B", &compiled, None, false);
+    let node_a =
+        build_template_node(a_template, "A", &compiled, &MergedTraitDefs::empty(), None, false);
+    let node_b =
+        build_template_node(b_template, "B", &compiled, &MergedTraitDefs::empty(), None, false);
 
     let sub_b = node_a
         .children
@@ -6288,7 +6291,14 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
     // BEFORE step-16 fix: Container → A → A → … stack overflow.
     // AFTER step-16 fix: Container expands normally, Container.a (pointing to
     // recursive A) has empty children instead of expanding A.
-    let node = build_template_node(container_template, "Container", &compiled, None, false);
+    let node = build_template_node(
+        container_template,
+        "Container",
+        &compiled,
+        &MergedTraitDefs::empty(),
+        None,
+        false,
+    );
 
     // Container should have exactly one sub child
     let sub_a = node
@@ -13699,18 +13709,20 @@ fn get_entity_tree_consumed_realizations_default_visible_false() {
 /// #5195 step-3 RED: the realization node for a `Physical` structure's
 /// `geometry` member must carry `trait_geometry == true`, matching its
 /// value-cell sibling (`build_template_node`'s value-cell loop already sets
-/// `is_geometry_member && parent_has_physical`). A non-trait `let helper`
+/// `is_geometry_member && geometry_is_trait_mandated`). A non-trait `let helper`
 /// realization stays `false`.
 ///
 /// Fails today because the realization loop hard-codes `trait_geometry: false`
 /// for every realization.
 ///
-/// `: Physical` is spelled literally so the existing `trait_bounds` substring
-/// heuristic fires — `trait_bounds` holds DECLARED names only, so a `: Rigid`
-/// structure (which refines Physical) does NOT match. That gap is pre-existing
-/// on the value-cell side and deliberately out of scope here; the feature's
-/// observable does not depend on it (see the consumed-downstream test above,
-/// which uses `: Rigid` and passes regardless).
+/// `: Physical` is spelled literally, so this covers the DIRECT bound. The
+/// transitive case (`: Rigid`, which refines Physical) is covered by
+/// `get_entity_tree_trait_geometry_follows_refinement_chain` below — the two
+/// read as a pair, one per side of `conforms_to_trait`'s
+/// equality-or-refinement contract (#5558). This test's body is deliberately
+/// unmodified by that change: a direct bound matches at pop time before the
+/// refinement walk, so it passing unchanged is the regression signal that
+/// #5558 was additive rather than a rewrite of the direct-bound case.
 ///
 /// `helper` is consumed by nothing, so it also stays `default_visible == true`
 /// — this test is independent of the consumed-downstream rule.
@@ -13759,6 +13771,196 @@ fn get_entity_tree_realization_trait_geometry_propagates() {
         geometry_cell.trait_geometry,
         "value-cell `geometry` must already have trait_geometry == true \
          (the existing heuristic this test pins the realization node against)"
+    );
+}
+
+// ---- #5558: trait_geometry follows the refinement chain ----
+
+/// #5558 step-1 RED: `trait_geometry` must fire for a structure that reaches
+/// `Physical` TRANSITIVELY, not just one that spells `: Physical` literally.
+///
+/// WHY this fails today: `template.trait_bounds` holds DECLARED trait names
+/// only — for `structure def Flange : Rigid` it is exactly `["Rigid"]`. The
+/// current test is a substring probe (`b.contains("Physical")`), which never
+/// sees that `trait Rigid : Physical`
+/// (`crates/reify-compiler/stdlib/structural_physical.ri`) refines it. So
+/// both `geometry` nodes report `trait_geometry == false`.
+///
+/// The `Rigid -> Physical` refinement edge lives in the PRELUDE, not in the
+/// user module: a user module's own `CompiledModule.trait_defs` holds only the
+/// traits it declares, and this source declares none. Driving the public
+/// `get_entity_tree()` (rather than `build_template_node` directly) is
+/// therefore what makes this test meaningful — it pins the module + prelude
+/// trait-def threading end-to-end, which a hand-built fixture could not.
+///
+/// A geometry binding emits BOTH a value cell and a realization node (#4954)
+/// and the flag is shared between them (#5195), so both are asserted; the
+/// non-trait `let helper` pins that nothing unrelated is swept in.
+#[test]
+fn get_entity_tree_trait_geometry_follows_refinement_chain() {
+    let source = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+    let helper = box(5mm, 5mm, 5mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "flange").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Flange")
+        .expect("Flange root must exist");
+
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
+
+    let geometry_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Flange.geometry" && n.kind != "realization")
+        .expect("value-cell node for 'geometry' must be present");
+    assert!(
+        geometry_cell.trait_geometry,
+        "value-cell `geometry` of a `: Rigid` structure must have \
+         trait_geometry == true — `Rigid : Physical` refines Physical, so the \
+         trait-mandated geometry member is reached through the refinement chain"
+    );
+    assert!(
+        realization("geometry").trait_geometry,
+        "the `geometry` realization of a `: Rigid` structure must have \
+         trait_geometry == true, matching its value-cell sibling (#4954/#5195)"
+    );
+    assert!(
+        !realization("helper").trait_geometry,
+        "a plain `let helper` realization must have trait_geometry == false — \
+         resolving the refinement chain must not widen which members qualify"
+    );
+}
+
+/// #5558: the merged trait defs must survive the RECURSION, not just reach the
+/// top-level templates.
+///
+/// `build_template_node` forwards `trait_defs` verbatim into its sub-component
+/// recursion. Every other `trait_geometry` test asserts on a ROOT template's
+/// children, so all of them stay green if that forwarding is replaced by an
+/// empty set — which is exactly the silent degradation (refinement chain back
+/// down to direct-bound matching) that the MERGED-set precondition on
+/// `MergedTraitDefs` exists to prevent.
+///
+/// `Assembly` declares no trait bounds of its own; the `: Rigid` structure is
+/// reached only as `sub flange : Flange`, so the assertions below read
+/// `Assembly.flange`'s children and are false unless the merged set survives
+/// one level of recursion. The root `Flange` node in the same tree is
+/// deliberately NOT what this test reads — it would pass either way.
+#[test]
+fn get_entity_tree_trait_geometry_follows_refinement_chain_in_sub_component() {
+    let source = r#"structure def Flange : Rigid {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+}
+structure Assembly {
+    sub flange : Flange at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "assembly").expect("load");
+
+    let tree = session.get_entity_tree();
+    let assembly = tree
+        .iter()
+        .find(|n| n.entity_path == "Assembly")
+        .expect("Assembly root must exist");
+    let flange = assembly
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Assembly.flange")
+        .expect("Assembly.flange sub node must exist");
+
+    let geometry_cell = flange
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Assembly.flange.geometry" && n.kind != "realization")
+        .expect("value-cell node for the nested 'geometry' must be present");
+    assert!(
+        geometry_cell.trait_geometry,
+        "value-cell `Assembly.flange.geometry` must report trait_geometry — the \
+         merged module + prelude trait defs must be forwarded into the \
+         sub-component recursion, not only used at the top level"
+    );
+
+    let geometry_realization = flange
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("geometry"))
+        .expect("realization node for the nested 'geometry' must be present");
+    assert!(
+        geometry_realization.trait_geometry,
+        "the nested `geometry` realization must agree with its value-cell \
+         sibling (#4954/#5195) one level down as well"
+    );
+}
+
+/// #5558 step-2 RED: the OTHER direction of the substring bug — a user trait
+/// merely NAMED like `Physical` must not be mistaken for it.
+///
+/// `PhysicalMock` neither IS `Physical` nor refines it (it declares no
+/// refinements at all), so `Mock.geometry` is not a trait-mandated geometry
+/// member. The substring form matches it purely on the spelling of the name.
+///
+/// The negative direction matters for the wire contract, not just tidiness: a
+/// spurious `trait_geometry == true` promotes an unrelated member in the
+/// frontend's auto-view heuristic, so a loose match is a user-visible defect
+/// rather than a harmless over-approximation.
+///
+/// Both nodes the binding emits (#4954) are asserted, since the flag is
+/// computed once and shared by the value-cell and realization branches (#5195).
+///
+/// Fails today: `"PhysicalMock".contains("Physical")` is `true`, so both nodes
+/// report `trait_geometry == true`.
+#[test]
+fn get_entity_tree_trait_geometry_rejects_lookalike_trait_name() {
+    let source = r#"trait PhysicalMock {
+    param geometry : Solid
+}
+structure def Mock : PhysicalMock {
+    param geometry : Solid = box(10mm, 10mm, 10mm)
+}"#;
+    let mut session = make_session();
+    session.load_from_source(source, "mock").expect("load");
+
+    let tree = session.get_entity_tree();
+    let root = tree
+        .iter()
+        .find(|n| n.entity_path == "Mock")
+        .expect("Mock root must exist");
+
+    let geometry_cell = root
+        .children
+        .iter()
+        .find(|n| n.entity_path == "Mock.geometry" && n.kind != "realization")
+        .expect("value-cell node for 'geometry' must be present");
+    assert!(
+        !geometry_cell.trait_geometry,
+        "value-cell `geometry` of a `: PhysicalMock` structure must have \
+         trait_geometry == false — `PhysicalMock` neither equals `Physical` \
+         nor refines it; only the name looks alike"
+    );
+
+    let geometry_realization = root
+        .children
+        .iter()
+        .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some("geometry"))
+        .expect("realization node for 'geometry' must be present");
+    assert!(
+        !geometry_realization.trait_geometry,
+        "the `geometry` realization of a `: PhysicalMock` structure must have \
+         trait_geometry == false, matching its value-cell sibling"
     );
 }
 
@@ -13839,6 +14041,12 @@ fn examples_m5_geometry_flange_hides_consumed_intermediates() {
             .find(|n| n.entity_path == path && n.kind != "realization")
             .unwrap_or_else(|| panic!("value-cell node '{path}' must be present"))
     };
+    let realization = |name: &str| -> &crate::types::EntityTreeNode {
+        root.children
+            .iter()
+            .find(|n| n.kind == "realization" && n.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("realization node for '{name}' must be present"))
+    };
     for member in ["body", "hole", "holes", "geometry"] {
         assert_eq!(
             value_cell(member).type_name.as_deref(),
@@ -13865,31 +14073,62 @@ fn examples_m5_geometry_flange_hides_consumed_intermediates() {
          rule 2 cannot hide the finished part's outline row"
     );
 
-    // ── `: Rigid` does NOT set trait_geometry (KNOWN LIMITATION pin) ──
+    // ── `: Rigid` DOES set trait_geometry (#5558 — flipped pin) ──
     //
-    // `parent_has_physical` matches DECLARED trait names only, so the
-    // refinement `Rigid : Physical` is invisible to it and every committed
-    // example — including this one — evaluates the flag to false. Pinned at the
-    // CURRENT value deliberately: the follow-up that resolves the refinement
-    // chain via `reify_eval::conforms_to_trait` must land as a visible flip of
-    // this assertion rather than silently. See `build_template_node`'s
-    // `parent_has_physical` comment.
+    // This block previously pinned the inverse ("no BoltFlange node may report
+    // trait_geometry") as a KNOWN LIMITATION of the declared-name-only
+    // substring heuristic, and required the follow-up resolving the refinement
+    // chain to land as a VISIBLE flip rather than silently. #5558 is that
+    // follow-up, and this is that flip.
     //
-    // The observable does not depend on the flag: `geometry` is un-consumed, so
-    // `default_visible == true` shows it either way (asserted above).
+    // Resolved contract: the flag follows the refinement chain
+    // `BoltFlange : Rigid : Physical` (stdlib/structural_physical.ri),
+    // resolved by `reify_eval::conforms_to_trait` against the merged module +
+    // prelude trait defs. See `build_template_node`'s
+    // `geometry_is_trait_mandated`.
+    //
+    // Asserted node-by-node rather than as a blanket count: a blanket
+    // `any(|n| n.trait_geometry)` would also be satisfied by the flag being
+    // wrongly set on `body`/`hole`/`holes`, so naming exactly which nodes flip
+    // is what pins the true scope of the change.
+    //
+    // The consumed-intermediate observable above is independent of this flag:
+    // `geometry` is un-consumed, so `default_visible == true` either way.
     assert!(
-        !root
-            .children
-            .iter()
-            .any(|n| n.trait_geometry),
-        "no BoltFlange node may report trait_geometry while the heuristic is \
-         declared-name-only and the example declares `: Rigid`; got {:?}",
-        root.children
-            .iter()
-            .filter(|n| n.trait_geometry)
-            .map(|n| &n.entity_path)
-            .collect::<Vec<_>>()
+        value_cell("geometry").trait_geometry,
+        "value cell `BoltFlange.geometry` must report trait_geometry — \
+         `BoltFlange : Rigid : Physical` reaches Physical transitively"
     );
+    assert!(
+        realization("geometry").trait_geometry,
+        "the `geometry` realization must report trait_geometry, matching its \
+         value-cell sibling (#4954/#5195)"
+    );
+    // Construction-step realizations are not the trait-mandated member.
+    for name in ["body", "hole", "holes"] {
+        assert!(
+            !realization(name).trait_geometry,
+            "construction-step realization '{name}' must NOT report \
+             trait_geometry — only the `geometry` member is trait-mandated"
+        );
+    }
+    // …nor are the plain scalar params, nor the intermediates' value cells.
+    for member in [
+        "body",
+        "hole",
+        "holes",
+        "outer_radius",
+        "height",
+        "hole_count",
+        "bolt_circle_radius",
+        "hole_radius",
+    ] {
+        assert!(
+            !value_cell(member).trait_geometry,
+            "value cell '{member}' must NOT report trait_geometry — exactly \
+             the `geometry` nodes flip, nothing else"
+        );
+    }
 }
 
 /// #5195 amendment (reviewer: robustness): a CONTAINER-typed geometry binding
