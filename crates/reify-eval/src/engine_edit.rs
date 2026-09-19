@@ -85,11 +85,16 @@
 //!      `values`/snapshot only (no cache, no journal), by design; see
 //!      the canonical Auto-cell lifecycle rule above.
 //!    - [`Engine::edit_source`] — `commit_cell_result` for both the main
-//!      write-back (task #6998) and the wave-2 ("Second propagation wave")
-//!      downstream reseed (task #6423) — both `CacheLeg::Record`. A third
-//!      phase, the post-wave2 driver-ordered guard-member reseed's
-//!      active-member leg, has NEITHER: a bare `values`/snapshot insert
-//!      with no cache write and no journal call at all.
+//!      write-back (task δ #5056; kept in sync with edit_param's arm by
+//!      task #6373) and the wave-2 ("Second propagation wave") downstream
+//!      reseed (task #6423) — both `CacheLeg::Record`. A third phase, the
+//!      post-wave2 driver-ordered guard-member reseed's active-member leg,
+//!      has NEITHER: a bare `values`/snapshot insert with no cache write
+//!      and no journal call at all. (Outside this roster: the earlier
+//!      step-(12) "Per-cell eval loop" — the ordinary per-cell eval walk
+//!      that runs before any of the above and is not itself a resolution
+//!      write-back — was separately migrated onto `commit_cell_result_at`
+//!      by task #6998.)
 //! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
 //!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
 //! 7. `objective_provenance` — `eval`'s two arms only
@@ -3842,20 +3847,13 @@ impl Engine {
                 // `SolveResult::Solved` resolution arm (#6373) and the wave2
                 // dependent-re-eval loop (#6423) above.
                 //
-                // `commit_cell_result_at(start, ..)`, not the plain
-                // `commit_cell_result`: `start` is captured above, before
-                // `reify_expr::eval_expr`, so the emitted Started/Completed
-                // pair brackets the full resolution rather than just the
-                // commit itself — see `commit_cell_result_at`'s doc (#5238
-                // amendment). Paired with edit_param's own main eval walk
-                // (~line 1521), which uses the plain `commit_cell_result` and
-                // so intentionally narrows to the commit-only span — change
-                // that site too if this one's bracketing semantics change.
-                //
-                // `UnconditionalDetermined` mirrors the pre-migration
-                // hand-rolled write, which stamped `Determined` unconditionally
-                // regardless of `val` — not a "fix", per the wave2 site's own
-                // note above.
+                // `_at(start, ..)`, not the plain form: brackets the full
+                // resolution, not just the commit — see `commit_cell_result_at`'s
+                // doc and edit_param's main eval walk (which deliberately keeps
+                // the plain form; change both together if that asymmetry ever
+                // changes). `UnconditionalDetermined` mirrors the pre-migration
+                // write rather than "fixing" it — see the wave2 site's note
+                // above.
                 let trace = extract_dependency_trace(expr);
                 let commit_outcome = commit_cell_result_at(
                     start,
@@ -7374,6 +7372,13 @@ mod tests {
     /// `expected Started payload Custom("edit-reeval"), got None`. Assertions
     /// (1), (2), (4), (5) all already pass on base — they are the
     /// behaviour-preservation net that must stay green through the migration.
+    ///
+    /// NOT COVERED: `p`/`q`/`r` are plain `Length` arithmetic, so this
+    /// fixture never produces `Value::Undef` — `DeterminacyRule::
+    /// UnconditionalDetermined` and `DeriveFromValue` are observationally
+    /// identical here, and swapping the argument at the call site would
+    /// leave this test green. Same carried-forward gap the wave2 site's own
+    /// comment already records; not this test's to close.
     #[test]
     fn edit_source_main_eval_walk_routes_through_commit_primitive() {
         use reify_constraints::SimpleConstraintChecker;
