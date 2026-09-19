@@ -1871,6 +1871,102 @@ select_cheap_ptodo_gate() {
 select_cheap_ptodo_gate
 
 # ---------------------------------------------------------------------------
+# Branch-scope at-source trigger for the PDIAG ratchet (task #7691).
+#
+# tests/infra/test_reify_audit_pdiag.sh scenario (a) — live per-file code-less
+# Diagnostic::error/warning counts must stay within
+# crates/reify-audit/pdiag-baseline.txt (INV-SF-6,
+# docs/notes/diagnostic-severity-policy.md) — ran ONLY in the merge-tier
+# run_all.sh pool. Task 7376 added two code-less sites to
+# crates/reify-compiler/src/connect.rs, went green on its own branch, and
+# learned of the regression from two ~20-minute merge-gate cycles and a thrash
+# escalation (esc-7376-2). This selector runs the same file on the task lane
+# whenever the branch could have moved a PDIAG count.
+#
+# Trigger: the merge-base diff ADDS or MODIFIES either
+#   (i)  a path pdiag_swept_path (below) accepts — only those files are
+#        counted, so only they can raise a count or appear as a new file; or
+#   (ii) crates/reify-audit/pdiag-baseline.txt itself — the other operand of
+#        the same comparison; a hand-lowered or malformed row reds scenario
+#        (a) with no swept file touched.
+# Diff-status policy (git diff --no-renames --diff-filter=AM): A and M are
+# the only statuses whose ratchet verdict can be High (NewFile / Exceeded);
+# a DELETE can only yield a Medium OrphanRow, which never reds the gate
+# (pdiag.rs RatchetVerdict::severity), so D is deliberately excluded.
+# --no-renames is load-bearing, unlike select_harness_kloc_guard's diff: a
+# renamed swept file keeps its sites but moves them to a path with no
+# baseline row — a High NewFile — so its new side must surface as an A
+# rather than vanish into an R entry --diff-filter=AM drops. Scanner edits
+# under crates/reify-audit/src/ are NOT a trigger (that crate is outside the
+# sweep, and its own cargo tests run on such a branch); the merge gate
+# remains the wholesale authority, so that residual is latency, not a hole.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS as select_harness_kloc_guard, so
+# it inherits the same four things select_cheap_ptodo_gate enumerates:
+# merge/background suppression (run_all.sh runs this file wholesale there —
+# exactly-once, INV-5; scope=branch is also structurally impossible under
+# those roles), the REIFY_INFRA_SUITE_ACTIVE re-entrancy guard, fail-fast
+# ordering before the cargo poles, and add_tool's LD_LIBRARY_PATH scrub.
+#
+# Measured cost (2026-09-19, whole leaf wall, warm lanes seeded from base gen
+# 439): 0.6s when reify_audit_guard finds target/release/reify-audit fresh —
+# the common case, since only a crates/reify-audit commit advances its
+# freshness epoch; 1.4s when that epoch has moved but the guard's cargo build
+# is a fingerprint no-op; 87s when that build really recompiles part of
+# reify-audit's release closure (a reify-compiler edit, which that closure
+# includes via reify-test-support) — inside the leaf's 10m wall.
+#
+# STALE-BINARY DECISION. The leaf deliberately does NOT set
+# REIFY_AUDIT_NO_COLD_BUILD (that would turn every stale verdict into a
+# budget-safe SKIP of scenario (a) — exactly the ratchet this selector exists
+# to run) and does NOT arm any ratchet-required refusal. The false-stale
+# state that used to make this leaf vacuous — guard rc 125 after a cargo
+# no-op against an mtime older than the last crates/reify-audit commit,
+# reproduced on a warm lane by a baseline-only commit — is closed at its
+# source instead: reify_audit_guard now accepts a successful cargo build as
+# proof of freshness for cargo's OWN artifact (see "CARGO IS THE AUTHORITY"
+# in scripts/reify-audit-freshness.sh). What still reaches rc 125 with a
+# present binary is a FAILED cargo build, where skipping (a) against the old
+# binary, loudly, is the right degrade on a task lane — the merge gate still
+# runs it.
+# ---------------------------------------------------------------------------
+
+# pdiag_swept_path <repo-relative-path> — succeeds iff PDIAG sweeps the path.
+# A DERIVED COPY of crates/reify-audit/src/pdiag.rs::is_swept_path and its
+# SCOPE_EXCLUDE_PREFIXES (cited by name, not line). Its source of truth is
+# behavioural: test_verify_scope.sh's PDIAG-DRIFT scenario replays every path
+# is_swept_path's own unit tests assert on, in both polarities, through this
+# selector, and re-derives SCOPE_EXCLUDE_PREFIXES from the Rust source.
+# Case-sensitive, like the Rust (`ends_with(".rs")`, no to_lowercase).
+pdiag_swept_path() {
+    local _p="$1" _file _stem
+    case "$_p" in *.rs) : ;; *) return 1 ;; esac
+    case "$_p" in crates/reify-audit/*|crates/reify-test-support/*) return 1 ;; esac
+    # Exactly the third segment must be `src` (a `*` glob would cross `/`).
+    [[ "$_p" =~ ^crates/[^/]*/src/ ]] || [[ "$_p" == gui/src-tauri/src/* ]] || return 1
+    # Test loci: a `tests` DIRECTORY segment, or a tests.rs / *_tests.rs stem.
+    [[ "$_p" =~ (^|/)tests/ ]] && return 1
+    _file="${_p##*/}"
+    _stem="${_file%.rs}"
+    [ "$_stem" != "tests" ] && [[ "$_stem" != *_tests ]]
+}
+
+select_pdiag_ratchet() {
+    [ "$SCOPE" = "branch" ] || return 0
+    [ -n "$_MERGE_BASE" ] || return 0
+    local _changed _path
+    _changed="$(git -C "$REPO_ROOT" diff --name-only --no-renames --diff-filter=AM "$_MERGE_BASE" 2>/dev/null)" || return 0
+    while IFS= read -r _path; do
+        [ -n "$_path" ] || continue
+        if [ "$_path" = "crates/reify-audit/pdiag-baseline.txt" ] || pdiag_swept_path "$_path"; then
+            add_selected_infra_glob "tests/infra/test_reify_audit_pdiag.sh"
+            return 0
+        fi
+    done <<< "$_changed"
+}
+select_pdiag_ratchet
+
+# ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
 #
 # Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
