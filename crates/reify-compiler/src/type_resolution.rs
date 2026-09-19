@@ -16,10 +16,21 @@ thread_local! {
     /// crate (including unit tests). Threading a new argument through all of them
     /// for a narrow fallback would be large churn with no behavioural change at the
     /// many sites that would pass it empty. Instead the resolver reads this ambient
-    /// set, installed (via [`EnumNameScope`]) ONLY around struct-param resolution
-    /// (`entity.rs`), where the module's `enum_defs` are in scope. It is empty
-    /// everywhere else, so non-`param` type positions are unaffected — the same
-    /// param-position scoping precedent as qualified-assoc resolution (`entity.rs`).
+    /// set, installed (via [`EnumNameScope`]) at exactly four sites, each of which
+    /// has the module's `enum_defs` in scope:
+    ///
+    ///   * `entity.rs`    — struct-param resolution (task 2998);
+    ///   * `functions.rs` — fn param resolution;
+    ///   * `functions.rs` — fn return-type resolution;
+    ///   * `compile_builder/defs_phase.rs::phase_constraint_defs` —
+    ///     constraint-def param resolution, installed once for the whole
+    ///     declaration loop; `compile_constraint_def` documents the
+    ///     precondition it relies on (task 6416).
+    ///
+    /// It is empty everywhere else, so type positions outside those four are
+    /// unaffected — the same param-position scoping precedent as qualified-assoc
+    /// resolution (`entity.rs`). Keep this list in sync: `grep -rn
+    /// 'EnumNameScope::new' crates/` is the authority.
     /// Type resolution is single-threaded per module and the set lives only for the
     /// lifetime of an `EnumNameScope` guard.
     static RESOLUTION_ENUM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -2056,8 +2067,9 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     // parameterized builtin (e.g. the `QoIDescriptor` in `Option<QoIDescriptor>`)
     // reaches this bare-`Named` tail because `resolve_type_with_aliases` above
     // resolves builtins / aliases / structures / traits but NOT enums. Consult the
-    // ambient enum set installed by `EnumNameScope` (non-empty ONLY around
-    // struct-param resolution; empty otherwise — see `RESOLUTION_ENUM_NAMES`).
+    // ambient enum set installed by `EnumNameScope` (non-empty around struct-param,
+    // fn param/return and constraint-def param resolution; empty otherwise — see
+    // `RESOLUTION_ENUM_NAMES` for the authoritative install-site list).
     // Bare names only: enums are non-parametric in v0.4, so an `Enum<Args>` form
     // keeps `type_args` non-empty and falls through (entity.rs then emits "enum
     // does not accept type arguments"). This is the same enum fallback that the
@@ -2209,38 +2221,52 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
 /// The deferred use-site arm in [`resolve_type_expr_with_aliases_kinded`]
 /// resolves an entity-bodied alias by RECURSING into that same function, so the
 /// body's ENUM-ness is only visible where the ambient [`RESOLUTION_ENUM_NAMES`]
-/// set is live. [`EnumNameScope`] installs it at exactly two places: struct-param
-/// resolution (`entity.rs`) and fn param/return resolution (`functions.rs`).
+/// set is live. [`EnumNameScope`] installs it at four places — struct-param
+/// resolution (`entity.rs`), fn param and fn return resolution (`functions.rs`),
+/// and, since task 6416, constraint-def param resolution (`defs_phase.rs`).
 ///
-/// Three other declared-type positions install no such scope. Each instead owns
-/// a PRIVATE enum namespace, consulted by a post-hoc fallback AFTER
+/// TWO declared-type positions still install no such scope (task 6259 described
+/// three; 6416 converted the constraint-def one). Each remaining position owns a
+/// PRIVATE enum namespace, consulted by a post-hoc fallback AFTER
 /// `resolve_type_expr_with_aliases` has already returned `None`, and keyed on
 /// the OUTER name — which for `type AL = Zq` is `AL`, never `Zq`. The body's
 /// enum-ness is therefore structurally unreachable at:
 ///
 ///   * `compile_builder/enums_phase.rs` — enum variant payload field;
-///   * `traits.rs` — trait member `param`/`let` annotation;
-///   * `compile_builder/defs_phase.rs` — constraint-def param.
+///   * `traits.rs` — trait member `param`/`let` annotation.
 ///
 /// Each of those sites resolves its private namespace against
 /// `unresolved_alias_body_name(name, reg).unwrap_or_else(|| name.to_string())`,
 /// so the lookup sees `Zq` and matches the direct spelling exactly.
 ///
-/// # Why NOT install `EnumNameScope` at those three sites instead
+/// # Why NOT install `EnumNameScope` at the two remaining sites instead
 ///
-/// That uniform-looking alternative perturbs the DIRECT path, and at the
-/// constraint-def site the perturbation is a real semantic change outside this
-/// task's scope. Today `constraint def K { param g : Zq }` stores `ty: None`:
-/// `resolve_type_expr_with_aliases` returns `None` for a bare enum there and
-/// `defs_phase.rs`'s guard only SUPPRESSES the diagnostic via `resolve_enum_type`
-/// — it never populates `ty`. An ambient enum scope would make that same direct
+/// That uniform-looking alternative perturbs the DIRECT path. Whether the
+/// perturbation is WANTED is a per-site judgement, and the constraint-def site
+/// is the worked example of it being wanted: this doc previously argued the
+/// change there was out of scope because it "would make that same direct
 /// spelling start storing `Some(Type::Enum("Zq"))`, changing what
-/// `expand_constraint_inst` type-checks at every instantiation site.
+/// `expand_constraint_inst` type-checks at every instantiation site". That is
+/// exactly what task 6416 then did ON PURPOSE — the check (task 4546) skips
+/// params whose `ty` is `None`, so it had been silently inert for every
+/// enum-typed constraint param, which was the defect. MEASURED after 6416:
+/// `param g : Zq` and `param g : AL` both store `Some(Enum("Zq"))` with zero
+/// diagnostics, and an `Int` arg at the instantiation site now raises exactly
+/// one `ConstraintArgTypeMismatch` through both spellings.
 ///
-/// This helper cannot do that: it is consulted ONLY on a branch the direct
-/// spelling never reaches (the `.or_else(..)` / `is_none()` fallback that runs
-/// after resolution has already failed), so the direct path is provably
-/// unperturbed. Do not "simplify" it back into an `EnumNameScope` install.
+/// So: do not read the paragraph above as a blanket prohibition. Before adding
+/// a scope at `enums_phase.rs` or `traits.rs`, work out what the DIRECT path at
+/// that site would start storing and who consumes it; the constraint-def
+/// precedent says a deliberate, tested change of that consumer is legitimate,
+/// while an incidental one is not.
+///
+/// This helper is still load-bearing at all three of its call sites, INCLUDING
+/// the constraint-def one where a scope is now installed, because the ambient
+/// fallback is gated on `type_args.is_empty()` while this hop is not. MEASURED
+/// at `defs_phase.rs` after 6416: with the hop removed, `param g : AL<Int>`
+/// starts emitting a spurious "unknown type 'AL'", while the bare `param g : AL`
+/// stays clean via the ambient fallback. Its remaining reach there is therefore
+/// exactly the PARAMETERISED alias form. Do not delete it as newly redundant.
 ///
 /// # Contract
 ///
