@@ -172,6 +172,27 @@ const JointRow: Component<JointRowProps> = (props) => {
   let rafId: number | null = null;
   let lastPreview: Promise<void> = Promise.resolve();
 
+  /**
+   * How long after a durable write the next one is held back and coalesced.
+   *
+   * A range input fires `change` once per pointer release — and once per ARROW
+   * KEY, where auto-repeat delivers roughly 30 a second. Each of those is a
+   * full recompile plus an atomic `.ri` rewrite, which is precisely the
+   * frame-rate write cadence the preview/commit split exists to prevent; the
+   * RAF coalescer cannot help, because it sits on `input` and it is `change`
+   * that schedules the commit.
+   *
+   * Comfortably longer than that repeat interval, so a held key coalesces;
+   * short enough that two deliberate gestures in a row still feel immediate.
+   */
+  const COMMIT_COALESCE_MS = 200;
+
+  // Leading edge, then one trailing write per cooldown. Leading deliberately:
+  // a pointer release must not be able to end a gesture with the durable write
+  // still only scheduled, or a row unmounted in that window would drop it.
+  let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
+  let deferredCommit: number | null = null;
+
   function schedulePreview(displayValue: number): void {
     pendingValue = displayValue;
     if (rafId !== null) return;
@@ -196,8 +217,21 @@ const JointRow: Component<JointRowProps> = (props) => {
     pendingValue = null;
   }
 
-  // An unmount mid-drag must not leave a frame behind to preview into a dead row.
-  onCleanup(cancelPendingPreview);
+  // An unmount mid-drag must not leave a frame behind to preview into a dead
+  // row — but a coalesced commit is the opposite case and is FLUSHED, not
+  // dropped: a preview is transient by definition, while a durable write the
+  // user has already made is theirs whether or not this row survives to see it
+  // land.
+  onCleanup(() => {
+    cancelPendingPreview();
+    if (coalesceTimer !== null) {
+      clearTimeout(coalesceTimer);
+      coalesceTimer = null;
+    }
+    const val = deferredCommit;
+    deferredCommit = null;
+    if (val !== null) void commitDisplayValue(val);
+  });
 
   function handleInput(event: Event): void {
     const input = event.target as HTMLInputElement;
@@ -218,19 +252,51 @@ const JointRow: Component<JointRowProps> = (props) => {
   }
 
   /**
-   * Pointer release — the gesture's one durable write.
+   * The gesture's durable write: drop the preview frame still pending, let the
+   * one already dispatched go first, then commit.
    *
-   * Drops the preview frame still pending and awaits the one already in flight,
-   * so no intermediate drag value can reach the engine after this commit's
-   * recompile and snap the viewport back.
+   * ORDER, not this `await`, is what keeps an intermediate drag value from
+   * landing after the commit and snapping the viewport back. `lastPreview`
+   * holds only the most RECENT preview promise — the RAF re-arms as soon as a
+   * frame fires, so frame N+1 can dispatch while frame N's IPC is outstanding,
+   * and awaiting N+1 proves nothing about N. The real guarantee is that every
+   * one of these calls is submitted to `large_stack::run_on_worker`'s ENGINE
+   * lane, which has a single consumer and serves its queue in order: the
+   * engine applies them in the order they were submitted, and the commit was
+   * submitted last. The await is belt-and-braces for the RESPONSE path, so the
+   * commit's state is the last one this row reasons about.
    */
-  async function handleChange(event: Event): Promise<void> {
-    const displayValue = Number((event.target as HTMLInputElement).value);
+  async function commitDisplayValue(displayValue: number): Promise<void> {
     const param = effectiveParamCellId();
     cancelPendingPreview();
     await lastPreview;
     if (param === null) return;
     props.onSetParameter(param, formatParamValue(displayValue, kind()));
+  }
+
+  function openCoalesceWindow(): void {
+    coalesceTimer = setTimeout(() => {
+      coalesceTimer = null;
+      const val = deferredCommit;
+      deferredCommit = null;
+      if (val === null) return;
+      void commitDisplayValue(val);
+      // A burst still in flight keeps its cadence bounded rather than
+      // resuming at key-repeat rate the moment one window closes.
+      openCoalesceWindow();
+    }, COMMIT_COALESCE_MS);
+  }
+
+  function handleChange(event: Event): void {
+    const displayValue = Number((event.target as HTMLInputElement).value);
+    if (coalesceTimer !== null) {
+      // Only the LAST value of a burst is worth writing: the ones before it
+      // are positions the slider has already left.
+      deferredCommit = displayValue;
+      return;
+    }
+    void commitDisplayValue(displayValue);
+    openCoalesceWindow();
   }
 
   // Compute the data-binding marker for testability and visual distinction.

@@ -386,6 +386,101 @@ describe('MechanismPanel', () => {
       }
     });
 
+    it('a burst of change events commits the first and then one trailing write', async () => {
+      // `change` fires once per pointer release AND once per arrow key, and
+      // auto-repeat delivers roughly 30 of those a second. Each one is a full
+      // recompile plus an atomic `.ri` rewrite, so keyboard scrubbing was the
+      // one gesture still routing the write cadence the preview/commit split
+      // exists to prevent straight through.
+      vi.useFakeTimers();
+      try {
+        const onSetParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: 'Kinematic.y_pos',
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+            }),
+          ],
+        });
+        render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={vi.fn()}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+
+        for (const value of ['100', '110', '120']) {
+          fireEvent.change(slider, { target: { value } });
+        }
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Leading edge: the first release-or-keypress is durable immediately,
+        // so no gesture can end with its write merely scheduled.
+        expect(onSetParameter).toHaveBeenCalledTimes(1);
+        expect(onSetParameter).toHaveBeenCalledWith('Kinematic.y_pos', '100mm');
+
+        // Trailing edge: the rest of the burst collapses to its LAST value,
+        // the only one the slider still sits on.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(onSetParameter).toHaveBeenCalledTimes(2);
+        expect(onSetParameter).toHaveBeenLastCalledWith('Kinematic.y_pos', '120mm');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a coalesced write still lands when the row unmounts before its window closes', async () => {
+      // The asymmetry with a pending PREVIEW, which unmount cancels: a preview
+      // is transient by definition, while a durable write the user has already
+      // made is theirs whether or not this row survives to see it land.
+      vi.useFakeTimers();
+      try {
+        const onSetParameter = vi.fn();
+        const desc = makeDescriptor({
+          cell_id: 'Kinematic.m',
+          joints: [
+            makeJoint({
+              joint_index: 0,
+              kind: 'prismatic',
+              driving_param_cell_id: 'Kinematic.y_pos',
+              range_lower_si: 0,
+              range_upper_si: 0.8,
+            }),
+          ],
+        });
+        const { unmount } = render(() => (
+          <MechanismPanel
+            descriptors={[desc]}
+            onSetParameter={onSetParameter}
+            onPreviewParameter={vi.fn()}
+            onScrubLocal={vi.fn()}
+          />
+        ));
+        const slider = screen.getByRole('slider') as HTMLInputElement;
+
+        fireEvent.change(slider, { target: { value: '100' } });
+        fireEvent.change(slider, { target: { value: '120' } });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(onSetParameter).toHaveBeenCalledTimes(1);
+
+        unmount();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(onSetParameter).toHaveBeenCalledTimes(2);
+        expect(onSetParameter).toHaveBeenLastCalledWith('Kinematic.y_pos', '120mm');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('revolute slider change commits "Xdeg"', async () => {
       const raf = installManualRaf();
       try {
