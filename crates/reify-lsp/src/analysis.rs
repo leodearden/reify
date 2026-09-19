@@ -590,6 +590,75 @@ pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan
     Some(named)
 }
 
+/// The `structure def`s nested inside `decl`'s body, or an empty slice for a
+/// declaration kind that has no nested declaration region.
+///
+/// WILDCARD-FREE over all 14 `Declaration` variants, for the same reason
+/// [`decl_name_and_span`] is: "does this kind carry child DECLARATIONS?" is a
+/// per-kind question, and answering it with a `_` arm is how a kind that later
+/// grows one gets silently skipped. Today exactly one kind does — a `purpose`,
+/// whose `structure def` members are kept out of `PurposeDef.members` and
+/// collected into `PurposeDef.structures` (task 4639).
+fn nested_structures(decl: &Declaration) -> &[reify_ast::StructureDef] {
+    match decl {
+        Declaration::Purpose(p) => &p.structures,
+        Declaration::Structure(_)
+        | Declaration::Occurrence(_)
+        | Declaration::Enum(_)
+        | Declaration::Function(_)
+        | Declaration::Trait(_)
+        | Declaration::Field(_)
+        | Declaration::Constraint(_)
+        | Declaration::Unit(_)
+        | Declaration::TypeAlias(_)
+        | Declaration::Joint(_)
+        | Declaration::Import(_)
+        | Declaration::Module(_)
+        | Declaration::Default(_) => &[],
+    }
+}
+
+/// Every name declared by a `structure def` nested inside a `purpose` body,
+/// paired with that structure's own statement span — the companion to
+/// [`decl_name_and_span`] for the names that are NOT `Declaration`s.
+///
+/// WHY IT IS SEPARATE rather than folded into [`decl_name_and_span`]: that
+/// function's contract is precisely "the name a top-level `Declaration`
+/// declares", and its compile-error forcing function is keyed to the 14
+/// `Declaration` variants. A purpose-nested structure is not one of them, so
+/// folding it in would blur a well-defined purpose and buy nothing the
+/// wildcard-free [`nested_structures`] does not already give.
+///
+/// WHY NAVIGATION TREATS THESE AS FILE-WIDE: the compiler puts the name in the
+/// MODULE-LEVEL structure namespace. `compile_builder::pre_pass`'s
+/// `Declaration::Purpose` arm registers each through
+/// `record_or_report_duplicate(…, "structure")` — so it COLLIDES with a
+/// same-named top-level structure — and `compile_builder::entities_phase`
+/// compiles it into the same `ctx.templates` as a top-level structure, scoping
+/// only AMBIENT-DEFAULT resolution to the purpose. Its one documented
+/// limitation, that `structure_refs` omits them so no function-signature
+/// skeleton is built, is a skeleton gap rather than a visibility rule.
+///
+/// SINGLE-LEVEL, by construction and not by choice: the grammar allows
+/// `structure_definition` only one level under `purpose_member`, so there is no
+/// deeper nesting to recurse into. `compile_builder::entities_phase`'s Purpose
+/// arm is the INVARIANT OWNER and carries the same note against `grammar.js`;
+/// if the permitted nesting depth ever changes, that arm and this one move
+/// together.
+///
+/// The crate's single source of purpose-nested names: the same-file goto-def
+/// scan, the cross-file oracle and the rename classifier all read it, so they
+/// cannot drift into three independent descents — which is exactly how the
+/// per-kind rot this task exists to undo began.
+pub(crate) fn purpose_nested_decl_names(
+    parsed: &ParsedModule,
+) -> impl Iterator<Item = (&str, SourceSpan)> {
+    parsed
+        .declarations
+        .iter()
+        .flat_map(|decl| nested_structures(decl).iter().map(|s| (s.name.as_str(), s.span)))
+}
+
 /// Recursively count Param, Let, and Constraint members, including those
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
 ///

@@ -140,9 +140,13 @@ pub fn compute_goto_definition_with_parsed(
 /// When two declarations share a name (already a semantic error) the FIRST in
 /// source order wins.
 ///
-/// SCOPE. Top-level declarations only — a `structure def` nested inside a
-/// `purpose` body lives in `PurposeDef.structures`, so it is not resolved
-/// (pinned by `goto_def_purpose_nested_structure_is_not_top_level`). And
+/// SCOPE. Module-level names — every top-level `Declaration` that declares one,
+/// plus the `structure def`s nested one level inside a `purpose` body. The
+/// nested ones are not `Declaration`s (they live in `PurposeDef.structures`)
+/// but the compiler registers them in the MODULE-LEVEL structure namespace, so
+/// they are file-wide navigable; [`crate::analysis::purpose_nested_decl_names`]
+/// carries that evidence and owns the descent. Pinned by
+/// `goto_def_resolves_a_purpose_nested_structure_file_wide`. And
 /// same-file only: cross-file goto-def runs [`decl_name_span_in`] instead. The
 /// two now agree on every kind but one — #6539 (rolled up in #6972) taught the
 /// use-site collectors to walk type expressions, which let the cross-file scan
@@ -156,10 +160,24 @@ fn resolve_decl_name(
     word: &str,
     cursor: Option<usize>,
 ) -> Option<Location> {
-    for decl in &parsed.declarations {
-        let Some((name, span)) = crate::analysis::decl_name_and_span(decl) else {
-            continue;
-        };
+    // Top-level declarations FIRST, purpose-nested structures after, so a
+    // genuine top-level declaration wins a name clash. That is not a new rule:
+    // it is the same first-in-source-order tie-break the scan already used, and
+    // the clash is a real possibility because the compiler registers a
+    // purpose-nested structure in the MODULE-LEVEL namespace, where it collides
+    // with a same-named top-level `structure`.
+    //
+    // One chained scan rather than two loops: every candidate then goes through
+    // the same name check, cursor-containment filter and `decl_name_token`
+    // narrowing, so the purpose-nested path cannot acquire subtly different
+    // matching or refusal behaviour.
+    let candidates = parsed
+        .declarations
+        .iter()
+        .filter_map(crate::analysis::decl_name_and_span)
+        .chain(crate::analysis::purpose_nested_decl_names(parsed));
+
+    for (name, span) in candidates {
         if name != word {
             continue;
         }
