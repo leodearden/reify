@@ -1414,6 +1414,14 @@ assert "PDIAG-DRIFT: derived corpus has at least one SWEPT path (the positive ha
     bash -c 'printf "%s\n" "$1" | grep -q "^1 "' _ "$_PDIAG_CORPUS"
 assert "PDIAG-DRIFT: derived corpus has at least one NOT-swept path (the negative half is not vacuous)" \
     bash -c 'printf "%s\n" "$1" | grep -q "^0 "' _ "$_PDIAG_CORPUS"
+# Completeness of the scrape itself: every is_swept_path( call in pdiag.rs's
+# test module must be an assert form the awk above reads. A test reshaped into
+# a form it does not recognise (a multi-line assert!, a (path, want) table)
+# would otherwise drop out of the corpus while both floors above stay green.
+_PDIAG_TEST_CALLS="$(awk '/^mod tests \{/ { t = 1 } t && /is_swept_path\(/ && !/^[[:space:]]*\/\// { c++ } END { print c + 0 }' "$_PDIAG_RS")"
+_PDIAG_READ_CALLS="$(awk '/^mod tests \{/ { t = 1 } t && /assert!\(!?is_swept_path\(/ { c++ } END { print c + 0 }' "$_PDIAG_RS")"
+assert "PDIAG-DRIFT: every is_swept_path call in pdiag.rs's tests is a form the scraper reads ($_PDIAG_READ_CALLS of $_PDIAG_TEST_CALLS)" \
+    [ "$_PDIAG_TEST_CALLS" -eq "$_PDIAG_READ_CALLS" ]
 while read -r _pd_pol _pd_path; do
     [ -n "$_pd_path" ] || continue
     plan_for_branch "$_pd_path"

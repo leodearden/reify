@@ -1584,8 +1584,9 @@ add_selected_infra_glob() {
 # That selector is the sole producer of this glob token today and is already
 # staged-only, but a future verify-pipeline-infra-tests.txt row mapping some
 # artifact to this same path would reach the arm under --scope branch, where a
-# warm-lane stamped target/ makes a rc-125-with-present-binary freshness
-# result the COMMON case and a hard refusal would red every task lane. What
+# rc-125-with-present-binary freshness result is still reachable (a FAILED
+# rebuild leaves the older binary executable; since #7691 a successful no-op
+# rebuild no longer lands here) and a hard refusal would red that lane. What
 # the arm produces there is an EMPTY prefix — the same un-armed, byte-identical
 # leaf every other glob gets — and that un-armed branch leaf is what
 # test_verify_scope.sh's PT-RATCHET-BRANCH pins.
@@ -1800,9 +1801,9 @@ select_harness_kloc_guard
 #
 # A THIRD outcome of that rebuild is NOT accepted, and is closed here. If
 # reify_audit_guard's rebuild attempt still leaves the binary judged stale
-# (rc=125 — e.g. a cargo no-op fingerprint match against an on-disk mtime
-# older than the last crates/reify-audit commit, such as a warm-lane target/
-# with stamped mtimes) while REIFY_AUDIT_BIN stays executable,
+# (rc=125 — since #7691 that means the rebuild FAILED, or REIFY_AUDIT_BIN is
+# not cargo's own artifact; a successful no-op rebuild now returns 0) while
+# REIFY_AUDIT_BIN stays executable,
 # tests/infra/test_reify_audit_ptodo.sh still sets RATCHET_SKIP=1 and skips
 # exactly scenario (a)+(b) — the gen-driven fingerprint ratchet this selector
 # exists to run — while executing its (c)-(g) exit-code hard gate, which is

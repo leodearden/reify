@@ -246,7 +246,9 @@ reify_audit_is_stale() {
 #               NO live consumer — never wire this to a done-flip path (#7139).
 # mode=rebuild: If stale, run `cargo build --release -q -p reify-audit`
 #               (cwd=repo_root), then re-check freshness.
-#               If still stale after rebuild, print hint and return 125.
+#               If still stale after rebuild, print hint and return 125 —
+#               unless the build SUCCEEDED and $bin is cargo's own artifact
+#               (CARGO IS THE AUTHORITY, #7691), which returns 0.
 #               If fresh (before or after rebuild), return 0.
 # mode=<other>: UNKNOWN mode — print E_AUDIT_GUARD_BAD_MODE and proceed as
 #               warn-open. Never falls through to a refusal (#7139 review).
@@ -340,9 +342,20 @@ reify_audit_guard() {
         # Scoped to cargo's own output path: a success says nothing about a
         # copy elsewhere (an installed binary, a hermetic test's fake), which
         # keeps the mtime verdict.  A FAILED build keeps it too, and falls
-        # through to rc 125 below.
-        if [ "$_cargo_rc" -eq 0 ] && [ -x "$bin" ] \
-            && [ "$(realpath -m "$bin")" = "$(cd "$repo_root" && realpath -m "${CARGO_TARGET_DIR:-target}/release/reify-audit")" ]; then
+        # through to rc 125 below.  `-ef` compares device and inode, so it
+        # follows symlinks and is false when either file is missing — it
+        # cannot fail open the way two empty path strings would.
+        #
+        # The output path is derived from CARGO_TARGET_DIR alone.  A build
+        # redirected by CARGO_BUILD_TARGET_DIR or a CARGO_BUILD_TARGET triple
+        # would leave that path naming an untouched old binary, so either one
+        # set keeps the mtime verdict.  The config-file forms (build.target-dir,
+        # build.target) are NOT detected: reify's .cargo/config.toml sets
+        # neither, and adding one must revisit this rule.
+        local _cargo_bin="${CARGO_TARGET_DIR:-target}/release/reify-audit"
+        case "$_cargo_bin" in /*) ;; *) _cargo_bin="$repo_root/$_cargo_bin" ;; esac
+        if [ "$_cargo_rc" -eq 0 ] && [ -x "$bin" ] && [ "$bin" -ef "$_cargo_bin" ] \
+            && [ -z "${CARGO_BUILD_TARGET_DIR:-}${CARGO_BUILD_TARGET:-}" ]; then
             echo "reify-audit: '$bin' mtime $btime predates crates/reify-audit commit $epoch, but cargo build just succeeded against it — cargo's fingerprint is the freshness authority for its own artifact; treating it as fresh" >&2
             return 0
         fi

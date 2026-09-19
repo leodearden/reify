@@ -711,11 +711,17 @@ CA_FAILED_RC=$?
 env -u CARGO_TARGET_DIR PATH="$CA_SHIM:$PATH" CA_CARGO_RC=0 \
     bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$CA_COPY' rebuild '$CA_REPO' 2>/dev/null"
 CA_COPY_RC=$?
+env -u CARGO_TARGET_DIR PATH="$CA_SHIM:$PATH" CA_CARGO_RC=0 \
+    CARGO_BUILD_TARGET_DIR="$TMPDIR_FRESHNESS/redirected-target" \
+    bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$CA_BIN' rebuild '$CA_REPO' 2>/dev/null"
+CA_REDIRECTED_RC=$?
 set -e
 assert "20c: FAILED cargo build → still rc 125 (a failure vouches for nothing)" \
     test "$CA_FAILED_RC" -eq 125
 assert "20d: successful cargo build but a NON-cargo path (installed copy) → still rc 125" \
     test "$CA_COPY_RC" -eq 125
+assert "20e: successful cargo build REDIRECTED by CARGO_BUILD_TARGET_DIR → still rc 125 (target/release is not where cargo wrote)" \
+    test "$CA_REDIRECTED_RC" -eq 125
 
 # -- Summary ------------------------------------------------------------------
 test_summary
