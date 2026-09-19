@@ -3907,11 +3907,17 @@ impl OcctKernel {
     /// This reports both, from the same single arm-selection site, so the two
     /// agree bit-for-bit.
     ///
-    /// A `tessellation_fallback == true` result is also the caller's signal
-    /// that the rest of the mass-property family — `Centroid`, `CenterOfMass`,
-    /// `MomentOfInertia`, `InertiaTensor` — is returning its degenerate
-    /// origin/zero default for this shape rather than a measurement: those
-    /// queries have no fallback arm of their own.
+    /// `tessellation_fallback == true` reads NARROWLY today: on OCCT 7.8 every
+    /// shape measured to reach that arm is a face-less compound, whose exact
+    /// integral and tessellation arm both sum nothing, so the flag means "this
+    /// shape has no measurable volume" rather than "an approximation was
+    /// substituted for an exact number".
+    ///
+    /// It is correspondingly the caller's signal that the rest of the
+    /// mass-property family — `Centroid`, `CenterOfMass`, `MomentOfInertia`,
+    /// `InertiaTensor` — is returning its degenerate origin/zero default for
+    /// this shape rather than a measurement: those queries have no fallback arm
+    /// of their own.
     pub fn volume_measurement(
         &self,
         id: GeometryHandleId,
@@ -5185,12 +5191,12 @@ mod tests {
 
     /// Store the EMPTY `TopoDS_Compound` fixture and return its handle ID.
     ///
-    /// The only Rust-constructible shape whose exact volume integral returns
-    /// mass bitwise 0.0 while `ShapeType()` (COMPOUND = 0) is <= `TopAbs_SOLID`
-    /// — i.e. the only input that reaches `query_volume`'s tessellation
-    /// fallback. Reached through `store_raw` rather than the `test-fixtures`-
-    /// gated `store_*_for_test` helpers, which only `tests/harness_occt/*.rs`
-    /// can see.
+    /// The simplest member of the face-less-compound class that reaches
+    /// `compute_volume_arm`'s tessellation fallback; the class boundary and the
+    /// measured values live in the canonical note on the fixture's definition
+    /// in occt_wrapper.cpp. Reached through `store_raw` rather than the
+    /// `test-fixtures`-gated `store_*_for_test` helpers, which only
+    /// `tests/harness_occt/*.rs` can see.
     fn store_empty_compound(kernel: &mut OcctKernel) -> GeometryHandleId {
         kernel.store_raw(
             ffi::ffi::make_empty_compound_for_test()
@@ -6960,6 +6966,10 @@ mod tests {
             "Volume query on null-topology shape must return Err, not crash/Ok"
         );
         assert!(
+            kernel.volume_measurement(h).is_err(),
+            "volume_measurement on null-topology shape must return Err, not crash/Ok"
+        );
+        assert!(
             kernel.query(&GeometryQuery::Centroid(h)).is_err(),
             "Centroid query on null-topology shape must return Err"
         );
@@ -6983,8 +6993,9 @@ mod tests {
     /// even when called DIRECTLY, bypassing the `get_shape` boundary guard.
     /// This pins the C++ IsNull guards independently of the Rust chokepoint, so
     /// any future or direct-FFI path that skips `get_shape` still fails safely.
-    /// Covers the mass-property queries (volume/centroid/bbox/inertia) plus the
-    /// surface/linear-property queries (face_centroid/area/edge_length);
+    /// Covers the mass-property queries (volume/volume_measurement/centroid/
+    /// bbox/inertia) plus the surface/linear-property queries
+    /// (face_centroid/area/edge_length);
     /// `query_face_centroid` is the one reached from the production `Centroid`
     /// dispatch for Face-repr handles, so its direct-FFI guard closes the last
     /// gap the get_shape chokepoint already covers.
@@ -7007,6 +7018,12 @@ mod tests {
         assert!(
             ffi::ffi::query_volume(&null_shape).is_err(),
             "query_volume on null-topology shape must return Err, not crash"
+        );
+        // Same crash vector, second entry point: both delegate to
+        // compute_volume_arm, which is where the IsNull guard now lives.
+        assert!(
+            ffi::ffi::query_volume_measurement(&null_shape).is_err(),
+            "query_volume_measurement on null-topology shape must return Err, not crash"
         );
         assert!(
             ffi::ffi::query_centroid(&null_shape).is_err(),
@@ -12467,11 +12484,12 @@ mod tests {
 
     /// Real solids report the exact integral, never the tessellation fallback.
     ///
-    /// `query_volume`'s in-code comment blames "parametric surfaces (e.g.
-    /// revolution surfaces)" for integrating to 0, which is the fallback's
-    /// stated reason to exist. On OCCT 7.8 that is stale, and the revolve case
-    /// below is precisely that shape class — it is the load-bearing one here
-    /// and must report `tessellation_fallback == false`.
+    /// `query_volume`'s original in-code comment blamed "parametric surfaces
+    /// (e.g. revolution surfaces)" for integrating to 0 — the fallback's stated
+    /// reason to exist. On OCCT 7.8 that was stale, so this task deleted it and
+    /// this test is what keeps it deleted: the revolve case below is precisely
+    /// that shape class, it is the load-bearing one here, and it must report
+    /// `tessellation_fallback == false`.
     ///
     /// TOLERANCE BASES (do not retune): 1e-9 is what the gate-passing
     /// `torus_execute_volume` uses for an analytic primitive, whose in-file
@@ -12553,8 +12571,14 @@ mod tests {
         }
     }
 
-    /// The one constructible shape that takes the fallback, and the parity
-    /// contract for the rest of the mass-property family.
+    /// The simplest shape that takes the fallback, and the parity contract for
+    /// the rest of the mass-property family.
+    ///
+    /// It is not the only one: any face-less compound reaches the same arm (see
+    /// the canonical note on `make_empty_compound_for_test` in
+    /// occt_wrapper.cpp). The empty compound is chosen because it is the
+    /// cheapest member to build, and every member answers identically — both
+    /// arms sum zero faces.
     ///
     /// CONTRACT: `tessellation_fallback == true` is the caller's signal that
     /// every other mass-property answer for this shape is a default, not a
@@ -12694,7 +12718,11 @@ mod tests {
         );
         assert_ne!(
             m.volume, 0.0,
-            "faces coplanar with the origin integrate to FP noise, not to bitwise zero"
+            "this fixture no longer discriminates bitwise-vs-tolerance on this OCCT \
+             build: its origin-coplanar faces summed to exact zero instead of FP \
+             noise, which is a property of OCCT's summation order, not of reify. \
+             REPAIR by finding a shape whose exact integral is tiny-but-nonzero; do \
+             NOT relax or delete this assertion — that silently unpins the guard."
         );
         assert!(
             m.volume.abs() < 1e-12,

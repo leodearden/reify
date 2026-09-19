@@ -4554,55 +4554,58 @@ static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
 /// wrapper. `query_volume` and `query_volume_measurement` both delegate here,
 /// so they can never disagree about which arm ran or what it returned.
 ///
-/// Callers must have rejected null topology already: `ShapeType()` below
-/// dereferences the TShape handle and would SIGSEGV rather than throw.
-static VolumeMeasurement compute_volume_arm(const TopoDS_Shape& shape) {
+/// DEFENSE-IN-DEPTH: reject null/empty topology before any deref. The check
+/// lives HERE rather than in each caller so the precondition is enforced at the
+/// same single site that selects the arm, and a future third entry point
+/// inherits an enforced invariant instead of a hand-off contract. `ShapeType()`
+/// below dereferences the TShape handle and would SIGSEGV on null topology
+/// (wrap_occt_call catches C++ exceptions, not the hardware signal). The
+/// primary guard is get_shape at the Rust boundary; this covers any direct-FFI
+/// or future path that bypasses it. Thrown as a ContractViolation with no op
+/// prefix, so each caller's own wrap_occt_call names itself.
+static VolumeMeasurement compute_volume_arm(const OcctShape& shape) {
+    if (shape.shape.IsNull()) {
+        throw ContractViolation("shape has null/empty topology");
+    }
     GProp_GProps props;
-    BRepGProp::VolumeProperties(shape, props);
+    BRepGProp::VolumeProperties(shape.shape, props);
     const double vol = props.Mass();
     // Guard is BITWISE, not a tolerance: an FP-noise volume is a measurement,
     // not an absent one. On OCCT 7.8 a revolution-surface solid integrates to a
-    // correct non-zero volume, so the only Rust-constructible shape that reaches
-    // the fallback is an empty compound, for which both arms return 0.0. Pinned
-    // by volume_measurement_reports_exact_for_real_solids and
+    // correct non-zero volume; the shapes measured to reach the fallback are
+    // FACE-LESS COMPOUNDS (VolumeProperties integrates over faces, so a compound
+    // with none sums to bitwise 0.0 while ShapeType() COMPOUND is <=
+    // TopAbs_SOLID), for which the tessellation arm likewise sums nothing and
+    // returns 0.0 — see make_empty_compound_for_test for the measured detail.
+    // Pinned by volume_measurement_reports_exact_for_real_solids and
     // volume_measurement_fallback_guard_is_bitwise_not_tolerance.
-    if (vol == 0.0 && shape.ShapeType() <= TopAbs_SOLID) {
-        return VolumeMeasurement{mesh_based_volume(shape, 0.01), true};
+    // TODO(#7707): every shape measured to satisfy this guard is face-less, so
+    // mesh_based_volume iterates zero faces and returns the 0.0 the exact arm
+    // already produced — the arm's body is unreachable in practice, and the
+    // flag can only mean "no measurable volume", never "approximated". #7707
+    // rules on deleting the arm outright vs keeping it as defence.
+    if (vol == 0.0 && shape.shape.ShapeType() <= TopAbs_SOLID) {
+        return VolumeMeasurement{mesh_based_volume(shape.shape, 0.01), true};
     }
     return VolumeMeasurement{vol, false};
 }
 
 double query_volume(const OcctShape& shape) {
     return wrap_occt_call("query_volume", [&]() {
-        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref.
-        // compute_volume_arm's ShapeType() test dereferences the TShape handle
-        // and would SIGSEGV on a null shape (wrap_occt_call catches C++
-        // exceptions, not the hardware signal). Primary guard is get_shape
-        // (Rust boundary); this covers any direct-FFI/future path that
-        // bypasses it.
-        if (shape.shape.IsNull()) {
-            throw std::runtime_error("query_volume: shape has null/empty topology");
-        }
-        return compute_volume_arm(shape.shape).volume;
+        return compute_volume_arm(shape).volume;
     });
 }
 
 VolumeMeasurement query_volume_measurement(const OcctShape& shape) {
     return wrap_occt_call("query_volume_measurement", [&]() {
-        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary); this
-        // covers any direct-FFI/future path that bypasses it.
-        if (shape.shape.IsNull()) {
-            throw std::runtime_error("query_volume_measurement: shape has null/empty topology");
-        }
-        return compute_volume_arm(shape.shape);
+        return compute_volume_arm(shape);
     });
 }
 
 double query_area(const OcctShape& shape) {
     return wrap_occt_call("query_area", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // compute_volume_arm). Primary guard is get_shape (Rust boundary); this
         // covers any direct-FFI/future path that bypasses it.
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_area: shape has null/empty topology");
@@ -4616,7 +4619,7 @@ double query_area(const OcctShape& shape) {
 double query_edge_length(const OcctShape& shape) {
     return wrap_occt_call("query_edge_length", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // compute_volume_arm). Primary guard is get_shape (Rust boundary); this
         // covers any direct-FFI/future path that bypasses it.
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_edge_length: shape has null/empty topology");
@@ -5169,7 +5172,7 @@ double curve_curvature_at(const OcctShape& shape, double px, double py, double p
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Pre-fix this returns Ok(origin) for a null shape;
+        // compute_volume_arm). Pre-fix this returns Ok(origin) for a null shape;
         // refuse loudly instead. Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_centroid: shape has null/empty topology");
@@ -5191,7 +5194,7 @@ Point3 query_centroid(const OcctShape& shape) {
 Point3 query_face_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_face_centroid", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Reached from the Centroid dispatch for Face-repr
+        // compute_volume_arm). Reached from the Centroid dispatch for Face-repr
         // handles, so pre-fix a null-topology face returns Ok(origin); refuse
         // loudly instead. Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
@@ -5207,7 +5210,7 @@ Point3 query_face_centroid(const OcctShape& shape) {
 BBox query_bbox(const OcctShape& shape) {
     return wrap_occt_call("query_bbox", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary).
+        // compute_volume_arm). Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_bbox: shape has null/empty topology");
         }
@@ -5591,10 +5594,10 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     GProp_GProps props;
     wrap_occt_call("query_inertia_tensor", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before VolumeProperties
-        // (see query_volume). Guard lives inside the wrap_occt_call lambda so
-        // the throw is caught and mapped to a catchable Err; the MatrixOfInertia
-        // math below stays outside the lambda by design. Primary guard is
-        // get_shape (Rust boundary).
+        // (see compute_volume_arm). Guard lives inside the wrap_occt_call
+        // lambda so the throw is caught and mapped to a catchable Err; the
+        // MatrixOfInertia math below stays outside the lambda by design.
+        // Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_inertia_tensor: shape has null/empty topology");
         }
@@ -5968,17 +5971,27 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
 }
 
 std::unique_ptr<OcctShape> make_empty_compound_for_test() {
-    // An empty TopoDS_Compound: the ONLY shape reachable from Rust for which
-    // BRepGProp::VolumeProperties returns mass EXACTLY 0.0 (bitwise) while
-    // ShapeType() (COMPOUND == 0) is <= TopAbs_SOLID (2) — i.e. the only
-    // constructible input that takes query_volume's tessellation fallback
-    // (see compute_volume_arm / query_volume). Measured on OCCT 7.8.1:
-    // Mass() == 0.0 bitwise, IsNull() == false, CentreOfMass == the origin,
-    // MatrixOfInertia all-zero, and BRepMesh_IncrementalMesh completes with
-    // 0 faces (so mesh_based_volume sums nothing and returns 0.0).
+    // CANONICAL NOTE on which shapes reach compute_volume_arm's tessellation
+    // fallback. The header, the cxx bridge and the Rust tests point here rather
+    // than restating it.
     //
-    // make_nonmanifold_compound_for_test() is NOT usable for this purpose:
-    // its three coplanar-with-origin faces integrate to
+    // THE CLASS is FACE-LESS COMPOUNDS, not this fixture alone:
+    // BRepGProp::VolumeProperties integrates over faces, so any compound with
+    // no faces sums to mass EXACTLY 0.0 (bitwise) while ShapeType() (COMPOUND
+    // == 0) is <= TopAbs_SOLID (2) — both halves of the guard. Production
+    // make_compound applies no topology-type restriction to its members, so
+    // e.g. a compound of edges or wires is in the class too. The EMPTY compound
+    // is simply the simplest member, and the one this fixture builds. For every
+    // member the tessellation arm also iterates zero faces, so both arms return
+    // 0.0 and the reported volume is the same either way.
+    //
+    // MEASURED on OCCT 7.8.1 for the empty compound: Mass() == 0.0 bitwise,
+    // IsNull() == false, CentreOfMass == the origin, MatrixOfInertia all-zero,
+    // and BRepMesh_IncrementalMesh completes with 0 faces (so mesh_based_volume
+    // sums nothing and returns 0.0).
+    //
+    // make_nonmanifold_compound_for_test() is NOT usable for this purpose: it
+    // HAS faces, and its three coplanar-with-origin ones integrate to
     // -6.6174449004242214e-24 (deterministic over 3 repeat runs), which MISSES
     // the exact `vol == 0.0` guard, so it never takes the fallback.
     //

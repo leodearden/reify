@@ -61,9 +61,17 @@ pub mod ffi {
     ///
     /// `volume` is bit-identical to what `query_volume` returns: both entry
     /// points delegate to the single arm-selection site `compute_volume_arm`.
-    /// `tessellation_fallback` is `true` iff OCCT's exact volume integral was
-    /// unusable and the tessellation arm produced the number — false is the
-    /// good path, mirroring `ExportStepResult::ap242_fell_back`.
+    ///
+    /// `tessellation_fallback` is `true` iff OCCT's exact volume integral
+    /// returned bitwise 0.0 for a shape whose `ShapeType()` is <=
+    /// `TopAbs_SOLID`, so the tessellation arm produced the number instead.
+    /// Read that NARROWLY: on OCCT 7.8 every shape measured to reach the arm is
+    /// a face-less compound, for which the tessellation arm also iterates zero
+    /// faces and returns 0.0. So `true` today means "this shape has no
+    /// measurable volume, and the rest of the mass-property family is returning
+    /// its degenerate default" — NOT "an approximate number was substituted for
+    /// an exact one". `false` is the good path, mirroring
+    /// `ExportStepResult::ap242_fell_back`.
     #[derive(Debug)]
     struct VolumeMeasurement {
         volume: f64,
@@ -1324,16 +1332,12 @@ pub mod ffi {
         /// Three faces sharing one edge → non-manifold compound.
         fn make_nonmanifold_compound_for_test() -> Result<UniquePtr<OcctShape>>;
 
-        /// EMPTY `TopoDS_Compound` (no children) → the only Rust-reachable
-        /// shape whose exact volume integral returns mass EXACTLY 0.0 (bitwise)
-        /// while `ShapeType()` (COMPOUND = 0) is <= `TopAbs_SOLID` (2) — i.e.
-        /// the only constructible input that takes `query_volume`'s
-        /// tessellation fallback. Measured on OCCT 7.8.1: mass 0.0 bitwise,
-        /// `IsNull() == false`, centre of mass at the origin, all-zero inertia
-        /// matrix, and `BRepMesh_IncrementalMesh` completes with 0 faces.
-        /// `make_nonmanifold_compound_for_test` is NOT usable here: it measures
-        /// -6.6174449004242214e-24 (deterministic), missing the exact
-        /// `vol == 0.0` guard. Production `make_compound` refuses empty input.
+        /// EMPTY `TopoDS_Compound` (no children) → the simplest member of
+        /// the face-less-compound class that takes `compute_volume_arm`'s
+        /// tessellation fallback. The class boundary, the measured values and
+        /// why `make_nonmanifold_compound_for_test` cannot serve here live in
+        /// ONE place: the canonical note on this fixture's definition in
+        /// occt_wrapper.cpp. Production `make_compound` refuses empty input.
         fn make_empty_compound_for_test() -> Result<UniquePtr<OcctShape>>;
 
         /// 10×10×10 mm box missing one face → open shell inside a solid.
