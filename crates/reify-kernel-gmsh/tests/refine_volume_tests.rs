@@ -619,3 +619,62 @@ fn uniform_smaller_size_field_produces_more_tets() {
          baseline={n_base_tets}, refined={n_refined_tets}",
     );
 }
+
+/// A refine that asks for many worker threads still returns a mesh.
+///
+/// # A HANG is this test's red signal, not an assertion message
+///
+/// If this regresses, the binary stops making progress and the gate's timeout
+/// kills it — there is no failure message to go looking for. The cause would be
+/// gmsh 4.15.2 deadlocking inside `gmshModelMeshGenerate(3)` while evaluating
+/// the `PostView` background size field from several mesher threads at once
+/// (task #7447). `refine_volume_with_size_field` defends against that by
+/// pinning `General.NumThreads` to 1 unconditionally; the measured thread-count
+/// table and the evidence that it is a block rather than slowness live at that
+/// option write in `src/refine_volume.rs`.
+///
+/// # Why 32 threads, and why the count had to be measured here
+///
+/// The deadlock threshold is FIXTURE-dependent, so a count that hangs another
+/// binary proves nothing about this one. Measured on this exact fixture with
+/// the pin removed and nothing else changed, each run killed at 120 s:
+///
+/// | `threads`  | unpinned outcome     |
+/// |------------|----------------------|
+/// | `Some(8)`  | passes in ~4 s       |
+/// | `Some(16)` | hangs                |
+/// | `Some(24)` | hangs                |
+/// | `Some(32)` | hangs (reproduced 2/2) |
+///
+/// `Some(8)` is enough to hang `tests/mesher_poison_recovery.rs`, whose gmsh
+/// has already been through a `finalize`/`initialize` recovery cycle — but it
+/// is NOT enough on a clean process, so writing 8 here would have produced a
+/// test that is green on BOTH sides of the fix and guards nothing. `Some(32)`
+/// is a literal rather than `available_parallelism` so what gmsh is asked for
+/// does not vary with the host's core count; the pin means only one thread is
+/// ever actually used, so it costs the gate no CPU.
+///
+/// Every other test in this file passes `deterministic: true`, i.e. one thread.
+/// That is exactly why nothing green caught the deadlock when the background
+/// field first landed.
+///
+/// Deliberately no wall-clock upper bound: a regression manifests as an
+/// unbounded hang that the gate timeout already catches, so a duration
+/// assertion would add a flake and buy no coverage.
+#[test]
+fn refine_returns_a_mesh_when_the_caller_asks_for_many_threads() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let cube = unit_cube_mesh();
+    let opts = MeshingOptions {
+        mesh_size: Some(0.5),
+        threads: Some(32),
+        deterministic: false,
+    };
+    let sizes = box_size_field(1.0, |_, _, _| 0.5);
+
+    let n_tets = refine_tet_count(&cube, &sizes, &opts);
+    assert!(
+        n_tets > 0,
+        "a multi-threaded refine must return a usable volume mesh, got {n_tets} tets",
+    );
+}
