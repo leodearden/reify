@@ -5183,6 +5183,21 @@ mod tests {
             .id
     }
 
+    /// Store the EMPTY `TopoDS_Compound` fixture and return its handle ID.
+    ///
+    /// The only Rust-constructible shape whose exact volume integral returns
+    /// mass bitwise 0.0 while `ShapeType()` (COMPOUND = 0) is <= `TopAbs_SOLID`
+    /// — i.e. the only input that reaches `query_volume`'s tessellation
+    /// fallback. Reached through `store_raw` rather than the `test-fixtures`-
+    /// gated `store_*_for_test` helpers, which only `tests/harness_occt/*.rs`
+    /// can see.
+    fn store_empty_compound(kernel: &mut OcctKernel) -> GeometryHandleId {
+        kernel.store_raw(
+            ffi::ffi::make_empty_compound_for_test()
+                .expect("make_empty_compound_for_test should succeed"),
+        )
+    }
+
     /// Assert that the volume of the shape at `handle_id` is within `tolerance`
     /// relative error of `expected`. Panics with a descriptive message including `label`.
     fn assert_volume_near(
@@ -12536,6 +12551,112 @@ mod tests {
                  exactly — both must come from the one arm-selection site"
             );
         }
+    }
+
+    /// The one constructible shape that takes the fallback, and the parity
+    /// contract for the rest of the mass-property family.
+    ///
+    /// CONTRACT: `tessellation_fallback == true` is the caller's signal that
+    /// every other mass-property answer for this shape is a default, not a
+    /// measurement.
+    ///
+    /// `query_centroid`, `query_moment_of_inertia` and `query_inertia_tensor`
+    /// have no fallback arm, so for a zero-mass shape they return the
+    /// degenerate origin / 0 / all-zero tensor rather than failing. This task
+    /// ACCEPTS that asymmetry and makes it discriminable instead of removing
+    /// it, so those degenerate values are pinned here: a future change must not
+    /// silently turn them into errors, nor into plausible-looking non-zero
+    /// noise.
+    ///
+    /// Every bound is exact f64 equality: an empty compound has no faces, so
+    /// the exact integral and `mesh_based_volume` both sum nothing, and OCCT's
+    /// centre-of-mass and inertia matrix for zero mass are exact zeros.
+    #[test]
+    fn volume_measurement_reports_fallback_and_family_degrades_for_empty_compound() {
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let id = store_empty_compound(&mut kernel);
+
+        let m = kernel
+            .volume_measurement(id)
+            .expect("volume_measurement must succeed for an empty compound");
+        assert!(
+            m.tessellation_fallback,
+            "an empty compound integrates to bitwise 0.0 with ShapeType COMPOUND (0) \
+             <= TopAbs_SOLID (2), so the tessellation fallback must fire (got {m:?})"
+        );
+        assert_eq!(
+            m.volume, 0.0,
+            "an empty compound has no faces, so the tessellation arm sums nothing"
+        );
+
+        let via_query = kernel
+            .query(&GeometryQuery::Volume(id))
+            .expect("Volume query must succeed")
+            .as_f64()
+            .expect("Volume must be numeric");
+        assert_eq!(
+            m.volume, via_query,
+            "volume_measurement().volume must equal GeometryQuery::Volume exactly — \
+             both must come from the one arm-selection site"
+        );
+
+        // The rest of the family still answers, degenerately rather than erroring.
+        for (label, query) in [
+            ("Centroid", GeometryQuery::Centroid(id)),
+            (
+                "CenterOfMass",
+                GeometryQuery::CenterOfMass {
+                    handle: id,
+                    density: 1000.0,
+                },
+            ),
+        ] {
+            let value = kernel
+                .query(&query)
+                .unwrap_or_else(|e| panic!("{label} query must succeed: {e:?}"));
+            let point = match &value {
+                Value::String(s) => parse_centroid_json(s),
+                other => panic!("{label} must return a centroid JSON string, got {other:?}"),
+            };
+            assert_eq!(
+                point,
+                (0.0, 0.0, 0.0),
+                "{label}: zero mass yields the origin default, not a measurement"
+            );
+        }
+
+        let tensor = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 1000.0,
+            })
+            .expect("InertiaTensor query must succeed");
+        let entries = extract_3x3_tensor_entries(&tensor);
+        for (i, row) in entries.iter().enumerate() {
+            for (j, entry) in row.iter().enumerate() {
+                assert_eq!(
+                    *entry, 0.0,
+                    "InertiaTensor[{i}][{j}]: zero mass yields the all-zero default, \
+                     not a measurement"
+                );
+            }
+        }
+
+        let moi = kernel
+            .query(&GeometryQuery::MomentOfInertia {
+                handle: id,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .expect("MomentOfInertia query must succeed")
+            .as_f64()
+            .expect("MomentOfInertia must be numeric");
+        assert_eq!(
+            moi, 0.0,
+            "MomentOfInertia: zero mass yields the 0 default, not a measurement"
+        );
     }
 
     /// Pin `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against OCCT's authoritative
