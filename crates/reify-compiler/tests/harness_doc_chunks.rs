@@ -32,6 +32,8 @@ mod enums_chunk_option_smoke;
 mod fence_gate;
 #[path = "harness_doc_chunks/geometry_chunk_smoke.rs"]
 mod geometry_chunk_smoke;
+#[path = "harness_doc_chunks/oracle_xref_smoke.rs"]
+mod oracle_xref_smoke;
 #[path = "harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs"]
 mod stdlib_chunk_geometry_ops_smoke;
 #[path = "harness_doc_chunks/units_chunk_smoke.rs"]

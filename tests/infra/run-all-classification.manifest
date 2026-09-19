@@ -76,7 +76,7 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (167, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (168, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
@@ -96,6 +96,7 @@ test_ensure_warm_base.sh pool
 test_event_inventory_wired.sh pool
 test_fea_e2e_crate_occt_free.sh pool
 test_find_uses_smoke_runner.sh pool
+test_flake_density_report.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
 test_git_rerere_guard.sh pool

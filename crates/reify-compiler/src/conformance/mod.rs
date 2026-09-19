@@ -400,9 +400,64 @@ pub(crate) fn check_fn_arg_conformance(
     walk_param_against_arg(param_type, compiled_arg, &mut ctx);
 }
 
-/// Check that each `Param`-kind value cell with a default expression in
-/// `template` has a default whose type is compatible with the declared
-/// `cell_type`, for nominal leaf types (task-4584):
+/// The value cells subject to param-default conformance: `value_cells` ∪ the
+/// members of every port body.
+///
+/// `TopologyTemplate.value_cells` is NOT the whole surface: port-body params are
+/// compiled separately (`entity.rs` port arm) under the composite member name
+/// `ValueCellId(entity, "<port>.<param>")` and stored on `CompiledPort.members`,
+/// a DISJOINT list that is deliberately never merged into `value_cells`
+/// (`reify_ast::decl`'s `collect_param_default_candidates` doc-comment records
+/// why: `set_parameter`, the GUI property panel, and
+/// `find_param_default_expr`/`find_param_default_span` cell_id resolution all
+/// key off `value_cells` and must not see port-internal names).
+///
+/// Walking only `value_cells` therefore left every port-member param default
+/// unchecked at EVERY arm below — a `Geometry`, `String` or `StructureRef`
+/// default inside a `port { }` block compiled with zero diagnostics (task 7174).
+/// Chaining here rather than adding a second call site keeps ONE loop body, so
+/// the two lists cannot drift apart again.
+///
+/// `CompiledGuardedGroup.members` / `.else_members` is deliberately OUT of this
+/// chain. A guarded param already carries its own separately-owned decision
+/// about default checking — `guards.rs` omits the sibling `check_param_default_type`
+/// at that site on purpose, pinned by
+/// `guarded_param_dimension_mismatched_default_does_not_check_param_default_type`
+/// — so extending conformance there is a change with its own acceptance
+/// criteria, not a ride-along on this one. Mechanically it would be one more
+/// `.chain(…)` here; structurally it still needs no second call site.
+///
+/// UNANNOTATED cells ARE judged here, against the `Type::dimensionless_scalar()`
+/// INFERENCE FALLBACK the compiler assigns when a `param` names no type — so
+/// `param c = Color.Red` reports `Enum(Color)` vs `Real`, naming a type the
+/// source never wrote. That is deliberate, and it is not something the port
+/// cells introduce: the walk is site-blind by construction (ONE loop body), and
+/// the top-level half has reported the fallback this way since α. The asymmetry
+/// worth knowing is against the sibling `check_param_default_type` (`entity.rs`),
+/// which IS gated on `param.type_expr.is_some()` at both its call sites and so
+/// stays silent on the same source (`untyped_port_member_param_with_enum_default_does_not_error`).
+/// The two checks are complementary, not alike-gated; what holds both SITES to
+/// one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
+///
+/// Whether an inference fallback should be judged AT ALL is a live question, and
+/// it is δ's (task #5306): that flip turns this Warning into a hard error on
+/// source that named no type. It is recorded here rather than pre-empted because
+/// gating it is a behaviour change at BOTH sites — this chain cannot skip the
+/// fallback for port cells without also skipping it for top-level ones, which is
+/// exactly the parity this task established. The bit such a gate would need
+/// (`param.type_expr.is_some()`, already computed at both `check_param_default_type`
+/// call sites) is not carried on `ValueCellDecl` today.
+fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellDecl> {
+    template
+        .value_cells
+        .iter()
+        .chain(template.ports.iter().flat_map(|p| p.members.iter()))
+}
+
+/// Check that each `Param`-kind cell enumerated by [`param_default_cells`]
+/// (template value cells ∪ port-body members) with a default expression has a
+/// default whose type is compatible with the declared `cell_type`, for nominal
+/// leaf types (task-4584):
 ///
 /// - **`Type::StructureRef`** params: applies an inline skip-list (see the arm
 ///   comment below for rationale — concretely, a `StructureRef` default for a
@@ -423,7 +478,7 @@ pub(crate) fn check_param_default_conformance(
     registries: ConformanceRegistries<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for vc in &template.value_cells {
+    for vc in param_default_cells(template) {
         if vc.kind != ValueCellKind::Param {
             continue;
         }
@@ -7412,6 +7467,81 @@ mod tests {
              got {}: {:?}",
             diagnostics.len(),
             diagnostics,
+        );
+    }
+
+    /// Task 7174: a port-body param default (`CompiledPort.members`) must reach
+    /// the SAME `check_param_default_conformance` walk as a top-level
+    /// `value_cells` param default.
+    ///
+    /// `template.value_cells` and `template.ports[].members` are disjoint lists
+    /// (deliberately — see `param_default_cells`'s doc comment). Before the fix,
+    /// `check_param_default_conformance` walked only `value_cells`, so pushing a
+    /// `Geometry` param cell onto `template.ports` instead of `template.value_cells`
+    /// made it invisible to the walk: RED (zero diagnostics) until
+    /// `param_default_cells` chains `template.ports[].members` in.
+    ///
+    /// Its integration twin `port_member_geometry_param_default_warns`
+    /// (`harness_structure_declarations`) proves the same warning end-to-end from
+    /// real source, so this probe is not here for the diagnostic — it is here for
+    /// the ROUTE. Constructing the cell on `ports[].members` and nowhere else is
+    /// the only way to distinguish "the chain reached the port list" from "the
+    /// producer merged port members into `value_cells` after all", and that second
+    /// shape is a regression of the disjointness the GUI / `set_parameter` /
+    /// `find_param_default_expr` consumers depend on, which the integration probe
+    /// would happily stay green through.
+    #[test]
+    fn port_member_param_default_reaches_conformance_walk() {
+        let region_cell = ValueCellDecl {
+            id: ValueCellId::new("Test", "mount.region"),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Private,
+            is_aux: false,
+            cell_type: Type::Geometry,
+            default_expr: Some(CompiledExpr::literal(
+                reify_ir::Value::Real(5.0),
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            )),
+            solver_hints: vec![],
+            span: SourceSpan::new(10, 20),
+        };
+        let mut template = minimal_template("Test", vec![]);
+        template.ports.push(CompiledPort {
+            name: "mount".to_string(),
+            direction: reify_core::PortDirection::Bidi,
+            type_name: "P".to_string(),
+            members: vec![region_cell],
+            constraints: vec![],
+            frame_expr: None,
+            is_priv: false,
+        });
+
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_param_default_conformance(
+            &template,
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "port-member param default must reach the conformance walk and emit exactly \
+             one diagnostic, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        assert!(
+            diagnostics[0].message.contains("mount.region"),
+            "message must name the composite port-member param 'mount.region', got: {:?}",
+            diagnostics[0].message
         );
     }
 
