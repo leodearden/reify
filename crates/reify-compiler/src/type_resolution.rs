@@ -1580,7 +1580,7 @@ pub(crate) fn resolve_type_alias_expr(
             // and the alias registry here.
             //
             // These empty sets reach the alias body as an empty
-            // `EntityNamespaces` (task 6477). That is the SAME deferral the
+            // `AliasBodyUseSite` (task 6477). That is the SAME deferral the
             // sets below document, not an oversight left behind when the use
             // site started forwarding its real namespaces — the names do not
             // exist yet at this point in the phase order, so there is nothing
@@ -1600,8 +1600,13 @@ pub(crate) fn resolve_type_alias_expr(
                     alias_registry,
                     &mut tmp_diags,
                     0,
-                    &empty_structs,
-                    &empty_traits,
+                    AliasBodyUseSite {
+                        structures: &empty_structs,
+                        traits: &empty_traits,
+                        // The DFS resolves a body of THIS module, so this
+                        // module's own span is the right anchor.
+                        span: type_expr.span,
+                    },
                 ) {
                     return Some(ty);
                 }
@@ -2288,8 +2293,11 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
             alias_registry,
             diagnostics,
             0,
-            structure_names,
-            trait_names,
+            AliasBodyUseSite {
+                structures: structure_names,
+                traits: trait_names,
+                span: type_expr.span,
+            },
         );
     }
 
@@ -2407,7 +2415,11 @@ const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
 ///
 /// Builds a substitution map from param names to concrete types, then
 /// resolves the alias body with those substitutions applied.
-#[allow(clippy::too_many_arguments)]
+///
+/// `use_site` is both what the body resolves against and where the caller is
+/// written; it is forwarded unchanged into the body, so every diagnostic the
+/// body raises lands at an offset in the caller's own source. See
+/// [`AliasBodyUseSite`].
 pub(crate) fn resolve_parameterized_alias(
     alias_entry: &TypeAliasEntry,
     type_args: &[reify_ast::TypeExpr],
@@ -2415,8 +2427,7 @@ pub(crate) fn resolve_parameterized_alias(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
-    structure_names: &HashSet<String>,
-    trait_names: &HashSet<String>,
+    use_site: AliasBodyUseSite<'_>,
 ) -> Option<Type> {
     if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
         diagnostics.push(
@@ -2465,8 +2476,8 @@ pub(crate) fn resolve_parameterized_alias(
             type_param_names,
             alias_registry,
             diagnostics,
-            structure_names,
-            trait_names,
+            use_site.structures,
+            use_site.traits,
         );
         if let Some(ty) = resolved {
             subst.insert(param.name.clone(), ty);
@@ -2511,18 +2522,16 @@ pub(crate) fn resolve_parameterized_alias(
     };
     // The body sees the caller's entity namespaces — which at a use site are
     // the real ones, and during the alias-DFS pre-pass are deliberately empty
-    // (task 6477; see `EntityNamespaces`).
-    let namespaces = EntityNamespaces {
-        structures: structure_names,
-        traits: trait_names,
-    };
+    // (task 6477; see `AliasBodyUseSite`) — and the caller's span, so a body
+    // diagnostic is anchored in the source it will be rendered against rather
+    // than in the (possibly PRELUDE) source the body was written in.
     resolve_type_alias_expr_with_subst(
         body,
         alias_registry,
         &subst,
         diagnostics,
         depth + 1,
-        namespaces,
+        use_site,
     )
 }
 
@@ -3266,11 +3275,13 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
     }
 }
 
-/// The entity name sets an alias body is resolved against (task 6477).
+/// What the USE SITE contributes to resolving an alias body (task 6477): the
+/// entity names the body may reference, and the offset its diagnostics belong
+/// at.
 ///
 /// Threaded as one borrowed bundle through the `*_with_subst` family rather
-/// than as two positional parameters, so "which namespaces does this body
-/// see?" stays a single named concept across ~17 recursion sites instead of a
+/// than as positional parameters, so "what does the use site give this body?"
+/// stays a single named concept across ~17 recursion sites instead of a
 /// widening argument list.
 ///
 /// Enum names are deliberately NOT a field: they travel on the ambient
@@ -3278,16 +3289,42 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
 /// tail already reads for exactly this purpose. Adding a third set here would
 /// be a second plumbing axis for the same question.
 ///
-/// Both sets are EMPTY on the alias-DFS pre-pass path, and that emptiness is a
-/// load-bearing DEFERRAL rather than a limitation: structures, traits and enums
-/// are not compiled when `phase_aliases` runs, so a body naming one legitimately
-/// leaves that phase `resolved_type: None` and is resolved at each use site
-/// instead. See `aliases_phase.rs`'s module header — that path "must not be
-/// 'fixed' to take the name sets".
+/// Both name sets are EMPTY on the alias-DFS pre-pass path, and that emptiness
+/// is a load-bearing DEFERRAL rather than a limitation: structures, traits and
+/// enums are not compiled when `phase_aliases` runs, so a body naming one
+/// legitimately leaves that phase `resolved_type: None` and is resolved at each
+/// use site instead. See `aliases_phase.rs`'s module header — that path "must
+/// not be 'fixed' to take the name sets".
 #[derive(Clone, Copy)]
-pub(crate) struct EntityNamespaces<'a> {
+pub(crate) struct AliasBodyUseSite<'a> {
     pub(crate) structures: &'a HashSet<String>,
     pub(crate) traits: &'a HashSet<String>,
+    /// Span of the type expression that triggered this instantiation, in the
+    /// source of the module the resulting diagnostics will be rendered
+    /// against.
+    ///
+    /// Why the body's OWN span is not usable for that: a diagnostic raised
+    /// while resolving a body joins the CONSUMER module's diagnostic list, but
+    /// `Diagnostic`/`DiagnosticLabel` carry no module identity — so for a
+    /// PRELUDE alias a label built from a body span is a raw byte offset into
+    /// a file the reader never opened. Measured: a 253-byte prelude declaring
+    /// `pub type W<U> = Hq<U>` produced a label at bytes 247..252 in a 37-byte
+    /// consumer, ~7x past its end. `reify-cli`'s `mcp_context` feeds the first
+    /// label's span straight to `byte_offset_to_line_col`, whose
+    /// `debug_assert!(offset <= source.len())` then trips in debug builds and
+    /// reports a silently wrong line/col in release.
+    ///
+    /// No secondary "in alias body, defined here" label accompanies it: spans
+    /// carry no module identity, so there is no way to tell the same-module
+    /// body (where such a label would help) from the prelude one (where it
+    /// would reintroduce exactly the offset this field exists to avoid).
+    ///
+    /// Two residues of the same hazard class are deliberately left alone,
+    /// both pre-dating this field: `resolve_parameterized_alias` anchors its
+    /// own arity and internal-error labels at `alias_entry.span`, and the
+    /// message text still echoes the body's arguments AS WRITTEN (`given 'U'`
+    /// where the direct spelling says `given 'Real'`).
+    pub(crate) span: SourceSpan,
 }
 
 /// Resolve a type alias body TypeExpr with parameter substitutions applied.
@@ -3298,15 +3335,16 @@ pub(crate) struct EntityNamespaces<'a> {
 /// The `depth` parameter tracks alias expansion depth to prevent stack overflow
 /// from recursive parameterized type aliases.
 ///
-/// `namespaces` carries the entity names the body may reference; see
-/// [`EntityNamespaces`] and the terminal `Named` arm below.
+/// `use_site` carries the entity names the body may reference and the span its
+/// diagnostics belong at; see [`AliasBodyUseSite`] and the terminal `Named` arm
+/// below.
 pub(crate) fn resolve_type_alias_expr_with_subst(
     type_expr: &reify_ast::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
-    namespaces: EntityNamespaces<'_>,
+    use_site: AliasBodyUseSite<'_>,
 ) -> Option<Type> {
     if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
         diagnostics.push(
@@ -3336,7 +3374,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     subst,
                     diagnostics,
                     depth,
-                    namespaces,
+                    use_site,
                 )?);
             }
             let resolved_return = resolve_type_alias_expr_with_subst(
@@ -3345,7 +3383,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::Function {
                 params: resolved_params,
@@ -3390,7 +3428,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     subst,
                     diagnostics,
                     depth,
-                    namespaces,
+                    use_site,
                 )
             {
                 return Some(ty);
@@ -3420,7 +3458,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                         subst,
                         diagnostics,
                         depth,
-                        namespaces,
+                        use_site,
                     )?;
                     inner_subst.insert(param.name.clone(), resolved);
                 }
@@ -3436,7 +3474,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     &inner_subst,
                     diagnostics,
                     depth + 1,
-                    namespaces,
+                    use_site,
                 );
             }
             // Builtins, the alias registry, and the USE SITE's entity
@@ -3462,9 +3500,15 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
             // The alias-DFS pre-pass passes empty sets and so is unaffected;
             // the emptiness there is a deferral, not a gap.
             //
-            // Enum names are not in `namespaces` — they come from the ambient
+            // Enum names are not in `use_site` — they come from the ambient
             // `RESOLUTION_ENUM_NAMES` fallback below, the same channel the
             // non-parametric `_kinded` tail uses.
+            //
+            // The span handed to the resolver is the USE SITE's, not this
+            // body's: the E_TYPE_ARG_ON_TRAIT label it can raise joins the
+            // consumer module's diagnostics, and a prelude body's span is a
+            // raw offset into a file that reader never opened (see
+            // `AliasBodyUseSite::span`).
             //
             // The alias's own params arrive through `subst`, checked at the top
             // of this arm, so the type-param set passed here is EMPTY: a body
@@ -3485,10 +3529,10 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 type_args,
                 &no_type_params,
                 alias_registry,
-                namespaces.structures,
-                namespaces.traits,
+                use_site.structures,
+                use_site.traits,
                 diagnostics,
-                type_expr.span,
+                use_site.span,
                 &mut |arg_expr, arg_diagnostics| {
                     resolve_type_alias_expr_with_subst(
                         arg_expr,
@@ -3496,7 +3540,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                         subst,
                         arg_diagnostics,
                         depth + 1,
-                        namespaces,
+                        use_site,
                     )
                 },
             )
@@ -3965,7 +4009,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
-    namespaces: EntityNamespaces<'_>,
+    use_site: AliasBodyUseSite<'_>,
 ) -> Option<Type> {
     // Gate: fast-path None for any name not in the canonical builtin set.
     // Mirrors the gate in resolve_parameterized_builtin_type so both are
@@ -3981,7 +4025,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::List(Box::new(inner)))
         }
@@ -3992,7 +4036,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::Set(Box::new(inner)))
         }
@@ -4003,7 +4047,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             let val = resolve_type_alias_expr_with_subst(
                 &type_args[1],
@@ -4011,7 +4055,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
@@ -4022,7 +4066,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::Keyed(Box::new(inner)))
         }
@@ -4033,7 +4077,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::Option(Box::new(inner)))
         }
@@ -4044,7 +4088,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::Range(Box::new(inner)))
         }
@@ -4087,7 +4131,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::tensor(rank, n, quantity))
         }
@@ -4100,7 +4144,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::matrix(m, n, quantity))
         }
@@ -4113,7 +4157,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             let codomain = resolve_type_alias_expr_with_subst(
                 &type_args[1],
@@ -4121,7 +4165,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
-                namespaces,
+                use_site,
             )?;
             Some(Type::Field {
                 domain: Box::new(domain),
@@ -6010,9 +6054,10 @@ mod tests {
         // through the substitution map instead, which is exactly what this
         // resolver variant exists to exercise: `Keyed<T>` with `T := Vent`.
         let no_entities = HashSet::new();
-        let namespaces = EntityNamespaces {
+        let use_site = AliasBodyUseSite {
             structures: &no_entities,
             traits: &no_entities,
+            span: SourceSpan::empty(0),
         };
         let mut subst = HashMap::new();
         subst.insert("T".to_string(), Type::StructureRef("Vent".into()));
@@ -6026,7 +6071,7 @@ mod tests {
             &subst,
             &mut diags,
             0,
-            namespaces,
+            use_site,
         );
         assert_eq!(
             keyed,
@@ -6043,7 +6088,7 @@ mod tests {
             &subst,
             &mut list_diags,
             0,
-            namespaces,
+            use_site,
         );
         assert_eq!(
             list,

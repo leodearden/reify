@@ -1596,3 +1596,70 @@ fn shadowed_prelude_parametric_alias_body_binds_as_the_direct_spelling_does() {
          late-binding bug to be fixed with a defining-module snapshot"
     );
 }
+
+/// A diagnostic raised while instantiating a PRELUDE parametric alias must be
+/// anchored in the CONSUMER's own source (task #6477, amendment).
+///
+/// `Diagnostic`/`DiagnosticLabel` carry no module identity, so a label built
+/// from a prelude alias BODY's span is a raw byte offset into a file the
+/// consumer's reader never opened — and for a short consumer it lands past the
+/// end of the source it will be rendered against. `reify-cli`'s `mcp_context`
+/// feeds the first label's span straight to `byte_offset_to_line_col`, whose
+/// `debug_assert!(offset <= source.len())` then trips in debug builds and
+/// reports a silently wrong line/col in release.
+///
+/// MEASURED on this tip with the span threading reverted: this consumer's
+/// single Error carried `labels=[SourceSpan { start: 50, end: 55 }]` against a
+/// 37-byte source — the offset of `Hq<U>` inside the PRELUDE, 13 bytes past the
+/// end of the file it would be rendered against.
+///
+/// The lock is the containment invariant, not a specific offset: every label
+/// on every diagnostic the consumer receives must index the consumer's source.
+/// `W<U> = Hq<U>` is the shape that produces one, because the shared name
+/// resolver's trait-with-args arm (#5049 α) is the only arm in the alias-body
+/// path that emits a label of its own.
+#[test]
+fn prelude_alias_body_diagnostic_is_anchored_in_the_consumer_source() {
+    let prelude_m = compile_prelude(
+        "trait Hq {\n    param w : Length\n}\npub type W<U> = Hq<U>\n",
+        "parametric_trait_arg_prelude",
+    );
+
+    let consumer_src = "structure def D { param p : W<Real> }";
+    let parsed = reify_syntax::parse(consumer_src, ModulePath::single("trait_arg_user"));
+    assert!(
+        parsed.errors.is_empty(),
+        "consumer parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile_with_prelude(&parsed, std::slice::from_ref(&prelude_m));
+
+    // The gap is LOUD by design — the point of the lock is where it points,
+    // not whether it fires, so a run that reported nothing would silently
+    // vacuously pass the containment check below.
+    assert!(
+        error_messages(&compiled)
+            .iter()
+            .any(|m| m.contains("E_TYPE_ARG_ON_TRAIT")),
+        "the consumer must still be told that `W<Real>`'s body applies type \
+         arguments to trait `Hq`; got: {:?}",
+        error_messages(&compiled)
+    );
+
+    let len = consumer_src.len();
+    let escaped: Vec<String> = compiled
+        .diagnostics
+        .iter()
+        .flat_map(|d| {
+            d.labels
+                .iter()
+                .filter(|l| l.span.end as usize > len || l.span.start as usize > len)
+                .map(move |l| format!("{:?} @ {:?}", d.message, l.span))
+        })
+        .collect();
+    assert!(
+        escaped.is_empty(),
+        "every label on a consumer diagnostic must index the consumer's own \
+         {len}-byte source; these carry offsets from another module: {escaped:?}"
+    );
+}
