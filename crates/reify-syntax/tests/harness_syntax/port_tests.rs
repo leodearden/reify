@@ -94,6 +94,47 @@ fn parse_port_direction_bidi() {
     assert_eq!(port.direction, Some(reify_core::PortDirection::Bidi));
 }
 
+/// A port direction's source spelling is stated by the parser twice — once for
+/// the inline `port p : <dir> T` form, once for the `direction = <dir>` body
+/// form — and a third time by `PortDirection::as_str`, which the compiler's
+/// chain diagnostics quote back at the designer.
+///
+/// Round-tripping every variant through both parse forms, with the source
+/// built from that variant's own `as_str()`, is what ties the three together:
+/// respell any one of them and this test fails rather than letting a
+/// diagnostic name a direction the parser would reject.
+#[test]
+fn every_port_direction_round_trips_through_both_parse_forms() {
+    for direction in [
+        reify_core::PortDirection::In,
+        reify_core::PortDirection::Out,
+        reify_core::PortDirection::Bidi,
+    ] {
+        let word = direction.as_str();
+        for source in [
+            format!("structure S {{ port p : {word} T }}"),
+            format!("structure S {{ port p : T {{ direction = {word} }} }}"),
+        ] {
+            let (decls, errors) = parse_decls(&source);
+            assert!(errors.is_empty(), "parse errors for {source:?}: {errors:?}");
+
+            let structure = match &decls[0] {
+                Declaration::Structure(s) => s,
+                other => panic!("expected Structure, got {other:?}"),
+            };
+            let port = match &structure.members[0] {
+                MemberDecl::Port(p) => p,
+                other => panic!("expected Port, got {other:?}"),
+            };
+            assert_eq!(
+                port.direction,
+                Some(direction),
+                "{source:?} should parse back as {direction:?}"
+            );
+        }
+    }
+}
+
 // ── Step 5: port with body ─────────────────────────────────────────
 
 #[test]
