@@ -653,8 +653,17 @@ assert "plan_strip_comments (f1): invokes no external filter (grep/sed/awk shado
 # NON-VACUITY for (f1): the shadows really do fire when something calls them,
 # so the empty marker above is evidence of absence rather than of a probe that
 # never worked.
+#
+# The shadow DRAINS stdin before returning. It is the read end of the pipeline
+# below, and a reader that returns without reading closes the pipe under a
+# `printf` that may still be mid-write — which kills it with SIGPIPE (141) and,
+# under this file's `set -euo pipefail`, aborts the whole suite with no FAIL
+# line to name the case. That is a race on write timing, so it fires only under
+# load: reproduced once in two runs at load 117, and it reddened task 5417's
+# merge gate on 2026-09-17. Same pipefail+SIGPIPE class as the `| grep -q`
+# sites task #7115 sweeps, reached through a non-`-q` spelling.
 (
-    grep() { printf 'grep\n' >> "$_STRIP_FILTER_CALLS"; }
+    grep() { while IFS= read -r _; do :; done; printf 'grep\n' >> "$_STRIP_FILTER_CALLS"; }
     printf '%s\n' "$_STRIP_MIXED" | grep -v '^#' >/dev/null
 )
 assert "plan_strip_comments (f1n): the filter shadows DO record a real call (f1 is not vacuous)" \

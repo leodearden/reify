@@ -151,3 +151,7 @@ mod polymorphic_zero_trait_eval;
 // layout and stays a grandfathered top-level standalone.
 #[path = "harness_engine/instance_scope_param_default_order.rs"]
 mod instance_scope_param_default_order;
+// Task #5417's DIC γ runtime-half e2e lands here for the same anti-re-accretion
+// reason as #5196's, #5045's and #5360's above.
+#[path = "harness_engine/objective_consumption_e2e.rs"]
+mod objective_consumption_e2e;

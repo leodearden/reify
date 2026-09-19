@@ -769,6 +769,24 @@ pub fn compile_with_prelude_context_checked_with_config(
     // fold into the module hash — design decision 5).
     hoist_nested_selectors::phase_hoist_nested_selector_ctors(&mut compile_ctx);
 
+    // Report declared objectives that provably govern nothing (DIC γ, task
+    // #5417). Runs LAST among the template post-passes, which is what makes the
+    // rule safe: `phase_sub_override_autos` / `phase_connect_auto_params` have
+    // already minted the parent-scoped `Parent.sub`/`member` cells that prove a
+    // child objective is governing after all, and
+    // `phase_hoist_nested_selector_ctors` has already finished rewriting
+    // ValueRefs. Runs before `compute_module_hash` for consistency with the
+    // other post-passes; it mutates only `diagnostics`, so the hash is
+    // unaffected either way. Purposes are excluded structurally — the pass
+    // walks `ctx.templates` and never touches `CompiledPurpose.objective`.
+    //
+    // `prelude_refs` is passed for ONE reason: to name the imported templates
+    // the pass must refuse to judge, including the monomorph clones
+    // `phase_auto_type_param_resolution` pushed into `ctx.templates` above. It
+    // does NOT widen the override search — see `inert_objective_finding`'s
+    // obligation 0′.
+    compile_builder::post_passes::phase_inert_objective_check(&mut compile_ctx, prelude_refs);
+
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);
 

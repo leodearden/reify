@@ -382,9 +382,20 @@ WARN_PCT=90
 # the remedy is still rule (a)'s split, and that split is #7466. On bare
 # main the unit already measured 17737, 263 lines under the warn line, so the
 # crate was crossing on its next test-bearing commit regardless of #6619.
+# harness_engine.rs measured 18002/20000 = 90% at task #5417 (root 157 + 15655
+# across 28 module files + 2190 external via `#[path = "common/differential.rs"]`).
+# Listed for the same reason as the two above and NOT because it is acceptable:
+# the remedy is still rule (a)'s split, and that split is #7654. On bare main the
+# unit measured 17240, 760 lines under the warn line, so it was crossing on its
+# next test-bearing leaf regardless of #5417 — which adds one 758-line module and
+# clears the line by 2. This is the unit's SECOND crossing: #6760 filed the first
+# at 18414 and 132a45e8d2 split the auto-resolution cluster out, after which it
+# re-accreted over ~2 weeks. So #7654 should draw a boundary with real headroom,
+# not the minimum that clears the line.
 _KLOC_WARN_KNOWN=(
     "crates/reify-syntax/tests/harness_syntax.rs"
     "crates/reify-kernel-occt/tests/harness_occt.rs"
+    "crates/reify-eval/tests/harness_engine.rs"
 )
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so

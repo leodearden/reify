@@ -1,0 +1,758 @@
+//! Task 5417 (DIC γ) — `E_OBJECTIVE_UNCONSUMED`, the runtime half.
+//!
+//! PRD `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3/§4.2.
+//!
+//! The compile half (`E_OBJECTIVE_INERT`) rejects an objective that provably
+//! governs nothing. This half covers the case the compiler cannot see: an
+//! objective that IS well-posed — it reaches a real solver variable — but that
+//! the solver then silently discards, because the decomposition built no
+//! component for it to attach to. `docs/prds/v0_6/fixtures/dic_min_unconstrained.ri`
+//! is the canonical probe: `param a = auto(free)` + `minimize (a-3)*(a-3)` and
+//! no constraints. Baseline before this rule: `a = undef (awaiting solve)` and
+//! the objective is never mentioned — the declaration evaporates in silence,
+//! which is the INV-SF-3 failure the PRD exists to eradicate.
+//!
+//! The rule must be quiet everywhere else. The negative cases below pin the
+//! three ways it could go wrong: an objective the solver DID consume (O1), one
+//! whose reachable autos are all concretely bound this run (O2, the
+//! vacuous-healthy rule), and the synthesised Chebyshev-centre objective a
+//! scope never declared (task 4013's exemption).
+//!
+//! Presence and absence are asserted on `DiagnosticCode` (INV-SF-6); message
+//! text is asserted only where the text IS the property — that the mnemonic the
+//! PRD prose promises is in the rendered string, and that the cell list names
+//! the right entity-qualified auto. `assert_solve_failure_still_reported` is the
+//! one exception in the other direction: the solver's own failure reports carry
+//! no code of their own, so matching their prose is the only way to pin that the
+//! failure survives.
+//!
+//! The sources are byte-mirrors of the committed PRD fixtures so the tests track
+//! the same user-observable signal the PRD measured.
+//!
+//! Written RED in step-9: nothing emits `ObjectiveUnconsumed` until step-10.
+//!
+//! **Placement note for the implementer.** This module is the arbiter of WHERE
+//! the emission goes. The gate belongs beside the #4804
+//! `W_SOLVER_OPTIMALITY_UNPROVEN` site on the single-scope objective path; if
+//! `eval()` turns out to skip that path entirely for a zero-constraint scope,
+//! the emission must move to whichever objective-path site actually executes for
+//! the `dic_min_unconstrained` fixture, and the reason recorded there.
+
+use reify_constraints::SolverRegistry;
+use reify_core::{Diagnostic, DiagnosticCode, Severity, ValueCellId};
+use reify_eval::Engine;
+use reify_test_support::{MockConstraintChecker, compile_source_with_stdlib};
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+/// Compile `source` (asserting it is compile-clean) and evaluate it with the
+/// production [`SolverRegistry`] — the same one `reify-cli` wires
+/// (`main.rs`'s `.with_solver(Box::new(SolverRegistry::production()))`) — so the
+/// objective path these tests describe is the one users actually hit. A bare
+/// `DimensionalSolver` is NOT equivalent: it solves the unconstrained fixture
+/// outright and leaves an `==`-pinned auto undef, so both would describe an
+/// engine no user runs.
+///
+/// The compile-clean assertion is load-bearing: every fixture here must pass the
+/// compile half untouched, or a `ObjectiveUnconsumed`-shaped hole could be
+/// masked by an `ObjectiveInert` Error raised earlier on the same source.
+fn eval_with_solver(source: &str) -> reify_eval::EvalResult {
+    eval_with_solver_keeping_engine(source).1
+}
+
+/// As [`eval_with_solver`], but hands back the `Engine` too so a caller can
+/// read `engine.snapshot()`.
+///
+/// The merged-cluster cases below need it: `SnapshotProvenance::Resolution`'s
+/// comma-joined member label is the only merged-vs-single-scope signal that
+/// survives into a post-`eval()` observation, and it is what makes their
+/// anti-vacuity assertion possible (see `assert_merged_cluster_spanned`).
+fn eval_with_solver_keeping_engine(source: &str) -> (Engine, reify_eval::EvalResult) {
+    let compiled = compile_source_with_stdlib(source);
+    let compile_errors: Vec<&Diagnostic> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "fixture must be compile-clean so the runtime rule is what is under \
+         test; got {compile_errors:?}"
+    );
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(SolverRegistry::production()));
+    let result = engine.eval(&compiled);
+    (engine, result)
+}
+
+/// Every `ObjectiveUnconsumed` diagnostic in an eval result.
+fn unconsumed(result: &reify_eval::EvalResult) -> Vec<&Diagnostic> {
+    result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ObjectiveUnconsumed))
+        .collect()
+}
+
+/// Assert exactly one `ObjectiveUnconsumed` Error, that it names `cell`, and
+/// that it is renderable.
+///
+/// "Exactly one" is the #5014 aggregation rule: one diagnostic per objective
+/// *declaration* naming the FULL unconsumed set — never one per component, per
+/// trial, or per auto.
+///
+/// `cell` must be the FULLY-QUALIFIED `entity.member` id, and it is matched
+/// against the BACKTICKED rendering `objective_unconsumed_diagnostic` emits
+/// (`format!("`{id}`")` over a `ValueCellId`, whose `Display` is
+/// `entity.member`). Both halves of that are load-bearing rather than
+/// fastidious: a bare-substring `contains(cell)` over an unqualified member
+/// name is VACUOUS, because the message template unconditionally contains the
+/// words "auto param", "Add a constraint" and "attach", so short member names
+/// like `a` are present no matter which cell — or whether any cell — the
+/// diagnostic actually named. Requiring the backticks pins the assertion to the
+/// cell LIST specifically, not to prose that merely happens to contain the same
+/// letters.
+fn assert_one_unconsumed_error_naming(result: &reify_eval::EvalResult, cell: &str) {
+    let found = unconsumed(result);
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one ObjectiveUnconsumed (the #5014 aggregation rule); \
+         got {found:?}"
+    );
+    let diag = found[0];
+    assert_eq!(
+        diag.severity,
+        Severity::Error,
+        "E_* mnemonics are Errors by house convention; got {:?}",
+        diag.severity
+    );
+    assert!(
+        diag.message.contains("E_OBJECTIVE_UNCONSUMED"),
+        "the message must carry the PRD-prose mnemonic so the CLI renders it; \
+         got {:?}",
+        diag.message
+    );
+    assert!(
+        cell.contains('.'),
+        "pass the fully-qualified `entity.member` id, not a bare member name — \
+         an unqualified name makes this assertion vacuous; got {cell:?}"
+    );
+    let backticked = format!("`{cell}`");
+    assert!(
+        diag.message.contains(&backticked),
+        "the message must name the unconsumed auto as {backticked} in its cell \
+         list; got {:?}",
+        diag.message
+    );
+}
+
+/// Assert the run reports no unconsumed objective at all.
+fn assert_no_unconsumed(result: &reify_eval::EvalResult, why: &str) {
+    let found = unconsumed(result);
+    assert!(found.is_empty(), "{why}; got {found:?}");
+}
+
+/// Anti-vacuity guard for the negative cases: the fixture must really have
+/// reached the solver and bound the auto.
+///
+/// Without this a negative case degenerates into "nothing solved, so of course
+/// nothing was reported" — it would keep passing even if the rule were rewritten
+/// to fire on everything.
+fn assert_bound(result: &reify_eval::EvalResult, entity: &str, member: &str) {
+    let id = ValueCellId::new(entity, member);
+    let got = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("cell {entity}.{member} is absent from the values map"));
+    assert!(
+        !matches!(got, reify_ir::Value::Undef),
+        "cell {entity}.{member} must be concretely bound for this negative case \
+         to mean anything; got {got:?}"
+    );
+}
+
+/// Anti-vacuity guard for the MERGED-CLUSTER cases: the shape must really have
+/// been solved as one cross-scope merged problem, spanning exactly
+/// `expected_members`.
+///
+/// Load-bearing in both directions. A merged fixture that quietly stopped
+/// forming a cluster would fall through to the single-scope emission site, so
+/// the positive case would keep passing while testing nothing about the arm it
+/// names; and the false-positive canary would stop guarding the merged arm at
+/// all. `SnapshotProvenance::Resolution.scope` is the comma-joined
+/// `cluster.scopes` member-name label `dispatch_merged_cluster_solve` writes
+/// (`merged_scope_label`) — a per-template solve writes a single name there,
+/// so the member SET is the discriminator. Asserted as a set-and-order over the
+/// split parts rather than the exact joined string, mirroring
+/// `merged_cluster_solve.rs`'s
+/// `merged_cluster_snapshot_provenance_scope_is_comma_joined_member_names`, so
+/// a benign separator change does not fail it.
+fn assert_merged_cluster_spanned(engine: &Engine, expected_members: &[&str]) {
+    let snapshot = engine
+        .snapshot()
+        .expect("engine must have a snapshot after eval()");
+    match &snapshot.provenance {
+        reify_ir::SnapshotProvenance::Resolution { scope, .. } => {
+            let members: Vec<&str> = scope.split(", ").collect();
+            assert_eq!(
+                members, expected_members,
+                "this fixture must be solved as ONE merged cross-scope cluster \
+                 spanning {expected_members:?} — otherwise it exercises the \
+                 single-scope emission site, not the merged one; got {scope:?}"
+            );
+        }
+        other => panic!(
+            "expected SnapshotProvenance::Resolution after a merged solve; got \
+             {other:?}"
+        ),
+    }
+}
+
+// ── (B7) the target: a well-posed objective the solver drops ────────────────
+
+/// Byte-mirror of `docs/prds/v0_6/fixtures/dic_min_unconstrained.ri`.
+///
+/// `minimize (a-3)*(a-3)` genuinely reaches the auto `a`, so it passes the
+/// compile half. But with no constraints the decomposition builds zero
+/// components, the registry has nothing to attach the cost to, and the
+/// objective is dropped. That drop is exactly what must stop being silent.
+const UNCONSTRAINED: &str = "\
+module dic_min_unconstrained
+
+structure DicMinUnconstrained {
+    param a : Real = auto(free)
+    minimize (a - 3.0) * (a - 3.0)
+}
+";
+
+#[test]
+fn unconstrained_objective_reports_unconsumed() {
+    let result = eval_with_solver(UNCONSTRAINED);
+    assert_one_unconsumed_error_naming(&result, "DicMinUnconstrained.a");
+}
+
+/// The diagnostic is additive: `a`'s pre-existing undef classification is the
+/// PRD's recorded baseline (`a = undef (awaiting solve)`) and must not shift.
+/// γ reports the silence — it does not change what the solver does (O1).
+#[test]
+fn unconstrained_objective_leaves_the_undef_classification_alone() {
+    let result = eval_with_solver(UNCONSTRAINED);
+    let id = ValueCellId::new("DicMinUnconstrained", "a");
+    let got = result
+        .values
+        .get(&id)
+        .expect("DicMinUnconstrained.a must be present in the values map");
+    assert!(
+        matches!(got, reify_ir::Value::Undef),
+        "baseline: `a` stays undef awaiting solve — γ adds a diagnostic, it does \
+         not change the solve; got {got:?}"
+    );
+}
+
+// ── (B8 / O1) a governing objective that solves stays quiet ─────────────────
+
+/// The `bt1_single_scope.ri` shape: an auto bracketed by two constraints, with
+/// an objective over it. The decomposition builds a component, the component
+/// consumes the objective, the solve happens — nothing to report.
+///
+/// This is the case that proves the rule keys off *consumption*, not off
+/// "an objective exists".
+#[test]
+fn governing_objective_that_solves_reports_nothing() {
+    let source = "\
+module dic_governing
+
+structure DicGoverning {
+    param w : Length = auto
+    constraint w >= 10mm
+    constraint w <= 50mm
+    minimize w
+}
+";
+    let result = eval_with_solver(source);
+    assert_bound(&result, "DicGoverning", "w");
+    assert_no_unconsumed(
+        &result,
+        "a component consumed this objective and solved it (O1)",
+    );
+}
+
+// ── (O2) vacuous-healthy: every reachable auto is bound this run ────────────
+
+/// An objective whose reachable autos are all concretely bound this run has
+/// nothing left to optimise, and saying so would be noise on a healthy model.
+///
+/// The reach here spans BOTH an auto (`w`) and a concrete param (`base`), which
+/// is what this case pins: the unbound-remainder test intersects with
+/// `auto_params` per id, so `base` never enters the set and cannot keep the
+/// diagnostic alive once `w` is bound.
+///
+/// **Which gate condition actually silences it — corrected, and MEASURED.**
+/// Condition 2, not the vacuous-healthy rule. An earlier revision of this doc
+/// claimed consumption was `FallbackComponentZero` because the registry matched
+/// the objective's DIRECT refs (`total` alone); step-18 made `decompose_prelude`
+/// expand objective refs through `dependent_cells` before the first-match scan
+/// (`registry.rs`, pinned by `let_indirected_objective_is_consumed_not_fallback`),
+/// so `total` now reaches `w` and this classifies `Consumed` — the same verdict
+/// as `let_indirected_objective_over_a_solved_auto_reports_nothing` below, whose
+/// shape this is structurally identical to. The gate returns at condition 2 and
+/// never reaches the O2 filter.
+///
+/// **Where condition 4 IS covered.** Directly, by
+/// `objective_unconsumed_gate_tests` in `engine_eval.rs`
+/// (`an_objective_whose_every_reached_auto_is_bound_reports_nothing`,
+/// `an_undef_write_back_does_not_count_as_bound`,
+/// `only_the_still_unbound_reached_autos_are_named`), and end-to-end by the
+/// merged joint-drive canary below. No SINGLE-SCOPE source fixture reaches it:
+/// condition 4 needs a dropped verdict (`NoComponents` /
+/// `FallbackComponentZero`) to coexist with a reached auto that is nonetheless
+/// bound, and on the single-scope path the two cannot both hold — a
+/// connector-pinned auto is partitioned out of `auto_params` upstream so it
+/// never enters the reach, and a solver-bound auto means a component consumed
+/// the objective. It is the merged write-back that makes the pair coexist, so
+/// end-to-end condition 4 is merged-path-only by construction rather than by
+/// omission.
+///
+/// **Pin-shape note (resolved in step-10).** The shape step-9 first wrote here —
+/// `w` pinned by two mutually-tight inequalities — is RED on its *premise*, not
+/// on the rule. Probing `SolverRegistry::production()` directly, none of
+/// `constraint w == 25mm`, `w >= 25mm` + `w <= 25mm`, or `w == base` binds `w`
+/// at all: each reports `constraints could not be satisfied (max absolute
+/// residual: 5.00e-7)` and leaves the cell undef, so the anti-vacuity guard
+/// tripped before the rule was ever consulted. The same probe found that
+/// multi-auto shapes (two bracketed autos, autos coupled by an equality, or a
+/// shared `w + h` bracket) also leave every auto undef. What DOES bind under the
+/// production registry is a SINGLE auto with a two-sided inequality bracket,
+/// which is the shape used here. That is a pre-existing solver characteristic,
+/// independent of DIC γ — γ adds a diagnostic, it does not change what solves.
+#[test]
+fn objective_whose_autos_are_all_bound_reports_nothing() {
+    let source = "\
+module dic_vacuous
+
+structure DicVacuous {
+    param base : Length = 4mm
+    param w : Length = auto
+    constraint w >= 10mm
+    constraint w <= 50mm
+    let total = w + base
+    minimize total
+}
+";
+    let result = eval_with_solver(source);
+    assert_bound(&result, "DicVacuous", "w");
+    assert_no_unconsumed(
+        &result,
+        "every objective-reachable auto is bound this run — the vacuous-healthy \
+         rule (O2)",
+    );
+}
+
+// ── (task 4013) the synthesised centrality objective is exempt ──────────────
+
+/// A scope that declares NO objective but picks up the synthesised
+/// Chebyshev-centre one must stay silent: the rule reports *declared* intent
+/// that the engine discarded, and there is no declaration here to discard.
+///
+/// The gate keys off `template.objective.is_some()`, which is the exact
+/// structural test — a synthetic-centrality scope has `objective == None` at
+/// compile time by construction.
+#[test]
+fn synthesised_centrality_objective_reports_nothing() {
+    let source = "\
+module dic_synthetic
+
+structure DicSynthetic {
+    param w : Length = auto
+    constraint w >= 10mm
+    constraint w <= 50mm
+}
+";
+    let result = eval_with_solver(source);
+    assert_no_unconsumed(
+        &result,
+        "no user-declared objective exists, so nothing was discarded (task 4013)",
+    );
+}
+
+// ── order-independence w.r.t. PRD 2 ─────────────────────────────────────────
+
+/// An objective that reads a `let` which reads a solved auto is transitively
+/// consumed, and must stay silent — `dependent_cells` already encodes the
+/// let-indirection, so this holds whichever order γ and PRD 2's let-tracing fix
+/// (tasks 5396 / 5467-5474) land in.
+#[test]
+fn let_indirected_objective_over_a_solved_auto_reports_nothing() {
+    let source = "\
+module dic_let_indirect
+
+structure DicLetIndirect {
+    param w : Length = auto
+    let doubled = w * 2.0
+    constraint w >= 10mm
+    constraint w <= 50mm
+    minimize doubled
+}
+";
+    let result = eval_with_solver(source);
+    assert_bound(&result, "DicLetIndirect", "w");
+    assert_no_unconsumed(
+        &result,
+        "the objective reaches `w` through the let and the component consumed \
+         it — order-independent w.r.t. PRD 2",
+    );
+}
+
+// ── a FAILED solve stays quiet (review round 1, finding 2) ─────────────────
+//
+// γ's contract is "the solve SUCCEEDED and your `minimize` was silently
+// dropped". When the solve itself fails, that claim is unwarranted: the
+// objective was not consumed because nothing was solved at all. The remedy text
+// ("Add a constraint relating `X` to the rest of the scope") then asks for
+// constraints the source already has, the Error stacks on top of the solve's
+// own report, and on the `NoProgress` arm it escalates a warning to an Error on
+// a model whose behaviour never changed.
+//
+// Each fixture below records the `SolveResult` arm it was MEASURED to produce —
+// probe: a temporary `eprintln!` over `solve_result` immediately before
+// `engine_eval.rs`'s `match solve_result`, run under `--nocapture`. The
+// measurement is not decoration: a fixture that silently drifted onto `Solved`
+// would make its case vacuous, which is why every one of them also asserts,
+// through `assert_solve_failure_still_reported`, that the failure is still on
+// the record.
+
+/// Anti-vacuity guard for the failed-solve cases: the run must STILL report the
+/// solve failure itself.
+///
+/// This is what makes "stays quiet" mean *the spurious second Error is gone*
+/// rather than *the whole scope went silent* — the suppression must cost the
+/// user nothing they were previously told. It doubles as the drift guard: a
+/// fixture that stopped failing would emit no failure diagnostic and trip here,
+/// instead of passing vacuously as a negative case.
+fn assert_solve_failure_still_reported(result: &reify_eval::EvalResult, why: &str) {
+    let reported: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code != Some(DiagnosticCode::ObjectiveUnconsumed)
+                && (d.message.contains("could not be satisfied")
+                    || d.message.contains("no progress")
+                    || d.message.contains("No progress"))
+        })
+        .collect();
+    assert!(
+        !reported.is_empty(),
+        "{why}; the solve failure must still be reported, but no failure \
+         diagnostic survives: {:?}",
+        result.diagnostics
+    );
+}
+
+/// (1) INFEASIBLE, let-indirected objective — the reviewer's repro shape.
+///
+/// MEASURED: `SolveResult::Infeasible`.
+///
+/// GREEN ALREADY, and honestly so: once step-18 expands the objective's refs
+/// through `dependent_cells`, `doubled` reaches `w`, `w` is in a component, and
+/// the registry classifies `Consumed` — gate condition (2) short-circuits before
+/// the outcome is ever consulted. Kept as a pin: it is the reviewer's literal
+/// repro shape, and it must not regress if a later change narrows the expansion.
+/// The case that actually exercises the outcome gate is (4) below.
+#[test]
+fn infeasible_solve_with_a_let_indirected_objective_reports_nothing() {
+    let source = "\
+module dic_infeasible_let
+
+structure DicInfeasibleLet {
+    param w : Length = auto
+    constraint w >= 50mm
+    constraint w <= 10mm
+    let doubled = w * 2.0
+    minimize doubled
+}
+";
+    let result = eval_with_solver(source);
+    assert_solve_failure_still_reported(
+        &result,
+        "the contradictory bracket is a real failure the user must still see",
+    );
+    assert_no_unconsumed(
+        &result,
+        "the solve failed, so `minimize` was not silently dropped — there is \
+         nothing for γ to add on top of the failure the run already reports",
+    );
+}
+
+/// (2) NOPROGRESS — the arm where the spurious report is also a warning→Error
+/// severity escalation.
+///
+/// MEASURED: `SolveResult::NoProgress`. The reach is `a`, which carries no
+/// constraint and so lands in no component; the objective is handed to component
+/// 0 (the `w` bracket) by the fallback, evaluates to undefined at that
+/// component's solution point, and the solver reports no progress — a WARNING.
+/// γ then stacked an ERROR on top, which is the escalation this case pins.
+///
+/// RED before step-20.
+#[test]
+fn no_progress_solve_with_a_dropped_objective_reports_nothing() {
+    let source = "\
+module dic_no_progress
+
+structure DicNoProgress {
+    param a : Real = auto(free)
+    param w : Length = auto
+    constraint w >= 10mm
+    constraint w <= 50mm
+    minimize (a - 3.0) * (a - 3.0)
+}
+";
+    let result = eval_with_solver(source);
+    assert_solve_failure_still_reported(
+        &result,
+        "the run's own no-progress report is the diagnostic of record here",
+    );
+    // The severity half of the finding, pinned separately from the quietness
+    // half: the solver's own report is a WARNING, so a scope whose behaviour did
+    // not change must not come back carrying an Error.
+    let no_progress: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("no progress"))
+        .collect();
+    assert!(
+        no_progress
+            .iter()
+            .all(|d| d.severity == Severity::Warning),
+        "the solver's own no-progress report is a warning; got {no_progress:?}"
+    );
+    let errors: Vec<&Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "this model's worst diagnostic is the solver's no-progress WARNING — γ \
+         must not escalate it to an Error; got {errors:?}"
+    );
+    assert_no_unconsumed(
+        &result,
+        "nothing was solved, so γ must not escalate the run's own warning into \
+         an Error about a `minimize` the solver never got to drop",
+    );
+}
+
+/// (3) INFEASIBLE with a DIRECT objective (`minimize w`, no let in the way).
+///
+/// The identical model with a direct objective is quiet TODAY, for a different
+/// reason: `w` is in a component, so the registry classifies `Consumed` and gate
+/// condition (2) never fires. Pinned so the outcome gate does not accidentally
+/// start reporting it.
+///
+/// MEASURED: `SolveResult::Infeasible`.
+#[test]
+fn infeasible_solve_with_a_direct_objective_reports_nothing() {
+    let source = "\
+module dic_infeasible_direct
+
+structure DicInfeasibleDirect {
+    param w : Length = auto
+    constraint w >= 50mm
+    constraint w <= 10mm
+    minimize w
+}
+";
+    let result = eval_with_solver(source);
+    assert_solve_failure_still_reported(
+        &result,
+        "the contradictory bracket is a real failure the user must still see",
+    );
+    assert_no_unconsumed(
+        &result,
+        "an objective the registry consumed is never γ's business, whatever the \
+         solve outcome",
+    );
+}
+
+/// (4) THE LOAD-BEARING CASE: a genuine DROP verdict *and* a failed solve.
+///
+/// Cases (1) and (3) both classify `Consumed` once the classifier expands refs
+/// through `dependent_cells` (step-18), so gate condition (2) short-circuits and
+/// they would stay quiet even with no outcome gate at all. This one does not:
+/// `a` carries no constraint, so it lands in no component and the objective
+/// over it classifies as a DROP verdict — condition (2) fires, conditions (3)
+/// and (4) hold, and the only thing that can silence it is the outcome gate
+/// itself. It is therefore the case that actually exercises step-20.
+///
+/// MEASURED: `SolveResult::Infeasible`, with consumption
+/// `FallbackComponentZero` — a genuine drop verdict. RED before step-20: the
+/// run reports BOTH the infeasibility and an E_OBJECTIVE_UNCONSUMED Error whose
+/// remedy asks for constraints relating `a` to a scope that could not be solved
+/// at all.
+#[test]
+fn dropped_objective_in_a_failing_scope_reports_nothing() {
+    let source = "\
+module dic_drop_and_fail
+
+structure DicDropAndFail {
+    param a : Real = auto(free)
+    param w : Length = auto
+    constraint w >= 50mm
+    constraint w <= 10mm
+    minimize (a - 3.0) * (a - 3.0)
+}
+";
+    let result = eval_with_solver(source);
+    assert_solve_failure_still_reported(
+        &result,
+        "the contradictory bracket on `w` is the real failure here",
+    );
+    assert_no_unconsumed(
+        &result,
+        "the objective over `a` IS a drop verdict, but the solve failed — γ \
+         claims a successful solve silently discarded a `minimize`, and that \
+         claim is unwarranted here",
+    );
+}
+
+// ── the MERGED-CLUSTER arm ──────────────────────────────────────────────────
+//
+// Everything above exercises the SINGLE-SCOPE emission site. The cases below
+// cover `dispatch_merged_cluster_solve` — the second path
+// `objective_unconsumed_diagnostic`'s own doc comment already claims calls it
+// ("the single-scope (`eval`) and merged-cluster (`dispatch_merged_cluster_solve`)
+// paths both call it"). Written RED in step-14: until step-15 wires that site,
+// only the single-scope one calls it and that claim is FALSE in-tree, so
+// INV-SF-3 has a real hole on every merged model.
+//
+// Why a merged cluster can reach `NoComponents` at all: `compute_clusters`
+// (`resolve_order.rs`) seeds a cluster on cross-scope OBJECTIVE reads ALONE —
+// constraint reads are deliberately NOT unioned — so an objective-span cluster
+// with zero constraints anywhere is a first-class shape, and
+// `decompose_into_components` returns `vec![]` when `constraints.is_empty()`.
+// That is the merged analogue of `dic_min_unconstrained.ri`.
+
+/// The `examples/whole_model_joint_drive.ri` shape with the child's two
+/// bracketing constraints DELETED.
+///
+/// The parent's INLINED `minimize cost(self.descendants)` expands to
+/// `[RivetedPanel.rivets.line_cost].sum`, which reads a cell of the CHILD — so
+/// the objective span couples `{RivetedPanel, Rivet}` into one `MergedSolve`
+/// cluster even though no constraint exists anywhere. The merged problem then
+/// carries one auto and zero constraints ⇒ zero components ⇒ the objective is
+/// dropped, and `Rivet.quantity_produced` is never written back.
+///
+/// **The aggregate MUST stay inlined in the `minimize`.** Putting it behind a
+/// `let` forms NO cluster at all (pinned by `resolve_order.rs`'s
+/// `objective_must_inline_the_aggregate_to_couple`: δ's C1 rule expands
+/// objective TERMS only, so an unexpanded `cost(self.descendants)` surfaces no
+/// `line_cost` read), which would silently demote this to a single-scope test
+/// that passes for the wrong reason. `assert_merged_cluster_spanned` is the
+/// executable guard against exactly that.
+const MERGED_UNCONSTRAINED: &str = r#"
+module dic_merged_unconstrained
+
+structure def Rivet : Costed {
+    param supplier          : String = "Acme Fastener"
+    param part_number       : String = "R-4210"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+
+    param quantity_produced : Real   = auto(free)
+}
+
+structure RivetedPanel {
+    sub rivets = Rivet()
+
+    minimize cost(self.descendants)
+}
+"#;
+
+#[test]
+fn merged_cluster_unconstrained_objective_reports_unconsumed() {
+    let (engine, result) = eval_with_solver_keeping_engine(MERGED_UNCONSTRAINED);
+    assert_merged_cluster_spanned(&engine, &["Rivet", "RivetedPanel"]);
+    assert_one_unconsumed_error_naming(&result, "Rivet.quantity_produced");
+}
+
+/// FALSE-POSITIVE CANARY — and the load-bearing case of the pair.
+///
+/// `examples/whole_model_joint_drive.ri` UNCHANGED must stay quiet, and it is
+/// the one in-tree model that proves the merged wiring passes a genuinely
+/// populated `bound_this_run`. It ALREADY classifies `FallbackComponentZero`
+/// today: the expanded objective's DIRECT refs are
+/// `{RivetedPanel.rivets.line_cost}` (an instance-path let) while the
+/// component's autos are structure-keyed `{Rivet.quantity_produced}`, so the
+/// registry's first-match scan finds nothing even though a component exists —
+/// i.e. gate condition (2) FIRES here. The only thing keeping it quiet is gate
+/// condition (4): the merged write-back binds `Rivet.quantity_produced` into
+/// `resolved_params`.
+///
+/// So `assert_bound` is not decoration — it is the assertion that proves the O2
+/// rule is what silences this, rather than an accidental early return. A step-15
+/// that passed an empty or stale map for `bound_this_run` would raise an Error
+/// on a published example, and this test is what catches it.
+///
+/// Read from the published file rather than mirrored inline, following
+/// `joint_drive_expansion_boundary.rs`'s BT-5 idiom, so the canary degrades
+/// loudly if the example itself drifts.
+#[test]
+fn joint_drive_example_stays_quiet_because_its_auto_is_bound() {
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/whole_model_joint_drive.ri"
+    ))
+    .expect("examples/whole_model_joint_drive.ri must be readable");
+
+    let (engine, result) = eval_with_solver_keeping_engine(&source);
+    assert_merged_cluster_spanned(&engine, &["Rivet", "RivetedPanel"]);
+    assert_bound(&result, "Rivet", "quantity_produced");
+    assert_no_unconsumed(
+        &result,
+        "the merged write-back bound every objective-reachable auto this run — \
+         the vacuous-healthy rule (O2) is what silences this, and it must keep \
+         silencing it once the merged site is wired",
+    );
+}
+
+/// (O1) The second existing objective-bearing merged fixture — the same shape
+/// carrying a per-sub parameter override (`joint_drive_expansion_boundary.rs`'s
+/// `OVERRIDE_SRC`) — stays byte-quiet too.
+///
+/// An override changes which value the instance-path cost cell folds to, not
+/// whether the auto is bound, so it must not perturb the rule. Pinning it
+/// separately keeps a step-15 that accidentally keyed off the folded objective
+/// VALUE (rather than the binding of the auto) from passing the canary above.
+#[test]
+fn merged_cluster_with_sub_override_stays_quiet() {
+    let source = r#"
+module dic_merged_override
+
+structure def Rivet : Costed {
+    param supplier          : String = "Acme Fastener"
+    param part_number       : String = "R-4210"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+
+    param quantity_produced : Real   = auto(free)
+    constraint quantity_produced >= 0.0
+    constraint quantity_produced <= 100.0
+}
+
+structure RivetedPanel {
+    sub rivets = Rivet(unit_cost: 0.90USD)
+
+    minimize cost(self.descendants)
+}
+"#;
+    let (engine, result) = eval_with_solver_keeping_engine(source);
+    assert_merged_cluster_spanned(&engine, &["Rivet", "RivetedPanel"]);
+    assert_bound(&result, "Rivet", "quantity_produced");
+    assert_no_unconsumed(
+        &result,
+        "a per-sub override changes the folded cost, not whether the auto is \
+         bound — this merged fixture must stay byte-quiet (O1)",
+    );
+}
