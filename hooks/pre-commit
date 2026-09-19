@@ -12,9 +12,14 @@ ROOT="$(git rev-parse --show-toplevel)"
 # ── Universal guards (all branches) ────────────────────────────────────
 
 # Unstage tree-sitter generated files — they're gitignored but force-add or
-# old tracking can sneak them back in.  These 63K+ line files cause merge
-# conflicts when committed on task branches.
-ts_generated="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^tree-sitter-reify/src/(parser\.c|grammar\.json|node-types\.json)$')"
+# old tracking (or a WIP-save sweep run on a branch cut before the .gitignore
+# entry landed) can sneak them back in.  These 63K+ line files cause merge
+# conflicts when committed on task branches.  Matched by literal path here
+# (not by consulting .gitignore), so this guard is immune to a branch's
+# .gitignore vintage — see task #7538.  Covers the full generated set:
+# the three tree-sitter artifacts plus their stamp/lock/tmp metadata files
+# (.gitignore:49-56).
+ts_generated="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^tree-sitter-reify/src/(parser\.c|grammar\.json|node-types\.json|\.grammar_hash\.stamp|\.generated_outputs\.stamp|\.tmp-.*|\.generate\.lock(\.d)?)$')"
 if [ -n "$ts_generated" ]; then
     echo "pre-commit: unstaging tree-sitter generated files (gitignored):"
     echo "$ts_generated" | while read -r f; do
