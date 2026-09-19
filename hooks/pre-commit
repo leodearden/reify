@@ -16,10 +16,13 @@ ROOT="$(git rev-parse --show-toplevel)"
 # entry landed) can sneak them back in.  These 63K+ line files cause merge
 # conflicts when committed on task branches.  Matched by literal path here
 # (not by consulting .gitignore), so this guard is immune to a branch's
-# .gitignore vintage — see task #7538.  Covers the full generated set:
-# the three tree-sitter artifacts plus their stamp/lock/tmp metadata files
-# (.gitignore:49-56).
-ts_generated="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^tree-sitter-reify/src/(parser\.c|grammar\.json|node-types\.json|\.grammar_hash\.stamp|\.generated_outputs\.stamp|\.tmp-.*|\.generate\.lock(\.d)?)$')"
+# .gitignore vintage — see task #7538.  Covers the root .gitignore's
+# "Tree-sitter generated" block (the three tree-sitter artifacts plus their
+# stamp/lock/tmp metadata files) plus the CLI binary and ad-hoc *.o files
+# from the nested tree-sitter-reify/.gitignore. Path list is exercised by
+# tests/infra/test_pre_commit_ts_guard.sh, which derives it from both
+# .gitignore files so the two stay in sync.
+ts_generated="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^tree-sitter-reify/(src/(parser\.c|grammar\.json|node-types\.json|\.grammar_hash\.stamp|\.generated_outputs\.stamp|\.tmp-.*|\.generate\.lock(\.d(/.*)?)?)|tree-sitter|.*\.o)$')"
 if [ -n "$ts_generated" ]; then
     echo "pre-commit: unstaging tree-sitter generated files (gitignored):"
     echo "$ts_generated" | while read -r f; do
