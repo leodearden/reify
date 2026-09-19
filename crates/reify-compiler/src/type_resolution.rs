@@ -1937,7 +1937,7 @@ fn resolve_entity_name_with_shadowing(
     // Placed AFTER the structure arm so a name that is both a structure and a
     // trait with args still resolves via `Type::Applied` (structure wins over
     // trait — the same precedence `resolve_type_with_aliases` uses for the
-    // bare-name case, :655-661). This is a real, constructible branch, not
+    // bare-name case). This is a real, constructible branch, not
     // just defensive ordering: nothing in the unified entity namespace stops
     // a `structure def` and a `trait` from sharing a name (`Declaration::Trait`
     // is never run through `record_or_report_duplicate` in
@@ -4001,7 +4001,6 @@ fn expect_integer_literal_type_arg(
 /// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
 /// `resolve_type_alias_expr_with_subst` — the full-type resolver with substitutions,
 /// **not** the dimension-only resolver — because Field's args are full Types.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     name: &str,
     type_args: &[reify_ast::TypeExpr],
@@ -4692,8 +4691,10 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// subject of the check.
 // Eight distinct inputs, none derivable from another: the entry under test,
 // the four namespaces its body may name, and the two registries case (b) needs
-// for required-bound metadata.  Same disposition as `resolve_parameterized_alias`
-// and `resolve_parameterized_builtin_type_with_subst` in this file.
+// for required-bound metadata.  Eight is one past clippy's threshold, which is
+// why this allow is here and why the seven-argument resolvers in this file
+// carry none — an allow that suppresses nothing only invites the signature to
+// grow past the real limit unnoticed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_pub_parametric_alias_def_site(
     entry: &TypeAliasEntry,
