@@ -479,11 +479,15 @@ pub(crate) fn eigensolve_modal(
     for (i, &f) in frequencies.iter().enumerate() {
         let omega = 2.0 * PI * f;
         if is_rigid_body_mode(omega, RIGID_BODY_OMEGA_TOL) {
+            // σ from `eig.shift` — the shift ACTUALLY used — for the same
+            // reason `W_ShiftSkippedModes` below names it from there: both
+            // clauses tell the author to move a σ, so neither may name a σ the
+            // solve might not have applied.
             diagnostics.push(rigid_body_mode_diagnostic(
                 i,
                 omega,
                 RIGID_BODY_OMEGA_TOL,
-                eigen_opts.sigma,
+                eig.shift,
             ));
         }
     }
@@ -572,16 +576,9 @@ pub(crate) fn eigensolve_modal(
     // yields a boolean, not an inertia count). Do not "improve" this into a
     // fabricated number.
     //
-    // Suppressed on a FAULTED solve, the same predicate shape and for the same
-    // reason as `W_ModalConvergence` just above. BOTH non-`None` faults carry
-    // `shift_skipped_modes == true` at σ ≠ 0 — the refusal via
-    // `conservative_shift_provenance(σ)` and the over-ceiling degenerate return
-    // — while holding ZERO eigenpairs, so the flag alone would describe a result
-    // that does not exist as "a window". The gate is therefore on the FAULT,
-    // not on the flag and not on σ: at σ ≠ 0 below λ₁ the flag is ESTABLISHED
-    // false by a successful Cholesky, which is the case a `σ != 0.0` test would
-    // get wrong.
-    if eig.shift_skipped_modes && fault == ModalSolveFault::None {
+    // Suppressed unless there is a result to describe — the rule and its three
+    // empty-result channels live in [`shift_window_is_reportable`].
+    if shift_window_is_reportable(eig.shift_skipped_modes, fault, frequencies.len()) {
         diagnostics.push(
             Diagnostic::warning(format!(
                 "W_ShiftSkippedModes: the shift sigma = {} skipped mode(s) below \
@@ -859,6 +856,13 @@ fn non_finite_frequency_diagnostic(n_modes: usize) -> Diagnostic {
 /// clause order all stay put. No [`DiagnosticCode`] is attached and the severity
 /// stays `Warning`: this is not one of α's three codes, and inventing a fourth
 /// is out of scope.
+///
+/// `sigma` is the shift ACTUALLY USED — [`EigenSolverResult::shift`], never the
+/// requested [`EigenSolverOptions::sigma`]. Same rule, and for the same reason,
+/// as `W_ShiftSkippedModes` in [`eigensolve_modal`]: both diagnostics name a σ
+/// to an author who is being told to move it, so a path that did not honor the
+/// requested shift must name the one it solved at rather than the one it was
+/// handed.
 fn rigid_body_mode_diagnostic(mode_index: usize, omega: f64, tol: f64, sigma: f64) -> Diagnostic {
     let shift_note = if sigma == 0.0 {
         String::new()
@@ -875,6 +879,43 @@ fn rigid_body_mode_diagnostic(mode_index: usize, omega: f64, tol: f64, sigma: f6
          ω = {omega:.3e} rad/s (≤ {tol:.1e}); the model \
          may be under-constrained (rigid-body or spurious mode).{shift_note}"
     ))
+}
+
+/// Whether a `W_ShiftSkippedModes` window claim would describe a result that
+/// EXISTS.
+///
+/// "The returned set is a window around σ" is a statement ABOUT a returned mode
+/// set, so an empty one makes it confidently wrong — and the C5 flag alone does
+/// not exclude that, because two of the three ways a shifted solve can come back
+/// empty carry `shift_skipped_modes == true`:
+///
+/// * the REFUSAL (`ShiftAtEigenvalue`) and the over-ceiling degenerate return,
+///   both via `conservative_shift_provenance(σ)`: no spectrum was computed, so
+///   C5 forbids establishing `false`. Both are faults, and both are suppressed
+///   here by `fault == None` alone;
+/// * a solve that CONVERGED NOTHING. Today `try_solve_eigen_shift_invert`
+///   folds that into the refusal — `shift_is_numerically_singular` returns
+///   `true` for an empty eigenvalue list, so the σ≠0 branch never returns `Ok`
+///   with no eigenpairs (MEASURED: every starved shifted solve reachable from
+///   `eigensolve_modal` arrives carrying `E_ShiftAtEigenvalue`). So the
+///   emptiness test is NOT load-bearing today.
+///
+/// It is kept anyway because the fault test is a PROXY for the property, and a
+/// proxy maintained in another crate is the kind that breaks silently: #7617 is
+/// chartered to split `ShiftAtEigenvalue`'s two causes, and a "converged
+/// nothing" outcome that stops being a refusal makes `fault == None` with an
+/// empty result live. Keying on the property directly costs one comparison and
+/// cannot be invalidated from outside this function.
+///
+/// Deliberately NOT gated on σ: at σ ≠ 0 below λ₁ the flag is ESTABLISHED
+/// `false` by a successful Cholesky, which is the case a `σ != 0.0` test would
+/// get wrong.
+fn shift_window_is_reportable(
+    shift_skipped_modes: bool,
+    fault: ModalSolveFault,
+    n_modes_returned: usize,
+) -> bool {
+    shift_skipped_modes && fault == ModalSolveFault::None && n_modes_returned > 0
 }
 
 /// Largest `n_free` for which a SINGULAR `K_free` is still routed to the dense
@@ -3228,6 +3269,14 @@ fn extract_loss_factor(val: &Value) -> Option<f64> {
 /// to `Value::Scalar { .. }` because the dimension gate is the load-bearing
 /// part: [`read_scalar_si`] is dimension-BLIND.
 ///
+/// The widening is scoped to σ, and `tol` — declared `param tol : Real` beside
+/// it — is the REMAINING instance of this class: a literal `tol: 1` arrives as
+/// [`Value::Int`] and silently becomes the 1e-9 default, exactly as `sigma: 2`
+/// did before this leaf. Left open deliberately (it is outside δ's scope) and
+/// named here so the next reader does not have to rediscover it; filed as a
+/// follow-up, which should also audit `n_modes`/`max_iters` for the
+/// mirror-image [`Value::Real`] spelling.
+///
 /// A DIMENSIONED `Scalar` — notably a `Scalar<Frequency>` — is refused and falls
 /// back to the default. That shape is #6097's future `shift_frequency` surface,
 /// and reading 300 Hz as `λ = 300` would be a silent 4π²-and-square error:
@@ -3265,20 +3314,26 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
         _ => default_max_iters,
     };
     // Gate on the VARIANT (and, for `Scalar`, on the DIMENSION), then convert
-    // through `read_scalar_si` so the tolerated spellings cannot drift apart
-    // from it. A non-finite σ still falls back: it would poison `K − σM`.
+    // ONCE through `read_scalar_si` so the tolerated spellings cannot drift
+    // apart from it — the `tolerated` shape [`extract_loss_factor`] spells out
+    // one knob up, which also keeps the finite guard in a single copy rather
+    // than one per accepted shape. A non-finite σ still falls back: it would
+    // poison `K − σM`.
     let sigma = match data.fields.get("sigma") {
-        Some(raw @ (Value::Real(_) | Value::Int(_))) => {
+        Some(raw) => {
+            let tolerated = match raw {
+                Value::Real(_) | Value::Int(_) => true,
+                Value::Scalar { dimension, .. } => *dimension == DimensionVector::DIMENSIONLESS,
+                _ => false,
+            };
             let s = read_scalar_si(raw);
-            if s.is_finite() { s } else { default_sigma }
+            if tolerated && s.is_finite() {
+                s
+            } else {
+                default_sigma
+            }
         }
-        Some(raw @ Value::Scalar { dimension, .. })
-            if *dimension == DimensionVector::DIMENSIONLESS =>
-        {
-            let s = read_scalar_si(raw);
-            if s.is_finite() { s } else { default_sigma }
-        }
-        _ => default_sigma,
+        None => default_sigma,
     };
     (n_modes, tol, max_iters, sigma)
 }
@@ -4390,7 +4445,8 @@ mod tests {
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
         resolve_location_node, rigid_body_mode_diagnostic, run_modal_analysis,
         run_transient_response,
-        ModalSolveFault, simply_supported_pin_pin_bcs, solve_generalized_eigen,
+        ModalSolveFault, shift_window_is_reportable, simply_supported_pin_pin_bcs,
+        solve_generalized_eigen,
         solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
@@ -5808,16 +5864,31 @@ mod tests {
     /// bypass the shifted factorization entirely, leaving the fixture testing
     /// nothing.
     fn laplacian_modal_assembly() -> (ModalAssembly, Vec<DirichletBc>) {
-        const N_NODES: usize = 29;
-        const N_FREE: usize = 80;
-        let n_dofs = 3 * N_NODES;
+        laplacian_modal_assembly_sized(29, 80)
+    }
+
+    /// [`laplacian_modal_assembly`] at a caller-chosen size, so a test can pick
+    /// which DISPATCH ARM of [`solve_generalized_eigen`] it exercises — the two
+    /// arms compute `shift_skipped_modes` by structurally different predicates
+    /// (absence-based and exact on the dense arm, Cholesky/LU-based and
+    /// conservative on the Lanczos arm), so one arm's coverage is not the
+    /// other's.
+    ///
+    /// The constraint set is always the TRAILING `n_dofs − n_free` DOFs, which
+    /// keeps `K_free` the leading principal submatrix of the tridiagonal and so
+    /// keeps the closed form [`laplacian_lambda`]`(n_free, k)` exact.
+    fn laplacian_modal_assembly_sized(
+        n_nodes: usize,
+        n_free: usize,
+    ) -> (ModalAssembly, Vec<DirichletBc>) {
+        let n_dofs = 3 * n_nodes;
         let (k_full, m_full) = laplacian_pencil(n_dofs);
-        let bcs: Vec<DirichletBc> = (N_FREE..n_dofs)
+        let bcs: Vec<DirichletBc> = (n_free..n_dofs)
             .map(|dof| DirichletBc { dof, value: 0.0 })
             .collect();
         assert!(
-            n_dofs - bcs.len() == N_FREE && bcs.len() >= 6,
-            "the fixture must leave n_free = {N_FREE} free DOFs while keeping \
+            n_dofs - bcs.len() == n_free && bcs.len() >= 6,
+            "the fixture must leave n_free = {n_free} free DOFs while keeping \
              `under_constrained` false",
         );
         let assembly = ModalAssembly {
@@ -5825,7 +5896,7 @@ mod tests {
             stiffness_matrix_norm: frobenius_norm(&k_full),
             k_full,
             m_full,
-            n_nodes: N_NODES,
+            n_nodes,
         };
         (assembly, bcs)
     }
@@ -6172,6 +6243,182 @@ mod tests {
             warnings[0].message.contains(&sigma.to_string()),
             "the warning must NAME σ = {sigma} so a reader never has to infer \
              which shift produced the window; got {:?}",
+            warnings[0].message,
+        );
+    }
+
+    /// Amendment (suggestion 1): the window claim is gated on a RESULT THAT
+    /// EXISTS, over the whole input cube.
+    ///
+    /// Asserted on [`shift_window_is_reportable`] directly, for the same reason
+    /// [`rigid_body_mode_diagnostic`] is: one corner — `fault == None` with a
+    /// `true` flag and ZERO modes — is not reachable through `eigensolve_modal`
+    /// today, because `try_solve_eigen_shift_invert` folds a zero-converged
+    /// shifted solve into `ShiftAtEigenvalue` (`shift_is_numerically_singular`
+    /// answers `true` for an empty eigenvalue list). MEASURED: every starved
+    /// shifted solve reachable from here — σ ∈ {5, 10, 10², 10⁴, 10⁸} on the
+    /// n_free = 80 pencil at `tol = 1e-300, max_iters = 1` — came back carrying
+    /// `E_ShiftAtEigenvalue`, never an empty success.
+    ///
+    /// Driving the predicate directly is therefore the only way to pin that
+    /// corner, and pinning it is the point: it is what makes the emptiness test
+    /// survive #7617 splitting that refusal's two causes, after which the corner
+    /// goes live. The two REACHABLE empty results keep their own end-to-end
+    /// tests below.
+    #[test]
+    fn shift_window_is_reportable_only_for_a_non_empty_result_at_no_fault() {
+        let faults = [
+            ModalSolveFault::None,
+            ModalSolveFault::SingularKOverCeiling,
+            ModalSolveFault::ShiftAtEigenvalue(2.5),
+        ];
+        for flag in [false, true] {
+            for fault in faults {
+                for n_modes_returned in [0_usize, 1, 7] {
+                    let expected =
+                        flag && fault == ModalSolveFault::None && n_modes_returned > 0;
+                    assert_eq!(
+                        shift_window_is_reportable(flag, fault, n_modes_returned),
+                        expected,
+                        "flag = {flag}, fault = {fault:?}, modes = {n_modes_returned}: \
+                         a window claim is legitimate ONLY when the C5 flag is set, \
+                         nothing faulted, and there is a mode set to describe",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Amendment (suggestion 3): the OTHER empty-at-σ≠0 result — the
+    /// over-ceiling degenerate return — is suppressed too.
+    ///
+    /// `solve_generalized_eigen`'s last arm sets `shift_skipped_modes` from
+    /// `conservative_shift_provenance(σ)` exactly as the refusal does, so the
+    /// flag is `true` here while the result holds no eigenpairs. This is the arm
+    /// where the suppression matters MOST: it already pushes a
+    /// `W_ModalRigidBodyMode` AND an `E_ModalNoModesComputed`, both saying "add
+    /// supports", so a leaked window claim would stack a third, contradictory
+    /// remedy on top of them.
+    ///
+    /// Driven with fewer than `RIGID_BODY_DOFS` constrained DOFs (which sets
+    /// `force_dense`) above [`DENSE_FALLBACK_MAX_DIM`], the two conditions that
+    /// arm requires. Two-sided like its refusal sibling: the Error is asserted
+    /// PRESENT so this cannot pass by the degenerate return having regressed
+    /// into a silent success.
+    #[test]
+    fn shift_skipped_modes_is_not_claimed_beside_an_over_ceiling_result() {
+        // 350 nodes → 1050 free DOFs > DENSE_FALLBACK_MAX_DIM = 1024, with ZERO
+        // constrained DOFs so `under_constrained` (< 6) sets `force_dense`.
+        const N_NODES: usize = 350;
+        let n_dofs = 3 * N_NODES;
+        assert!(
+            n_dofs > DENSE_FALLBACK_MAX_DIM,
+            "the fixture must sit ABOVE the dense-fallback ceiling",
+        );
+        let (k_full, m_full) = laplacian_pencil(n_dofs);
+        let assembly = ModalAssembly {
+            mass_matrix_norm: frobenius_norm(&m_full),
+            stiffness_matrix_norm: frobenius_norm(&k_full),
+            k_full,
+            m_full,
+            n_nodes: N_NODES,
+        };
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &[],
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma: 1.5,
+            },
+        );
+
+        assert!(
+            result.frequencies.is_empty(),
+            "the premise of this test is a degenerate return with no modes; got {:?}",
+            result.frequencies,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ModalNoModesComputed")),
+            "the over-ceiling refusal must still be raised, or this test passes \
+             for the wrong reason; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "this result holds no eigenpairs and already carries an \"add \
+             supports\" remedy; a window claim would be a third, contradictory \
+             one; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// Amendment (suggestion 4): the DENSE arm's provenance reaches the warning
+    /// too.
+    ///
+    /// The two dispatch arms compute `shift_skipped_modes` by structurally
+    /// different predicates — the dense arm's
+    /// `any_eigenvalue_skipped_between_zero_and_shift` is ABSENCE-based and
+    /// exact, the Lanczos arm's `shift_provenance_from_factorization` is
+    /// Cholesky/LU-based and conservative. Every other test here (and the
+    /// committed `.ri` fixture pair, deliberately sized to n_free = 504) routes
+    /// to the Lanczos arm, so without this one the dense half of the emission is
+    /// wired but unwitnessed.
+    ///
+    /// `n_free = 63 ≤ max(64, 2·n_modes)` takes the small-model dense arm before
+    /// any factorization is attempted. σ between λ₃ and λ₄ with `n_modes = 2`
+    /// selects {λ₃, λ₄} and leaves λ₁, λ₂ inside `(0, σ)` and ABSENT — exactly
+    /// the condition that predicate tests.
+    #[test]
+    fn shift_skipped_modes_warns_once_on_the_dense_path() {
+        const N_NODES: usize = 23;
+        const N_FREE: usize = 63;
+        const N_MODES: usize = 2;
+        assert!(
+            N_FREE <= 64.max(2 * N_MODES),
+            "the fixture must take the SMALL-MODEL DENSE arm, or it witnesses \
+             the same Lanczos predicate every other test already covers",
+        );
+        let (assembly, bcs) = laplacian_modal_assembly_sized(N_NODES, N_FREE);
+        let sigma = (laplacian_lambda(N_FREE, 3) + laplacian_lambda(N_FREE, 4)) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: N_MODES,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert_eq!(
+            result.frequencies.len(),
+            N_MODES,
+            "the dense arm returns the whole spectrum and selects from it, so \
+             this is a SUCCESSFUL solve with a real window to describe; got {:?}",
+            result.diagnostics,
+        );
+        let warnings = shift_skipped_warnings(&result);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "λ₁ and λ₂ lie in (0, σ) and are absent from the selected set, so \
+             the dense path's exact predicate must report the window EXACTLY \
+             once; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            warnings[0].message.contains(&sigma.to_string()),
+            "the warning must NAME σ = {sigma} on this arm too; got {:?}",
             warnings[0].message,
         );
     }
@@ -6719,9 +6966,6 @@ mod tests {
                  knobs untouched",
             );
         }
-
-        // A non-StructureInstance still yields ALL defaults, σ included.
-        assert_eq!(extract_eigen_knobs(&Value::Undef), (10, 1e-9, 200, 0.0));
     }
 
     /// Amendment (suggestion 2): `extract_reference_direction` normalizes the
