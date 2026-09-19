@@ -1004,8 +1004,9 @@ fn stale_decl_line_diagnostic(out_of_range: &[StaleDeclLine]) -> Option<String> 
     // Still ONE line however many buckets fired — `; `-joined, never
     // newline-joined; see this function's doc on the per-symbol storm.
     Some(format!(
-        "reify-audit: jcodemunch suppression enrichment: {}. Suppression flags \
-         are unavailable for these symbols.",
+        "reify-audit: jcodemunch suppression enrichment: {}. These symbols are \
+         EXCLUDED from P1/P5 orphan detection — their suppression could not be \
+         read, and unknown is not \"no opt-out\".",
         clauses.join("; ")
     ))
 }
@@ -1043,6 +1044,13 @@ fn collect_stale_decl_lines(
 /// diagnostic, let the caller `eprintln!` it" idiom as
 /// [`read_source_lines_for_enrichment`] and [`stale_decl_line_diagnostic`].
 ///
+/// POSTCONDITION: every symbol's [`ChangedSymbol::suppression`] is assigned
+/// here, so the result never depends on what the caller passed in. A
+/// declaring file that could not be read, or a declaration line out of range
+/// for it, yields `None` — unknown, never "read it, carries no opt-out". A
+/// second enrichment of the same slice therefore re-derives the answer
+/// rather than retaining the first run's stale judgement.
+///
 /// Returning it is what makes the stale-index report observable from a test
 /// at all: an in-process test cannot read its own process's stderr, so a
 /// report printed from inside here could be deleted with the whole suite
@@ -1071,15 +1079,10 @@ fn enrich_suppression_flags(symbols: &mut [ChangedSymbol], project_root: &Path) 
                 v.insert(entry)
             }
         };
-        // No `else`: a file that could not be read leaves `suppression` at
-        // the `None` the decode step set, which is the CORRECT answer — no
-        // declaration was scanned, so no opt-out judgement exists. That is an
-        // absence of evidence, not evidence of absence, and
-        // `read_source_lines_for_enrichment`'s own per-path message above is
-        // what keeps it from being silent.
-        if let Ok(lines) = cached {
-            sym.suppression = extract_suppression(lines, sym.line);
-        }
+        sym.suppression = cached
+            .as_ref()
+            .ok()
+            .and_then(|lines| extract_suppression(lines, sym.line));
     }
     // A second pass over the now-fully-populated `file_cache` rather than
     // an inline push in the loop above: `collect_stale_decl_lines` is its
@@ -3298,8 +3301,7 @@ mod tests {
 
     /// The third way a declaration goes unlocatable, and the one that had no
     /// test at all before this seam grew an "unknown": the declaring file
-    /// could not be READ, so `enrich_suppression_flags` never enters its `Ok`
-    /// arm and nothing was scanned.
+    /// could not be READ, so nothing was scanned.
     ///
     /// The sibling above pins the OPERATOR-facing half of this state (an
     /// unreadable file stays out of the stale-index summary because it has
@@ -3330,6 +3332,38 @@ mod tests {
         assert!(
             !symbols[0].decl_located(),
             "decl_located() is the accessor a detector branches on; got {:?}",
+            symbols[0]
+        );
+    }
+
+    /// The POSTCONDITION, exercised the only way it is distinguishable from
+    /// an assignment that fires only when the file read succeeds: a symbol
+    /// that arrives already carrying a judgement, whose declaring file cannot
+    /// be read now. Enrichment must RE-DERIVE `None` rather than let the
+    /// stale `Some(..)` stand — leaving it is precisely the "evidence of
+    /// absence" this seam exists to eliminate, and a conditional assignment
+    /// passes every other test in this file while failing this one.
+    #[test]
+    fn enrich_suppression_flags_overwrites_a_judgement_it_can_no_longer_verify() {
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        // Deliberately never written: the path does not exist under the root.
+        let mut symbols = vec![ChangedSymbol {
+            name: "widget".to_string(),
+            file: "does-not-exist.rs".to_string(),
+            line: 7,
+            suppression: Some(DeclSuppression {
+                has_allow_dead_code: true,
+                ..DeclSuppression::default()
+            }),
+        }];
+
+        let _ = enrich_suppression_flags(&mut symbols, tmp.path());
+
+        assert_eq!(
+            symbols[0].suppression, None,
+            "enrichment establishes its own postcondition rather than assuming \
+             the caller's: a declaration it could not read is UNKNOWN, whatever \
+             the slice arrived carrying; got {:?}",
             symbols[0]
         );
     }
