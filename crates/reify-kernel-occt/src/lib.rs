@@ -12420,6 +12420,96 @@ mod tests {
         );
     }
 
+    // --- Volume-measurement provenance (task 6568) ---
+
+    /// Real solids report the exact integral, never the tessellation fallback.
+    ///
+    /// `query_volume`'s in-code comment blames "parametric surfaces (e.g.
+    /// revolution surfaces)" for integrating to 0, which is the fallback's
+    /// stated reason to exist. On OCCT 7.8 that is stale, and the revolve case
+    /// below is precisely that shape class — it is the load-bearing one here
+    /// and must report `tessellation_fallback == false`.
+    ///
+    /// TOLERANCE BASES (do not retune): 1e-9 is what the gate-passing
+    /// `torus_execute_volume` uses for an analytic primitive, whose in-file
+    /// comment records a measured rel_err of ~1.8e-16; the box's 20·10·5
+    /// product is additionally exact in binary f64. 2e-2 is copied verbatim
+    /// from the gate-passing `revolve_circle_face_full_volume`, which builds
+    /// this identical revolved torus.
+    ///
+    /// The `m.volume == query(Volume)` assertion is EXACT f64 equality on
+    /// purpose: both entry points must come from the one arm-selection site,
+    /// and OCCT's integration is deterministic.
+    #[test]
+    fn volume_measurement_reports_exact_for_real_solids() {
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+
+        let box_id = make_box_20_10_5(&mut kernel);
+        let cylinder_id = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(10.0),
+                height: Value::Real(20.0),
+            })
+            .expect("Cylinder creation must succeed")
+            .id;
+        let profile_id = make_torus_profile(&mut kernel, 5.0, 20.0);
+        let revolved_id = kernel
+            .execute(&GeometryOp::Revolve {
+                profile: profile_id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::TAU,
+            })
+            .expect("Revolve full should succeed")
+            .id;
+
+        for (label, id, expected, tolerance) in [
+            ("box 20×10×5", box_id, 1000.0f64, 1e-9f64),
+            (
+                "cylinder r10 h20",
+                cylinder_id,
+                std::f64::consts::PI * 100.0 * 20.0,
+                1e-9f64,
+            ),
+            (
+                "revolved circle face (revolution surface)",
+                revolved_id,
+                2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0,
+                2e-2f64,
+            ),
+        ] {
+            let m = kernel
+                .volume_measurement(id)
+                .unwrap_or_else(|e| panic!("{label}: volume_measurement must succeed: {e:?}"));
+
+            assert!(
+                !m.tessellation_fallback,
+                "{label}: OCCT's exact volume integral returns non-zero mass here, \
+                 so the tessellation fallback must not fire (got {m:?})"
+            );
+            let rel_err = (m.volume - expected).abs() / expected;
+            assert!(
+                rel_err < tolerance,
+                "{label}: volume expected ≈{expected}, got {} (relative error {rel_err:.3e})",
+                m.volume
+            );
+
+            let via_query = kernel
+                .query(&GeometryQuery::Volume(id))
+                .expect("Volume query must succeed")
+                .as_f64()
+                .expect("Volume must be numeric");
+            assert_eq!(
+                m.volume, via_query,
+                "{label}: volume_measurement().volume must equal GeometryQuery::Volume \
+                 exactly — both must come from the one arm-selection site"
+            );
+        }
+    }
+
     /// Pin `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against OCCT's authoritative
     /// `Precision::Confusion()` value at runtime.
     ///
