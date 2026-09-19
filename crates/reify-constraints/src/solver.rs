@@ -1084,9 +1084,11 @@ fn worst_unmet_floor_term(
 // Constraint-derived parameter bounds (task #5618)
 //
 // `AutoParam.bounds` is **always `None`** in production — all three construction
-// sites hardcode it (`reify-eval/src/engine_eval.rs:1436`, `engine_edit.rs:1470`,
-// `:3635`) and no `.ri` surface sets it.  So `effective_bounds` always degrades to
-// `default_bounds_for`, which for a dimensionless Real is `(-1e6, 1e6)`: useless as
+// sites hardcode it (`build_auto_param_list` in `reify-eval/src/engine_eval.rs`,
+// and the inline `AutoParam` literals in `Engine::edit_param` and
+// `Engine::edit_source` in `engine_edit.rs`) and no `.ri` surface sets it.  So
+// `effective_bounds` always degrades to `default_bounds_for`, which for a
+// dimensionless Real is `(-1e6, 1e6)`: useless as
 // a seed source, as a Nelder-Mead step scale, and as a clamp target.  A Money
 // objective over an auto bracketed away from 0 (`q >= 1 ∧ q <= 100`) therefore
 // seeded at the fixed `0.01`, outside the synthesised robustness floor's window,
@@ -4364,9 +4366,10 @@ mod tests {
     ///
     /// The DEBUG-count assertion is the key TDD signal: if the early-return is
     /// absent, at least the `"verifying uniqueness via perturbation"` debug event
-    /// at solver.rs:818 fires (DEBUG ≥ 1), plus additional debug events from
-    /// inside `solve_core`'s no-constraint / no-objective early-return path
-    /// (DEBUG ≥ 2).  Zero DEBUG events proves both were skipped.
+    /// (emitted inside `verify_uniqueness` itself) fires (DEBUG ≥ 1), plus
+    /// additional debug events from inside `solve_core`'s no-constraint /
+    /// no-objective early-return path (DEBUG ≥ 2).  Zero DEBUG events proves
+    /// both were skipped.
     #[test]
     fn verify_uniqueness_skips_solve_core_when_param_missing() {
         use std::collections::HashMap;
