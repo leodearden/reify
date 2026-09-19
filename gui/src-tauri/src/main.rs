@@ -370,7 +370,7 @@ fn set_parameter(
             Ok(gui_state)
         }
         Err(refused) => {
-            if let Some(ref restored) = refused.restored {
+            if let Some(restored) = refused.restored.as_deref() {
                 let delta = compute_delta(&state.last_state, restored);
                 emit_delta(&app, &delta);
             }

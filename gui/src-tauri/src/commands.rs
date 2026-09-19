@@ -96,7 +96,14 @@ pub struct RefusedParameterWrite {
     /// State AFTER the discard: what the engine and the canonical `.ri` now
     /// agree on. `None` only when no state could be read back at all (a
     /// panicking or poisoned engine), where there is nothing truthful to emit.
-    pub restored: Option<GuiState>,
+    ///
+    /// Boxed to keep this struct — and therefore the `Err` variant of every
+    /// `Result<_, RefusedParameterWrite>` below — under the
+    /// `clippy::result_large_err` threshold. A `GuiState` is ~360 bytes
+    /// inline, which every `Ok` return would otherwise pay for on the far
+    /// commoner success path. The indirection is storage only: carrying the
+    /// state remains the caller's compiler-enforced obligation.
+    pub restored: Option<Box<GuiState>>,
 }
 
 /// Set a parameter value DURABLY — write it back into the canonical `.ri` — and
@@ -121,7 +128,7 @@ pub fn set_parameter_impl(
         s.commit_parameter(cell_id, value)
             .map_err(|message| RefusedParameterWrite {
                 message,
-                restored: s.build_gui_state().ok(),
+                restored: s.build_gui_state().ok().map(Box::new),
             })
     }) {
         Ok(committed_or_refused) => committed_or_refused,
