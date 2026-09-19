@@ -1930,18 +1930,183 @@ mod tests {
         );
     }
 
-    /// Regression pin: the SHARED helper's behaviour must stay byte-identical.
+    /// The shared helper's kind list, pinned at the boundary that moved.
     ///
-    /// `find_declaration_name_span` is `pub(crate)` and the rename/reference
-    /// collectors use it to decide what is renameable. Giving it a TypeAlias arm
-    /// would classify an alias as a renameable home declaration, but the use-site
-    /// collectors walk expressions, not type expressions — so a rename would move
-    /// the declaration token and silently miss every `param x : Alias` use.
+    /// HISTORY — this test was `find_declaration_name_span_still_skips_type_alias`
+    /// and asserted the exact opposite. `find_declaration_name_span` is
+    /// `pub(crate)` and the rename/reference collectors use it to decide what is
+    /// renameable, so while the use-site collectors walked expressions but not
+    /// TYPE expressions, a `TypeAlias` arm would have classified an alias as a
+    /// renameable home whose `param x : Alias` uses were all invisible — a
+    /// rename that moves the declaration and silently misses every use.
+    ///
+    /// #6539 taught the collectors every `TypeExpr` root, which discharged that
+    /// condition, so #6972 admitted the alias. The test is rewritten rather than
+    /// deleted so the reversal is visible in the diff instead of the old claim
+    /// just vanishing.
+    ///
+    /// `Unit` is asserted alongside, because it is what keeps the new admission
+    /// from reading as "the helper now takes everything": a unit's only use site
+    /// is a literal suffix that no collector can reach, so the SAME rule that
+    /// admitted the alias refuses the unit.
     #[test]
-    fn find_declaration_name_span_still_skips_type_alias() {
+    fn find_declaration_name_span_admits_type_alias_and_still_refuses_unit() {
+        let alias_src = "type Speed = Length / Time\n";
+        assert_eq!(
+            find_declaration_name_span(alias_src, "Speed"),
+            Some(SourceSpan::new(
+                alias_src.find("Speed").unwrap() as u32,
+                (alias_src.find("Speed").unwrap() + "Speed".len()) as u32,
+            )),
+            "the shared helper must resolve a type alias to its NAME token: \
+             every alias use is a type position, and type positions are \
+             collected (#6539)"
+        );
         assert!(
-            find_declaration_name_span("type Speed = Length / Time\n", "Speed").is_none(),
-            "the shared helper must not resolve type aliases (rename safety)"
+            find_declaration_name_span("unit meter : Length\n", "meter").is_none(),
+            "the shared helper must still refuse a unit: its only use site is a \
+             literal suffix, which carries no span for any collector to push, so \
+             admitting it would hand rename a reference set holding the \
+             declaration token alone"
+        );
+    }
+
+    /// CROSS-FILE go-to-definition over the four declaration kinds #6388 left
+    /// same-file-navigable, plus the Unit contrast (#6539, rolled up in #6972).
+    ///
+    /// THE ASYMMETRY THIS CLOSES. #6388 made SAME-FILE goto-def uniform across
+    /// all eleven named declaration kinds, but the cross-file path runs the
+    /// separate `decl_name_span_in` scan, which admitted only
+    /// Structure/Occurrence/Function/Enum/Trait/Field. So `type Pressure` was
+    /// navigable from its own file and not from an importer — the same name,
+    /// two answers, decided by which file the cursor sat in.
+    ///
+    /// WHY A DESTRUCTURED IMPORT IS THE SCAFFOLD, and not four separate
+    /// `import defs.Name` lines: `lower_import` classifies a dotted import's
+    /// last segment by CAPITALISATION, so `import defs.lightweight` lowers to
+    /// `ImportKind::Module` with path `defs.lightweight` and never names an
+    /// entity at all. The destructured form pushes every identifier verbatim,
+    /// so it is the one import spelling that can expose a lowercase-named
+    /// declaration — and `purpose`/`joint`/`unit` names are conventionally
+    /// lowercase.
+    ///
+    /// WHY THE CURSOR IS ON THE IMPORT TOKEN. Purpose and Joint have no
+    /// use-site syntax anywhere in the grammar (`purpose_declaration` and
+    /// `joint_definition` are the only productions naming them), so an import
+    /// token is the ONLY cursor position from which a user can ask for their
+    /// definition. Using it for all five keeps the comparison one-variable.
+    #[test]
+    fn cross_file_goto_def_resolves_the_four_newly_admitted_declaration_kinds() {
+        const DEFS: &str = "type Pressure = Force\n\
+                            constraint def Foo { x > 0 }\n\
+                            purpose lightweight(subject : Structure) { minimize subject.mass }\n\
+                            joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)\n\
+                            unit meter : Length\n";
+        const MAIN: &str = "import defs.{Pressure, Foo, lightweight, ball, meter}\n";
+
+        let defs_uri = Url::parse("file:///project/defs.ri").unwrap();
+        // Non-vacuity: a snippet broken by grammar drift would yield no
+        // declaration, and every "does not resolve" branch below would pass for
+        // the wrong reason.
+        let defs_parsed = parse_clean(DEFS);
+        assert_eq!(
+            defs_parsed.declarations.len(),
+            5,
+            "fixture must declare all five kinds, got {:?}",
+            defs_parsed.declarations.len()
+        );
+
+        let mut map = std::collections::HashMap::new();
+        map.insert("defs".to_string(), (defs_uri.clone(), DEFS.to_string()));
+        let resolver = mock_resolver(map);
+
+        // Each name occurs exactly once in DEFS (at its declaration) and once in
+        // MAIN (in the import list), so `find` is unambiguous for both.
+        let goto_from_import = |name: &str| -> Option<Location> {
+            let cursor = MAIN.find(name).expect("import list names it");
+            compute_goto_definition_cross_file(
+                MAIN,
+                &test_uri(),
+                crate::convert::offset_to_position(MAIN, cursor as u32),
+                &resolver,
+            )
+        };
+
+        for (name, kind) in [
+            ("Pressure", "TypeAlias"),
+            ("Foo", "Constraint"),
+            ("lightweight", "Purpose"),
+            ("ball", "Joint"),
+        ] {
+            let loc = goto_from_import(name)
+                .unwrap_or_else(|| panic!("cross-file goto-def must resolve {kind} {name:?}"));
+            assert_eq!(loc.uri, defs_uri, "{kind} {name:?}: wrong target file");
+            let decl = DEFS.find(name).unwrap();
+            assert_eq!(
+                (
+                    position_to_offset(DEFS, loc.range.start),
+                    position_to_offset(DEFS, loc.range.end),
+                ),
+                (decl, decl + name.len()),
+                "{kind} {name:?}: must land on the declaration's NAME TOKEN. \
+                 Landing on offset 0 means the import phase fell back to \
+                 `Range::default()` because the declaration scan refused the \
+                 kind — which is exactly the asymmetry this pins closed"
+            );
+        }
+
+        // --- The Unit contrast, stated as what is actually measurable ---
+        //
+        // The declaration scan refuses `meter` outright, so the cross-file
+        // locator has no answer for it.
+        assert!(
+            find_declaration_in_source(DEFS, "meter", &defs_uri).is_none(),
+            "the cross-file declaration locator must refuse a unit"
+        );
+        // From a USE site the public entry point returns None, because
+        // `find_word_at_offset` fuses the suffix into `5meter`, which matches no
+        // import and no declaration.
+        let user = "import defs.{meter}\nstructure S {\n    param x : Length = 5meter\n}";
+        let suffix = user.rfind("meter").expect("fixture uses a `5meter` literal");
+        assert_eq!(
+            find_word_at_offset(user, suffix).map(|(_, w)| w),
+            Some("5meter"),
+            "fixture guard: the suffix must still fuse, or the None below pins \
+             an unrelated miss"
+        );
+        assert!(
+            compute_goto_definition_cross_file(
+                user,
+                &test_uri(),
+                crate::convert::offset_to_position(user, suffix as u32),
+                &resolver,
+            )
+            .is_none(),
+            "a unit-suffixed literal is not a cursor position cross-file \
+             goto-def can resolve"
+        );
+        // From the IMPORT token it does NOT return None, and saying so matters:
+        // the import phase answers every RESOLVABLE import, falling back to the
+        // target file's start when the entity is not found. So the honest
+        // contrast is "never reaches the declaration", not "returns None".
+        let from_import = goto_from_import("meter").expect(
+            "an import token always resolves at least to the target file, \
+             whether or not the entity is found",
+        );
+        assert_eq!(
+            (
+                from_import.uri.clone(),
+                position_to_offset(DEFS, from_import.range.start),
+                position_to_offset(DEFS, from_import.range.end),
+            ),
+            (defs_uri.clone(), 0, 0),
+            "a unit import token lands at the target file START (the \
+             unresolved-entity fallback), never on the `unit meter` declaration"
+        );
+        assert_ne!(
+            position_to_offset(DEFS, from_import.range.start),
+            DEFS.find("meter").unwrap(),
+            "and specifically not on the unit's name token"
         );
     }
 
