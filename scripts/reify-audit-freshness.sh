@@ -318,9 +318,32 @@ reify_audit_guard() {
 
     if [ "$mode" = "rebuild" ]; then
         # Attempt to self-heal the release binary.
-        (cd "$repo_root" && cargo build --release -q -p reify-audit) || true
+        local _cargo_rc=0
+        (cd "$repo_root" && cargo build --release -q -p reify-audit) || _cargo_rc=$?
         # Re-check: if now fresh, return 0.
         if ! reify_audit_is_stale "$bin" "$repo_root"; then
+            return 0
+        fi
+        # CARGO IS THE AUTHORITY (task #7691).  The mtime comparison is a
+        # PROXY for "nobody rebuilt this binary since crates/reify-audit last
+        # changed"; a `cargo build` that just SUCCEEDED refutes that proxy for
+        # the artifact cargo itself owns.  The two disagree routinely: a
+        # commit touching only non-source files under crates/reify-audit
+        # (pdiag-baseline.txt, ptodo-baseline.txt, tests/ — about half of that
+        # crate's commits) advances the epoch while cargo's fingerprint
+        # correctly finds nothing to rebuild, so the no-op leaves an older
+        # mtime behind.  Measured on a warm lane: a baseline-only commit gave
+        # guard rc 125 after a 0.45s no-op build, and
+        # test_reify_audit_pdiag.sh then skipped its ratchet (a) against a
+        # binary that was current.
+        #
+        # Scoped to cargo's own output path: a success says nothing about a
+        # copy elsewhere (an installed binary, a hermetic test's fake), which
+        # keeps the mtime verdict.  A FAILED build keeps it too, and falls
+        # through to rc 125 below.
+        if [ "$_cargo_rc" -eq 0 ] && [ -x "$bin" ] \
+            && [ "$(realpath -m "$bin")" = "$(cd "$repo_root" && realpath -m "${CARGO_TARGET_DIR:-target}/release/reify-audit")" ]; then
+            echo "reify-audit: '$bin' mtime $btime predates crates/reify-audit commit $epoch, but cargo build just succeeded against it — cargo's fingerprint is the freshness authority for its own artifact; treating it as fresh" >&2
             return 0
         fi
         # Still stale after rebuild — fall through to the refuse message.
@@ -399,11 +422,11 @@ $_remedy" >&2
     fi
 
     # rc 125 means "still judged stale", NOT "no usable binary" (#5962 review).
-    # Two very different worlds reach here: a failed `cargo build -p reify-audit`
-    # (nothing on disk to run), and a build that was a legitimate no-op — cargo's
-    # fingerprint says up-to-date — while the on-disk mtime still predates the
-    # last crates/reify-audit commit, e.g. a warm-lane seeded target/ with
-    # stamped mtimes, where $bin is fully executable.  Callers that refuse on 125
+    # Very different worlds reach here: a failed `cargo build -p reify-audit`
+    # with nothing on disk to run, the same failure with an OLDER binary still
+    # executable at $bin, and — in refuse mode, or for a $bin that is not
+    # cargo's own artifact (see CARGO IS THE AUTHORITY above) — a binary that
+    # runs perfectly well but is merely old by mtime.  Callers that refuse on 125
     # must split on `[ -x "$bin" ]` first, exactly as they must for rc 75 above;
     # tests/infra/test_reify_audit_ptodo.sh does (absent → exit 1, present →
     # degrade to RATCHET_SKIP=1 and keep running the staleness-tolerant gates).
