@@ -1808,6 +1808,19 @@ pub(crate) fn resolve_type_expr_with_aliases(
 /// convention two call sites have to keep in sync. Pinned by
 /// `parametric_alias_body_shadow_parity`.
 ///
+/// "Identical path" is a claim about THIS function, not about the two callers
+/// end to end: each keeps arms of its own below it, and the alias-body caller
+/// has neither of the `_kinded` caller's two. The E_BARE_SCALAR guard is
+/// deliberately absent. The DEFERRED non-parametric alias arm (#6259) is a real
+/// parity GAP, not a deliberate exclusion: a body naming an entity INDIRECTLY,
+/// through a non-parametric alias that is itself entity-bodied
+/// (`resolved_type: None`), fails where the direct spelling succeeds —
+/// `type Inner = Zq` + `type Outer<T> = Option<Inner>` used as `Outer<Real>`
+/// reports `unresolved type: Outer<Real>` where direct `Option<Inner>` lowers
+/// to `Option(Enum("Zq"))`. Loud rather than silently wrong, and not a
+/// regression; pinned as a known gap by
+/// `parametric_alias_deferred_alias_body_known_gap`.
+///
 /// That sharing covers APPLIED names (`N<Args>`) as well as bare ones, and
 /// only since task #6477. The two applied arms used to sit in
 /// `resolve_type_expr_with_aliases_kinded`, so the alias-body caller silently

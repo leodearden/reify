@@ -2355,6 +2355,12 @@ mod parametric_alias_entity_body_use_site {
     /// All four entity kinds an alias body may name, bare and nested, plus the
     /// row where the alias's own param and an entity name appear TOGETHER —
     /// then the same names in APPLIED position, where the failure is silent.
+    ///
+    /// Every row names its entity DIRECTLY, so the matrix is exhaustive over
+    /// the entity KINDS and not over the parity claim: naming one INDIRECTLY,
+    /// through a non-parametric alias that is itself entity-bodied, still
+    /// fails, and is pinned separately by
+    /// `parametric_alias_deferred_alias_body_known_gap`.
     const USE_SITE_CASES: &[UseSiteCase] = &[
         UseSiteCase {
             label: "bare enum body",
@@ -2711,6 +2717,126 @@ mod parametric_alias_applied_enum_known_gap {
         }
     }
 }
+
+/// Known gap: an alias body that names an entity INDIRECTLY, through a
+/// non-parametric alias that is itself entity-bodied (task #6477, amendment).
+///
+/// The sibling of `parametric_alias_applied_enum_known_gap` on the other axis.
+/// Steps 3-4 gave the alias-body path the use site's entity namespaces, and
+/// `parametric_alias_entity_body_use_site` covers all four entity kinds named
+/// DIRECTLY in a body. It does not reach a body that names one through
+/// `type Inner = <entity>`, because THAT recovery lives in a caller-level arm
+/// the alias-body path does not have: the deferred non-parametric alias arm
+/// (#6259) sits in `resolve_type_expr_with_aliases_kinded`, below the shared
+/// name resolver, and carries an `AliasDeferScope` cycle guard and the
+/// commit-on-success scratch-diagnostics discipline that go with re-resolving a
+/// stored body. Porting it is a different change from step-4's threading, and
+/// out of this task's scope; filed as a follow-up.
+///
+/// MEASURED on this tip, with `enum Zq` / `structure def Sq` / `type Inner = Zq`
+/// / `type InnerS = Sq` in scope:
+///
+///   `type Outer<T> = Inner`          used as `Outer<Real>` -> `Type::Error` +
+///       ["unresolved type: Outer<Real>"];  direct `Inner` -> `Enum("Zq")`, errs=[]
+///   `type Outer<T> = Option<Inner>`  used as `Outer<Real>` -> `Type::Error` +
+///       ["unresolved type: Outer<Real>"];  direct -> `Option(Enum("Zq"))`, errs=[]
+///   `type Outer<T> = Option<InnerS>` used as `Outer<Real>` -> `Type::Error` +
+///       ["unresolved type: Outer<Real>"];  direct -> `Option(StructureRef("Sq"))`, errs=[]
+///
+/// Not a regression — it failed identically before step-4 — and LOUD rather
+/// than silently wrong, which is why it is pinned rather than fixed. The lock
+/// states that invariant instead of freezing today's message, so closing the
+/// gap keeps this module green and only closing it WRONGLY trips it.
+mod parametric_alias_deferred_alias_body_known_gap {
+    use super::alias_to_entity_type_parity::param_type_and_errors;
+
+    /// Declarations shared by every row: two entities, and one entity-bodied
+    /// NON-parametric alias each. Both alias entries reach a use site with
+    /// `resolved_type: None` — the shape the deferred arm exists for.
+    const DECLS: &str = "enum Zq { Close, Medium }\n\
+                         structure def Sq {\n    param w : Length = 1.0mm\n}\n\
+                         type Inner = Zq\n\
+                         type InnerS = Sq";
+
+    /// One gap row: `type Outer<T> = {body}` used as `param p : Outer<Real>`,
+    /// against the `direct` spelling of the same body.
+    struct GapRow {
+        label: &'static str,
+        /// What the ALIAS spelling was measured to do when this lock was
+        /// written, so a future reader sees the verdict it was pinned against.
+        measured_today: &'static str,
+        body: &'static str,
+        direct: &'static str,
+    }
+
+    #[test]
+    fn a_body_naming_an_entity_through_a_deferred_alias_is_loud_rather_than_silently_wrong() {
+        const ROWS: &[GapRow] = &[
+            GapRow {
+                label: "bare deferred alias to an enum",
+                measured_today: "Type::Error + [\"unresolved type: Outer<Real>\"]",
+                body: "Inner",
+                direct: "Inner",
+            },
+            GapRow {
+                label: "deferred alias to an enum, nested in a builtin",
+                measured_today: "Type::Error + [\"unresolved type: Outer<Real>\"]",
+                body: "Option<Inner>",
+                direct: "Option<Inner>",
+            },
+            GapRow {
+                label: "deferred alias to a structure def, nested in a builtin",
+                measured_today: "Type::Error + [\"unresolved type: Outer<Real>\"]",
+                body: "Option<InnerS>",
+                direct: "Option<InnerS>",
+            },
+            GapRow {
+                // The composing row: the alias's own param and a deferred
+                // alias name in the same body.
+                label: "param-using body that also names a deferred alias",
+                measured_today: "Type::Error + [\"unresolved type: Outer<Real>\"]",
+                body: "Map<T, Inner>",
+                direct: "Map<Real, Inner>",
+            },
+        ];
+
+        for row in ROWS {
+            let GapRow {
+                label,
+                measured_today,
+                body,
+                direct,
+            } = row;
+            let alias_src = format!(
+                "{DECLS}\ntype Outer<T> = {body}\nstructure def D {{\n    param p : Outer<Real>\n}}\n"
+            );
+            let direct_src =
+                format!("{DECLS}\nstructure def D {{\n    param p : {direct}\n}}\n");
+
+            // The direct spelling is this row's reference point: #6259 made it
+            // resolve, and if it stops doing so the row says nothing about the
+            // alias path.
+            let (direct_ty, direct_errs) = param_type_and_errors(&direct_src, "D", "p");
+            assert!(
+                direct_errs.is_empty() && !direct_ty.is_error(),
+                "[{label}] the direct spelling `{direct}` must still resolve cleanly \
+                 through the deferred non-parametric alias arm (#6259); got \
+                 {direct_ty:?} with {direct_errs:?}"
+            );
+
+            let (alias_ty, alias_errs) = param_type_and_errors(&alias_src, "D", "p");
+            assert!(
+                alias_ty == direct_ty || !alias_errs.is_empty(),
+                "[{label}] `type Outer<T> = {body}` must either lower exactly as the \
+                 direct spelling `{direct}` does or report an error — never resolve the \
+                 body to something else in silence. Measured when this lock was written: \
+                 {measured_today}. Now: alias {alias_ty:?} errs={alias_errs:?}; direct \
+                 {direct_ty:?} errs={direct_errs:?}"
+            );
+        }
+    }
+}
+
 
 /// Hygiene locks for the PARAMETRIC alias path: a parametric body must bind
 /// exactly its OWN type params and nothing ambient (task #6477, step-6).
