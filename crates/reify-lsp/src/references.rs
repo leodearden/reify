@@ -5733,6 +5733,115 @@ structure Assembly {
         }
     }
 
+    /// The CROSS-FILE path must give the same answer as the same-file path for a
+    /// purpose-nested structure (#6534).
+    ///
+    /// #6534's requirement is CONSISTENCY, not merely coverage: the two paths
+    /// run different scans (`resolve_decl_name` walks `decl_name_and_span`, the
+    /// cross-file side walks `decl_name_span_in`), so one learning to descend
+    /// into purpose bodies while the other does not would make the SAME name
+    /// navigable or renameable depending only on which file the cursor sits in —
+    /// the exact asymmetry this whole sweep exists to remove.
+    ///
+    /// ORDERING, and why admitting this is safe rather than merely convenient:
+    /// the collectors landed FIRST. Step-12 taught the declaration-name
+    /// traversal every type position and step-14 taught it to descend
+    /// `PurposeDef.structures`, so by the time the oracle admits this name its
+    /// use sites are already collected. Admitting it before that would have
+    /// handed `compute_rename_cross_file` an edit set holding the declaration
+    /// token alone — which is why the reference set is asserted here to carry
+    /// ALL THREE sites, and the rename grant is asserted only alongside it.
+    #[test]
+    fn cross_file_path_agrees_with_same_file_on_a_purpose_nested_structure() {
+        const SRC: &str = "purpose Exploration() {\n    \
+                           structure def InPurpose {\n        \
+                           param x : Length = 5mm\n    \
+                           }\n\
+                           }\n\
+                           structure Host {\n    \
+                           param p : InPurpose\n    \
+                           sub s = InPurpose()\n\
+                           }";
+        let parsed = reify_syntax::parse(SRC, ModulePath::single("nested"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean, got {:?}",
+            parsed.errors
+        );
+        // Non-vacuity: the name must really be purpose-nested and really have
+        // both use forms, or every assertion below could pass for a top-level
+        // structure instead.
+        assert!(
+            parsed.declarations.iter().any(|d| matches!(
+                d,
+                Declaration::Purpose(p) if p.structures.iter().any(|s| s.name == "InPurpose")
+            )),
+            "fixture must nest `InPurpose` inside the purpose body"
+        );
+        let occ = occurrences(SRC, "InPurpose");
+        assert_eq!(
+            occ.len(),
+            3,
+            "fixture: declaration + `param p : InPurpose` + `sub s = InPurpose()`"
+        );
+        let (decl, type_use, sub_use) = (occ[0], occ[1], occ[2]);
+
+        let uri = Url::parse("file:///proj/nested.ri").unwrap();
+        // The fixture imports nothing; a resolver that resolves nothing keeps
+        // the cross-file machinery on its single-document path.
+        let resolver = |_: &str| -> Option<(Url, String)> { None };
+        let decl_pos = offset_to_position(SRC, decl as u32);
+
+        // (a) The cross-file oracle locates the name token — and locates the
+        //     SAME token the same-file scan jumps to.
+        assert_eq!(
+            crate::goto_def::find_declaration_name_span(SRC, "InPurpose"),
+            Some(span_of(decl, "InPurpose")),
+            "the cross-file oracle must locate a purpose-nested structure's \
+             name token"
+        );
+        assert_eq!(
+            crate::goto_def::compute_goto_definition(SRC, &uri, decl_pos).map(|l| l.range),
+            Some(span_to_range(SRC, span_of(decl, "InPurpose"))),
+            "same-file goto-def and the cross-file oracle must agree on the \
+             token; a divergence makes navigability depend on which file the \
+             cursor is in"
+        );
+
+        // (b) The reference set carries the declaration token AND BOTH use
+        //     forms. All three, because `compute_rename_cross_file` uses this
+        //     set as its exact edit set.
+        let refs = compute_references_cross_file(
+            SRC,
+            &parsed,
+            &uri,
+            decl_pos,
+            true,
+            &workspace_docs(&[(uri.clone(), SRC)]),
+            &resolver,
+        )
+        .expect("a purpose-nested structure must resolve to a cross-file home");
+        assert_eq!(
+            sorted_locations(refs),
+            vec![
+                loc_at(uri.clone(), SRC, decl, "InPurpose"),
+                loc_at(uri.clone(), SRC, type_use, "InPurpose"),
+                loc_at(uri.clone(), SRC, sub_use, "InPurpose"),
+            ],
+            "declaration token, `param p : InPurpose` type position, and \
+             `sub s = InPurpose()` construction site — a rename that moved the \
+             declaration while missing either use would leave the file \
+             referencing a name that no longer exists"
+        );
+
+        // (c) And it is renameable, which is sound ONLY because (b) holds.
+        assert!(
+            prepare_rename_cross_file(SRC, &parsed, &uri, decl_pos, &resolver).is_some(),
+            "a purpose-nested structure classifies as a Structure, which \
+             `is_renameable_cross_file` already admits"
+        );
+    }
+
     // --- κ step-9 (task 4210): cross-file rename WorkspaceEdit (Invariant 5) ---
 
     /// Apply LSP `TextEdit`s to `source`, splicing in DESCENDING start order so
