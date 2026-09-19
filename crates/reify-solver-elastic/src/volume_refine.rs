@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use reify_kernel_gmsh::MeshingOptions;
+use reify_kernel_gmsh::{BackgroundSizeField, MeshingOptions};
 use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeMesh};
 
 // ---------------------------------------------------------------------------
@@ -729,25 +729,16 @@ pub(crate) fn refine_with_size_field_validated(
     // Project per-element hints → per-volume-vertex sizes (conservative min).
     let vol_vertex_sizes = project_per_element_sizes_to_vertices(volume_mesh, shape, size_hints);
 
-    // Map per-volume-vertex sizes → per-surface-vertex sizes.
-    //
-    // The surface boundary vertices of `volume_mesh` correspond to the input
-    // `surface` vertices (same positions, f32 coords).  For each surface
-    // vertex we find the nearest volume-mesh vertex by squared-distance and
-    // adopt its projected size.  This is O(n_surf × n_vol) but acceptable for
-    // test-scale meshes; a spatial index would be needed for production-scale
-    // refinement loops.
-    let surface_vertex_sizes =
-        project_volume_to_surface_vertices(surface, volume_mesh, &vol_vertex_sizes);
+    // Hand the VOLUME field to gmsh as a background mesh size field. The field
+    // reaches the mesher intact — interior values included — rather than being
+    // projected onto the boundary, which is what used to discard every
+    // interior entry (task #7447).
+    let size_field = BackgroundSizeField::from_tet_mesh(volume_mesh, &vol_vertex_sizes)
+        .map_err(map_geometry_error)?;
 
-    // Delegate to the kernel-gmsh helper for the full-remesh with size hints.
-    reify_kernel_gmsh::refine_volume_with_size_field(
-        surface,
-        &surface_vertex_sizes,
-        options,
-        element_order,
-    )
-    .map_err(map_geometry_error)
+    // Delegate to the kernel-gmsh helper for the full remesh.
+    reify_kernel_gmsh::refine_volume_with_size_field(surface, &size_field, options, element_order)
+        .map_err(map_geometry_error)
 }
 
 // ---------------------------------------------------------------------------

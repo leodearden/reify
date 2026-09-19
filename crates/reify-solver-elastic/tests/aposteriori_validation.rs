@@ -93,7 +93,7 @@
 //! `solve_cg`) is identical to the rest of the FEA validation suite.
 
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
-use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
+use reify_kernel_gmsh::{BackgroundSizeField, MeshingOptions, refine_volume_with_size_field};
 use reify_solver_elastic::{
     AdaptiveEstimate, AdaptiveProblem, AssemblyElement, AssemblyMode, BudgetReason, CgResult,
     CgSolverOptions, ConvergenceStatus, DORFLER_THETA, DirichletBc, ElementOrder, ElementStiffness,
@@ -951,10 +951,56 @@ fn seed_volume_from_surface(
     uniform_size: f64,
     options: &MeshingOptions,
 ) -> VolumeMesh {
-    let n_surf_verts = surface.vertices.len() / 3;
-    let sizes = vec![uniform_size; n_surf_verts];
-    refine_volume_with_size_field(surface, &sizes, options, ElementOrderTag::P1)
+    let size_field = uniform_field_over_aabb(surface, uniform_size);
+    refine_volume_with_size_field(surface, &size_field, options, ElementOrderTag::P1)
         .expect("seed_volume_from_surface: initial gmsh mesh must succeed")
+}
+
+/// A uniform [`BackgroundSizeField`] of `size` over `surface`'s axis-aligned
+/// bounding box, as the 6-tet Kuhn decomposition of that box.
+///
+/// The box is what guarantees the field is DEFINED everywhere gmsh meshes —
+/// a background field only sizes the region its sizing mesh covers. A uniform
+/// field needs no more resolution than six tets.
+fn uniform_field_over_aabb(surface: &Mesh, size: f64) -> BackgroundSizeField {
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for xyz in surface.vertices.chunks_exact(3) {
+        for a in 0..3 {
+            lo[a] = lo[a].min(xyz[a]);
+            hi[a] = hi[a].max(xyz[a]);
+        }
+    }
+    // Corner order matches `kuhn_6tet_unit_cube_vm`: a CCW ring per z-level.
+    let corners = [
+        [lo[0], lo[1], lo[2]],
+        [hi[0], lo[1], lo[2]],
+        [hi[0], hi[1], lo[2]],
+        [lo[0], hi[1], lo[2]],
+        [lo[0], lo[1], hi[2]],
+        [hi[0], lo[1], hi[2]],
+        [hi[0], hi[1], hi[2]],
+        [lo[0], hi[1], hi[2]],
+    ];
+    let vm = VolumeMesh {
+        vertices: corners.iter().flatten().copied().collect(),
+        #[rustfmt::skip]
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![
+                0, 1, 2, 6,
+                0, 1, 5, 6,
+                0, 3, 2, 6,
+                0, 3, 7, 6,
+                0, 4, 5, 6,
+                0, 4, 7, 6,
+            ],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    BackgroundSizeField::from_tet_mesh(&vm, &vec![size; corners.len()])
+        .expect("uniform_field_over_aabb: a uniform field over the AABB must be valid")
 }
 
 /// Centroid of tet element `conn` over `nodes`.

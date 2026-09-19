@@ -782,28 +782,40 @@ fn localized_size_reduction_refines_marked_region_only() {
 /// mid-span `0.42 < cx < 0.58` against both end bands pooled (`cx < 0.15`,
 /// `cx > 0.85`).
 ///
-/// Measured on this exact path (discrete surface + `classify_surfaces(PI/12)` +
-/// `create_geometry` + `Algorithm3D = 10`) against libgmsh 4.15.2:
+/// Measured by THIS test on this exact path (discrete surface +
+/// `classify_surfaces(PI/12)` + `create_geometry` + `Algorithm3D = 10`)
+/// against libgmsh 4.15.2:
 ///
-/// | sizing mechanism                  | mid-span | ends  | ratio |
-/// |-----------------------------------|----------|-------|-------|
-/// | 0D corner anchors (pre-#7447)     | 0.5399   | 0.338 | 1.60  |
-/// | PostView background field         | 0.0949   | 0.312 | 0.304 |
+/// | sizing mechanism              | mid-span | ends   | ratio |
+/// |-------------------------------|----------|--------|-------|
+/// | 0D corner anchors (pre-#7447) | 0.6009   | 0.3173 | 1.893 |
+/// | PostView background field     | 0.1328   | 0.2388 | 0.556 |
 ///
 /// The two sit on OPPOSITE sides of 1.0: corner anchoring does not merely fail
-/// to refine the mid-span, it leaves it COARSER than the ends. The 0.6 bound
-/// has ~2x margin below and ~2.7x above, so it discriminates rather than
-/// trailing whichever number was measured last.
+/// to refine the mid-span, it leaves it COARSER than the ends. That sign change
+/// is what the bound turns on, and no threshold between the two can be reached
+/// by tuning the corner path.
 ///
-/// The table's first row is the standalone C probe; THIS test read mid-span
-/// 0.6009 over 12 tets against ends 0.3173 over 88, ratio 1.893, when it was
-/// first run as a RED against the corner-anchor path. Both readings agree on
-/// the sign, which is what the bound turns on.
+/// Why 0.556 and not the ~0.30 a standalone C probe reads for the same analytic
+/// field: this fixture cannot REQUEST 0.04. Per-element hints are sampled at tet
+/// CENTROIDS, and on an n=4 lattice the centroids nearest `x = 0.5` sit at
+/// `|cx - 0.5| ~= 0.0625`, so the finest hint the field ever carries is 0.0963.
+/// The fixture's own requested mid/end ratio is 0.280 — which is the probe's
+/// number. The remaining 0.280 -> 0.556 is gmsh's gradient limiter, which both
+/// coarsens the mid-span (0.0963 -> 0.1328) and FINES the ends (0.3438 ->
+/// 0.2388) as it bounds `|grad h|`.
 ///
-/// Deliberately NOT asserted: that the band reaches the REQUESTED 0.04. Gmsh's
-/// gradient limiter smooths a prescribed field, delivering ~0.095 for that
-/// request, so "achieves the requested size" would be a false premise no
-/// implementation could satisfy.
+/// So the margin below the bound is ~1.08x, not the ~2x the ratio alone
+/// suggests, while the margin above is ~3.4x. Thin but not fragile: every input
+/// is a fixed hand-built fixture and `deterministic: true` pins gmsh to one
+/// thread, and the reading was bit-stable across three consecutive runs. A
+/// future reading that drifts toward 0.6 is far more likely to be a gmsh
+/// gradient-limiter change than a regression in this crate — check the
+/// requested-vs-achieved pair above before touching the bound.
+///
+/// Deliberately NOT asserted: that the band reaches its requested size. Gmsh's
+/// gradient limiter smooths any prescribed field, so "achieves the requested
+/// size" would be a false premise no implementation could satisfy.
 #[test]
 fn mid_span_size_reduction_refines_the_mid_span_band() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -1077,10 +1089,17 @@ fn extracted_boundary_is_a_usable_refine_surface_for_the_mesh_it_came_from() {
     // hand-wound cube is NEVER used again: everything downstream goes through
     // the extracted boundary.
     let cube = unit_cube_mesh();
-    let n_cube_verts = cube.vertices.len() / 3;
+    // A uniform 0.5 field over a minimal sizing mesh spanning the same box.
+    let sizing = kuhn_6tet_unit_cube_vm();
+    let n_sizing_verts = sizing.vertices.len() / 3;
+    let uniform_field = reify_kernel_gmsh::BackgroundSizeField::from_tet_mesh(
+        &sizing,
+        &vec![0.5_f64; n_sizing_verts],
+    )
+    .expect("a uniform field over the Kuhn cube must be constructible");
     let volume = reify_kernel_gmsh::refine_volume_with_size_field(
         &cube,
-        &vec![0.5_f64; n_cube_verts],
+        &uniform_field,
         &opts,
         ElementOrderTag::P1,
     )

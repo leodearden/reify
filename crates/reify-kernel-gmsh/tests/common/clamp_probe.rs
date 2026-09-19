@@ -130,10 +130,13 @@ pub fn poison_global_mesh_size_clamp(size: f64) {
 ///
 /// # Why it pins the size-SOURCE trio first
 ///
-/// `refine_volume_with_size_field` writes `Mesh.MeshSizeFromPoints = 1`,
+/// `refine_volume_with_size_field` writes `Mesh.MeshSizeFromPoints = 0`,
 /// `MeshSizeFromCurvature = 0` and `MeshSizeExtendFromBoundary = 0`
 /// (`refine_volume.rs`) and deliberately does NOT restore them — task #6212's
-/// still-open leak. Any binary that runs a refine in one test and this probe in
+/// still-open leak. `FromPoints` used to be written as `1`; since task #7447
+/// drove the remesh from a background size field it is `0`, which deviates
+/// from gmsh's default in the OPPOSITE direction — it disables point-driven
+/// sizing rather than enabling it. Any binary that runs a refine in one test and this probe in
 /// another therefore measures under a different option table depending on which
 /// test won cargo's thread race, and `CLAMP_TEST_ORDER` does not help: it
 /// serialises the bodies but restores nothing. Observed, not theoretical — with

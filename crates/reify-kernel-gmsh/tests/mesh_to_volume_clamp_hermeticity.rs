@@ -51,8 +51,43 @@ mod clamp_probe;
 use clamp_probe::{
     CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, probe_triangle_count, set_global_mesh_size_clamp,
 };
-use reify_ir::ElementOrderTag;
-use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
+use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
+use reify_kernel_gmsh::{BackgroundSizeField, GmshKernel, MeshingOptions, refine_volume_with_size_field};
+
+/// A uniform [`BackgroundSizeField`] of `size` spanning the unit cube.
+///
+/// The 6-tet Kuhn decomposition over the cube's 8 corners is the smallest mesh
+/// that spans the box; a uniform field needs no more resolution than that.
+fn uniform_unit_cube_size_field(size: f64) -> BackgroundSizeField {
+    #[rustfmt::skip]
+    let vm = VolumeMesh {
+        vertices: vec![
+            0.0_f32, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            1.0, 1.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 1.0,
+            1.0, 0.0, 1.0,
+            1.0, 1.0, 1.0,
+            0.0, 1.0, 1.0,
+        ],
+        connectivity: VolumeConnectivity::Tet {
+            indices: vec![
+                0, 1, 2, 6,
+                0, 1, 5, 6,
+                0, 3, 2, 6,
+                0, 3, 7, 6,
+                0, 4, 5, 6,
+                0, 4, 7, 6,
+            ],
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    };
+    BackgroundSizeField::from_tet_mesh(&vm, &vec![size; 8])
+        .unwrap_or_else(|e| panic!("uniform size field must be constructible: {e:?}"))
+}
 
 /// Mesh the unit cube through `GmshKernel::mesh_to_volume` at `size` and
 /// return the P1 tet count.
@@ -252,12 +287,11 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
     const SEED: f64 = 0.5;
 
     let cube = common::unit_cube_mesh();
-    let n_surface_verts = cube.vertices.len() / 3;
 
     // Seed through the real producer, then refine with a uniform field.
     //
     // `refine_volume_with_size_field` never reads `options.mesh_size` — the
-    // per-vertex field is what decides element size — so `opts` deliberately
+    // size field is what decides element size — so `opts` deliberately
     // leaves it `None`. Passing a size there would imply a dependency that
     // does not exist.
     let refine_after_seed = |field: f64| -> usize {
@@ -268,7 +302,7 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
         };
         refine_volume_with_size_field(
             &cube,
-            &vec![field; n_surface_verts],
+            &uniform_unit_cube_size_field(field),
             &opts,
             ElementOrderTag::P1,
         )
