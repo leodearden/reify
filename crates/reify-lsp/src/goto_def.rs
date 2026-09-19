@@ -104,7 +104,7 @@ pub fn compute_goto_definition_with_parsed(
     //   the cursor-on-import contract is untouched.
     //
     // The returned range is the NAME TOKEN — deliberately the same shape the
-    // cross-file path returns via `find_declaration_name_span`; closing that
+    // cross-file path returns via `decl_name_span_in`; closing that
     // asymmetry is why task 6388 exists. Member resolution above keeps returning
     // the full member statement span, unchanged.
     //
@@ -140,13 +140,19 @@ pub fn compute_goto_definition_with_parsed(
 /// When two declarations share a name (already a semantic error) the FIRST in
 /// source order wins.
 ///
-/// SCOPE. Top-level declarations only — a `structure def` nested inside a
-/// `purpose` body lives in `PurposeDef.structures`, so it is not resolved
-/// (pinned by `goto_def_purpose_nested_structure_is_not_top_level`). And
-/// same-file only: cross-file goto-def runs the narrower [`decl_name_span_in`]
-/// instead, leaving Purpose/Constraint/Unit/Joint SAME-FILE-navigable until the
-/// use-site collectors learn to walk type expressions (#6539, rolled up in
-/// #6972).
+/// SCOPE. Module-level names — every top-level `Declaration` that declares one,
+/// plus the `structure def`s nested one level inside a `purpose` body. The
+/// nested ones are not `Declaration`s (they live in `PurposeDef.structures`)
+/// but the compiler registers them in the MODULE-LEVEL structure namespace, so
+/// they are file-wide navigable; [`crate::analysis::purpose_nested_decl_names`]
+/// carries that evidence and owns the descent. Pinned by
+/// `goto_def_resolves_a_purpose_nested_structure_file_wide`. And
+/// same-file only: cross-file goto-def runs [`decl_name_span_in`] instead. The
+/// two now agree on every kind but one — #6539 (rolled up in #6972) taught the
+/// use-site collectors to walk type expressions, which let the cross-file scan
+/// admit Purpose, Constraint, TypeAlias and Joint. `Unit` alone stays
+/// SAME-FILE-navigable, and not for want of a collector: see
+/// [`decl_name_span_in`].
 fn resolve_decl_name(
     parsed: &reify_ast::ParsedModule,
     source: &str,
@@ -154,10 +160,24 @@ fn resolve_decl_name(
     word: &str,
     cursor: Option<usize>,
 ) -> Option<Location> {
-    for decl in &parsed.declarations {
-        let Some((name, span)) = crate::analysis::decl_name_and_span(decl) else {
-            continue;
-        };
+    // Top-level declarations FIRST, purpose-nested structures after, so a
+    // genuine top-level declaration wins a name clash. That is not a new rule:
+    // it is the same first-in-source-order tie-break the scan already used, and
+    // the clash is a real possibility because the compiler registers a
+    // purpose-nested structure in the MODULE-LEVEL namespace, where it collides
+    // with a same-named top-level `structure`.
+    //
+    // One chained scan rather than two loops: every candidate then goes through
+    // the same name check, cursor-containment filter and `decl_name_token`
+    // narrowing, so the purpose-nested path cannot acquire subtly different
+    // matching or refusal behaviour.
+    let candidates = parsed
+        .declarations
+        .iter()
+        .filter_map(crate::analysis::decl_name_and_span)
+        .chain(crate::analysis::purpose_nested_decl_names(parsed));
+
+    for (name, span) in candidates {
         if name != word {
             continue;
         }
@@ -318,15 +338,13 @@ pub fn compute_goto_definition_cross_file_with_parsed(
 
 /// Find a top-level declaration by name in a source string and return its Location.
 ///
-/// Parses `source` ONCE and scans it via [`decl_name_span_in`] with
-/// `include_aliases = true`, so cross-file goto-def also resolves a `type`
-/// alias (#6341), then pairs the located name-token span with `uri` as an LSP
-/// [`Location`].
+/// Parses `source` ONCE, scans it via [`decl_name_span_in`], then pairs the
+/// located name-token span with `uri` as an LSP [`Location`].
 ///
 /// The single parse is load-bearing, not incidental: the cross-file caller
 /// probes each import's target in turn, so a MISS is the common case, and the
 /// target file is not covered by the server's per-document parse cache (that
-/// cache holds only the primary document). Chaining an alias-only second pass
+/// cache holds only the primary document). Chaining a second per-kind pass
 /// behind `.or_else` would therefore re-run a full tree-sitter parse + AST
 /// lowering of the same string on every miss, doubling the cost of an
 /// interactive, per-keystroke-adjacent path.
@@ -334,46 +352,33 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
-    let span = decl_name_span_in(&parsed, source, name, true)?;
+    let span = decl_name_span_in(&parsed, source, name)?;
     Some(Location {
         uri: uri.clone(),
         range: span_to_range(source, span),
     })
 }
 
-/// Find the **name-token span** of a top-level declaration named `name`.
+/// [`decl_name_span_in`] for a caller holding only the source text: parses
+/// `source` (prelude-aware, for AST-shape consistency across reify-lsp; see
+/// task 2525) and delegates.
 ///
-/// Parses `source` (prelude-aware, for AST-shape consistency across reify-lsp;
-/// see task 2525) and delegates to [`decl_name_span_in`] with
-/// `include_aliases = false`. Returns `None` when no declaration matches.
-///
-/// Factored from [`find_declaration_in_source`] so the cross-file
-/// reference/rename collectors (task κ, 4210) can obtain a renamed structure's
-/// home declaration token uniformly as a `SourceSpan`, independent of the
-/// `Location`/`uri` packaging that goto-def needs.
-///
-/// # This helper feeds REFERENCES, not just cross-file goto-def
-///
-/// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
-/// the `collect_structure_name_spans` home token, `resolve_cross_file_home`
-/// step 2, and the cross-file rename producer.
-///
-/// Its kind list is therefore DELIBERATELY NARROWER than
-/// [`crate::analysis::decl_name_and_span`], the wildcard-free SAME-FILE source,
-/// and must not be "unified" onto it: **adding a kind here changes what the
-/// REFERENCE SET reports**, and for a type-position-only kind it reports the
-/// declaration token ALONE, with every use site absent — the incomplete input a
-/// later rename would trust.
-///
-/// The full argument, the measurement behind it, and the separate allowlist
-/// that gates rename itself (`references::classify_top_level_decl`) live on the
-/// guard test `references::tests::
-/// rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
+/// TEST-ONLY, and deliberately so. Every production caller — cross-file
+/// goto-def, and the three points in `references.rs` this once fed (the
+/// `collect_decl_name_spans` home token, `resolve_cross_file_home` step 2, the
+/// cross-file rename producer) — already holds the document's `ParsedModule`,
+/// so each of those calls was a SECOND full parse of a string the caller had
+/// just parsed, on an interactive per-keystroke-adjacent path. They now pass
+/// their parse to `decl_name_span_in` directly. What survives here is the
+/// `&str` convenience a TEST wants, where a parse is not already at hand and
+/// the cost is irrelevant; a new production caller belongs on the `_in` form,
+/// not here.
+#[cfg(test)]
 pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
-    decl_name_span_in(&parsed, source, name, false)
+    decl_name_span_in(&parsed, source, name)
 }
 
 /// Scan an already-parsed module for the name-token span of the declaration
@@ -385,17 +390,63 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 ///
 /// Takes `&ParsedModule` rather than `&str` so a caller that needs more than one
 /// declaration shape pays for exactly one parse; `source` is still required
-/// because the AST carries whole-declaration spans, not name-token spans.
+/// because the AST carries whole-declaration spans, not name-token spans. Every
+/// production caller passes a parse it already holds — see the test-only
+/// [`find_declaration_name_span`] for why the `&str` form is not one of them.
 ///
-/// `include_aliases` gates the `TypeAlias` arm, and the gate is a safety
-/// boundary, not a convenience. The shared [`find_declaration_name_span`] passes
-/// `false` because the cross-file rename/reference collectors use it to decide
-/// what is renameable: classifying an alias as a renameable home declaration
-/// would move the declaration token while silently missing every
-/// `param x : Alias` use site — those collectors walk *expressions*, not type
-/// expressions — corrupting the user's file. Goto-def is read-only and has no
-/// such hazard, so only [`find_declaration_in_source`] passes `true`.
-/// Task #6341.
+/// # This scan feeds REFERENCES, not just cross-file goto-def
+///
+/// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
+/// the `collect_decl_name_spans` home token, `resolve_cross_file_home` step 2,
+/// and — through the first — the cross-file rename producer. So **adding a kind
+/// here changes what the REFERENCE SET reports**, and a kind whose use sites are
+/// not collected would report the declaration token ALONE, the incomplete input
+/// a later rename would trust and silently act on.
+///
+/// Its kind allowlist, [`admitted_decl_name_and_span`], is therefore governed by
+/// one rule, not by convenience: a kind is admitted exactly when every use-site
+/// form for it is collected. Ten of the eleven NAMED kinds now satisfy it —
+/// Structure, Occurrence, Function, Enum, Trait and Field always did; TypeAlias,
+/// Constraint, Purpose and Joint were admitted once #6539 taught the collectors
+/// every `TypeExpr` root, every `constraint Name(…)` instantiation and a
+/// purpose's sibling child regions. `Unit` is the sole named refusal (measured
+/// below), and `Import`/`Default`/`Module` declare no name at all. The allowlist
+/// is WILDCARD-FREE over all 14 [`reify_ast::Declaration`] variants, so a new
+/// declaration kind is a compile error rather than a silently unresolvable one.
+///
+/// That makes this list narrower than [`crate::analysis::decl_name_and_span`],
+/// the wildcard-free SAME-FILE source, by exactly one kind — but the two must
+/// still not be "unified", because they answer different questions: that one
+/// asks what a declaration is NAMED, this one asks whether renaming it is SAFE.
+///
+/// The full argument, the measurement behind it, and the separate allowlist
+/// that gates rename itself (`references::classify_decl_name_in`) live on the
+/// guard test `references::tests::
+/// cross_file_declaration_kind_admission_tracks_use_site_coverage`.
+///
+/// It also DESCENDS one level into purpose bodies, via
+/// [`crate::analysis::purpose_nested_decl_names`] — the crate's single source of
+/// purpose-nested names, which also owns the single-level assumption and names
+/// its invariant owner in the compiler. That descent is sound here for the same
+/// reason any kind is admitted: a purpose-nested structure's use sites are
+/// COLLECTED. `collect_decl_name_spans` walks every type position (#6539) and
+/// descends `PurposeDef.structures`, so the reference set a rename edits carries
+/// the construction sites and type positions, not the declaration token alone.
+/// The compiler's own treatment — the name is registered in the MODULE-LEVEL
+/// structure namespace — is why this is a correctness fix rather than a
+/// generosity.
+///
+/// WHY `Unit` IS REFUSED — not an oversight, and not "not yet done". A unit's
+/// only use site is a suffixed literal (`5meter`), which is unreachable from
+/// both ends: `ExprKind::QuantityLiteral`'s `UnitExpr::Unit(String)` carries no
+/// span, so no collector can push it, and `find_word_at_offset` fuses `5meter`
+/// into one word, so the user cannot place a cursor that resolves to `meter`.
+/// Admitting `Unit` would hand the rename producer a reference set holding the
+/// declaration token ALONE and silently leave every suffixed literal stale.
+/// Measured and pinned by
+/// `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
+/// and by `goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration`.
+/// Tasks #6341, #6539.
 ///
 /// Declarations are scanned in source order, so in the (ill-formed) case of an
 /// alias and a structure sharing one name, the earlier declaration wins.
@@ -410,54 +461,87 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// search to the declaration's own span exists to prevent.
 ///
 /// What a refusal costs is enumerated per consumer rather than summarised,
-/// because they do not all behave alike — three are inert and one is not:
+/// because they do not all behave alike:
 /// - [`find_declaration_in_source`] (goto-def) is read-only: no jump. Inert.
 /// - `references.rs::resolve_cross_file_home` step 2 tests only `.is_some()`,
-///   so a structure declared in the primary document stops being recognised as
-///   the home and the query falls through to the import arm — which, in the
-///   home document itself, resolves to nothing. A wholesale `None`. Inert.
-/// - `references.rs::compute_references_cross_file` uses the value only to drop
-///   the declaration token when `include_declaration = false`; with no token to
-///   drop, that filter is a no-op. Inert.
-/// - `references.rs::collect_structure_name_spans` pushes this token into the
-///   span set that `compute_rename_cross_file` turns into edits. A refusal
-///   silently OMITS it, so a rename driven from an IMPORTING document (where
-///   the home resolves through the import arm, never consulting this function)
-///   rewrites every construction site and import token but leaves the
-///   declaration behind — a partial rename. Still strictly better than the old
-///   locator, which rewrote the declaration's leading keyword, but not free.
-///   Making the rename path refuse wholesale when the home token cannot be
-///   located is a follow-up; it is not reachable today, because no parse
-///   observed so far yields a surviving declaration whose span excludes its own
-///   name token (error recovery either keeps the name inside the span or emits
-///   no declaration at all, which this function already answers with `None`).
-fn decl_name_span_in(
+///   so a declaration in the primary document stops being recognised as the
+///   home and the query falls through to the import arm — which, in the home
+///   document itself, resolves to nothing. A wholesale `None`. Inert.
+/// - `references.rs::compute_references_cross_file` REFUSES THE WHOLE QUERY
+///   (`None`) when this function declines a name the home document does
+///   declare — the condition it checks via `classify_decl_name_in`. It used to
+///   use the value only to drop the declaration token under
+///   `include_declaration = false`, which made the refusal look inert; it was
+///   not. Reached through an IMPORT (doc A declares `unit meter : Length`, doc
+///   B writes `import defs.{meter}`), `resolve_cross_file_home` step 3 keys
+///   only on `import_exposes_entity` and never consults this oracle, so the set
+///   came back as B's import token ALONE — one "reference" that is not the
+///   declaration, with the declaration itself missing even under
+///   `include_declaration = true`. Pinned by
+///   `references::tests::cross_file_references_refuse_a_home_whose_kind_this_oracle_declines`.
+/// - `references.rs::collect_decl_name_spans` pushes this token into the
+///   span set that `compute_rename_cross_file` turns into edits, so a refusal
+///   would silently OMIT it and leave a rename driven from an importing
+///   document rewriting every use while the declaration stayed behind. The
+///   wholesale refusal above is what forecloses that: rename runs through
+///   `compute_references_cross_file`, which now returns `None` first. Note the
+///   partial-rename shape was never reachable anyway — no parse observed so far
+///   yields a surviving declaration whose span excludes its own name token
+///   (error recovery either keeps the name inside the span or emits no
+///   declaration at all, which this function already answers with `None`).
+pub(crate) fn decl_name_span_in(
     parsed: &reify_ast::ParsedModule,
     source: &str,
     name: &str,
-    include_aliases: bool,
 ) -> Option<SourceSpan> {
-    for decl in &parsed.declarations {
-        let (decl_name, span) = match decl {
-            reify_ast::Declaration::Structure(s) => (s.name.as_str(), s.span),
-            reify_ast::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
-            reify_ast::Declaration::Function(f) => (f.name.as_str(), f.span),
-            reify_ast::Declaration::Enum(e) => (e.name.as_str(), e.span),
-            reify_ast::Declaration::Trait(t) => (t.name.as_str(), t.span),
-            reify_ast::Declaration::Field(f) => (f.name.as_str(), f.span),
-            reify_ast::Declaration::TypeAlias(t) if include_aliases => (t.name.as_str(), t.span),
-            _ => continue,
-        };
+    // Top-level declarations FIRST, purpose-nested structures after — the same
+    // precedence [`resolve_decl_name`] uses, so a name clash between a
+    // purpose-nested structure and a same-named top-level declaration resolves
+    // identically on both paths.
+    let candidates = parsed
+        .declarations
+        .iter()
+        .filter_map(admitted_decl_name_and_span)
+        .chain(crate::analysis::purpose_nested_decl_names(parsed));
+
+    for (decl_name, span) in candidates {
         if decl_name == name {
             // Point to the name within the declaration, not the entire span.
             // Sharing the narrowing with the same-file path is not the oracle
             // merge this function's doc forbids — that split is over which
-            // KINDS the match above admits, not over how an already-selected
+            // KINDS are admitted, not over how an already-selected
             // declaration's name token is narrowed.
             return decl_name_token(source, decl_name, span);
         }
     }
     None
+}
+
+/// The `(name, statement span)` pair of a top-level declaration whose kind
+/// [`decl_name_span_in`] admits — `None` for `Unit` and for the three kinds
+/// that declare no name of their own.
+///
+/// Split out so the ADMISSION RULE is one named thing rather than a match
+/// buried in a loop; the rule itself, and why `Unit` is its one named refusal,
+/// are stated on [`find_declaration_name_span`] and [`decl_name_span_in`].
+fn admitted_decl_name_and_span(decl: &reify_ast::Declaration) -> Option<(&str, SourceSpan)> {
+    let named = match decl {
+        reify_ast::Declaration::Structure(s) => (s.name.as_str(), s.span),
+        reify_ast::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
+        reify_ast::Declaration::Function(f) => (f.name.as_str(), f.span),
+        reify_ast::Declaration::Enum(e) => (e.name.as_str(), e.span),
+        reify_ast::Declaration::Trait(t) => (t.name.as_str(), t.span),
+        reify_ast::Declaration::Field(f) => (f.name.as_str(), f.span),
+        reify_ast::Declaration::TypeAlias(t) => (t.name.as_str(), t.span),
+        reify_ast::Declaration::Constraint(c) => (c.name.as_str(), c.span),
+        reify_ast::Declaration::Purpose(p) => (p.name.as_str(), p.span),
+        reify_ast::Declaration::Joint(j) => (j.name.as_str(), j.span),
+        reify_ast::Declaration::Unit(_) => return None,
+        reify_ast::Declaration::Import(_)
+        | reify_ast::Declaration::Default(_)
+        | reify_ast::Declaration::Module(_) => return None,
+    };
+    Some(named)
 }
 
 #[cfg(test)]
@@ -638,7 +722,7 @@ mod tests {
         // Task 6388: goto-def on a top-level declaration NAME used to return
         // None — a deliberate non-goal, now lifted. Standard LSP behaviour is
         // that goto-def on a definition returns that definition, and the
-        // cross-file path (find_declaration_name_span) has always returned the
+        // cross-file path (decl_name_span_in) has always returned the
         // NAME TOKEN for the very same symbol; this closes that asymmetry.
         let source = reify_test_support::bracket_source();
         // 'Bracket' on line 0: "structure def Bracket {"
@@ -1086,26 +1170,98 @@ mod tests {
     }
 
     #[test]
-    fn goto_def_purpose_nested_structure_is_not_top_level() {
-        // DELIBERATE SCOPE BOUNDARY, not an oversight. A `structure def` nested
+    fn goto_def_resolves_a_purpose_nested_structure_file_wide() {
+        // THE VISIBILITY QUESTION, ANSWERED (#6534). A `structure def` written
         // directly inside a `purpose` body lands in `PurposeDef.structures`, not
-        // in `ParsedModule.declarations`, so it is not a TOP-LEVEL declaration
-        // and task 6388's uniform declaration-name resolution does not reach it.
-        // Whether such a name is even visible outside its enclosing purpose is a
-        // language-semantics question this task does not answer; pinning the
-        // current None keeps the boundary explicit rather than latent.
-        let source = "purpose Exploration() {\n    structure def InPurpose {\n        param x : Length = 5mm\n    }\n}";
-        let offset = source.find("InPurpose").expect("source declares InPurpose");
-        let position = crate::convert::offset_to_position(source, offset as u32 + 1);
-        assert!(
-            compute_goto_definition(source, &test_uri(), position).is_none(),
-            "a purpose-nested structure name is not a top-level declaration"
+        // in `ParsedModule.declarations`, so #6388's uniform declaration-name
+        // resolution — which walks `declarations` — never reached it. This test
+        // used to pin that miss as a boundary and record the visibility question
+        // as unanswered. The compiler already answers it:
+        //
+        // - `pre_pass.rs`'s `Declaration::Purpose` arm registers every
+        //   `p.structures` entry through
+        //   `ctx.record_or_report_duplicate(&s.name, s.span, "structure")`, so
+        //   the name occupies the MODULE-LEVEL structure namespace and collides
+        //   with a same-named top-level `structure`.
+        // - `entities_phase.rs`'s matching arm compiles it into the same
+        //   `ctx.templates` as a top-level structure. The only thing scoped to
+        //   the purpose is AMBIENT-DEFAULT resolution, via `Some(p.name)`
+        //   (DD6 innermost-wins).
+        // - The one documented limitation (pre_pass.rs, same arm) is that
+        //   `structure_refs` omits them, so `phase_functions` builds no
+        //   signature skeleton. That is a SKELETON gap, not a name-visibility
+        //   rule.
+        //
+        // A module-level name is file-wide navigable, so goto-def resolves it
+        // from anywhere in the file — and navigation is read-only, where a
+        // slightly generous jump costs precision, not correctness (the same
+        // trade #6388's Phase C already made).
+        let source = "purpose Exploration() {\n    \
+                      structure def InPurpose {\n        \
+                      param x : Length = 5mm\n    \
+                      }\n\
+                      }\n\
+                      structure Host {\n    \
+                      sub s = InPurpose()\n\
+                      }";
+        let parsed = parse_clean(source);
+
+        // Fixture guard: the nested structure must really live in
+        // `PurposeDef.structures` and NOT in `declarations`, or this test pins
+        // the ordinary top-level path and asserts nothing about the descent.
+        let nested_names: Vec<&str> = parsed
+            .declarations
+            .iter()
+            .filter_map(|d| match d {
+                reify_ast::Declaration::Purpose(p) => Some(p),
+                _ => None,
+            })
+            .flat_map(|p| p.structures.iter().map(|s| s.name.as_str()))
+            .collect();
+        assert_eq!(
+            nested_names,
+            vec!["InPurpose"],
+            "fixture must nest `InPurpose` inside the purpose body"
         );
+        assert!(
+            !parsed.declarations.iter().any(|d| matches!(
+                d,
+                reify_ast::Declaration::Structure(s) if s.name == "InPurpose"
+            )),
+            "fixture must NOT also declare `InPurpose` at top level"
+        );
+
+        let decl = source.find("InPurpose").expect("source declares InPurpose");
+        let use_site = source.rfind("InPurpose").expect("source constructs it");
+        assert_ne!(decl, use_site, "fixture needs a use site distinct from the declaration");
+        let name_token = (decl, decl + "InPurpose".len());
+
+        for (label, cursor) in [
+            ("the declaration token itself", decl),
+            ("a `sub s = InPurpose()` construction site elsewhere in the file", use_site),
+        ] {
+            let loc = compute_goto_definition(
+                source,
+                &test_uri(),
+                crate::convert::offset_to_position(source, cursor as u32 + 1),
+            )
+            .unwrap_or_else(|| {
+                panic!("goto-def from {label} must resolve a purpose-nested structure")
+            });
+            assert_eq!(
+                range_to_byte_range(source, loc.range),
+                name_token,
+                "from {label}: must land on the NAME TOKEN, the same shape every \
+                 other declaration kind returns"
+            );
+        }
     }
 
     #[test]
     fn goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration() {
-        // BOUNDARY PIN, sibling to `goto_def_purpose_nested_structure_is_not_top_level`.
+        // BOUNDARY PIN. Its former sibling, the purpose-nested-structure pin,
+        // was RETIRED by #6534 (that name turned out to be file-wide visible);
+        // this one survives because its cause is the word scanner, not a scope.
         //
         // Task 6388's "uniform across declaration kinds" claim holds at
         // DECLARATION sites for all eleven named kinds, but a `unit` has no
@@ -1920,18 +2076,183 @@ mod tests {
         );
     }
 
-    /// Regression pin: the SHARED helper's behaviour must stay byte-identical.
+    /// The shared helper's kind list, pinned at the boundary that moved.
     ///
-    /// `find_declaration_name_span` is `pub(crate)` and the rename/reference
-    /// collectors use it to decide what is renameable. Giving it a TypeAlias arm
-    /// would classify an alias as a renameable home declaration, but the use-site
-    /// collectors walk expressions, not type expressions — so a rename would move
-    /// the declaration token and silently miss every `param x : Alias` use.
+    /// HISTORY — this test was `find_declaration_name_span_still_skips_type_alias`
+    /// and asserted the exact opposite. `find_declaration_name_span` is
+    /// `pub(crate)` and the rename/reference collectors use it to decide what is
+    /// renameable, so while the use-site collectors walked expressions but not
+    /// TYPE expressions, a `TypeAlias` arm would have classified an alias as a
+    /// renameable home whose `param x : Alias` uses were all invisible — a
+    /// rename that moves the declaration and silently misses every use.
+    ///
+    /// #6539 taught the collectors every `TypeExpr` root, which discharged that
+    /// condition, so #6972 admitted the alias. The test is rewritten rather than
+    /// deleted so the reversal is visible in the diff instead of the old claim
+    /// just vanishing.
+    ///
+    /// `Unit` is asserted alongside, because it is what keeps the new admission
+    /// from reading as "the helper now takes everything": a unit's only use site
+    /// is a literal suffix that no collector can reach, so the SAME rule that
+    /// admitted the alias refuses the unit.
     #[test]
-    fn find_declaration_name_span_still_skips_type_alias() {
+    fn find_declaration_name_span_admits_type_alias_and_still_refuses_unit() {
+        let alias_src = "type Speed = Length / Time\n";
+        assert_eq!(
+            find_declaration_name_span(alias_src, "Speed"),
+            Some(SourceSpan::new(
+                alias_src.find("Speed").unwrap() as u32,
+                (alias_src.find("Speed").unwrap() + "Speed".len()) as u32,
+            )),
+            "the shared helper must resolve a type alias to its NAME token: \
+             every alias use is a type position, and type positions are \
+             collected (#6539)"
+        );
         assert!(
-            find_declaration_name_span("type Speed = Length / Time\n", "Speed").is_none(),
-            "the shared helper must not resolve type aliases (rename safety)"
+            find_declaration_name_span("unit meter : Length\n", "meter").is_none(),
+            "the shared helper must still refuse a unit: its only use site is a \
+             literal suffix, which carries no span for any collector to push, so \
+             admitting it would hand rename a reference set holding the \
+             declaration token alone"
+        );
+    }
+
+    /// CROSS-FILE go-to-definition over the four declaration kinds #6388 left
+    /// same-file-navigable, plus the Unit contrast (#6539, rolled up in #6972).
+    ///
+    /// THE ASYMMETRY THIS CLOSES. #6388 made SAME-FILE goto-def uniform across
+    /// all eleven named declaration kinds, but the cross-file path runs the
+    /// separate `decl_name_span_in` scan, which admitted only
+    /// Structure/Occurrence/Function/Enum/Trait/Field. So `type Pressure` was
+    /// navigable from its own file and not from an importer — the same name,
+    /// two answers, decided by which file the cursor sat in.
+    ///
+    /// WHY A DESTRUCTURED IMPORT IS THE SCAFFOLD, and not four separate
+    /// `import defs.Name` lines: `lower_import` classifies a dotted import's
+    /// last segment by CAPITALISATION, so `import defs.lightweight` lowers to
+    /// `ImportKind::Module` with path `defs.lightweight` and never names an
+    /// entity at all. The destructured form pushes every identifier verbatim,
+    /// so it is the one import spelling that can expose a lowercase-named
+    /// declaration — and `purpose`/`joint`/`unit` names are conventionally
+    /// lowercase.
+    ///
+    /// WHY THE CURSOR IS ON THE IMPORT TOKEN. Purpose and Joint have no
+    /// use-site syntax anywhere in the grammar (`purpose_declaration` and
+    /// `joint_definition` are the only productions naming them), so an import
+    /// token is the ONLY cursor position from which a user can ask for their
+    /// definition. Using it for all five keeps the comparison one-variable.
+    #[test]
+    fn cross_file_goto_def_resolves_the_four_newly_admitted_declaration_kinds() {
+        const DEFS: &str = "type Pressure = Force\n\
+                            constraint def Foo { x > 0 }\n\
+                            purpose lightweight(subject : Structure) { minimize subject.mass }\n\
+                            joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)\n\
+                            unit meter : Length\n";
+        const MAIN: &str = "import defs.{Pressure, Foo, lightweight, ball, meter}\n";
+
+        let defs_uri = Url::parse("file:///project/defs.ri").unwrap();
+        // Non-vacuity: a snippet broken by grammar drift would yield no
+        // declaration, and every "does not resolve" branch below would pass for
+        // the wrong reason.
+        let defs_parsed = parse_clean(DEFS);
+        assert_eq!(
+            defs_parsed.declarations.len(),
+            5,
+            "fixture must declare all five kinds, got {:?}",
+            defs_parsed.declarations.len()
+        );
+
+        let mut map = std::collections::HashMap::new();
+        map.insert("defs".to_string(), (defs_uri.clone(), DEFS.to_string()));
+        let resolver = mock_resolver(map);
+
+        // Each name occurs exactly once in DEFS (at its declaration) and once in
+        // MAIN (in the import list), so `find` is unambiguous for both.
+        let goto_from_import = |name: &str| -> Option<Location> {
+            let cursor = MAIN.find(name).expect("import list names it");
+            compute_goto_definition_cross_file(
+                MAIN,
+                &test_uri(),
+                crate::convert::offset_to_position(MAIN, cursor as u32),
+                &resolver,
+            )
+        };
+
+        for (name, kind) in [
+            ("Pressure", "TypeAlias"),
+            ("Foo", "Constraint"),
+            ("lightweight", "Purpose"),
+            ("ball", "Joint"),
+        ] {
+            let loc = goto_from_import(name)
+                .unwrap_or_else(|| panic!("cross-file goto-def must resolve {kind} {name:?}"));
+            assert_eq!(loc.uri, defs_uri, "{kind} {name:?}: wrong target file");
+            let decl = DEFS.find(name).unwrap();
+            assert_eq!(
+                (
+                    position_to_offset(DEFS, loc.range.start),
+                    position_to_offset(DEFS, loc.range.end),
+                ),
+                (decl, decl + name.len()),
+                "{kind} {name:?}: must land on the declaration's NAME TOKEN. \
+                 Landing on offset 0 means the import phase fell back to \
+                 `Range::default()` because the declaration scan refused the \
+                 kind — which is exactly the asymmetry this pins closed"
+            );
+        }
+
+        // --- The Unit contrast, stated as what is actually measurable ---
+        //
+        // The declaration scan refuses `meter` outright, so the cross-file
+        // locator has no answer for it.
+        assert!(
+            find_declaration_in_source(DEFS, "meter", &defs_uri).is_none(),
+            "the cross-file declaration locator must refuse a unit"
+        );
+        // From a USE site the public entry point returns None, because
+        // `find_word_at_offset` fuses the suffix into `5meter`, which matches no
+        // import and no declaration.
+        let user = "import defs.{meter}\nstructure S {\n    param x : Length = 5meter\n}";
+        let suffix = user.rfind("meter").expect("fixture uses a `5meter` literal");
+        assert_eq!(
+            find_word_at_offset(user, suffix).map(|(_, w)| w),
+            Some("5meter"),
+            "fixture guard: the suffix must still fuse, or the None below pins \
+             an unrelated miss"
+        );
+        assert!(
+            compute_goto_definition_cross_file(
+                user,
+                &test_uri(),
+                crate::convert::offset_to_position(user, suffix as u32),
+                &resolver,
+            )
+            .is_none(),
+            "a unit-suffixed literal is not a cursor position cross-file \
+             goto-def can resolve"
+        );
+        // From the IMPORT token it does NOT return None, and saying so matters:
+        // the import phase answers every RESOLVABLE import, falling back to the
+        // target file's start when the entity is not found. So the honest
+        // contrast is "never reaches the declaration", not "returns None".
+        let from_import = goto_from_import("meter").expect(
+            "an import token always resolves at least to the target file, \
+             whether or not the entity is found",
+        );
+        assert_eq!(
+            (
+                from_import.uri.clone(),
+                position_to_offset(DEFS, from_import.range.start),
+                position_to_offset(DEFS, from_import.range.end),
+            ),
+            (defs_uri.clone(), 0, 0),
+            "a unit import token lands at the target file START (the \
+             unresolved-entity fallback), never on the `unit meter` declaration"
+        );
+        assert_ne!(
+            position_to_offset(DEFS, from_import.range.start),
+            DEFS.find("meter").unwrap(),
+            "and specifically not on the unit's name token"
         );
     }
 
@@ -1986,7 +2307,7 @@ mod tests {
         );
 
         assert_eq!(
-            decl_name_span_in(&parsed, source, "Widget", false),
+            decl_name_span_in(&parsed, source, "Widget"),
             None,
             "a declaration span that excludes its own name token must be refused \
              outright: neither a span that would reach the rename write path, nor \
