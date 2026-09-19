@@ -26,6 +26,11 @@
 #  19:   the warn-open advisory AND refusal messages are SELF-DESCRIBING —
 #        they name their own cause, their own fix, and what they are NOT
 #        (task #7139)
+#  20:   rebuild mode trusts a SUCCESSFUL cargo build for cargo's OWN artifact
+#        even when its mtime still predates the crate epoch (the no-op build
+#        after a baseline-only crates/reify-audit commit), and only there: a
+#        FAILED build, or the same success against a non-cargo path, stays 125
+#        (task #7691)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -657,6 +662,60 @@ for _form in ADVISORY REFUSAL MISSING; do
     assert "19f [$_form]: whole message is under 2000 chars (survives _STDERR_CLIP intact)" \
         bash -c 'test "${#1}" -lt 2000' -- "$_msg"
 done
+
+# ==============================================================================
+# Check 20: CARGO IS THE AUTHORITY for its own artifact (task #7691)
+# ==============================================================================
+# Hermetic repo whose only crates/reify-audit commit is dated NOW, with
+# <repo>/target/release/reify-audit stamped to 2000 — the shape a warm lane
+# reaches after a baseline-only commit, where the real cargo build is a
+# fingerprint no-op that leaves the old mtime in place. The shim cargo mirrors
+# that no-op (never touches the binary) and exits with $CA_CARGO_RC.
+echo ""
+echo "--- Check 20: rebuild mode trusts a successful cargo build for cargo's own artifact only ---"
+
+CA_REPO="$TMPDIR_FRESHNESS/cargo-authority-repo"
+CA_SHIM="$TMPDIR_FRESHNESS/cargo-authority-shim"
+mkdir -p "$CA_REPO/crates/reify-audit" "$CA_REPO/target/release" "$CA_SHIM"
+git -C "$CA_REPO" init -q
+printf 'row 1\n' > "$CA_REPO/crates/reify-audit/pdiag-baseline.txt"
+git -C "$CA_REPO" add crates/reify-audit/pdiag-baseline.txt
+git -C "$CA_REPO" -c user.email=t@t -c user.name=t commit -q -m "baseline-only"
+CA_BIN="$CA_REPO/target/release/reify-audit"
+CA_COPY="$TMPDIR_FRESHNESS/reify-audit-installed-copy"
+for _b in "$CA_BIN" "$CA_COPY"; do
+    printf '#!/bin/sh\nexit 0\n' > "$_b"
+    chmod +x "$_b"
+    touch -t 200001010000 "$_b"
+done
+printf '#!/usr/bin/env bash\nexit "${CA_CARGO_RC:-0}"\n' > "$CA_SHIM/cargo"
+chmod +x "$CA_SHIM/cargo"
+
+# Non-vacuity: the binary really is stale by mtime, so a green below can only
+# come from the cargo-authority rule, never from the fresh fast path.
+assert "20-pre: cargo's own artifact is stale by mtime (the rule under test is really reached)" \
+    bash -c "source '$FRESHNESS_LIB' && reify_audit_is_stale '$CA_BIN' '$CA_REPO' 2>/dev/null"
+
+assert "20a: successful no-op cargo build + cargo's own artifact → rc 0 (rebuild)" \
+    env -u CARGO_TARGET_DIR PATH="$CA_SHIM:$PATH" CA_CARGO_RC=0 \
+        bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$CA_BIN' rebuild '$CA_REPO' 2>/dev/null"
+
+assert "20b: same, through rebuild-budget-safe with REIFY_AUDIT_NO_COLD_BUILD unset → rc 0" \
+    env -u CARGO_TARGET_DIR -u REIFY_AUDIT_NO_COLD_BUILD PATH="$CA_SHIM:$PATH" CA_CARGO_RC=0 \
+        bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$CA_BIN' rebuild-budget-safe '$CA_REPO' 2>/dev/null"
+
+set +e
+env -u CARGO_TARGET_DIR PATH="$CA_SHIM:$PATH" CA_CARGO_RC=101 \
+    bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$CA_BIN' rebuild '$CA_REPO' 2>/dev/null"
+CA_FAILED_RC=$?
+env -u CARGO_TARGET_DIR PATH="$CA_SHIM:$PATH" CA_CARGO_RC=0 \
+    bash -c "source '$FRESHNESS_LIB' && reify_audit_guard '$CA_COPY' rebuild '$CA_REPO' 2>/dev/null"
+CA_COPY_RC=$?
+set -e
+assert "20c: FAILED cargo build → still rc 125 (a failure vouches for nothing)" \
+    test "$CA_FAILED_RC" -eq 125
+assert "20d: successful cargo build but a NON-cargo path (installed copy) → still rc 125" \
+    test "$CA_COPY_RC" -eq 125
 
 # -- Summary ------------------------------------------------------------------
 test_summary
