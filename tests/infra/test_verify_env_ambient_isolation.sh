@@ -19,7 +19,7 @@
 # Verifies that:
 #   1. python3 is on PATH
 #   2. tests/infra/test_verify_env_ambient_isolation.py (stdlib unittest)
-#      exits 0 -- 26 tests, including one real run of test_occt_flock_gate.sh
+#      exits 0 -- 27 tests, including one real run of test_occt_flock_gate.sh
 #      under the production verify_env ambient
 
 set -euo pipefail

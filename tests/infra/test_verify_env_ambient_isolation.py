@@ -35,6 +35,15 @@ discovers. Two deliberate departures from a transliteration:
     runs all of them, so the failure mode the self-guard existed to detect
     cannot occur. Porting the assertion would pin a property of bash, not of
     this test.
+  * Two STRENGTHENINGS, declared here rather than smuggled in, because the
+    policy asks a port to be behaviour-preserving and these are the places it
+    deliberately is not. The bash original asserted only that its SIGTERM-deaf
+    fixture surfaced as 137; this file also asserts that the fixture's recorded
+    pid is GONE, since 137 alone would be reported just the same by a backstop
+    that CLAIMED a kill it never performed. And the post-SIGKILL drain is
+    bounded, with a test for the abandonment branch — a Python-only hazard the
+    bash original could not have had, because `timeout` never owned a pipe to
+    block on. Both are argued at their sites.
 """
 
 import os
@@ -64,6 +73,15 @@ NESTED_BACKSTOP_SECS = 900
 # --kill-after=60` in verify.sh and test_occt_flock_gate.sh). Only ever reached
 # by a child that already failed to answer SIGTERM.
 NESTED_KILL_GRACE_SECS = 60
+
+# Appended to a wedged run's output when even the post-SIGKILL drain had to be
+# abandoned. A SENTINEL LINE rather than a fourth invented exit code: the group
+# really was SIGKILLed, so RC_WEDGED_SIGKILL stays the honest diagnosis, and
+# what a reader actually needs is to know that output stops here.
+ABANDONED_DRAIN_NOTE = (
+    "\n[backstop] drain abandoned: a descendant outlived the process group and "
+    "still holds the output pipe. Anything written after this point is unread."
+    "\n")
 
 # Exit codes run_under_ambient invents when the child itself did not exit.
 RC_WEDGED_SIGTERM = 124
@@ -146,6 +164,20 @@ def run_under_ambient(yaml_path, budget_secs, grace_secs, cmd, base_env=None):
     escalation is the house convention (`timeout --kill-after`) for exactly
     that reason.
 
+    WHY EVERY RUNG WAITS, INCLUDING THE LAST ONE. `grace_secs` bounds the drain
+    after SIGKILL exactly as it bounds the drain after SIGTERM, and that
+    symmetry is the fix for a hazard this backstop would otherwise have had for
+    itself: os.killpg reaches the process GROUP, so a descendant that called
+    setsid/setpgid survives it and keeps the inherited write end of the stdout
+    pipe open. An unbounded `communicate()` on the last rung therefore blocks
+    on a process the kill never touched -- the backstop becoming the wedge it
+    exists to prevent, with the outer run_all envelope once again the only
+    thing that ends this file. MEASURED, not reasoned: a fixture that
+    backgrounds `setsid sleep ...` really does hold the pipe past a group
+    SIGKILL, and
+    test_a_descendant_that_outlives_the_group_does_not_wedge_the_backstop
+    exercises that branch against this real code path.
+
     WHY A NEW SESSION AND killpg, NOT proc.kill(). start_new_session puts the
     child in its own process group so the signal reaches the GROUP: the nested
     suite's backgrounded descendants — gated flock holders, wrapper
@@ -184,25 +216,64 @@ def run_under_ambient(yaml_path, budget_secs, grace_secs, cmd, base_env=None):
     except subprocess.TimeoutExpired:
         pass
 
-    output = _signal_group_and_drain(proc, signal.SIGTERM, grace_secs)
-    if output is not None:
+    drained, output = _signal_group_and_drain(proc, signal.SIGTERM, grace_secs)
+    if drained:
         return AmbientRun(rc=RC_WEDGED_SIGTERM, output=output)
-    output = _signal_group_and_drain(proc, signal.SIGKILL, None)
-    return AmbientRun(rc=RC_WEDGED_SIGKILL, output=output or "")
+    drained, output = _signal_group_and_drain(proc, signal.SIGKILL, grace_secs)
+    if not drained:
+        _abandon_pipe(proc)
+        output += ABANDONED_DRAIN_NOTE
+    return AmbientRun(rc=RC_WEDGED_SIGKILL, output=output)
 
 
 def _signal_group_and_drain(proc, sig, grace_secs):
-    """Signal the child's whole group; return its output, or None if it
-    outlived `grace_secs`."""
+    """Signal the child's whole group, then drain its pipe under `grace_secs`.
+
+    Returns `(drained, output)`. `drained` is False when the pipe outlived the
+    grace -- the SIGTERM caller's cue to escalate, and the SIGKILL caller's cue
+    that there is nothing left to escalate TO. The output comes back either
+    way: TimeoutExpired carries everything read so far, and a retried
+    `communicate()` keeps accumulating into the same buffer (MEASURED on this
+    host's CPython), so an abandoned run still reports what the child managed
+    to say rather than throwing that attribution away.
+    """
     try:
         os.killpg(os.getpgid(proc.pid), sig)
     except ProcessLookupError:
         pass
     try:
         output, _ = proc.communicate(timeout=grace_secs)
-        return output
-    except subprocess.TimeoutExpired:
-        return None
+        return True, output
+    except subprocess.TimeoutExpired as expired:
+        return False, _partial_output(expired)
+
+
+def _partial_output(expired):
+    """What the child managed to say before a drain gave up.
+
+    TimeoutExpired carries those bytes RAW even when the Popen was opened in
+    text mode (MEASURED, not assumed), so the decode happens here rather than
+    leaking bytes into an AmbientRun whose `output` is documented as str.
+    """
+    if expired.output is None:
+        return ""
+    if isinstance(expired.output, bytes):
+        return expired.output.decode(errors="replace")
+    return expired.output
+
+
+def _abandon_pipe(proc):
+    """Release this process's end of a pipe a descendant is still holding.
+
+    The read end is the only half this process owns; the escapee owns the write
+    end and is the orphan reaper's problem
+    (docs/notes/orphaned-test-binary-reaper.md), not this backstop's. poll()
+    then reaps the direct child -- already ended by the group SIGKILL -- so
+    neither a zombie nor a "subprocess still running" warning outlives the run.
+    """
+    if proc.stdout is not None:
+        proc.stdout.close()
+    proc.poll()
 
 
 @dataclass(frozen=True)
@@ -428,10 +499,61 @@ class TestNestedBackstop(FixtureBase):
         suite = self.fixture_suite(
             "trap '' TERM", f'echo $$ > "{pidfile}"', "sleep 600")
         run = run_under_ambient(ORCHESTRATOR_YAML, 2, 2, ["bash", str(suite)])
+        recorded = pidfile.read_text().strip() if pidfile.is_file() else ""
+        # Checked BEFORE the rc assertion, and on purpose. A bash that has not
+        # reached `echo $$` under process-spawn and scheduling latency leaves
+        # this file unwritten, which an unguarded int() turns into an opaque
+        # FileNotFoundError/ValueError in the member that is flaky-ledger
+        # rank #3. It also makes the rc assertion below MISLEADING: a bash that
+        # had not yet installed `trap '' TERM` would have died to the SIGTERM
+        # and returned 124, so "expected 137, got 124" would name the wrong
+        # defect. Attribution first, then the assertion it guards.
+        self.assertRegex(
+            recorded, r"^\d+$",
+            f"the deaf fixture recorded no usable pid ({recorded!r}) inside its "
+            "budget -- that is a spawn-latency artefact of this fixture, not a "
+            "backstop bug, and it invalidates the exit-code assertion that "
+            "follows")
         self.assertEqual(run.rc, RC_WEDGED_SIGKILL)
-        pid = int(pidfile.read_text().strip())
-        self.assertFalse(process_alive(pid),
-                         f"pid {pid} outlived the backstop's escalation")
+        self.assertFalse(process_alive(int(recorded)),
+                         f"pid {recorded} outlived the backstop's escalation")
+
+    def test_a_descendant_that_outlives_the_group_does_not_wedge_the_backstop(self):
+        """The backstop's own last wedge, closed.
+
+        os.killpg reaches the process GROUP. A descendant that called setsid is
+        in another group, survives the SIGKILL, and keeps the inherited write
+        end of the stdout pipe open -- so an UNBOUNDED post-SIGKILL drain
+        blocks on a process the kill never touched. Mutation-checked: restore
+        `grace_secs=None` on that rung and this test never returns.
+
+        THE FIXTURE'S ESCAPEE IS TIED TO THE TMPDIR, not to a sleep long enough
+        to win a race. It holds the pipe for exactly as long as this test's own
+        fixture directory exists, so it outlives the drain deterministically in
+        one direction and is gone within a second of setUp's cleanup in the
+        other -- no timing assumption, and no orphan left behind for the
+        reaper. (A host without `setsid` reds here loudly rather than passing
+        vacuously: the descendant would stay in the group, the drain would
+        succeed, and the note assertion would fail.)
+
+        Asserted on an exit CODE and on output content, never on a magnitude,
+        like every other assertion in this file.
+        """
+        held_open = f'while [ -d "{self.tmpdir}" ]; do sleep 1; done'
+        suite = self.fixture_suite(
+            f"setsid bash -c '{held_open}' &",
+            'echo "ESCAPEE-SPAWNED"',
+            "sleep 600")
+        run = run_under_ambient(ORCHESTRATOR_YAML, 2, 2, ["bash", str(suite)])
+        self.assertEqual(run.rc, RC_WEDGED_SIGKILL)
+        self.assertIn("drain abandoned", run.output,
+                      "the drain returned without abandoning, so this fixture "
+                      "did not reproduce the escaped-descendant wedge and the "
+                      "branch under test was never reached")
+        self.assertIn(
+            "ESCAPEE-SPAWNED", run.output,
+            "what the child DID say must survive the abandonment -- "
+            "attribution is the whole job of a backstop")
 
     def test_a_suite_that_ran_and_failed_passes_its_own_code_through(self):
         """The discriminator. Without it the backstop could "pass" by mapping

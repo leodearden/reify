@@ -38,8 +38,9 @@ the manifest row and every doc reference stay keyed on the `.sh` basename.
 
 `test_verify_env_ambient_isolation` is the landed proof, and it lives in the
 tree now rather than in a branch-local commit —
-`tests/infra/test_verify_env_ambient_isolation.py` (540 lines, 26/26) behind
-the thin `tests/infra/test_verify_env_ambient_isolation.sh` wrapper. `FC6b`
+`tests/infra/test_verify_env_ambient_isolation.py` (27/27, a real suite and
+not a stub) behind the thin `tests/infra/test_verify_env_ambient_isolation.sh`
+wrapper. `FC6b`
 pins its derived route as `via:test_occt_flock_gate.sh` — *not*
 `via:run_all.sh`, which is what a grammar loose enough to read docstring prose
 as an invocation would have derived — and `G3`/`G1` read that file's single
