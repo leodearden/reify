@@ -174,7 +174,9 @@ are enforced at **load** time, so a malformed predicate is a usage error (exit
 2. **Finiteness is structural, not opt-in.** `float("inf") >= 0.01` is `True` in
    Python, so a bounds-only check would admit `inf`. Every capture must parse as
    a *finite* float regardless of whether `finite` is set; `finite: true` is
-   simply how you say "a finite number, bounds irrelevant".
+   simply how you say "a finite number, bounds irrelevant". `finite: false` is
+   **rejected**, not honoured: it reads as an opt-out the predicate does not
+   offer, so a probe written that way would assert the opposite of what it says.
 
 `exit_code` / `stderr_contains` / `stdout_contains` are **rejected** on a `value`
 probe: exit 0 is structural to the kind, and a stdout assertion belongs in

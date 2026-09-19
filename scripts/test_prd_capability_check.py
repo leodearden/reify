@@ -494,6 +494,32 @@ class TestValueProbeSchema(unittest.TestCase):
             self._value_probe({"pattern": r"X = ([0-9.]+)", "group": 1}), "probe[0]"
         )
 
+    def test_rejects_finite_false(self):
+        """`finite: false` reads as an opt-out the predicate does not offer.
+
+        Finiteness is enforced unconditionally, so a probe written this way
+        behaves exactly as if `true` had been given and its evidence line says
+        "satisfies finite" — the author's spec and the probe's actual assertion
+        disagree, which is this kind's own defect one level down.  Satisfying
+        the non-vacuity rule by KEY PRESENCE alone would let it load.
+        """
+        message = self._assert_rejected(
+            self._value_probe({"pattern": r"X = (\S+)", "finite": False}),
+            "probe[0]",
+            "finite",
+        )
+        self.assertIn("structural", message)
+
+    def test_rejects_finite_false_alongside_a_real_bound(self):
+        """Not just the lone-key case: the contradiction is the key itself."""
+        self._assert_rejected(
+            self._value_probe(
+                {"pattern": r"X = (\S+)", "min": 0.01, "finite": False}
+            ),
+            "probe[0]",
+            "finite",
+        )
+
     # ── REJECT: constraint types and ordering ─────────────────────────────────
 
     def test_rejects_non_numeric_min(self):

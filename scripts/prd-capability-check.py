@@ -527,6 +527,15 @@ def _validate_value_predicate(index: int, match: Dict[str, Any]) -> None:
             f"index (int) or a named group (str), got {type(group).__name__}"
         )
 
+    if spec.get("finite") is False:
+        raise ValueError(
+            f"{where} match.{_VALUE_PREDICATE_KEY} sets 'finite' false, but "
+            "finiteness is structural and cannot be opted out of: inf and nan "
+            "are refused whatever the spec says, so the probe would behave "
+            "exactly as if true were written and its evidence line would say "
+            "so.  Drop the key, or set it true."
+        )
+
     constraints = _VALUE_CONSTRAINT_KEYS & set(spec)
     if not constraints:
         raise ValueError(
