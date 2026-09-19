@@ -1668,6 +1668,49 @@ structure Bolt {
         );
     }
 
+    /// (d) THE DOCUMENTED DEGRADE PATH, which the four cases above deliberately
+    /// avoid by using non-SI names.
+    ///
+    /// `AnalysisContext::find_unit`'s contract names one non-exceptional `None`:
+    /// a module-local unit duplicating a PRELUDE unit is rejected with
+    /// "duplicate unit declaration … already defined in stdlib prelude" and
+    /// never reaches `compiled.units`, so the declaration exists in the AST
+    /// while the compiled entry does not. The hover arm must then render the
+    /// signature ALONE rather than treat the miss as a bug — and until this
+    /// test, nothing exercised that path, so an arm that grew an `expect()` on
+    /// the compiled entry, or that made the signature conditional on it, would
+    /// have shipped green.
+    ///
+    /// `find_unit` is asserted directly, not just inferred from the absent
+    /// conversion line: a factor-1 offset-free unit ALSO emits no `SI:` line
+    /// (case (a)), so the markdown alone cannot tell the degrade path from the
+    /// adds-no-information path. Task #6500.
+    #[test]
+    fn hover_on_prelude_duplicate_unit_degrades_to_signature() {
+        // `mm` is a PRELUDE unit symbol: `si_units.rs` emits `pub unit <prefix><base>`
+        // for every SI prefix/base pair, so the prelude names are symbols
+        // (`m`, `mm`, `kg`, `Pa`), never spelled-out words like `meter`.
+        let source = "unit mm : Length\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(
+            ctx.find_unit("mm").is_none(),
+            "fixture must actually hit the prelude-duplicate path, or this test \
+             exercises the ordinary lookup instead"
+        );
+
+        let position = Position::new(0, 5); // on 'mm'
+        let md = hover_markdown(source, position)
+            .expect("hover must still return Some when the compiled entry is absent");
+        assert!(
+            md.contains("```reify\nunit mm : Length\n```"),
+            "the signature must render from the AST alone, got: {md}"
+        );
+        assert!(
+            !md.contains("SI"),
+            "no compiled entry means no conversion line to append, got: {md}"
+        );
+    }
+
     /// The `type` keyword itself must have a hover description, like every other
     /// declaration-introducing keyword. Task #6341.
     #[test]

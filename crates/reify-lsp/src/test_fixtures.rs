@@ -19,9 +19,11 @@ use reify_core::ModulePath;
 ///
 /// Consumers, each a per-kind loop over this table except where noted:
 /// - `analysis::tests::decl_name_and_span_returns_name_and_span_for_every_named_kind`
-/// - `analysis::tests::named_decl_snippets_cover_every_named_kind`
+/// - `analysis::tests::named_decl_snippets_cover_every_named_kind` — also asserts
+///   this table is row-for-row aligned with `OUTLINE_SYMBOL_KIND_BY_NAME`, so a
+///   new row needs a per-kind `SymbolKind` verdict too
 /// - `analysis::tests::every_named_decl_snippet_yields_one_symbol_agreeing_with_decl_name_and_span`
-/// - `analysis::tests::document_symbols_include_every_remaining_named_kind` — looks
+/// - `analysis::tests::document_symbols_map_every_named_kind_to_its_symbol_kind` — looks
 ///   rows up BY NAME via `named_decl_snippet`, so renaming a row's declared name
 ///   panics there rather than silently shrinking its loop
 /// - `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind`

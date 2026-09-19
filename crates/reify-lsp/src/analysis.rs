@@ -786,7 +786,8 @@ fn symbol_kind_for(decl: &Declaration) -> SymbolKind {
         // A named mapping over a domain — the closest LSP analogue to a property.
         Declaration::Field(_) => SymbolKind::PROPERTY,
         // A named region enclosing other declarations, which is what NAMESPACE
-        // means in LSP.
+        // means in LSP — and [`symbol_children`] emits those enclosed
+        // declarations, so the container label is not an empty promise.
         Declaration::Purpose(_) => SymbolKind::NAMESPACE,
         // A named relation, not a value.
         Declaration::Constraint(_) => SymbolKind::OPERATOR,
@@ -805,20 +806,39 @@ fn symbol_kind_for(decl: &Declaration) -> SymbolKind {
 /// Build a declaration's child symbols.
 ///
 /// Only the container kinds have any: structure/occurrence/trait expose their
-/// members, and an enum exposes its variants. Every other kind is a LEAF and
-/// returns empty, which [`children_or_none`] turns into `children: None` rather
-/// than `Some(vec![])`.
+/// members, a purpose exposes both of its child regions, and an enum exposes
+/// its variants. Every other kind is a LEAF and returns empty, which
+/// [`children_or_none`] turns into `children: None` rather than `Some(vec![])`.
 ///
 /// Deliberately a wildcard match, unlike [`symbol_kind_for`]: "has no children"
 /// is the right DEFAULT for a new declaration kind, whereas "has no symbol
-/// kind" is not — a new variant that needs children will be noticed because its
-/// members are missing from the outline, while a new variant silently mapped to
-/// some arbitrary kind would not.
+/// kind" is not — a new variant silently mapped to some arbitrary kind would
+/// never be noticed, while missing children show up as members absent from the
+/// outline.
+///
+/// That default is safe only while the kind's [`symbol_kind_for`] arm does not
+/// ADVERTISE children. A `purpose` maps to NAMESPACE — "a named region
+/// enclosing other declarations" — so falling through the wildcard rendered it
+/// as a container holding nothing while its params, lets and nested
+/// `structure def`s vanished from the outline entirely. It has an explicit arm
+/// for that reason, and so must any future kind mapped to a container
+/// `SymbolKind`.
 fn symbol_children(source: &str, decl: &Declaration) -> Vec<DocumentSymbol> {
     match decl {
         Declaration::Structure(s) => members_to_symbols(source, &s.members),
         Declaration::Occurrence(o) => members_to_symbols(source, &o.members),
         Declaration::Trait(t) => members_to_symbols(source, &t.members),
+        // A purpose is the one kind whose children live in TWO sibling vecs:
+        // `members` (param/let/constraint/minimize) and `structures`, which the
+        // parser keeps apart so `members` stays a pure `MemberDecl` list (task
+        // 4639). Both are rendered and then re-interleaved by span, so the
+        // outline reads in source order rather than vec order.
+        Declaration::Purpose(p) => {
+            let mut children = members_to_symbols(source, &p.members);
+            children.extend(p.structures.iter().map(|s| structure_def_symbol(source, s)));
+            children.sort_by_key(|s| (s.range.start.line, s.range.start.character));
+            children
+        }
         // Each variant becomes an ENUM_MEMBER child. Named-payload variant
         // fields (`Circle { radius: Length }`) are not expanded into
         // grandchildren.
@@ -837,6 +857,28 @@ fn symbol_children(source: &str, decl: &Declaration) -> Vec<DocumentSymbol> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// Build the [`DocumentSymbol`] for a `structure def` that is NOT a top-level
+/// [`Declaration`] — today only the ones nested one level inside a `purpose`
+/// body.
+///
+/// STRUCT is the kind [`symbol_kind_for`] gives a top-level structure, and a
+/// purpose-nested one must not be labelled differently: the compiler registers
+/// it in the module-level structure namespace and compiles it into the same
+/// template table (the evidence is on [`purpose_nested_decl_names`]), and this
+/// crate's navigation already resolves the two alike. Nothing in the type
+/// system ties the two spellings of STRUCT together, so
+/// `tests::purpose_children_nest_members_and_nested_structures` compares this
+/// kind against the one a top-level structure fixture actually produces.
+fn structure_def_symbol(source: &str, s: &reify_ast::StructureDef) -> DocumentSymbol {
+    make_symbol(
+        &s.name,
+        SymbolKind::STRUCT,
+        span_to_range(source, s.span),
+        name_selection_range(source, s.span, &s.name),
+        children_or_none(members_to_symbols(source, &s.members)),
+    )
 }
 
 /// Convert a possibly-empty child list into the `children` field of a
@@ -2765,12 +2807,35 @@ mod tests {
                  another named kind with no snippet at all: {source}"
             );
             seen.push(index);
+
+            // Close the loop on the per-kind SymbolKind oracle too: a variant
+            // newly admitted to `decl_name_and_span` + `kind_index` + this
+            // table is forced BY THE COMPILER to pick a `symbol_kind_for` arm,
+            // but only this assertion forces a test to state which one.
+            assert!(
+                OUTLINE_SYMBOL_KIND_BY_NAME
+                    .iter()
+                    .any(|(n, _)| n == expected_name),
+                "every NAMED_DECL_SNIPPETS row needs an OUTLINE_SYMBOL_KIND_BY_NAME \
+                 row, or `document_symbols_map_every_named_kind_to_its_symbol_kind` \
+                 leaves {expected_name:?}'s SymbolKind unpinned: {source}"
+            );
         }
 
         assert_eq!(
             seen.len(),
             NAMED_DECL_SNIPPETS.len(),
             "every row must contribute a kind index"
+        );
+        // The converse direction. `named_decl_snippet` already panics on a kind
+        // row with no snippet, but only for rows the outline test reaches; this
+        // makes the two tables the same SIZE, so neither can carry a row the
+        // other lacks.
+        assert_eq!(
+            OUTLINE_SYMBOL_KIND_BY_NAME.len(),
+            NAMED_DECL_SNIPPETS.len(),
+            "the snippet table and the SymbolKind oracle must hold exactly one \
+             row per named kind each"
         );
         seen.sort_unstable();
         assert_eq!(
@@ -3187,16 +3252,30 @@ mod tests {
         );
     }
 
-    // --- task #6533: the outline's remaining per-kind gap ---
+    // --- task #6533: the outline's per-kind SymbolKind mapping ---
 
-    /// The FIVE named `Declaration` kinds the outline still drops, paired with
-    /// the `SymbolKind` each must map to and the declared name its
-    /// [`NAMED_DECL_SNIPPETS`] row carries.
+    /// The single per-kind `SymbolKind` ORACLE: every one of the eleven named
+    /// `Declaration` kinds, keyed by the name its [`NAMED_DECL_SNIPPETS`] row
+    /// declares.
     ///
-    /// TypeAlias is deliberately ABSENT even though it is a named kind: #6341
-    /// already gave it a TYPE_PARAMETER arm, pinned by
-    /// `document_symbols_include_type_alias`. The five here are what is left.
-    const OUTLINE_MISSING_KINDS: &[(&str, SymbolKind)] = &[
+    /// It holds ALL of them, not just the five #6533 restored, because
+    /// [`symbol_kind_for`]'s wildcard-free match forces a new variant to PICK a
+    /// kind but nothing forces a test to state WHICH — so a silent
+    /// STRUCT→OBJECT flip on an already-admitted kind had no oracle to red.
+    /// `named_decl_snippets_cover_every_named_kind` asserts this table and the
+    /// snippet table stay row-for-row aligned, so a newly-named variant needs a
+    /// row in both or that test fails.
+    const OUTLINE_SYMBOL_KIND_BY_NAME: &[(&str, SymbolKind)] = &[
+        // `structure S { … }` — the archetypal record of members.
+        ("S", SymbolKind::STRUCT),
+        // `occurrence def Welding { … }` — an instantiable kind of happening.
+        ("Welding", SymbolKind::CLASS),
+        // `enum Dir { In, Out }` — LSP's own enum.
+        ("Dir", SymbolKind::ENUM),
+        // `fn id_length(…) -> Length` — LSP's own function.
+        ("id_length", SymbolKind::FUNCTION),
+        // `trait Rigid { … }` — a named contract over members.
+        ("Rigid", SymbolKind::INTERFACE),
         // `field def temp : Point3 -> Real` — a named mapping over a domain, the
         // closest LSP analogue to a property.
         ("temp", SymbolKind::PROPERTY),
@@ -3207,6 +3286,9 @@ mod tests {
         ("Foo", SymbolKind::OPERATOR),
         // `unit meter : Length` — a named fixed quantity.
         ("meter", SymbolKind::CONSTANT),
+        // `type Pressure = Force` — SymbolKind has no TypeAlias member;
+        // TYPE_PARAMETER is the conventional LSP mapping (#6341).
+        ("Pressure", SymbolKind::TYPE_PARAMETER),
         // `joint ball(...)` — a named parameterized construction.
         ("ball", SymbolKind::METHOD),
     ];
@@ -3214,8 +3296,9 @@ mod tests {
     /// Look up the shared-table snippet that declares `name`.
     ///
     /// Panics rather than returning an Option: a miss means
-    /// [`OUTLINE_MISSING_KINDS`] and [`NAMED_DECL_SNIPPETS`] have drifted apart,
-    /// which must fail loudly here rather than silently shrink the loop below.
+    /// [`OUTLINE_SYMBOL_KIND_BY_NAME`] and [`NAMED_DECL_SNIPPETS`] have drifted
+    /// apart, which must fail loudly here rather than silently shrink the loop
+    /// below.
     fn named_decl_snippet(name: &str) -> &'static str {
         NAMED_DECL_SNIPPETS
             .iter()
@@ -3225,8 +3308,8 @@ mod tests {
     }
 
     #[test]
-    fn document_symbols_include_every_remaining_named_kind() {
-        for (name, expected_kind) in OUTLINE_MISSING_KINDS {
+    fn document_symbols_map_every_named_kind_to_its_symbol_kind() {
+        for (name, expected_kind) in OUTLINE_SYMBOL_KIND_BY_NAME {
             let source = named_decl_snippet(name);
             let parsed = parse_one_clean(source, "test");
             let symbols = compute_document_symbols_from_parsed(&parsed, source);
@@ -3247,6 +3330,85 @@ mod tests {
             // the name token; the helper asserts both.
             assert_selection_on_name(source, sym);
         }
+    }
+
+    /// A `purpose` is labelled NAMESPACE — "a named region enclosing other
+    /// declarations" — so the outline must actually show what it encloses.
+    /// Before this, `symbol_children`'s wildcard gave it ZERO children, and both
+    /// of its child regions (`members` and the nested `structure def`s this
+    /// sweep made file-wide navigable and renameable, #6534) vanished from the
+    /// document outline while the container label stayed.
+    ///
+    /// Also the SPOT guard for the nested structure's kind: STRUCT is spelled
+    /// once in `symbol_kind_for` and once in `structure_def_symbol`, with
+    /// nothing in the type system tying them together, so the expected kind here
+    /// is READ OFF a top-level structure fixture rather than restated.
+    #[test]
+    fn purpose_children_nest_members_and_nested_structures() {
+        // `let`, not `param`: grammar.js's `purpose_member` admits
+        // constraint/let/minimize/maximize/guarded/default/pragma/structure —
+        // a `param` in a purpose body lowers to no member at all.
+        const SRC: &str = "purpose Exploration() {\n    \
+                           let budget = 5mm\n    \
+                           structure def InPurpose {\n        \
+                           param x : Length = 5mm\n    \
+                           }\n\
+                           }";
+        let parsed = parse_one_clean(SRC, "test");
+        // Non-vacuity: both child regions must really be populated, or the
+        // assertions below could pass against an empty purpose.
+        let Declaration::Purpose(p) = &parsed.declarations[0] else {
+            panic!("fixture must parse to a purpose");
+        };
+        assert_eq!(p.members.len(), 1, "fixture must carry one member");
+        assert_eq!(p.structures.len(), 1, "fixture must nest one structure");
+
+        let symbols = compute_document_symbols_from_parsed(&parsed, SRC);
+        assert_eq!(symbols.len(), 1, "one purpose \u{2192} one top-level symbol");
+        let purpose = &symbols[0];
+        assert_eq!(purpose.kind, SymbolKind::NAMESPACE);
+        let children = purpose
+            .children
+            .as_ref()
+            .expect("a NAMESPACE symbol must not render as an empty container");
+
+        // Source order across the two sibling vecs: the param is declared first.
+        assert_eq!(
+            children
+                .iter()
+                .map(|c| (c.name.as_str(), c.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("budget", SymbolKind::VARIABLE),
+                ("InPurpose", top_level_structure_symbol_kind()),
+            ],
+            "a purpose's children are its members and its nested structures, in \
+             source order"
+        );
+
+        // The nested structure is a container in its own right, exactly as a
+        // top-level one is.
+        let nested = &children[1];
+        assert_eq!(
+            nested
+                .children
+                .as_ref()
+                .expect("a nested structure exposes its own members")
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["x"]
+        );
+        assert_selection_on_name(SRC, nested);
+    }
+
+    /// The `SymbolKind` a TOP-LEVEL `structure` actually yields, read off the
+    /// shared snippet table so `purpose_children_nest_members_and_nested_structures`
+    /// compares against the live mapping instead of a second hard-coded STRUCT.
+    fn top_level_structure_symbol_kind() -> SymbolKind {
+        let source = named_decl_snippet("S");
+        let parsed = parse_one_clean(source, "test");
+        compute_document_symbols_from_parsed(&parsed, source)[0].kind
     }
 
     /// The complement. The three kinds `decl_name_and_span` answers `None` for
@@ -3293,7 +3455,7 @@ mod tests {
     /// covered.
     ///
     /// It pins the WIRING, not the per-kind `SymbolKind` choice, which is
-    /// `document_symbols_include_every_remaining_named_kind`'s job: every named
+    /// `document_symbols_map_every_named_kind_to_its_symbol_kind`'s job: every named
     /// declaration yields exactly one top-level symbol whose name, range and
     /// selection_range are the ones `decl_name_and_span` + `name_selection_range`
     /// produce. A future refactor that recomputes any of those three locally —
