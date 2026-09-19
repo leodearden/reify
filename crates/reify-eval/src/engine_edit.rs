@@ -155,7 +155,6 @@ use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo, RealizationNodeData};
-use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
@@ -3828,13 +3827,6 @@ impl Engine {
                 && let Some(ref expr) = node.default_expr
             {
                 let start = Instant::now();
-                self.journal.record(EvalEvent {
-                    timestamp: start,
-                    node_id: node_id.clone(),
-                    kind: EventKind::Started,
-                    version: VersionId(version_id),
-                    payload: None,
-                });
 
                 let val = reify_expr::eval_expr(
                     expr,
@@ -3842,27 +3834,49 @@ impl Engine {
                         .with_determinacy(&new_snapshot.values)
                         .with_runtime_diagnostics(&runtime_sink),
                 );
-                values.insert(vcid.clone(), val.clone());
-                new_snapshot
-                    .values
-                    .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
+                // Commit via the cell-commit primitive (task #6998): atomically
+                // writes values/snapshot/cache/journal (INV-EVAL-1), recording
+                // the edit-reeval provenance slug on the journal's Started
+                // event (previously `payload: None`). This is the third and
+                // last edit_source write-back site to migrate, after the
+                // `SolveResult::Solved` resolution arm (#6373) and the wave2
+                // dependent-re-eval loop (#6423) above.
+                //
+                // `commit_cell_result_at(start, ..)`, not the plain
+                // `commit_cell_result`: `start` is captured above, before
+                // `reify_expr::eval_expr`, so the emitted Started/Completed
+                // pair brackets the full resolution rather than just the
+                // commit itself — see `commit_cell_result_at`'s doc (#5238
+                // amendment). Paired with edit_param's own main eval walk
+                // (~line 1521), which uses the plain `commit_cell_result` and
+                // so intentionally narrows to the commit-only span — change
+                // that site too if this one's bracketing semantics change.
+                //
+                // `UnconditionalDetermined` mirrors the pre-migration
+                // hand-rolled write, which stamped `Determined` unconditionally
+                // regardless of `val` — not a "fix", per the wave2 site's own
+                // note above.
                 let trace = extract_dependency_trace(expr);
-                let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                let outcome = self.cache.record_evaluation(
-                    node_id.clone(),
-                    cached_result,
-                    VersionId(version_id),
+                let commit_outcome = commit_cell_result_at(
+                    start,
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut new_snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
+                    vcid.clone(),
+                    val,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::EditReeval,
                     trace,
+                    VersionId(version_id),
+                    CacheLeg::Record,
                 );
-
-                self.journal.record(EvalEvent {
-                    timestamp: Instant::now(),
-                    node_id: node_id.clone(),
-                    kind: EventKind::Completed { outcome },
-                    version: VersionId(version_id),
-                    payload: Some(EventPayload::Duration(start.elapsed())),
-                });
+                let outcome = commit_outcome
+                    .cache_outcome()
+                    .expect("CacheLeg::Record always yields Some(cache_outcome)");
 
                 // Early-cutoff propagation — identical policy to edit_param:
                 // - Changed: dependents inherit has_changed_parent and are
@@ -7152,10 +7166,10 @@ mod tests {
     /// (`cell_commit.rs`) rather than the hand-rolled
     /// values-insert/snapshot-insert/record_evaluation copy. `edit_source`'s
     /// MAIN per-cell eval loop (this file's step-(12) "Per-cell eval loop")
-    /// remains hand-rolled too, but it DOES emit a journal Started/Completed
-    /// pair (with `payload: None`, so no `TraceSource` provenance slug) — a
-    /// different defect class, out of scope here (see plan.json design
-    /// decision D1 / follow-up task #6998). This is the `edit_source` half
+    /// is ALSO migrated onto the primitive (task #6998), so all three of
+    /// `edit_source`'s write-back sites now route through it — see
+    /// `edit_source_main_eval_walk_routes_through_commit_primitive` below for
+    /// that site's own pin. This is the `edit_source` half
     /// of the edit_param/edit_source resolution-arm AND wave2 sync pairs
     /// (INV-EVAL-1): the mirrors are
     /// `edit_param_dependent_reeval_routes_through_commit_primitive` above
@@ -7468,7 +7482,9 @@ mod tests {
         // out by assertion (1), but this pins the mechanism, not just the
         // symptom).
         assert!(
-            engine.last_eval_set().contains(&NodeId::Value(r_id.clone())),
+            engine
+                .last_eval_set()
+                .contains(&NodeId::Value(r_id.clone())),
             "last_eval_set must contain r, meaning the Changed branch of the \
              early-cutoff propagation ran; got {:?}",
             engine.last_eval_set()
