@@ -1109,26 +1109,98 @@ mod tests {
     }
 
     #[test]
-    fn goto_def_purpose_nested_structure_is_not_top_level() {
-        // DELIBERATE SCOPE BOUNDARY, not an oversight. A `structure def` nested
+    fn goto_def_resolves_a_purpose_nested_structure_file_wide() {
+        // THE VISIBILITY QUESTION, ANSWERED (#6534). A `structure def` written
         // directly inside a `purpose` body lands in `PurposeDef.structures`, not
-        // in `ParsedModule.declarations`, so it is not a TOP-LEVEL declaration
-        // and task 6388's uniform declaration-name resolution does not reach it.
-        // Whether such a name is even visible outside its enclosing purpose is a
-        // language-semantics question this task does not answer; pinning the
-        // current None keeps the boundary explicit rather than latent.
-        let source = "purpose Exploration() {\n    structure def InPurpose {\n        param x : Length = 5mm\n    }\n}";
-        let offset = source.find("InPurpose").expect("source declares InPurpose");
-        let position = crate::convert::offset_to_position(source, offset as u32 + 1);
-        assert!(
-            compute_goto_definition(source, &test_uri(), position).is_none(),
-            "a purpose-nested structure name is not a top-level declaration"
+        // in `ParsedModule.declarations`, so #6388's uniform declaration-name
+        // resolution — which walks `declarations` — never reached it. This test
+        // used to pin that miss as a boundary and record the visibility question
+        // as unanswered. The compiler already answers it:
+        //
+        // - `pre_pass.rs`'s `Declaration::Purpose` arm registers every
+        //   `p.structures` entry through
+        //   `ctx.record_or_report_duplicate(&s.name, s.span, "structure")`, so
+        //   the name occupies the MODULE-LEVEL structure namespace and collides
+        //   with a same-named top-level `structure`.
+        // - `entities_phase.rs`'s matching arm compiles it into the same
+        //   `ctx.templates` as a top-level structure. The only thing scoped to
+        //   the purpose is AMBIENT-DEFAULT resolution, via `Some(p.name)`
+        //   (DD6 innermost-wins).
+        // - The one documented limitation (pre_pass.rs, same arm) is that
+        //   `structure_refs` omits them, so `phase_functions` builds no
+        //   signature skeleton. That is a SKELETON gap, not a name-visibility
+        //   rule.
+        //
+        // A module-level name is file-wide navigable, so goto-def resolves it
+        // from anywhere in the file — and navigation is read-only, where a
+        // slightly generous jump costs precision, not correctness (the same
+        // trade #6388's Phase C already made).
+        let source = "purpose Exploration() {\n    \
+                      structure def InPurpose {\n        \
+                      param x : Length = 5mm\n    \
+                      }\n\
+                      }\n\
+                      structure Host {\n    \
+                      sub s = InPurpose()\n\
+                      }";
+        let parsed = parse_clean(source);
+
+        // Fixture guard: the nested structure must really live in
+        // `PurposeDef.structures` and NOT in `declarations`, or this test pins
+        // the ordinary top-level path and asserts nothing about the descent.
+        let nested_names: Vec<&str> = parsed
+            .declarations
+            .iter()
+            .filter_map(|d| match d {
+                reify_ast::Declaration::Purpose(p) => Some(p),
+                _ => None,
+            })
+            .flat_map(|p| p.structures.iter().map(|s| s.name.as_str()))
+            .collect();
+        assert_eq!(
+            nested_names,
+            vec!["InPurpose"],
+            "fixture must nest `InPurpose` inside the purpose body"
         );
+        assert!(
+            !parsed.declarations.iter().any(|d| matches!(
+                d,
+                reify_ast::Declaration::Structure(s) if s.name == "InPurpose"
+            )),
+            "fixture must NOT also declare `InPurpose` at top level"
+        );
+
+        let decl = source.find("InPurpose").expect("source declares InPurpose");
+        let use_site = source.rfind("InPurpose").expect("source constructs it");
+        assert_ne!(decl, use_site, "fixture needs a use site distinct from the declaration");
+        let name_token = (decl, decl + "InPurpose".len());
+
+        for (label, cursor) in [
+            ("the declaration token itself", decl),
+            ("a `sub s = InPurpose()` construction site elsewhere in the file", use_site),
+        ] {
+            let loc = compute_goto_definition(
+                source,
+                &test_uri(),
+                crate::convert::offset_to_position(source, cursor as u32 + 1),
+            )
+            .unwrap_or_else(|| {
+                panic!("goto-def from {label} must resolve a purpose-nested structure")
+            });
+            assert_eq!(
+                range_to_byte_range(source, loc.range),
+                name_token,
+                "from {label}: must land on the NAME TOKEN, the same shape every \
+                 other declaration kind returns"
+            );
+        }
     }
 
     #[test]
     fn goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration() {
-        // BOUNDARY PIN, sibling to `goto_def_purpose_nested_structure_is_not_top_level`.
+        // BOUNDARY PIN. Its former sibling, the purpose-nested-structure pin,
+        // was RETIRED by #6534 (that name turned out to be file-wide visible);
+        // this one survives because its cause is the word scanner, not a scope.
         //
         // Task 6388's "uniform across declaration kinds" claim holds at
         // DECLARATION sites for all eleven named kinds, but a `unit` has no
