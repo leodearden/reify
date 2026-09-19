@@ -843,8 +843,13 @@ pub(crate) fn elaborate_forall_connect(
             // then hand the result to `chain_hops` (connect.rs), which owns
             // the spec §6.2 element resolution this arm shares with the
             // entity-member site. Every emitted connection is anchored at
-            // `decl.span` rather than at the chain body's own span, so a
-            // per-element diagnostic cites the forall the designer wrote.
+            // `decl.span` rather than at the chain body's own span, so
+            // `compile_connection`'s diagnostics cite the forall the designer
+            // wrote. `chain_hops`' own §6.2 diagnostics are labelled at the
+            // element instead — for the substituted bound variable, that is
+            // the span its binding carries: the collection expression's when
+            // the forall iterates a sub collection, a list item's own when it
+            // iterates a literal list.
             ForallConnectBody::Chain(cd) => {
                 // Edge case: fewer than two elements is a malformed chain.
                 // Emit the standard chain diagnostic once per element-iteration

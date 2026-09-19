@@ -454,6 +454,97 @@ fn assert_chain_over_an_unindexed_collection_is_refused(source: &str) {
     );
 }
 
+/// An unindexed collection in the INTERIOR of a chain plays two roles — the
+/// destination of `a -> vents` and the source of `vents -> hub` — but denoting
+/// many occurrences is a property of the element, not of a role, so the author
+/// is told once. Both hops touch it, so neither is emitted.
+#[test]
+fn chain_interior_unindexed_collection_is_refused_once() {
+    let source = r#"
+trait Air { param d : Length }
+occurrence def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+    port outlet : out Air { param d : Length = 5mm }
+}
+occurrence def Hub {
+    port feed : in Air { param d : Length = 5mm }
+    port vent : out Air { param d : Length = 5mm }
+}
+structure def S {
+    sub a = Hub()
+    sub vents : List<Vent>
+    constraint vents.count == 2
+    sub hub = Hub()
+    chain a -> vents -> hub
+}
+"#;
+
+    let module = compile_source(source);
+    let codes: Vec<Option<DiagnosticCode>> = errors_only(&module).iter().map(|d| d.code).collect();
+    assert_eq!(
+        codes,
+        vec![Some(DiagnosticCode::ChainElementNotAnOccurrence)]
+    );
+
+    let s = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template S");
+    assert!(
+        s.connections.is_empty(),
+        "both hops touch the refused element, got: {:?}",
+        s.connections
+    );
+}
+
+/// An indexer selects one occurrence only out of a collection or keyed sub. On
+/// a plain sub `p1[0]` names nothing, so inference must not turn it into
+/// `p1[0].outlet` — a hop to a node that does not exist. The element is handed
+/// back verbatim, and `compile_connection`'s undefined-port error reports it,
+/// as it did before §6.2 inference existed.
+#[test]
+fn chain_indexed_element_on_a_plain_sub_is_not_inferred() {
+    let source = r#"
+trait FluidPort { param diameter : Length }
+occurrence def Pipe {
+    port inlet : in FluidPort { param diameter : Length = 25mm }
+    port outlet : out FluidPort { param diameter : Length = 25mm }
+}
+structure def Pipeline {
+    sub p1 = Pipe()
+    sub p2 = Pipe()
+    chain p1[0] -> p2
+}
+"#;
+
+    let module = compile_source(source);
+    let messages: Vec<&str> = errors_only(&module)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec!["undefined port 'p1[0]' in connect statement"]
+    );
+
+    let pipeline = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Pipeline")
+        .expect("expected template Pipeline");
+    let endpoints: Vec<(&str, &str)> = pipeline
+        .connections
+        .iter()
+        .map(|c| (c.left_port.as_str(), c.right_port.as_str()))
+        .collect();
+    assert_eq!(
+        endpoints,
+        vec![("p1[0]", "p2.inlet")],
+        "the indexed element must reach compile_connection verbatim, not as an inferred `p1[0].outlet`"
+    );
+}
+
 /// A keyed sub's element name is serialized as `vents["a.b"]`, so deciding an
 /// element's SHAPE by scanning that string for a `.` misreads a key that
 /// happens to contain one as an already-dotted port reference and skips
@@ -647,5 +738,12 @@ structure def Vent {
             "undefined port 'b' in connect statement",
         ]
     );
-    assert_no_diagnostic(&module.diagnostics, Severity::Error, "chain element");
+    assert!(
+        !module.diagnostics.iter().any(|d| matches!(
+            d.code,
+            Some(DiagnosticCode::ChainPortNotUnique | DiagnosticCode::ChainElementNotAnOccurrence)
+        )),
+        "a sub_port_directions miss must add no §6.2 diagnostic, got: {:?}",
+        module.diagnostics
+    );
 }

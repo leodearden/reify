@@ -321,60 +321,118 @@ fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core
 /// A hop is emitted only when BOTH of its endpoints resolved, so a §6.2 failure
 /// yields exactly one precise diagnostic rather than that plus a downstream
 /// "undefined port" from `compile_connection`. Both endpoints are always
-/// attempted, so an unresolvable element is reported in each role it fails in.
+/// attempted, so an element whose port cannot be inferred is reported in each
+/// role it fails in.
+///
+/// Whether an element denotes ONE occurrence is a property of the element, not
+/// of a role, so it is settled once per element before any hop is resolved: an
+/// unindexed collection is reported once, however many hops it sits in.
 pub(crate) fn chain_hops(
     ctx: &ConnectContext,
     elements: &[reify_ast::Expr],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<(reify_ast::Expr, reify_ast::Expr)> {
     use reify_core::PortDirection::{In, Out};
+    let one_occurrence: Vec<bool> = elements
+        .iter()
+        .map(|elem| denotes_one_occurrence(ctx, elem, diagnostics))
+        .collect();
     elements
         .windows(2)
-        .filter_map(|pair| {
-            let source = resolve_chain_endpoint(ctx, &pair[0], Out, diagnostics);
-            let dest = resolve_chain_endpoint(ctx, &pair[1], In, diagnostics);
+        .zip(one_occurrence.windows(2))
+        .filter_map(|(pair, ok)| {
+            let source = if ok[0] {
+                resolve_chain_endpoint(ctx, &pair[0], Out, diagnostics)
+            } else {
+                None
+            };
+            let dest = if ok[1] {
+                resolve_chain_endpoint(ctx, &pair[1], In, diagnostics)
+            } else {
+                None
+            };
             source.zip(dest)
         })
         .collect()
 }
 
-/// Resolve one chain element in one role to the endpoint expression the hop
-/// should connect, per spec §6.2.
+/// The sub a chain element names, in one of the two shapes §6.2 inference acts
+/// on.
+enum ChainElementSub<'a> {
+    /// A bare `Ident`: `p1`.
+    Bare(&'a str),
+    /// An `IndexAccess` directly under an `Ident`: `vents[0]`, `vents["intake"]`.
+    Indexed(&'a str),
+}
+
+/// Classify a chain element by the sub it names. Every other shape is `None`:
+/// a `MemberAccess` (`sub.port`, `vents[0].inlet`) has already named its port,
+/// and an `AdHocSelector` cannot be resolved by inference.
 ///
-/// Only two shapes name a sub whose port can be inferred, so the dispatch
-/// reads `elem.kind` — the structure already in hand. The serialized name is
-/// diagnostic TEXT here and never a dispatch input: it cannot distinguish a
+/// Dispatch reads `elem.kind`, never the serialized name, which cannot tell a
 /// keyed element from a dotted port reference (`vents["a.b"]` carries both a
-/// bracket and a dot), and asking it to try is what made an element's shape
-/// depend on its key's spelling.
+/// bracket and a dot).
+fn chain_element_sub(elem: &reify_ast::Expr) -> Option<ChainElementSub<'_>> {
+    match &elem.kind {
+        reify_ast::ExprKind::Ident(sub) => Some(ChainElementSub::Bare(sub)),
+        reify_ast::ExprKind::IndexAccess { object, .. } => match &object.kind {
+            reify_ast::ExprKind::Ident(sub) => Some(ChainElementSub::Indexed(sub)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether a chain element denotes at most one occurrence, reporting the one
+/// shape that does not: a bare name of a collection or keyed sub, which denotes
+/// N occurrences, so the port inference would pick belongs to none of them.
 ///
-/// * `Ident` naming one of the ENCLOSING entity's own ports — verbatim. That
-///   is what `chain a -> b -> c` over own ports has always meant, so own ports
-///   take precedence over a same-named sub; inferring here would silently
-///   repoint an existing chain.
-/// * `Ident` otherwise, and `IndexAccess` under an `Ident` object (`vents[0]`,
-///   `vents["intake"]`) — the sub whose unique port usable in `needed` is the
-///   hop's endpoint. The sub name comes from the object, not from splitting
-///   the serialized string, and `sub_port_directions` keys on it because every
-///   element of a collection shares one child template.
-/// * Every other shape — verbatim. That covers `MemberAccess` (`sub.port`,
-///   `self.port`, `vents[0].inlet`), where the designer has already named the
-///   port and inference has nothing to add, and `AdHocSelector`, which
-///   inference cannot resolve and must not wrap into an expression its own
-///   serializer cannot read back.
+/// An own port of the enclosing entity is exempt: own ports take precedence
+/// over a same-named sub (see `resolve_chain_endpoint`).
+fn denotes_one_occurrence(
+    ctx: &ConnectContext,
+    elem: &reify_ast::Expr,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let Some(ChainElementSub::Bare(sub)) = chain_element_sub(elem) else {
+        return true;
+    };
+    if is_own_port(ctx, sub) || !names_many_occurrences(ctx, sub) {
+        return true;
+    }
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "chain element '{sub}' names a whole collection, not one occurrence; \
+             chain its elements, e.g. 'forall v in {sub}: chain v -> ...'"
+        ))
+        .with_code(DiagnosticCode::ChainElementNotAnOccurrence)
+        .with_label(DiagnosticLabel::new(
+            elem.span,
+            "names a collection, not one occurrence",
+        )),
+    );
+    false
+}
+
+/// Resolve one chain element in one role to the endpoint expression the hop
+/// should connect, per spec §6.2: an element naming ONE occurrence of a sub
+/// becomes that sub's unique port usable in `needed`.
 ///
-/// An element `resolve_port_name` cannot serialize at all is likewise handed
-/// back, so `compile_connection` keeps sole ownership of the "invalid port
-/// reference" wording — this function never duplicates a diagnostic that
-/// already has a home.
+/// Everything else is handed back verbatim for `compile_connection` to judge,
+/// so this function never duplicates a diagnostic that already has a home:
 ///
-/// Zero or several usable ports is the §6.2 failure: it names what was
-/// actually found and sends the author to the dotted form, leaving the
-/// endpoint unresolved so `chain_hops` drops the hop.
-///
-/// Inference is per-INSTANCE, so an `Ident` naming a collection or keyed sub —
-/// no indexer — is refused outright: such a name denotes N occurrences, and
-/// the port that would otherwise be inferred belongs to none of them.
+/// * an element that already names its port, or that `resolve_port_name`
+///   cannot serialize (`compile_connection` owns "invalid port reference");
+/// * an own port of the enclosing entity — own ports take precedence over a
+///   same-named sub, since inferring would silently repoint an existing chain;
+/// * an indexer on a sub that is not a collection or keyed sub — `p1[0]` names
+///   no occurrence, and inferring `p1[0].outlet` would emit a hop to a node
+///   that does not exist;
+/// * a bare collection name, which `chain_hops` has already refused — checked
+///   again here so this function never infers for one on its own;
+/// * a `sub_port_directions` MISS — per that map's absence contract "not
+///   resolvable at this point in the compile", covering a typo and a child
+///   declared later in the module (#7374), where the silent pass is deliberate.
 ///
 /// Usability is TIERED, not a union: a port declared in `needed` wins
 /// outright, and only when the sub declares none does a `bidi` port — which
@@ -382,12 +440,9 @@ pub(crate) fn chain_hops(
 /// union would make the common `in`/`out`/`bidi` sub ambiguous, though §6.2
 /// reads it as having exactly one port per direction.
 ///
-/// A `sub_port_directions` MISS is handed back verbatim rather than diagnosed
-/// here: per that map's absence contract a miss means "not resolvable at this
-/// point in the compile", which covers both a typo (`compile_connection`'s
-/// existing undefined-port error is the right one) and a child structure
-/// declared later in the module (#7374), where today's silent pass is
-/// deliberate.
+/// Zero or several usable ports is the §6.2 failure: it names what was
+/// actually found and sends the author to the dotted form, leaving the
+/// endpoint unresolved so `chain_hops` drops the hop.
 fn resolve_chain_endpoint(
     ctx: &ConnectContext,
     elem: &reify_ast::Expr,
@@ -397,31 +452,15 @@ fn resolve_chain_endpoint(
     let Some(name) = resolve_port_name(elem) else {
         return Some(elem.clone());
     };
-    let (sub, indexed) = match &elem.kind {
-        reify_ast::ExprKind::Ident(sub) => (sub.as_str(), false),
-        reify_ast::ExprKind::IndexAccess { object, .. } => match &object.kind {
-            reify_ast::ExprKind::Ident(sub) => (sub.as_str(), true),
-            _ => return Some(elem.clone()),
-        },
+    let sub = match chain_element_sub(elem) {
+        Some(ChainElementSub::Bare(sub))
+            if !is_own_port(ctx, sub) && !names_many_occurrences(ctx, sub) =>
+        {
+            sub
+        }
+        Some(ChainElementSub::Indexed(sub)) if names_many_occurrences(ctx, sub) => sub,
         _ => return Some(elem.clone()),
     };
-    if !indexed && ctx.ports.iter().any(|p| p.name == sub) {
-        return Some(elem.clone());
-    }
-    if !indexed && names_many_occurrences(ctx, sub) {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "chain element '{name}' names a whole collection, not one occurrence; \
-                 chain its elements, e.g. 'forall v in {name}: chain v -> ...'"
-            ))
-            .with_code(DiagnosticCode::ChainElementNotAnOccurrence)
-            .with_label(DiagnosticLabel::new(
-                elem.span,
-                "names a collection, not one occurrence",
-            )),
-        );
-        return None;
-    }
     let Some(child_ports) = ctx.scope.sub_port_directions.get(sub) else {
         return Some(elem.clone());
     };
@@ -477,6 +516,11 @@ fn names_many_occurrences(ctx: &ConnectContext, sub: &str) -> bool {
     ctx.scope.collection_sub_names.contains(sub) || ctx.scope.keyed_sub_keys.contains_key(sub)
 }
 
+/// Whether `name` is one of the enclosing entity's own ports.
+fn is_own_port(ctx: &ConnectContext, name: &str) -> bool {
+    ctx.ports.iter().any(|p| p.name == name)
+}
+
 /// Compile a single connection (from connect statement or chain desugaring).
 pub(crate) fn compile_connection(
     ctx: &ConnectContext,
@@ -527,9 +571,8 @@ pub(crate) fn compile_connection(
     // `own_port_name` accepts bare `p` and `self.p` alike, so a typo is caught in
     // either spelling — the same symmetry `endpoint_direction` gives the
     // direction check.
-    let undefined_own_port = |port_ref: &str| {
-        own_port_name(port_ref).is_some_and(|name| !ctx.ports.iter().any(|p| p.name == name))
-    };
+    let undefined_own_port =
+        |port_ref: &str| own_port_name(port_ref).is_some_and(|name| !is_own_port(ctx, name));
     // Own-entity-only consumers below (auto-match, the asymmetric-LocatedPort
     // warning) still gate on the endpoint being written bare.
     let is_bare = |name: &str| !name.contains('.');

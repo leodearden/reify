@@ -1547,7 +1547,7 @@ Resolving per role is what makes a chain longer than two elements direction-vali
 
 If an element offers several candidate ports for the role it plays — or none at all — `chain` is a compile error for that element, naming what was found. The designer disambiguates by naming the port on that element (`chain casting.part -> machining`), which the grammar accepts for any element. A named port is taken verbatim in **both** the element's roles, so naming one on an *interior* element pins the same port for the hop arriving and the hop leaving: that resolves an element carrying *several* `bidi` ports, and otherwise the chain is split into explicit `connect` statements. An element naming one of the *enclosing* entity's own ports is likewise taken as that port and never re-inferred, which is what lets `chain` compose an enclosing structure's own `out` → `bidi` → `in` ports.
 
-**A chain element must denote exactly one occurrence.** Inference is per-instance, so naming a `List<T>` or `Keyed<T>` sub *without* an indexer is a compile error: such a name denotes N occurrences, and the port that would be inferred belongs to none of them. Index the element (`chain vents[0] -> hub`), or chain the collection's occurrences with `forall`:
+**A chain element must denote exactly one occurrence.** Inference is per-instance, so naming a `List<T>` or `Keyed<T>` sub *without* an indexer is a compile error: such a name denotes N occurrences, and the port that would be inferred belongs to none of them. An indexer selects an occurrence only of a `List<T>` or `Keyed<T>` sub (on any other sub it selects nothing, and the element is an undefined port). Index the element (`chain vents[0] -> hub`), or chain the collection's occurrences with `forall`:
 
 ```
 forall v in vents: chain v -> hub
@@ -2855,11 +2855,15 @@ connect_block   ::= '{' (param_assign | port_mapping)* '}'
 param_assign    ::= IDENT '=' expr
 port_mapping    ::= IDENT '->' IDENT
 
-chain_stmt      ::= 'chain' port_ref ('->' port_ref)+
+chain_stmt      ::= 'chain' chain_elem ('->' chain_elem)+
+chain_elem      ::= IDENT chain_index? ('.' IDENT)* ('@' IDENT ('(' args ')')? )?
+chain_index     ::= '[' (INT_LIT | STRING_LIT) ']'
 
-(* Each element is a port_ref, not a bare IDENT: naming the port on an element
-   is how §6.2 inference is disambiguated, so the dotted form is load-bearing
-   rather than merely tolerated. *)
+(* A chain element is a port_ref whose head may carry one indexer. Naming the
+   port on an element (a.p, vents[0].inlet) is how §6.2 inference is
+   disambiguated, so the dotted form is load-bearing rather than merely
+   tolerated; the indexer (vents[0], vents["intake"]) is how an element of a
+   collection or keyed sub is named as the one occurrence §6.2 requires. *)
 
 port_ref        ::= path ('@' IDENT ('(' args ')')? )?
 
