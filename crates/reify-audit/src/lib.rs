@@ -1526,6 +1526,22 @@ impl ChangedSymbol {
     pub fn decl_located(&self) -> bool {
         self.suppression.is_some()
     }
+
+    /// `true` when this symbol's declaration was located AND carries one of
+    /// [`DeclSuppression`]'s opt-outs — the `Option`-lifting of
+    /// [`DeclSuppression::opts_out`] onto a symbol, so no detector rewrites
+    /// it inline.
+    ///
+    /// An unlocatable declaration answers `false`: it made no opt-out claim
+    /// either way. That is NOT permission to report the symbol — ask
+    /// [`decl_located`](Self::decl_located) first; this answers only "did
+    /// the author opt out".
+    // G-allow: accessor on the public ChangedSymbol API; every caller is intra-crate or a test — orphan-audit script counts only inter-crate call sites
+    pub fn opts_out(&self) -> bool {
+        self.suppression
+            .as_ref()
+            .is_some_and(DeclSuppression::opts_out)
+    }
 }
 
 /// A non-declaration reference (caller site) of a symbol, as reported by
@@ -1829,34 +1845,42 @@ fn is_test_path(p: &str) -> bool {
         || p.contains(".spec.")  // JS/TS: foo.spec.ts
 }
 
-/// Combined OPT-OUT predicate for detector passes that check changed symbols.
+/// Combined OPT-OUT predicate for P5 H2 (`check_live_path_stranded`): the
+/// author's own opt-out, plus the `crates/reify-stdlib/` scope-exclude (every
+/// `.ri` structure def is technically orphan until something calls it).
 ///
-/// Answers "did the author opt out", NOT "should this be reported". Returns
-/// `true` when the symbol is a stdlib def or its located declaration carries
-/// an opt-out:
+/// Answers "did the author opt out", NOT "should this be reported". A symbol
+/// whose declaration was never located answers `false`, because no opt-out
+/// was ever observed; whether it is reportable is the SEPARATE question
+/// [`ChangedSymbol::decl_located`] asks, and folding the two into one
+/// predicate is what made an unlocatable declaration indistinguishable from a
+/// clean one.
 ///
-/// - File starts with `crates/reify-stdlib/` (scope-exclude: every
-///   `.ri` structure def is technically orphan until something calls it).
-/// - The declaration was located and [`DeclSuppression::opts_out`] holds.
-///
-/// A symbol whose declaration was never located answers `false` here, because
-/// no opt-out was ever observed. Whether it is reportable is a SEPARATE
-/// question, asked via [`ChangedSymbol::decl_located`]; folding the two into
-/// one predicate is what made an unlocatable declaration indistinguishable
-/// from a clean one.
-///
-/// Used by both P1 (`p1_producer_orphan`) and P5 H2 (`check_live_path_stranded`)
-/// so the opt-out semantics stay in lockstep — P1 calls
-/// [`DeclSuppression::opts_out`] directly rather than through this helper,
-/// because it deliberately does NOT apply the stdlib scope-exclude above. Per
-/// `f-infra-design.md` §5 P1/P5.
+/// P1 (`p1_producer_orphan`) calls [`ChangedSymbol::opts_out`] on its own, so
+/// the stdlib clause below is the whole of the difference between the two
+/// detectors. Per `f-infra-design.md` §5 P1/P5.
 // G-allow: shared suppression predicate; callers are intra-crate (p5_phantom_done::check_live_path_stranded) — orphan-audit script counts only inter-crate call sites
 pub(crate) fn is_symbol_suppressed(symbol: &ChangedSymbol) -> bool {
-    symbol.file.starts_with("crates/reify-stdlib/")
-        || symbol
-            .suppression
-            .as_ref()
-            .is_some_and(DeclSuppression::opts_out)
+    symbol.file.starts_with("crates/reify-stdlib/") || symbol.opts_out()
+}
+
+/// `Some(n)` when `symbols` carries `n >= 1` entries and NOT ONE of their
+/// declarations could be located, so a detector's per-symbol pass examined
+/// nothing it was handed; `None` when at least one was examinable.
+///
+/// Such a sweep reports zero findings for the same reason an empty one does —
+/// it looked at nothing — but it is invisible to an `is_empty()` check, so
+/// the two states need separate detection. The cause is a degraded jcodemunch
+/// substrate (see [`ChangedSymbol::decl_located`]); before unlocatable symbols
+/// were skipped, that degradation announced itself as a false-positive storm,
+/// and without this it would announce itself as nothing at all.
+///
+/// An EMPTY sweep is deliberately not folded in: "received nothing" and
+/// "examined nothing of what was received" have different remedies, so each
+/// detector words them as separate clauses.
+// G-allow: shared vacuity rule; callers are intra-crate (p1_producer_orphan, p5_phantom_done) — orphan-audit script counts only inter-crate call sites
+pub(crate) fn wholly_unlocatable_count(symbols: &[ChangedSymbol]) -> Option<usize> {
+    (!symbols.is_empty() && symbols.iter().all(|s| !s.decl_located())).then_some(symbols.len())
 }
 
 // -----------------------------------------------------------------------

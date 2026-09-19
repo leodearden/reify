@@ -25,14 +25,18 @@
 //!   opted out is UNKNOWN ([`crate::ChangedSymbol::decl_located`]) — SKIPPED outright
 //!   rather than downgraded, since unknown is not "no opt-out"; an opt-out the
 //!   located declaration carries — `#[allow(dead_code)]` / `#[cfg(test)]` /
-//!   a non-blank `// G-allow:` marker ([`DeclSuppression::opts_out`]);
+//!   a non-blank `// G-allow:` marker ([`crate::ChangedSymbol::opts_out`]);
 //!   a non-test workspace caller.
 //! - Surviving symbols: severity is Medium only once *strictly more than*
 //!   14 days have elapsed since the done-flip (design §5 P1, line 83:
 //!   ">14 days"); at exactly the boundary and anywhere inside the window it
 //!   is Low ("log only").
+//!
+//! When the FIRST of those per-symbol guards eats a task's entire symbol list,
+//! zero findings means "examined nothing", not "corpus clean", so
+//! [`unexamined_sweep_breadcrumb`] annotates it on stderr.
 
-use crate::{AuditContext, DeclSuppression, EvidenceRef, Finding, Pattern, Severity};
+use crate::{AuditContext, ChangedSymbol, EvidenceRef, Finding, Pattern, Severity};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 14-day grace window. `f-infra-design.md` §5 P1 line 83 specifies a
@@ -119,7 +123,14 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let since_sha = format!("{commit}^1");
         let until_sha = commit;
 
-        for symbol in ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
+        let symbols = ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha);
+        if let Some(msg) =
+            unexamined_sweep_breadcrumb(&symbols, &meta.task_id, &since_sha, until_sha)
+        {
+            eprintln!("{msg}");
+        }
+
+        for symbol in symbols {
             // Per-symbol guard: the declaration could not be located, so whether
             // its author opted out is UNKNOWN, not "no". Reporting here is what
             // turns a jcodemunch grammar drift (a release that stops emitting
@@ -135,11 +146,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             // a non-blank `// G-allow:` marker, whose shared rule (and the
             // orphan-script regex it mirrors) lives in `DeclSuppression`
             // (design §5 P1).
-            if symbol
-                .suppression
-                .as_ref()
-                .is_some_and(DeclSuppression::opts_out)
-            {
+            if symbol.opts_out() {
                 continue;
             }
             // A non-test workspace caller proves the symbol is consumed —
@@ -191,4 +198,106 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     }
 
     findings
+}
+
+/// Returns a `reify-audit:` prefixed stderr breadcrumb when every symbol this
+/// task's `get_changed_symbols` returned had an unlocatable declaration, so P1
+/// skipped all of them and its zero findings report a degraded jcodemunch
+/// substrate rather than a clean corpus.
+///
+/// Returns `None` otherwise, including for an EMPTY result: a done task that
+/// introduced no public symbol has always been an ordinary no-op here, and P1
+/// visits every done task, so annotating that would be one line per task on
+/// the (common) unwired-jcodemunch path. The vacuity rule itself lives in
+/// [`crate::wholly_unlocatable_count`], shared with P5 H2's breadcrumb.
+///
+/// Mirrors `p5_phantom_done::h2_vacuous_breadcrumb`'s "return the diagnostic,
+/// let the caller `eprintln!` it" idiom — an in-process test cannot read its
+/// own process's stderr, so a message printed from inside here could be
+/// deleted with the whole suite still green.
+fn unexamined_sweep_breadcrumb(
+    symbols: &[ChangedSymbol],
+    task_id: &str,
+    since_sha: &str,
+    until_sha: &str,
+) -> Option<String> {
+    let unlocatable = crate::wholly_unlocatable_count(symbols)?;
+    Some(format!(
+        "reify-audit: P1 (producer-orphan) vacuous for task {task_id}: all \
+         {unlocatable} symbol(s) from {since_sha}..{until_sha} had an unlocatable \
+         declaration and were skipped unexamined — P1 produced no findings for \
+         this task (jcodemunch substrate degraded, not a clean corpus)"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unexamined_sweep_breadcrumb;
+    use crate::{ChangedSymbol, DeclSuppression};
+
+    fn symbol(name: &str, suppression: Option<DeclSuppression>) -> ChangedSymbol {
+        ChangedSymbol {
+            name: name.to_string(),
+            file: "crates/foo/src/lib.rs".to_string(),
+            line: 42,
+            suppression,
+        }
+    }
+
+    /// The quiet-degradation case this breadcrumb exists for: a NON-empty
+    /// symbol list in which not one declaration was locatable. P1 skips every
+    /// row, so a zero-finding sweep would otherwise read as "corpus clean"
+    /// — the same jcodemunch grammar drift that was loud (a false-positive
+    /// storm) before unlocatable symbols were skipped.
+    #[test]
+    fn unexamined_sweep_breadcrumb_fires_when_no_declaration_was_locatable() {
+        let symbols = vec![symbol("alpha", None), symbol("beta", None)];
+        let msg = unexamined_sweep_breadcrumb(&symbols, "7600", "abc123^1", "abc123")
+            .expect("an all-unlocatable sweep must produce a breadcrumb");
+        assert!(
+            msg.contains("7600"),
+            "breadcrumb must name the task id; got: {msg}"
+        );
+        assert!(
+            msg.contains("vacuous"),
+            "breadcrumb must name the sweep as vacuous; got: {msg}"
+        );
+        assert!(
+            msg.contains('2'),
+            "breadcrumb must name how many symbols went unexamined; got: {msg}"
+        );
+        assert_eq!(
+            msg.lines().count(),
+            1,
+            "breadcrumb must stay one line; got: {msg:?}"
+        );
+    }
+
+    /// One examinable symbol is enough to make the sweep real: the detector
+    /// applied its guards to something, so zero findings is a genuine result
+    /// and an operator must not be told otherwise.
+    #[test]
+    fn unexamined_sweep_breadcrumb_is_silent_when_any_declaration_was_located() {
+        let symbols = vec![
+            symbol("alpha", None),
+            symbol("beta", Some(DeclSuppression::default())),
+        ];
+        assert_eq!(
+            unexamined_sweep_breadcrumb(&symbols, "7600", "abc123^1", "abc123"),
+            None,
+            "a sweep that examined even one declaration is not vacuous"
+        );
+    }
+
+    /// An empty result is P1's ordinary no-op — a done task can legitimately
+    /// introduce no public symbol, and P1 visits every done task, so this
+    /// branch must not annotate.
+    #[test]
+    fn unexamined_sweep_breadcrumb_is_silent_for_an_empty_sweep() {
+        assert_eq!(
+            unexamined_sweep_breadcrumb(&[], "7600", "abc123^1", "abc123"),
+            None,
+            "no symbols at all is not the same fact as none examinable"
+        );
+    }
 }

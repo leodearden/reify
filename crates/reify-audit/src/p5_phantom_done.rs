@@ -1626,8 +1626,10 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// criteria): real jcodemunch substrate wired, non-vacuous live sweep,
 /// measured FP rate ≤ 5%. Per task 4141 live-corpus FP validation.
 ///
-/// When `get_changed_symbols` returns an empty slice a stderr vacuous
-/// breadcrumb is emitted via [`h2_vacuous_breadcrumb`] (task 4144).
+/// When this pass examines nothing — `get_changed_symbols` returned an empty
+/// slice, or every symbol it returned had an unlocatable declaration — a
+/// stderr vacuous breadcrumb is emitted via [`h2_vacuous_breadcrumb`]
+/// (task 4144).
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     // Cross-crate gate: requires >=2 distinct crates/<name>/ roots.
     if crate_root_count(&meta.files) < 2 {
@@ -1681,12 +1683,20 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     findings
 }
 
-/// Returns a `reify-audit:` prefixed stderr breadcrumb message when the H2
-/// `get_changed_symbols` call returned an empty slice, so operators can
-/// distinguish a vacuous sweep from a legitimately clean corpus.
+/// Returns a `reify-audit:` prefixed stderr breadcrumb message when H2's
+/// per-symbol pass examined NOTHING, so operators can distinguish a vacuous
+/// sweep from a legitimately clean corpus. Two ways in, each with its own
+/// clause because each has its own remedy:
 ///
-/// Returns `None` when `symbols` is non-empty (normal sweep; no annotation
-/// needed). Mirrors the `Option<String>`-diagnostic pattern from
+/// - `get_changed_symbols` returned nothing — jcodemunch is unwired, or the
+///   range really does introduce no symbol.
+/// - Symbols arrived but not one declaration was locatable
+///   ([`crate::wholly_unlocatable_count`]), so the guard below skipped every
+///   row. This one is the quiet failure: the jcodemunch grammar drift that
+///   produces it used to announce itself as a false-positive storm.
+///
+/// Returns `None` when at least one symbol was examined (normal sweep; no
+/// annotation needed). Mirrors the `Option<String>`-diagnostic pattern from
 /// `jcodemunch_client.rs::read_source_lines_for_enrichment`.
 fn h2_vacuous_breadcrumb(
     symbols: &[ChangedSymbol],
@@ -1694,15 +1704,23 @@ fn h2_vacuous_breadcrumb(
     since_sha: &str,
     until_sha: &str,
 ) -> Option<String> {
-    if symbols.is_empty() {
-        Some(format!(
-            "reify-audit: H2 (live-path-stranded) vacuous for task {task_id}: \
-             get_changed_symbols returned empty for {since_sha}..{until_sha} \
-             — H2 produced no findings (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
-        ))
+    let cause = if symbols.is_empty() {
+        format!(
+            "get_changed_symbols returned empty for {since_sha}..{until_sha} \
+             (corpus clean OR jcodemunch not wired / NoopJCodemunchOps)"
+        )
     } else {
-        None
-    }
+        let unlocatable = crate::wholly_unlocatable_count(symbols)?;
+        format!(
+            "all {unlocatable} symbol(s) from {since_sha}..{until_sha} had an \
+             unlocatable declaration and were skipped unexamined (jcodemunch \
+             substrate degraded, not a clean corpus)"
+        )
+    };
+    Some(format!(
+        "reify-audit: H2 (live-path-stranded) vacuous for task {task_id}: \
+         {cause} — H2 produced no findings"
+    ))
 }
 
 /// Count the number of distinct `crates/<name>/` roots referenced by `files`.
@@ -1734,10 +1752,12 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    /// Asserts `h2_vacuous_breadcrumb` returns `Some` (with task-id and the word
-    /// "vacuous") for an empty symbols slice and `None` for a non-empty slice.
+    /// Asserts `h2_vacuous_breadcrumb` returns `Some` (with task-id and the
+    /// word "vacuous") for an empty symbols slice, and `None` once a symbol
+    /// was actually examined. The third state — a non-empty slice in which
+    /// nothing was examinable — is its own test below.
     #[test]
-    fn h2_vacuous_breadcrumb_fires_only_when_empty() {
+    fn h2_vacuous_breadcrumb_fires_when_empty_and_is_silent_once_a_symbol_is_examined() {
         // Empty slice → Some(msg) containing the task id and "vacuous".
         let result = h2_vacuous_breadcrumb(&[], "4144", "abc123^1", "abc123");
         let msg = result.expect("expected Some for empty symbols slice");
@@ -1763,7 +1783,59 @@ mod tests {
         let result = h2_vacuous_breadcrumb(&[sym], "4144", "abc123^1", "abc123");
         assert!(
             result.is_none(),
-            "expected None for non-empty symbols slice; got: {result:?}"
+            "expected None once a declaration was examined; got: {result:?}"
+        );
+    }
+
+    /// The third state, and the quiet one: symbols DID arrive, but not one
+    /// declaration was locatable, so H2's first guard skipped every row. An
+    /// `is_empty()`-only vacuity check cannot see this, and the jcodemunch
+    /// grammar drift that produces it (a release that stops emitting `line`,
+    /// as 1.108.54 did for `find_references`) stopped being loud the moment
+    /// unlocatable symbols began being skipped instead of stranded.
+    #[test]
+    fn h2_vacuous_breadcrumb_fires_when_no_declaration_was_locatable() {
+        let unlocatable = |name: &str| ChangedSymbol {
+            name: name.to_string(),
+            file: "crates/foo/src/lib.rs".to_string(),
+            // The wire's "no line reported" sentinel — one of the three ways
+            // a declaration goes unlocatable; `suppression: None` is what all
+            // three leave behind, and what the guard reads.
+            line: 0,
+            suppression: None,
+        };
+        let symbols = vec![unlocatable("alpha"), unlocatable("beta")];
+
+        let msg = h2_vacuous_breadcrumb(&symbols, "4144", "abc123^1", "abc123")
+            .expect("an all-unlocatable sweep must produce a breadcrumb");
+        assert!(
+            msg.contains("4144") && msg.contains("vacuous"),
+            "breadcrumb must carry the task id and name the sweep vacuous; got: {msg}"
+        );
+        assert!(
+            msg.contains('2'),
+            "breadcrumb must name how many symbols went unexamined; got: {msg}"
+        );
+        assert_eq!(
+            msg.lines().count(),
+            1,
+            "breadcrumb must stay one line; got: {msg:?}"
+        );
+
+        // One examinable symbol is enough to make the sweep real.
+        let mixed = vec![
+            unlocatable("alpha"),
+            ChangedSymbol {
+                name: "beta".to_string(),
+                file: "crates/foo/src/lib.rs".to_string(),
+                line: 42,
+                suppression: Some(DeclSuppression::default()),
+            },
+        ];
+        assert_eq!(
+            h2_vacuous_breadcrumb(&mixed, "4144", "abc123^1", "abc123"),
+            None,
+            "a sweep that examined even one declaration is not vacuous"
         );
     }
 
