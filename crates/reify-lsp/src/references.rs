@@ -5369,112 +5369,216 @@ structure Assembly {
         );
     }
 
+    /// Per-kind CROSS-FILE admission of a top-level declaration name, and the
+    /// coverage rule that decides it. Successor to #6388's non-regression
+    /// guard; same subject, opposite verdict for four of five kinds.
+    ///
+    /// HISTORY — what this test used to assert, and why. #6388 made same-file
+    /// go-to-definition resolve top-level declaration names UNIFORMLY across
+    /// all kinds, via its own scanner (`analysis::decl_name_and_span` +
+    /// `goto_def::decl_name_token`). It deliberately did NOT widen
+    /// `goto_def::find_declaration_name_span`, the home oracle feeding
+    /// `collect_decl_name_spans`, `resolve_cross_file_home` step 2 and the
+    /// cross-file rename producer. At that time `collect_uses` /
+    /// `collect_idents_in_expr` walked `ExprKind::Ident` in EXPRESSIONS only
+    /// and `collect_decl_name_spans` added only `sub _ = Name` construction
+    /// sites, so admitting a type-position-only kind would have reported the
+    /// DECLARATION token with every use site absent — and because
+    /// `compute_rename_cross_file` uses the reference set as its exact EDIT
+    /// set, a rename would move the declaration while silently leaving each use
+    /// stale. Invariant 5 cannot see that: it checks only that edited buffers
+    /// re-PARSE clean, which a dangling name does. So this test asserted, per
+    /// kind, that the split HELD.
+    ///
+    /// WHAT CHANGED (#6539, rolled up in #6972). The RULE is unchanged — a kind
+    /// is admitted cross-file iff EVERY use-site form for that kind is
+    /// collected — but the collectors moved, so the same rule now yields the
+    /// opposite verdict for four kinds. `collect_decl_name_spans` collects
+    /// every type position at every `TypeExpr` root, every `constraint Name(…)`
+    /// instantiation, and both of a purpose's sibling child regions. The split
+    /// that #6388 pinned is therefore RETIRED, not violated.
+    ///
+    /// TWO GATES, STILL ASSERTED SEPARATELY, because they are still separate
+    /// code:
+    /// - RENAME is gated by `classify_top_level_decl` + `is_renameable_cross_file`,
+    ///   which never consult `find_declaration_name_span`. The per-kind verdicts
+    ///   below pin THAT gate.
+    /// - The REFERENCE SET is gated by `find_declaration_name_span`. The
+    ///   coupling assertion at the tail pins that one. A rename-only assertion
+    ///   cannot: a kind admitted to the home oracle alone leaves every
+    ///   `prepare_rename*` call returning None, so the verdicts stay green while
+    ///   the reference set silently goes incomplete.
     #[test]
-    fn rename_and_references_unaffected_by_same_file_goto_def_declaration_names() {
-        // TASK 6388 NON-REGRESSION GUARD — the executable form of that task's
-        // CRITICAL-CONSTRAINT audit.
-        //
-        // 6388 made same-file go-to-definition resolve top-level declaration
-        // names UNIFORMLY across all kinds, via its own scanner
-        // (`analysis::decl_name_and_span` + `goto_def::decl_name_token`). It did
-        // NOT widen `goto_def::find_declaration_name_span`, which feeds the
-        // references home oracle here: `collect_decl_name_spans`,
-        // `resolve_cross_file_home` step 2, and the cross-file rename producer.
-        //
-        // WHY THAT SEPARATION MUST HOLD: the five kinds below are now navigable
-        // by same-file goto-def but are NOT collectible as uses.
-        // `collect_uses`/`collect_idents_in_expr` walk `ExprKind::Ident` in
-        // EXPRESSIONS only, never type expressions, and
-        // `collect_decl_name_spans` adds only `sub _ = Name` construction
-        // sites. A rename built on that reference set moves the DECLARATION
-        // token while silently missing every type-position use — and because
-        // Invariant 5 only checks that edited buffers re-PARSE clean, such a
-        // rename passes validation yet leaves the buffer referencing a name that
-        // no longer exists. (Same shape as the `is_renameable_cross_file`
-        // CAVEAT, which documents the residual gap for the ADMITTED
-        // Structure/Occurrence.)
-        //
-        // TWO GATES, ASSERTED SEPARATELY, because they are separate code:
-        // - RENAME is gated by `classify_top_level_decl`'s own allowlist, which
-        //   never consults `find_declaration_name_span`. The per-kind refusals
-        //   below pin THAT gate.
-        // - The REFERENCE SET is gated by `find_declaration_name_span`. The
-        //   coupling assertion at the tail pins that one. A rename-only
-        //   assertion cannot: widening `find_declaration_name_span` leaves every
-        //   `prepare_rename*` call returning None, so the refusals stay green
-        //   while the reference set silently goes incomplete.
+    fn cross_file_declaration_kind_admission_tracks_use_site_coverage() {
         let (_docs, resolver) = canonical_workspace();
 
-        // The five kinds whose uses live in TYPE position only, FILTERED from
-        // the shared snippet table rather than re-copied. That table was hoisted
-        // to module scope in `analysis` precisely so it would have one home; a
-        // third verbatim copy here would reintroduce the lockstep-edit burden it
-        // was meant to remove.
-        const TYPE_POSITION_ONLY: [&str; 5] = ["Pressure", "meter", "Foo", "ball", "lightweight"];
-        let kinds: Vec<&(&str, &str)> = NAMED_DECL_SNIPPETS
+        // The five kinds whose uses live in TYPE position only (or, for Unit, in
+        // a literal suffix) — the kinds #6388 refused wholesale — each paired
+        // with its verdict under the coverage rule and the measurement behind
+        // it. Names are FILTERED from the shared snippet table rather than
+        // re-copied: that table was hoisted to module scope in `analysis`
+        // precisely so it would have one home, and a third verbatim copy here
+        // would reintroduce the lockstep-edit burden it was meant to remove.
+        //
+        // `meter` is the one refusal left, and it is refused for a STRONGER
+        // reason than "not yet collected" — the use site is unreachable from
+        // both ends (#6972, measured):
+        //   - A unit's only use site is a suffixed literal (`5meter`), which
+        //     lowers to `ExprKind::QuantityLiteral { value, unit: UnitExpr }`.
+        //     That is a LEAF to `collect_idents_in_expr`, and its
+        //     `UnitExpr::Unit(String)` (ast.rs:196) carries NO span, so there is
+        //     nothing in the AST for any collector to push.
+        //   - Even a spanned suffix would not help the user: `find_word_at_offset`
+        //     FUSES `5meter` into the single word `"5meter"`, pinned by
+        //     `goto_def::tests::
+        //     goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration`,
+        //     so goto-def and rename cannot be INVOKED from that position at all.
+        // Closing it needs a spanned `UnitExpr` plus a suffix-aware word
+        // splitter, neither of which is a change here.
+        const ADMISSION: [(&str, bool, &str); 5] = [
+            (
+                "Pressure",
+                true,
+                "TypeAlias — every use is a type position, and every `TypeExpr` \
+                 root is collected (#6539)",
+            ),
+            (
+                "Foo",
+                true,
+                "Constraint — type positions plus `constraint Foo(…)` \
+                 instantiation names, both collected (#6539)",
+            ),
+            (
+                "lightweight",
+                true,
+                "Purpose — VACUOUSLY complete: `purpose` appears only in its own \
+                 declaration production (grammar.js `purpose_declaration`), so \
+                 the grammar admits no use site to miss",
+            ),
+            (
+                "ball",
+                true,
+                "Joint — vacuously complete for the same reason (grammar.js \
+                 `joint_definition` is the sole production naming a joint)",
+            ),
+            (
+                "meter",
+                false,
+                "Unit — the literal-suffix use site is both uncollectable and \
+                 unreachable; see this test's table comment",
+            ),
+        ];
+        let rows: Vec<(&(&str, &str), bool, &str)> = ADMISSION
             .iter()
-            .filter(|(_, name)| TYPE_POSITION_ONLY.contains(name))
+            .map(|(name, admitted, why)| {
+                let snippet = NAMED_DECL_SNIPPETS
+                    .iter()
+                    .find(|(_, n)| n == name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "every name in ADMISSION must still have a row in \
+                             NAMED_DECL_SNIPPETS; a renamed or dropped row would \
+                             silently shrink this guard, but {name:?} has none"
+                        )
+                    });
+                (snippet, *admitted, *why)
+            })
             .collect();
-        assert_eq!(
-            kinds.len(),
-            TYPE_POSITION_ONLY.len(),
-            "every TYPE_POSITION_ONLY name must still have a row in \
-             NAMED_DECL_SNIPPETS; a renamed or dropped row would silently \
-             shrink this guard"
-        );
 
         let uri = Url::parse("file:///proj/guard.ri").unwrap();
-        for (source, name) in kinds {
-            // `parse_one_clean` asserts cleanliness FIRST: every assertion in
-            // this loop is NEGATIVE, so a snippet broken by grammar drift would
-            // yield zero declarations and pass vacuously — the guard would stop
-            // guarding in silence.
+        for ((source, name), admitted, why) in &rows {
+            // `parse_one_clean` asserts cleanliness FIRST: a snippet broken by
+            // grammar drift would yield zero declarations, and every assertion
+            // below would then pass — or refuse — vacuously.
             let parsed = parse_one_clean(source, "guard");
 
             let decl = occurrences(source, name)[0];
             let pos = offset_to_position(source, decl as u32);
 
+            // SINGLE-FILE rename is unchanged by all of this and still refuses
+            // every declaration kind: `prepare_rename` admits only value-member
+            // bindings, so same-file goto-def navigability has never implied
+            // same-file renameability and still does not.
             assert!(
                 prepare_rename(source, &parsed, pos).is_none(),
                 "single-file prepare_rename must refuse the {name:?} declaration \
-                 name (goto-def navigability must not imply renameability): {source}"
+                 name (a declaration name is not a value-member binding): {source}"
             );
-            assert!(
-                prepare_rename_cross_file(source, &parsed, &uri, pos, &resolver).is_none(),
-                "cross-file prepare_rename_cross_file must refuse the {name:?} \
-                 declaration name: {source}"
+
+            let granted =
+                prepare_rename_cross_file(source, &parsed, &uri, pos, &resolver).is_some();
+            assert_eq!(
+                granted, *admitted,
+                "cross-file rename admission for {name:?} must be \
+                 {admitted} — {why}: {source}"
+            );
+        }
+
+        // COMPLETENESS OF A VACUOUS SET. Purpose and Joint are admitted on the
+        // grounds that the grammar gives their names no use-site syntax, so a
+        // reference set holding the declaration token ALONE is COMPLETE for
+        // them — not incomplete. Asserted explicitly so a future reader does not
+        // read the one-element set as the very gap this task closed and "fix" it
+        // by collecting something that is not a reference.
+        for (source, name) in [
+            NAMED_DECL_SNIPPETS
+                .iter()
+                .find(|(_, n)| *n == "lightweight")
+                .expect("purpose row"),
+            NAMED_DECL_SNIPPETS
+                .iter()
+                .find(|(_, n)| *n == "ball")
+                .expect("joint row"),
+        ] {
+            let parsed = parse_one_clean(source, "guard");
+            let decl = occurrences(source, name)[0];
+            let refs = compute_references_cross_file(
+                source,
+                &parsed,
+                &uri,
+                offset_to_position(source, decl as u32),
+                true,
+                &workspace_docs(&[(uri.clone(), source)]),
+                &resolver,
+            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "an admitted kind must resolve to a cross-file home, so \
+                     {name:?} must report a reference set: {source}"
+                )
+            });
+            assert_eq!(
+                refs,
+                vec![loc_at(uri.clone(), source, decl, name)],
+                "{name:?} has no use-site syntax in the grammar, so its \
+                 reference set is exactly the declaration token — complete, not \
+                 truncated: {source}"
             );
         }
 
         // COUPLING between the two halves, stated in the direction that lets the
         // gap be CLOSED: if either oracle treats the declaration as a home — a
         // granted rename, or a reported reference set — then that set must COVER
-        // the type-position use.
+        // the use site.
         //
         // Deliberately NOT the earlier form of this assertion, which pinned the
         // reference-set INCOMPLETENESS ("the type-position use must not be
-        // reported"). That is a deficiency, not a contract: it would red the
-        // moment someone taught `collect_uses`/`collect_idents_in_expr` to walk
-        // type expressions — #6972's remit — reading as a rule forbidding the
-        // improvement. As written, closing the collector gap keeps this green,
-        // while admitting a kind to EITHER oracle without closing it reds.
-        //
-        // The `refs_reported` half is what gives this guard teeth, and it is
-        // MUTATION-VERIFIED: flipping `find_declaration_name_span`'s
-        // `include_aliases` argument to `true` turns the `Pressure` row's
-        // reference set from None into exactly one location — the declaration
-        // token, with the `param p : Pressure` use absent — reddening this
-        // assertion while every refusal above stays green. That is precisely the
-        // regression the refusals alone cannot see.
-        //
-        // Today both antecedents are false (rename refused, no reference set),
-        // so the implication holds vacuously; both are still evaluated on every
-        // run so neither call can rot silently.
+        // reported"). That is a deficiency, not a contract: it would have redded
+        // the moment someone taught the collectors to walk type expressions —
+        // #6972's remit — reading as a rule forbidding the improvement. Written
+        // this way it survived that change intact: the `Pressure` and `Foo` rows
+        // flipped from vacuously-true to genuinely-true without an edit, and it
+        // is still what guards the `meter` row.
         let use_bearing: &[(&str, &str, &str)] = &[
             (
                 "type Pressure = Force\nstructure S {\n    param p : Pressure = 1.0\n}",
                 "Pressure",
                 "the `param p : Pressure` type annotation",
+            ),
+            (
+                "constraint def Foo {\n    param x : Length\n    x > 0mm\n}\nstructure A {\n    param w : Length = 1mm\n    constraint Foo(x: w)\n}",
+                "Foo",
+                "the `constraint Foo(x: w)` instantiation",
             ),
             (
                 "unit meter : Length\nstructure S {\n    param x : Length = 5meter\n}",
@@ -5529,8 +5633,8 @@ structure Assembly {
                  (rename_granted={rename_granted}, refs_reported={refs_reported}) \
                  but the cross-file reference set does not cover {use_desc}, so a \
                  rename would move the declaration token and silently miss it. \
-                 Either teach `collect_uses`/`collect_idents_in_expr` to walk type \
-                 expressions, or keep both oracles refusing this kind: {source}"
+                 Either teach the declaration-name traversal to collect that use \
+                 form, or keep both oracles refusing this kind: {source}"
             );
         }
     }

@@ -21,7 +21,7 @@ use reify_core::ModulePath;
 /// - `analysis::tests::decl_name_and_span_returns_name_and_span_for_every_named_kind`
 /// - `analysis::tests::named_decl_snippets_cover_every_named_kind`
 /// - `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind`
-/// - `references::tests::rename_and_references_unaffected_by_same_file_goto_def_declaration_names`
+/// - `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
 ///
 /// Every snippet is lifted (verbatim or near-verbatim) from an existing passing
 /// source — `crates/reify-syntax/tests/harness_syntax/*` or

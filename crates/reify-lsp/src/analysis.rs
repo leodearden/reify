@@ -561,7 +561,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// leaves every use stale. A kind belongs there only once every use-site form
 /// for it is collected. The argument and the measurement behind it live on the
 /// guard test
-/// `references::tests::rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
+/// `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`.
 pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
     let named = match decl {
         Declaration::Structure(s) => (s.name.as_str(), s.span),

@@ -368,7 +368,7 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// The full argument, the measurement behind it, and the separate allowlist
 /// that gates rename itself (`references::classify_top_level_decl`) live on the
 /// guard test `references::tests::
-/// rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
+/// cross_file_declaration_kind_admission_tracks_use_site_coverage`.
 pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
