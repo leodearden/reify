@@ -1895,9 +1895,11 @@ pub(crate) fn resolve_type_expr_with_aliases(
 /// 1-2 must stay keyed on `structure_names` / `trait_names` membership and not
 /// on "has arguments": a generic enum is in neither set and must keep flowing
 /// past (regression oracle: `tests::applied_form_is_not_shadowed`). Beyond
-/// that, each caller has its own remaining arms — the deferred non-parametric
-/// alias body, the E_BARE_SCALAR guard — and its own `unresolved type`
-/// diagnostic to emit.
+/// that, the `_kinded` caller keeps two arms of its own below this function —
+/// the deferred non-parametric alias body, the E_BARE_SCALAR guard — which the
+/// alias-body caller does NOT have; see the parity note above for which of the
+/// two absences is deliberate and which is a known gap. Both callers emit their
+/// own `unresolved type` diagnostic.
 #[allow(clippy::too_many_arguments)]
 fn resolve_entity_name_with_shadowing(
     name: &str,
