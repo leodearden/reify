@@ -475,15 +475,14 @@ fn sorted_face_key(face: [u32; 3]) -> [u32; 3] {
 /// # Why deriving it from the volume mesh is the RIGHT source, not just the
 /// available one
 ///
-/// [`refine_with_size_field_validated`] transfers per-element sizes onto the
-/// surface by a NEAREST-VERTEX scan
-/// ([`project_volume_to_surface_vertices`]). That transfer is only meaningful
-/// when the mesh being refined actually came from the supplied surface. A
-/// boundary extracted from the volume mesh has vertices that are an exact
-/// (bit-equal) SUBSET of that mesh's vertices, so every nearest-vertex lookup
-/// is a distance-0 identity — strictly tighter than an independently
-/// tessellated surface of the same solid, whose triangulation would not share
-/// vertices with the tet mesh at all.
+/// [`refine_with_size_field_validated`] hands gmsh a
+/// [`reify_kernel_gmsh::BackgroundSizeField`] built from `volume_mesh`'s own
+/// tets, so the field's support is exactly the union of those tets. A boundary
+/// extracted from that same mesh is their free-face set, and therefore bounds
+/// precisely that union: every point the mesher queries for a size lies inside
+/// some field tet. An independently tessellated surface of the same solid
+/// bounds a slightly different region, in which some query points would have
+/// no covering tet at all.
 ///
 /// # Measured behaviour on real gmsh output (task 4909, libgmsh 4.15.2)
 ///
@@ -491,9 +490,7 @@ fn sorted_face_key(face: [u32; 3]) -> [u32; 3] {
 /// field yields 181 P1 tets; this function extracts 150 triangles over 77
 /// vertices from it, which satisfies `V - E + F = 77 - 225 + 150 = 2` — a
 /// closed genus-0 manifold. `refine_marked_elements` accepts that extracted
-/// boundary and remeshes 181 -> 667 tets when the `x < 0.5` half is marked,
-/// so `classify_surfaces` does find 0D corner entities on it (the "no corner
-/// sizes applied" failure mode does not occur at this seed density).
+/// boundary and remeshes 181 -> 667 tets when the `x < 0.5` half is marked.
 ///
 /// On that same output, 0 of 181 tets were emitted NEGATIVELY oriented, so
 /// the orientation swap in [`outward_tet_faces`] was dormant: the canonical
@@ -631,8 +628,9 @@ pub fn boundary_surface_mesh(volume_mesh: &VolumeMesh) -> Result<Mesh, RefineErr
 /// Remesh the volume enclosed by `surface` using per-element size hints.
 ///
 /// Validates `size_hints`, projects them to per-vertex sizes (via
-/// [`project_per_element_sizes_to_vertices`]), then delegates to
-/// [`reify_kernel_gmsh::refine_volume_with_size_field`].
+/// [`project_per_element_sizes_to_vertices`]), wraps those in a
+/// [`reify_kernel_gmsh::BackgroundSizeField`] over `volume_mesh`'s own tets,
+/// then delegates to [`reify_kernel_gmsh::refine_volume_with_size_field`].
 ///
 /// # Arguments
 ///
@@ -744,73 +742,6 @@ pub(crate) fn refine_with_size_field_validated(
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
-
-/// Map per-volume-mesh-vertex sizes to per-surface-vertex sizes via
-/// nearest-neighbour coordinate matching.
-///
-/// The boundary vertices of `volume_mesh` are the same points as the surface
-/// mesh vertices (both stored as f32 flat XYZ coords, same positions).  For
-/// each surface vertex we scan all volume vertices and adopt the size of the
-/// closest one.  The scan is O(n_surf × n_vol) — acceptable for test-scale
-/// meshes (n_surf ≪ n_vol is typical); a spatial index is the right upgrade
-/// if this path shows up in profiling.
-///
-/// If no volume vertex is found within a finite distance (shouldn't happen
-/// for a well-formed surface/volume pair), the surface vertex receives the
-/// global minimum of `vol_vertex_sizes` as a safe fallback.
-fn project_volume_to_surface_vertices(
-    surface: &Mesh,
-    volume_mesh: &VolumeMesh,
-    vol_vertex_sizes: &[f64],
-) -> Vec<f64> {
-    let n_surf = surface.vertices.len() / 3;
-    let n_vol = volume_mesh.vertices.len() / 3;
-
-    // Compute global minimum over FINITE sizes only.
-    // `vol_vertex_sizes` may contain f64::INFINITY for volume vertices that
-    // are not referenced by any tet element (orphaned surface/boundary nodes
-    // produced by gmsh's classify_surfaces + create_geometry step). These
-    // orphaned nodes must be excluded from the nearest-neighbour search so
-    // the surface vertex sizes are not contaminated by the orphaned infinity.
-    let finite_min = vol_vertex_sizes
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .fold(f64::INFINITY, f64::min);
-    // Safe fallback: if somehow ALL vol_vertex_sizes are infinite, every
-    // surface vertex receives f64::INFINITY too (signals a misconfiguration
-    // upstream; callers are responsible for passing a well-formed volume mesh).
-    let fallback = finite_min;
-
-    let mut result = vec![fallback; n_surf];
-    for (s, result_slot) in result.iter_mut().enumerate() {
-        let sx = surface.vertices[s * 3];
-        let sy = surface.vertices[s * 3 + 1];
-        let sz = surface.vertices[s * 3 + 2];
-
-        let mut best_dist_sq = f32::INFINITY;
-        let mut best_size = fallback;
-        for (v, &vol_size) in vol_vertex_sizes.iter().enumerate().take(n_vol) {
-            // Skip orphaned nodes (not part of any tet) — they carry
-            // f64::INFINITY and would pollute the result if chosen as the
-            // nearest neighbour.
-            if !vol_size.is_finite() {
-                continue;
-            }
-            let vx = volume_mesh.vertices[v * 3];
-            let vy = volume_mesh.vertices[v * 3 + 1];
-            let vz = volume_mesh.vertices[v * 3 + 2];
-            let dist_sq =
-                (sx - vx) * (sx - vx) + (sy - vy) * (sy - vy) + (sz - vz) * (sz - vz);
-            if dist_sq < best_dist_sq {
-                best_dist_sq = dist_sq;
-                best_size = vol_size;
-            }
-        }
-        *result_slot = best_size;
-    }
-    result
-}
 
 /// Map a `GeometryError` from the kernel-gmsh layer to a `RefineError`,
 /// routing stub-build errors to [`RefineError::GmshUnavailable`].
@@ -1125,9 +1056,9 @@ mod tests {
     ///     and the kept triangles must be renumbered against the compacted
     ///     vertex buffer.
     /// (c) Every surviving surface vertex must be BIT-EQUAL to some volume
-    ///     vertex. This is the property that makes
-    ///     `project_volume_to_surface_vertices`' nearest-vertex size transfer
-    ///     a distance-0 identity rather than an approximation.
+    ///     vertex. That is what makes the extracted boundary bound exactly the
+    ///     union of the volume mesh's tets — the support of the background
+    ///     size field built from them (see [`boundary_surface_mesh`]).
     #[test]
     fn boundary_surface_mesh_drops_shared_faces_and_compacts_interior_vertices() {
         // (a) shared-face drop.

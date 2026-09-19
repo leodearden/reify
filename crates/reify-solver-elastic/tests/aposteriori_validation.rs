@@ -517,8 +517,8 @@ fn volume_mesh_from_nodes_conns(nodes: &[[f64; 3]], conns: &[[usize; 4]]) -> Vol
 /// returning (and remaps `conns` to the compacted indices). A real Gmsh
 /// remesh can emit boundary vertices that survive `classify_surfaces` but
 /// are not incident to any volume tet — the same orphaned-vertex artifact
-/// `reify_solver_elastic::volume_refine::project_volume_to_surface_vertices`
-/// already guards against (there, via an `f64::INFINITY` sentinel; here, via
+/// `reify_kernel_gmsh::BackgroundSizeField::from_tet_mesh` already tolerates
+/// (there, by reading sizes only at vertices a tet references; here, by
 /// dropping the vertex outright). Left in `nodes`, an orphaned vertex gets no
 /// stiffness-matrix contribution at all, silently inflating `n_dofs` and — if
 /// any Dirichlet BC or point load ever targets it — panicking downstream in

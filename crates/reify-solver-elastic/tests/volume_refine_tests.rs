@@ -578,11 +578,10 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 /// # Why the baseline is `refine_with_size_field`, not `mesh_to_volume`
 ///
 /// It used to be `GmshKernel::mesh_to_volume(mesh_size = 0.5)`, and #6200
-/// exposed that control as invalid: it compared two *different* producers that
-/// do not share sizing semantics — `mesh_to_volume` applies a global target,
-/// while this path sets per-corner sizes with `Mesh.MeshSizeFromPoints=1` and
-/// lets gmsh interpolate — so no inequality between them pins a property of
-/// the function under test. It passed only because the pre-#6200
+/// exposed that control as invalid: it compared two *different* producers —
+/// `mesh_to_volume` applies a global target, while this path installs a
+/// background size field over the seed's own tets — so no inequality between
+/// them pins a property of the function under test. It passed only because the pre-#6200
 /// `mesh_to_volume` baseline was an *undersized* mesh (a 90° `classify_surfaces`
 /// feature angle left the box only ~74–86% tetrahedralized). Completing the box
 /// roughly doubles that baseline at the same nominal size and the assertion
@@ -616,8 +615,8 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 /// over in `reify-kernel-gmsh`:
 ///
 /// * *Consumer, #6211*: the refine writes the pair itself on entry —
-///   `MeshSizeMin` to gmsh's `0.0` default, `MeshSizeMax` to
-///   `max(vertex_sizes)`, at the "Mesh-size clamp: set explicitly, never
+///   `MeshSizeMin` to gmsh's `0.0` default, `MeshSizeMax` to the size field's
+///   own `max_size()`, at the "Mesh-size clamp: set explicitly, never
 ///   inherited" block in `refine_volume.rs` — so its output is a function of
 ///   its own arguments rather than of whatever a sibling last left behind.
 /// * *Producer, #6298*: `mesh_to_volume` no longer leaves that clamp behind at
@@ -645,6 +644,15 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 /// the section above removed — measured then as baseline=99 vs refined=95,
 /// with the assertion inverted.
 ///
+/// One candidate mechanism for that confound is settled and is NOT the cause:
+/// the two producers' differing clamps. Measured for #7447, one process per
+/// reading, unit cube, P1 — `mesh_to_volume(S)`'s hard `[S, S]` against this
+/// path's `[0, S]` at the same `S` — 186 vs 188 tets at S=0.5, 403 vs 397 at
+/// S=0.25, 2513 vs 2549 at S=0.125. Same density to within seed noise at every
+/// size, so the clamp asymmetry is not a confound and needs no further
+/// investigation; reason (i) above rests on the producers' sizing SEMANTICS,
+/// which is a separate thing and still stands.
+///
 /// Measured **before #6211 and #6298**, one process per reading (unit cube,
 /// P1) — the two `mesh_to_volume →` rows record the inbound leak as it behaved
 /// then, when the producer still leaked its clamp and the consumer still
@@ -669,12 +677,15 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 ///
 /// The producer-side half was filed as **task #6298** — out of #6200's scope
 /// (#6200 owns the `classify_surfaces` feature angle; the leak was a distinct
-/// bug in a different function) — and has since landed. What remains open is
-/// **#6212**: `refine_volume_with_size_field`'s own outbound
+/// bug in a different function) — and has since landed. The matching outbound
+/// leak of `refine_volume_with_size_field`'s own
 /// `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
-/// `MeshSizeExtendFromBoundary` leak, the same defect class in the same
-/// direction for a different option set, and the reason a future producer-side
-/// write could still reach this test.
+/// `MeshSizeExtendFromBoundary` trio closed with #7447, which had to close it:
+/// switching to a background field turned the `FromPoints` write from gmsh's
+/// own default `1` into a `0` that would have DISABLED point-driven sizing
+/// process-wide. **#6212** stays open for the sibling entry points
+/// (`mesh_plane_2d`, `mesh_boundary`'s surface remesh), so a future
+/// producer-side write could still reach this test.
 #[test]
 fn localized_size_reduction_refines_marked_region_only() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -694,8 +705,8 @@ fn localized_size_reduction_refines_marked_region_only() {
     // per-element hints to. Because that field is UNIFORM, the seed cannot
     // influence the baseline: `project_per_element_sizes_to_vertices` takes a
     // min over incident elements (0.5 everywhere regardless of density or
-    // topology) and the nearest-neighbour surface projection then hands gmsh
-    // `[0.5; 8]` whatever the seed looked like. That is what removes the
+    // topology), so the background field gmsh receives is the constant 0.5
+    // whatever the seed looked like. That is what removes the
     // cross-producer confound — the baseline below is produced entirely by the
     // function under test.
     //
@@ -1065,12 +1076,11 @@ fn tet_volume(nodes: &[[f64; 3]], conn: &[usize; 4]) -> f64 {
 /// for `solver::elastic_static` that variant is the `VolumeMesh`, so no
 /// surface `Mesh` reaches the trampoline. Reconstructing the boundary from
 /// the realized tet mesh is the only route that does not require a second
-/// realization demand — and it is also the tighter one, because
-/// `project_volume_to_surface_vertices`' nearest-vertex size transfer then
-/// resolves to a distance-0 identity on bit-equal vertices.
+/// realization demand — and it is also the tighter one, because that boundary
+/// bounds exactly the tets the background size field is built over.
 ///
 /// A failure here surfaces as `"no dim=2 entities after classify+create_geometry;
-/// surface may be open or non-manifold"` or `"no corner sizes applied"`.
+/// surface may be open or non-manifold"`.
 #[test]
 fn extracted_boundary_is_a_usable_refine_surface_for_the_mesh_it_came_from() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -1143,8 +1153,7 @@ fn extracted_boundary_is_a_usable_refine_surface_for_the_mesh_it_came_from() {
             "refine_marked_elements must accept the EXTRACTED boundary as its \
              surface - if this fails with 'no dim=2 entities after \
              classify+create_geometry' the extracted surface is open or \
-             non-manifold; if with 'no corner sizes applied' the seed is too \
-             coarse for classify_surfaces to find 0D corners",
+             non-manifold",
         );
 
     let n_after = refined.tet_indices().expect("refined is tet-only").len() / 4;
