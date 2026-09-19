@@ -2637,6 +2637,28 @@ impl EngineSession {
             }
         };
 
+        // A splice that produced the text already there needs no write. Setting
+        // a cell to the value it already holds is not a rare accident: the
+        // property panel's edit box commits on BLUR, so focusing a field and
+        // clicking away commits its own seeded value, and a slider dragged back
+        // to where it started releases on one too.
+        //
+        // The RECOMPILE above deliberately still runs. It is what reconciles a
+        // live `preview_parameter` override with the source, and the override
+        // need not equal this value — a drag whose last frame previewed 120mm
+        // can release at the original 80mm inside a single frame, so returning
+        // here before the recompile would leave the engine showing a value the
+        // source does not carry. Skipping the WRITE is free of that hazard: the
+        // bytes it would lay down are the bytes already on disk.
+        //
+        // What the skip buys is the FS-watcher echo — `write_file_atomically`
+        // fires a change event whose handler reads the file and recompiles it
+        // again — so a no-op commit costs one recompile rather than two plus an
+        // atomic file rewrite.
+        if new_source == original {
+            return Ok(state);
+        }
+
         if let Err(e) = write_file_atomically(&path, &new_source) {
             let write_err = format!("Error writing {}: {e}", path.display());
             // The engine committed and disk did not, so the engine is now AHEAD
@@ -3297,6 +3319,41 @@ impl EngineSession {
     /// when the session is not stale.
     pub fn reload_error(&self) -> Option<&str> {
         self.last_reload_error.as_deref()
+    }
+
+    /// Whether recompiling `content` as this session's source would provably
+    /// change nothing the GUI can observe.
+    ///
+    /// The FS-watcher's question. Every durable parameter write
+    /// ([`Self::apply_param_to_source`]) writes the `.ri` itself, and the
+    /// watcher observes that write and hands the bytes straight back — so
+    /// without this the one recompile a user gesture is budgeted costs two,
+    /// the second one re-deriving the state the first just committed.
+    ///
+    /// Answering it HERE rather than at the watcher is what makes it
+    /// trustworthy: identical text is a necessary condition, not a sufficient
+    /// one. A recompile also clears the two failure banners, so a session
+    /// holding either one has real work to do even on byte-identical input —
+    /// reverting a broken file to the last text that compiled is exactly that
+    /// case, and a guard that only compared the text would leave the banner up
+    /// forever. Both conditions live in this one predicate so no caller can
+    /// remember one and forget the other.
+    ///
+    /// KNOWN LIMITATION: this does not close the watcher's stale-read window.
+    /// The watcher reads the file BEFORE queueing onto the engine lock, so a
+    /// durable write landing in between makes `content` a superseded snapshot
+    /// that no longer matches this session's source — and being told to
+    /// recompile older text than disk holds is not something a predicate over
+    /// `content` can detect. That path self-heals on the superseding write's
+    /// own watcher event, and closing it properly means moving the READ under
+    /// the lock — a watcher-contract change, filed as follow-up work rather
+    /// than smuggled in behind this predicate's name.
+    pub fn reload_would_be_a_no_op(&self, content: &str) -> bool {
+        self.compile_failure.is_none()
+            && self.last_reload_error.is_none()
+            && self
+                .resolve_source()
+                .is_some_and(|(_, source)| source == content)
     }
 
     /// Is the session holding source it FAILED to compile?

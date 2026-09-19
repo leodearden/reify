@@ -2721,6 +2721,72 @@ fn reload_for_watch_impl_failure_returns_ok_with_diagnostic_and_staleness() {
     );
 }
 
+#[test]
+fn reload_for_watch_if_changed_impl_skips_the_sessions_own_source() {
+    // Every durable parameter write rewrites the `.ri` itself, and the
+    // FS-watcher observes that write and hands the same bytes back. Recompiling
+    // them re-derives the state the write already committed and emitted, so a
+    // single user gesture pays for two full recompiles — the cost the
+    // preview/commit split exists to keep to one.
+    use crate::commands::reload_for_watch_if_changed_impl;
+
+    let engine = make_test_engine_for_commands();
+
+    assert!(
+        reload_for_watch_if_changed_impl(&engine, "bracket.ri", bracket_source())
+            .expect("the echo must not be an error")
+            .is_none(),
+        "content the session already holds must be recognised as its own echo"
+    );
+
+    // The negative control: text that differs is the case the watcher exists
+    // for, and must still recompile.
+    let changed = bracket_source().replace("80mm", "120mm");
+    assert_ne!(changed, bracket_source(), "fixture must actually differ");
+    let reloaded = reload_for_watch_if_changed_impl(&engine, "bracket.ri", &changed)
+        .expect("a real external edit must not be an error")
+        .expect("a real external edit must be recompiled, not skipped");
+    assert!(
+        reloaded
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Bracket.width" && v.value == "120"),
+        "the recompiled state must carry the external edit"
+    );
+}
+
+#[test]
+fn reload_for_watch_if_changed_impl_still_reloads_identical_text_for_a_stale_session() {
+    // Identical text is a necessary condition for skipping, not a sufficient
+    // one. A recompile also LIFTS the failure banners, so a stale session has
+    // real work to do on byte-identical input — which is precisely what
+    // reverting a broken file back to the last text that compiled looks like
+    // from here. A guard that compared only the text would leave that banner
+    // standing with no later event to clear it.
+    use crate::commands::reload_for_watch_if_changed_impl;
+
+    let engine = make_test_engine_for_commands();
+    crate::engine_lock::with_engine_lock(&engine, |s| s.record_reload_error("boom".to_string()))
+        .expect("with_engine_lock should not panic");
+
+    let reloaded = reload_for_watch_if_changed_impl(&engine, "bracket.ri", bracket_source())
+        .expect("a stale session's reload must not be an error")
+        .expect("a stale session must recompile even byte-identical text");
+    assert!(
+        reloaded
+            .compile_diagnostics
+            .iter()
+            .all(|d| d.code.as_deref() != Some("hot-reload-error")),
+        "the recompile must have lifted the staleness banner; got: {:?}",
+        reloaded.compile_diagnostics
+    );
+    assert!(
+        !crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+            .expect("with_engine_lock should not panic"),
+        "and the session must no longer report itself stale"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Watcher delta surfacing test (task 4153, step-9 RED)
 // ---------------------------------------------------------------------------

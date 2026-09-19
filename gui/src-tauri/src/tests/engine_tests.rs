@@ -22027,6 +22027,97 @@ fn commit_parameter_preserves_an_existing_staleness_banner_when_the_write_back_i
     );
 }
 
+/// The inode `path` currently resolves to — the observable that distinguishes
+/// "the file was left alone" from "the file was rewritten with the same bytes".
+///
+/// `write_file_atomically` writes a sibling temp file and `rename`s it over the
+/// target, so ANY write it performs replaces the inode. Comparing content could
+/// not tell the two apart, and comparing mtimes would race the filesystem's
+/// timestamp granularity.
+#[cfg(unix)]
+fn inode_of(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .expect("the fixture file should be readable")
+        .ino()
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_parameter_writes_no_file_when_the_value_is_already_the_source_value() {
+    // Committing the value a cell already holds is not a rare accident. The
+    // property panel's edit box commits on BLUR against a field `editSeed`
+    // pre-filled with the cell's own value, so focusing a field and clicking
+    // away commits exactly this; a slider dragged back to where it started
+    // releases on one too. Before the skip, each of those cost an atomic file
+    // rewrite, and then a second recompile when the FS-watcher handed the
+    // bytes straight back.
+    let (_dir, path, mut session) = writeback_session();
+    let before = inode_of(&path);
+
+    let state = session
+        .commit_parameter("Part.width", "80mm")
+        .expect("committing the value already in the source must SUCCEED, not refuse");
+
+    assert_eq!(
+        inode_of(&path),
+        before,
+        "a commit whose splice changed nothing must not rewrite the file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        writeback_source(),
+        "and the bytes must be the untouched original"
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|v| v.cell_id == "Part.width" && v.value == "80" && v.unit == "mm"),
+        "the returned GuiState must still report the committed value"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_parameter_still_discards_a_live_preview_when_it_writes_no_file() {
+    // The hazard the skip has to step around, and the reason it drops only the
+    // WRITE and not the recompile. `commit_parameter`'s postcondition is
+    // unconditional — it returns only with engine state ≡ source — and a
+    // no-op-on-disk commit is no exception: the preview's override lives in
+    // `last_check` and need not equal the value being committed. One frame is
+    // all it takes to produce that, a drag that previews 120mm and then
+    // releases back on the original 80mm, and returning early on byte equality
+    // would leave the engine showing 120 while every source surface says 80.
+    let (_dir, path, mut session) = writeback_session();
+    let before = inode_of(&path);
+
+    session
+        .preview_parameter("Part.width", "120mm")
+        .expect("preview_parameter should succeed");
+    assert_eq!(
+        gui_value_of(&mut session, "Part.width"),
+        ("120".to_string(), "mm".to_string()),
+        "precondition: the preview's override must be live in the engine"
+    );
+
+    session
+        .commit_parameter("Part.width", "80mm")
+        .expect("committing the source's own value must succeed");
+
+    assert_eq!(
+        gui_value_of(&mut session, "Part.width"),
+        ("80".to_string(), "mm".to_string()),
+        "the commit must have reconciled the engine with the source it did not \
+         need to write"
+    );
+    assert_eq!(
+        inode_of(&path),
+        before,
+        "and it must still not have rewritten the file to do it"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // task 5097 δ — EngineSession::holds_rejected_source (the write-back interlock)
 // ─────────────────────────────────────────────────────────────────────────────

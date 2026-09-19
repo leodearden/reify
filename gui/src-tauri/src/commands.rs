@@ -536,6 +536,40 @@ pub fn reload_for_watch_impl(
     }
 }
 
+/// [`reload_for_watch_impl`], skipped entirely when the session already holds
+/// `content` — `Ok(None)` meaning nothing was recompiled and there is nothing
+/// to emit.
+///
+/// The FS-watcher's entry point, and the reason it is not
+/// `reload_for_watch_impl` itself: the OTHER caller of that function is the
+/// editor's `update_source` command, which owes the frontend a `GuiState`
+/// whatever it finds and so has no use for a skip.
+///
+/// The watcher, by contrast, sees its own tail. Every durable parameter write
+/// (`EngineSession::apply_param_to_source`) rewrites the `.ri`, the watcher
+/// observes that write and hands the same bytes back here, and recompiling
+/// them re-derives exactly the state the write already committed and emitted.
+/// That doubles what a user gesture costs — the one recompile per gesture this
+/// task's preview/commit split exists to budget for, paid twice — so the echo
+/// is dropped here rather than at the watcher, where a caller would have to
+/// remember to ask.
+///
+/// The predicate is [`EngineSession::reload_would_be_a_no_op`], which owns
+/// what "already holds" has to mean (identical text AND no failure banner a
+/// recompile would lift) and documents the one case it does not cover.
+pub fn reload_for_watch_if_changed_impl(
+    engine: &Mutex<EngineSession>,
+    path: &str,
+    content: &str,
+) -> Result<Option<GuiState>, String> {
+    // Asked under the SAME lock the reload runs under, so nothing can change
+    // the session's source between the question and the answer.
+    if crate::engine_lock::with_engine_lock(engine, |s| s.reload_would_be_a_no_op(content))? {
+        return Ok(None);
+    }
+    reload_for_watch_impl(engine, path, content).map(Some)
+}
+
 /// Map an export-format SPELLING to the [`reify_ir::ExportFormat`] it names.
 ///
 /// Extracted from [`export_impl`] so the Tauri command and the reify-debug
