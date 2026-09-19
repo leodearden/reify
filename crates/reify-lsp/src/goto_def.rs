@@ -318,15 +318,13 @@ pub fn compute_goto_definition_cross_file_with_parsed(
 
 /// Find a top-level declaration by name in a source string and return its Location.
 ///
-/// Parses `source` ONCE and scans it via [`decl_name_span_in`] with
-/// `include_aliases = true`, so cross-file goto-def also resolves a `type`
-/// alias (#6341), then pairs the located name-token span with `uri` as an LSP
-/// [`Location`].
+/// Parses `source` ONCE, scans it via [`decl_name_span_in`], then pairs the
+/// located name-token span with `uri` as an LSP [`Location`].
 ///
 /// The single parse is load-bearing, not incidental: the cross-file caller
 /// probes each import's target in turn, so a MISS is the common case, and the
 /// target file is not covered by the server's per-document parse cache (that
-/// cache holds only the primary document). Chaining an alias-only second pass
+/// cache holds only the primary document). Chaining a second per-kind pass
 /// behind `.or_else` would therefore re-run a full tree-sitter parse + AST
 /// lowering of the same string on every miss, doubling the cost of an
 /// interactive, per-keystroke-adjacent path.
@@ -334,7 +332,7 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
-    let span = decl_name_span_in(&parsed, source, name, true)?;
+    let span = decl_name_span_in(&parsed, source, name)?;
     Some(Location {
         uri: uri.clone(),
         range: span_to_range(source, span),
@@ -344,8 +342,8 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// Find the **name-token span** of a top-level declaration named `name`.
 ///
 /// Parses `source` (prelude-aware, for AST-shape consistency across reify-lsp;
-/// see task 2525) and delegates to [`decl_name_span_in`] with
-/// `include_aliases = false`. Returns `None` when no declaration matches.
+/// see task 2525) and delegates to [`decl_name_span_in`]. Returns `None` when
+/// no declaration matches.
 ///
 /// Factored from [`find_declaration_in_source`] so the cross-file
 /// reference/rename collectors (task κ, 4210) can obtain a renamed structure's
@@ -373,7 +371,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_target"));
-    decl_name_span_in(&parsed, source, name, false)
+    decl_name_span_in(&parsed, source, name)
 }
 
 /// Scan an already-parsed module for the name-token span of the declaration
@@ -387,15 +385,22 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// declaration shape pays for exactly one parse; `source` is still required
 /// because the AST carries whole-declaration spans, not name-token spans.
 ///
-/// `include_aliases` gates the `TypeAlias` arm, and the gate is a safety
-/// boundary, not a convenience. The shared [`find_declaration_name_span`] passes
-/// `false` because the cross-file rename/reference collectors use it to decide
-/// what is renameable: classifying an alias as a renameable home declaration
-/// would move the declaration token while silently missing every
-/// `param x : Alias` use site — those collectors walk *expressions*, not type
-/// expressions — corrupting the user's file. Goto-def is read-only and has no
-/// such hazard, so only [`find_declaration_in_source`] passes `true`.
-/// Task #6341.
+/// The match is WILDCARD-FREE over all 14 [`reify_ast::Declaration`] variants,
+/// so a new declaration kind is a compile error here rather than a silently
+/// unresolvable one. Ten of the eleven NAMED kinds are admitted. `Unit` is the
+/// sole named refusal, and `Import`/`Default`/`Module` declare no name at all.
+///
+/// WHY `Unit` IS REFUSED — not an oversight, and not "not yet done". A unit's
+/// only use site is a suffixed literal (`5meter`), which is unreachable from
+/// both ends: `ExprKind::QuantityLiteral`'s `UnitExpr::Unit(String)` carries no
+/// span, so no collector can push it, and `find_word_at_offset` fuses `5meter`
+/// into one word, so the user cannot place a cursor that resolves to `meter`.
+/// Admitting `Unit` would hand the rename producer a reference set holding the
+/// declaration token ALONE and silently leave every suffixed literal stale.
+/// Measured and pinned by
+/// `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
+/// and by `goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration`.
+/// Tasks #6341, #6539.
 ///
 /// Declarations are scanned in source order, so in the (ill-formed) case of an
 /// alias and a structure sharing one name, the earlier declaration wins.
@@ -435,7 +440,6 @@ fn decl_name_span_in(
     parsed: &reify_ast::ParsedModule,
     source: &str,
     name: &str,
-    include_aliases: bool,
 ) -> Option<SourceSpan> {
     for decl in &parsed.declarations {
         let (decl_name, span) = match decl {
@@ -445,8 +449,14 @@ fn decl_name_span_in(
             reify_ast::Declaration::Enum(e) => (e.name.as_str(), e.span),
             reify_ast::Declaration::Trait(t) => (t.name.as_str(), t.span),
             reify_ast::Declaration::Field(f) => (f.name.as_str(), f.span),
-            reify_ast::Declaration::TypeAlias(t) if include_aliases => (t.name.as_str(), t.span),
-            _ => continue,
+            reify_ast::Declaration::TypeAlias(t) => (t.name.as_str(), t.span),
+            reify_ast::Declaration::Constraint(c) => (c.name.as_str(), c.span),
+            reify_ast::Declaration::Purpose(p) => (p.name.as_str(), p.span),
+            reify_ast::Declaration::Joint(j) => (j.name.as_str(), j.span),
+            reify_ast::Declaration::Unit(_) => continue,
+            reify_ast::Declaration::Import(_)
+            | reify_ast::Declaration::Default(_)
+            | reify_ast::Declaration::Module(_) => continue,
         };
         if decl_name == name {
             // Point to the name within the declaration, not the entire span.
@@ -1986,7 +1996,7 @@ mod tests {
         );
 
         assert_eq!(
-            decl_name_span_in(&parsed, source, "Widget", false),
+            decl_name_span_in(&parsed, source, "Widget"),
             None,
             "a declaration span that excludes its own name token must be refused \
              outright: neither a span that would reach the rename write path, nor \

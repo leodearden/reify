@@ -40,12 +40,21 @@ use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// The kind of symbol a [`ReferenceSet`] resolves to.
 ///
-/// The enum is defined **complete** for the reify-lsp ↔ frontend seam (so β/γ/δ
-/// have a stable contract), but only the value-member kinds (`Param`, `Let`,
-/// `Auto`, `Sub`, `Port`) are reference-collected and rename-eligible in this
-/// single-file foundation phase. The declaration-name kinds
-/// (`Structure`/`Occurrence`/`Trait`/`Enum`/`Variant`/`Fn`) are classification-only
-/// here; full cross-declaration + cross-file rename is deferred to phase κ.
+/// Two families, and which one a symbol falls in decides which rename path can
+/// reach it:
+/// - DECLARATION NAMES — one variant per NAMED top-level `Declaration` kind
+///   (all eleven), plus `Variant` for an enum's variants. Never single-file
+///   renameable; renameable cross-file for the kinds
+///   `is_renameable_cross_file` admits.
+/// - VALUE MEMBERS (`Param`/`Let`/`Auto`/`Sub`/`Port`) — bindings inside an
+///   entity body, renameable single-file (`is_renameable`) and keeping those
+///   exact semantics on the cross-file path.
+///
+/// One variant per named declaration kind — rather than a single `Decl` — is
+/// what lets `classify_top_level_decl` match WILDCARD-FREE over
+/// `Declaration`, so a new declaration kind is a compile error there instead of
+/// a silently unclassified declaration that every rename gate then refuses
+/// without saying so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefSymbolKind {
     Structure,
@@ -54,6 +63,12 @@ pub enum RefSymbolKind {
     Enum,
     Variant,
     Fn,
+    Field,
+    Purpose,
+    Constraint,
+    Unit,
+    TypeAlias,
+    Joint,
     Param,
     Let,
     Auto,
@@ -2243,10 +2258,30 @@ pub fn compute_references_cross_file(
 }
 
 /// Classify the top-level declaration named `name` in `source` to a
-/// [`RefSymbolKind`], for κ cross-file rename gating. Mirrors the declaration
-/// scan in [`crate::goto_def::find_declaration_name_span`] (which located the
-/// home token), so the classified kind agrees with the resolved home. Returns
-/// `None` when no top-level declaration matches.
+/// [`RefSymbolKind`], for cross-file rename gating. Returns `None` when no
+/// top-level declaration matches.
+///
+/// WILDCARD-FREE over all 14 `Declaration` variants. This function and
+/// `goto_def::decl_name_span_in` are two per-kind allowlists over the
+/// same enum — one deciding the rename GATE, the other the reference SET — and
+/// a wildcard on either is a channel through which they drift apart silently.
+/// (They did: this one lacked `Field`, which the other admitted.) With both
+/// exhaustive, a new declaration kind is a compile error at both.
+///
+/// They still differ in exactly one place, deliberately: `Unit` is classified
+/// here but refused there, so a unit's refusal is stated by
+/// [`is_renameable_cross_file`] as a named verdict rather than falling out of an
+/// unmatched arm. Reaching a unit home at all needs the import path, since the
+/// same-document arm of `resolve_cross_file_home` consults the oracle first.
+///
+/// PARSE DIFFERENCE, and why it cannot decide kind admission: this scans a bare
+/// [`reify_syntax::parse`] while the oracle scans
+/// `reify_compiler::parse_with_stdlib`. The latter is
+/// `parse_with_prelude_enums` — it hands the parser the prelude's ENUM NAMES so
+/// a qualified `E.V` lowers correctly, and injects NO prelude declarations into
+/// `parsed.declarations`. Both therefore see exactly the user's own top-level
+/// declarations; the difference is in expression/type SHAPE below the
+/// declaration level, which no arm of either match inspects.
 fn classify_top_level_decl(source: &str, name: &str) -> Option<RefSymbolKind> {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("_classify"));
     parsed.declarations.iter().find_map(|decl| {
@@ -2256,36 +2291,75 @@ fn classify_top_level_decl(source: &str, name: &str) -> Option<RefSymbolKind> {
             Declaration::Trait(t) => (t.name.as_str(), RefSymbolKind::Trait),
             Declaration::Enum(e) => (e.name.as_str(), RefSymbolKind::Enum),
             Declaration::Function(f) => (f.name.as_str(), RefSymbolKind::Fn),
-            _ => return None,
+            Declaration::Field(f) => (f.name.as_str(), RefSymbolKind::Field),
+            Declaration::Purpose(p) => (p.name.as_str(), RefSymbolKind::Purpose),
+            Declaration::Constraint(c) => (c.name.as_str(), RefSymbolKind::Constraint),
+            Declaration::Unit(u) => (u.name.as_str(), RefSymbolKind::Unit),
+            Declaration::TypeAlias(a) => (a.name.as_str(), RefSymbolKind::TypeAlias),
+            Declaration::Joint(j) => (j.name.as_str(), RefSymbolKind::Joint),
+            // These three declare no name of their own: an import names an
+            // entity homed elsewhere, a `default` names the type it applies to,
+            // and a `module` names a module path.
+            Declaration::Import(_) | Declaration::Default(_) | Declaration::Module(_) => {
+                return None;
+            }
         };
         (decl_name == name).then_some(kind)
     })
 }
 
-/// Whether a cross-file home of `kind` is renameable in κ: every single-file
-/// value-member kind ([`is_renameable`]) PLUS `Structure`/`Occurrence`.
-/// `Trait`/`Enum`/`Fn`/`Variant` refuse. Shared by
+/// Whether a cross-file home of `kind` is renameable. Shared by
 /// [`prepare_rename_cross_file`] and the cross-file rename producer so the two
 /// agree on what is renameable.
 ///
-/// THE ADMISSION RULE: a kind is renameable cross-file only when EVERY use-site
-/// form for that kind is collected. [`compute_rename_cross_file`] uses the
-/// reference set as its exact EDIT set, so an uncollected use is left stale by
-/// the rename — and Invariant 5 does not catch it, because it only checks that
-/// the edited buffers re-PARSE clean, which a dangling name does.
+/// THE ADMISSION RULE, and it is the only one: a kind is renameable cross-file
+/// exactly when EVERY use-site form for that kind is collected.
+/// [`compute_rename_cross_file`] uses the reference set as its exact EDIT set,
+/// so an uncollected use is left stale by the rename — and Invariant 5 does not
+/// catch it, because it only checks that the edited buffers re-PARSE clean,
+/// which a dangling name does.
 ///
-/// Structure/Occurrence satisfy the rule. [`collect_decl_name_spans`] collects
-/// the declaration token, every `sub _ = Name` construction site AND every type
-/// position (#6539) — which closes the type-annotation / refinement staleness
-/// this doc comment used to record here as a live rename hazard. Its one
-/// residual, `TypeParamDecl.bounds`, is stated in that function's CAVEAT.
+/// ADMITTED, with what discharges the rule for each:
+/// - `Structure`/`Occurrence` — declaration token, `sub _ = Name` construction
+///   sites, and every type position ([`collect_decl_name_spans`], #6539).
+/// - `TypeAlias` — its uses are type positions only, and every `TypeExpr` root
+///   is walked.
+/// - `Constraint` — type positions plus `constraint Name(…)` instantiation
+///   names, both collected (#6539).
+/// - `Purpose`/`Joint` — VACUOUSLY: the grammar names a purpose only in
+///   `purpose_declaration` and a joint only in `joint_definition`, so there is
+///   no use-site form to collect and the declaration token alone is a COMPLETE
+///   reference set. Not a gap; asserted as such by
+///   `tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`.
+/// - Every single-file value-member kind, via [`is_renameable`] — those keep
+///   their exact single-file semantics on this path.
 ///
-/// The refused kinds are refused because the rule has not been DISCHARGED for
-/// them, not because their type positions are uncollected: a trait, enum or
-/// function name is also used in value position (`E.Variant`, `f(x)`), which a
-/// different collector answers for.
+/// REFUSED, and for two different reasons — worth keeping apart, because only
+/// the first is a gap anyone can close here:
+/// - `Trait`/`Enum`/`Fn`/`Variant`/`Field`: the rule is simply not DISCHARGED.
+///   Their type positions ARE collected, but each is also used in VALUE
+///   position (`E.Variant`, `f(x)`), which a different collector answers for
+///   and which this function has no evidence about.
+/// - `Unit`: the rule cannot be discharged from here at all. Its one use form
+///   is a literal suffix, and `UnitExpr::Unit(String)` carries no span for any
+///   collector to push — see `goto_def::decl_name_span_in`, which
+///   refuses `Unit` outright for the same measurement.
+///
+/// The one residual inside an ADMITTED kind is `TypeParamDecl.bounds`, stated
+/// in [`collect_decl_name_spans`]' CAVEAT: a `T: Numeric` bound carries no span,
+/// so renaming the TRAIT `Numeric` would leave it stale — which is part of why
+/// `Trait` is refused above.
 fn is_renameable_cross_file(kind: RefSymbolKind) -> bool {
-    is_renameable(kind) || matches!(kind, RefSymbolKind::Structure | RefSymbolKind::Occurrence)
+    is_renameable(kind)
+        || matches!(
+            kind,
+            RefSymbolKind::Structure
+                | RefSymbolKind::Occurrence
+                | RefSymbolKind::TypeAlias
+                | RefSymbolKind::Constraint
+                | RefSymbolKind::Purpose
+                | RefSymbolKind::Joint
+        )
 }
 
 /// Cross-file prepare-rename over the import graph (κ, task 4210).
