@@ -101,6 +101,7 @@ structure def Pipeline {
         "expected exactly one error — only `a` is ambiguous, `b` has a unique `in` port; got: {:?}",
         errors
     );
+    assert_eq!(errors[0].code, Some(DiagnosticCode::ChainPortNotUnique));
 
     let message = &errors[0].message;
     for expected in ["'a'", "'out'", "outA", "outB"] {
@@ -151,6 +152,7 @@ structure def Pipeline {
         "expected exactly one error — only `a` lacks the port its role needs; got: {:?}",
         errors
     );
+    assert_eq!(errors[0].code, Some(DiagnosticCode::ChainPortNotUnique));
 
     let message = &errors[0].message;
     for expected in ["'a'", "'out'", "no "] {
@@ -324,6 +326,7 @@ structure def S {
         errors
     );
     for (element, dir, error) in [("'a'", "'out'", errors[0]), ("'b'", "'in'", errors[1])] {
+        assert_eq!(error.code, Some(DiagnosticCode::ChainPortNotUnique));
         for expected in [element, dir, "linkA", "linkB"] {
             assert!(
                 error.message.contains(expected),
@@ -406,9 +409,10 @@ structure def S {
 }
 
 /// The collection and keyed cases differ only in how `vents` is declared, so
-/// both assert the same three things: one error naming the sub, a remedy that
-/// prescribes the per-element `forall` form, and no connection at all —
-/// emitting the hop is what manufactures the phantom endpoint.
+/// both assert the same three things: one `ChainElementNotAnOccurrence` error
+/// naming the sub, a remedy that prescribes the per-element `forall` form, and
+/// no connection at all — emitting the hop is what manufactures the phantom
+/// endpoint.
 fn assert_chain_over_an_unindexed_collection_is_refused(source: &str) {
     let module = compile_source(source);
     let errors = errors_only(&module);
@@ -417,6 +421,10 @@ fn assert_chain_over_an_unindexed_collection_is_refused(source: &str) {
         1,
         "expected exactly one error — only `vents` is unindexed, `hub` is a plain sub; got: {:?}",
         errors
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::ChainElementNotAnOccurrence)
     );
 
     let message = &errors[0].message;
