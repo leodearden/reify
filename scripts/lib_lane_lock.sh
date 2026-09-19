@@ -80,6 +80,17 @@ lane_lock_probe() {
     LANE_LOCK_PROBE_STATE='IDLE'
     LANE_LOCK_PROBE_DETAIL=''
 
+    # An ABSENT lock file is not a degradation: it positively means no consumer
+    # has ever taken this lane's lock. IDLE, silently, and never created (A1).
+    #
+    # Ordered BEFORE the flock check, and that order is load-bearing: this
+    # answer needs no flock at all, so a broken or unresolvable one must not
+    # turn a positive "nobody ever took this lane" into an unmeasurable one.
+    # The audit probes every lane in a pool, where the difference is directly
+    # observable — a degraded flock would otherwise report a lockless lane as
+    # occupied.
+    [ -e "$lock" ] || return 0
+
     # Tool missing or not executable — a wiring/environment fault, not evidence
     # about the lane.
     if ! command -v "$flock_bin" >/dev/null 2>&1; then
@@ -87,10 +98,6 @@ lane_lock_probe() {
         LANE_LOCK_PROBE_DETAIL="flock is missing or not executable: $flock_bin"
         return 0
     fi
-
-    # An ABSENT lock file is not a degradation: it positively means no consumer
-    # has ever taken this lane's lock. IDLE, silently, and never created (A1).
-    [ -e "$lock" ] || return 0
 
     # The read-only open is a SCOPED block redirect, deliberately NOT
     # `exec 7<"$lock" 2>/dev/null`. A redirection attached to a command-less

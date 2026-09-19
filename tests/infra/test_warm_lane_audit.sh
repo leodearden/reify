@@ -3146,6 +3146,11 @@ assert "T3: a stderr warning names the degraded lane's lock and the direction ta
     bash -c 'printf "%s\n" "$1" | grep -F "_lane-a.lock" | grep -qF "fail-CLOSED"' _ "$ERR_OUT"
 assert "T4: HEADROOM counts BOTH degraded lanes live (live=2)" \
     bash -c '[ "$1" = "2" ]' _ "$(_headroom_field "$OUT" live)"
+# ...and only those two. The lockless lane needs no flock to be answered, so a
+# broken one must not turn its positive "nobody ever took this lane" into a
+# degradation — the ordering pin, observable only in a pool-wide caller.
+assert "T4: ...but NOT the lockless lane, whose IDLE needs no flock" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
 assert "T4: the partition identity still holds under degradation" \
     _partition_holds \
     "$(_headroom_field "$OUT" resident)" \
@@ -3161,6 +3166,8 @@ assert "T5: ...and reaches the same fail-CLOSED verdict by the resolution branch
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*live=LIVE"' _ "$OUT"
 assert "T5: ...counting both lanes live" \
     bash -c '[ "$1" = "2" ]' _ "$(_headroom_field "$OUT" live)"
+assert "T5: ...and leaving the lockless lane IDLE here too" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
 
 # -- T6: would-block, i.e. a genuine BUSY rather than a degradation ------------
 REIFY_WARM_LANE_AUDIT_FLOCK="$T_FLOCK_CONFLICT" run_helper --mount "$T_MOUNT"
@@ -3203,7 +3210,7 @@ fi
 # -- T9: A1 is not weakened on any of those paths ------------------------------
 assert "T9: no lock file was created for the lane that had none" \
     test ! -e "$T_MOUNT/_lane-nolock.lock"
-assert "T9: ...and that lane read IDLE throughout, an absent lock being a positive answer" \
+assert "T9: ...and it reads IDLE, an absent lock being a positive answer (T4/T5 pin the degraded runs)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
 
 test_summary

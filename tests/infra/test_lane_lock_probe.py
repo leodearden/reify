@@ -153,6 +153,17 @@ class LaneLockProbeTestCase(unittest.TestCase):
         self.assertFalse(lock.exists(), "the probe created the lock file")
         self.assertFalse(parent.exists(), "the probe created the lock's parent")
 
+    def test_p2b_absent_lock_beats_an_unresolvable_flock(self):
+        # Ordering pin: "no consumer ever took this lane" is a POSITIVE answer
+        # that needs no flock, so it must be reached before the tool check. A
+        # caller that probes a whole pool (the audit) would otherwise report
+        # every lockless lane as occupied the moment flock broke.
+        lock = self.tmpdir / "never-taken.lock"
+        missing = self.tmpdir / "nowhere" / "flock"
+        self.assertProbe(self.probe(lock, missing), IDLE)
+        self.assertProbe(self.probe(lock, self.make_stub("f1c", 1)), IDLE)
+        self.assertFalse(lock.exists())
+
     def test_p3_exclusive_holder_is_busy(self):
         lock = self.make_lock()
         self.hold(lock, fcntl.LOCK_EX)

@@ -90,6 +90,9 @@
 # Additional env knobs (no dedicated CLI flag):
 #   REIFY_WARM_LANE_AUDIT_DF             df command override (default: df),
 #                                         mirrors REIFY_WARM_LANE_DISK_GUARD_DF.
+#   REIFY_WARM_LANE_AUDIT_FLOCK          flock command override (default:
+#                                         flock), mirrors
+#                                         REIFY_WARM_LANE_LOCK_GUARD_FLOCK.
 #   REIFY_WARM_LANE_AUDIT_STASH_REPO     Repo to query for the shared stash
 #                                         stack (default: the first resident
 #                                         lane that resolves as a git worktree
@@ -122,8 +125,9 @@
 # Invariants:
 #   A1 — read-only: never mutates a lane (no reset/rm/reclaim). This binds
 #        BOTH on-disk surfaces the audit touches, and identically:
-#          · the LIVE/IDLE probe opens an EXISTING <dir>.lock read-only and
-#            never creates a missing one;
+#          · the LIVE/IDLE probe (lane_lock_probe, scripts/lib_lane_lock.sh)
+#            opens an EXISTING <dir>.lock read-only and never creates a
+#            missing one;
 #          · the assignment-state read opens an EXISTING
 #            <state-dir>/<lane>.json read-only and never creates the record
 #            OR the directory -- neither a default <mount>/.lane-state nor an
@@ -136,14 +140,26 @@
 #        but never contends with another concurrent reader (e.g. a second
 #        audit run) — only a genuine writer's non-blocking attempt could
 #        ever be perturbed, and only for the instant this probe's fd is
-#        open.
+#        open. A1's and A2's guarantees over that probe are the SHARED
+#        helper's: lane_lock_probe in scripts/lib_lane_lock.sh is the one
+#        implementation, used identically by scripts/warm-lane-lock-guard.sh.
+#        What stays THIS script's own is the fail direction below.
 #   A3 — a status-lookup failure degrades that lane to `unknown` (never
 #        aborts, never reclassifies as reclaimable/leaked). When this
 #        suppresses what would otherwise be a LEAKED verdict, the lane is
 #        still reported PRESERVED-OK (conservative default), but a stderr
 #        warning fires and the lane is counted in the HEADROOM
 #        `leak_unknown` field, so "no leaks" stays distinguishable from
-#        "leaks could not be evaluated".
+#        "leaks could not be evaluated". The liveness probe degrades the
+#        same way and UNIFORMLY: any cause that makes it unmeasurable — a
+#        broken or missing flock, an unreadable lock file — counts that lane
+#        LIVE with a stderr warning, fail-CLOSED, because over-reporting
+#        occupancy in advisory prose is merely conservative. (Until task
+#        5738 this was inconsistent: a broken flock read LIVE, but an
+#        unreadable lock file fell through to IDLE, silently fail-OPEN on
+#        the same axis.) scripts/warm-lane-lock-guard.sh takes the OPPOSITE
+#        direction on the identical state, deliberately — its exit 3 gates
+#        merge dispatch, where a false BUSY wedges the serial merge queue.
 #   A4 — `stale` is always the relation age_min >= stale_age_min against the
 #        declared knob — never an inline/undeclared literal.
 #   A5 — the assignment-state read is fail-safe: a missing state dir, a
@@ -188,6 +204,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=scripts/lib_portable.sh
 source "$SCRIPT_DIR/lib_portable.sh"
+
+# The liveness probe itself — shared with scripts/warm-lane-lock-guard.sh,
+# which applies the OPPOSITE fail direction to the same measurement.
+# shellcheck source=scripts/lib_lane_lock.sh
+source "$SCRIPT_DIR/lib_lane_lock.sh"
 
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
@@ -280,6 +301,7 @@ STALE_AGE_MIN="${REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN:-60}"
 MAIN_REF="${REIFY_WARM_LANE_AUDIT_MAIN_REF:-main}"
 SAFETY="${REIFY_WARM_LANE_AUDIT_SAFETY:-1.5}"
 DF="${REIFY_WARM_LANE_AUDIT_DF:-df}"
+FLOCK_BIN="${REIFY_WARM_LANE_AUDIT_FLOCK:-flock}"
 RESIDUE_GLOB="${REIFY_WARM_LANE_AUDIT_RESIDUE_GLOB:-data/queue/*.db*}"
 # Repo to query for the shared stash stack. Default (empty): the FIRST resident
 # lane that resolves as a git worktree — refs/stash lives in the shared common
@@ -379,38 +401,30 @@ _lane_role() {
 # IDLE while remaining very much assigned (see _read_lane_assignment, the
 # separate answer).
 #
-# Opens an EXISTING <dir>.lock read-only and attempts a non-blocking SHARED
-# flock on that read-only fd: success (lock acquired) => IDLE, released
-# immediately; failure (blocked by a live consumer's exclusive flock) =>
-# LIVE. A missing lock file is IDLE and is NEVER created (no `>`-open/
-# truncation, no `flock <file> <cmd>` convenience form -- both would mutate
-# the pool).
+# The MEASUREMENT is `lane_lock_probe` in scripts/lib_lane_lock.sh, shared
+# with scripts/warm-lane-lock-guard.sh: it answers IDLE / BUSY /
+# UNMEASURABLE and carries no fail direction of its own. This script's
+# contribution is the mapping, and it fails CLOSED — an unmeasurable probe
+# counts LIVE, where the guard sends the same state to IDLE. Both are right
+# for their own consumer: this output is advisory prose, where over-reporting
+# occupancy is merely conservative, whereas the guard's exit 3 gates merge
+# dispatch, where a false BUSY wedges the serial merge queue. Reasoning:
+# docs/design/merge-verify-lane-dispatch-seam.md §3.
 #
-# Shared (-s), not exclusive (-x): this probe is a pure reader, and every
-# real lane-assignment consumer holds an EXCLUSIVE flock while live
-# (mirroring warm-lane-gc.sh's own `flock -n <lock>` reclaim-eligibility
-# check, which defaults to exclusive because IT proceeds to a real mutation
-# on success -- this script never does). A shared request still correctly
-# fails against a live consumer's exclusive lock, so LIVE detection is
-# unchanged; but two readers (e.g. two concurrent audit runs) never contend
-# with each other. Only a genuine writer's non-blocking attempt could still
-# be transiently perturbed, and only for the instant this fd is open (A2) --
-# an unavoidable characteristic of any momentary lock-state probe, and
-# benign for this script's advisory-only output.
+# The warning reaches stderr even though the sole call site is a `$( )`:
+# command substitution captures stdout only. It is the A3 ethos applied to
+# this axis — every degradation is paired with a stderr warning, so "no
+# leaks" stays distinguishable from "leaks could not be evaluated".
 _probe_live() {
     local lock="$1"
-    local result='IDLE'
-    if [ -e "$lock" ]; then
-        if exec 7<"$lock" 2>/dev/null; then
-            if flock -n -s 7 2>/dev/null; then
-                flock -u 7 2>/dev/null || true
-            else
-                result='LIVE'
-            fi
-            exec 7<&- 2>/dev/null || true
-        fi
-    fi
-    printf '%s' "$result"
+    lane_lock_probe "$lock" "$FLOCK_BIN"
+    case "$LANE_LOCK_PROBE_STATE" in
+        BUSY) printf 'LIVE' ;;
+        UNMEASURABLE)
+            warn "lock probe unmeasurable for $lock ($LANE_LOCK_PROBE_DETAIL); counted LIVE (fail-CLOSED)."
+            printf 'LIVE' ;;
+        IDLE) printf 'IDLE' ;;
+    esac
     return 0
 }
 
