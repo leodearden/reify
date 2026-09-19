@@ -4549,38 +4549,37 @@ static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
     return std::abs(volume);
 }
 
-/// The site that chooses between OCCT's exact volume integral and the
-/// tessellation fallback, reporting both the number and which arm produced it.
-/// Only the exact arm exists so far; `query_volume` still selects its own.
+/// The ONE site that chooses between OCCT's exact volume integral and the
+/// tessellation fallback, and the only source of a volume number in this
+/// wrapper. `query_volume` and `query_volume_measurement` both delegate here,
+/// so they can never disagree about which arm ran or what it returned.
 ///
-/// Callers must have rejected null topology already: the shape-type test the
-/// fallback arm needs dereferences the TShape handle and would SIGSEGV rather
-/// than throw.
+/// Callers must have rejected null topology already: `ShapeType()` below
+/// dereferences the TShape handle and would SIGSEGV rather than throw.
 static VolumeMeasurement compute_volume_arm(const TopoDS_Shape& shape) {
     GProp_GProps props;
     BRepGProp::VolumeProperties(shape, props);
-    return VolumeMeasurement{props.Mass(), false};
+    const double vol = props.Mass();
+    // BRepGProp::VolumeProperties returns 0 for some parametric surfaces
+    // (e.g. revolution surfaces). Fall back to mesh-based computation.
+    if (vol == 0.0 && shape.ShapeType() <= TopAbs_SOLID) {
+        return VolumeMeasurement{mesh_based_volume(shape, 0.01), true};
+    }
+    return VolumeMeasurement{vol, false};
 }
 
 double query_volume(const OcctShape& shape) {
     return wrap_occt_call("query_volume", [&]() {
-        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref. The
-        // ShapeType() fallback below dereferences the TShape handle and would
-        // SIGSEGV on a null shape (wrap_occt_call catches C++ exceptions, not
-        // the hardware signal). Primary guard is get_shape (Rust boundary);
-        // this covers any direct-FFI/future path that bypasses it.
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref.
+        // compute_volume_arm's ShapeType() test dereferences the TShape handle
+        // and would SIGSEGV on a null shape (wrap_occt_call catches C++
+        // exceptions, not the hardware signal). Primary guard is get_shape
+        // (Rust boundary); this covers any direct-FFI/future path that
+        // bypasses it.
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_volume: shape has null/empty topology");
         }
-        GProp_GProps props;
-        BRepGProp::VolumeProperties(shape.shape, props);
-        double vol = props.Mass();
-        // BRepGProp::VolumeProperties returns 0 for some parametric surfaces
-        // (e.g. revolution surfaces). Fall back to mesh-based computation.
-        if (vol == 0.0 && shape.shape.ShapeType() <= TopAbs_SOLID) {
-            vol = mesh_based_volume(shape.shape, 0.01);
-        }
-        return vol;
+        return compute_volume_arm(shape.shape).volume;
     });
 }
 
