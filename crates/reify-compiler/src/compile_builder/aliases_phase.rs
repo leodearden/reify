@@ -154,7 +154,10 @@ pub(crate) fn phase_aliases(
 ///
 /// Iterates `ctx.alias_registry.iter()` (user-declared aliases only, excluding
 /// prelude-seeded entries), filters to `is_pub && !type_params.is_empty()`,
-/// and calls `validate_pub_parametric_alias_def_site` for each.
+/// and calls `validate_pub_parametric_alias_def_site` for each.  That filter
+/// runs FIRST and an empty result returns immediately, so a module with no
+/// `pub` parametric alias of its own — nearly every module — builds none of
+/// the registries or name sets below.
 ///
 /// **Call site:** immediately after `phase_pending_bound_checks` in `lib.rs`,
 /// where `ctx.alias_registry`, `ctx.resolution_structure_names`,
@@ -180,6 +183,27 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     ctx: &mut CompilationCtx,
     prelude_refs: &[&CompiledModule],
 ) {
+    // Collect the entries to validate FIRST — both to release the immutable
+    // `ctx.alias_registry` borrow before `ctx.diagnostics` is borrowed mutably
+    // below, and because an empty collection means every registry and name set
+    // built after this point would be discarded unused.
+    //
+    // Empty is the overwhelmingly common case, not a corner: `alias_registry.
+    // iter()` skips prelude-seeded entries, so this holds only the module's own
+    // `pub` PARAMETRIC aliases — a population the repo-wide survey behind
+    // `parametric_alias_population_regression` puts at two across all of
+    // stdlib. Returning here retires four sets of String clones over the full
+    // prelude alias/trait/enum population per module compile.
+    let entries_to_validate: Vec<_> = ctx
+        .alias_registry
+        .iter()
+        .filter(|e| e.is_pub && !e.type_params.is_empty())
+        .cloned()
+        .collect();
+    if entries_to_validate.is_empty() {
+        return;
+    }
+
     // Build template registry (prelude structures first, then local override).
     let template_registry: HashMap<String, &TopologyTemplate> = prelude_refs
         .iter()
@@ -206,14 +230,6 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
         .resolution_enums
         .iter()
         .map(|e| e.name.clone())
-        .collect();
-
-    // Collect the entries to validate before mutably borrowing `ctx.diagnostics`.
-    let entries_to_validate: Vec<_> = ctx
-        .alias_registry
-        .iter()
-        .filter(|e| e.is_pub && !e.type_params.is_empty())
-        .cloned()
         .collect();
 
     for entry in &entries_to_validate {
