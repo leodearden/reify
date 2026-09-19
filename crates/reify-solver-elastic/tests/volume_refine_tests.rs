@@ -128,6 +128,82 @@ fn kuhn_6tet_unit_cube_vm() -> VolumeMesh {
     }
 }
 
+/// Kuhn decomposition of the unit cube over an `n^3` lattice of cells —
+/// `(n+1)^3` vertices, `6 * n^3` tets.
+///
+/// Each cell is cut into the 6 tets that share the cell's main diagonal, one
+/// per permutation of the three axes; together they partition the cell exactly,
+/// and adjacent cells match face-to-face because every cell is cut the same way.
+///
+/// Hand-built and gmsh-free for the two reasons `kuhn_6tet_unit_cube_vm` gives:
+/// producer symmetry, so both sides of a comparison come from the same source,
+/// and determinism under a gmsh version bump.
+///
+/// This generalises `kuhn_6tet_unit_cube_vm` but does NOT subsume it: that
+/// fixture numbers each z-level as a CCW ring (`(0,0,0), (1,0,0), (1,1,0),
+/// (0,1,0)`), while a lattice must number rasterwise, so `n = 1` here emits the
+/// same six tets under a different index order. Both are kept rather than
+/// silently changing the index order every existing assertion was measured
+/// against.
+///
+/// `n >= 2` is what a mid-span size field needs: with no INTERIOR vertices the
+/// min-projection in `project_per_element_sizes_to_vertices` has nowhere to put
+/// an interior minimum, so an 8-vertex seed cannot represent one at all.
+fn kuhn_lattice_unit_cube_vm(n: usize) -> VolumeMesh {
+    assert!(n >= 1, "lattice needs at least one cell per axis");
+    let side = n + 1;
+    let vid = |i: usize, j: usize, k: usize| ((k * side + j) * side + i) as u32;
+
+    let mut vertices = Vec::with_capacity(3 * side * side * side);
+    for k in 0..side {
+        for j in 0..side {
+            for i in 0..side {
+                vertices.push(i as f32 / n as f32);
+                vertices.push(j as f32 / n as f32);
+                vertices.push(k as f32 / n as f32);
+            }
+        }
+    }
+
+    // One tet per permutation (a, b, c) of the axes: walk from the cell's low
+    // corner along a, then b, then c, landing on the opposite corner. The
+    // shared main diagonal is the (low corner -> opposite corner) edge.
+    const AXIS_ORDERS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+
+    let mut indices = Vec::with_capacity(4 * 6 * n * n * n);
+    for ck in 0..n {
+        for cj in 0..n {
+            for ci in 0..n {
+                for order in AXIS_ORDERS {
+                    let mut step = [0_usize; 3];
+                    indices.push(vid(ci, cj, ck));
+                    for axis in order {
+                        step[axis] = 1;
+                        indices.push(vid(ci + step[0], cj + step[1], ck + step[2]));
+                    }
+                }
+            }
+        }
+    }
+
+    VolumeMesh {
+        vertices,
+        connectivity: VolumeConnectivity::Tet {
+            indices,
+            order: ElementOrderTag::P1,
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
 fn dummy_surface() -> Mesh {
     Mesh {
         vertices: vec![0.0_f32; 9],
@@ -694,7 +770,138 @@ fn localized_size_reduction_refines_marked_region_only() {
     }
 }
 
+/// The size field's INTERIOR is honoured, not just its boundary values.
+///
+/// This is the case a 0D-corner-anchor size field provably cannot serve. A box
+/// classifies to eight point entities, and eight corner scalars interpolate
+/// MONOTONICALLY along each axis, so a field with an interior minimum is
+/// structurally unrepresentable — no tuning of that path can express it.
+///
+/// Fixture: the requested field `0.04 + 0.9*|cx - 0.5|` is fine at mid-span and
+/// coarse at both ends. Statistic: mean tet edge length by centroid band,
+/// mid-span `0.42 < cx < 0.58` against both end bands pooled (`cx < 0.15`,
+/// `cx > 0.85`).
+///
+/// Measured on this exact path (discrete surface + `classify_surfaces(PI/12)` +
+/// `create_geometry` + `Algorithm3D = 10`) against libgmsh 4.15.2:
+///
+/// | sizing mechanism                  | mid-span | ends  | ratio |
+/// |-----------------------------------|----------|-------|-------|
+/// | 0D corner anchors (pre-#7447)     | 0.5399   | 0.338 | 1.60  |
+/// | PostView background field         | 0.0949   | 0.312 | 0.304 |
+///
+/// The two sit on OPPOSITE sides of 1.0: corner anchoring does not merely fail
+/// to refine the mid-span, it leaves it COARSER than the ends. The 0.6 bound
+/// has ~2x margin below and ~2.7x above, so it discriminates rather than
+/// trailing whichever number was measured last.
+///
+/// The table's first row is the standalone C probe; THIS test read mid-span
+/// 0.6009 over 12 tets against ends 0.3173 over 88, ratio 1.893, when it was
+/// first run as a RED against the corner-anchor path. Both readings agree on
+/// the sign, which is what the bound turns on.
+///
+/// Deliberately NOT asserted: that the band reaches the REQUESTED 0.04. Gmsh's
+/// gradient limiter smooths a prescribed field, delivering ~0.095 for that
+/// request, so "achieves the requested size" would be a false premise no
+/// implementation could satisfy.
+#[test]
+fn mid_span_size_reduction_refines_the_mid_span_band() {
+    if !reify_kernel_gmsh::GMSH_AVAILABLE {
+        eprintln!("skipping: libgmsh not available in this build");
+        return;
+    }
+
+    let cube = unit_cube_mesh();
+    let opts = MeshingOptions {
+        mesh_size: Some(0.5),
+        deterministic: true,
+        ..Default::default()
+    };
+
+    // n = 4 gives 125 vertices / 384 tets. Interior vertices are the point:
+    // the min-projection needs somewhere to put an interior minimum.
+    let vm_seed = kuhn_lattice_unit_cube_vm(4);
+    let n_seed_tets = vm_seed.tet_indices().expect("seed is tet-only").len() / 4;
+    assert_eq!(n_seed_tets, 384, "fixture sanity: 6 tets per cell, 4^3 cells");
+
+    let size_hints: Vec<f64> = (0..n_seed_tets)
+        .map(|e| 0.04 + 0.9 * (tet_centroid_x(&vm_seed, e) - 0.5).abs())
+        .collect();
+
+    let refined = refine_with_size_field(&cube, &vm_seed, &size_hints, &opts)
+        .expect("refine_with_size_field must succeed");
+
+    let (mid_count, mid_mean) = mean_tet_edge_where(&refined, |cx| (0.42..0.58).contains(&cx));
+    let (end_count, end_mean) = mean_tet_edge_where(&refined, |cx| cx < 0.15 || cx > 0.85);
+
+    // Non-vacuity first: an empty band would make the ratio below meaningless.
+    assert!(
+        mid_count > 0 && end_count > 0,
+        "both bands must contain tets to compare: mid-span={mid_count}, ends={end_count}"
+    );
+
+    assert!(
+        mid_mean < 0.6 * end_mean,
+        "the mid-span band must be refined relative to the ends: \n\
+         mid-span mean tet edge {mid_mean:.4} over {mid_count} tets, \
+         ends {end_mean:.4} over {end_count} tets, ratio {:.3} (bound 0.6).\n\
+         A ratio ABOVE 1.0 means the size field's interior never reached gmsh \
+         and sizing fell back to boundary interpolation — check that the \
+         PostView background field is installed and \
+         `Mesh.MeshSizeFromPoints` is 0. A ratio between 0.6 and 1.0 with a \
+         plausible tet count is the signature of a scrambled list-data buffer: \
+         `gmshViewAddListData` accepts a per-POINT grouping with ierr=0, and \
+         `BackgroundSizeField`'s byte-exact layout test is what tells the two \
+         apart.",
+        mid_mean / end_mean
+    );
+}
+
 // ---- geometry helpers ----
+/// Mean over the band's tets of each tet's own mean edge length, paired with
+/// the band's tet count so a caller can reject a vacuous band before dividing.
+///
+/// Same statistic as `SplitStats` in
+/// `reify-kernel-gmsh/tests/refine_volume_tests.rs` — a per-tet mean edge is
+/// the quantity directly comparable to a requested characteristic length —
+/// generalised from a single split point to an arbitrary centroid-x band so
+/// both end bands can be pooled.
+fn mean_tet_edge_where(vm: &VolumeMesh, keep: impl Fn(f64) -> bool) -> (usize, f64) {
+    let tet_indices = vm.tet_indices().expect("fixture is tet-only");
+    let n = tet_indices.len() / 4;
+    let mut total = 0.0_f64;
+    let mut count = 0usize;
+    for e in 0..n {
+        if !keep(tet_centroid_x(vm, e)) {
+            continue;
+        }
+        let base = e * 4;
+        let verts: Vec<[f64; 3]> = (0..4)
+            .map(|k| {
+                let vi = tet_indices[base + k] as usize;
+                [
+                    vm.vertices[vi * 3] as f64,
+                    vm.vertices[vi * 3 + 1] as f64,
+                    vm.vertices[vi * 3 + 2] as f64,
+                ]
+            })
+            .collect();
+        let mut tet_edge_total = 0.0_f64;
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                let dx = verts[i][0] - verts[j][0];
+                let dy = verts[i][1] - verts[j][1];
+                let dz = verts[i][2] - verts[j][2];
+                tet_edge_total += (dx * dx + dy * dy + dz * dz).sqrt();
+            }
+        }
+        total += tet_edge_total / 6.0;
+        count += 1;
+    }
+    let mean = if count == 0 { 0.0 } else { total / count as f64 };
+    (count, mean)
+}
+
 
 fn tet_centroid_x(vm: &VolumeMesh, elem_idx: usize) -> f64 {
     let base = elem_idx * 4;
