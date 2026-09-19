@@ -610,9 +610,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // arm — inside `apply_lambda`, with captures already cloned
                     // into `ctx.values` — the field is in scope. We dispatch via
                     // `apply_lambda_with_point_unpacking` to mirror the `sample`
-                    // path. Builtins are matched in earlier arms, so they are
-                    // never shadowed; non-field names yield `Undef` from the
-                    // cell lookup and fall through to `eval_builtin` unchanged.
+                    // path. This field-cell lookup runs BEFORE the `eval_builtin`
+                    // fallthrough below, so a `__field__::<name>` cell CAN shadow
+                    // a builtin of the same name; non-field names yield `Undef`
+                    // from the cell lookup and fall through to `eval_builtin`
+                    // unchanged.
                     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &function.name);
                     let candidate = ctx.values.get_or_undef(&field_id);
                     if let Value::Field { lambda, .. } = &candidate
@@ -1937,10 +1939,12 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     if let Some(diag) = reify_stdlib::fea_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
-    // AffineMap-constructor warnings: `affine_scale` zero (degenerate, det=0) or
-    // dimensioned scale factor (the linear part of an affine map is dimensionless).
-    // Also the #6080 Error for a `transform_exp` twist whose `angular` half is
-    // not Vector3<Angle> — same classifier, different severity per arm.
+    // Geometry-builtin diagnostics: `affine_scale` zero/dimensioned-factor
+    // Warnings, plus Severity::Error dimension rejections for `transform_log`,
+    // `transform_exp` (#6080 angular / RULING #6126 linear), `affine_translate`
+    // / `affine_map` (task 5747, units-length ζ), and `bbox` (task 6081) — one
+    // classifier, severity split by fault class. See `geometry_diagnose`'s own
+    // doc comment for the full per-name breakdown.
     if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
