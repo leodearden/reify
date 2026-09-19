@@ -382,9 +382,22 @@ WARN_PCT=90
 # the remedy is still rule (a)'s split, and that split is #7466. On bare
 # main the unit already measured 17737, 263 lines under the warn line, so the
 # crate was crossing on its next test-bearing commit regardless of #6619.
+# harness_compilation_surface.rs measured 18211/20000 = 91% at task #7543 (root
+# 51 + 18160 across 11 module files, no external includes). Listed for the same
+# reason as the two above and NOT because it is acceptable: the remedy is still
+# rule (a)'s split, and that split is #7709. UNLIKE those two, this row cannot
+# plead that main was crossing anyway — at #7543's merge-base (a8d7f5fb24) the
+# unit summed to 16109, a full 1891 lines under the warn line, so #7543 alone
+# carried it over. It is listed rather than fixed in place because #7543's
+# entire +2102 delta lands in ONE module file (ctor_conformance_corpus_survey.rs,
+# 4850 -> 6952) whose reusable half ALREADY went off-cap into
+# crates/reify-test-support/, leaving no honest in-scope reduction: the residual
+# must compile .ri through reify-compiler, and relocating it to a library crate
+# purely to duck this line is the very cap evasion Section 5c detects.
 _KLOC_WARN_KNOWN=(
     "crates/reify-syntax/tests/harness_syntax.rs"
     "crates/reify-kernel-occt/tests/harness_occt.rs"
+    "crates/reify-compiler/tests/harness_compilation_surface.rs"
 )
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
