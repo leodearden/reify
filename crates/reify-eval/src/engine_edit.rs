@@ -84,13 +84,12 @@
 //!      reseed's, also calls [`deactivate_if_not_auto`], writing
 //!      `values`/snapshot only (no cache, no journal), by design; see
 //!      the canonical Auto-cell lifecycle rule above.
-//!    - [`Engine::edit_source`] — main write-back journals via
-//!      `commit_cell_result`; its wave-2 ("Second propagation wave")
-//!      does NOT — a bare `values`/snapshot insert plus
-//!      `cache.record_evaluation`, no journal event. A third phase, the
-//!      post-wave2 driver-ordered guard-member reseed's active-member
-//!      leg, has NEITHER: a bare `values`/snapshot insert with no cache
-//!      write and no journal call at all.
+//!    - [`Engine::edit_source`] — `commit_cell_result` for both the main
+//!      write-back (task #6998) and the wave-2 ("Second propagation wave")
+//!      downstream reseed (task #6423) — both `CacheLeg::Record`. A third
+//!      phase, the post-wave2 driver-ordered guard-member reseed's
+//!      active-member leg, has NEITHER: a bare `values`/snapshot insert
+//!      with no cache write and no journal call at all.
 //! 6. `resolved_params` — `eval`'s two arms, [`Engine::edit_param`] and
 //!    [`Engine::edit_source`]; NOT written by either `eval_cached` arm
 //! 7. `objective_provenance` — `eval`'s two arms only
