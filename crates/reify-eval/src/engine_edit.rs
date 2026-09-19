@@ -7337,6 +7337,144 @@ mod tests {
         );
     }
 
+    /// Task #6998: pins that `edit_source`'s MAIN per-cell eval loop (this
+    /// file's step-(12) "Per-cell eval loop") routes its write-back through
+    /// the `commit_cell_result`/`commit_cell_result_at` primitive, exactly
+    /// like its two siblings already migrated —  the `SolveResult::Solved`
+    /// resolution arm (#6373) and the wave2 dependent-re-eval loop (#6423),
+    /// both pinned by `edit_source_recorded_sites_route_through_commit_primitive`
+    /// above. This is the THIRD and last INV-EVAL-1 write-back site in
+    /// `edit_source`.
+    ///
+    /// FIXTURE is deliberately SOLVER-FREE (no `auto` param, no constraint,
+    /// no `.with_solver(..)`, no guards or collections): with no autos,
+    /// `all_resolved_ids` stays empty, the wave2 block is gated out, Phases
+    /// 1/3/4 have nothing to re-elaborate, and the step-(12) main eval walk
+    /// is the ONLY site that can commit `q`. A solver fixture (the shape the
+    /// sibling test above uses) would let one of the already-migrated sites
+    /// supply q's trailing journal pair and pass this test vacuously for a
+    /// reason unrelated to the site under test — see plan.json design
+    /// decision D5. Two sources differing only in `p`'s default, so
+    /// `edit_source` re-evaluates the dependents `q` and `r`.
+    ///
+    /// RED on base, measured verbatim from assertion (3)'s helper call:
+    /// `expected Started payload Custom("edit-reeval"), got None`. Assertions
+    /// (1), (2), (4), (5) all already pass on base — they are the
+    /// behaviour-preservation net that must stay green through the migration.
+    #[test]
+    fn edit_source_main_eval_walk_routes_through_commit_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+
+        const SRC_A: &str = r#"structure MainWalkSrcCommit {
+    param p : Length = 1mm
+    let q = p + 1mm
+    let r = q + 1mm
+}"#;
+        const SRC_B: &str = r#"structure MainWalkSrcCommit {
+    param p : Length = 2mm
+    let q = p + 1mm
+    let r = q + 1mm
+}"#;
+
+        let compiled_a = compile_source(SRC_A);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        // Cold eval — solver-free, so no auto resolution is involved.
+        engine.eval(&compiled_a);
+
+        let p_id = ValueCellId::new("MainWalkSrcCommit", "p");
+        let q_id = ValueCellId::new("MainWalkSrcCommit", "q");
+        let q_node = NodeId::Value(q_id.clone());
+        let r_id = ValueCellId::new("MainWalkSrcCommit", "r");
+        let q_events_before = engine.journal().events_for_node(&q_node).len();
+
+        let compiled_b = compile_source(SRC_B);
+        let result = engine
+            .edit_source(&compiled_b)
+            .expect("edit_source must succeed");
+
+        // (1) GUARD — the main eval walk actually re-evaluated the
+        // dependents, so the site under test executed at all.
+        assert_scalar_si_approx_eq(
+            result
+                .values
+                .get(&q_id)
+                .expect("q must be in result.values after edit_source"),
+            0.003,
+            1e-9,
+            "edit_source main eval walk: q must be 3mm (p=2mm + 1mm)",
+        );
+        assert_scalar_si_approx_eq(
+            result
+                .values
+                .get(&r_id)
+                .expect("r must be in result.values after edit_source"),
+            0.004,
+            1e-9,
+            "edit_source main eval walk: r must be 4mm (q=3mm + 1mm)",
+        );
+
+        // (2) GUARD/behaviour-preservation — EXACTLY one Started+Completed
+        // pair is appended for q, not two: an impl that adds the
+        // `commit_cell_result_at` call without DELETING the hand-rolled
+        // pair would emit two pairs, and only the exact-count form (`==`,
+        // not `>=`) catches that.
+        let q_events_after = engine.journal().events_for_node(&q_node);
+        assert_eq!(
+            q_events_after.len(),
+            q_events_before + 2,
+            "edit_source main eval walk must append exactly one Started+Completed \
+             pair for q, had {q_events_before} events before, {} after",
+            q_events_after.len()
+        );
+
+        // (3) RED SIGNAL — measured on base:
+        // `expected Started payload Custom("edit-reeval"), got None`. The
+        // helper's snapshot/cache three-leg checks already pass on base
+        // (snapshot[q] = (0.003, Determined), cache[q] = Value(0.003,
+        // Determined)) — they are the behaviour-preservation half of this
+        // pin.
+        assert_recorded_via_commit_primitive(
+            &engine,
+            &q_id,
+            0.003,
+            "edit_source main eval walk (q)",
+        );
+
+        // (4) GUARD/characterization — pins that the commit forwards
+        // `extract_dependency_trace(expr)` and not a
+        // `DependencyTrace::default()`, which would silently drop q's
+        // reverse-dependency edge on p while every other assertion here
+        // still passed.
+        let q_cache_entry = engine
+            .cache_store()
+            .get(&q_node)
+            .expect("q must have a cache entry after edit_source main eval walk");
+        assert!(
+            q_cache_entry.dependency_trace.reads.contains(&p_id),
+            "q's cache entry dependency_trace.reads must contain p, got {:?}",
+            q_cache_entry.dependency_trace.reads
+        );
+
+        // (5) GUARD/characterization — pins that the migrated call still
+        // feeds the real `EvalOutcome` into the early-cutoff propagation
+        // below it: `has_changed_parent` is seeded only from dependents of
+        // the changed set (= {q}), so a commit whose outcome degraded to
+        // `Unchanged` would put r in `skipped`, drop it from
+        // `last_eval_set`, and leave it at the stale 0.003 (already ruled
+        // out by assertion (1), but this pins the mechanism, not just the
+        // symptom).
+        assert!(
+            engine.last_eval_set().contains(&NodeId::Value(r_id.clone())),
+            "last_eval_set must contain r, meaning the Changed branch of the \
+             early-cutoff propagation ran; got {:?}",
+            engine.last_eval_set()
+        );
+    }
+
     /// Assert that `id`'s journal, snapshot, and cache all show the effects of
     /// a `commit_cell_result(.., TraceSource::EditReeval, .., CacheLeg::Record)`
     /// commit: a `Started`/`Completed` journal pair with the edit-reeval
