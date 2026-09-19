@@ -124,6 +124,22 @@ pub fn set_parameter_impl(
     // The rebuild happens INSIDE the same lock the commit ran under, so no
     // other command can interleave between the discard and the snapshot the
     // frontend will be told to render.
+    //
+    // It is NOT the discard's own `GuiState` reused, and the difference is not
+    // cosmetic. `commit_parameter`'s discard runs through `update_source`,
+    // whose `commit_state` clears `compile_failure` and `last_reload_error`
+    // unconditionally — including banners that PREDATE this call — and builds
+    // its state in that cleared window. `commit_parameter` restores the two
+    // surfaces afterwards, so that state is already out of date about them by
+    // the time the refusal surfaces here: it carries no `hot-reload-error`
+    // diagnostic, because `build_compile_diagnostics` synthesizes that entry
+    // FROM `last_reload_error`.
+    //
+    // Handing it to the frontend to save this rebuild would therefore clear a
+    // staleness banner the engine still holds — the defect the engine-level
+    // restore closes, moved one layer out and made invisible, since the
+    // frontend has no later event to correct it. Pinned by
+    // `set_parameter_impl_refusal_restores_a_state_that_still_shows_the_banner`.
     match crate::engine_lock::with_engine_lock(engine, |s| {
         s.commit_parameter(cell_id, value)
             .map_err(|message| RefusedParameterWrite {

@@ -2420,6 +2420,50 @@ fn make_test_engine_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Arc<Mut
 }
 
 #[test]
+fn set_parameter_impl_refusal_restores_a_state_that_still_shows_the_banner() {
+    // Why the refusal path builds a SECOND `GuiState` rather than reusing the
+    // one the discard already built. That one was built inside `update_source`,
+    // in the window where `commit_state` had just cleared `compile_failure` and
+    // `last_reload_error` — banners that PREDATE the commit entirely — and
+    // `commit_parameter` restores them only after it returns. Reusing it would
+    // hand the frontend a state carrying no `hot-reload-error` diagnostic while
+    // the engine still holds the error: the defect the engine-level restore
+    // closes, moved one layer out, where no later event corrects it.
+    use crate::commands::set_parameter_impl;
+
+    let (_dir, _path, engine) = make_test_engine_on_disk();
+    crate::engine_lock::with_engine_lock(&engine, |s| s.record_reload_error("boom".to_string()))
+        .expect("with_engine_lock should not panic");
+
+    let refused = set_parameter_impl(&engine, "Bracket.nope", "1mm")
+        .expect_err("an unknown cell must be REFUSED");
+    assert!(
+        refused.message.contains("Unknown parameter"),
+        "precondition: the refusal must be the unknown-cell rejection, got: {}",
+        refused.message
+    );
+
+    let restored = refused
+        .restored
+        .as_deref()
+        .expect("a refusal must carry the state the frontend has to render");
+    assert!(
+        restored
+            .compile_diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("hot-reload-error")),
+        "the state handed to the frontend must still show the staleness banner \
+         the engine still holds; got: {:?}",
+        restored.compile_diagnostics
+    );
+    assert!(
+        crate::engine_lock::with_engine_lock(&engine, |s| s.is_stale())
+            .expect("with_engine_lock should not panic"),
+        "and the engine must still be stale, so the two agree"
+    );
+}
+
+#[test]
 fn set_parameter_impl_writes_the_value_back_to_the_ri_file() {
     // The wire name `set_parameter` keeps its spelling and acquires the meaning
     // it always claimed: setting a parameter is the DURABLE operation. This is
