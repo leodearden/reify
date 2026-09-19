@@ -1463,8 +1463,10 @@ pub fn compute_document_highlights(
 /// neither ever appears as `ExprKind::Ident`. This dedicated, BINDING-FREE
 /// traversal is the only way to surface them — see [`collect_type_name_uses`]
 /// for why the value-binding path is the wrong home. The home declaration token
-/// is located via goto_def's `find_declaration_name_span` so a declaration's
-/// rename/reference token is uniform with go-to-definition.
+/// is located via goto_def's `decl_name_span_in` so a declaration's
+/// rename/reference token is uniform with go-to-definition — fed the `parsed`
+/// the caller already holds, rather than `find_declaration_name_span`, which
+/// re-parses the same string.
 ///
 /// CAVEAT — the one type reference this traversal cannot locate.
 /// `TypeParamDecl.bounds` is a `Vec<String>` carrying no spans of its own (only
@@ -1478,7 +1480,7 @@ fn collect_decl_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> V
     let mut spans = Vec::new();
     // Home declaration token (`structure Name` / `occurrence def Name` / …),
     // present only when `name` is declared in THIS document.
-    if let Some(decl_token) = crate::goto_def::find_declaration_name_span(source, name) {
+    if let Some(decl_token) = crate::goto_def::decl_name_span_in(parsed, source, name) {
         spans.push(decl_token);
     }
     for decl in &parsed.declarations {
@@ -2069,8 +2071,13 @@ fn resolve_cross_file_home(
         return Some(CrossFileHome::ValueMember);
     }
     // 2. A declaration of any admitted kind in THIS document → home is the
-    //    current file.
-    if crate::goto_def::find_declaration_name_span(primary_source, word).is_some() {
+    //    current file. Scanned through `primary_parsed`, which the server
+    //    already parsed for this edit, rather than `find_declaration_name_span`
+    //    — that helper is this same scan preceded by its own
+    //    `parse_with_stdlib`, i.e. a second full parse of the primary buffer on
+    //    an interactive path, and the server's cached parse is that same
+    //    prelude-aware flavour.
+    if crate::goto_def::decl_name_span_in(primary_parsed, primary_source, word).is_some() {
         return Some(CrossFileHome::Declaration {
             uri: primary_uri.clone(),
             name: word.to_string(),
@@ -2200,7 +2207,10 @@ fn collect_importer_decl_name_references(
 /// When the cursor is on a local VALUE-member binding the call delegates to the
 /// single-file [`compute_references`] (value members keep single-file scope).
 /// Returns `None` when the cursor resolves to neither a value member nor a
-/// resolvable declaration.
+/// resolvable declaration — and, since #6972, also when it resolves to a home
+/// the DECLARATION-TOKEN oracle declines (a `Unit` reached through an import),
+/// rather than reporting a set from which the declaration itself is missing.
+/// The refusal is stated at the check.
 ///
 /// PURE: the open-document set arrives as `workspace_docs` and target resolution
 /// as the injected `resolve_import` closure (mirroring goto_def), so the whole
@@ -2238,13 +2248,38 @@ pub fn compute_references_cross_file(
             name,
             source: home_source,
         } => {
+            // ONE parse of the home document, shared by all three questions
+            // asked of it below. `find_declaration_name_span` and
+            // `classify_decl_name` each carry their own `parse` and were being
+            // called on this same string; both `_in` forms take the parse
+            // instead (the flavour argument is on `classify_decl_name_in`).
+            let home_parsed =
+                reify_syntax::parse(&home_source, reify_core::ModulePath::single("_home"));
+            let home_decl = crate::goto_def::decl_name_span_in(&home_parsed, &home_source, &name);
+
+            // REFUSE A HOME THE ORACLE DECLINES. The home document declares
+            // `name`, but `decl_name_span_in` will not locate its token —
+            // today exactly the `Unit` kind, which it refuses so that rename
+            // stays away from a unit whose literal-suffix uses no collector can
+            // reach. `resolve_cross_file_home` step 3 never consults the oracle
+            // (it keys only on `import_exposes_entity`), so without this the
+            // set would be the importers' tokens with the DECLARATION ITSELF
+            // absent even under `include_declaration = true` — one "reference"
+            // that is not the declaration. Refusing wholesale matches what
+            // `prepare_rename_cross_file` already does for the same kind.
+            //
+            // A home that does not declare `name` at all (a stale or
+            // mis-resolved import) is a different case and keeps its existing
+            // behaviour: `classify_decl_name_in` answers `None`, and the
+            // importing documents' tokens are still reported.
+            if home_decl.is_none() && classify_decl_name_in(&home_parsed, &name).is_some() {
+                return None;
+            }
+
             let mut locations = Vec::new();
 
             // Home document: declaration token + every same-file use site
             // (categories enumerated on `collect_decl_name_spans`).
-            let home_parsed =
-                reify_syntax::parse(&home_source, reify_core::ModulePath::single("_home"));
-            let home_decl = crate::goto_def::find_declaration_name_span(&home_source, &name);
             for span in collect_decl_name_spans(&home_source, &home_parsed, &name) {
                 // include_declaration=false drops the home declaration token.
                 if !include_declaration && Some(span) == home_decl {
@@ -2306,16 +2341,17 @@ pub fn compute_references_cross_file(
 /// unmatched arm. Reaching a unit home at all needs the import path, since the
 /// same-document arm of `resolve_cross_file_home` consults the oracle first.
 ///
-/// PARSE DIFFERENCE, and why it cannot decide kind admission: this scans a bare
-/// [`reify_syntax::parse`] while the oracle scans
-/// `reify_compiler::parse_with_stdlib`. The latter is
+/// PARSE DIFFERENCE, and why it cannot decide kind admission: a caller may hand
+/// this either parse flavour — a bare [`reify_syntax::parse`] or
+/// `reify_compiler::parse_with_stdlib`, which the oracle uses. The latter is
 /// `parse_with_prelude_enums` — it hands the parser the prelude's ENUM NAMES so
 /// a qualified `E.V` lowers correctly, and injects NO prelude declarations into
 /// `parsed.declarations`. Both therefore see exactly the user's own top-level
 /// declarations; the difference is in expression/type SHAPE below the
-/// declaration level, which no arm of either match inspects.
-fn classify_decl_name(source: &str, name: &str) -> Option<RefSymbolKind> {
-    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("_classify"));
+/// declaration level, which no arm of this match (nor of the oracle's) inspects.
+/// That is what lets [`compute_references_cross_file`] compare the two verdicts
+/// over ONE parse of the home document.
+fn classify_decl_name_in(parsed: &ParsedModule, name: &str) -> Option<RefSymbolKind> {
     let top_level = parsed.declarations.iter().find_map(|decl| {
         let (decl_name, kind) = match decl {
             Declaration::Structure(s) => (s.name.as_str(), RefSymbolKind::Structure),
@@ -2339,10 +2375,20 @@ fn classify_decl_name(source: &str, name: &str) -> Option<RefSymbolKind> {
         (decl_name == name).then_some(kind)
     });
     top_level.or_else(|| {
-        crate::analysis::purpose_nested_decl_names(&parsed)
+        crate::analysis::purpose_nested_decl_names(parsed)
             .any(|(nested, _)| nested == name)
             .then_some(RefSymbolKind::Structure)
     })
+}
+
+/// [`classify_decl_name_in`] for a caller holding only the source text.
+///
+/// Parses and delegates. A caller that already has the document's
+/// [`ParsedModule`] must call the `_in` form directly rather than pay a second
+/// parse of the same string on an interactive path.
+fn classify_decl_name(source: &str, name: &str) -> Option<RefSymbolKind> {
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("_classify"));
+    classify_decl_name_in(&parsed, name)
 }
 
 /// Whether a cross-file home of `kind` is renameable. Shared by
@@ -2380,7 +2426,10 @@ fn classify_decl_name(source: &str, name: &str) -> Option<RefSymbolKind> {
 /// - `Unit`: the rule cannot be discharged from here at all. Its one use form
 ///   is a literal suffix, and `UnitExpr::Unit(String)` carries no span for any
 ///   collector to push — see `goto_def::decl_name_span_in`, which
-///   refuses `Unit` outright for the same measurement.
+///   refuses `Unit` outright for the same measurement. FIND-REFERENCES refuses
+///   it too, in [`compute_references_cross_file`]: the two gates now agree on
+///   `Unit` rather than leaving a unit home reporting importers' tokens with no
+///   declaration in the set.
 ///
 /// The one residual inside an ADMITTED kind is `TypeParamDecl.bounds`, stated
 /// in [`collect_decl_name_spans`]' CAVEAT: a `T: Numeric` bound carries no span,
@@ -4947,12 +4996,12 @@ structure Assembly {
     /// the name token alone rather than the whole member statement — the
     /// rename-safety property, since `compute_rename_cross_file` uses the
     /// reference set as its exact edit set. The DECLARATION token is the
-    /// ORACLE's to supply, and `find_declaration_name_span` does not admit
-    /// `Constraint` today (measured: it returns `None` for `constraint def
-    /// Foo`), so the declaration half is asserted as an IMPLICATION — if the
-    /// oracle offers a home token, the set carries it. That is vacuously true
-    /// now and becomes a real assertion when the oracle widens, which keeps this
-    /// test green across that change instead of pinning a state about to move.
+    /// ORACLE's to supply, so the declaration half is asserted as an
+    /// IMPLICATION — if the oracle offers a home token, the set carries it.
+    /// Written that way when `decl_name_span_in` still refused `Constraint`, so
+    /// it was VACUOUSLY true; step-18 admitted the kind, and the implication
+    /// became a real assertion with no edit — which is the point of phrasing a
+    /// coupling in the direction that lets the gap be closed.
     ///
     /// Non-vacuity: the fixture is asserted to parse clean AND to really contain
     /// a `MemberDecl::ConstraintInst` named `Foo`, so grammar drift fails loudly
@@ -5502,7 +5551,7 @@ structure Assembly {
     /// go-to-definition resolve top-level declaration names UNIFORMLY across
     /// all kinds, via its own scanner (`analysis::decl_name_and_span` +
     /// `goto_def::decl_name_token`). It deliberately did NOT widen
-    /// `goto_def::find_declaration_name_span`, the home oracle feeding
+    /// `goto_def::decl_name_span_in`, the home oracle feeding
     /// `collect_decl_name_spans`, `resolve_cross_file_home` step 2 and the
     /// cross-file rename producer. At that time `collect_uses` /
     /// `collect_idents_in_expr` walked `ExprKind::Ident` in EXPRESSIONS only
@@ -5525,10 +5574,10 @@ structure Assembly {
     ///
     /// TWO GATES, STILL ASSERTED SEPARATELY, because they are still separate
     /// code:
-    /// - RENAME is gated by `classify_decl_name` + `is_renameable_cross_file`,
-    ///   which never consult `find_declaration_name_span`. The per-kind verdicts
+    /// - RENAME is gated by `classify_decl_name_in` + `is_renameable_cross_file`,
+    ///   which never consult `decl_name_span_in`. The per-kind verdicts
     ///   below pin THAT gate.
-    /// - The REFERENCE SET is gated by `find_declaration_name_span`. The
+    /// - The REFERENCE SET is gated by `decl_name_span_in`. The
     ///   coupling assertion at the tail pins that one. A rename-only assertion
     ///   cannot: a kind admitted to the home oracle alone leaves every
     ///   `prepare_rename*` call returning None, so the verdicts stay green while
@@ -5762,6 +5811,100 @@ structure Assembly {
                  form, or keep both oracles refusing this kind: {source}"
             );
         }
+    }
+
+    /// The MULTI-DOCUMENT half of the `Unit` refusal, which the single-document
+    /// rows of `cross_file_declaration_kind_admission_tracks_use_site_coverage`
+    /// cannot reach.
+    ///
+    /// In one document a unit home is already unreachable: step 2 of
+    /// `resolve_cross_file_home` consults the oracle, which refuses `Unit`, and
+    /// step 3 finds no import — so the whole query is `None` and the guard's
+    /// `meter` row is vacuously satisfied. Across TWO documents it is reachable,
+    /// because step 3 keys only on `import_exposes_entity` and never consults
+    /// the oracle: the home resolves, and the reference set used to come back as
+    /// the importer's `import` token ALONE — one "reference" that is not the
+    /// declaration, with the declaration missing even under
+    /// `include_declaration = true`, and no rename available to act on it.
+    ///
+    /// The contract is now a wholesale refusal, matching what
+    /// `prepare_rename_cross_file` already did for the same kind. Both are
+    /// asserted, and the two halves of the non-vacuity are asserted too: the
+    /// import really does resolve, and the SAME workspace shape yields a full
+    /// reference set for an ADMITTED kind — otherwise this test would pass
+    /// against a resolver that simply never resolves anything.
+    #[test]
+    fn cross_file_references_refuse_a_home_whose_kind_this_oracle_declines() {
+        const DEFS_SRC: &str = "pub unit hoop : Length\npub type Pressure = Force\n";
+        const USER_SRC: &str = "import defs.{hoop, Pressure}\n\
+                                structure S {\n    \
+                                param p : Pressure = 1.0\n\
+                                }";
+        let defs_uri = Url::parse("file:///proj/defs.ri").unwrap();
+        let user_uri = Url::parse("file:///proj/user.ri").unwrap();
+        let mut map = HashMap::new();
+        map.insert("defs".to_string(), (defs_uri.clone(), DEFS_SRC.to_string()));
+        let resolver = mock_resolver(map);
+        let docs = workspace_docs(&[(defs_uri.clone(), DEFS_SRC), (user_uri.clone(), USER_SRC)]);
+
+        let parsed_user = reify_syntax::parse(USER_SRC, ModulePath::single("user"));
+        assert!(
+            parsed_user.errors.is_empty(),
+            "fixture must parse clean, got {:?}",
+            parsed_user.errors
+        );
+        let refs_at = |name: &str, occurrence: usize| {
+            compute_references_cross_file(
+                USER_SRC,
+                &parsed_user,
+                &user_uri,
+                offset_to_position(USER_SRC, occurrences(USER_SRC, name)[occurrence] as u32),
+                true,
+                &docs,
+                &resolver,
+            )
+        };
+
+        // NON-VACUITY (a): the import arm really does reach `defs.ri` for a kind
+        // the oracle admits, so the refusal below is about the KIND and not
+        // about a resolver that resolves nothing.
+        let alias_refs = refs_at("Pressure", 0)
+            .expect("an admitted kind imported from defs.ri must resolve to a home");
+        assert!(
+            alias_refs.iter().any(|l| l.uri == defs_uri),
+            "non-vacuity: the admitted kind's set must include the home \
+             declaration in defs.ri, got: {alias_refs:?}"
+        );
+
+        // NON-VACUITY (b): the unit is genuinely exposed by that same import, so
+        // `resolve_cross_file_home` step 3 does reach a home for it.
+        assert_eq!(
+            classify_decl_name(DEFS_SRC, "hoop"),
+            Some(RefSymbolKind::Unit),
+            "fixture: defs.ri must declare `hoop` as a unit"
+        );
+        assert!(
+            crate::goto_def::find_declaration_name_span(DEFS_SRC, "hoop").is_none(),
+            "fixture: the declaration-token oracle must decline that unit"
+        );
+
+        // THE CONTRACT. Both gates refuse, in the same direction.
+        assert!(
+            refs_at("hoop", 0).is_none(),
+            "a home the declaration-token oracle declines must refuse the whole \
+             query, not report the importer's token with no declaration in the set"
+        );
+        assert!(
+            prepare_rename_cross_file(
+                USER_SRC,
+                &parsed_user,
+                &user_uri,
+                offset_to_position(USER_SRC, occurrences(USER_SRC, "hoop")[0] as u32),
+                &resolver,
+            )
+            .is_none(),
+            "rename already refused a unit home; references must not disagree"
+        );
     }
 
     /// The CROSS-FILE path must give the same answer as the same-file path for a

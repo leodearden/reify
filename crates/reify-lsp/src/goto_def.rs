@@ -104,7 +104,7 @@ pub fn compute_goto_definition_with_parsed(
     //   the cursor-on-import contract is untouched.
     //
     // The returned range is the NAME TOKEN — deliberately the same shape the
-    // cross-file path returns via `find_declaration_name_span`; closing that
+    // cross-file path returns via `decl_name_span_in`; closing that
     // asymmetry is why task 6388 exists. Member resolution above keeps returning
     // the full member statement span, unchanged.
     //
@@ -359,45 +359,21 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
     })
 }
 
-/// Find the **name-token span** of a top-level declaration named `name`.
+/// [`decl_name_span_in`] for a caller holding only the source text: parses
+/// `source` (prelude-aware, for AST-shape consistency across reify-lsp; see
+/// task 2525) and delegates.
 ///
-/// Parses `source` (prelude-aware, for AST-shape consistency across reify-lsp;
-/// see task 2525) and delegates to [`decl_name_span_in`]. Returns `None` when
-/// no declaration matches.
-///
-/// Factored from [`find_declaration_in_source`] so the cross-file
-/// reference/rename collectors (task κ, 4210) can obtain a renamed structure's
-/// home declaration token uniformly as a `SourceSpan`, independent of the
-/// `Location`/`uri` packaging that goto-def needs.
-///
-/// # This helper feeds REFERENCES, not just cross-file goto-def
-///
-/// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
-/// the `collect_decl_name_spans` home token, `resolve_cross_file_home`
-/// step 2, and the cross-file rename producer. So **adding a kind here changes
-/// what the REFERENCE SET reports**, and a kind whose use sites are not
-/// collected would report the declaration token ALONE — the incomplete input a
-/// later rename would trust and silently act on.
-///
-/// Its kind list is therefore governed by one rule, not by convenience: a kind
-/// is admitted exactly when every use-site form for it is collected. Ten of the
-/// eleven named kinds now satisfy it — Structure, Occurrence, Function, Enum,
-/// Trait and Field always did; TypeAlias, Constraint, Purpose and Joint were
-/// admitted once #6539 taught the collectors every `TypeExpr` root, every
-/// `constraint Name(…)` instantiation and a purpose's sibling child regions.
-/// `Unit` is the one refusal, and it is not a backlog item: its only use site is
-/// a literal suffix carrying no span, so no collector can ever reach it from
-/// here (the measurement is on [`decl_name_span_in`]).
-///
-/// That makes this list narrower than [`crate::analysis::decl_name_and_span`],
-/// the wildcard-free SAME-FILE source, by exactly one kind — but the two must
-/// still not be "unified", because they answer different questions: that one
-/// asks what a declaration is NAMED, this one asks whether renaming it is SAFE.
-///
-/// The full argument, the measurement behind it, and the separate allowlist
-/// that gates rename itself (`references::classify_decl_name`) live on the
-/// guard test `references::tests::
-/// cross_file_declaration_kind_admission_tracks_use_site_coverage`.
+/// TEST-ONLY, and deliberately so. Every production caller — cross-file
+/// goto-def, and the three points in `references.rs` this once fed (the
+/// `collect_decl_name_spans` home token, `resolve_cross_file_home` step 2, the
+/// cross-file rename producer) — already holds the document's `ParsedModule`,
+/// so each of those calls was a SECOND full parse of a string the caller had
+/// just parsed, on an interactive per-keystroke-adjacent path. They now pass
+/// their parse to `decl_name_span_in` directly. What survives here is the
+/// `&str` convenience a TEST wants, where a parse is not already at hand and
+/// the cost is irrelevant; a new production caller belongs on the `_in` form,
+/// not here.
+#[cfg(test)]
 pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
@@ -414,13 +390,39 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 ///
 /// Takes `&ParsedModule` rather than `&str` so a caller that needs more than one
 /// declaration shape pays for exactly one parse; `source` is still required
-/// because the AST carries whole-declaration spans, not name-token spans.
+/// because the AST carries whole-declaration spans, not name-token spans. Every
+/// production caller passes a parse it already holds — see the test-only
+/// [`find_declaration_name_span`] for why the `&str` form is not one of them.
 ///
-/// Its kind allowlist, [`admitted_decl_name_and_span`], is WILDCARD-FREE over
-/// all 14 [`reify_ast::Declaration`] variants, so a new declaration kind is a
-/// compile error rather than a silently unresolvable one. Ten of the eleven
-/// NAMED kinds are admitted. `Unit` is the sole named refusal, and
-/// `Import`/`Default`/`Module` declare no name at all.
+/// # This scan feeds REFERENCES, not just cross-file goto-def
+///
+/// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
+/// the `collect_decl_name_spans` home token, `resolve_cross_file_home` step 2,
+/// and — through the first — the cross-file rename producer. So **adding a kind
+/// here changes what the REFERENCE SET reports**, and a kind whose use sites are
+/// not collected would report the declaration token ALONE, the incomplete input
+/// a later rename would trust and silently act on.
+///
+/// Its kind allowlist, [`admitted_decl_name_and_span`], is therefore governed by
+/// one rule, not by convenience: a kind is admitted exactly when every use-site
+/// form for it is collected. Ten of the eleven NAMED kinds now satisfy it —
+/// Structure, Occurrence, Function, Enum, Trait and Field always did; TypeAlias,
+/// Constraint, Purpose and Joint were admitted once #6539 taught the collectors
+/// every `TypeExpr` root, every `constraint Name(…)` instantiation and a
+/// purpose's sibling child regions. `Unit` is the sole named refusal (measured
+/// below), and `Import`/`Default`/`Module` declare no name at all. The allowlist
+/// is WILDCARD-FREE over all 14 [`reify_ast::Declaration`] variants, so a new
+/// declaration kind is a compile error rather than a silently unresolvable one.
+///
+/// That makes this list narrower than [`crate::analysis::decl_name_and_span`],
+/// the wildcard-free SAME-FILE source, by exactly one kind — but the two must
+/// still not be "unified", because they answer different questions: that one
+/// asks what a declaration is NAMED, this one asks whether renaming it is SAFE.
+///
+/// The full argument, the measurement behind it, and the separate allowlist
+/// that gates rename itself (`references::classify_decl_name_in`) live on the
+/// guard test `references::tests::
+/// cross_file_declaration_kind_admission_tracks_use_site_coverage`.
 ///
 /// It also DESCENDS one level into purpose bodies, via
 /// [`crate::analysis::purpose_nested_decl_names`] — the crate's single source of
@@ -459,28 +461,35 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// search to the declaration's own span exists to prevent.
 ///
 /// What a refusal costs is enumerated per consumer rather than summarised,
-/// because they do not all behave alike — three are inert and one is not:
+/// because they do not all behave alike:
 /// - [`find_declaration_in_source`] (goto-def) is read-only: no jump. Inert.
 /// - `references.rs::resolve_cross_file_home` step 2 tests only `.is_some()`,
-///   so a structure declared in the primary document stops being recognised as
-///   the home and the query falls through to the import arm — which, in the
-///   home document itself, resolves to nothing. A wholesale `None`. Inert.
-/// - `references.rs::compute_references_cross_file` uses the value only to drop
-///   the declaration token when `include_declaration = false`; with no token to
-///   drop, that filter is a no-op. Inert.
+///   so a declaration in the primary document stops being recognised as the
+///   home and the query falls through to the import arm — which, in the home
+///   document itself, resolves to nothing. A wholesale `None`. Inert.
+/// - `references.rs::compute_references_cross_file` REFUSES THE WHOLE QUERY
+///   (`None`) when this function declines a name the home document does
+///   declare — the condition it checks via `classify_decl_name_in`. It used to
+///   use the value only to drop the declaration token under
+///   `include_declaration = false`, which made the refusal look inert; it was
+///   not. Reached through an IMPORT (doc A declares `unit meter : Length`, doc
+///   B writes `import defs.{meter}`), `resolve_cross_file_home` step 3 keys
+///   only on `import_exposes_entity` and never consults this oracle, so the set
+///   came back as B's import token ALONE — one "reference" that is not the
+///   declaration, with the declaration itself missing even under
+///   `include_declaration = true`. Pinned by
+///   `references::tests::cross_file_references_refuse_a_home_whose_kind_this_oracle_declines`.
 /// - `references.rs::collect_decl_name_spans` pushes this token into the
-///   span set that `compute_rename_cross_file` turns into edits. A refusal
-///   silently OMITS it, so a rename driven from an IMPORTING document (where
-///   the home resolves through the import arm, never consulting this function)
-///   rewrites every construction site and import token but leaves the
-///   declaration behind — a partial rename. Still strictly better than the old
-///   locator, which rewrote the declaration's leading keyword, but not free.
-///   Making the rename path refuse wholesale when the home token cannot be
-///   located is a follow-up; it is not reachable today, because no parse
-///   observed so far yields a surviving declaration whose span excludes its own
-///   name token (error recovery either keeps the name inside the span or emits
-///   no declaration at all, which this function already answers with `None`).
-fn decl_name_span_in(
+///   span set that `compute_rename_cross_file` turns into edits, so a refusal
+///   would silently OMIT it and leave a rename driven from an importing
+///   document rewriting every use while the declaration stayed behind. The
+///   wholesale refusal above is what forecloses that: rename runs through
+///   `compute_references_cross_file`, which now returns `None` first. Note the
+///   partial-rename shape was never reachable anyway — no parse observed so far
+///   yields a surviving declaration whose span excludes its own name token
+///   (error recovery either keeps the name inside the span or emits no
+///   declaration at all, which this function already answers with `None`).
+pub(crate) fn decl_name_span_in(
     parsed: &reify_ast::ParsedModule,
     source: &str,
     name: &str,
@@ -713,7 +722,7 @@ mod tests {
         // Task 6388: goto-def on a top-level declaration NAME used to return
         // None — a deliberate non-goal, now lifted. Standard LSP behaviour is
         // that goto-def on a definition returns that definition, and the
-        // cross-file path (find_declaration_name_span) has always returned the
+        // cross-file path (decl_name_span_in) has always returned the
         // NAME TOKEN for the very same symbol; this closes that asymmetry.
         let source = reify_test_support::bracket_source();
         // 'Bracket' on line 0: "structure def Bracket {"
