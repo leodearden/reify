@@ -42,8 +42,10 @@ tree now rather than in a branch-local commit —
 the thin `tests/infra/test_verify_env_ambient_isolation.sh` wrapper. `FC6b`
 pins its derived route as `via:test_occt_flock_gate.sh` — *not*
 `via:run_all.sh`, which is what a grammar loose enough to read docstring prose
-as an invocation would have derived — and `G3`/`G1` read the spawn at
-`test_verify_env_ambient_isolation.py:175-178` for 1 site / 0 unredirected.
+as an invocation would have derived — and `G3`/`G1` read that file's single
+spawn, the `subprocess.Popen` in `run_under_ambient`, for 1 site / 0
+unredirected. Cited by SYMBOL, not by line: nothing asserts on a line number,
+so a stale one is silent.
 
 ### The Python dialect a port must emit
 

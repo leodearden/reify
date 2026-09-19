@@ -13,7 +13,8 @@
 # This wrapper is also what test_slot_timeout_marker.sh Section F reads through:
 # its derivation follows an anchored python3 invocation of a same-stem sibling
 # into that sibling, so this member stays in the deadline-capable roster with
-# its real route (via:test_occt_flock_gate.sh, which the .py invokes at :520).
+# its real route (via:test_occt_flock_gate.sh, which the .py invokes from
+# TestNestedSuiteUnderRealAmbient.setUpClass).
 #
 # Verifies that:
 #   1. python3 is on PATH

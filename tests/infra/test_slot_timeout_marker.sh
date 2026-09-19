@@ -1835,8 +1835,9 @@ F_EDGE_PY_STR_SUF='"'
 # THE VERB SET IS {bash, sh}, deliberately not (b)'s: `source` is a shell
 # builtin and can never be argv[0] of an exec, so admitting it would only add a
 # shape that cannot occur.
-# WHAT THIS REJECTS: `[sys.executable, str(TOOL_PATH), *args]`, live at
-# test_flake_density_report.py:83 -- an argv list headed by a bare NAME rather
+# WHAT THIS REJECTS: `[sys.executable, str(TOOL_PATH), *args]`, live in
+# test_flake_density_report.py's LedgerFixture.run_cli -- an argv list headed
+# by a bare NAME rather
 # than a quoted verb. Requiring (h) AND (i) FOR THE SAME VARIABLE is the direct
 # analogue of the (d)+(e) pairing and rejects the Python form of the bind-only
 # inspection shape for the same measured reason (e) records.
@@ -2663,8 +2664,14 @@ echo "--- FC8: the PYTHON-SIBLING dialect -- a wrapper whose invocation lives in
 # DATA rather than syntax:
 #   NESTED = SCRIPT_DIR / "test_occt_flock_gate.sh"   a Path-join, not `VAR=`
 #   ["bash", str(NESTED)]                             a LIST, not `bash <path>`
-# MEASURED on the parked port of test_verify_env_ambient_isolation.py (:53 and
-# :520): F_EDGE_BIND_PRE cannot match the first (it requires `VAR=` with no
+# MEASURED on test_verify_env_ambient_isolation.py -- its module-level
+# NESTED_SUITE bind, and the argv list in
+# TestNestedSuiteUnderRealAmbient.setUpClass. CITED BY SYMBOL, NOT BY LINE, and
+# that holds for every cross-file citation this dialect and Section G's Python
+# rows carry: nothing here asserts on a line number, so a stale one is silent,
+# and a reader re-deriving a grammar decision from it re-derives it wrongly.
+# A symbol survives every edit short of a rename.
+# F_EDGE_BIND_PRE cannot match the first (it requires `VAR=` with no
 # blanks around it and a `/` immediately after), and F_EDGE_VERB_RE cannot match
 # the second (it requires the verb followed by a BLANK, where a list gives it a
 # `"`). A ported member therefore drops silently out of the derivation, taking
@@ -2836,7 +2843,7 @@ class TestSeedIsOnlyInspected(unittest.TestCase):
 F8BOPYEOF
 
 # (vii) An argv list whose FIRST element is not a quoted exec verb. The shape is
-# transcribed from test_flake_density_report.py:83
+# transcribed from test_flake_density_report.py's LedgerFixture.run_cli
 # (`[sys.executable, str(TOOL_PATH), *args]`); the fixture points it at the seed
 # node so that the quoted-verb-first requirement is the only thing rejecting it.
 # What that requirement buys, measured: it is what keeps the live
@@ -2903,7 +2910,8 @@ assert "FC8f: none of the four measured non-invocation shapes is an edge -- a DO
 # tree already carries exactly one delegating wrapper/sibling pair,
 # test_flake_density_report.{sh,py}, and its `.py` names run_all.sh in TWO
 # docstrings (:9, :56) while spawning only `[sys.executable, str(TOOL_PATH),
-# *args]` (:83). It is therefore a free, permanent, real-tree instance of both
+# *args]` (LedgerFixture.run_cli). It is therefore a free, permanent, real-tree
+# instance of both
 # (iv) and (vii) at once -- and an expensive one to get wrong, because
 # run_all.sh sorts ahead of every other candidate, so a docstring-admitting rule
 # would put this file in the roster with route via:run_all.sh and turn F1 RED
@@ -3154,12 +3162,13 @@ G_SITE=(
 # sibling, which is where its deadline-capable invocation of
 # test_occt_flock_gate.sh lives. Its derived ROUTE is unchanged and still
 # via:test_occt_flock_gate.sh (FC6b pins it) -- but in Python ARGV IS DATA and
-# the spawn is the exec. The argv list `["bash", str(NESTED_SUITE)]` (:520)
+# the spawn is the exec. The argv list `["bash", str(NESTED_SUITE)]` in
+# TestNestedSuiteUnderRealAmbient.setUpClass
 # carries no stream disposition whatsoever, so asserting on it could only ever
 # produce the same false RED that Section G already refuses to raise on
 # test_run_all_ambient_isolation.sh's forwarding call, one indirection up. The
-# leak property lives entirely at run_under_ambient's single Popen funnel
-# (:175-178), which is what this row therefore names. MEASURED: scanning the
+# leak property lives entirely at run_under_ambient's single Popen funnel,
+# which is what this row therefore names. MEASURED: scanning the
 # `.py` for the spawn gives 1 site / 0 unredirected; the `.sh` wrapper has none
 # of either, which is precisely the vacuity G3 caught when the port landed.
 #
@@ -3242,7 +3251,8 @@ G_CAPTURE_RE='2>[^&]'
 # subprocess.PIPE and subprocess.DEVNULL satisfy it, for exactly the reason
 # `2>/dev/null` does at G2e1: Section G asserts the LEAK property, not D4
 # evidence preservation. `capture_output=True` is the third in-tree idiom
-# (test_flake_density_report.py:83) and diverts BOTH streams in one token.
+# (test_flake_density_report.py's LedgerFixture.run_cli) and diverts BOTH
+# streams in one token.
 G_PY_CAPTURE_RE='(stderr=subprocess\.(PIPE|DEVNULL)|capture_output=True)'
 # G_PY_MERGE_RE is the `2>&1` analogue, and carries the same stdout
 # PRECONDITION: merging stderr into an INHERITED stdout is the leak, not a fix.
@@ -3991,7 +4001,7 @@ printf '%s\n' \
     'subprocess.run(["bash", str(NESTED)], stderr=subprocess.DEVNULL, check=True)' \
     > "$G_PY_CTRL_LINE_DEVNULL"
 # `capture_output=True` is the third in-tree idiom and diverts BOTH streams in
-# one token. Live at test_flake_density_report.py:83.
+# one token. Live in test_flake_density_report.py's LedgerFixture.run_cli.
 printf '%s\n' \
     'subprocess.run([sys.executable, str(TOOL_PATH)], capture_output=True, text=True)' \
     > "$G_PY_CTRL_LINE_CAPOUT"
