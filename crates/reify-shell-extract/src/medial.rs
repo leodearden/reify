@@ -126,7 +126,7 @@ pub struct MedialOptions {
     /// floor) is the coarsest grid it will build, so this field must
     /// satisfy `2 × nb ≥ 4`, i.e. `nb ≥ 2.0`, or no grid the producer
     /// serves is measurable at all. Enforced across the two crates by
-    /// `crates/reify-eval/tests/shell_voxel_resolution_window.rs`.
+    /// `crates/reify-eval/tests/harness_kernel_realization/shell_voxel_resolution_window.rs`.
     /// (Named in prose only — this crate deliberately carries no
     /// kernel/eval dependency, so it stays cycle-free.)
     pub narrow_band_half_width_voxels: f64,

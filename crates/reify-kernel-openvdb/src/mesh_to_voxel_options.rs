@@ -127,8 +127,9 @@ pub const BAND_MARGIN_VOXELS: f64 = 2.0;
 /// consumer's band at all (today it deliberately does not — there is no
 /// dependency on `reify-shell-extract`, and adding one would invert the
 /// layering), so it is filed as separate follow-up work rather than done here.
-/// `crates/reify-eval/tests/shell_voxel_resolution_window.rs` brackets the two
-/// constants so the gap stays visible and the window cannot silently close.
+/// `crates/reify-eval/tests/harness_kernel_realization/shell_voxel_resolution_window.rs`
+/// brackets the two constants so the gap stays visible and the window cannot
+/// silently close.
 ///
 /// Tunable on the same "measure first, then tune" footing as
 /// [`VOXELS_PER_LONGEST_AXIS`] (PRD §6 D7), but constrained in BOTH directions:

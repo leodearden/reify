@@ -24,8 +24,10 @@
 //! `NoMeasurement` with no diagnostic naming over-refinement as the cause —
 //! the producer (`reify-kernel-openvdb`'s `MeshToVoxelOptions::for_resolution`)
 //! happily serves such a grid, since it enforces only the opposite, COARSE
-//! bound. `crates/reify-eval/tests/shell_voxel_resolution_window.rs` brackets
-//! the two constants against each other; this file owns the upper edge itself.
+//! bound.
+//! `crates/reify-eval/tests/harness_kernel_realization/shell_voxel_resolution_window.rs`
+//! brackets the two constants against each other; this file owns the upper
+//! edge itself.
 //!
 //! # Why the edges, and only the edges
 //!
