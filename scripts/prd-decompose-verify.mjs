@@ -400,7 +400,11 @@ Instructions:
                       group>", "group": <int|str, optional, default 1>,
                       "min": <number>, "max": <number>, "finite": <bool>}}
                   with AT LEAST ONE of min/max/finite — a pattern alone asserts
-                  nothing about the value and is rejected at bind time.
+                  nothing about the value and is rejected at bind time.  The
+                  pattern must match what reify eval actually prints
+                  ("Structure.field = <value> [unit]"): a pattern that locates
+                  nothing is UNPROVABLE, not a failure, because a mis-aimed
+                  probe is indistinguishable from an absent capability.
 5. Each premise needs a fixture path (repo-relative). If the leaf doesn't
    specify one, you may need to reference an existing fixture in
    tests/prd-gate/fixtures/ or note that a new fixture is needed.

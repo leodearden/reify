@@ -80,12 +80,16 @@ with a mandatory predicate — see [`match` predicate semantics](#match-predicat
 | `grammar` | `tree-sitter parse --quiet <fixture>` (CWD = `tree-sitter-reify/`) | exit 0 → **PRESENT** (no parse errors); exit 1 with `(ERROR` in output → **ABSENT**; "Failed to load language" in stderr → **HARNESS ERROR** |
 | `check` | `reify check <fixture>` | `match` predicate satisfied → **PRESENT**; predicate not satisfied → **ABSENT** |
 | `ir` | `reify eval <fixture>` (eval-error proxy) | exit 0 → **ABSENT** (sound by determinism); exit ≠ 0 with asserted `stderr_contains` signature → **PRESENT**; exit ≠ 0 without signature → **INDETERMINATE** → UNPROVABLE |
-| `value` | `reify eval <fixture>` (same argv as `ir` — the kind names the observation model, not the command) | exit 0 and the `stdout_value` capture satisfies the constraint → **PRESENT**; exit 0 otherwise → **ABSENT**; exit ≠ 0 → **INDETERMINATE** → UNPROVABLE |
+| `value` | `reify eval <fixture>` (same argv as `ir` — the kind names the observation model, not the command) | exit 0 and the `stdout_value` capture satisfies the constraint → **PRESENT**; exit 0 and a capture was read but failed the constraint → **ABSENT**; exit 0 but the `pattern` located nothing → **INDETERMINATE** → UNPROVABLE; exit ≠ 0 → **INDETERMINATE** → UNPROVABLE |
 
-`value` is asymmetric the opposite way from `ir`. A non-zero exit means no value
-was produced, so "the capability is absent" and "the fixture or harness is
-broken" are indistinguishable — answering ABSENT there would manufacture a
-confident negative finding out of a broken probe.
+`value` is asymmetric the opposite way from `ir`: **ABSENT is reserved for a value
+that was actually read.** If nothing was read — a non-zero exit produced no
+output, or the `pattern` located nothing because the output field was renamed or
+the pattern was typo'd — then "the capability is absent" and "the fixture, the
+pattern or the harness is broken" are indistinguishable, and answering ABSENT
+would manufacture a confident negative finding out of a broken probe. Both cases
+are INDETERMINATE, so a mis-aimed `value` probe is UNPROVABLE under *either*
+polarity rather than silently PASSing a pinned `observation: absent`.
 
 ### Why `value` exists (task #6876)
 
@@ -162,7 +166,9 @@ All set fields must hold simultaneously (AND semantics). An empty `match: {}` me
 ### `stdout_value` (value probes only)
 
 `re.search(pattern, stdout)` → take `group` (default `1`) → parse it as a float →
-apply the bounds. Any step failing makes the observation ABSENT. Two invariants
+apply the bounds. A failure at the *parse* or *bounds* step makes the observation
+ABSENT; a failure to locate the capture at all makes it INDETERMINATE (see the
+probe-kinds table above). Two invariants
 are enforced at **load** time, so a malformed predicate is a usage error (exit
 64) rather than a silently-passing probe:
 

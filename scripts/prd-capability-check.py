@@ -42,8 +42,11 @@ Probe kinds and dispatch:
     value    — `reify eval <fixture>` (same argv as ir; the kind names the
                observation model, not the command)
                exit 0 AND the stdout_value predicate holds → PRESENT
-               exit 0 AND it does not hold → ABSENT
+               exit 0, a value read and found wanting → ABSENT
+               exit 0, pattern located nothing → INDETERMINATE → UNPROVABLE
                exit ≠ 0 → INDETERMINATE → UNPROVABLE
+               ABSENT is reserved for a value that was actually read: nothing
+               read means "absent" and "broken probe" are indistinguishable.
                Exists because ir's clean branch is exit-code-only: it answers
                ABSENT on exit 0 without consulting match at all, so a premise
                about the printed VALUE bound as ir/absent asserts nothing.
@@ -51,7 +54,7 @@ Probe kinds and dispatch:
 Verdicts:
     PASS          — observed matches expected
     FAIL          — observed contradicts expected
-    UNPROVABLE    — observation is INDETERMINATE (only possible for ir kind)
+    UNPROVABLE    — observation is INDETERMINATE (only possible for ir and value)
     HARNESS_ERROR — probe tool error: missing binary, grammar load failure, etc.
                     Emitted verbatim in both text and --json output; always triggers exit 70.
 
@@ -83,7 +86,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +455,7 @@ def _validate_value_predicate(index: int, match: Dict[str, Any]) -> None:
 
     Raises ValueError naming probe[index], the offending key, and why it is a
     defect.  Returns None when the predicate is well formed, which is the
-    precondition stdout_value_satisfied() relies on.
+    precondition observe_stdout_value() relies on.
     """
     where = f"probe[{index}]"
 
@@ -864,12 +867,35 @@ def observe_stdout_value(
     return ValueObservation(True, captured, None)
 
 
-def stdout_value_satisfied(run: ProbeRun, stdout_value: Dict[str, Any]) -> bool:
-    """The boolean view of observe_stdout_value — what observe() needs."""
-    return observe_stdout_value(run, stdout_value).satisfied
+def _value_reading_observation(reading: ValueObservation) -> str:
+    """What a reading of a value probe's stdout amounts to.
+
+    A pattern that located nothing is INDETERMINATE, not ABSENT, for the same
+    reason a non-zero exit is: a renamed output field, a reworded `reify eval`
+    line or a typo'd pattern is indistinguishable from a value that WAS read
+    and found wanting, so calling it ABSENT would manufacture a confident
+    negative finding out of a mis-aimed probe.  It also keeps a value probe
+    pinned `observation: absent` from PASSing forever the moment its pattern
+    stops matching.
+    """
+    if reading.failed_constraint == _VALUE_FAILED_PATTERN:
+        return INDETERMINATE
+    return PRESENT if reading.satisfied else ABSENT
 
 
 def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
+    """The observation constant alone — the thin view of observe_with_evidence().
+
+    observe_with_evidence() states the observation model and is the single site
+    that computes it; this is the caller-facing name for the common case of
+    wanting the answer without a value probe's reading of stdout.
+    """
+    return observe_with_evidence(probe_kind, run, match)[0]
+
+
+def observe_with_evidence(
+    probe_kind: str, run: ProbeRun, match: Dict[str, Any]
+) -> Tuple[str, Optional[ValueObservation]]:
     """Determine observation (PRESENT/ABSENT/INDETERMINATE or _HARNESS_ERROR).
 
     grammar:
@@ -892,13 +918,16 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
 
     value (the clean-eval mirror of ir, asymmetric the other way):
         exit 0, stdout_value predicate satisfied → PRESENT
-        exit 0, predicate not satisfied → ABSENT
+        exit 0, a value was read and found wanting → ABSENT
+        exit 0, the pattern located no value → INDETERMINATE
         exit ≠ 0 → INDETERMINATE
-            A non-zero exit means no value was produced, so "the capability is
-            absent" and "the fixture or harness is broken" are indistinguishable;
-            answering ABSENT there would manufacture a confident negative finding
-            out of a broken probe.  That is the mirror image of the exit-code-only
-            vacuity this kind exists to close, so it is refused too.
+            Both INDETERMINATE branches are one rule: nothing was read, so "the
+            capability is absent" and "the fixture, the pattern or the harness is
+            broken" are indistinguishable, and answering ABSENT would manufacture
+            a confident negative finding out of a broken probe.  That is the
+            mirror image of the exit-code-only vacuity this kind exists to close,
+            so it is refused too.  Only a capture that was actually parsed and
+            failed its constraint earns ABSENT.
 
     Args:
         probe_kind: "grammar", "check", "ir", or "value".
@@ -906,20 +935,25 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
         match: Match predicate dict from the probe's expected.match field.
 
     Returns:
-        PRESENT, ABSENT, INDETERMINATE, or _HARNESS_ERROR.
+        (observation, reading) where observation is PRESENT, ABSENT,
+        INDETERMINATE or _HARNESS_ERROR, and reading is the ValueObservation
+        behind it — non-None exactly when a value probe exited 0 and its stdout
+        was read.  Computing both here is what keeps a value probe's verdict and
+        the evidence printed beside it one reading of one run rather than two
+        searches that happen to agree.
     """
     # Universal harness-error checks: the probe never ran to completion (any probe
     # kind).  run_probe() injects _BINARY_NOT_FOUND_SENTINEL on a launch failure
     # and _PROBE_TIMEOUT_SENTINEL when a caller-supplied timeout elapsed, so all
     # kinds surface "could not run" as _HARNESS_ERROR, not as ABSENT/FAIL.
     if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
-        return _HARNESS_ERROR
+        return _HARNESS_ERROR, None
     if _PROBE_TIMEOUT_SENTINEL in run.stderr:
-        return _HARNESS_ERROR
+        return _HARNESS_ERROR, None
 
     if probe_kind == "grammar":
         if run.exit_code == 0:
-            return PRESENT
+            return PRESENT, None
         # Shares _GRAMMAR_LOAD_FAILURE_MARKER with grammar_cache_denied() on
         # purpose: two independent spellings of the same tree-sitter signature
         # would drift, and the drift is silent-and-dangerous in exactly one
@@ -927,37 +961,36 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
         # branch would reclassify a load failure as ABSENT, i.e. promote a
         # harness error to a real PASS/FAIL verdict.
         if _GRAMMAR_LOAD_FAILURE_MARKER in run.stderr:
-            return _HARNESS_ERROR
+            return _HARNESS_ERROR, None
         if run.exit_code == 1:
             # Parse error (the grammar produced ERROR nodes).  tree-sitter with
             # --quiet may suppress the "(ERROR ...)" tree output entirely, so we
             # classify any exit 1 without a load-failure stderr as ABSENT rather
             # than requiring "(ERROR" to appear in the combined output.
-            return ABSENT
+            return ABSENT, None
         # exit ≠ {0, 1} — unexpected; treat as harness error
-        return _HARNESS_ERROR
+        return _HARNESS_ERROR, None
 
     if probe_kind == "check":
-        return PRESENT if match_predicate(run, match) else ABSENT
+        return (PRESENT if match_predicate(run, match) else ABSENT), None
 
     if probe_kind == "ir":
         if run.exit_code == 0:
-            return ABSENT
+            return ABSENT, None
         # exit ≠ 0: check for the asserted signature in stderr
         sig = match.get("stderr_contains")
         if sig and sig in run.stderr:
-            return PRESENT
-        return INDETERMINATE
+            return PRESENT, None
+        return INDETERMINATE, None
 
     if probe_kind == "value":
         if run.exit_code != 0:
-            return INDETERMINATE
-        if stdout_value_satisfied(run, match[_VALUE_PREDICATE_KEY]):
-            return PRESENT
-        return ABSENT
+            return INDETERMINATE, None
+        reading = observe_stdout_value(run, match[_VALUE_PREDICATE_KEY])
+        return _value_reading_observation(reading), reading
 
     # Unknown kind — this shouldn't happen after validation, but be safe
-    return _HARNESS_ERROR
+    return _HARNESS_ERROR, None
 
 
 # ---------------------------------------------------------------------------
@@ -1407,9 +1440,13 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
     # Run the probe and capture output.
     run = runner(probe)
 
-    # Determine observation.
+    # Determine observation, and — for a value probe that produced output — the
+    # reading of stdout behind it.  One call, so the verdict and the evidence
+    # rendered beside it cannot be two different searches of the same run.
+    # value_obs is None for every other kind and for a value probe that exited
+    # non-zero: there was no reading to report.
     match = probe.expected.get("match", {})
-    obs = observe(probe.probe_kind, run, match)
+    obs, value_obs = observe_with_evidence(probe.probe_kind, run, match)
 
     # Determine verdict.
     if obs == _HARNESS_ERROR:
@@ -1417,13 +1454,6 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
     else:
         expected_obs = probe.expected["observation"]
         verd = verdict(obs, expected_obs)
-
-    # A value probe's captured token is evidence the renderer cannot recover
-    # from a truncated stdout preview.  Only PRESENT/ABSENT reached the value at
-    # all: INDETERMINATE and _HARNESS_ERROR mean none was produced.
-    value_obs = None
-    if probe.probe_kind == "value" and obs in (PRESENT, ABSENT):
-        value_obs = observe_stdout_value(run, match[_VALUE_PREDICATE_KEY])
 
     return Result(
         probe=probe,

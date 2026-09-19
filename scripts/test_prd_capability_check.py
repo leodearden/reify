@@ -620,10 +620,13 @@ class TestValueProbeSchema(unittest.TestCase):
 class TestStdoutValuePredicate(unittest.TestCase):
     """The stdout half of a value probe, in isolation — no subprocesses.
 
-    stdout_value_satisfied(run, spec) locates a capture in run.stdout, parses it
+    observe_stdout_value(run, spec) locates a capture in run.stdout, parses it
     as a float, and applies the spec's bounds.  It reads run.stdout and nothing
     else: the exit code is the OTHER half of the observation, decided by
     observe(), and mixing the two here would put the answer in two places.
+
+    These tests read `.satisfied` off the reading rather than a boolean wrapper,
+    so the predicate under test is the same call observe() makes.
     """
 
     # The real three-line shape `reify eval` prints for value_clean_eval_cells.ri.
@@ -637,7 +640,7 @@ class TestStdoutValuePredicate(unittest.TestCase):
         return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
 
     def _check(self, stdout, spec):
-        return pcc.stdout_value_satisfied(self._run(stdout), spec)
+        return pcc.observe_stdout_value(self._run(stdout), spec).satisfied
 
     # ── locating the capture ──────────────────────────────────────────────────
 
@@ -776,18 +779,18 @@ class TestStdoutValuePredicate(unittest.TestCase):
     def test_reads_only_stdout(self):
         """exit_code and stderr must not reach the answer."""
         spec = {"pattern": r"X = ([0-9.]+)", "min": 0.01, "max": 0.03}
-        clean = pcc.stdout_value_satisfied(self._run("X = 0.018\n"), spec)
-        noisy = pcc.stdout_value_satisfied(
+        clean = pcc.observe_stdout_value(self._run("X = 0.018\n"), spec)
+        noisy = pcc.observe_stdout_value(
             self._run("X = 0.018\n", exit_code=99, stderr="EvalError everywhere\n"),
             spec,
         )
-        self.assertTrue(clean)
+        self.assertTrue(clean.satisfied)
         self.assertEqual(clean, noisy)
 
     def test_returns_a_plain_bool(self):
         spec = {"pattern": r"X = ([0-9.]+)", "min": 0.01}
         self.assertIsInstance(
-            pcc.stdout_value_satisfied(self._run("X = 0.018\n"), spec), bool
+            pcc.observe_stdout_value(self._run("X = 0.018\n"), spec).satisfied, bool
         )
 
 
@@ -1035,11 +1038,48 @@ class TestValueObservation(unittest.TestCase):
             pcc.observe("value", run, self._value(self._DAMPING)), pcc.ABSENT
         )
 
-    def test_exit_zero_pattern_missing_is_absent(self):
+    def test_exit_zero_pattern_missing_is_indeterminate(self):
+        """A mis-aimed pattern read nothing, so it cannot report a negative.
+
+        Same rule as the non-zero exit below: a renamed output field or a typo'd
+        pattern is indistinguishable from a value that WAS read and found
+        wanting, and ABSENT would turn a broken probe into a confident finding.
+        """
         run = self._run(0, stdout="something_else = 0.018\n")
         self.assertEqual(
-            pcc.observe("value", run, self._value(self._DAMPING)), pcc.ABSENT
+            pcc.observe("value", run, self._value(self._DAMPING)),
+            pcc.INDETERMINATE,
         )
+
+    def test_absent_is_reserved_for_a_value_that_was_actually_read(self):
+        """The discriminator between the two negative answers, side by side.
+
+        Both runs exit 0 and neither satisfies the spec; only the one whose
+        capture was parsed earns ABSENT.  Were a pattern miss ABSENT too, a
+        value probe pinned `observation: absent` — which load_probe_set accepts
+        — would PASS forever the moment its pattern stopped matching, asserting
+        nothing at all.
+        """
+        read = self._run(0, stdout="damping_ratio = 0\n")
+        unread = self._run(0, stdout="something_else = 0.018\n")
+        self.assertEqual(
+            pcc.observe("value", read, self._value(self._DAMPING)), pcc.ABSENT
+        )
+        self.assertEqual(
+            pcc.observe("value", unread, self._value(self._DAMPING)),
+            pcc.INDETERMINATE,
+        )
+        # And the mis-aimed probe is UNPROVABLE under BOTH polarities, so no
+        # expectation can launder it into a pass.
+        for polarity in ("present", "absent"):
+            with self.subTest(polarity=polarity):
+                self.assertEqual(
+                    pcc.verdict(
+                        pcc.observe("value", unread, self._value(self._DAMPING)),
+                        polarity,
+                    ),
+                    pcc.UNPROVABLE,
+                )
 
     def test_exit_zero_undef_capture_is_absent(self):
         run = self._run(0, stdout="damping_ratio = undef\n")
@@ -3584,8 +3624,13 @@ class TestValueProbeReporting(unittest.TestCase):
                 self.assertIsNone(by_kind[kind].value_observation)
         self.assertIsNotNone(by_kind["value"].value_observation)
 
-    def test_value_observation_agrees_with_the_boolean_predicate(self):
-        """SPOT: the explanation and the predicate are one computation."""
+    def test_value_observation_is_the_reading_the_verdict_came_from(self):
+        """SPOT: the explanation and the observation are ONE computation.
+
+        Not merely "they agree" — the Result carries the very object
+        observe_with_evidence() derived the observation from, so there is no
+        second search of stdout that could drift out of step with the first.
+        """
         for stdout in (self._CELLS, "nothing here\n",
                        "ValueCleanEvalCells.damping_ratio = 0\n"):
             with self.subTest(stdout=stdout):
@@ -3595,9 +3640,13 @@ class TestValueProbeReporting(unittest.TestCase):
                     if p.probe_kind == "value"
                 ][0]
                 result = pcc.evaluate(probe, runner=lambda _p: run)
+                obs, reading = pcc.observe_with_evidence(
+                    "value", run, {"stdout_value": self._DAMPING_SPEC}
+                )
+                self.assertEqual(result.value_observation, reading)
+                self.assertEqual(result.observation, obs)
                 self.assertEqual(
-                    result.value_observation.satisfied,
-                    pcc.stdout_value_satisfied(run, self._DAMPING_SPEC),
+                    obs, pcc._value_reading_observation(result.value_observation)
                 )
 
     def test_value_observation_records_capture_and_failed_constraint(self):
@@ -3661,9 +3710,15 @@ class TestValueProbeReporting(unittest.TestCase):
         self.assertIn("min", line)
 
     def test_text_value_line_distinguishes_a_pattern_miss(self):
-        """A mis-aimed probe must not read as a wrong value."""
+        """A mis-aimed probe must not read as a wrong value.
+
+        It is UNPROVABLE (rc 2), not FAIL: nothing was read, so there is no
+        negative to report — but the evidence line still says WHY, which is the
+        whole reason an INDETERMINATE value row carries a reading at all.
+        """
         rc, out, _ = self._run_main(value_stdout="something else entirely\n")
-        self.assertEqual(rc, 1, out)
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"[{pcc.UNPROVABLE}]", out)
         line = self._value_lines(out)[0]
         self.assertIn("pattern", line)
 

@@ -105,9 +105,11 @@ class Premise:
 #   produces  → ir / present     — reify eval exits ≠ 0 with signature → PRESENT → PASS
 #   ir        → ir / absent      — reify eval exits 0 (clean) → ABSENT → expected absent → PASS
 #   value     → value / present  — reify eval exits 0 AND the stdout capture satisfies the
-#                                   numeric constraint → PRESENT → PASS; exits 0 but the value
-#                                   is wrong or undef → ABSENT → FAIL; exits ≠ 0 → INDETERMINATE
-#                                   → UNPROVABLE
+#                                   numeric constraint → PRESENT → PASS; exits 0 and a capture
+#                                   was read but is wrong or undef → ABSENT → FAIL; exits ≠ 0,
+#                                   or the pattern located nothing → INDETERMINATE → UNPROVABLE
+#                                   (ABSENT is reserved for a value actually read: a mis-aimed
+#                                   pattern is a broken probe, not a negative finding)
 _ASSERTION_KIND_MAP: Dict[str, tuple] = {
     "rejection": ("check",   "present"),
     "parses":    ("grammar", "present"),
