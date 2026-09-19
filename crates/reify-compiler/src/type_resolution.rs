@@ -2011,6 +2011,72 @@ fn resolve_entity_name_with_shadowing(
     None
 }
 
+/// Does `name` denote a type here at all?
+///
+/// The name-existence half of [`resolve_entity_name_with_shadowing`], for
+/// callers that need the verdict without the `Type` —
+/// [`validate_pub_parametric_alias_def_site`] being the one today.
+///
+/// Defined BY that resolver rather than beside it, and that is the point: task
+/// #6477 exists because the def-site guard's own hand-written disjunction and
+/// the resolver's namespace list DRIFTED — the guard had no enum arm while the
+/// resolver had `RESOLUTION_ENUM_NAMES` — so an alias body naming a plainly
+/// declared `enum` was rejected at its own definition site. Asking the resolver
+/// makes the next namespace a single-site addition instead of two copies that
+/// must be kept in step by hand.
+///
+/// Enums answer through the ambient `RESOLUTION_ENUM_NAMES` set, so a caller
+/// that cares about them must install an [`EnumNameScope`] first — the same
+/// channel the `_kinded` and alias-body tails read, rather than a second
+/// plumbing axis for the same question.
+///
+/// Two disjuncts stay OUTSIDE the resolver, neither of them drift:
+///
+/// - `is_parameterized_builtin_name` — `Vector3`, `Keyed`, `Option`, … are
+///   never written bare, so they have no `resolve_type_name` entry and the
+///   bare-name resolver cannot see them. `pub type Vec3<Q: Dimension> =
+///   Vector3<Q>` needs this arm. The canonical predicate is used rather than a
+///   local list, so a builtin added without updating it becomes unreachable
+///   dead code in both places at once.
+/// - an alias entry with `resolved_type: None` — DELIBERATELY more permissive
+///   than the resolver's alias arm, which matches only a resolved entry. An
+///   entity-bodied non-parametric alias (`type Inner = Zq`) carries exactly
+///   that shape until its use site re-resolves it (task #6259), so a def site
+///   that rejected it would be a false positive on a name that does exist.
+fn type_name_is_known(
+    name: &str,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+) -> bool {
+    if is_parameterized_builtin_name(name) || alias_registry.lookup(name).is_some() {
+        return true;
+    }
+    // A name-existence question carries no type arguments, and with `type_args`
+    // empty no arm of the resolver can emit a diagnostic or call `resolve_arg`
+    // — so the span is never read and the scratch vector is never written. The
+    // assert keeps that true if an arm is ever added.
+    let no_type_params = HashSet::new();
+    let mut scratch: Vec<Diagnostic> = Vec::new();
+    let known = resolve_entity_name_with_shadowing(
+        name,
+        &[],
+        &no_type_params,
+        alias_registry,
+        structure_names,
+        trait_names,
+        &mut scratch,
+        SourceSpan::empty(0),
+        &mut |_, _| None,
+    )
+    .is_some();
+    debug_assert!(
+        scratch.is_empty(),
+        "a bare name-existence resolution must not emit diagnostics; got {scratch:?}"
+    );
+    known
+}
+
 /// Dimension-kinded variant of [`resolve_type_expr_with_aliases`].
 ///
 /// Identical to the 6-arg wrapper but accepts a `dim_param_names` set that
@@ -4654,21 +4720,18 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// # Case (a) — name-existence check (step-2)
 ///
 /// `collect_type_expr_names(body)` yields every referenced type name in the
-/// alias body (e.g. {Q, Time} for `Q / Time`).  For each name that is NOT
-/// the alias's own type param, attempt to resolve it in isolation:
+/// alias body (e.g. {Q, Time} for `Q / Time`).  Each name that is NOT the
+/// alias's own type param goes to [`type_name_is_known`] in isolation; a name
+/// that is known nowhere gets a def-site `UnresolvedType` Error at
+/// `entry.span`.
 ///
-/// - `resolve_type_name(name).is_some()` → builtin/dimension name → OK
-/// - `alias_registry.lookup(name).is_some()` → known alias → OK
-/// - `structure_names.contains(name)` → known structure/occurrence → OK
-/// - `trait_names.contains(name)` → known trait → OK
-/// - `enum_names.contains(name)` → known enum → OK
-/// - Otherwise → push a def-site `UnresolvedType` Error at `entry.span`.
-///
-/// All four entity kinds an alias body may legally name — structure def,
-/// occurrence def, trait, enum — are therefore covered.  The enum arm was
-/// missing until #6477, which made `pub type G<T> = Option<SomeEnum>` fail
-/// its own definition site with "references unknown name" for a plainly
-/// declared name.
+/// The question "which namespaces exist here?" is answered by the RESOLVER,
+/// not by a list maintained here — see [`type_name_is_known`].  Task #6477
+/// exists because the two drifted: this guard had no enum arm while the
+/// resolver had `RESOLUTION_ENUM_NAMES`, so `pub type G<T> = Option<SomeEnum>`
+/// failed its own definition site with "references unknown name" for a plainly
+/// declared name.  The enum names arrive through an [`EnumNameScope`] rather
+/// than a direct set membership for exactly that reason.
 ///
 /// Resolving names in isolation (rather than re-resolving the whole body)
 /// avoids false-positives on valid `Rate<Q>=Q/Time` (Q is a free param; the
@@ -4720,43 +4783,38 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
 
     // ── Case (a): name-existence check ────────────────────────────────────────
     // Emit an error for each name referenced in the body that is not the alias's
-    // own type param and cannot be resolved as a builtin, alias, structure,
-    // trait, or enum.  Track seen names (as owned Strings) to suppress duplicate
-    // errors for the same name across the body.
-    let mut seen: HashSet<String> = HashSet::new();
-    for name in collect_type_expr_names(body) {
-        if !seen.insert(name.clone()) {
-            continue; // already checked this name
-        }
-        if type_param_names.contains(name.as_str()) {
-            continue; // own type param — valid at def site
-        }
-        let is_known = resolve_type_name(&name).is_some()
-            // Parameterized built-in types are valid name references even though
-            // `resolve_type_name` only handles non-parameterized forms.  E.g.
-            // `pub type Vec3<Q: Dimension> = Vector3<Q>` references `Vector3`
-            // which is always applied (never bare), so it has no entry in
-            // `resolve_type_name`.  Use the canonical predicate (rather than a
-            // separate hardcoded list) so the guard stays in sync with the
-            // resolver automatically — any future builtin arm added without
-            // updating the predicate becomes unreachable dead code.
-            || is_parameterized_builtin_name(name.as_str())
-            || alias_registry.lookup(&name).is_some()
-            || structure_names.contains(&name)
-            || trait_names.contains(&name)
-            || enum_names.contains(&name);
-        if !is_known {
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "type alias '{}' body references unknown name '{}'",
-                    entry.name, name
-                ))
-                .with_code(DiagnosticCode::UnresolvedType)
-                .with_label(DiagnosticLabel::new(
-                    entry.span,
-                    format!("'{}' is not defined in this scope", name),
-                )),
-            );
+    // own type param and is known in no namespace.  Track seen names (as owned
+    // Strings) to suppress duplicate errors for the same name across the body.
+    //
+    // The scope is what puts ENUMS in front of `type_name_is_known`: the
+    // resolver reads enum names from the ambient set, so installing
+    // `enum_names` here is how this guard asks about them through the same
+    // channel every other caller uses instead of keeping its own arm. It is
+    // scoped to case (a) alone — case (b) below deliberately keeps its existing
+    // "body did not reduce to a Type ⇒ skip the bound check" behaviour.
+    {
+        let _enum_scope = EnumNameScope::new(enum_names.clone());
+        let mut seen: HashSet<String> = HashSet::new();
+        for name in collect_type_expr_names(body) {
+            if !seen.insert(name.clone()) {
+                continue; // already checked this name
+            }
+            if type_param_names.contains(name.as_str()) {
+                continue; // own type param — valid at def site
+            }
+            if !type_name_is_known(&name, alias_registry, structure_names, trait_names) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type alias '{}' body references unknown name '{}'",
+                        entry.name, name
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        entry.span,
+                        format!("'{}' is not defined in this scope", name),
+                    )),
+                );
+            }
         }
     }
 
