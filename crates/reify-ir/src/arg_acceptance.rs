@@ -20,239 +20,150 @@
 //!
 //! Provides [`accept_arg`] and the associated types (`ArgSpec`, `Acceptance`,
 //! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
-//! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
-//! Contract C — the LENGTH-semantic args (task 5214, extended by 5350, 5623,
-//! 5658, 5661, 5743 and 5744): `geometry_ops`' `eval_named_arg_length`, its
-//! raw-`Value` wrapper `required_length_value`, and `resolve_length_scalar_arg`
-//! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
-//! [`length_spec`] so both emit identical rejection text.
+//! Contract B (`body_mass_props` density ladder in `dynamics_ops`), and
+//! Contract C — the LENGTH-semantic args: `geometry_ops`'
+//! `eval_named_arg_length`, its raw-`Value` wrapper `required_length_value`, and
+//! `resolve_length_scalar_arg` (`edges_at_height` z/tol, `geo_equiv` tol), which
+//! share the single [`length_spec`] so all of them emit identical rejection
+//! text.
 //!
-//! The positions currently routed through the Contract C chokepoint, by family.
-//! THREE routes reach it, all bottoming out in the same
+//! # WHICH POSITIONS CONTRACT C GOVERNS — the machine check, not this comment
+//!
+//! `crates/reify-eval/tests/units_length_closure_guard.rs`.
+//!
+//! That guard sweeps EVERY builtin in `reify_compiler::GEOMETRY_FUNCTION_NAMES`
+//! across every arity, drives each numeric position through the eval-side op
+//! compiler with a bare number planted in it, and asserts that every position it
+//! reaches is either rejected here or carries an entry stating why it is
+//! legitimately dimensionless — a closed `Justification` taxonomy (decision D14)
+//! for the justified ones, a `Residual` row with a live task cite for the rest.
+//! Dropping any one entry makes it fire; so does stubbing out any one observed
+//! gate.
+//!
+//! This note used to carry that enumeration by hand — a per-family table of
+//! gated positions, a list of what was deliberately left bare, and a list of who
+//! owned the rest. Decision D6 replaced it: a prose list cannot go red, five
+//! successive hand audits missed the raw-`Value` passthrough class, and a
+//! position added without a matching doc edit was invisible. Add a length-
+//! semantic argument anywhere and the guard will tell you; you no longer have to
+//! remember to tell it.
+//!
+//! What stays here is what describes THIS MODULE rather than tracking work.
+//!
+//! # The three routes, and the one chokepoint
+//!
+//! THREE routes reach Contract C, all bottoming out in the same
 //! `accept_arg(&value, &length_spec())` call so their rejection wording is
-//! byte-identical by construction: the NAMED-ARG route
-//! (`eval_named_arg_length`); since task 5658 the VARIADIC route
-//! (`accept_variadic_length_args`, for the arity-open positional coordinate
-//! streams whose args the compiler names inertly `c0`…`cN`); and since task
-//! 5745 the DECODED-VALUE route (`accept_length_point3`, for a position that
-//! arrives already assembled into a composite `Value` by a stdlib producer —
-//! `plane_yz(10mm)` → `Value::Plane`, `point3(…)` → `Value::Point` — and so
-//! never passes through an argument-name read at all). Since task 5661 the
-//! variadic route carries 2-D vertex PAIRS as well as 3-D triples, which is why
-//! its coordinate renderer (`CoordName`) carries a per-point STRIDE: at stride 3
-//! a pair stream would be named `x1,y1,z1,x2,…`, misdirecting the author on both
-//! the axis letter and the vertex number. The decoded-value route has the
-//! analogous renderer problem in a GRID rather than a stream, and answers it the
-//! same way (`GridCoordName`, rendering `control_points[r][c].{x|y|z}`).
+//! byte-identical by construction:
+//!
+//! * the NAMED-ARG route (`eval_named_arg_length`);
+//! * the VARIADIC route (`accept_variadic_length_args`), for the arity-open
+//!   positional coordinate streams whose args the compiler names inertly
+//!   `c0`…`cN`;
+//! * the DECODED-VALUE route (`accept_length_point3`), for a position that
+//!   arrives already assembled into a composite `Value` by a stdlib producer —
+//!   `plane_yz(10mm)` → `Value::Plane`, `point3(…)` → `Value::Point` — and so
+//!   never passes through an argument-name read at all.
+//!
+//! The variadic route carries 2-D vertex PAIRS as well as 3-D triples, which is
+//! why its coordinate renderer (`CoordName`) carries a per-point STRIDE: at
+//! stride 3 a pair stream would be named `x1,y1,z1,x2,…`, misdirecting the
+//! author on both the axis letter and the vertex number. The decoded-value route
+//! has the analogous renderer problem in a GRID rather than a stream, and answers
+//! it the same way (`GridCoordName`, rendering `control_points[r][c].{x|y|z}`).
 //!
 //! The named-arg route has TWO ARITIES, and a new optional dimensioned slot
 //! should reuse the second rather than open-code it: `required_length_arg` (an
-//! absent arg is a diagnosed failure) and, since task 5755,
-//! `optional_length_value` (an absent arg is `Ok(None)`, so the caller supplies
-//! its own documented default, while a PRESENT one is gated identically). Both
-//! mint their `Err` text from the same `length_arg_to_result`, so an optional
-//! slot is not a second dialect. This is an ARITY of the named-arg route, not a
-//! fourth route: the value is obtained by the same argument-name lookup +
-//! `eval_expr`, which is what "route" distinguishes above. `isosurface`'s `iso`
-//! (below) is its first caller.
+//! absent arg is a diagnosed failure) and `optional_length_value` (an absent arg
+//! is `Ok(None)`, so the caller supplies its own documented default, while a
+//! PRESENT one is gated identically). Both mint their `Err` text from the same
+//! `length_arg_to_result`, so an optional slot is not a second dialect. This is
+//! an ARITY of the named-arg route, not a fourth route: the value is obtained by
+//! the same argument-name lookup + `eval_expr`, which is what "route"
+//! distinguishes. `isosurface`'s `iso` is its first caller — and note that only
+//! a PRESENT `iso` is gated; an ABSENT one keeps a deliberate un-gated `0.0`
+//! default (decision D12), so the absent branch is not a hole.
 //!
-//! | family    | builtin / position                                   | task |
-//! |-----------|------------------------------------------------------|------|
-//! | pattern   | linear + 2-D spacing, arbitrary-pattern offsets, mirror-plane origin | 5214 |
-//! | pattern   | circular-pattern axis origin `ox`/`oy`/`oz`          | 5350 |
-//! | transform | `translate` `dx`/`dy`/`dz`; `rotate_around` pivot `px`/`py`/`pz` | 5623 |
-//! | sweep     | `revolve` axis origin `ox`/`oy`/`oz`                 | 5623 |
-//! | curve     | `line_segment` endpoints `x1`…`z2`; `arc` centre `cx`/`cy`/`cz` + `radius`; `helix` `radius`/`pitch`/`height` | 5623 |
-//! | curve     | `interp` + `bezier` variadic coordinate triples (EVERY position); `nurbs` pole coordinates (`2 .. 2 + 3·n_points`) — via the variadic route | 5658 |
-//! | profile   | `polygon` variadic 2-D vertex pairs (EVERY position) — via the variadic route | 5661 |
-//! | surface   | `isosurface` isovalue `iso` — OPTIONAL: only a PRESENT `iso` is gated; an ABSENT one keeps a deliberate un-gated `0.0` default (decision D12) — via `optional_length_value`, so the absent branch is NOT a residual hole | 5755 |
-//! | primitive | `box` width/height/depth, `cylinder` radius/height, `sphere` radius, `tube` outer_r/inner_r/height, `cone` bottom_radius/top_radius/height, `wedge` width/depth/height/top_width, `torus` major/minor_radius, `half_space` POINT `px`/`py`/`pz` (21 fields) | 5743 |
-//! | profile   | `rectangle` width/height, `circle` radius, `ellipse` semi_major/semi_minor (5 fields) | 5743 |
-//! | modify    | `fillet` radius, `chamfer` distance, `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken` offset, `zone_slab` width, `offset_solid`/`offset_curve` distance (9 fields) | 5744 |
-//! | sweep     | `extrude`/`extrude_symmetric` distance, `pipe` radius (3 fields) | 5744 |
-//! | decoded value | `decode_plane` / `decode_axis` ORIGINS `ox`/`oy`/`oz`; the `nurbs_surface` control-point GRID (the SURFACE sibling of the curve poles 5658 gated) — via the decoded-value route | 5745 |
-//! | transform | `apply_transform`'s `transform` TRANSLATION triple, and `arbitrary_pattern`'s LIST-form per-element translation triples (`translation.x`/`translation.y`/`translation.z`) — via the decoded-value route | 5747 |
-//! | construction datum | `plane_xy`/`plane_xz`/`plane_yz` OFFSET; `axis_x`/`axis_y`/`axis_z` ORIGIN `ox`/`oy`/`oz` — the PRODUCER side, a value-layer gate living in reify-stdlib and reading this module through the 5791 relocation | 5746 |
+//! # The raw-`Value` slots reach the same chokepoint, all at once
 //!
-//! The two **5743** rows (`primitive` + `profile`) and the two **5744** rows
-//! (`modify` + `sweep`) are the R7 **raw-`Value`** positions: unlike the
-//! named-arg rows above them, these 38 are stored into their `GeometryOp`
-//! field as a `Value` and read by the kernel via `as_f64`, never through a
-//! named-arg `f64` helper. (The **5745** `decoded value` row below them is a
-//! THIRD route, not a raw-`Value` one: its coordinates are already assembled
-//! into a composite `Value` by a producer and are read back out by
-//! `point3_components`, so it reaches the chokepoint via `accept_length_point3`
-//! rather than via `required_length_value`.)
+//! The primitive / profile / modify / sweep fields are stored into their
+//! `GeometryOp` field as a `Value` and read by the kernel via `as_f64`, never
+//! through a named-arg `f64` helper. They reach the chokepoint through
+//! `geometry_ops`' `required_length_values` (and its `N == 1` wrapper
+//! `required_length_value`), which layers over the named-arg route
+//! (`required_length_args` → `required_length_arg` → `eval_named_arg_length`)
+//! and re-wraps each ACCEPTED SI f64 back into a dimensioned `Value` — so the
+//! stored representation is unchanged and the rejection wording is shared,
+//! rather than forked for the kernel boundary.
 //!
-//! Those 38 reach the chokepoint through `geometry_ops`' `required_length_values`
-//! (and its `N == 1` wrapper `required_length_value`), which layers over the
-//! named-arg route (`required_length_args` → `required_length_arg` →
-//! `eval_named_arg_length`) and re-wraps each ACCEPTED SI f64 back into a
-//! dimensioned `Value` — so the stored representation is unchanged and the
-//! rejection wording is shared, rather than forked for the kernel boundary.
-//! Every builtin with MORE THAN ONE gated slot reads its whole set in one
+//! Every builtin with MORE THAN ONE gated slot reads its whole set in ONE
 //! `required_length_values` call, so a bare `box(20, 20, 10)` is diagnosed at
-//! `width`, `height` AND `depth` — and a bare
-//! `chamfer_asymmetric(solid, 1, 2)` at BOTH `d1` and `d2` — in a single build
-//! rather than one arg name per rebuild. Task 5744 extended that same
-//! all-at-once discipline to the named-arg route's last `?`-chained group,
+//! `width`, `height` AND `depth` — and a bare `chamfer_asymmetric(solid, 1, 2)`
+//! at BOTH `d1` and `d2` — in a single build rather than one arg name per
+//! rebuild. The named-arg route's last `?`-chained group,
 //! `pattern_arbitrary`'s per-transform `t{i}_dx`/`t{i}_dy`/`t{i}_dz` offset
-//! triple (esc-5743-4), which now reads through `required_length_args`.
-//! Task 5743 also attached `reify_core::DiagnosticCode::DimensionedArgRejected`
-//! to every `ArgSpec`-backed rejection emitted in `geometry_ops`, retrofitting
-//! the previously code-less Contract C sites on both of the routes that existed
-//! then. Task 5745's decoded-value route inherits the code for free, by calling
-//! the same shared `accept_length_value`. Task 5747 (ζ) added the route's
-//! SECOND consumer, `accept_transform_to_arrays`, which shape-checks a
-//! `Value::Transform` locally and hands its translation WHOLE to
-//! `accept_length_point3` — so the transform row inherits the wording, the
-//! code, D10's `unresolved (Undef)` message and the all-failures-at-once
-//! precedence across the triple without re-deriving any of it.
+//! triple, reads through `required_length_args` for the same reason (esc-5743-4).
+//! `accept_transform_to_arrays` shape-checks a `Value::Transform` locally and
+//! hands its translation WHOLE to `accept_length_point3`, so it inherits the
+//! wording, the code, D10's `unresolved (Undef)` message and the
+//! all-failures-at-once precedence across the triple without re-deriving any of
+//! them.
 //!
-//! Task 5746 (ε) is the **5746** row's entry. It is the first PRODUCER-side row
-//! in this table: the six construction-datum constructors live in reify-stdlib's
-//! value algebra, not in `geometry_ops`, so they reach this module directly
-//! through the 5791 relocation rather than through either of the routes above.
-//! What ε closes is R11's producer hole, shut at BOTH ends together with task
-//! δ's (5745) consumer-side `decode_plane` / `decode_axis` gate two rows up
-//! (decision D4) — the same rule, no longer enforceable on only one side.
+//! `reify_core::DiagnosticCode::DimensionedArgRejected` is attached to every
+//! `ArgSpec`-backed rejection emitted in `geometry_ops` (INV-SF-6). That code,
+//! not the message text, is the structured contract a consumer should match on —
+//! the closure guard above reads it, and `ArgRejection::message` remains the
+//! sole owner of the wording so the ANGLE (PRD 3) and reader (PRD 5) follow-ups
+//! inherit identical text.
 //!
-//! What ε does NOT close, named here as an explicit RESIDUAL rather than left to
-//! be rediscovered: the FIVE sibling construction-datum constructors `midplane`,
-//! `axis_through`, `plane_through`, the arity-2 `offset` and `frame_at` (task
-//! 4387 / η) stay dimension-POLYMORPHIC. They enforce dimension AGREEMENT among
-//! their inputs, never LENGTH, and ε deliberately does not sweep them up — they
-//! are exactly the producers that keep δ's consumer-side gate live and reachable
-//! from real `.ri` source. That residual is owned by a follow-up task, not by
-//! ε's harness.
+//! # Two QUIET consumers, gated but deliberately silent
 //!
-//! Three things task 5747 (ζ) deliberately LEFT STANDING, each with the reason,
-//! so task 5752's closure guard can lift them rather than rediscover them:
+//! `interferes`/`min_clearance`'s per-body `world_transform` and
+//! `walk_templates`' `composed_world` go through `decompose_transform_to_arrays`,
+//! now a thin wrapper over `accept_transform_to_arrays` with a throwaway
+//! diagnostic sink. They ARE gated; they are deliberately SILENT, and are NOT
+//! un-gated holes. Both already treat `None` as "identity / not decomposable →
+//! use the raw handle, no kernel op", and both read transforms that are LENGTH
+//! BY CONSTRUCTION: `identity_pose_transform` and `compose_pose_chain`'s seed
+//! mint `reify_ir::Value::length(0.0)`, `frame_to_pose_transform` hard-requires
+//! LENGTH components, and `reify_stdlib::compose_transforms` requires
+//! `t1_dim == t2_dim` so composition preserves the dimension. A rejection there
+//! is unreachable in production, and emitting one would DOUBLE-REPORT a failure
+//! the pose producer has already diagnosed.
 //!
-//! - the two QUIET consumers of `geometry_ops`' `decompose_transform_to_arrays`
-//!   — `interferes`/`min_clearance`'s per-body `world_transform` and
-//!   `walk_templates`' `composed_world` — are GATED (that helper is now a thin
-//!   wrapper over `accept_transform_to_arrays` with a throwaway diagnostic
-//!   sink), but deliberately SILENT. They are NOT un-gated residuals. Both
-//!   already treat `None` as "identity / not decomposable → use the raw handle,
-//!   no kernel op", and both read transforms that are LENGTH BY CONSTRUCTION:
-//!   `identity_pose_transform` and `compose_pose_chain`'s seed mint
-//!   `reify_ir::Value::length(0.0)`, `frame_to_pose_transform` hard-requires
-//!   LENGTH components, and `reify_stdlib::compose_transforms` requires
-//!   `t1_dim == t2_dim` so composition preserves the dimension. A rejection
-//!   there is unreachable in production, and emitting one would DOUBLE-REPORT a
-//!   failure the pose producer has already diagnosed;
-//! - ζ's OTHER half (R12 — `affine_translate`'s `dx`/`dy`/`dz` and
-//!   `affine_map`'s `translation`) is a VALUE-layer gate living in
-//!   **reify-stdlib**. When ζ was written this module was `pub(crate)` to
-//!   reify-eval and the crate edge ran reify-eval → reify-stdlib, so R12 could
-//!   not call it and rendered its wording from a local mirror of
-//!   [`ArgRejection::message`] + [`length_spec`]. That obstacle is GONE: task
-//!   5791 (`docs/prds/v0_6/dimension-checked-readers.md` §3 Leg A) hoisted this
-//!   module into `reify-ir` — which reify-stdlib already depends on — and made
-//!   it `pub`, so reify-stdlib CAN call [`accept_arg`] — and does. The mirror is
-//!   DELETED and R12 reads its rejection straight from this module, pinned by
-//!   `length_rejection_wording_is_the_shared_arg_rejection_template` in
-//!   reify-stdlib's own test module (renamed from its R12-only spelling when
-//!   task 5746 / R11 joined the same table). One owner, nothing left to drift;
-//! - reify-stdlib's OWN `decompose_transform` (`crates/reify-stdlib/src/geometry.rs`)
-//!   and its consumers. Measured on ζ's final tree, they are NOT uniform, which
-//!   is why ζ did not fold them in wholesale: `affine_from_transform` DISCARDS
-//!   the translation dimension into `_dim` outright, and `transform_inverse`
-//!   propagates whatever dimension arrived through `make_dimensioned_component`.
-//!   Both are one call away from ζ's R12 gate, but neither sits on ANY route in
-//!   the research inventory
-//!   (`docs/notes/units-gating-gap-research-2026-07-28.md`), and folding them in
-//!   would widen a LEAF whose file lock is deliberately serialized against its
-//!   siblings. These two ARE a RESIDUAL — see the owner list below.
+//! # What this module's gate CANNOT see
 //!
-//!   The THIRD consumer, `transform_log`, was in that list when ζ was written and
-//!   is NOT any more: **RULING #6126** (task 6126, landed 2026-08-28) dropped its
-//!   `LENGTH || DIMENSIONLESS` admission to `t_dim != TWIST_LINEAR_DIM` and gave
-//!   it a `Severity::Error` arm in `geometry::diagnose`, on the same D11 grounds
-//!   ζ argues from. The two rulings AGREE: LENGTH is the one admitted spatial
-//!   dimension on both the log↔exp seam and the affine constructors, so nothing
-//!   here is a competing narrowing. `transform_exp`'s LINEAR half went with it;
-//!   its ANGULAR half is #6080's and is still open.
+//! `reify-stdlib`'s own `decompose_transform`
+//! (`crates/reify-stdlib/src/geometry.rs`) and its consumers
+//! `affine_from_transform` and `transform_inverse`. Measured: the first DISCARDS
+//! the translation dimension into `_dim` outright, the second propagates whatever
+//! dimension arrived through `make_dimensioned_component`. Both are one call away
+//! from the R12 gate, but they are pure VALUE-layer builtins that mint an
+//! `AffineMap`/`Transform` and never produce a `CompiledGeometryOp` — and neither
+//! name is in `GEOMETRY_FUNCTION_NAMES` — so **the closure guard cannot reach
+//! them**, and records them as an explicit out-of-universe residual rather than
+//! sweeping them up. Their owner is **task #6089** (the Frame/Transform/AffineMap
+//! LENGTH ruling), not the guard. The THIRD consumer, `transform_log`, was closed
+//! by RULING #6126, which dropped its `LENGTH || DIMENSIONLESS` admission to
+//! `t_dim != TWIST_LINEAR_DIM` and gave it a `Severity::Error` arm in
+//! `geometry::diagnose`; `transform_exp`'s LINEAR half went with it.
 //!
-//! Contract C is NOT yet exhaustive, and this note stays open until the closure
-//! guard of task 5752 replaces it with a pointer. What remains un-gated, and
-//! who owns it:
+//! # ANGLES are gated, but not here
 //!
-//! - The SEVERITY residuals — task 6157. Task 5743 promoted the shared
-//!   `accept_length_value` rejection from `Warning` to `Error` + code, but
-//!   deliberately left three classes alone: the quiet-degrade readers
-//!   (`resolve_spec_arg` / `resolve_density_arg`), which return `Option<f64>`
-//!   and whose callers CONTINUE on `None` with no paired op-compile Error, so
-//!   promoting them would flip `reify eval` to exit 1 for positions no boundary
-//!   row covers; the non-finite-`Length` arm, which `accept_arg` ACCEPTED (it
-//!   IS a Length, merely NaN/±inf) and which therefore carries no
-//!   `ArgRejection` to hang a dimension-rejection code on; and the inline
-//!   non-`ArgSpec` `ArgRejection` sites (`Int`, `Point<Length>`, `Vec3`,
-//!   `Range`, `String` — including `resolve_int_value_ref`) plus Contract B.
+//! They have their own spec in this module — [`angle_spec`] — owned by
+//! `docs/prds/v0_6/angle-units-surface-convergence.md` by seam-table decree, and
+//! the positions it governs are enumerated on that function rather than here.
+//! That PRD reuses the SAME `DimensionedArgRejected` code rather than minting a
+//! per-dimension sibling, so an angle position is tracked in ITS list and never
+//! in this one; which list a newly-added argument belongs to is decided by its
+//! dimension, not by its file.
 //!
-//! - The reify-stdlib `decompose_transform` consumers described above
-//!   (`affine_from_transform`, `transform_inverse`; `transform_log` was closed by
-//!   RULING #6126) — owned by task #5752. That task needs to OWN them explicitly
-//!   rather than assume its harness sweeps them up: its probe is
-//!   SOURCE-TEXT-DRIVEN over `reify_compiler::units::GEOMETRY_FUNCTION_NAMES` and
-//!   asserts on the resulting `CompiledGeometryOp`s, so it reaches positions that
-//!   compile down to a geometry op — and these are pure VALUE-layer stdlib
-//!   builtins that mint an `AffineMap`/`Transform` `Value` and never produce one.
+//! # Value-level only
 //!
-//! Deliberately NOT gated, and not a residual — the DECODED-VALUE counterparts
-//! of the unit-vector row below, each with the justification task 5752's
-//! closure-guard allowlist can lift verbatim (D14). All three are the remaining
-//! `point3_components` callers, which is why that helper SURVIVES task 5745
-//! rather than being replaced by the gate:
-//!
-//! - the `decode_plane` plane NORMAL — a dimensionless unit vector, normalised
-//!   by `unit_vector3`; the plane equation is invariant to its scale;
-//! - the `decode_axis` axis DIRECTION — likewise a dimensionless unit vector,
-//!   normalised by `unit_vector3`;
-//! - `offset_curve`'s 3rd argument when it is not a reference Surface — its own
-//!   production diagnostic already calls it "a direction vec3".
-//!
-//! Gating any of the three would REJECT CORRECT `.ri` CODE, since a unit vector
-//! legitimately has bare components. This is the D3 adversary finding
-//! (2026-07-28, BINDING) — the same ORIGIN-vs-DIRECTION split the SCALAR forms
-//! already draw, restated for the decoded-value route.
-//!
-//! Deliberately NOT gated, and not a residual: unit-vector DIRECTIONS
-//! (`ax`/`ay`/`az`, `nx`/`ny`/`nz`, and `extrude_infinite`'s `dx`/`dy`/`dz`),
-//! instance COUNTS, and dimensionless scale FACTORS. `half_space` is the one
-//! builtin whose args STRADDLE that line: its `px`/`py`/`pz` POINT is gated
-//! (above) while its `nx`/`ny`/`nz` outward NORMAL stays bare, mirroring the
-//! `ax`/`ay`/`az` vs `ox`/`oy`/`oz` split already drawn for the circular
-//! pattern.
-//!
-//! ANGLES are gated too, but they are NOT rows of the table above. They have
-//! their own spec here — [`angle_spec`] — owned by
-//! `docs/prds/v0_6/angle-units-surface-convergence.md` by seam-table decree,
-//! and the positions it governs are enumerated on that function rather than
-//! here. That PRD reuses the SAME `DimensionedArgRejected` code rather than
-//! minting a per-dimension sibling, so an angle position is still tracked in
-//! ITS residual list and never in this one; which list a newly-added argument
-//! belongs to is decided by its dimension, not by its file.
-//!
-//! Also deliberately NOT gated, and the reason `nurbs` gates a SPAN rather than
-//! every position — its dimensionless neighbours sit on BOTH sides of the poles
-//! (task 5658), each ungated for a stated reason rather than by omission:
-//! `degree` is a polynomial degree, i.e. a count; `n_points` is a count; the
-//! weights are rational blending factors; the knots are parameter-space values.
-//! None of the four is a quantity in metres, so demanding a dimension of them
-//! would reject correct `.ri` code. The gated span is consequently
-//! ARITY-DEPENDENT — `2 .. 2 + 3·n_points`, computed from an argument — so a
-//! mechanical allowlist over it needs per-arity keys.
-//!
-//! Until the residual closes, adding a length-semantic arg anywhere means
-//! adding it to the owning task's triage list too.
-//!
-//! The helper is **value-level only**: it operates on an already-resolved
-//! `Value` and has no knowledge of `CompiledExpr` or `ValueMap`.
-//! Callers are responsible for extracting the value from the expression
-//! (`resolve_density_arg`/`resolve_spec_arg` evaluate a `CompiledExpr`;
-//! `eval_named_arg_length` goes through `eval_named_arg`).
+//! The helper operates on an already-resolved `Value` and has no knowledge of
+//! `CompiledExpr` or `ValueMap`. Callers are responsible for extracting the value
+//! from the expression (`resolve_density_arg`/`resolve_spec_arg` evaluate a
+//! `CompiledExpr`; `eval_named_arg_length` goes through `eval_named_arg`).
 
 /// Specification for a single builtin argument — its expected type name, the
 /// required `DimensionVector`, and an optional hint shown in rejection messages.
