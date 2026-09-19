@@ -30,7 +30,9 @@
 
 use std::sync::Mutex;
 
-use reify_kernel_gmsh::mesh_size_clamp::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
+use reify_kernel_gmsh::mesh_size_clamp::{
+    GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT, GMSH_MESH_SIZE_SOURCE_DEFAULTS,
+};
 use reify_kernel_gmsh::{ffi, init, mesh_plane_2d};
 
 /// Whole-test-body serialisation, layered *above* `init::GMSH_LOCK`.
@@ -76,25 +78,6 @@ const PROBE_OUTER: [[f64; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.
 pub const GMSH_CLAMP_DEFAULTS: (f64, f64) =
     (GMSH_MESH_SIZE_MIN_DEFAULT, GMSH_MESH_SIZE_MAX_DEFAULT);
 
-/// Gmsh's documented defaults for the three size-SOURCE options — the
-/// `MeshSizeFromPoints` / `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary`
-/// trio that decides *where* element sizes come from, as distinct from the
-/// `MeshSizeMin`/`MeshSizeMax` pair that clamps them.
-///
-/// Measured, not assumed: `gmsh 4.15.2 -parse_and_exit` on a `.geo` of
-/// `Printf("%g", Mesh.MeshSizeFromPoints)` and friends prints `1`, `0`, `1`.
-///
-/// Local to this module on purpose. It exists only to make
-/// [`probe_triangle_count`] hermetic; it is NOT a production restore list and
-/// does not close task #6212, which owns extending the real
-/// `mesh_size_clamp` seam to these three across every entry point that writes
-/// them.
-const GMSH_SIZE_SOURCE_DEFAULTS: [(&str, f64); 3] = [
-    ("Mesh.MeshSizeFromPoints", 1.0),
-    ("Mesh.MeshSizeFromCurvature", 0.0),
-    ("Mesh.MeshSizeExtendFromBoundary", 1.0),
-];
-
 /// Write the process-global gmsh mesh-size clamp.
 ///
 /// gmsh's option table is process-global and is **not** reset by `gmshClear()`,
@@ -130,30 +113,34 @@ pub fn poison_global_mesh_size_clamp(size: f64) {
 ///
 /// # Why it pins the size-SOURCE trio first
 ///
-/// `refine_volume_with_size_field` writes `Mesh.MeshSizeFromPoints = 0`,
-/// `MeshSizeFromCurvature = 0` and `MeshSizeExtendFromBoundary = 0`
-/// (`refine_volume.rs`) and deliberately does NOT restore them — task #6212's
-/// still-open leak. `FromPoints` used to be written as `1`; since task #7447
-/// drove the remesh from a background size field it is `0`, which deviates
-/// from gmsh's default in the OPPOSITE direction — it disables point-driven
-/// sizing rather than enabling it. Any binary that runs a refine in one test and this probe in
-/// another therefore measures under a different option table depending on which
-/// test won cargo's thread race, and `CLAMP_TEST_ORDER` does not help: it
-/// serialises the bodies but restores nothing. Observed, not theoretical — with
-/// #6298's fix reverted, `mesh_to_volume_clamp_hermeticity.rs` measured
-/// baseline 48 / after 246 in one interleaving and 162 / 242 in another.
+/// `mesh_profile_2d::mesh_plane_2d` and `mesh_boundary`'s surface remesh write
+/// mesh-size options and never restore them — task #6212's still-open leak. Any
+/// binary that runs one of those in one test and this probe in another
+/// therefore measures under a different option table depending on which test
+/// won cargo's thread race, and `CLAMP_TEST_ORDER` does not help: it serialises
+/// the bodies but restores nothing. Observed, not theoretical — with #6298's
+/// fix reverted, `mesh_to_volume_clamp_hermeticity.rs` measured baseline 48 /
+/// after 246 in one interleaving and 162 / 242 in another.
 ///
 /// Writing the trio to gmsh's own defaults here makes this probe's reading a
 /// function of the mesh-size CLAMP alone, which is the one thing both guards
 /// assert about — so their recorded numbers are reproducible and their
 /// sensitivity stops being an order-dependent property of a leak another task
-/// owns. This changes nothing outside the probe: #6212's leak is still live for
-/// every real caller, and closing it is still #6212's job.
+/// owns.
+///
+/// The trio it normalises is [`GMSH_MESH_SIZE_SOURCE_DEFAULTS`], the
+/// PRODUCTION restore table, rather than a private copy — same
+/// cannot-drift reasoning as [`GMSH_CLAMP_DEFAULTS`] above. `refine_volume_
+/// with_size_field` is no longer a reason this normalisation is needed: since
+/// task #7447 it arms `MeshSizeSourceReset` and hands the trio back at its
+/// defaults. Keeping the write is still right — the probe asserts its own
+/// starting state rather than trusting every sibling to have been fixed, and
+/// #6212's two writers are still live.
 pub fn probe_triangle_count() -> usize {
     {
         let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init::ensure_initialized();
-        for (option, default) in GMSH_SIZE_SOURCE_DEFAULTS {
+        for (option, default) in GMSH_MESH_SIZE_SOURCE_DEFAULTS {
             ffi::option_set_number(option, default)
                 .unwrap_or_else(|e| panic!("set {option} to its gmsh default: {e:?}"));
         }

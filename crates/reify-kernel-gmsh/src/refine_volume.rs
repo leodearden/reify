@@ -13,7 +13,7 @@
 //! keyed on all inputs — diverge automatically. No new cache-key field is
 //! needed; the existing `volume_mesh_cache_key` derivation already covers this.
 //!
-//! # Global mesh-size clamp: inherits nothing, leaves nothing
+//! # Global mesh-size options: inherits nothing, leaves nothing
 //!
 //! Gmsh's option table is process-global and survives `gmshClear()`. Since
 //! task #6211 this function
@@ -29,6 +29,15 @@
 //!   pinned to a fine `MeshSizeMax` left over from an adaptive-refinement
 //!   iteration.
 //!
+//! Since task #7447 the same outbound discipline covers the size-SOURCE trio
+//! this function writes — `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature`
+//! / `MeshSizeExtendFromBoundary` — via
+//! [`crate::mesh_size_clamp::MeshSizeSourceReset`]. #7447 is what made that
+//! mandatory rather than tidy: switching to a background size field changed
+//! the `FromPoints` write from `1` to `0`, and a leaked `0` DISABLES
+//! point-driven sizing for every later call in the process, where the leaked
+//! `1` had merely re-asserted gmsh's own default.
+//!
 //! That guard now lives in [`crate::mesh_size_clamp`] rather than in this
 //! file: since task #6298 it is shared infrastructure with a second consumer,
 //! `kernel_real::GmshKernel::mesh_to_volume`, and one implementation cannot
@@ -42,15 +51,14 @@
 //! `refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`,
 //! which straddles a refine with exactly the `mesh_plane_2d` call named above.
 //!
-//! Scope of that guarantee: it covers the `MeshSizeMin`/`MeshSizeMax` pair
-//! only. The `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
-//! `MeshSizeExtendFromBoundary` writes below are still left behind for a later
-//! caller to inherit — the same defect class in the same direction, tracked as
-//! task #6212 because closing it means extending the `mesh_size_clamp` seam to
-//! those three across every entry point that writes them (and an
-//! `option_get_number` FFI getter to restore *as found* rather than to
-//! defaults), not a change local to this file. See the inline rationale at the
-//! option writes below.
+//! Scope of that guarantee: it covers THIS entry point. Task #6212 stays open
+//! and still owns bringing `mesh_profile_2d::mesh_plane_2d` and
+//! `mesh_boundary`'s surface remesh onto the same seam, and adding the
+//! `option_get_number` FFI getter that would let a restore be *as found*
+//! rather than to gmsh's defaults. Only the clamp half has a behavioural
+//! guard; the size-source half has no victim to observe it through, and
+//! `mesh_size_clamp`'s module doc records why and what would be owed if one
+//! appeared.
 //!
 //! # Cost basis: full remesh from surface
 //!
@@ -89,7 +97,7 @@ use crate::background_size_field::BackgroundSizeField;
 use crate::options::MeshingOptions;
 
 #[cfg(has_gmsh)]
-use crate::mesh_size_clamp::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeClampReset};
+use crate::mesh_size_clamp::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeClampReset, MeshSizeSourceReset};
 
 /// Remesh the volume enclosed by `surface`, sized by a background size field.
 ///
@@ -283,9 +291,9 @@ pub fn refine_volume_with_size_field(
 
     // --- Background size field ---
     //
-    // The whole size field, interior included. Taken once, used by both guards
-    // below, so the `clamp_reset_witness` accessor keeps a single call site
-    // here (see its doc in `init.rs`).
+    // The whole size field, interior included. Taken once, used by all three
+    // guards below, so the `clamp_reset_witness` accessor keeps a single call
+    // site here (see its doc in `init.rs`).
     let witness = _guard.clamp_reset_witness();
     let _background_field = BackgroundFieldGuard::install(witness, size_field)?;
 
@@ -302,10 +310,14 @@ pub fn refine_volume_with_size_field(
     // fine patch on one face extends its fineness deep into the interior,
     // overriding what the background field asks for there.
     //
-    // All three are process-global. `FromPoints = 0` deviates from gmsh's
-    // default of 1 and DISABLES point-driven sizing for every later call in the
-    // process, which is the dangerous direction — the outbound guard that
-    // closes it is the next commit in task #7447.
+    // All three are process-global and survive `gmshClear()`. `FromPoints = 0`
+    // deviates from gmsh's default of 1 in the DANGEROUS direction — it
+    // disables point-driven sizing for every later call in the process, where
+    // the `1` this function used to write merely re-asserted the default.
+    // `MeshSizeSourceReset` closes that outbound direction on every exit path,
+    // early `?`-returns included, so the trio is returned to gmsh's defaults
+    // and nothing downstream inherits this call's size sources (task #7447).
+    let _size_source_reset = MeshSizeSourceReset::armed(witness);
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;

@@ -1,15 +1,23 @@
-//! The crate-wide `Mesh.MeshSizeMin`/`MeshSizeMax` restore discipline.
+//! The crate-wide mesh-size option restore discipline.
 //!
 //! # The invariant
 //!
 //! Gmsh's option table is **process-global** and `gmshClear()` clears MODELS,
-//! not OPTIONS. A `Mesh.MeshSizeMin` / `Mesh.MeshSizeMax` pair written by one
-//! entry point therefore survives for the life of the process and is inherited
-//! by every later call that does not write the pair itself. So:
+//! not OPTIONS. A mesh-size option written by one entry point therefore
+//! survives for the life of the process and is inherited by every later call
+//! that does not write it itself. So:
 //!
-//! > **Every entry point that writes the `Mesh.MeshSizeMin`/`MeshSizeMax` pair
-//! > must restore gmsh's documented defaults before returning — on every exit
-//! > path, early `?`-returns included.**
+//! > **Every entry point that writes a mesh-size option must restore gmsh's
+//! > documented default before returning — on every exit path, early
+//! > `?`-returns included.**
+//!
+//! Two option sets are covered, by two guards, because they are two concerns.
+//! The `Mesh.MeshSizeMin`/`MeshSizeMax` pair CLAMPS sizes
+//! ([`MeshSizeClampReset`]); the `Mesh.MeshSizeFromPoints` /
+//! `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` trio decides WHERE
+//! sizes come from ([`MeshSizeSourceReset`]). An entry point arms exactly the
+//! guards for the sets it writes — one type covering both would make a caller
+//! that touches only the clamp silently rewrite the size sources too.
 //!
 //! Restoring DEFAULTS rather than the values found on entry is deliberate:
 //! this crate's FFI surface exposes `option_set_number` but no
@@ -27,13 +35,21 @@
 //!
 //! # Consumers
 //!
-//! * [`crate::refine_volume::refine_volume_with_size_field`] — since task
-//!   #6211, which is where [`MeshSizeClampReset`] was first written.
-//! * [`crate::kernel_real::GmshKernel::mesh_to_volume`] — since task #6298,
-//!   which moved the guard here so the two share one implementation rather
-//!   than two hand-written resets free to drift apart.
+//! * [`crate::refine_volume::refine_volume_with_size_field`] — arms BOTH.
+//!   [`MeshSizeClampReset`] since task #6211, which is where it was first
+//!   written; [`MeshSizeSourceReset`] since task #7447, which had to add it
+//!   because driving that remesh from a background size field changed its
+//!   `Mesh.MeshSizeFromPoints` write from `1` to `0`. That is a deviation in
+//!   the DANGEROUS direction — it DISABLES point-driven sizing for every later
+//!   call in the process, where the old `1` merely re-asserted gmsh's own
+//!   default.
+//! * [`crate::kernel_real::GmshKernel::mesh_to_volume`] — arms
+//!   [`MeshSizeClampReset`] only, since task #6298, which moved the guard here
+//!   so the two share one implementation rather than two hand-written resets
+//!   free to drift apart. It writes no size-SOURCE option.
 //!
-//! Each consumer has its own outbound guard so neither can rot into a comment:
+//! Each CLAMP consumer has its own outbound guard so neither can rot into a
+//! comment:
 //! `tests/refine_volume_tests.rs::refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`
 //! and
 //! `tests/mesh_to_volume_clamp_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`.
@@ -63,18 +79,33 @@
 //! future author reads before adding a THIRD writer, and an invariant stated
 //! without its live exceptions is how the leak stays open by accident.
 //!
-//! # Scope
+//! # Scope: what is NOT closed
 //!
-//! This module covers the `MeshSizeMin`/`MeshSizeMax` pair only. The
-//! `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
-//! `MeshSizeExtendFromBoundary` trio is the same defect class in the same
-//! direction and is still left behind by `refine_volume_with_size_field` for a
-//! later caller to inherit — tracked as task #6212, which owns extending this
-//! seam to those three (and adding the `option_get_number` FFI getter that
-//! would let a restore be *as found* rather than to defaults). #6212 also owns
-//! the remaining INBOUND hole in `mesh_to_volume`, where a resolved size of
-//! `0.0` skips the clamp writes entirely and the call inherits whatever is in
-//! the table.
+//! Coverage is per-ENTRY-POINT, not per-option-name, and saying which is the
+//! difference between a stated invariant and a believed one.
+//! [`MeshSizeSourceReset`] closes the size-SOURCE trio for
+//! `refine_volume_with_size_field` and for nothing else. Task **#6212** stays
+//! open and still owns bringing the two writers named above onto this seam,
+//! and adding the `option_get_number` FFI getter that would let a restore be
+//! *as found* rather than to defaults. #6212 also owns the remaining INBOUND
+//! hole in `mesh_to_volume`, where a resolved size of `0.0` skips the clamp
+//! writes entirely and the call inherits whatever is in the table.
+//!
+//! ## Why [`MeshSizeSourceReset`] ships without a behavioural guard
+//!
+//! Deliberate, not an omission. This crate exposes no `option_get_number`, so
+//! the option table is not directly readable, and the established alternative
+//! — observing the leak's EFFECT on a defaults-relying probe, which is how
+//! both clamp guards work — has no victim for THIS option set. No in-repo
+//! entry point prescribes per-point sizes: `mesh_plane_2d` passes
+//! `geo_add_point` a meshSize of `0.0`, and since task #7447
+//! `refine_volume_with_size_field` sources its sizes from a background field
+//! instead. A test written today would therefore assert nothing.
+//!
+//! A guard is OWED the moment a point-size-prescribing entry point is added.
+//! Whoever adds one inherits writing it; the shape to copy is
+//! `refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`,
+//! with the new entry point as the victim.
 
 /// Gmsh's documented default for `Mesh.MeshSizeMin` — no floor.
 ///
@@ -90,6 +121,29 @@ pub const GMSH_MESH_SIZE_MIN_DEFAULT: f64 = 0.0;
 ///
 /// `pub` for the same reason as [`GMSH_MESH_SIZE_MIN_DEFAULT`].
 pub const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
+
+/// Gmsh's documented defaults for the three size-SOURCE options, each paired
+/// with the option name it belongs to: point-driven sizing ON,
+/// curvature-driven sizing OFF, boundary-gradient extension into the interior
+/// ON.
+///
+/// One table rather than three scalars so that a name and its default cannot
+/// drift apart, and so [`MeshSizeSourceReset`]'s restore is a loop over this
+/// definition rather than a hand-unrolled copy of it.
+///
+/// Measured against the shipped library, not assumed: `gmshOptionGetNumber`
+/// on a freshly `gmshInitialize`d libgmsh 4.15.2 returns `1`, `0` and `1` for
+/// these three (and `0` / `1e+22` for the pair above, which is how those two
+/// were checked at the same time).
+///
+/// `pub` for the same reason as [`GMSH_MESH_SIZE_MIN_DEFAULT`] — this crate's
+/// `tests/` binaries are separate compilation units and normalise the trio to
+/// make their own readings hermetic.
+pub const GMSH_MESH_SIZE_SOURCE_DEFAULTS: [(&str, f64); 3] = [
+    ("Mesh.MeshSizeFromPoints", 1.0),
+    ("Mesh.MeshSizeFromCurvature", 0.0),
+    ("Mesh.MeshSizeExtendFromBoundary", 1.0),
+];
 
 /// RAII reset of the process-global `Mesh.MeshSizeMin`/`MeshSizeMax` pair to
 /// gmsh's defaults, covering the early-`?`-return paths as well as success.
@@ -140,5 +194,33 @@ impl Drop for MeshSizeClampReset<'_> {
         // be reported from `drop` and must not mask the real result.
         let _ = crate::ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT);
         let _ = crate::ffi::option_set_number("Mesh.MeshSizeMax", GMSH_MESH_SIZE_MAX_DEFAULT);
+    }
+}
+
+/// RAII reset of the process-global size-SOURCE trio to gmsh's defaults
+/// ([`GMSH_MESH_SIZE_SOURCE_DEFAULTS`]), covering the early-`?`-return paths
+/// as well as success.
+///
+/// The sibling of [`MeshSizeClampReset`], and deliberately identical to it in
+/// construction — same lock-witness borrow, same `pub`, same restore-to-
+/// defaults rationale, all documented on that type — so that neither can drift
+/// into a weaker discipline than the other. What differs is only WHICH options
+/// it owns; see this module's doc for why that is two types and not one.
+pub struct MeshSizeSourceReset<'g>(std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>);
+
+impl<'g> MeshSizeSourceReset<'g> {
+    /// Arm the reset. Takes the live `GMSH_LOCK` guard by reference purely for
+    /// its lifetime — the guard itself is never touched.
+    pub fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
+
+impl Drop for MeshSizeSourceReset<'_> {
+    fn drop(&mut self) {
+        // Best-effort for the same reason as `MeshSizeClampReset::drop`.
+        for (option, default) in GMSH_MESH_SIZE_SOURCE_DEFAULTS {
+            let _ = crate::ffi::option_set_number(option, default);
+        }
     }
 }
