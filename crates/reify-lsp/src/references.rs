@@ -2081,10 +2081,17 @@ fn resolve_cross_file_home(
     None
 }
 
-/// Collect the structure-name reference spans an importing document
-/// `doc_source` contributes for an entity named `name` homed at `home_uri`:
-/// the import entity token plus (for non-aliased imports) every same-file
-/// `sub _ = name` construction site, ascending by `span.start`.
+/// Collect the declaration-name reference spans an importing document
+/// `doc_source` contributes for a declaration named `name` homed at `home_uri`:
+/// the import entity token plus, for non-aliased imports, every USE SITE in the
+/// document, ascending by `span.start`.
+///
+/// The use sites are exactly the three categories
+/// [`collect_decl_name_uses_in_decl`] fans out over — `sub _ = name`
+/// construction sites, `constraint name(…)` instantiations, and every type
+/// position (#6539) — because this calls that same fan-out. Sharing it with the
+/// home document is deliberate: the two cannot disagree about what counts as a
+/// use, so a rename driven from either end edits the same set.
 ///
 /// SCOPE SOUNDNESS (Invariant 1, κ step-6): an import contributes ONLY when
 /// `resolve_import(import.path)` resolves to `home_uri` — never by a bare
@@ -2101,9 +2108,9 @@ fn resolve_cross_file_home(
 ///   and its `sub _ = Alias` uses are a separate binding and are excluded.
 ///
 /// PERFORMANCE — a cheap substring pre-filter skips fully parsing docs that
-/// cannot contribute: every span this function emits (an import entity token or
-/// a `sub _ = name` construction token) requires `name` to appear LITERALLY in
-/// `doc_source`, so `!doc_source.contains(name)` is a sound early-out (a
+/// cannot contribute: every span this function emits is a name token for `name`
+/// itself, so it requires `name` to appear LITERALLY in `doc_source`, and
+/// `!doc_source.contains(name)` is a sound early-out (a
 /// whole-word match implies a substring match — the pre-filter never drops a
 /// real reference). On a workspace with many open docs this avoids re-parsing
 /// every buffer just to discover it never imports the home entity.
@@ -2166,14 +2173,16 @@ fn collect_importer_structure_references(
 
 /// Cross-file find-references over the import graph (κ, task 4210).
 ///
-/// Resolves the cursor to a structure "home" — a local declaration name, an
+/// Resolves the cursor to a declaration "home" — a local declaration name, an
 /// `import` entity token, or a `sub _ = Name` construction site — then unions:
-/// the home document's declaration token + same-file construction sites, and,
-/// for every OTHER document in `workspace_docs` that imports the home entity,
-/// that document's import entity token + construction sites. Each span is mapped
-/// to an LSP [`Location`] in its document. `include_declaration` controls whether
-/// the home declaration token is part of the set, mirroring the single-file
-/// [`compute_references`] contract.
+/// the home document's declaration token + its same-file use sites, and, for
+/// every OTHER document in `workspace_docs` that imports the home entity, that
+/// document's import entity token + its use sites. Both halves run the one
+/// fan-out described on `collect_decl_name_spans`, so "use site" means the
+/// same thing in every document. Each span is mapped to an LSP [`Location`] in
+/// its document. `include_declaration` controls whether the home declaration
+/// token is part of the set, mirroring the single-file [`compute_references`]
+/// contract.
 ///
 /// When the cursor is on a local VALUE-member binding the call delegates to the
 /// single-file [`compute_references`] (value members keep single-file scope).
@@ -2372,10 +2381,11 @@ fn is_renameable_cross_file(kind: RefSymbolKind) -> bool {
 ///
 /// Resolution order mirrors [`compute_references_cross_file`]: try the
 /// single-file [`prepare_rename`] first (value members keep their exact
-/// semantics), then resolve a cross-file structure home and admit it only when
-/// its declaration kind is κ-renameable ([`is_renameable_cross_file`] —
-/// Structure/Occurrence). Refuses keywords, literals, type-annotation positions,
-/// and words resolving to neither a local binding nor a resolvable structure.
+/// semantics), then resolve a cross-file declaration home and admit it only when
+/// its kind is renameable ([`is_renameable_cross_file`], which states the rule
+/// and the per-kind verdicts). Refuses keywords, literals, type-annotation
+/// positions, and words resolving to neither a local binding nor a resolvable
+/// declaration.
 ///
 /// PURE: target resolution arrives as the injected `resolve_import` closure
 /// (mirroring goto_def), so the cross-file path is unit-testable with a mock
@@ -2410,8 +2420,8 @@ pub fn prepare_rename_cross_file(
         return None;
     };
 
-    // Admit only the κ-renameable declaration kinds (Structure/Occurrence); a
-    // trait/enum/fn home is OUT of κ scope and refuses.
+    // Admit only the renameable declaration kinds; `is_renameable_cross_file`
+    // owns the rule and the per-kind verdicts.
     if !is_renameable_cross_file(classify_top_level_decl(&source, &name)?) {
         return None;
     }
@@ -2442,14 +2452,15 @@ pub fn prepare_rename_cross_file(
 /// targets. A consuming task that surfaces "only open files were updated" or
 /// walks the workspace `.ri` tree would close this gap.
 ///
-/// SCOPE — declaration + construction sites only. For a Structure/Occurrence
-/// home the edit set covers the declaration token, import entity tokens, and
-/// `sub _ = Name` (construction) sites — NOT type-annotation / refinement
-/// positions (see [`is_renameable_cross_file`] and [`collect_decl_name_spans`]).
-/// If a structure name also appears in such a position the rename rewrites the
-/// decl + construction sites but leaves that use stale; the buffers still
-/// re-PARSE clean (Invariant 5 only checks parse-cleanliness) yet now reference
-/// a renamed entity. Extending the collector to type positions is a κ follow-up.
+/// SCOPE — which use forms the edit set covers. The edit set is the reference
+/// set, so it covers the declaration token, import entity tokens, `sub _ = Name`
+/// construction sites, `constraint Name(…)` instantiations, and every type
+/// position — the categories [`collect_decl_name_spans`] enumerates. The
+/// type-position gap this block used to record as a live rename hazard was
+/// closed by #6539; the one residual inside an admitted kind is
+/// `TypeParamDecl.bounds`, which carries no span in the AST and is stated in
+/// that function's CAVEAT. Which KINDS may be renamed at all is a separate
+/// question, answered by [`is_renameable_cross_file`].
 ///
 /// The edit set is exactly the cross-file reference set
 /// ([`compute_references_cross_file`] with `include_declaration = true`) — the
@@ -2463,8 +2474,8 @@ pub fn prepare_rename_cross_file(
 /// rejecting empty/whitespace/punctuation/digit-leading/reserved-keyword), and
 /// the cursor must resolve to a renameable home. Renameability is gated through
 /// [`prepare_rename_cross_file`] so prepare and rename never disagree (value
-/// members keep single-file semantics; structure homes admit only
-/// Structure/Occurrence). Returns `None` on either refusal.
+/// members keep single-file semantics; declaration homes admit only the kinds
+/// [`is_renameable_cross_file`] lists). Returns `None` on either refusal.
 ///
 /// PURE: the open-document set arrives as `workspace_docs` and target resolution
 /// as the injected `resolve_import` closure (mirroring goto_def), so the whole
@@ -2487,7 +2498,8 @@ pub fn compute_rename_cross_file(
     }
 
     // Renameability gate — share prepare's resolution so prepare and rename never
-    // disagree on what is renameable (value member, or Structure/Occurrence home).
+    // disagree on what is renameable (value member, or an admitted declaration
+    // home — `is_renameable_cross_file` lists them).
     prepare_rename_cross_file(primary_source, primary_parsed, primary_uri, pos, resolve_import)?;
 
     // The cross-file reference set (declaration ∪ uses) is exactly the set of
@@ -5390,8 +5402,9 @@ structure Assembly {
     #[test]
     fn prepare_rename_cross_file_refuses_keyword_type_and_unresolved() {
         // The cross-file producer keeps the single-file refusals: a keyword, a
-        // type-annotation position (OUT of κ scope), and a word that resolves to
-        // neither a local binding nor a resolvable structure all return None.
+        // type-annotation position naming a declaration this workspace does not
+        // declare, and a word that resolves to neither a local binding nor a
+        // resolvable declaration all return None.
         let (_docs, resolver) = canonical_workspace();
         let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
 
@@ -5409,7 +5422,13 @@ structure Assembly {
             "(a) keyword `structure` is not renameable"
         );
 
-        // (b) type-annotation position `Length` — type positions are OUT of κ.
+        // (b) type-annotation position `Length`. Since #6539 a type position is
+        //     no longer refused for BEING one — it is a collected use site, and
+        //     an alias named there is renameable. `Length` still refuses for a
+        //     different and more basic reason: it is a PRELUDE dimension, so no
+        //     top-level declaration in this workspace declares it and there is
+        //     no home to rename. Kept as a row because "the cursor is on a type"
+        //     must not become sufficient on its own.
         let ty = occurrences(PARTS_SRC, "Length")[0];
         assert!(
             prepare_rename_cross_file(
@@ -5420,7 +5439,8 @@ structure Assembly {
                 &resolver,
             )
             .is_none(),
-            "(b) a type-annotation position (`Length`) is not a κ rename target"
+            "(b) `Length` names no declaration in this workspace, so there is \
+             no home to rename"
         );
 
         // (c) an imported structure use whose import does NOT resolve (the

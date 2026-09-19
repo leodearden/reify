@@ -143,10 +143,12 @@ pub fn compute_goto_definition_with_parsed(
 /// SCOPE. Top-level declarations only — a `structure def` nested inside a
 /// `purpose` body lives in `PurposeDef.structures`, so it is not resolved
 /// (pinned by `goto_def_purpose_nested_structure_is_not_top_level`). And
-/// same-file only: cross-file goto-def runs the narrower [`decl_name_span_in`]
-/// instead, leaving Purpose/Constraint/Unit/Joint SAME-FILE-navigable until the
-/// use-site collectors learn to walk type expressions (#6539, rolled up in
-/// #6972).
+/// same-file only: cross-file goto-def runs [`decl_name_span_in`] instead. The
+/// two now agree on every kind but one — #6539 (rolled up in #6972) taught the
+/// use-site collectors to walk type expressions, which let the cross-file scan
+/// admit Purpose, Constraint, TypeAlias and Joint. `Unit` alone stays
+/// SAME-FILE-navigable, and not for want of a collector: see
+/// [`decl_name_span_in`].
 fn resolve_decl_name(
     parsed: &reify_ast::ParsedModule,
     source: &str,
@@ -354,14 +356,25 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 ///
 /// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
 /// the `collect_decl_name_spans` home token, `resolve_cross_file_home`
-/// step 2, and the cross-file rename producer.
+/// step 2, and the cross-file rename producer. So **adding a kind here changes
+/// what the REFERENCE SET reports**, and a kind whose use sites are not
+/// collected would report the declaration token ALONE — the incomplete input a
+/// later rename would trust and silently act on.
 ///
-/// Its kind list is therefore DELIBERATELY NARROWER than
-/// [`crate::analysis::decl_name_and_span`], the wildcard-free SAME-FILE source,
-/// and must not be "unified" onto it: **adding a kind here changes what the
-/// REFERENCE SET reports**, and for a type-position-only kind it reports the
-/// declaration token ALONE, with every use site absent — the incomplete input a
-/// later rename would trust.
+/// Its kind list is therefore governed by one rule, not by convenience: a kind
+/// is admitted exactly when every use-site form for it is collected. Ten of the
+/// eleven named kinds now satisfy it — Structure, Occurrence, Function, Enum,
+/// Trait and Field always did; TypeAlias, Constraint, Purpose and Joint were
+/// admitted once #6539 taught the collectors every `TypeExpr` root, every
+/// `constraint Name(…)` instantiation and a purpose's sibling child regions.
+/// `Unit` is the one refusal, and it is not a backlog item: its only use site is
+/// a literal suffix carrying no span, so no collector can ever reach it from
+/// here (the measurement is on [`decl_name_span_in`]).
+///
+/// That makes this list narrower than [`crate::analysis::decl_name_and_span`],
+/// the wildcard-free SAME-FILE source, by exactly one kind — but the two must
+/// still not be "unified", because they answer different questions: that one
+/// asks what a declaration is NAMED, this one asks whether renaming it is SAFE.
 ///
 /// The full argument, the measurement behind it, and the separate allowlist
 /// that gates rename itself (`references::classify_top_level_decl`) live on the

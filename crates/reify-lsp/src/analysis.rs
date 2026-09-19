@@ -540,9 +540,11 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// The match is deliberately **exhaustive with no `_` wildcard arm**, and that
 /// is the load-bearing part of the design: a new `Declaration` variant becomes
 /// a COMPILE ERROR here, forcing an explicit named-vs-unnamed decision instead
-/// of a silent omission. Every other declaration scan in this crate is a
-/// per-kind allowlist ending in `_`, and each of them silently dropped kinds as
-/// the parser grew them.
+/// of a silent omission. This scan was the first in the crate to be written
+/// that way, after every wildcard-terminated one had silently dropped kinds as
+/// the parser grew them; #6972 finished the job, so the two rename/references
+/// oracles below are exhaustive too and a new variant is a compile error at all
+/// three.
 ///
 /// The returned span is the whole declaration statement, NOT the name token —
 /// narrow it with [`name_token_span`] when a jump target is wanted.
@@ -555,12 +557,14 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 ///
 /// The deliberate NON-consumers are the two rename/references oracles,
 /// `goto_def::find_declaration_name_span` and
-/// `references::classify_top_level_decl`. They stay narrower on purpose: they
-/// feed rename, whose edit set is the reference set, so admitting a kind whose
-/// USE SITES are not collected produces a rename that moves the declaration and
-/// leaves every use stale. A kind belongs there only once every use-site form
-/// for it is collected. The argument and the measurement behind it live on the
-/// guard test
+/// `references::classify_top_level_decl`. They answer a stricter question, and
+/// must keep answering it separately: they feed rename, whose edit set is the
+/// reference set, so admitting a kind whose USE SITES are not collected
+/// produces a rename that moves the declaration and leaves every use stale. A
+/// kind belongs there only once every use-site form for it is collected. Since
+/// #6539 ten of the eleven named kinds qualify; `Unit` does not, and cannot —
+/// its one use form is a literal suffix that carries no span. The argument and
+/// the measurement behind it live on the guard test
 /// `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`.
 pub(crate) fn decl_name_and_span(decl: &Declaration) -> Option<(&str, SourceSpan)> {
     let named = match decl {
