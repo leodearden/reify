@@ -557,7 +557,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 ///
 /// The deliberate NON-consumers are the two rename/references oracles,
 /// `goto_def::find_declaration_name_span` and
-/// `references::classify_top_level_decl`. They answer a stricter question, and
+/// `references::classify_decl_name`. They answer a stricter question, and
 /// must keep answering it separately: they feed rename, whose edit set is the
 /// reference set, so admitting a kind whose USE SITES are not collected
 /// produces a rename that moves the declaration and leaves every use stale. A

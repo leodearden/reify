@@ -395,7 +395,7 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// asks what a declaration is NAMED, this one asks whether renaming it is SAFE.
 ///
 /// The full argument, the measurement behind it, and the separate allowlist
-/// that gates rename itself (`references::classify_top_level_decl`) live on the
+/// that gates rename itself (`references::classify_decl_name`) live on the
 /// guard test `references::tests::
 /// cross_file_declaration_kind_admission_tracks_use_site_coverage`.
 pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
@@ -416,10 +416,23 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// declaration shape pays for exactly one parse; `source` is still required
 /// because the AST carries whole-declaration spans, not name-token spans.
 ///
-/// The match is WILDCARD-FREE over all 14 [`reify_ast::Declaration`] variants,
-/// so a new declaration kind is a compile error here rather than a silently
-/// unresolvable one. Ten of the eleven NAMED kinds are admitted. `Unit` is the
-/// sole named refusal, and `Import`/`Default`/`Module` declare no name at all.
+/// Its kind allowlist, [`admitted_decl_name_and_span`], is WILDCARD-FREE over
+/// all 14 [`reify_ast::Declaration`] variants, so a new declaration kind is a
+/// compile error rather than a silently unresolvable one. Ten of the eleven
+/// NAMED kinds are admitted. `Unit` is the sole named refusal, and
+/// `Import`/`Default`/`Module` declare no name at all.
+///
+/// It also DESCENDS one level into purpose bodies, via
+/// [`crate::analysis::purpose_nested_decl_names`] — the crate's single source of
+/// purpose-nested names, which also owns the single-level assumption and names
+/// its invariant owner in the compiler. That descent is sound here for the same
+/// reason any kind is admitted: a purpose-nested structure's use sites are
+/// COLLECTED. `collect_decl_name_spans` walks every type position (#6539) and
+/// descends `PurposeDef.structures`, so the reference set a rename edits carries
+/// the construction sites and type positions, not the declaration token alone.
+/// The compiler's own treatment — the name is registered in the MODULE-LEVEL
+/// structure namespace — is why this is a correctness fix rather than a
+/// generosity.
 ///
 /// WHY `Unit` IS REFUSED — not an oversight, and not "not yet done". A unit's
 /// only use site is a suffixed literal (`5meter`), which is unreachable from
@@ -472,33 +485,54 @@ fn decl_name_span_in(
     source: &str,
     name: &str,
 ) -> Option<SourceSpan> {
-    for decl in &parsed.declarations {
-        let (decl_name, span) = match decl {
-            reify_ast::Declaration::Structure(s) => (s.name.as_str(), s.span),
-            reify_ast::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
-            reify_ast::Declaration::Function(f) => (f.name.as_str(), f.span),
-            reify_ast::Declaration::Enum(e) => (e.name.as_str(), e.span),
-            reify_ast::Declaration::Trait(t) => (t.name.as_str(), t.span),
-            reify_ast::Declaration::Field(f) => (f.name.as_str(), f.span),
-            reify_ast::Declaration::TypeAlias(t) => (t.name.as_str(), t.span),
-            reify_ast::Declaration::Constraint(c) => (c.name.as_str(), c.span),
-            reify_ast::Declaration::Purpose(p) => (p.name.as_str(), p.span),
-            reify_ast::Declaration::Joint(j) => (j.name.as_str(), j.span),
-            reify_ast::Declaration::Unit(_) => continue,
-            reify_ast::Declaration::Import(_)
-            | reify_ast::Declaration::Default(_)
-            | reify_ast::Declaration::Module(_) => continue,
-        };
+    // Top-level declarations FIRST, purpose-nested structures after — the same
+    // precedence [`resolve_decl_name`] uses, so a name clash between a
+    // purpose-nested structure and a same-named top-level declaration resolves
+    // identically on both paths.
+    let candidates = parsed
+        .declarations
+        .iter()
+        .filter_map(admitted_decl_name_and_span)
+        .chain(crate::analysis::purpose_nested_decl_names(parsed));
+
+    for (decl_name, span) in candidates {
         if decl_name == name {
             // Point to the name within the declaration, not the entire span.
             // Sharing the narrowing with the same-file path is not the oracle
             // merge this function's doc forbids — that split is over which
-            // KINDS the match above admits, not over how an already-selected
+            // KINDS are admitted, not over how an already-selected
             // declaration's name token is narrowed.
             return decl_name_token(source, decl_name, span);
         }
     }
     None
+}
+
+/// The `(name, statement span)` pair of a top-level declaration whose kind
+/// [`decl_name_span_in`] admits — `None` for `Unit` and for the three kinds
+/// that declare no name of their own.
+///
+/// Split out so the ADMISSION RULE is one named thing rather than a match
+/// buried in a loop; the rule itself, and why `Unit` is its one named refusal,
+/// are stated on [`find_declaration_name_span`] and [`decl_name_span_in`].
+fn admitted_decl_name_and_span(decl: &reify_ast::Declaration) -> Option<(&str, SourceSpan)> {
+    let named = match decl {
+        reify_ast::Declaration::Structure(s) => (s.name.as_str(), s.span),
+        reify_ast::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
+        reify_ast::Declaration::Function(f) => (f.name.as_str(), f.span),
+        reify_ast::Declaration::Enum(e) => (e.name.as_str(), e.span),
+        reify_ast::Declaration::Trait(t) => (t.name.as_str(), t.span),
+        reify_ast::Declaration::Field(f) => (f.name.as_str(), f.span),
+        reify_ast::Declaration::TypeAlias(t) => (t.name.as_str(), t.span),
+        reify_ast::Declaration::Constraint(c) => (c.name.as_str(), c.span),
+        reify_ast::Declaration::Purpose(p) => (p.name.as_str(), p.span),
+        reify_ast::Declaration::Joint(j) => (j.name.as_str(), j.span),
+        reify_ast::Declaration::Unit(_) => return None,
+        reify_ast::Declaration::Import(_)
+        | reify_ast::Declaration::Default(_)
+        | reify_ast::Declaration::Module(_) => return None,
+    };
+    Some(named)
 }
 
 #[cfg(test)]

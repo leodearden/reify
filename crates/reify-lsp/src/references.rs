@@ -51,7 +51,7 @@ use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 ///   exact semantics on the cross-file path.
 ///
 /// One variant per named declaration kind — rather than a single `Decl` — is
-/// what lets `classify_top_level_decl` match WILDCARD-FREE over
+/// what lets `classify_decl_name` match WILDCARD-FREE over
 /// `Declaration`, so a new declaration kind is a compile error there instead of
 /// a silently unclassified declaration that every rename gate then refuses
 /// without saying so.
@@ -2266,9 +2266,18 @@ pub fn compute_references_cross_file(
     }
 }
 
-/// Classify the top-level declaration named `name` in `source` to a
-/// [`RefSymbolKind`], for cross-file rename gating. Returns `None` when no
-/// top-level declaration matches.
+/// Classify the declaration named `name` in `source` to a [`RefSymbolKind`],
+/// for cross-file rename gating. Returns `None` when nothing declares `name`.
+///
+/// "Declaration" here means a MODULE-LEVEL name: every top-level `Declaration`
+/// that declares one, plus the `structure def`s nested one level inside a
+/// `purpose` body (#6534). The nested ones classify as
+/// [`RefSymbolKind::Structure`] — which is what they are to the compiler, which
+/// registers them in the module-level structure namespace and compiles them
+/// into the same template table — so they need no new gate:
+/// [`is_renameable_cross_file`] already admits `Structure`. Top-level names are
+/// scanned FIRST, matching the precedence both goto-def scans use, so a name
+/// clash resolves identically everywhere.
 ///
 /// WILDCARD-FREE over all 14 `Declaration` variants. This function and
 /// `goto_def::decl_name_span_in` are two per-kind allowlists over the
@@ -2291,9 +2300,9 @@ pub fn compute_references_cross_file(
 /// `parsed.declarations`. Both therefore see exactly the user's own top-level
 /// declarations; the difference is in expression/type SHAPE below the
 /// declaration level, which no arm of either match inspects.
-fn classify_top_level_decl(source: &str, name: &str) -> Option<RefSymbolKind> {
+fn classify_decl_name(source: &str, name: &str) -> Option<RefSymbolKind> {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("_classify"));
-    parsed.declarations.iter().find_map(|decl| {
+    let top_level = parsed.declarations.iter().find_map(|decl| {
         let (decl_name, kind) = match decl {
             Declaration::Structure(s) => (s.name.as_str(), RefSymbolKind::Structure),
             Declaration::Occurrence(o) => (o.name.as_str(), RefSymbolKind::Occurrence),
@@ -2314,6 +2323,11 @@ fn classify_top_level_decl(source: &str, name: &str) -> Option<RefSymbolKind> {
             }
         };
         (decl_name == name).then_some(kind)
+    });
+    top_level.or_else(|| {
+        crate::analysis::purpose_nested_decl_names(&parsed)
+            .any(|(nested, _)| nested == name)
+            .then_some(RefSymbolKind::Structure)
     })
 }
 
@@ -2422,7 +2436,7 @@ pub fn prepare_rename_cross_file(
 
     // Admit only the renameable declaration kinds; `is_renameable_cross_file`
     // owns the rule and the per-kind verdicts.
-    if !is_renameable_cross_file(classify_top_level_decl(&source, &name)?) {
+    if !is_renameable_cross_file(classify_decl_name(&source, &name)?) {
         return None;
     }
 
@@ -5494,7 +5508,7 @@ structure Assembly {
     ///
     /// TWO GATES, STILL ASSERTED SEPARATELY, because they are still separate
     /// code:
-    /// - RENAME is gated by `classify_top_level_decl` + `is_renameable_cross_file`,
+    /// - RENAME is gated by `classify_decl_name` + `is_renameable_cross_file`,
     ///   which never consult `find_declaration_name_span`. The per-kind verdicts
     ///   below pin THAT gate.
     /// - The REFERENCE SET is gated by `find_declaration_name_span`. The
