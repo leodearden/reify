@@ -854,8 +854,10 @@ assert_exit "GLOB-CLAUSE: is-registered agrees about tests/infra/test_flake_dens
 
 # (p) PRECISION, the single-directory anchor survives the alternation edit. The
 # `[^/]*` component must keep applying to `.py` exactly as it does to `.sh`.
-# PASSES VACUOUSLY TODAY -- nothing under tests/infra matches `.py` yet -- and
-# becomes load-bearing the moment the widening lands.
+# WAS VACUOUS when written, against the pre-7626 `.sh`-only clause, and has
+# been DISCRIMINATING since the widening landed two commits later in this same
+# change. MEASURED, not inferred: relax `[^/]*` to `.*` and re-run -- this case
+# is the only one of the 177 that reds.
 assert_exit "PRECISION: tests/infra/sub/nested.py is not single-directory -> fast-path-safe (exit 1)" 1 \
     run_guard_nofork requires-full-gate tests/infra/sub/nested.py
 
@@ -865,7 +867,10 @@ assert_exit "PRECISION: tests/infra/sub/nested.py is not single-directory -> fas
 # era and a `[a-z]+` drift would red both, so this is a deliberate restatement
 # rather than an independent discriminator -- sited with the `.py` cases so
 # that whoever comes to add a THIRD extension meets the closure pin where they
-# are already working. VACUOUS TODAY for the same reason as (p).
+# are already working. Was vacuous when written for the same reason as (p),
+# and is live now for the same reason. MEASURED: widening the constant to
+# `[^/]*\.[a-z]+$` reds this case and (h) together, exactly as the note
+# predicts.
 assert_exit "PRECISION: tests/infra/zzz_fixture.txt is neither .sh nor .py -> fast-path-safe (exit 1)" 1 \
     run_guard_nofork requires-full-gate tests/infra/zzz_fixture.txt
 
@@ -876,7 +881,9 @@ assert_exit "PRECISION: tests/infra/zzz_fixture.txt is neither .sh nor .py -> fa
 # of `is-registered` ONLY because requires-full-gate reports 1 for it. That was
 # recorded there as a measured aside; making it an assertion here means a
 # `.py`-anywhere widening reds HERE, instead of silently hollowing out Pair C's
-# case into a tautology. VACUOUS TODAY for the same reason as (p).
+# case into a tautology. Was vacuous when written for the same reason as (p),
+# and is live now for the same reason. MEASURED: dropping the `^tests/infra/`
+# anchor reds this case along with eleven others.
 assert_exit "NON-REGRESSION: scripts/prd-capability-check.py is a .py OUTSIDE tests/infra -> fast-path-safe (exit 1)" 1 \
     run_guard_nofork requires-full-gate scripts/prd-capability-check.py
 
