@@ -159,6 +159,44 @@ pub fn ensure_initialized() {
 /// out is harmless either way: measured on libgmsh 4.15.2, an FFI call after
 /// `gmshFinalize` returns `ierr=1` ("Gmsh has not been initialized") and does
 /// nothing.
+///
+/// # Why the diagnosis is read here
+///
+/// Gmsh states WHY a mesh failed in its captured message stream, not in the
+/// last-error line the `ffi` macro annotates with — see [`crate::log_capture`].
+/// That stream lives INSIDE libgmsh, and this function is the only thing in
+/// this crate that destroys libgmsh. So it reads the capture before the
+/// teardown and folds it into the error it returns, and is therefore the sole
+/// annotator of its own failure: a caller's own
+/// [`crate::log_capture::LogCapture`] seam must not also cover this call, or
+/// the same lines land in the message twice.
+///
+/// That the read has to happen first is not hypothetical, but neither is it
+/// what the measurement showed. Measured on libgmsh 4.15.2: the capture
+/// SURVIVES a `gmshFinalize`+`gmshInitialize` cycle — lines captured before
+/// the recycle are still readable after it — and `gmshLoggerGet` between the
+/// two returns `ierr=1`. Gmsh documents neither, so reading first is what
+/// keeps the diagnosis independent of a behaviour that could change under us.
+///
+/// A caller that armed no capture pays nothing: [`ffi::logger_get`] on a
+/// logger that was never started returns an empty `Vec`, which is
+/// [`crate::log_capture::annotated`]'s pass-through path. The read is on the
+/// failure path only — the success path returns before reaching it.
+///
+/// Three of this function's four callers sit in exactly that position today,
+/// and the asymmetry is easier to miss from their side than from here. Only
+/// [`crate::kernel_real::GmshKernel::mesh_to_volume`] arms a
+/// [`crate::log_capture::LogCapture`], so a failure reached through
+/// `refine_volume::refine_volume_with_size_field`,
+/// `mesh_boundary::mesh_surface_to_volume_with_attribution` or
+/// `mesh_profile_2d::mesh_plane_2d` still reports nothing beyond the
+/// last-error line — and each of those silences `"General.Terminal"` just as
+/// `mesh_to_volume` does, which is precisely what leaves the capture as the
+/// only route to gmsh's diagnosis there too. Each is one
+/// `LogCapture::armed(&_guard)` after its own `"General.Terminal"` write away
+/// from parity; all three already hold the [`GmshGuard`] that call asks for.
+/// Left undone because those three files are outside task #6969's scope, not
+/// because arming them was judged wrong.
 pub(crate) fn mesh_generate_with_recovery(
     _guard: &GmshGuard,
     dim: i32,
@@ -167,21 +205,28 @@ pub(crate) fn mesh_generate_with_recovery(
         Ok(()) => return Ok(()),
         Err(e) => e,
     };
+    let captured = ffi::logger_get().unwrap_or_default();
 
     if let Err(finalize_err) = ffi::finalize() {
         // Do NOT initialize() now: the library was never torn down, and a
         // second gmshInitialize over a live one is undefined. Report both
         // facts — the mesh failed, and the process is still poisoned.
-        return Err(GeometryError::OperationFailed(format!(
-            "{original} (and the mesher could not be recovered: {finalize_err} — \
-             later meshing calls in this process may silently produce no elements)"
-        )));
+        return Err(crate::log_capture::annotated(
+            GeometryError::OperationFailed(format!(
+                "{original} (and the mesher could not be recovered: {finalize_err} — \
+                 later meshing calls in this process may silently produce no elements)"
+            )),
+            &captured,
+        ));
     }
     if let Err(init_err) = ffi::initialize() {
         GMSH_DEAD.store(true, Ordering::Release);
-        return Err(GeometryError::OperationFailed(format!(
-            "{original} (and {GMSH_DEAD_MESSAGE}: {init_err})"
-        )));
+        return Err(crate::log_capture::annotated(
+            GeometryError::OperationFailed(format!(
+                "{original} (and {GMSH_DEAD_MESSAGE}: {init_err})"
+            )),
+            &captured,
+        ));
     }
 
     // `gmshInitialize` resets the process-global option table, so without
@@ -192,7 +237,7 @@ pub(crate) fn mesh_generate_with_recovery(
     // Best-effort: a failure here must not mask the real result.
     let _ = ffi::option_set_number("General.Terminal", 0.0);
 
-    Err(original)
+    Err(crate::log_capture::annotated(original, &captured))
 }
 
 /// Read this call's tetrahedra back out of gmsh, rejecting a buffer that

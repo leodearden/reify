@@ -10,6 +10,7 @@
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
 use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, QueryError};
 use reify_test_support::fixtures::unit_cube_mesh;
+use reify_kernel_gmsh::{ffi, init};
 
 /// Round-trip a unit cube (8 vertices, 12 outward-winding triangles)
 /// through `mesh_to_volume` with the default options + P1 element order.
@@ -492,6 +493,38 @@ fn out_of_bounds_index_errors() {
     assert!(
         msg.contains("99") && msg.contains("out of bounds"),
         "error message should mention the out-of-bounds tag and phrasing; got: {msg}"
+    );
+}
+
+/// The success-path half of "stop the capture on EVERY exit path".
+///
+/// MEASURED: one unit-cube `mesh_to_volume` emits 82 captured lines, so a
+/// success path that left the capture armed would leave all 82 buffered for
+/// the next caller in this process to report as its own — and this read
+/// would find them. `logger_stop` drains, so empty is the witness that the
+/// guard fired. The error path is covered by
+/// `log_capture_tests::log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop`
+/// and, end to end, by
+/// `mesher_poison_recovery::a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error`
+/// — which lives there because it needs a deliberate mesher failure, kept out
+/// of this binary.
+#[test]
+fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+    kernel
+        .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
+        .expect("mesh_to_volume must succeed for a closed unit-cube surface");
+
+    // `mesh_to_volume` released GMSH_LOCK on return, so this read is
+    // serialised against any concurrent mesher in this binary rather than
+    // racing one mid-flight.
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
+    assert!(
+        leftover.is_empty(),
+        "mesh_to_volume must leave gmsh's capture stopped and drained; {} lines left: {leftover:?}",
+        leftover.len(),
     );
 }
 // Coverage gap: the `surface_tags.is_empty()` branch in
