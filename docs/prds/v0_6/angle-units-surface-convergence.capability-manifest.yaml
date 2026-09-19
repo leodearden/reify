@@ -55,15 +55,17 @@ tasks:
   title: angle_spec() in arg_acceptance; retire the hint-less inline ANGLE spec
   capabilities:
   - name: angle-spec-absent-today
-    binding: capability→producer (this leaf) — grep:crates/reify-eval/src/arg_acceptance.rs:86
-      density_spec, :103 length_spec, :117 accept_arg; no angle_spec anywhere in the
-      repo
+    binding: capability→producer (this leaf) — grep:crates/reify-ir/src/arg_acceptance.rs:298
+      density_spec, :337 length_spec, :635 accept_arg; no angle_spec anywhere in the
+      repo AT DECOMPOSE — since DELIVERED, pub fn angle_spec() at
+      crates/reify-ir/src/arg_acceptance.rs:411 (re-measured 2026-09-18, task 7550;
+      anchors re-measured against main @ ea896581d1, not bd10b6d0e1)
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: pub fn angle_spec
       paths:
-      - crates/reify-eval/src/arg_acceptance.rs
+      - crates/reify-ir/src/arg_acceptance.rs
       expect: present
   - name: angle-rejection-mechanism-fires
     binding: 'rejection-check (G6 branch 4) — probe: reify eval faces_by_normal(b,0.0,0.0,1.0,0.01)
@@ -83,7 +85,7 @@ tasks:
       kind: grep
       pattern: pass a dimensioned angle such as
       paths:
-      - crates/reify-eval/src/arg_acceptance.rs
+      - crates/reify-ir/src/arg_acceptance.rs
       expect: present
   - name: shared-diagnostic-code-upstream
     binding: DAG-direction — producer:task 5743 (PRD 1 β) mints the shared bare/wrong-dimension

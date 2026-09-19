@@ -43,6 +43,7 @@
 
 scripts/verify.sh    tests/infra/test_verify_*.sh
 scripts/prd-capability-check.py    tests/infra/test_prd_capability_check.sh
+scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
 
 # Warm-lane CoW pool scripts — edits route to the end-to-end integration gate.
 # Note: this is a load-bearing verify-pipeline file (see CLAUDE.md); editing it
@@ -540,3 +541,23 @@ scripts/reify-audit-predone-wrapper.sh  tests/infra/test_reify_audit_predone_wra
 # future edit to a one-line jq filter. The suite is the same hermetic,
 # seconds-long, `pool`-classified one row 513 selects.
 scripts/reify-audit-snapshot-filter.jq  tests/infra/test_reify_audit_predone_wrapper.sh
+
+# Task 7244: the read-only task-branch provenance sweep (which in-flight
+# branches carry commits or files belonging to another task). Mirrors the
+# scripts/deterministic-gate-closure-staleness-sweep.sh row above — same
+# hermetic, `pool`-classified, seconds-long suite, selected as a fail-fast pole
+# whenever the SUT changes.
+scripts/task-branch-contamination-sweep.sh    tests/infra/test_task_branch_contamination_sweep.sh
+
+# Task 7244: scripts/lib_task_citation.sh is the SINGLE copy of the "this commit
+# message cites task N" grammar (its header records, arm by arm, where it agrees
+# with dark-factory's DEFAULT_COMMIT_CITATION_PATTERN), so it needs a row per
+# CONSUMER — the one-artifact-multiple-rows pattern scripts/seed-warm-lane.sh and
+# scripts/warm-lane-audit.sh already use. Its own unit suite plus BOTH consumers'
+# suites, each of which load-bears the lib: a lib-only diff that selected only
+# the lib's unit tests would leave the consumers' classification contracts
+# unrun on the very edit that can break them (esc-7244-16's grammar change
+# moved 81 live degenerate verdicts and the sweep's census at once).
+scripts/lib_task_citation.sh    tests/infra/test_lib_task_citation.sh
+scripts/lib_task_citation.sh    tests/infra/test_warm_lane_degenerate_ref.sh
+scripts/lib_task_citation.sh    tests/infra/test_task_branch_contamination_sweep.sh

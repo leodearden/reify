@@ -48,6 +48,10 @@ pub mod ptodo;
 pub mod pdssentinel;
 pub mod pdiag;
 pub mod pdoccover;
+pub mod pdcheck;
+/// Crate-internal: shared scaffolding for the lanes that read the task DB.
+/// Not part of the detector API surface — the lanes are.
+pub(crate) mod task_rows;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;
@@ -239,6 +243,33 @@ pub enum Pattern {
     ///
     /// Reference: `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §(b) / leaf γ.
     PDocCover,
+    /// PDCHECK — `delivered_checks` dead-path lane: a non-terminal task's
+    /// `kind: grep` capability-check row whose pathspec no longer resolves
+    /// against the tracked-file set. TWO finding kinds, carried as a stable
+    /// summary prefix (PTODO's `kind`-as-prefix convention above) and split on
+    /// the row's `expect` polarity, because both readings of the runner's rc=1
+    /// on an empty pathspec are silent but they are opposite defects:
+    ///
+    /// - `delivered-check-unsatisfiable-path` (**High**) — `expect: present`
+    ///   and every path in the row absent. rc=1 reads as FAILED, so every
+    ///   dependent blocks forever at `DEP_CAPABILITY_NOT_DELIVERED`.
+    /// - `delivered-check-vacuous-absent-path` (**Medium**) — `expect: absent`
+    ///   and every path absent. The identical rc=1 reads as PASSED, so the
+    ///   check succeeds while asserting nothing.
+    ///
+    /// Quantified over the WHOLE row: a multi-`paths` row runs as ONE
+    /// `git grep -E -e <pattern> <ref> -- <paths...>`, an ANY-match, so one
+    /// dead path among live ones leaves the row satisfiable and yields no
+    /// finding. Rename-vs-delete changes only the repair hint and is carried as
+    /// [`EvidenceRef`], not as a third and fourth kind.
+    ///
+    /// **Opt-in only** (`is_some_and`, mirroring PDIAG/PDOCCOVER): the High
+    /// kind moves the process exit code, which is the High-severity count.
+    /// Reads `ls_files()` plus a read-only `.taskmaster/tasks/tasks.db`; never
+    /// contacts jcodemunch.
+    ///
+    /// Reference: `docs/architecture-audit/f-infra-design.md` §5.
+    PDeliveredCheckPath,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -252,6 +283,15 @@ pub enum EvidenceRef {
     Commit { sha: String, subject: String },
     /// One or more entries from a task's `metadata.files`.
     MetadataFiles { entries: Vec<String> },
+    /// One row of a task's `metadata.delivered_checks`, located by its `name`
+    /// — the handle a fixer needs to find the row — plus the `paths` pathspec
+    /// the row asserts over.
+    ///
+    /// Deliberately NOT [`EvidenceRef::MetadataFiles`], whose doc above pins
+    /// its meaning to "entries from a task's `metadata.files`": a
+    /// delivered_check row is a different thing with a different repair, and
+    /// collapsing the two would make the fixer guess which they were handed.
+    DeliveredCheck { check_name: String, paths: Vec<String> },
     /// A row in `data/orchestrator/runs.db`. `key` is a free-form locator
     /// (e.g. `"task_id=3242"`) — humans, not parsers, consume this.
     RunsDb { table: String, key: String },
@@ -449,9 +489,28 @@ pub trait GitOps {
     /// the correct question is "what did this commit change".
     fn changed_paths_in_commit(&self, commit: &str) -> Vec<String>;
 
-    /// `git check-ignore <path>` — true iff `path` is gitignored
+    /// `git check-ignore -- <path>` — true iff `path` is gitignored
     /// (or matches a negated rule that re-ignores).
-    fn is_gitignored(&self, path: &str) -> bool;
+    ///
+    /// Fail-safe: `false` on any git error, so "not ignored" and "could not
+    /// tell" are indistinguishable. Callers for whom that collapse is unsafe
+    /// must use [`GitOps::try_is_gitignored`] — see its note.
+    fn is_gitignored(&self, path: &str) -> bool {
+        self.try_is_gitignored(path).unwrap_or(false)
+    }
+
+    /// Fallible variant of [`GitOps::is_gitignored`]: `Ok(false)` means git ran
+    /// and the path is not ignored; `Err(description)` means git did not run or
+    /// failed, and the question is UNANSWERED.
+    ///
+    /// Exists for the same inverted-fail-safe reason as
+    /// [`GitOps::try_log_grep`]. The P5 pre-done gate builds its declared set by
+    /// SUBTRACTING the gitignored subset from `metadata.files`, so a `false`
+    /// from a failed `git check-ignore` keeps the entry in `declared` — the
+    /// first half of a blocking refusal. The gate routes the `Err` into its
+    /// advisory channel instead, downgrading any surviving refusal to a
+    /// non-blocking `Low`.
+    fn try_is_gitignored(&self, path: &str) -> Result<bool, String>;
 
     /// Returns `true` iff `path` resolves on `branch` to a tracked file OR a
     /// directory containing tracked files (git does not track empty dirs),
@@ -585,11 +644,13 @@ pub trait GitOps {
 /// **Construct exactly once per `project_root`.** The private
 /// `gitignore_unavailable` field is a per-instance `AtomicBool` that
 /// short-circuits all subsequent
-/// [`is_gitignored`](GitOps::is_gitignored) calls after the first
+/// [`try_is_gitignored`](GitOps::try_is_gitignored) calls after the first
 /// unrecoverable `git check-ignore` exit, so a task with N files against
 /// a broken git repo emits at most one
 /// `reify-audit: git check-ignore exited …` breadcrumb rather than N
-/// copies of the same line.
+/// copies of the same line. It is a BREADCRUMB budget, not a cached
+/// answer: a short-circuited call returns `Err` like the one that latched
+/// it, silently.
 ///
 /// This dedup is silently defeated by constructing a fresh [`RealGitOps`]
 /// per task, per file, or per worker: each new instance starts with a
@@ -606,11 +667,12 @@ pub trait GitOps {
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
-    /// Set to `true` the first time `is_gitignored` encounters a genuine
+    /// Set to `true` the first time `try_is_gitignored` encounters a genuine
     /// non-0/1 exit status from `git check-ignore` (exit code other than 0 or
-    /// 1). Subsequent calls short-circuit and return `false` silently, so a
-    /// task with N files against a broken git repo emits at most one breadcrumb
-    /// rather than N copies of the same line.
+    /// 1). Subsequent calls short-circuit to `Err` silently, so a task with N
+    /// files against a broken git repo emits at most one breadcrumb rather than
+    /// N copies of the same line. `Err`, not `Ok(false)`: the flag budgets the
+    /// breadcrumb and makes no claim that the answer is known.
     ///
     /// A spawn-level `Err` (EAGAIN/ENOMEM transient) does **not** latch this
     /// flag — a transient OS failure is not evidence that `git check-ignore` is
@@ -945,10 +1007,14 @@ impl GitOps for RealGitOps {
             .collect()
     }
 
-    fn is_gitignored(&self, path: &str) -> bool {
+    fn try_is_gitignored(&self, path: &str) -> Result<bool, String> {
         // `git check-ignore` exit code 0 = ignored, 1 = not ignored.
         // Any other outcome (spawn error, exit code other than 0/1) is a git
-        // failure — log a breadcrumb and default to false.
+        // failure — log a breadcrumb and report the question as unanswered.
+        //
+        // `--` is load-bearing: `metadata.files` is hand-authored and
+        // unescaped, so an entry beginning with `-` would otherwise be parsed
+        // as an option and exit 129.
         //
         // Use `.output()` (not `.status()`) to capture git's own stderr so
         // that "fatal: not a git repository" and similar diagnostics do not
@@ -959,31 +1025,27 @@ impl GitOps for RealGitOps {
         // code), `gitignore_unavailable` is latched so subsequent calls
         // short-circuit without forking git again — a task with N files
         // against a broken repo emits at most one breadcrumb rather than N
-        // identical lines.  A spawn-level Err (EAGAIN/ENOMEM transient) does
-        // NOT latch the flag: a transient OS failure is not evidence that git
-        // check-ignore is permanently broken for this repo.
+        // identical lines.  The latch budgets the BREADCRUMB only: a
+        // short-circuited call is still an unanswered question and returns
+        // `Err`, never `Ok(false)`.  A spawn-level Err (EAGAIN/ENOMEM
+        // transient) does NOT latch the flag: a transient OS failure is not
+        // evidence that git check-ignore is permanently broken for this repo.
         if self.gitignore_unavailable.load(Ordering::Relaxed) {
-            return false;
+            return Err("git check-ignore previously unavailable in this repository".to_string());
         }
         // Intentionally calls Command::output() directly rather than going
-        // through spawn_with_retry.  is_gitignored() has its own per-session
+        // through spawn_with_retry.  This seam has its own per-session
         // AtomicBool dedup latch (gitignore_unavailable) that a retry loop
         // would complicate; a spawn-level transient EAGAIN here already does
         // NOT set the latch (see Err branch below), so recovery is possible
         // on the next call.  The shell-layer run_audit retry in the PTODO infra
         // test provides defense-in-depth against persistent spawn pressure.
-        //
-        // Residual transient risk: a spawn failure here returns false
-        // (not-ignored), potentially scanning a file that should be excluded
-        // and surfacing a spurious finding (exit 0→1).  That is the
-        // conservative / extra-finding direction — the opposite of the exit 1→0
-        // flake task #4800 targets — and caught by re-running.
         match crate::git_env::command(&self.project_root)
-            .args(["check-ignore", "--quiet", path])
+            .args(["check-ignore", "--quiet", "--", path])
             .output()
         {
-            Ok(out) if out.status.code() == Some(0) => true,
-            Ok(out) if out.status.code() == Some(1) => false,
+            Ok(out) if out.status.code() == Some(0) => Ok(true),
+            Ok(out) if out.status.code() == Some(1) => Ok(false),
             Ok(out) => {
                 self.gitignore_unavailable.store(true, Ordering::Relaxed);
                 eprintln!(
@@ -991,23 +1053,21 @@ impl GitOps for RealGitOps {
                     out.status.code(),
                     self.project_root.display()
                 );
-                false
+                Err(format!("git check-ignore exited {:?}", out.status.code()))
             }
             Err(e) => {
                 // Spawn failure (EAGAIN/ENOMEM under load) — do NOT latch
                 // `gitignore_unavailable`.  A transient spawn error is not
                 // evidence that git check-ignore is permanently unavailable;
                 // latching here would silently disable ignore-filtering for
-                // the entire session after a single resource blip, potentially
-                // surfacing spurious findings for files that should be
-                // excluded.  Only a genuine non-0/1 exit status (above)
-                // warrants the dedup latch.
+                // the entire session after a single resource blip.  Only a
+                // genuine non-0/1 exit status (above) warrants the dedup latch.
                 eprintln!(
                     "reify-audit: git check-ignore failed in {}: {}",
                     self.project_root.display(),
                     e
                 );
-                false
+                Err(format!("git check-ignore failed: {e}"))
             }
         }
     }
@@ -1147,6 +1207,10 @@ pub struct MockGitOps {
     diff_changed_paths: HashMap<(String, String), Vec<String>>,
     changed_paths_in_commit: HashMap<String, Vec<String>>,
     is_gitignored: HashMap<String, bool>,
+    /// Simulated `git check-ignore` FAILURES, keyed like `is_gitignored`. An
+    /// entry here makes `try_is_gitignored` return `Err`, which is a different
+    /// observation from `Ok(false)` — see [`GitOps::try_is_gitignored`].
+    is_gitignored_errors: HashMap<String, String>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
     diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
     file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
@@ -1215,6 +1279,18 @@ impl MockGitOps {
     pub fn set_path_tracked_on_error(&mut self, branch: &str, path: &str, err: &str) {
         self.path_tracked_on_errors
             .insert((branch.to_string(), path.to_string()), err.to_string());
+    }
+
+    /// Make `git check-ignore -- <path>` FAIL rather than answer.
+    ///
+    /// Distinct from `set_is_gitignored(.., false)`: that is git answering
+    /// "not ignored", this is git not answering at all. The P5 pre-done gate
+    /// subtracts the ignored set from the declared set, so it must not read the
+    /// latter as the former.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_is_gitignored_error(&mut self, path: &str, err: &str) {
+        self.is_gitignored_errors
+            .insert(path.to_string(), err.to_string());
     }
 
     /// Make `git log <branch> --grep=<pattern>` FAIL rather than answer.
@@ -1301,8 +1377,11 @@ impl GitOps for MockGitOps {
             .unwrap_or_default()
     }
 
-    fn is_gitignored(&self, path: &str) -> bool {
-        self.is_gitignored.get(path).copied().unwrap_or(false)
+    fn try_is_gitignored(&self, path: &str) -> Result<bool, String> {
+        if let Some(err) = self.is_gitignored_errors.get(path) {
+            return Err(err.clone());
+        }
+        Ok(self.is_gitignored.get(path).copied().unwrap_or(false))
     }
 
     fn diff_added_lines(&self, from: &str, to: &str, path: &str) -> Vec<(usize, String)> {

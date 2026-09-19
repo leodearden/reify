@@ -27,10 +27,13 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).
 
-use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity};
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+// §8.4 terminal set and the §6.3 membership test now live in the shared
+// task-DB scaffolding, which the PDCHECK lane reads too.
+use crate::task_rows::{is_terminal_status, path_present_in_tracked};
 use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------
@@ -1385,45 +1388,9 @@ pub fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
     rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
-/// §8.4 terminal statuses: a cite resolving to one of these is "dead" and
-/// orphans its marker. Every other present status (pending / in-progress /
-/// blocked / deferred) is nominally live — but see `metadata_do_not_complete`:
-/// a non-terminal task carrying `do_not_complete == true` is classified as
-/// `parked-on-anchor` (Medium) rather than live (task ι, #4644). η flips
-/// `orphaned` to High; β keeps all other liveness kinds Medium.
-fn is_terminal_status(status: &str) -> bool {
-    status == "done" || status == "cancelled"
-}
-
 // -----------------------------------------------------------------------
 // §6.3 inverse lane — non-terminal tasks citing git-deleted metadata.files paths
 // -----------------------------------------------------------------------
-
-/// §6.3 inverse-lane membership test: returns `true` when `path` (trailing-
-/// slash-tolerant) is "present in the tracked set" — i.e. it equals a tracked
-/// file OR is a directory prefix of some tracked file (a tracked file starts
-/// with `path + "/"`). Strips at most one trailing `/` before the checks.
-///
-/// This guard suppresses the critical FP class where `metadata.files` names
-/// a DIRECTORY that still exists (e.g. `crates/reify-audit/tests`): a
-/// directory is never a member of the `git ls-files` set, yet
-/// `git log -1 -- <dir>` returns non-empty — without this guard, every
-/// directory citation would produce a false-positive finding.
-fn path_present_in_tracked(path: &str, tracked: &std::collections::HashSet<String>) -> bool {
-    // Strip at most one trailing slash for both exact-match and prefix checks.
-    let path = path.trim_end_matches('/');
-    if tracked.contains(path) {
-        return true;
-    }
-    // Directory-prefix membership: some tracked file lives under `path/`.
-    // O(n) scan over the tracked set — acceptable for current backlog sizes
-    // because most cited paths hit the O(1) exact-match branch above and only
-    // genuinely absent paths reach here. If the tracked set grows very large
-    // (tens of thousands of files), consider a sorted Vec<String> +
-    // `partition_point`-based prefix search to reduce this to O(log n).
-    let prefix = format!("{}/", path);
-    tracked.iter().any(|f| f.starts_with(&prefix))
-}
 
 /// §6.3 inverse lane: for each non-terminal master task, check each cited
 /// `metadata.files` path. A path absent from `tracked` (not an exact tracked
@@ -1444,9 +1411,10 @@ fn path_present_in_tracked(path: &str, tracked: &std::collections::HashSet<Strin
 /// [`crate::GitOps::rename_target_for_path`]) degrades to the deleted kind, so
 /// the lane never trades one misleading finding for another.
 ///
-/// Fail-soft on DB errors (propagated as `Err` so the caller's
-/// `and_then`-based degradation handles them alongside the liveness lane).
-/// NULL/malformed/missing `metadata` → empty files list → graceful (no panic).
+/// Task selection, permissive metadata parse and the git memo live in
+/// [`crate::task_rows`], shared with the PDCHECK lane. Fail-soft on DB errors
+/// (propagated as `Err` so the caller's `and_then`-based degradation handles
+/// them alongside the liveness lane).
 ///
 /// Findings are sorted by (task_id, path) for determinism; deleted paths are
 /// by definition absent from `tracked` so they never share a key with the
@@ -1457,42 +1425,12 @@ pub fn resolve_inverse(
     git: &dyn crate::GitOps,
     tracked: &std::collections::HashSet<String>,
 ) -> rusqlite::Result<Vec<Finding>> {
-    let mut stmt =
-        conn.prepare("SELECT id, status, metadata FROM tasks WHERE tag = 'master'")?;
-
-    let rows: Vec<(i64, String, Option<String>)> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-
     let mut out: Vec<Finding> = Vec::new();
-    // Per-run caches: avoid redundant `git log` / `git show` spawns when
-    // multiple tasks cite the same absent path (common in larger backlogs where
-    // a single deleted or renamed file is referenced by several related tasks —
-    // the measured live case was 2 renamed paths cited by 6 tasks).
-    let mut git_cache: HashMap<String, Option<GitCommit>> = HashMap::new();
-    // Keyed on (cited path, sha) rather than the path alone: within a run the
-    // sha IS a pure function of the path (it comes from `git_cache`), but the
-    // tuple key is correct without depending on that invariant, and matches the
-    // `HashMap<(String, String), _>` shape the GitOps mock uses.
-    let mut rename_cache: HashMap<(String, String), Option<String>> = HashMap::new();
+    let mut history = crate::task_rows::PathHistory::default();
 
-    for (id, status, metadata_opt) in rows {
-        if is_terminal_status(&status) {
-            continue;
-        }
-
-        // Parse metadata.files: NULL / malformed / missing key → empty, graceful.
-        let files: Vec<String> = metadata_opt
-            .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
-            .and_then(|v| v.get("files").and_then(|a| a.as_array()).cloned())
-            .unwrap_or_default()
-            .into_iter()
+    for (id, metadata) in crate::task_rows::non_terminal_master_tasks(conn)? {
+        let files: Vec<String> = crate::task_rows::metadata_array(&metadata, "files")
+            .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect();
 
@@ -1500,63 +1438,49 @@ pub fn resolve_inverse(
             if path_present_in_tracked(&path, tracked) {
                 continue;
             }
-            // Path absent from tracked set — check git history (fail-safe: None
-            // on any git error → no false positive). Results are memoized to
-            // avoid repeated subprocess spawns for the same path across tasks.
-            let commit_opt = git_cache
-                .entry(path.clone())
-                .or_insert_with(|| git.last_commit_for_path(&path))
-                .clone();
-            if let Some(commit) = commit_opt {
-                // Did that same commit RENAME the path rather than delete it?
-                // Fail-safe: None on a merge commit, a genuine delete, or any
-                // git error → the unchanged deleted-path finding below.
-                let rename_target = rename_cache
-                    .entry((path.clone(), commit.sha.clone()))
-                    .or_insert_with(|| git.rename_target_for_path(&path, &commit.sha))
-                    .clone()
-                    // Only advertise a target the reader can actually go look
-                    // at: a target that was itself renamed again or deleted
-                    // falls back to the deleted kind. `path_present_in_tracked`
-                    // (not a bare `tracked.contains`) keeps the trailing-slash
-                    // and directory-prefix semantics identical to the cited-path
-                    // check above, so the two membership tests cannot drift.
-                    .filter(|new_path| path_present_in_tracked(new_path, tracked));
-                if let Some(new_path) = rename_target {
-                    out.push(Finding {
-                        pattern: Pattern::PTodo,
-                        severity: Severity::Medium,
-                        task_id: id.to_string(),
-                        summary: format!(
-                            "task-cites-renamed-path: task #{id} cites renamed path '{path}' (renamed to '{new_path}' in {sha})",
-                            sha = commit.sha,
-                        ),
-                        evidence: vec![
-                            // Only the CITED path: `MetadataFiles` means
-                            // "entries from a task's metadata.files", and it is
-                            // this lane's path sort key (see the sort below).
-                            EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
-                            EvidenceRef::File { path: new_path },
-                            EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
-                        ],
-                    });
-                } else {
-                    out.push(Finding {
-                        pattern: Pattern::PTodo,
-                        severity: Severity::Medium,
-                        task_id: id.to_string(),
-                        summary: format!(
-                            "task-cites-deleted-path: task #{id} cites deleted path '{path}' (last touched {sha})",
-                            sha = commit.sha,
-                        ),
-                        evidence: vec![
-                            EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
-                            EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
-                        ],
-                    });
-                }
+            // Path absent from the tracked set — ask git. `None` → the path
+            // never existed → presumed to-be-created → pass (no finding).
+            let Some((commit, rename_target)) = history.resolve(git, tracked, &path) else {
+                continue;
+            };
+            // Did that same commit RENAME the path rather than delete it?
+            // Fail-safe: a merge commit, a genuine delete, a git error, or a
+            // target that is itself no longer tracked all degrade to the
+            // deleted kind, so the lane never trades one misleading finding
+            // for another.
+            if let Some(new_path) = rename_target {
+                out.push(Finding {
+                    pattern: Pattern::PTodo,
+                    severity: Severity::Medium,
+                    task_id: id.to_string(),
+                    summary: format!(
+                        "task-cites-renamed-path: task #{id} cites renamed path '{path}' (renamed to '{new_path}' in {sha})",
+                        sha = commit.sha,
+                    ),
+                    evidence: vec![
+                        // Only the CITED path: `MetadataFiles` means
+                        // "entries from a task's metadata.files", and it is
+                        // this lane's path sort key (see the sort below).
+                        EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
+                        EvidenceRef::File { path: new_path },
+                        EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
+                    ],
+                });
+            } else {
+                out.push(Finding {
+                    pattern: Pattern::PTodo,
+                    severity: Severity::Medium,
+                    task_id: id.to_string(),
+                    summary: format!(
+                        "task-cites-deleted-path: task #{id} cites deleted path '{path}' (last touched {sha})",
+                        sha = commit.sha,
+                    ),
+                    evidence: vec![
+                        EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
+                        EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
+                    ],
+                });
             }
-            // None → path never existed → presumed to-be-created → pass.
         }
     }
 

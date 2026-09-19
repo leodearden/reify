@@ -4537,6 +4537,37 @@ pub enum DiagnosticCode {
     /// the feature-gated serde derives automatically (same measured argument as
     /// `DimensionedArgRejected` and `EvalCachedGuardedGroupsFallback` above).
     FeaLoadKindUnsupported,
+    /// Origin: `crates/reify-compiler/src/connect.rs::resolve_chain_endpoint`
+    /// (spec §6.2 `chain` default-port inference).
+    ///
+    /// Canonical message:
+    /// `"chain element '<name>' has no port usable as '<dir>'"` /
+    /// `"chain element '<name>' has several ports usable as '<dir>' (…)"`.
+    ///
+    /// One code covers BOTH the zero- and several-candidate arms because they
+    /// are one rule — "exactly one candidate port in this role" — and a reader
+    /// acting on either takes the same remedy (name the port explicitly on
+    /// that element). Splitting them would make the code a restatement of the
+    /// message text rather than of the rule.
+    ///
+    /// PRD-prose mnemonic: `E_ChainPortNotUnique` (severity convention:
+    /// `E_*` → Error).
+    ChainPortNotUnique,
+    /// Origin: `crates/reify-compiler/src/connect.rs::resolve_chain_endpoint`
+    /// (spec §6.2 "a chain element must denote exactly one occurrence").
+    ///
+    /// Canonical message: `"chain element '<name>' names a whole collection,
+    /// not one occurrence; chain its elements, e.g. 'forall v in <name>: chain
+    /// v -> ...'"`.
+    ///
+    /// Distinct from `ChainPortNotUnique`: the element's port may well be
+    /// unique — the defect is that the name denotes N occurrences, so the
+    /// inferred port belongs to none of them. The remedies differ too (index
+    /// the element or go through `forall`, rather than dot a port onto it).
+    ///
+    /// PRD-prose mnemonic: `E_ChainElementNotAnOccurrence` (severity
+    /// convention: `E_*` → Error).
+    ChainElementNotAnOccurrence,
 }
 
 /// A diagnostic message with location and optional labels.

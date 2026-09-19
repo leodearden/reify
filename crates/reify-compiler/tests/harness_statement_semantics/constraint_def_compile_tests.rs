@@ -7,7 +7,7 @@ use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 use reify_compiler::{CompiledConstraintDef, CompiledConstraintParam};
 use reify_core::*;
 use reify_ir::*;
-use reify_test_support::{compile_source, compile_template};
+use reify_test_support::{compile_source, compile_source_with_stdlib, compile_template};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -17,6 +17,58 @@ fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect()
+}
+
+/// Collect only the `unknown type '...'` diagnostics — the message the
+/// constraint-def param resolver emits for a name it cannot resolve.
+///
+/// Scoping an assertion to this one message, rather than to zero errors
+/// wholesale, keeps a test aimed at the suppression clause it is locking.
+fn unknown_type_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diags
+        .iter()
+        .filter(|d| d.message.starts_with("unknown type '"))
+        .collect()
+}
+
+/// Look up the constraint def named `def_name` in `module` and return its ONE
+/// param, asserting both that the def survived compilation and that it has
+/// exactly one param.
+///
+/// The param-type tests below all follow the same shape (compile a one-param
+/// `constraint def K`, then assert something about `params[0].ty`). Indexing
+/// `params[0]` directly makes a dropped param surface as a bare
+/// index-out-of-bounds panic instead of the assertion message the test was
+/// written to produce; this helper turns that failure mode into a named
+/// arity assertion, and removes the repeated find/index boilerplate.
+fn sole_param<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    def_name: &str,
+) -> &'a CompiledConstraintParam {
+    let def: &CompiledConstraintDef = module
+        .constraint_defs
+        .iter()
+        .find(|d| d.name == def_name)
+        .unwrap_or_else(|| {
+            panic!(
+                "constraint def '{}' must be present in module.constraint_defs; found: {:?}",
+                def_name,
+                module
+                    .constraint_defs
+                    .iter()
+                    .map(|d| &d.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        def.params.len(),
+        1,
+        "expected constraint def '{}' to have exactly 1 param, got {}: {:?}",
+        def_name,
+        def.params.len(),
+        def.params.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+    &def.params[0]
 }
 
 /// Create a temporary project directory with `stdlib/` pre-created.
@@ -1466,5 +1518,300 @@ structure S {
          (numeric leniency — dimensional strictness is task 4490's job), \
          got {}; diagnostics: {:?}",
         code_count, module.diagnostics
+    );
+}
+
+// ── Task 6416: enum-typed constraint def params resolve to Type::Enum ────────
+
+/// A bare enum-typed `constraint def` param must store the RESOLVED enum type on
+/// `CompiledConstraintParam.ty`, not `None`.
+///
+/// Enum names reach type resolution only through the ambient `RESOLUTION_ENUM_NAMES`
+/// set installed by the `EnumNameScope` guard. Before task 6416 `compile_constraint_def`
+/// installed no such scope, so `param g : Zq` resolved to `None` and the `ty` field
+/// stayed `None` — which in turn made task 4546's instantiation-site arg type check
+/// in `expand_constraint_inst` silently inert for every enum-typed param (it skips
+/// params whose `ty` is `None`).
+///
+/// The zero-error assertion is bundled deliberately: a compile that newly started
+/// erroring would be an alternative — and unacceptable — way to make the `ty`
+/// assertion unreachable.
+#[test]
+fn enum_typed_constraint_def_param_resolves_to_enum_type() {
+    let source = r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Zq
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for an enum-typed constraint def param, got: {:?}",
+        errors
+    );
+
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
+    assert_eq!(
+        param.ty,
+        Some(Type::Enum("Zq".to_string())),
+        "expected param 'g' to carry the resolved enum type Enum(Zq); a `None` here \
+         means the instantiation-site arg type check silently skips this param"
+    );
+}
+
+/// The same enum-name fallback must reach params typed by a STDLIB (prelude) enum,
+/// not just module-local ones — `ThreadSystem` is declared at
+/// `crates/reify-compiler/stdlib/ports_mechanical.ri:35`.
+///
+/// Pins that the ambient enum-name set installed by `compile_constraint_def` covers
+/// the full `enum_defs` slice (local + prelude), not merely the module's own decls.
+#[test]
+fn stdlib_enum_typed_constraint_def_param_resolves_to_enum_type() {
+    let source = r#"
+constraint def K {
+    param g : ThreadSystem
+    true
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for a stdlib-enum-typed constraint def param, got: {:?}",
+        errors
+    );
+
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
+    assert_eq!(
+        param.ty,
+        Some(Type::Enum("ThreadSystem".to_string())),
+        "expected param 'g' to carry the resolved stdlib enum type Enum(ThreadSystem)"
+    );
+}
+
+/// An enum NESTED IN A PARAMETERISED BUILTIN (`param g : Option<Zq>`) must
+/// resolve to `Option(Enum("Zq"))` with no diagnostic.
+///
+/// This is the third behavioural effect of the `EnumNameScope` install, and it
+/// is the one the guard was ORIGINALLY introduced for — `RESOLUTION_ENUM_NAMES`
+/// is a thread-local rather than an explicit argument precisely so enum names
+/// stay visible at the INNER type-arg resolution behind
+/// `resolve_parameterized_builtin_type` (see the thread-local's own doc comment,
+/// which cites `Option<QoIDescriptor>`).
+///
+/// MEASURED on this tree with the install reverted: `ty` was `None` AND the
+/// compile emitted a spurious error, `unknown type 'Option' in param 'g' of
+/// constraint def 'K'` — the outer builtin name is what the unknown-type guard
+/// reports when its inner arg fails to resolve. So this spelling was
+/// user-visibly broken before task 6416, not merely under-typed, and unlike the
+/// bare/alias spellings it is not covered by any parity test elsewhere.
+///
+/// The zero-error assertion is therefore load-bearing here, not decorative: it
+/// is the half that pins the spurious diagnostic away.
+#[test]
+fn option_wrapped_enum_constraint_def_param_resolves_to_option_of_enum() {
+    let source = r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Option<Zq>
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for an Option-wrapped enum constraint def \
+         param; before task 6416 this spelling emitted `unknown type 'Option' in \
+         param 'g' of constraint def 'K'`, got: {:?}",
+        errors
+    );
+
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
+    assert_eq!(
+        param.ty,
+        Some(Type::Option(Box::new(Type::Enum("Zq".to_string())))),
+        "expected param 'g' to carry Option(Enum(Zq)) — the ambient enum-name set \
+         must be live at the INNER type-arg resolution of a parameterised builtin, \
+         which is the case `EnumNameScope` exists for. A `None` here means the \
+         scope install regressed; an error diagnostic means it regressed AND the \
+         spurious `unknown type 'Option'` came back"
+    );
+}
+
+// ── Task 6416 / step-5: absolute-value locks on the ENUM-BODIED ALIAS path ───
+//
+// The alias spelling is also covered by task 6259's parity harness in
+// `tests/harness_langcore/type_alias_compile_tests.rs`, but only by PARITY
+// (`alias_ty` vs `direct_ty`), which a revert of 6416's `EnumNameScope` install
+// collapses to `None` on both sides — so that harness stays GREEN through the
+// revert, as its own header explains at length. The two tests below pin the
+// ABSOLUTE post-fix value, which is the shape that detects it.
+
+/// A non-parametric alias whose BODY is an enum (`type AL = Zq`) must resolve
+/// through the same ambient `RESOLUTION_ENUM_NAMES` fallback as the direct
+/// spelling, storing `Some(Enum("Zq"))` — the alias's own name never appears in
+/// the ambient set, so this exercises the deferred use-site arm of
+/// `resolve_type_expr_with_aliases_kinded` recursing into the alias body while
+/// the scope installed by `compile_constraint_def` is live.
+#[test]
+fn alias_to_enum_constraint_def_param_resolves_to_enum_type() {
+    let source = r#"
+enum Zq { Close, Medium }
+type AL = Zq
+
+constraint def K {
+    param g : AL
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for an alias-to-enum constraint def param, got: {:?}",
+        errors
+    );
+
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
+    assert_eq!(
+        param.ty,
+        Some(Type::Enum("Zq".to_string())),
+        "expected param 'g' typed `AL` to carry the resolved BODY type Enum(Zq); \
+         `None` here means the instantiation-site arg type check silently skips \
+         every alias-typed enum param. This is an ABSOLUTE assertion on purpose — \
+         do NOT weaken it to a direct-vs-alias parity comparison, since parity is \
+         exactly what failed to detect the defect (both sides were None)."
+    );
+}
+
+/// The same, through a TRANSITIVE chain `A2 -> A1 -> Zq`: the alias walker must
+/// still reach the enum body across multiple links while the ambient set is live.
+///
+/// A one-link-only fix would leave this red while
+/// `alias_to_enum_constraint_def_param_resolves_to_enum_type` passed.
+#[test]
+fn transitive_alias_chain_to_enum_constraint_def_param_resolves_to_enum_type() {
+    let source = r#"
+enum Zq { Close, Medium }
+type A1 = Zq
+type A2 = A1
+
+constraint def K {
+    param g : A2
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for a transitive alias chain to an enum, got: {:?}",
+        errors
+    );
+
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
+    assert_eq!(
+        param.ty,
+        Some(Type::Enum("Zq".to_string())),
+        "expected param 'g' typed `A2` (-> `A1` -> `Zq`) to carry Enum(Zq) — the \
+         alias walker must reach the enum body through every link, not just one"
+    );
+}
+
+// ── Task 6416 / step-8: RESIDUAL reach of the unknown-type suppression ───────
+//
+// Task 6416's issue text predicted that installing the `EnumNameScope` would
+// make `compile_constraint_def`'s `resolve_enum_type(...).is_none()` conjunct —
+// and task 6259's `unresolved_alias_body_name` hop — redundant. It does NOT:
+// the residue is the PARAMETERISED spelling, argued once on
+// `unresolved_alias_body_name` and executably locked by the two tests below.
+//
+// Both scope their assertion to the `"unknown type '"` message rather than to
+// zero errors wholesale, which leaves room for a future task to add the arity
+// diagnostic `entity.rs` already emits for the struct-param spelling ("enum
+// does not accept type arguments") and this site does not. That inconsistency
+// is real, pre-existing, and OUT OF SCOPE for task 6416.
+
+/// A parameterised spelling of a locally-declared enum (`param g : Zq<Int>`)
+/// must not produce an "unknown type" diagnostic: `resolve_enum_type`'s
+/// arg-blind lookup is the only suppression left for this spelling, so
+/// deleting that conjunct makes this test fail with `unknown type 'Zq'`.
+#[test]
+fn parameterised_enum_constraint_def_param_emits_no_unknown_type_diagnostic() {
+    let source = r#"
+enum Zq { Close, Medium }
+
+constraint def K {
+    param g : Zq<Int>
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let unknown = unknown_type_diags(&module.diagnostics);
+    assert!(
+        unknown.is_empty(),
+        "expected no \"unknown type '...'\" diagnostic for the parameterised spelling \
+         of the known enum `Zq`; the arg-blind `resolve_enum_type` conjunct in \
+         `compile_constraint_def` is what suppresses it, got: {:?}",
+        unknown
+    );
+
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
+    assert!(
+        param.ty.is_none(),
+        "expected the PARAMETERISED spelling to leave `ty` as None (the ambient \
+         enum fallback is gated on `type_args.is_empty()`); got {:?}. If this ever \
+         becomes Some(..), the suppression conjunct's reach has changed and the \
+         measured claim on `unresolved_alias_body_name` must be re-measured.",
+        param.ty
+    );
+}
+
+/// The same through a non-parametric alias (`type AL = Zq` / `param g :
+/// AL<Int>`). `resolve_enum_type` alone cannot suppress this one — the spelled
+/// name `AL` is not in `enum_defs` — so removing ONLY task 6259's
+/// `unresolved_alias_body_name` hop makes this test fail with `unknown type 'AL'`.
+#[test]
+fn parameterised_alias_to_enum_constraint_def_param_emits_no_unknown_type_diagnostic() {
+    let source = r#"
+enum Zq { Close, Medium }
+type AL = Zq
+
+constraint def K {
+    param g : AL<Int>
+    true
+}
+"#;
+    let module = compile_source(source);
+
+    let unknown = unknown_type_diags(&module.diagnostics);
+    assert!(
+        unknown.is_empty(),
+        "expected no \"unknown type '...'\" diagnostic for the parameterised ALIAS \
+         spelling `AL<Int>`; task 6259's `unresolved_alias_body_name` hop is what \
+         maps `AL` to its enum body `Zq` so the arg-blind `resolve_enum_type` \
+         lookup can suppress it, got: {:?}",
+        unknown
+    );
+
+    let param: &CompiledConstraintParam = sole_param(&module, "K");
+    assert!(
+        param.ty.is_none(),
+        "expected the parameterised alias spelling to leave `ty` as None (the ambient \
+         enum fallback is gated on `type_args.is_empty()`, and the alias hop feeds \
+         only the suppression predicate); got {:?}",
+        param.ty
     );
 }

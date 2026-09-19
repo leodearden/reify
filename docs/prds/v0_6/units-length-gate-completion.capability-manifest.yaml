@@ -36,15 +36,15 @@ tasks:
     DiagnosticCode retrofit
   capabilities:
   - name: accept-arg-core-wired
-    binding: capability→producer (upstream, already on main) — grep:crates/reify-eval/src/arg_acceptance.rs:117
-      accept_arg, :28 ArgSpec, :40 Acceptance, :52 ArgRejection, :103 length_spec;
+    binding: capability→producer (upstream, already on main) — grep:crates/reify-ir/src/arg_acceptance.rs:635
+      accept_arg, :240 ArgSpec, :252 Acceptance, :264 ArgRejection, :337 length_spec;
       pub(crate) via lib.rs:93
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: pub fn accept_arg
       paths:
-      - crates/reify-eval/src/arg_acceptance.rs
+      - crates/reify-ir/src/arg_acceptance.rs
       expect: present
   - name: rejection-mechanism-observed-to-fire
     binding: 'rejection-check (G6 branch 4) — authored `mirror(b, 10, 0, 0, 1, 0,

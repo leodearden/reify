@@ -30,6 +30,8 @@ mod common;
 
 #[path = "harness_modules_ports/alias_dfs_diagnostic_tests.rs"]
 mod alias_dfs_diagnostic_tests;
+#[path = "harness_modules_ports/chain_desugar_tests.rs"]
+mod chain_desugar_tests;
 #[path = "harness_modules_ports/connect_compile_tests.rs"]
 mod connect_compile_tests;
 #[path = "harness_modules_ports/deprecated_use_tests.rs"]

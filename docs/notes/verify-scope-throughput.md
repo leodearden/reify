@@ -35,8 +35,8 @@ reflect a real run on this host.
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
 | (a) docs-only | `docs/note.md` | — | 20 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 20 | 19 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 20 | 19 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 20 | 20 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 20 | 20 |
 | (d) gui-only | `gui/src/editor/foo.ts` | — | 20 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
@@ -47,8 +47,8 @@ below and replacing the counts; then re-run the test to confirm it passes.
 | shape | all | branch |
 |-------|-----|--------|
 | docs-only  | 20 |  0 |
-| reify-doc  | 20 | 19 |
-| reify-eval | 20 | 19 |
+| reify-doc  | 20 | 20 |
+| reify-eval | 20 | 20 |
 | gui-only   | 20 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
@@ -260,6 +260,16 @@ pass. Measured at this HEAD: `scope=all` = 20 for all four shapes;
 `RUN_RUST=1` cells) are unchanged in kind; only their absolute endpoints moved,
 because two independent +1s landed underneath them. The human-readable table and
 this sentinel are re-synced in lockstep per the standing task-5125 convention._
+
+_Counts bumped 2026-09-19 (task 7691): `select_pdiag_ratchet` adds
+`tests/infra/test_reify_audit_pdiag.sh` as a selective-infra leaf under
+`scope=branch` whenever the merge-base diff adds or modifies a path PDIAG sweeps
+(`pdiag.rs::is_swept_path`). Shapes (b) and (c) change `crates/<c>/src/lib.rs`,
+which is swept, so their `scope=branch` cells move 19 → 20. `scope=all` is
+unchanged (the selector is branch-only; run_all.sh owns the file there), and so
+are docs-only (0) and gui-only (3), which touch no swept path. Re-measured with
+`tests/infra/test_verify_throughput.sh`, whose failing run reported exactly
+`note(19) == live(20)` for those two cells and nothing else._
 
 ## Heavy-Work Narrowed Markers
 
