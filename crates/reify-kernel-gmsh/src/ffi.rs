@@ -284,6 +284,52 @@ unsafe extern "C" {
         size: f64,
         ierr: *mut c_int,
     );
+
+    // ---- post-processing views + mesh size fields ----
+    //
+    // Together these bind the BACKGROUND SIZE FIELD path: a view carries the
+    // size values, a `"PostView"` field reads the view, and that field becomes
+    // the model's background mesh size field. Unlike `gmshModelMeshSetSize`
+    // above, this transports a value per TETRAHEDRON of a caller-supplied
+    // sizing mesh, so an interior minimum survives — which the 0D-entity path
+    // structurally cannot represent (see `refine_volume`'s module doc).
+
+    /// `int gmshViewAdd(const char* name, const int tag, int* ierr)` — gmshc.h:3112
+    ///
+    /// Pass `tag = -1` to let gmsh assign a tag; the assigned tag is returned.
+    pub fn gmshViewAdd(name: *const c_char, tag: c_int, ierr: *mut c_int) -> c_int;
+
+    /// `void gmshViewRemove(const int tag, int* ierr)` — gmshc.h:3117
+    pub fn gmshViewRemove(tag: c_int, ierr: *mut c_int);
+
+    /// `void gmshViewAddListData(const int tag, const char* dataType, const int numEle, const double* data, const size_t data_n, int* ierr)` — gmshc.h:3205
+    pub fn gmshViewAddListData(
+        tag: c_int,
+        dataType: *const c_char,
+        numEle: c_int,
+        data: *const f64,
+        data_n: usize,
+        ierr: *mut c_int,
+    );
+
+    /// `int gmshModelMeshFieldAdd(const char* fieldType, const int tag, int* ierr)` — gmshc.h:1678
+    ///
+    /// Pass `tag = -1` to let gmsh assign a tag; the assigned tag is returned.
+    pub fn gmshModelMeshFieldAdd(fieldType: *const c_char, tag: c_int, ierr: *mut c_int) -> c_int;
+
+    /// `void gmshModelMeshFieldRemove(const int tag, int* ierr)` — gmshc.h:1683
+    pub fn gmshModelMeshFieldRemove(tag: c_int, ierr: *mut c_int);
+
+    /// `void gmshModelMeshFieldSetNumber(const int tag, const char* option, const double value, int* ierr)` — gmshc.h:1696
+    pub fn gmshModelMeshFieldSetNumber(
+        tag: c_int,
+        option: *const c_char,
+        value: f64,
+        ierr: *mut c_int,
+    );
+
+    /// `void gmshModelMeshFieldSetAsBackgroundMesh(const int tag, int* ierr)` — gmshc.h:1732
+    pub fn gmshModelMeshFieldSetAsBackgroundMesh(tag: c_int, ierr: *mut c_int);
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,4 +1078,124 @@ pub fn get_element_types(dim: i32, tag: i32) -> Result<Vec<i32>, GeometryError> 
     let types: Vec<i32> = unsafe { take_gmsh_buf(types_ptr, types_n) };
     check_ierr("gmshModelMeshGetElementTypes", ierr)?;
     Ok(types)
+}
+
+// ---------------------------------------------------------------------------
+// Post-processing views + mesh size fields — the background-size-field path
+// ---------------------------------------------------------------------------
+
+/// Add a post-processing view named `name` and return its assigned tag.
+///
+/// Views are PROCESS-GLOBAL and survive `gmshClear()`; pair every successful
+/// call with [`view_remove`] (an RAII guard, not a trailing call — an early
+/// `?` return otherwise leaks the view into every later mesh in the process).
+pub fn view_add(name: &str) -> Result<i32, GeometryError> {
+    let cname = CString::new(name)
+        .map_err(|e| GeometryError::OperationFailed(format!("view_add: invalid CString: {e}")))?;
+    let mut ierr: c_int = 0;
+    // -1 => let gmsh assign the tag.
+    let tag = unsafe { gmshViewAdd(cname.as_ptr(), -1, &mut ierr) };
+    check_ierr("gmshViewAdd", ierr)?;
+    Ok(tag)
+}
+
+/// Remove the view with tag `tag`.
+pub fn view_remove(tag: i32) -> Result<(), GeometryError> {
+    gmsh_call!("gmshViewRemove", ierr, gmshViewRemove(tag, &mut ierr))
+}
+
+/// Attach list-based data to view `tag`.
+///
+/// `data_type` concatenates the field type (`"S"` scalar / `"V"` vector /
+/// `"T"` tensor) with the element type (`"P"` point … `"S"` tetrahedron), so
+/// `"SS"` is a scalar field on tetrahedra.
+///
+/// # Buffer layout — a silent-failure surface
+///
+/// Per gmshc.h:3200-3204 the doubles for one element are grouped by AXIS, not
+/// by point: `[x1..xn, y1..yn, z1..zn, v1..vn]`, repeated per element. For
+/// `"SS"` that is 16 doubles: `[x0,x1,x2,x3, y0,y1,y2,y3, z0,z1,z2,z3,
+/// s0,s1,s2,s3]`. This is NOT the grouping the ASCII `.pos` "parsed" format
+/// uses, which interleaves per point. Feeding a per-point buffer here returns
+/// `ierr = 0` and yields a plausible-but-wrong mesh (measured: 1689 tets
+/// against 2633 on otherwise identical input), so the layout is fixed in one
+/// place — [`crate::BackgroundSizeField`] — and pinned by a byte-exact test.
+///
+/// `num_ele` is the element COUNT while `data.len()` is the total double
+/// count (`num_ele * 16` for `"SS"`); gmsh does not cross-check the two.
+pub fn view_add_list_data(
+    tag: i32,
+    data_type: &str,
+    num_ele: usize,
+    data: &[f64],
+) -> Result<(), GeometryError> {
+    let ctype = CString::new(data_type).map_err(|e| {
+        GeometryError::OperationFailed(format!("view_add_list_data: invalid CString: {e}"))
+    })?;
+    let num_ele = c_int::try_from(num_ele).map_err(|_| {
+        GeometryError::OperationFailed(format!(
+            "view_add_list_data: element count {num_ele} exceeds the C int range"
+        ))
+    })?;
+    gmsh_call!(
+        "gmshViewAddListData",
+        ierr,
+        gmshViewAddListData(
+            tag,
+            ctype.as_ptr(),
+            num_ele,
+            data.as_ptr(),
+            data.len(),
+            &mut ierr,
+        )
+    )
+}
+
+/// Add a mesh size field of type `field_type` (e.g. `"PostView"`) and return
+/// its assigned tag.
+///
+/// Fields are process-global on the same terms as views; see [`view_add`].
+pub fn field_add(field_type: &str) -> Result<i32, GeometryError> {
+    let ctype = CString::new(field_type)
+        .map_err(|e| GeometryError::OperationFailed(format!("field_add: invalid CString: {e}")))?;
+    let mut ierr: c_int = 0;
+    // -1 => let gmsh assign the tag.
+    let tag = unsafe { gmshModelMeshFieldAdd(ctype.as_ptr(), -1, &mut ierr) };
+    check_ierr("gmshModelMeshFieldAdd", ierr)?;
+    Ok(tag)
+}
+
+/// Remove the mesh size field with tag `tag`.
+pub fn field_remove(tag: i32) -> Result<(), GeometryError> {
+    gmsh_call!(
+        "gmshModelMeshFieldRemove",
+        ierr,
+        gmshModelMeshFieldRemove(tag, &mut ierr)
+    )
+}
+
+/// Set numerical `option` on field `tag`.
+///
+/// For a `"PostView"` field, select the source view with `"ViewTag"` and the
+/// tag [`view_add`] returned — NOT `"ViewIndex"`, which is a position in the
+/// currently-loaded view list and goes stale (silently, selecting a different
+/// view) as views are removed.
+pub fn field_set_number(tag: i32, option: &str, value: f64) -> Result<(), GeometryError> {
+    let copt = CString::new(option).map_err(|e| {
+        GeometryError::OperationFailed(format!("field_set_number: invalid CString: {e}"))
+    })?;
+    gmsh_call!(
+        "gmshModelMeshFieldSetNumber",
+        ierr,
+        gmshModelMeshFieldSetNumber(tag, copt.as_ptr(), value, &mut ierr)
+    )
+}
+
+/// Make field `tag` the model's background mesh size field.
+pub fn field_set_as_background_mesh(tag: i32) -> Result<(), GeometryError> {
+    gmsh_call!(
+        "gmshModelMeshFieldSetAsBackgroundMesh",
+        ierr,
+        gmshModelMeshFieldSetAsBackgroundMesh(tag, &mut ierr)
+    )
 }
