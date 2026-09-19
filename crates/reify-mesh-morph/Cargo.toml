@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Mesh morphing classifier and engine for Reify"
+build = "build.rs"
 
 [features]
 # Enables `stats::reset_for_test()` in the compiled artifact (not just in the
@@ -11,6 +12,11 @@ description = "Mesh morphing classifier and engine for Reify"
 # `[dev-dependencies]` to reset the process-global stats between cross-crate
 # test cases once engine wiring (PRD #2947-#2949) lands.
 testing = []
+
+[build-dependencies]
+# Powers `build.rs`'s per-crate `has_gmsh` detection + test-binary RUNPATH
+# emission. See `build.rs` for why both are required here.
+reify-build-utils.workspace = true
 
 [dependencies]
 reify-core.workspace = true
@@ -24,4 +30,17 @@ tracing.workspace = true
 reify-ir.workspace = true
 reify-compiler.workspace = true
 reify-test-support.workspace = true
+# `tests/morph_scale_characterisation.rs` calls `GmshKernel::mesh_to_volume`
+# directly for the from-scratch tetrahedralisation arm. Deliberately NO
+# feature flags, because plain tetrahedralisation needs neither `mesh-morph`
+# nor `stub_register`.
+#
+# Omitting `stub_register` does NOT keep the gmsh kernel out of the
+# `inventory` registry on a real-FFI host: `reify-kernel-gmsh`'s
+# `inventory::submit!` is gated on `cfg(any(has_gmsh, feature =
+# "stub_register"))` (`crates/reify-kernel-gmsh/src/register.rs`), so wherever
+# `has_gmsh` is set the registration fires regardless of this feature. That is
+# harmless here only because no `reify-mesh-morph` test binary asserts on the
+# kernel registry — a claim to re-check before adding one.
+reify-kernel-gmsh.workspace = true
 serde_json = { workspace = true }
