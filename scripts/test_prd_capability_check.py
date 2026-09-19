@@ -84,6 +84,21 @@ _VALUE_CELLS_FIXTURE = os.path.join(
     "tests", "prd-gate", "fixtures", "value_clean_eval_cells.ri"
 )
 
+# The three-line shape `reify eval` really prints for that fixture, and the
+# constraint the committed example holds its first cell to.  Named once here:
+# renaming the fixture or rewording a printed cell is then one edit, not five.
+_VALUE_CELLS_STDOUT = (
+    "ValueCleanEvalCells.damping_ratio = 0.018\n"
+    "ValueCleanEvalCells.degenerate_ratio = 0\n"
+    "ValueCleanEvalCells.undef_ratio = undef\n"
+)
+
+_DAMPING_SPEC = {
+    "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
+    "min": 0.01,
+    "max": 0.03,
+}
+
 
 # ---------------------------------------------------------------------------
 # step-01 (RED): probe-set JSON round-trip tests
@@ -327,7 +342,7 @@ class TestValueProbeSchema(unittest.TestCase):
         probe = {
             "capability": "damping ratio is a finite in-range number",
             "probe_kind": "value",
-            "fixture": "tests/prd-gate/fixtures/value_clean_eval_cells.ri",
+            "fixture": _VALUE_CELLS_FIXTURE,
             "expected": {"observation": "present", "match": match},
         }
         probe.update(overrides)
@@ -629,12 +644,6 @@ class TestStdoutValuePredicate(unittest.TestCase):
     so the predicate under test is the same call observe() makes.
     """
 
-    # The real three-line shape `reify eval` prints for value_clean_eval_cells.ri.
-    CELLS = (
-        "ValueCleanEvalCells.damping_ratio = 0.018\n"
-        "ValueCleanEvalCells.degenerate_ratio = 0\n"
-        "ValueCleanEvalCells.undef_ratio = undef\n"
-    )
 
     def _run(self, stdout, exit_code=0, stderr=""):
         return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
@@ -665,7 +674,7 @@ class TestStdoutValuePredicate(unittest.TestCase):
             "min": -0.5,
             "max": 0.5,
         }
-        self.assertTrue(self._check(self.CELLS, spec))
+        self.assertTrue(self._check(_VALUE_CELLS_STDOUT, spec))
 
     def test_greedy_capture_does_not_span_lines(self):
         """No re.DOTALL: `.+` must stop at the newline.
@@ -674,7 +683,7 @@ class TestStdoutValuePredicate(unittest.TestCase):
         parse, so a True here is what proves the flag is off.
         """
         spec = {"pattern": r"damping_ratio = (.+)", "min": 0.01, "max": 0.03}
-        self.assertTrue(self._check(self.CELLS, spec))
+        self.assertTrue(self._check(_VALUE_CELLS_STDOUT, spec))
 
     def test_group_defaults_to_one(self):
         spec = {"pattern": r"(\w+) = ([0-9.]+)", "min": 0.0}
@@ -728,7 +737,7 @@ class TestStdoutValuePredicate(unittest.TestCase):
     def test_degenerate_zero_fails_a_lower_bound(self):
         """The motivating #6876 defect: a clean eval that printed 0."""
         spec = {"pattern": r"degenerate_ratio = ([-+0-9.eE]+)", "min": 0.01}
-        self.assertFalse(self._check(self.CELLS, spec))
+        self.assertFalse(self._check(_VALUE_CELLS_STDOUT, spec))
 
     # ── tokens that are not numbers ───────────────────────────────────────────
 
@@ -761,7 +770,7 @@ class TestStdoutValuePredicate(unittest.TestCase):
     def test_undef_cell_fails_a_finiteness_assertion(self):
         """The 'prints garbage with exit 0' case, on the real fixture shape."""
         spec = {"pattern": r"undef_ratio = (\S+)", "finite": True}
-        self.assertFalse(self._check(self.CELLS, spec))
+        self.assertFalse(self._check(_VALUE_CELLS_STDOUT, spec))
 
     def test_scientific_and_signed_notation_parse(self):
         spec = {"pattern": r"X = (\S+)", "min": 0.01, "max": 0.03}
@@ -2880,11 +2889,13 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         )
 
 
-class TestMain(unittest.TestCase):
-    """Tests for main(argv) integration — hermetic + skip-guarded real e2e.
+class _MainHarness:
+    """Shared plumbing for driving main() hermetically: capture, and stub runs.
 
-    Most tests FAIL until step-14 implements main() properly (currently a stub
-    that returns 64 for any valid probe-set path).
+    A mixin rather than a TestCase whose methods other classes borrow: reaching
+    into another TestCase for helpers couples one test class's lifecycle to
+    another's privates, and constructing a bare TestCase() to do it is a
+    construction Python only tolerates by accident.
     """
 
     def _run_main_capturing(self, argv, runner=None):
@@ -2927,7 +2938,17 @@ class TestMain(unittest.TestCase):
         back to _PASSING_RUNS.  Otherwise every test that pins one kind's
         rendering would have to enumerate all the others, and adding a kind to
         the example probe set would mean editing all of them in lockstep.
+
+        A key that is not a probe kind is a typo, and a silent one would be the
+        worst kind: the steer would go nowhere and the test would assert against
+        an all-PASSing run while believing it had forced a failure.
         """
+        unknown = sorted(set(by_kind) - set(self._PASSING_RUNS))
+        if unknown:
+            raise KeyError(
+                f"not a probe kind: {unknown}; steerable kinds are "
+                f"{sorted(self._PASSING_RUNS)}"
+            )
         runs = dict(self._PASSING_RUNS, **by_kind)
 
         def runner(probe: Any) -> Any:
@@ -2943,6 +2964,32 @@ class TestMain(unittest.TestCase):
         """Runner that makes the check probe FAIL (reify silent-accept)."""
         # exit 0 → no rejection → ABSENT, against an expected present.
         return self._make_runner({"check": (0, "All constraints satisfied.", "")})
+
+
+class TestMain(_MainHarness, unittest.TestCase):
+    """Tests for main(argv) integration — hermetic + skip-guarded real e2e.
+
+    Most tests FAIL until step-14 implements main() properly (currently a stub
+    that returns 64 for any valid probe-set path).
+    """
+
+    # ── the stub runner's own contract ───────────────────────────────────────
+
+    def test_make_runner_rejects_a_kind_that_does_not_exist(self):
+        """A mistyped steer must be loud, or the test it steers proves nothing.
+
+        Defaulting unnamed kinds to _PASSING_RUNS is what keeps each test from
+        enumerating all four — but it also means a typo'd key silently steers
+        nothing, leaving the real probe PASSing while the test believes it has
+        forced a failure and asserts against the wrong run.
+        """
+        with self.assertRaises(KeyError) as ctx:
+            self._make_runner({"grammer": (1, "", "boom")})
+        self.assertIn("grammer", str(ctx.exception))
+
+        # The kinds that ARE steerable are exactly the harness's known kinds,
+        # which are exactly the probe kinds the loader admits.
+        self.assertEqual(set(self._PASSING_RUNS), set(pcc._VALID_PROBE_KINDS))
 
     # ── arg / IO errors → 64 ─────────────────────────────────────────────────
 
@@ -3509,7 +3556,7 @@ class TestMain(unittest.TestCase):
 # #6876 step-09 (RED): value-probe result legibility + the real-binary e2e
 # ---------------------------------------------------------------------------
 
-class TestValueProbeReporting(unittest.TestCase):
+class TestValueProbeReporting(_MainHarness, unittest.TestCase):
     """A value FAIL must say WHICH defect it found.
 
     "the pattern matched and captured 0, which is below min 0.01" and "the
@@ -3523,18 +3570,6 @@ class TestValueProbeReporting(unittest.TestCase):
     surface here plus the committed example's fourth row that make this RED.
     """
 
-    _FIXTURE = "tests/prd-gate/fixtures/value_clean_eval_cells.ri"
-
-    _DAMPING_SPEC = {
-        "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
-        "min": 0.01,
-        "max": 0.03,
-    }
-    _CELLS = (
-        "ValueCleanEvalCells.damping_ratio = 0.018\n"
-        "ValueCleanEvalCells.degenerate_ratio = 0\n"
-        "ValueCleanEvalCells.undef_ratio = undef\n"
-    )
 
     # ── hermetic plumbing ─────────────────────────────────────────────────────
 
@@ -3565,11 +3600,11 @@ class TestValueProbeReporting(unittest.TestCase):
             {
                 "capability": "value row",
                 "probe_kind": "value",
-                "fixture": self._FIXTURE,
+                "fixture": _VALUE_CELLS_FIXTURE,
                 "expected": {
                     "observation": "present",
                     "match": {
-                        "stdout_value": value_spec or dict(self._DAMPING_SPEC)
+                        "stdout_value": value_spec or dict(_DAMPING_SPEC)
                     },
                 },
             },
@@ -3577,20 +3612,18 @@ class TestValueProbeReporting(unittest.TestCase):
 
     def _run_main(self, argv_prefix=(), value_spec=None, value_stdout=None,
                   value_exit=0):
-        main_test = TestMain()
-        runner = main_test._make_runner({
-            "grammar": (0, "", ""),
-            "check": (1, "", "rejection: bad arg"),
-            "ir": (0, "a = 0.01 m", ""),
+        # Only the value row is steered; the other three keep _PASSING_RUNS, so
+        # a scoping assertion reads against rows that are otherwise ordinary.
+        runner = self._make_runner({
             "value": (value_exit,
-                      self._CELLS if value_stdout is None else value_stdout,
+                      _VALUE_CELLS_STDOUT if value_stdout is None else value_stdout,
                       ""),
         })
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
             fh.write(self._probe_set_text(value_spec))
             tmp = fh.name
         try:
-            return main_test._run_main_capturing(list(argv_prefix) + [tmp], runner=runner)
+            return self._run_main_capturing(list(argv_prefix) + [tmp], runner=runner)
         finally:
             os.unlink(tmp)
 
@@ -3615,7 +3648,7 @@ class TestValueProbeReporting(unittest.TestCase):
 
     def test_evaluate_populates_value_observation_only_for_value_kind(self):
         def runner(probe):
-            return pcc.ProbeRun(exit_code=0, stdout=self._CELLS, stderr="")
+            return pcc.ProbeRun(exit_code=0, stdout=_VALUE_CELLS_STDOUT, stderr="")
 
         probes = pcc.load_probe_set(self._probe_set_text())
         by_kind = {p.probe_kind: pcc.evaluate(p, runner=runner) for p in probes}
@@ -3631,7 +3664,7 @@ class TestValueProbeReporting(unittest.TestCase):
         observe_with_evidence() derived the observation from, so there is no
         second search of stdout that could drift out of step with the first.
         """
-        for stdout in (self._CELLS, "nothing here\n",
+        for stdout in (_VALUE_CELLS_STDOUT, "nothing here\n",
                        "ValueCleanEvalCells.damping_ratio = 0\n"):
             with self.subTest(stdout=stdout):
                 run = pcc.ProbeRun(exit_code=0, stdout=stdout, stderr="")
@@ -3641,7 +3674,7 @@ class TestValueProbeReporting(unittest.TestCase):
                 ][0]
                 result = pcc.evaluate(probe, runner=lambda _p: run)
                 obs, reading = pcc.observe_with_evidence(
-                    "value", run, {"stdout_value": self._DAMPING_SPEC}
+                    "value", run, {"stdout_value": _DAMPING_SPEC}
                 )
                 self.assertEqual(result.value_observation, reading)
                 self.assertEqual(result.observation, obs)
@@ -3651,7 +3684,7 @@ class TestValueProbeReporting(unittest.TestCase):
 
     def test_value_observation_records_capture_and_failed_constraint(self):
         cases = [
-            (self._CELLS, True, "0.018", None),
+            (_VALUE_CELLS_STDOUT, True, "0.018", None),
             ("ValueCleanEvalCells.damping_ratio = 0\n", False, "0", "min"),
             ("ValueCleanEvalCells.damping_ratio = 9.9\n", False, "9.9", "max"),
             ("nothing here\n", False, None, "pattern"),
@@ -3672,7 +3705,7 @@ class TestValueProbeReporting(unittest.TestCase):
         spec = {"pattern": r"undef_ratio = (\S+)", "finite": True}
         probes = pcc.load_probe_set(self._probe_set_text(value_spec=spec))
         probe = [p for p in probes if p.probe_kind == "value"][0]
-        run = pcc.ProbeRun(exit_code=0, stdout=self._CELLS, stderr="")
+        run = pcc.ProbeRun(exit_code=0, stdout=_VALUE_CELLS_STDOUT, stderr="")
         obs = pcc.evaluate(probe, runner=lambda _p: run).value_observation
         self.assertFalse(obs.satisfied)
         self.assertEqual(obs.captured, "undef")
@@ -3764,9 +3797,8 @@ class TestValueProbeReporting(unittest.TestCase):
     # ── the committed worked example ──────────────────────────────────────────
 
     def test_committed_example_value_row_passes_under_stub(self):
-        main_test = TestMain()
-        rc, out, _ = main_test._run_main_capturing(
-            [str(_EXAMPLE_PROBE_SET)], runner=main_test._all_pass_runner()
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
         )
         self.assertEqual(rc, 0, out)
         value_rows = [
@@ -3789,21 +3821,21 @@ class TestValueProbeReporting(unittest.TestCase):
         probe_json = json.dumps({"probes": [{
             "capability": f"#6876 e2e ({probe_kind})",
             "probe_kind": probe_kind,
-            "fixture": self._FIXTURE,
+            "fixture": _VALUE_CELLS_FIXTURE,
             "expected": {"observation": expected_observation, "match": match},
         }]})
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
             fh.write(probe_json)
             tmp = fh.name
         try:
-            return TestMain()._run_main_capturing([tmp])
+            return self._run_main_capturing([tmp])
         finally:
             os.unlink(tmp)
 
     @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_damping_ratio_in_range_is_pass(self):
         rc, out, _ = self._e2e("value", "present", {
-            "stdout_value": dict(self._DAMPING_SPEC)
+            "stdout_value": dict(_DAMPING_SPEC)
         })
         self.assertEqual(rc, 0, out)
         self.assertIn(f"[{pcc.PASS}]", out)
@@ -4019,7 +4051,6 @@ class TestBuildCommandValueKind(unittest.TestCase):
     keeps the two from drifting apart into two ways of asking one question.
     """
 
-    _FIXTURE = "tests/prd-gate/fixtures/value_clean_eval_cells.ri"
     _VALUE_MATCH = {
         "stdout_value": {
             "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
@@ -4032,7 +4063,7 @@ class TestBuildCommandValueKind(unittest.TestCase):
         return pcc.Probe(
             capability="damping ratio is in range",
             probe_kind=kind,
-            fixture=fixture if fixture is not None else self._FIXTURE,
+            fixture=fixture if fixture is not None else _VALUE_CELLS_FIXTURE,
             expected={
                 "observation": "present",
                 "match": match if match is not None else {},
@@ -4045,7 +4076,7 @@ class TestBuildCommandValueKind(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
             cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
         self.assertEqual(
-            cmd, ["reify", "eval", os.path.join(_REPO_ROOT, self._FIXTURE)]
+            cmd, ["reify", "eval", os.path.join(_REPO_ROOT, _VALUE_CELLS_FIXTURE)]
         )
 
     def test_value_argv_identical_to_ir_argv(self):
@@ -4068,10 +4099,10 @@ class TestBuildCommandValueKind(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
             cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
         self.assertTrue(os.path.isabs(cmd[-1]), f"got {cmd[-1]!r}")
-        self.assertTrue(cmd[-1].endswith(self._FIXTURE), f"got {cmd[-1]!r}")
+        self.assertTrue(cmd[-1].endswith(_VALUE_CELLS_FIXTURE), f"got {cmd[-1]!r}")
 
     def test_value_passes_absolute_fixture_through(self):
-        absolute = os.path.join(_REPO_ROOT, self._FIXTURE)
+        absolute = os.path.join(_REPO_ROOT, _VALUE_CELLS_FIXTURE)
         probe = self._make_probe(
             "value", fixture=absolute, match=dict(self._VALUE_MATCH)
         )
