@@ -1428,11 +1428,11 @@ pub fn compute_document_highlights(
     )
 }
 
-// ─── κ (task 4210): cross-file structure references + rename ─────────────────
+// ─── κ (task 4210): cross-file declaration-name references + rename ─────────────────
 //
 // The single-file producers above resolve VALUE-member bindings
 // (param/let/auto/sub/port) within one entity body. The machinery below follows
-// the import graph to resolve a STRUCTURE name (a declaration name) across
+// the import graph to resolve a DECLARATION name across
 // files: its home declaration token, every same-file USE SITE, and — in each
 // importing document — the import entity token plus that document's use sites.
 // `collect_decl_name_spans` enumerates the use-site categories and is the ONE
@@ -1502,7 +1502,7 @@ fn collect_decl_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> V
 /// Both reference collectors share it: the home document walks every
 /// declaration, and an importing document walks the same set once its import
 /// exposes `name` under that same local name
-/// ([`collect_importer_structure_references`]). Sharing one fan-out is what
+/// ([`collect_importer_decl_name_references`]). Sharing one fan-out is what
 /// keeps the two from disagreeing about what a use site is.
 fn collect_decl_name_uses_in_decl(
     decl: &Declaration,
@@ -1649,7 +1649,7 @@ fn collect_decl_name_uses_in_decl(
         // An import's entity token IS a reference, but admitting it here would
         // key on a bare name match; scope soundness (Invariant 1) requires
         // keying on the RESOLVED target module instead, which is
-        // `collect_importer_structure_references`' job. A `module` declaration
+        // `collect_importer_decl_name_references`' job. A `module` declaration
         // names a module path, never a declaration.
         Declaration::Import(_) | Declaration::Module(_) => {}
     }
@@ -2018,14 +2018,22 @@ enum CrossFileHome {
     /// A local value-member binding (`param`/`let`/`auto`/`sub`/`port`) — the
     /// single-file producers own it unchanged.
     ValueMember,
-    /// A structure declaration named `name`, homed in document `uri` whose full
-    /// `source` is carried so the home-file collector can run over it.
-    Structure { uri: Url, name: String, source: String },
+    /// A DECLARATION named `name`, homed in document `uri` whose full `source`
+    /// is carried so the home-file collector can run over it.
+    ///
+    /// "Declaration" is the whole module-level namespace, not just `structure`:
+    /// since #6539 this carries a Structure, Occurrence, Fn, Enum, Trait, Field,
+    /// TypeAlias, Constraint, Purpose or Joint, and since #6534 a `structure
+    /// def` nested one level inside a `purpose` body too. Which of those may be
+    /// RENAMED is a narrower question, and the one place it is answered is
+    /// [`is_renameable_cross_file`] — reaching this variant is not itself a
+    /// rename verdict.
+    Declaration { uri: Url, name: String, source: String },
 }
 
 /// Resolve the cursor (`offset` + the identifier `word` under it) to a cross-file
-/// home (κ step-4): a local value-member binding, a structure declared in THIS
-/// document, or a structure reached through an `import`.
+/// home (κ step-4): a local value-member binding, a declaration in THIS
+/// document, or a declaration reached through an `import`.
 ///
 /// Resolution order is deliberate: value-member bindings win first (so the
 /// single-file semantics of `param`/`let`/`auto`/`sub`/`port` are untouched),
@@ -2039,7 +2047,7 @@ enum CrossFileHome {
 /// `false` for ALIASED imports (`import m.Name as Alias`). So resolution cannot
 /// START from an aliased import's entity token: invoking references/rename with
 /// the cursor exactly on the `Name` in `import parts.Hole as Bore` returns
-/// `None`. This is asymmetric with [`collect_importer_structure_references`],
+/// `None`. This is asymmetric with [`collect_importer_decl_name_references`],
 /// which DOES emit that aliased entity token into the reference set when
 /// resolution starts elsewhere (e.g. the home declaration) — so the token is
 /// part of the set yet is not a valid starting cursor. The asymmetry is
@@ -2060,9 +2068,10 @@ fn resolve_cross_file_home(
     if collect_references_at(primary_source, primary_parsed, offset, word, true).is_some() {
         return Some(CrossFileHome::ValueMember);
     }
-    // 2. A structure declared in THIS document → home is the current file.
+    // 2. A declaration of any admitted kind in THIS document → home is the
+    //    current file.
     if crate::goto_def::find_declaration_name_span(primary_source, word).is_some() {
-        return Some(CrossFileHome::Structure {
+        return Some(CrossFileHome::Declaration {
             uri: primary_uri.clone(),
             name: word.to_string(),
             source: primary_source.to_string(),
@@ -2075,7 +2084,7 @@ fn resolve_cross_file_home(
             && import_exposes_entity(&import.kind, word)
             && let Some((home_uri, home_source)) = resolve_import(&import.path)
         {
-            return Some(CrossFileHome::Structure {
+            return Some(CrossFileHome::Declaration {
                 uri: home_uri,
                 name: word.to_string(),
                 source: home_source,
@@ -2118,7 +2127,7 @@ fn resolve_cross_file_home(
 /// whole-word match implies a substring match — the pre-filter never drops a
 /// real reference). On a workspace with many open docs this avoids re-parsing
 /// every buffer just to discover it never imports the home entity.
-fn collect_importer_structure_references(
+fn collect_importer_decl_name_references(
     doc_source: &str,
     name: &str,
     home_uri: &Url,
@@ -2191,7 +2200,7 @@ fn collect_importer_structure_references(
 /// When the cursor is on a local VALUE-member binding the call delegates to the
 /// single-file [`compute_references`] (value members keep single-file scope).
 /// Returns `None` when the cursor resolves to neither a value member nor a
-/// resolvable structure.
+/// resolvable declaration.
 ///
 /// PURE: the open-document set arrives as `workspace_docs` and target resolution
 /// as the injected `resolve_import` closure (mirroring goto_def), so the whole
@@ -2224,7 +2233,7 @@ pub fn compute_references_cross_file(
             pos,
             include_declaration,
         ),
-        CrossFileHome::Structure {
+        CrossFileHome::Declaration {
             uri: home_uri,
             name,
             source: home_source,
@@ -2253,7 +2262,7 @@ pub fn compute_references_cross_file(
                 if *doc_uri == home_uri {
                     continue; // home-file references already collected above
                 }
-                for span in collect_importer_structure_references(
+                for span in collect_importer_decl_name_references(
                     doc_source,
                     &name,
                     &home_uri,
@@ -2392,7 +2401,7 @@ fn is_renameable_cross_file(kind: RefSymbolKind) -> bool {
 
 /// Cross-file prepare-rename over the import graph (κ, task 4210).
 ///
-/// Lifts the single-file cross-module refusal: a structure name reached through
+/// Lifts the single-file cross-module refusal: a declaration name reached through
 /// an `import` (its import entity token or a `sub _ = Name` construction site),
 /// or the home declaration token itself, becomes a rename target — whereas the
 /// single-file [`prepare_rename`] returns `None` for it (declaration/imported
@@ -2421,10 +2430,10 @@ pub fn prepare_rename_cross_file(
         return Some(target);
     }
 
-    // 2. Cross-file structure home — lift the single-file cross-module refusal.
+    // 2. Cross-file declaration home — lift the single-file cross-module refusal.
     let offset = position_to_offset(primary_source, pos);
     let (word_start, word) = find_word_at_offset(primary_source, offset)?;
-    let CrossFileHome::Structure { name, source, .. } = resolve_cross_file_home(
+    let CrossFileHome::Declaration { name, source, .. } = resolve_cross_file_home(
         primary_source,
         primary_parsed,
         primary_uri,
@@ -2458,13 +2467,15 @@ pub fn prepare_rename_cross_file(
 }
 
 /// Cross-file rename over the import graph (κ, task 4210): a [`WorkspaceEdit`]
-/// that renames a structure (or single-file value member) to `new_name` across
-/// every OPEN document that references it.
+/// that renames a DECLARATION (or a single-file value member) to `new_name`
+/// across every OPEN document that references it. Which declaration kinds are
+/// admitted is [`is_renameable_cross_file`]'s answer, not this one's — it is
+/// wider than `structure` and narrower than every named kind.
 ///
 /// SCOPE — open documents only. The guarantee is bounded to the `workspace_docs`
 /// set, which the server populates exclusively from documents currently OPEN in
 /// the editor (the open-doc snapshot). A file that imports and constructs the
-/// renamed structure but is NOT open is never edited, so the rename can leave
+/// renamed declaration but is NOT open is never edited, so the rename can leave
 /// stale references to the old name in closed importers. This matches κ design
 /// decision #5 (whole-tree on-disk enumeration of unopened importers is a
 /// deferred follow-up); the substrate here is the open-doc set + resolved
