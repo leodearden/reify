@@ -52,7 +52,7 @@ Cross-PRD notes:
 - **mirror-exists-and-shadows** → PASS. `examples/stdlib/ports_breadth.ri`
   carries the local `ThreadSpec` mirror (`:44`, lacking `thread_form`) and the
   "EVAL-TIME RE-DECLARATION NOTE" dead-semantics block (`:16-24`); file is
-  auto-covered by `crates/reify-compiler/tests/examples_smoke.rs` (in-file
+  auto-covered by `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` (in-file
   comment + directory walk).
 - **regime-b-live-mirror-strippable** → PASS *(probe, D3)*. The re-declaration
   hazard is dead: a mirror-stripped copy evaluates clean with stdlib

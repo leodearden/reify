@@ -441,7 +441,7 @@ tasks:
   title: docs-truth leaves — best-practices exemplar + cheatsheet index + discoverability
   capabilities:
   - name: exemplar-gate-exists
-    binding: wired — grep:crates/reify-compiler/tests/examples_smoke.rs auto-compile
+    binding: wired — grep:crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs auto-compile
       gate; examples/best_practices/INDEX.md present
     verdict: PASS
     delivered_check:
