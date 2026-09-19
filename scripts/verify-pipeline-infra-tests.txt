@@ -574,3 +574,9 @@ scripts/lib_task_citation.sh    tests/infra/test_task_branch_contamination_sweep
 scripts/lib_lane_lock.sh    tests/infra/test_lane_lock_probe.sh
 scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_audit.sh
 scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_lock_guard.sh
+# ...and a THIRD suite load-bears it transitively: test_warm_lane_sizing_lifecycle.sh
+# drives scripts/warm-lane-audit.sh end to end and asserts on the probe's own
+# verdicts (`HEADROOM live=3` at B2, `live=1` at B19), so a lib-only diff that
+# omitted this row would leave those assertions unrun on the very edit that can
+# move them.
+scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_sizing_lifecycle.sh
