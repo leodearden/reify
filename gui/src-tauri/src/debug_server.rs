@@ -2160,15 +2160,25 @@ pub(crate) fn reify_export_envelope(output_path: &str) -> Value {
 
 /// Engine-routing core of the `reify_set_parameter` write tool: apply
 /// `value` to `cell_id`'s default literal IN THE `.ri` SOURCE (INV-GUI-3,
-/// via γ's [`EngineSession::apply_param_to_source_str`]), then refresh the
-/// delta baseline.
+/// via [`EngineSession::commit_parameter`]), then refresh the delta baseline.
 ///
 /// This is the AI counterpart of the property panel, and since η it is
-/// deliberately the SAME mechanism: the panel's commit routes through
-/// `EngineSession::commit_parameter`, which is this `apply_param_to_source_str`
-/// with a preview discard in front of its error arm. Only a slider's in-flight
-/// DRAG is an ephemeral engine-state override
+/// deliberately the SAME mechanism, down to the entry point: the panel's
+/// commit, the Tauri-invoke `TauriToolContext::set_parameter` and this tool
+/// all call `commit_parameter`, which is γ's `apply_param_to_source_str`
+/// with a preview discard in front of its error arm. Only a slider's
+/// in-flight DRAG is an ephemeral engine-state override
 /// (`EngineSession::preview_parameter`), and it never outlives the gesture.
+///
+/// Calling the bare `apply_param_to_source_str` here instead would be the
+/// cheaper-looking spelling and the wrong one: an AI write can land while a
+/// user drag is live, and γ's ledger — which guarantees a refusal moves none
+/// of ITS four surfaces — says nothing about the preview's override in
+/// `last_check`, which it never reads. A refusal on this surface would then
+/// strand a value no source carries, which is esc-7281-4 on the one path that
+/// had opted out of the fix. The discard runs on the error arm only, so the
+/// success path this doc describes costs exactly what it did before.
+///
 /// The dimension-aware parse is shared too (#5757), so `value` is a
 /// UNIT-BEARING literal (`"120mm"`) on any dimensioned cell — see
 /// `apply_param_to_source_str` for the full unit contract.
@@ -2187,7 +2197,7 @@ pub async fn reify_set_parameter_on_engine_and_refresh_baseline(
     let cell_id = cell_id.to_owned();
     let value = value.to_owned();
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
-        s.apply_param_to_source_str(&cell_id, &value)
+        s.commit_parameter(&cell_id, &value)
     })
     .await
 }
