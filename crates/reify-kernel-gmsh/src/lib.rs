@@ -35,6 +35,7 @@
 //! `crates/reify-kernel-occt/build.rs` — system-library detection pattern.
 
 pub mod auto_size;
+pub mod background_size_field;
 pub mod cache_key;
 pub mod fill_metrics;
 #[cfg(feature = "mesh-morph")]
@@ -146,6 +147,10 @@ pub use volume_mesh_options::VolumeMeshOptions;
 // Unconditional re-export — uniform signature in both cfg(has_gmsh) (real FFI
 // remesh) and cfg(not(has_gmsh)) (stub returning STUB_UNAVAILABLE_MARKER).
 pub use refine_volume::refine_volume_with_size_field;
+// The size field `refine_volume_with_size_field` consumes. Unconditional for
+// the same reason the function is: it is plain data with no FFI, and both
+// build arms take it, so the signature is uniform across build modes.
+pub use background_size_field::BackgroundSizeField;
 
 /// `true` when this crate was compiled with libgmsh detected at build time
 /// (real FFI surface available); `false` otherwise (stub-only build).
