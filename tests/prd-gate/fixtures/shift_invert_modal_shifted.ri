@@ -4,9 +4,12 @@
 // PRD: docs/prds/v0_6/shift-invert-eigensolve.md (leaf δ, task #7261 — the
 // modal trampoline honors the shift surface-agnostically in λ-space).
 //
-// PAIRED WITH: shift_invert_modal_unshifted.ri. The two files are byte-identical
-// except for this header and the `sigma:` literal, so the ONLY thing that can
-// explain a difference in their frequency pairs is the shift.
+// PAIRED WITH: shift_invert_modal_unshifted.ri. The two MODELS are identical
+// except for the `sigma:` literal (the headers and the `module` / `structure`
+// names differ, as they must to coexist in one gate), so the ONLY thing that
+// can explain a difference in their frequency pairs is the shift. ENFORCED by
+// `assert_fixtures_differ_only_in_sigma`, the first assertion of the e2e test
+// named below — do not weaken it to prose.
 //
 // LIVE GUARD (cited by SYMBOL, not file:line — nothing recompiles a fixture, so
 // a line number here would drift silently): `include_str!`-embedded and asserted
