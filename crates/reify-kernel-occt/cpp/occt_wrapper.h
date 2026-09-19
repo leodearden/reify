@@ -82,6 +82,7 @@ struct TessResult;
 struct ExportStepResult;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
+struct VolumeMeasurement;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
 struct RevolveSynthesisPostSortResult;
 /// Returned by `face_analytic_datum` / `edge_analytic_datum` (geometric-relations ε);
@@ -1039,6 +1040,12 @@ Point3 wire_start_point(const OcctShape& wire);
 // --- Queries ---
 
 double query_volume(const OcctShape& shape);
+
+/// `query_volume`'s number plus which arm produced it. Both functions delegate
+/// to the same `compute_volume_arm` helper, so the returned `volume` is
+/// bit-identical to `query_volume(shape)` and the two can never disagree about
+/// which arm ran. Throws std::runtime_error on null/empty topology.
+VolumeMeasurement query_volume_measurement(const OcctShape& shape);
 double query_area(const OcctShape& shape);
 Point3 query_centroid(const OcctShape& shape);
 

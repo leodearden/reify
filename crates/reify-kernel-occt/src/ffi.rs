@@ -57,6 +57,19 @@ pub mod ffi {
         m33: f64,
     }
 
+    /// A shape's volume together with which arm produced it.
+    ///
+    /// `volume` is bit-identical to what `query_volume` returns: both entry
+    /// points delegate to the single arm-selection site `compute_volume_arm`.
+    /// `tessellation_fallback` is `true` iff OCCT's exact volume integral was
+    /// unusable and the tessellation arm produced the number — false is the
+    /// good path, mirroring `ExportStepResult::ap242_fell_back`.
+    #[derive(Debug)]
+    struct VolumeMeasurement {
+        volume: f64,
+        tessellation_fallback: bool,
+    }
+
     /// Topology-map cache build counts for an OcctShape.
     ///
     /// Each counter is 0 on a fresh shape and increments to 1 on the first
@@ -930,6 +943,10 @@ pub mod ffi {
 
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
+        /// `query_volume`'s number plus which arm produced it. Shares one
+        /// arm-selection site with `query_volume`, so `.volume` is bit-identical
+        /// to `query_volume(shape)` for the same shape.
+        fn query_volume_measurement(shape: &OcctShape) -> Result<VolumeMeasurement>;
         fn query_area(shape: &OcctShape) -> Result<f64>;
         fn query_edge_length(shape: &OcctShape) -> Result<f64>;
         /// Unit tangent of `shape` (must be a TopoDS_Edge) sampled at the

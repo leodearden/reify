@@ -4549,6 +4549,19 @@ static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
     return std::abs(volume);
 }
 
+/// The site that chooses between OCCT's exact volume integral and the
+/// tessellation fallback, reporting both the number and which arm produced it.
+/// Only the exact arm exists so far; `query_volume` still selects its own.
+///
+/// Callers must have rejected null topology already: the shape-type test the
+/// fallback arm needs dereferences the TShape handle and would SIGSEGV rather
+/// than throw.
+static VolumeMeasurement compute_volume_arm(const TopoDS_Shape& shape) {
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(shape, props);
+    return VolumeMeasurement{props.Mass(), false};
+}
+
 double query_volume(const OcctShape& shape) {
     return wrap_occt_call("query_volume", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref. The
@@ -4568,6 +4581,18 @@ double query_volume(const OcctShape& shape) {
             vol = mesh_based_volume(shape.shape, 0.01);
         }
         return vol;
+    });
+}
+
+VolumeMeasurement query_volume_measurement(const OcctShape& shape) {
+    return wrap_occt_call("query_volume_measurement", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // covers any direct-FFI/future path that bypasses it.
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_volume_measurement: shape has null/empty topology");
+        }
+        return compute_volume_arm(shape.shape);
     });
 }
 

@@ -100,6 +100,11 @@ pub fn boolean_pass_count() -> u64 {
 #[cfg(has_occt)]
 pub use ffi::ffi::RevolveSynthesisPostSortResult;
 
+/// Re-exported so callers can name [`OcctKernel::volume_measurement`]'s return
+/// type without reaching into the private bridge module.
+#[cfg(has_occt)]
+pub use ffi::ffi::VolumeMeasurement;
+
 /// Fixture for integration tests: runs only the post-sort/dedup helper on
 /// a synthetic flat-records input, without requiring real OCCT geometry.
 ///
@@ -3893,6 +3898,29 @@ impl OcctKernel {
             }
         };
         Ok(self.store(shape))
+    }
+
+    /// A shape's volume together with which arm produced it.
+    ///
+    /// `GeometryQuery::Volume` answers with the number alone, which leaves a
+    /// caller unable to tell an exact integral from the tessellation fallback.
+    /// This reports both, from the same single arm-selection site, so the two
+    /// agree bit-for-bit.
+    ///
+    /// A `tessellation_fallback == true` result is also the caller's signal
+    /// that the rest of the mass-property family — `Centroid`, `CenterOfMass`,
+    /// `MomentOfInertia`, `InertiaTensor` — is returning its degenerate
+    /// origin/zero default for this shape rather than a measurement: those
+    /// queries have no fallback arm of their own.
+    pub fn volume_measurement(
+        &self,
+        id: GeometryHandleId,
+    ) -> Result<VolumeMeasurement, QueryError> {
+        let shape = self
+            .get_shape(id)
+            .map_err(|_| QueryError::InvalidHandle(id))?;
+        ffi::ffi::query_volume_measurement(shape)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
     }
 
     pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
