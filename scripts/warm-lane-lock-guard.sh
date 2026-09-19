@@ -14,12 +14,15 @@
 #     docs/design/merge-verify-lane-dispatch-seam.md
 #
 # In brief (task 5608; escalation esc-5363-5): `<worktree_base>/<lane>.lock` is
-# ONE inode per lane, and dark-factory has FOUR acquirers of that inode family
-# on four independently-tuned waits (seam doc §1) — three that can target
-# `_merge-verify`, plus a task-lane consumer-hold that never does. So a dispatch
-# that lands while a verify-length lease (1–2h) is held burns the full bounded
-# wait before deferring. On an idle lane it costs nothing: the value this guard
-# adds is in the contended case, not on every dispatch.
+# ONE inode per lane, per host, and dark-factory has FIVE acquirers of that
+# inode family, each on its own independently-tuned wait (seam doc §1) — four
+# in-orchestrator sites running on the workstation and sharing its one literal
+# inode (three that can target `_merge-verify`, plus a task-lane consumer-hold
+# that never does), and a fifth outside the in-process orchestrator on a
+# physically separate host, taking that host's own same-named inode. So a
+# dispatch that lands while a verify-length lease (1–2h) is held burns the full
+# bounded wait before deferring. On an idle lane it costs nothing: the value
+# this guard adds is in the contended case, not on every dispatch.
 # How dark-factory CLASSIFIES that timeout is DF-owned and changes as DF
 # changes; it is stated once, in the seam doc's §1 acquirer table. Do not
 # restate it here — this header carried a copy that went stale when DF task
