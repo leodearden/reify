@@ -12659,6 +12659,50 @@ mod tests {
         );
     }
 
+    /// The fallback guard is bitwise `vol == 0.0`, not a near-zero tolerance.
+    ///
+    /// `make_nonmanifold_compound_for_test` is a COMPOUND (ShapeType 0, so it
+    /// passes the `<= TopAbs_SOLID` half of the guard) whose three
+    /// coplanar-with-origin faces integrate to pure FP noise. It is therefore
+    /// exactly the input a tolerance-based guard (`std::abs(vol) < eps`) would
+    /// mis-classify as "no volume" and hand to the tessellation arm, and this
+    /// test is what stops that substitution passing.
+    ///
+    /// BOUND BASIS: b96716462a records this fixture measuring
+    /// -6.6174449004242214e-24, deterministic over three runs — twelve orders
+    /// of magnitude inside the 1e-12 bound asserted here. The magnitude is
+    /// deliberately NOT pinned: only the non-zero-and-tiny window is, so the
+    /// test tracks the guard's precision rather than one OCCT build's FP noise.
+    #[test]
+    fn volume_measurement_fallback_guard_is_bitwise_not_tolerance() {
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let id = kernel.store_raw(
+            ffi::ffi::make_nonmanifold_compound_for_test()
+                .expect("make_nonmanifold_compound_for_test should succeed"),
+        );
+
+        let m = kernel
+            .volume_measurement(id)
+            .expect("volume_measurement must succeed for a non-manifold compound");
+        assert!(
+            !m.tessellation_fallback,
+            "the exact integral produced a non-zero number, so the fallback must not \
+             fire — a tolerance-based guard would wrongly fire here (got {m:?})"
+        );
+        assert_ne!(
+            m.volume, 0.0,
+            "faces coplanar with the origin integrate to FP noise, not to bitwise zero"
+        );
+        assert!(
+            m.volume.abs() < 1e-12,
+            "that noise must stay negligible; got {}",
+            m.volume
+        );
+    }
+
     /// Pin `DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against OCCT's authoritative
     /// `Precision::Confusion()` value at runtime.
     ///
