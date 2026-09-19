@@ -744,6 +744,19 @@ assert_exit "PRECISION: docs/zzz-not-registered.md NOT in synthetic manifest -> 
 # glob clause in the guard itself. Neither manifest entry is used as a
 # positive below -- every positive here is a genuine RED against the
 # pre-task-5256 guard.
+#
+# WIDENED TO `.py` (task 7626). Arm 2 of the bash-to-Python migration policy
+# (docs/notes/infra-test-bash-to-python-migration-policy.md) moves an EXISTING
+# gate member's body into a `.py` sibling behind a thin `test_<name>.sh`
+# wrapper. The wrapper stays a gate member via the original `.sh` glob, but the
+# hundreds of lines that actually assert anything move into the `.py` -- which
+# the pre-7626 clause could not see, so editing them classified as config-only
+# and rode the merge-worker trivial-pass. Measured before the fix: the wrapper
+# tests/infra/test_verify_env_ambient_isolation.sh -> exit 0, its sibling
+# tests/infra/test_verify_env_ambient_isolation.py -> exit 1 -- i.e. the
+# identical assertion edit changed route purely by moving file. Cases (k)-(o)
+# pin the widening to `\.(sh|py)$` across BOTH dispatch arms; (p)-(r) pin what
+# it must still refuse.
 
 echo ""
 echo "-- Pair D: infra-test glob clause --"
@@ -799,6 +812,73 @@ assert_exit "PRECISION: scripts/zzz-not-infra.sh OUTSIDE tests/infra -> fast-pat
 # substring match).
 assert_exit "PRECISION: other/tests/infra/test_z.sh unanchored -> fast-path-safe (exit 1)" 1 \
     run_guard_nofork requires-full-gate other/tests/infra/test_z.sh
+
+# (k) POSITIVE, `.py` arm: the first Arm 2 product, ported by task 7626. Its
+# `.sh` wrapper is ~28 lines of delegation; the ~540 lines that run the real
+# nested test_occt_flock_gate.sh under the production ambient live here. This
+# is the regression that motivated the widening, so it leads the `.py` cases.
+assert_exit "POSITIVE: tests/infra/test_verify_env_ambient_isolation.py (Arm 2 sibling) is load-bearing (exit 0)" 0 \
+    run_guard requires-full-gate tests/infra/test_verify_env_ambient_isolation.py
+
+# (l) POSITIVE, `.py` arm: the pre-existing Arm 1 product, on the tree since
+# before task 7626 -- so this gap was already live, not introduced by the port.
+assert_exit "POSITIVE: tests/infra/test_flake_density_report.py (Arm 1 sibling) is load-bearing (exit 0)" 0 \
+    run_guard requires-full-gate tests/infra/test_flake_density_report.py
+
+# (m) BREADTH, the `.py` analogue of (d), and the case that settles the rule's
+# shape as `\.(sh|py)$` rather than `test_.*\.py`. cpu_gov_instrument.py is not
+# a test at all: it is a Python helper that test_cpu_load_governance.sh drives
+# directly (INSTRUMENT= at :239; SELF-1..SELF-6a at :438-486 assert its exits
+# and its CLI), and that file's own :24 records it as deliberately NOT
+# test_*.sh. Exactly as test_helpers.sh forces (d), this live load-bearing
+# helper forbids a test_-prefixed-only widening.
+assert_exit "BREADTH: tests/infra/cpu_gov_instrument.py (non-test_-prefixed helper) is load-bearing (exit 0)" 0 \
+    run_guard requires-full-gate tests/infra/cpu_gov_instrument.py
+
+# (n) INCIDENT SIGNAL, the (b)-analogue for Python: a path that need not exist
+# on disk (this is a pure path classifier), so the clause covers ports not yet
+# written rather than only the three `.py` files that exist today.
+assert_exit "INCIDENT SIGNAL: tests/infra/test_anything.py is load-bearing (exit 0)" 0 \
+    run_guard requires-full-gate tests/infra/test_anything.py
+
+# (o) IS-REGISTERED ARM. The glob is consulted by TWO dispatch arms --
+# requires-full-gate and is-registered -- and a widening applied to only one
+# leaves the membership predicate lying to its caller (and to the ANTI-DRIFT
+# sweep above, which routes entirely through is-registered). Sited here rather
+# than beside the synthetic-map GLOB-CLAUSE case in Pair C, because that case
+# needs an injected map to discriminate a glob hit from a row hit, whereas this
+# one is about the `.py` widening and belongs with the cases that motivate it.
+# The queried path has no map row, so only the glob clause can answer 0.
+assert_exit "GLOB-CLAUSE: is-registered agrees about tests/infra/test_flake_density_report.py (exit 0) -- BOTH arms widened" 0 \
+    run_guard is-registered tests/infra/test_flake_density_report.py
+
+# (p) PRECISION, the single-directory anchor survives the alternation edit. The
+# `[^/]*` component must keep applying to `.py` exactly as it does to `.sh`.
+# PASSES VACUOUSLY TODAY -- nothing under tests/infra matches `.py` yet -- and
+# becomes load-bearing the moment the widening lands.
+assert_exit "PRECISION: tests/infra/sub/nested.py is not single-directory -> fast-path-safe (exit 1)" 1 \
+    run_guard_nofork requires-full-gate tests/infra/sub/nested.py
+
+# (q) PRECISION, the extension set stays CLOSED at exactly {sh, py}; a blanket
+# "any file under tests/infra" would drag every fixture and .manifest into the
+# full gate. HONEST NOTE: (h) above already pins this property from the `.sh`
+# era and a `[a-z]+` drift would red both, so this is a deliberate restatement
+# rather than an independent discriminator -- sited with the `.py` cases so
+# that whoever comes to add a THIRD extension meets the closure pin where they
+# are already working. VACUOUS TODAY for the same reason as (p).
+assert_exit "PRECISION: tests/infra/zzz_fixture.txt is neither .sh nor .py -> fast-path-safe (exit 1)" 1 \
+    run_guard_nofork requires-full-gate tests/infra/zzz_fixture.txt
+
+# (r) NON-REGRESSION, the neighbour that constrains the fix's shape: the
+# widening must be DIRECTORY-ANCHORED, not "any .py anywhere".
+# scripts/prd-capability-check.py is registered SURGICALLY via a map row, and
+# Pair C's assertion of that is a genuine RED against a full-gate-only reading
+# of `is-registered` ONLY because requires-full-gate reports 1 for it. That was
+# recorded there as a measured aside; making it an assertion here means a
+# `.py`-anywhere widening reds HERE, instead of silently hollowing out Pair C's
+# case into a tautology. VACUOUS TODAY for the same reason as (p).
+assert_exit "NON-REGRESSION: scripts/prd-capability-check.py is a .py OUTSIDE tests/infra -> fast-path-safe (exit 1)" 1 \
+    run_guard_nofork requires-full-gate scripts/prd-capability-check.py
 
 # ---------------------------------------------------------------------------
 # Pair E — emitted-gate plan-line derivation (task 6320)
