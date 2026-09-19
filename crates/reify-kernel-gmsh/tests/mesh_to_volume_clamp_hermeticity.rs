@@ -48,46 +48,17 @@ mod common;
 #[path = "common/clamp_probe.rs"]
 mod clamp_probe;
 
+// The uniform size field this suite remeshes under, shared by `#[path]` with
+// `tests/mesher_poison_recovery.rs` for the same reason as the probe above.
+#[path = "common/size_field.rs"]
+mod size_field;
+
 use clamp_probe::{
     CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, probe_triangle_count, set_global_mesh_size_clamp,
 };
-use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
-use reify_kernel_gmsh::{BackgroundSizeField, GmshKernel, MeshingOptions, refine_volume_with_size_field};
-
-/// A uniform [`BackgroundSizeField`] of `size` spanning the unit cube.
-///
-/// The 6-tet Kuhn decomposition over the cube's 8 corners is the smallest mesh
-/// that spans the box; a uniform field needs no more resolution than that.
-fn uniform_unit_cube_size_field(size: f64) -> BackgroundSizeField {
-    #[rustfmt::skip]
-    let vm = VolumeMesh {
-        vertices: vec![
-            0.0_f32, 0.0, 0.0,
-            1.0, 0.0, 0.0,
-            1.0, 1.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-            1.0, 0.0, 1.0,
-            1.0, 1.0, 1.0,
-            0.0, 1.0, 1.0,
-        ],
-        connectivity: VolumeConnectivity::Tet {
-            indices: vec![
-                0, 1, 2, 6,
-                0, 1, 5, 6,
-                0, 3, 2, 6,
-                0, 3, 7, 6,
-                0, 4, 5, 6,
-                0, 4, 7, 6,
-            ],
-            order: ElementOrderTag::P1,
-        },
-        normals: None,
-        boundary: None,
-    };
-    BackgroundSizeField::from_tet_mesh(&vm, &vec![size; 8])
-        .unwrap_or_else(|e| panic!("uniform size field must be constructible: {e:?}"))
-}
+use reify_ir::ElementOrderTag;
+use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
+use size_field::uniform_unit_cube_size_field;
 
 /// Mesh the unit cube through `GmshKernel::mesh_to_volume` at `size` and
 /// return the P1 tet count.
