@@ -264,7 +264,7 @@ diagnostics carry codes by construction (§3.6).
   batch-shape change 3): 16 `IdlerPulley(` at-transform3 sites in today's
   679-line printer.ri; ζ distills into `examples/indexed_idler_array.ri`,
   no printer.ri contention with belt μ #5445.
-- `examples-ci-substrate` → PASS. `crates/reify-compiler/tests/examples_smoke.rs`
+- `examples-ci-substrate` → PASS. `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
   recursively compile-gates every `examples/**/*.ri` (recursive discovery
   since 2026-04-26) — the example is CI-run with NO new test infrastructure;
   the parity assertions extend the existing reify-eval suites (§7 preamble;

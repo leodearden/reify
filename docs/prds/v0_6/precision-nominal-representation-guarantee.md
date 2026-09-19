@@ -699,7 +699,7 @@ not the feature name finds `RepresentationWithin` from the chunks in intent term
 layout, stating the anti-pattern it replaces (bound on the geometry-owning structure, which replaces
 `#precision` outright per §3.1(c)). Plus its `INDEX.md` line and a one-line index entry in
 `.claude/skills/reify-design/SKILL.md` pointing at the corpus file (not an inline playbook).
-*Signal:* the file compiles under the corpus gate (`crates/reify-compiler/tests/examples_smoke.rs`)
+*Signal:* the file compiles under the corpus gate (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`)
 and `best_practices_index_matches_corpus_directory` stays green.
 *Modules:* `examples/best_practices/representation_bound.ri`, `examples/best_practices/INDEX.md`,
 `.claude/skills/reify-design/SKILL.md`.
