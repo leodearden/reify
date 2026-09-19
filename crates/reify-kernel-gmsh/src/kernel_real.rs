@@ -526,6 +526,12 @@ impl GmshKernel {
         // and returns it already folded in. Annotating it here as well would
         // append the same lines twice: MEASURED on libgmsh 4.15.2, the capture
         // survives the recycle.
+        //
+        // That exclusion is enforced, not merely stated here:
+        // `mesher_poison_recovery::a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error`
+        // requires exactly ONE `gmsh log (` header in the message, so drawing
+        // either seam over this call reds instead of silently doubling every
+        // mesher-failure diagnostic that reaches a log or the GUI.
         init::mesh_generate_with_recovery(&_guard, 3)?;
 
         let volume_mesh =

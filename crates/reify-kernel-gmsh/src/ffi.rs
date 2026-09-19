@@ -922,7 +922,13 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
 }
 
 /// Start capturing gmsh's Info/Warning/Progress message stream into an
-/// in-memory buffer, drained by [`logger_get`].
+/// in-memory buffer. [`logger_get`] READS that buffer without consuming it;
+/// [`logger_stop`] is the drain (measured — see both of their docs, and
+/// `tests/log_capture_tests.rs`'s guard test, which annotates twice under one
+/// arm). [`crate::log_capture::LogCapture`] rests on that split both ways: it
+/// may fold the capture into more than one error while armed, and the empty
+/// post-drop read that witnesses its stop would witness nothing if a read
+/// emptied the buffer by itself.
 ///
 /// This capture is INDEPENDENT of the `"General.Terminal"` option — every
 /// production mesher in this crate (`kernel_real::mesh_to_volume`,

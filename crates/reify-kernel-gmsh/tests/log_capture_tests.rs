@@ -180,8 +180,14 @@ fn a_non_operation_failed_error_passes_through_unchanged() {
 }
 
 /// The guard's whole observable contract, through its public surface only:
-/// `annotate` reads the LIVE capture (not an empty list), and `drop` stops
-/// it (not "the test remembered to").
+/// `annotate` reads the LIVE capture (not an empty list), that read leaves
+/// the buffer intact, and `drop` stops it (not "the test remembered to").
+///
+/// The middle one is what keeps the last from being vacuous: if a read
+/// consumed the capture, the post-drop empty read below would be satisfied by
+/// the `annotate` above it whether or not `drop` ever fired. It is also the
+/// property `ffi::logger_start`'s doc now states — `logger_get` reads, only
+/// `logger_stop` drains — and nothing else in this crate pins it.
 ///
 /// Deliberately does NOT touch `"General.Terminal"`: capture is independent
 /// of it — see `ffi::logger_start`'s measurement and
@@ -199,14 +205,19 @@ fn log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop() {
     let guard = init::lock().expect("init::lock failed");
     init::ensure_initialized();
 
-    let annotated_err = {
+    let (annotated_err, re_read_err) = {
         let capture = LogCapture::armed(&guard);
         // `ffi::clear()` is the "something that logs" on purpose: it needs no
         // geometry and costs ~0ms, where every mesher in this crate costs
         // seconds to say the same thing about the guard. It also doubles as
         // this test's cleanup.
         ffi::clear().expect("ffi::clear failed");
-        capture.annotate(GeometryError::OperationFailed("boom".into()))
+        // Twice, with no gmsh call in between: whatever the second one sees is
+        // what the first one left behind.
+        (
+            capture.annotate(GeometryError::OperationFailed("boom".into())),
+            capture.annotate(GeometryError::OperationFailed("again".into())),
+        )
     };
 
     let msg = operation_failed_message(annotated_err);
@@ -216,7 +227,14 @@ fn log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop() {
     );
     assert!(
         msg.contains("Info: Clearing all models"),
-        "annotate must drain the LIVE capture, not format an empty list; got: {msg}",
+        "annotate must read the LIVE capture, not format an empty list; got: {msg}",
+    );
+
+    let re_read = operation_failed_message(re_read_err);
+    assert!(
+        re_read.contains("Info: Clearing all models"),
+        "reading the capture must not consume it — the second annotate under the same \
+         arm saw nothing; got: {re_read}",
     );
 
     // Still under GMSH_LOCK, after the guard dropped. `logger_stop` both

@@ -49,7 +49,7 @@ mod clamp_probe;
 
 use clamp_probe::{CLAMP_TEST_ORDER, probe_triangle_count};
 use reify_ir::{ElementOrderTag, GeometryError, Mesh};
-use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
+use reify_kernel_gmsh::{GmshKernel, MeshingOptions, ffi, init, refine_volume_with_size_field};
 use reify_test_support::fixtures::unit_cube_mesh;
 
 /// A single open triangle: a surface gmsh accepts and classifies happily but
@@ -304,6 +304,28 @@ fn a_failed_mesh_to_volume_leaves_the_default_clamp_behind() {
 ///
 /// The assertions stay on stable gmsh phrases and deliberately do not pin the
 /// captured line COUNT, which is version- and thread-sensitive.
+///
+/// Two further properties ride on this one failure, because provoking it is
+/// the expensive part and both are invisible anywhere else:
+///
+/// The tail is folded in exactly ONCE. `init::mesh_generate_with_recovery`
+/// annotates its own failure — it has to, since it destroys the library
+/// holding the capture — so `mesh_to_volume` deliberately leaves that one
+/// call outside its `LogCapture` seam. Only a comment marks that exclusion at
+/// the call site, and a later edit extending the seam over it "for symmetry"
+/// with its two neighbours would fail SILENTLY: every mesher-failure message
+/// would carry the same ~40 lines twice. The count assertion below is what
+/// reds instead.
+///
+/// The capture is still stopped and drained afterwards. This is the third
+/// and riskiest of the guard's exit shapes:
+/// `mesh_to_volume_tests::mesh_to_volume_leaves_the_gmsh_logger_stopped`
+/// covers success, `log_capture_tests`'s guard test covers an error that
+/// leaves libgmsh standing, and only this path RECYCLES the library
+/// mid-window — `LogCapture::drop` therefore calls `logger_stop` on a
+/// library that is not the one `logger_start` ran against. Leaving the
+/// capture armed there is exactly the contamination `log_capture`'s module
+/// doc names: the next unrelated failure would report these lines as its own.
 #[test]
 fn a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
@@ -330,5 +352,29 @@ fn a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error() 
     assert!(
         msg.contains("Info:"),
         "expected a captured Info line — gmshLoggerGetLastError can never supply one; got: {msg}",
+    );
+    assert_eq!(
+        msg.matches("gmsh log (").count(),
+        1,
+        "the mesher failure must be annotated exactly ONCE — \
+         init::mesh_generate_with_recovery folds the capture in itself, so a \
+         LogCapture seam drawn over that call would append the same tail a \
+         second time; got: {msg}",
+    );
+
+    // `mesh_to_volume` released GMSH_LOCK on return, so this read is
+    // serialised against any concurrent mesher rather than racing one
+    // mid-flight — and `_order` above keeps this binary's siblings out of the
+    // window. Mirrors `mesh_to_volume_leaves_the_gmsh_logger_stopped`, on the
+    // path where recovery destroyed and rebuilt the library holding the buffer
+    // while the capture was armed.
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
+    assert!(
+        leftover.is_empty(),
+        "a mesh_to_volume that failed AT THE MESHER must still leave gmsh's capture \
+         stopped and drained, even though recovery recycled the library holding the \
+         buffer mid-window; {} lines left: {leftover:?}",
+        leftover.len(),
     );
 }
