@@ -221,7 +221,8 @@ re-satisfying four bidirectional asserts in `test_run_all_classification.sh` —
 a large blast radius on load-bearing verify-pipeline artifacts, inside a task
 whose purpose was *reducing* infra-gate reds.
 
-That deferral has three measured costs. All are real; none was hidden:
+That deferral has four measured costs. All are real; none is hidden — though
+cost 4 below *was*, and how it stayed off this list is part of its entry:
 
 1. **Every Python member needs a hand-written wrapper.** Forgetting the
    manifest row is caught (the classification gate fails in both directions);
@@ -254,13 +255,64 @@ That deferral has three measured costs. All are real; none was hidden:
    in Section G, a Python diversion dialect selected from the scan target's
    extension. See "The Python dialect a port must emit" above for the shapes a
    port must now write.
+4. **The merge gate's full-gate admission oracle did not see Python.
+   IDENTIFIED AND CLOSED by #7626 — and it had never been on this list.**
+   Measured before that task: this document contained zero matches for
+   *verify-pipeline-guard*, *full gate*, *trivial-pass* or *config-only*. That
+   omission is exactly why #7626 could close cost 3 and still ship this one
+   open. It is recorded here rather than quietly patched, because a cost list
+   that merely *looks* complete is how the next gap gets missed the same way.
+
+   `scripts/verify-pipeline-guard.sh` is the oracle dark-factory's merge worker
+   consults to decide whether a diff may take the trivial-pass fast path. Its
+   infra-test clause matched `^tests/infra/[^/]*\.sh$` — so an Arm 2 port split
+   a single member across that boundary: the thin wrapper kept routing to the
+   full gate while the sibling holding every assertion classified as
+   config-only, and the *identical* assertion edit changed route purely by
+   having moved file. Measured on the port itself before the fix:
+
+   | path | `requires-full-gate` |
+   |---|---|
+   | `tests/infra/test_verify_env_ambient_isolation.sh` | exit 0 |
+   | `tests/infra/test_verify_env_ambient_isolation.py` | exit 1 |
+   | `tests/infra/test_flake_density_report.py` | exit 1 |
+   | `tests/infra/cpu_gov_instrument.py` | exit 1 |
+
+   with no `.py` row anywhere in `scripts/verify-pipeline-paths.txt` to catch
+   them by another route. This is a regression **Arm 2 creates**: Arm 1 only
+   ever produced new tests, wrapper and sibling both new together; Arm 2 moves
+   an *existing* gate member's body across the clause.
+
+   Closed by widening that clause to `^tests/infra/[^/]*\.(sh|py)$`, lifted to
+   one shared `_INFRA_GLOB_ERE` constant so the `requires-full-gate` and
+   `is-registered` arms cannot drift apart. The rule stays directory-anchored
+   and is deliberately NOT `test_`-prefixed, so a port may add a plain Python
+   helper beside its member without a second gate edit —
+   `tests/infra/cpu_gov_instrument.py`, driven directly by
+   `test_cpu_load_governance.sh`, is the live case that forced that shape.
+
+   **The check a future porter runs**, on every new file under `tests/infra/`:
+
+   ```
+   bash scripts/verify-pipeline-guard.sh requires-full-gate tests/infra/<new-file>
+   ```
+
+   Exit 0 means the gate sees it. Exit 1 on a file that holds assertions means
+   the gate does not, and editing those assertions will fast-path past them.
 
 Costs 1 and 2 are **task #7445**'s charter (native `test_*.py` discovery, which
 retires the wrapper idiom, plus teaching the wall-clock guard Python — read
 its Part B as the grammar extension cost 2 describes, not only the scan-scope
-widening it is worded as). Cost 3 is closed.
+widening it is worded as). Costs 3 and 4 are closed.
 
-The three fail in different directions, which is what decides how each is held.
+Costs 2, 3 and 4 are one family, and naming it is the cheapest defence against
+a fifth: each is a **guard whose scan scope or grammar is bash-shaped**, so
+moving a member's body into `.py` moves it out from under that guard while
+every roster, row and wrapper still looks intact. Cost 1 is the odd one out —
+it is about discovery, not about a guard going quiet. When auditing for the
+next gap, enumerate the guards, not the rosters.
+
+They fail in different directions, which is what decides how each is held.
 Cost 1 fails **loudly**: a missing manifest row reds the classification gate in
 both directions. Cost 2 fails **quietly but non-silently** — an unratcheted
 wall-clock assert still runs and still asserts, so no coverage is lost; what is
@@ -272,6 +324,12 @@ direction** — the member keeps passing, the roster keeps deriving, and a
 deadline-capability guard simply stops covering one suite. A migration policy
 that traded loud coverage for quiet coverage loss would be worse than no
 policy, which is why Arm 2 waited for #7626 rather than shipping alongside it.
+Cost 4 failed the same way but one level worse, and that is why it is worth
+the space it takes above: cost 3 lost coverage *within* a gate that still ran,
+whereas cost 4 skipped the gate entirely — the diff is classified config-only,
+takes the merge worker's trivial pass, and lands on `main` without the ported
+member ever having been executed. Nothing reds, so the only signal is the
+oracle, which is why the porter's check above is a step and not a suggestion.
 
 ---
 
