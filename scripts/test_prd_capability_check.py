@@ -3786,6 +3786,30 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             {"satisfied": False, "captured": "0", "failed_constraint": "min"},
         )
 
+    def test_json_value_observation_survives_an_unprovable_pattern_miss(self):
+        """An UNPROVABLE value row still says WHY, which is the point of it.
+
+        The reading is carried whenever stdout was READ, not only when the
+        answer was PRESENT/ABSENT — otherwise a mis-aimed probe would report
+        "unprovable" with nothing an operator could act on.
+        """
+        _, out, _ = self._run_main(
+            argv_prefix=["--json"], value_stdout="something else entirely\n"
+        )
+        record = {r["probe_kind"]: r for r in self._json_records(out)}["value"]
+        self.assertEqual(record["verdict"], pcc.UNPROVABLE)
+        self.assertEqual(
+            record["value_observation"],
+            {"satisfied": False, "captured": None, "failed_constraint": "pattern"},
+        )
+
+    def test_json_value_observation_absent_when_nothing_was_read(self):
+        """A non-zero exit produced no stdout to read, so there is no reading."""
+        _, out, _ = self._run_main(argv_prefix=["--json"], value_exit=1)
+        record = {r["probe_kind"]: r for r in self._json_records(out)}["value"]
+        self.assertEqual(record["verdict"], pcc.UNPROVABLE)
+        self.assertNotIn("value_observation", record)
+
     def test_json_value_observation_present_on_pass(self):
         _, out, _ = self._run_main(argv_prefix=["--json"])
         record = {r["probe_kind"]: r for r in self._json_records(out)}["value"]
