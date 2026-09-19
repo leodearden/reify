@@ -26,7 +26,7 @@
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::{make_simple_engine, point3};
+use reify_test_support::{make_simple_engine, meters, point3};
 
 // ── Value crafting helpers ───────────────────────────────────────────────────
 
@@ -482,7 +482,7 @@ fn trampoline_length_in_load_component_is_failed() {
         Value::List(vec![
             force_vec(0.0, 0.0, 0.0),
             // loads[1].y is a Length where a Force belongs.
-            Value::Vector(vec![force(0.0), length(50.0), force(0.0)]),
+            Value::Vector(vec![force(0.0), meters(50.0), force(0.0)]),
             force_vec(0.0, 0.0, 0.0),
         ]),
         Value::List(vec![Value::Int(0), Value::Int(2)]),
