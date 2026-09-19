@@ -1,0 +1,24 @@
+[Unit]
+Description=Reify code-index warming timer: keep the jcodemunch index current with the canonical checkout
+Documentation=file:///home/leo/src/reify/docs/prds/jcodemunch-substrate-restoration.md
+# Without a periodic warming pass the index drifts behind main and every
+# jcodemunch query answers from a stale tree.
+
+[Timer]
+# Cadence is an operational tunable — tests assert only the directive presence.
+# Cost basis (measured 2026-08-17 under the identity lever): cold run 114 s for
+# 55890 symbols, immediate re-run 35.6 s, third run 24.6 s. Daily therefore
+# costs well under a CPU-minute per day, and hourly would also be affordable;
+# `daily` is the conservative starting point, not a ceiling.
+OnCalendar=daily
+# Catch-up after host downtime. Unlike reify-warm-lane-gc.timer this schedule
+# is deliberately NOT the OnUnitActiveSec= monotonic shape: systemd.timer(5)
+# says "Persistent= only has an effect on timers configured with OnCalendar=",
+# so the two directives are one decision, not two. At the GC timer's 15-minute
+# cadence a missed tick is a minor loss; here a missed daily tick leaves the
+# index a day-plus stale, which is the failure this timer exists to prevent.
+Persistent=true
+Unit=reify-jcodemunch-index.service
+
+[Install]
+WantedBy=timers.target

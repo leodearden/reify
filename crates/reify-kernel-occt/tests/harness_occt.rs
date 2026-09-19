@@ -48,6 +48,8 @@ mod analytic_datum_tests;
 mod apply_transform_integration;
 #[path = "harness_occt/boolean_op_history_integration.rs"]
 mod boolean_op_history_integration;
+#[path = "harness_occt/boolean_result_normalization_integration.rs"]
+mod boolean_result_normalization_integration;
 #[path = "harness_occt/chamfer_with_history_integration.rs"]
 mod chamfer_with_history_integration;
 #[path = "harness_occt/closest_point_on_shape_integration.rs"]
@@ -62,6 +64,8 @@ mod curve_constructors_integration;
 mod curve_curvature_integration;
 #[path = "harness_occt/dispatcher_integration.rs"]
 mod dispatcher_integration;
+#[path = "harness_occt/empty_shape_consumer_guard_integration.rs"]
+mod empty_shape_consumer_guard_integration;
 #[path = "harness_occt/extrude_infinite_integration.rs"]
 mod extrude_infinite_integration;
 #[path = "harness_occt/extrude_integration.rs"]
@@ -114,6 +118,8 @@ mod point_on_shape_integration;
 mod projection_trait_delegation;
 #[path = "harness_occt/projector_impl.rs"]
 mod projector_impl;
+#[path = "harness_occt/reflection_det_negative_integration.rs"]
+mod reflection_det_negative_integration;
 #[path = "harness_occt/revolve_with_history_integration.rs"]
 mod revolve_with_history_integration;
 #[path = "harness_occt/shell_open_curated_faces.rs"]

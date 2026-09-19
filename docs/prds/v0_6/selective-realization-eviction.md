@@ -40,8 +40,14 @@ of θ (D8) — deferred until "`RealizationNodeData` result hashing exists." It 
   display-only annotation) yields `last_dispatch_count() == 0` on the next build (every realization
   cache-hits) — today it is the full all-bodies count.
 - **No stale geometry.** Across the staleness corpus (param edit, guard flip, collection grow,
-  source edit) the selective path serves a `GeometryHandleId` **byte-equivalent** to what the
-  wholesale-flush baseline would have produced — never a handle the flush would have evicted. The
+  source edit) the selective path serves geometry **content-equivalent** to what the
+  wholesale-flush baseline would have produced, and classifies every realization identically as a
+  cache **hit or miss** — never a handle the flush would have evicted. Equivalence is asserted on
+  the *content* of the served geometry (canonical shape), NOT on `GeometryHandleId`: that id is a
+  content-blind per-session counter (`crates/reify-ir/src/geometry.rs`, minted by fetch-and-increment
+  and deliberately kept monotonic across `reset`), so two regimes that execute different numbers of
+  realizations necessarily mint different ids for the same geometry. A byte-equal-id criterion would
+  therefore be false exactly when selective eviction works. See the §6 gate row. The
   superseding contract-lock tests (replacing the task-2874 "cache is empty after edit" pins) assert
   *affected realizations re-execute and unaffected ones hit*, not *the cache is empty*.
 - **Downstream re-eval correctness.** A `@optimized` ComputeNode with a direct `realization_inputs`
@@ -154,10 +160,18 @@ The unified-DAG red-team scoped this out of θ (D8) because the incremental mach
   cannot serve a stale handle") **stays**; only its *expression* changes from "the cache is empty
   after edit" to "the changed cone is evicted, the unaffected cone survives, and no stale handle is
   served." Each superseded test names task 2874 + this PRD's γ so the lineage is traceable.
-- **D6 — Develops behind the `UnifiedDag` flag; ι cutover (#4362) is not a hard prerequisite.**
-  Eviction rides the warm/edit driver paths already landed by 4361/4531. Like the parent's θ, it is
-  built and gated under `feature = "unified-dag"` / `REIFY_BUILD_SCHEDULER=unified`; ι (flip default +
-  delete legacy) is independent.
+- **D6 — #4362 Stage-4 (ι cutover) has landed; `BuildScheduler::UnifiedDag` is the product default, and
+  eviction needs no production-side scheduler gate at all.** As of `97bd1c9670` (2026-06-23),
+  `BuildScheduler::UnifiedDag` is the runtime `#[default]` and `REIFY_BUILD_SCHEDULER=legacy` is the
+  one-release kill-switch back to `LegacyMultiPass`; Stage-5 (delete the legacy loop, the enum, and the
+  kill-switch) is deferred to #4727 and does not block this PRD either way. Eviction rides the warm/edit
+  driver paths already landed by 4361/4531; `Engine::build_scheduler` itself is consulted **only** on
+  the cold `build()` path (precedent at `engine_build.rs:~5131` in the post-geometry re-check and
+  `demand_scoped_unified_pass` at `:6023`) — the edit/flush seam β/γ touch (`engine_edit.rs`) is
+  scheduler-agnostic by construction and gets **no** scheduler branch. The only remaining scheduler
+  concern is deterministic pinning in tests, via the `Engine::set_build_scheduler`
+  test-instrumentation seam (ε, §9) — never the vestigial `unified-dag` Cargo feature, which has no
+  remaining active `cfg` users and gates no build (#7126).
 - **D7 — `edit_source` value-path driver-homing (#4713) is not a hard prerequisite — and has now
   landed, which only simplifies the picture.** Eviction targets the shared **flush seam**
   (`clear_realization_cache` at both edit entries) and the realization-cache lookup, not the
@@ -195,7 +209,7 @@ The unified-DAG red-team scoped this out of θ (D8) because the incremental mach
 | Collection grow (`forall`/count change) | edit raises a collection count, re-emitting realizations | new members execute; pre-existing members with unchanged inputs hit; structural re-elaboration leaves no orphaned stale entry (composes with 4530's rebuild invariant) |
 | `edit_source` recompile | source edit changes one body's op, leaves another's identical | changed body evicted; identical body's entry survives (via old-graph/new-graph input-cone diff); covers D7 (no 4713 dependency) |
 | Tolerance interplay | unaffected realization cached at `tol=1e-6`; affected one shares `entity`-adjacent buckets | partial-order lookup on survivors unchanged; only changed `(entity_id,*)` family removed |
-| Differential equivalence (the gate) | run the full staleness corpus under wholesale-flush AND selective eviction | every served `GeometryHandleId` byte-equivalent across regimes |
+| Differential equivalence (the gate) | run the full staleness corpus under wholesale-flush AND selective eviction | every served realization is **content-equivalent** across regimes (canonical shape of the served geometry), AND each realization's cache **hit/miss classification** matches. NOT `GeometryHandleId` byte-equality — the id is a content-blind session counter, so it necessarily diverges once the two regimes execute different realization counts |
 
 The δ task names the differential corpus + these boundary cases; the γ task names the superseded
 contract-lock tests; ε names the two dispatch-count e2es — closing G2's loop.
@@ -214,8 +228,9 @@ contract-lock tests; ε names the two dispatch-count e2es — closing G2's loop.
   (`engine_admin.rs:644`), `last_dispatch_count` (`engine_admin.rs:~1570`),
   `ComputeNodeData.result_content_hash` precedent (`graph.rs:164`).
 - **No grammar change — G3 grammar-gate N/A.** This is pure engine internals; no novel `.ri` syntax.
-- **Not hard-gated on:** ι 4362 (D6) or #4713 `edit_source` driver-homing (D7) — the latter has in
-  fact landed (`45ff132e20`), making both edit paths uniform.
+- **Not hard-gated on:** ι 4362 (D6) or #4713 `edit_source` driver-homing (D7) — both have in fact
+  landed (`97bd1c9670`, `45ff132e20`), making both edit paths uniform and leaving no production-side
+  scheduler gate to design around.
 
 ## 8. Cross-PRD relationship
 
@@ -225,7 +240,7 @@ contract-lock tests; ε names the two dispatch-count e2es — closing G2's loop.
 | `selective-demand.md` (ε, task 4741, **LANDED**) | **produces-for** | per-realization **input-cone hash** (`upstream_values_hash` on `RealizationNodeData`, recorded by this PRD's α/D1); selective-demand δ consumes it on re-demand as its staleness gate (D3) | **this PRD** (hash producer) | **LANDED** — selective-demand batch (incl. ε=4741) on main |
 | task 4530 (dep-structure rebuild invariant) | consumes | `reverse_index`/`trace_map`/`demand` rebuild after structural re-elaboration | task 4530 | `done` — collection-grow boundary case (§6) relies on it |
 | task 4713 (`edit_source` driver-homing) | soft | the `edit_source` value-eval ordering; eviction sits at the shared flush seam, order-independent | task 4713 | **landed** (`45ff132e20`); **not** a prereq (D7) — both edit paths now uniform |
-| task 4362 (ι cutover) | soft | default-scheduler flip + legacy delete | task 4362 | develops behind the flag (D6) |
+| task 4362 (ι cutover) | soft | default-scheduler flip + legacy delete | task 4362 | **done** (Stage-4 landed, `97bd1c9670`); Stage-5 pending #4727 — not a prereq (D6) |
 
 Seam ownership is unambiguous: the parent D8 explicitly defers eviction to "a follow-up after
 `RealizationNodeData` result hashing exists" = **this PRD**. The two siblings are complementary
@@ -264,12 +279,17 @@ dependency edges at decompose time per `preferences_cross_prd_deps_real_edges`.
   *grammar_confirmed: true.*
 - **δ — staleness differential corpus (the H boundary test).** The §6 corpus (param edit, guard
   flip, collection grow, `edit_source` recompile, tolerance interplay) under both
-  wholesale-flush and selective regimes; assert every served `GeometryHandleId` byte-equivalent.
+  wholesale-flush and selective regimes; assert every served realization is content-equivalent
+  (canonical shape) AND that each realization's cache hit/miss classification matches across
+  regimes. Do NOT assert `GeometryHandleId` byte-equality — see §6's gate row.
   *Modules:* `crates/reify-eval/tests/`. *Signal:* **leaf** — corpus green; selective ≡ wholesale on
-  served handles. *grammar_confirmed: true.*
+  served geometry content and on hit/miss classification. *grammar_confirmed: true.*
 - **ε — e2e: slider drag re-executes kernel ops only for the affected body.** Multi-body isolating
   fixture; `edit_param` feeding body A → `last_dispatch_count() == ops(A)` (`< all-bodies`);
-  no-realization edit → `== 0`. `#[cfg_attr(not(feature="unified-dag"), ignore)]`. *Modules:*
+  no-realization edit → `== 0`. Pin the scheduler via the `Engine::set_build_scheduler` test seam
+  (test-instrumentation-gated; see `tests/common/differential.rs`'s module header) — see D6 for why
+  this test seam is the mechanism, not a `#[cfg_attr(not(feature="unified-dag"), ignore)]` gate.
+  *Modules:*
   `crates/reify-eval/tests/`. *Signal:* **leaf** (the headline integration gate). *grammar_confirmed:
   true.*
 

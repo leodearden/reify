@@ -48,6 +48,17 @@ constraint-panel state show MEASURED verdicts matching `reify check` on the same
 measure, warm `edit_param`, payload retains the measured verdict with stale=true, re-measure
 clears it, epochs monotone.
 
+**Amendments recorded on the filed task after this spec was written** (the task record is
+authoritative; listed here so the spec does not read as complete):
+- **A5 RULED 2026-08-28 (Leo)** — the β constituent's C-STATUS ambiguity resolves to the
+  STRUCTURED CHANNEL for all three kernel-measured kinds; the v1 verdict-only scope-cut is
+  explicitly rejected.
+- **A5-R 2026-09-01** — the carrier must be dimension-bearing (deviation/min-wall are Lengths,
+  overhang/draft are Angles; a bare `Option<f64>` is the INV-AD-4 erasure), and the field is a
+  sibling on `ConstraintCheckEntry`, never a payload on `Satisfaction`, per
+  solver-legibility-telemetry §8.1 item 2. Two scope cuts named. Mirrored to retired leaf #6741
+  and logged in the experiment's §10.
+
 ## GOM-C2 (δ+ε+θ+η): frontend affordances, thickness leg, companion corrections, docs-truth
 
 **Deps:** GOM-C1; #6666 (out-of-batch, ε's edge). **Priority:** high (max of constituents).

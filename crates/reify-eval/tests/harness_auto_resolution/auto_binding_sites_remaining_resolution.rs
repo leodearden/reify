@@ -23,10 +23,10 @@
 //! Step 10 (GREEN): extends `examples/auto_binding_sites.ri` with all four sites.
 
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
-use reify_core::{DiagnosticCode, Severity, ValueCellId};
+use reify_core::{Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::{DeterminacyState, Value};
-use reify_test_support::parse_and_compile_with_stdlib;
+use reify_test_support::{parse_and_compile_with_stdlib, scalar_si, underdetermined_diags};
 
 /// Build an Engine backed by `SimpleConstraintChecker` + `DimensionalSolver`.
 fn engine_with_solver() -> Engine {
@@ -46,14 +46,6 @@ fn warnings_only(diagnostics: &[reify_core::Diagnostic]) -> Vec<&reify_core::Dia
     diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Warning)
-        .collect()
-}
-
-/// Every `Underdetermined`-coded diagnostic, matched on the STRUCTURED code.
-fn underdetermined_diags(diagnostics: &[reify_core::Diagnostic]) -> Vec<&reify_core::Diagnostic> {
-    diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
         .collect()
 }
 
@@ -233,14 +225,8 @@ structure EParam {
     );
 
     // §4.4: the two paths must produce the same resolved value.
-    let si_let = match val_let {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("ELet.m should be Scalar, got {:?}", other),
-    };
-    let si_param = match val_param {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("EParam.m should be Scalar, got {:?}", other),
-    };
+    let si_let = scalar_si(val_let, "ELet.m");
+    let si_param = scalar_si(val_param, "EParam.m");
     assert!(
         (si_let - si_param).abs() < 1e-9,
         "§4.4 invariant violated: let-auto ELet.m = {} != param-default EParam.m = {}",
@@ -404,10 +390,7 @@ structure E {
         "E.__connector_0.gain should be a Scalar value; got {:?}",
         val
     );
-    let si = match val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected Scalar, got {:?}", other),
-    };
+    let si = scalar_si(val, "E.__connector_0.gain");
     assert!(
         (si - 0.005).abs() > 1e-6,
         "E.__connector_0.gain must NOT equal the ConnType child default 5mm (0.005 SI); \
@@ -760,10 +743,7 @@ structure Parent {
 
     // (3) The value must be ~0.007 SI (7mm = Conn7's own constraint),
     //     NOT the parent's unconstrained initial guess 0.01 SI (10mm).
-    let si = match val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected Scalar, got {:?}", other),
-    };
+    let si = scalar_si(val, "Parent.__connector_0.gain");
     assert!(
         (si - 0.007).abs() < 1e-6,
         "Parent.__connector_0.gain should be ~0.007 SI (7mm from Conn7's constraint), \
@@ -879,10 +859,7 @@ structure Parent {
 
     // (2) Still ≈0.007 (7mm from Conn7's constraint), not reverted to the
     //     initial-guess 0.01 (10mm).
-    let si_edit = match val_edit {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected Scalar after edit, got {:?}", other),
-    };
+    let si_edit = scalar_si(val_edit, "Parent.__connector_0.gain after edit_param");
     assert!(
         (si_edit - 0.007).abs() < 1e-6,
         "after edit_param: __connector_0.gain should still be ~0.007 SI (7mm), \
@@ -1001,10 +978,7 @@ fn connector_internal_strict_auto_resolves_when_parent_declared_before_connector
 
     // (4) The value must be ~0.007 SI (7mm = Conn7's own constraint), NOT the
     //     parent's unconstrained initial guess 0.01 SI (10mm).
-    let si = match val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected Scalar, got {:?}", other),
-    };
+    let si = scalar_si(val, "Parent.__connector_0.gain");
     assert!(
         (si - 0.007).abs() < 1e-6,
         "Parent.__connector_0.gain should be ~0.007 SI (7mm from Conn7's constraint), \

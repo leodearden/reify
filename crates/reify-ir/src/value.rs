@@ -2319,6 +2319,72 @@ impl Value {
         matches!(self, Value::Bool(_))
     }
 
+    /// The bare discriminant name for this value's variant (e.g. `"Scalar"`,
+    /// `"BoundingBox"`), with NO payload interpolated.
+    ///
+    /// This is the single source of truth for `Value`'s variant-name table:
+    /// `ri_literal`'s `.ri`-serializer rejection text and
+    /// `reify_constraints::value_kind_label` both delegate here rather than
+    /// spelling out their own copy of this match (task #6466).
+    ///
+    /// Deliberately a fixed `&'static str` per variant rather than
+    /// `{value:?}`: a `SampledField` or `Matrix` payload could be enormous,
+    /// and this string reaches user-facing surfaces — an MCP rejection error
+    /// from the serializer, a constraint diagnostic from the checker.
+    ///
+    /// **EXHAUSTIVE BY CONSTRUCTION — do not add a `_` arm.** A catch-all is
+    /// not a tidiness question here: it would collapse to one useless name
+    /// exactly the values a caller is most likely to be holding (a
+    /// `Direction`, a `Frame`, a `Range`), and would let a newly added
+    /// variant degrade silently instead of failing to compile. Listing every
+    /// variant makes the compiler the guard — the same shape
+    /// [`Value::format_hover`] already uses.
+    ///
+    /// That compile error fires **here only**. A delegating call site that
+    /// carries its own catch-all — `value_kind_label`'s
+    /// `other => other.kind_name()` — silently inherits a new variant's bare
+    /// name instead. So when a new variant carries a payload worth
+    /// interpolating (the way that function enriches `Scalar<{dimension}>`
+    /// and `Enum<{type_name}>`), review those call sites by hand: nothing
+    /// will prompt you. The name table itself is pinned variant-by-variant
+    /// by `kind_name_is_pinned_for_every_variant` in this file's tests.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Value::Bool(_) => "Bool",
+            Value::Int(_) => "Int",
+            Value::Real(_) => "Real",
+            Value::String(_) => "String",
+            Value::Scalar { .. } => "Scalar",
+            Value::Enum { .. } => "Enum",
+            Value::List(_) => "List",
+            Value::Set(_) => "Set",
+            Value::Map(_) => "Map",
+            Value::Option(_) => "Option",
+            Value::Field { .. } => "Field",
+            Value::Lambda { .. } => "Lambda",
+            Value::Tensor(_) => "Tensor",
+            Value::Point(_) => "Point",
+            Value::Vector(_) => "Vector",
+            Value::Complex { .. } => "Complex",
+            Value::Orientation { .. } => "Orientation",
+            Value::Frame { .. } => "Frame",
+            Value::Transform { .. } => "Transform",
+            Value::Plane { .. } => "Plane",
+            Value::Axis { .. } => "Axis",
+            Value::Direction { .. } => "Direction",
+            Value::BoundingBox { .. } => "BoundingBox",
+            Value::Range { .. } => "Range",
+            Value::Matrix(_) => "Matrix",
+            Value::SampledField(_) => "SampledField",
+            Value::StructureInstance(_) => "StructureInstance",
+            Value::GeometryHandle { .. } => "GeometryHandle",
+            Value::AffineMap { .. } => "AffineMap",
+            Value::Selector(_) => "Selector",
+            Value::Feature(_) => "Feature",
+            Value::Undef => "Undef",
+        }
+    }
+
     /// Format this value for user-friendly display (e.g., hover tooltips).
     ///
     /// Unlike the [`Display`](std::fmt::Display) impl which shows raw
@@ -3077,16 +3143,25 @@ fn format_engineering(mantissa: f64, exponent: i32) -> String {
 /// # Stability — PROVISIONAL public surface
 ///
 /// Widened from a private helper by task λ (#5788, §11 Q2) so task μ can read
-/// the curated raw-SI label across the crate boundary. That consumer has not
-/// landed, so no real call site has yet exercised this signature: the
-/// `&DimensionVector -> Cow<'static, str>` shape is not settled and may change
-/// (or narrow back to `pub(crate)`) once μ shows what it actually needs.
+/// the curated raw-SI label across the crate boundary. Task #6674 then added
+/// the first real consumers — the `Value::Scalar` and `Value::Complex` arms of
+/// [`Display`](std::fmt::Display), which source the `reify eval` cell's unit
+/// from here — so the `&DimensionVector -> Cow<'static, str>` shape is now
+/// settled as adequate for a label-only caller. That consumer is IN-CRATE,
+/// though: the CROSS-CRATE `pub` widening λ made for μ still has no non-test
+/// caller outside the crate, so the open question is the visibility, not the
+/// signature, and narrowing back to `pub(crate)` remains on the table.
 /// `crates/reify-ir/tests/api_surface.rs` records this under its explicit
 /// `PROVISIONAL SURFACE` banner, NOT in the pinned contract: it records only
 /// that both the flat and module-path spellings resolve, and that file states
 /// outright that narrowing an item below the banner is a normal edit rather
 /// than an API break. Narrowing therefore means deleting that block, not
 /// arguing a contract change.
+///
+/// #6674 pre-empted only the coherent-SI LABEL half of L4 task #5235's eval
+/// call site; #5235 REPLACES this call rather than extending it, and still
+/// owns the `DisplayPreference` plumbing, the Length→mm / Angle→deg MAGNITUDE
+/// change, and the three other surfaces.
 /// In-crate callers wanting the rendered value should keep using
 /// [`Value::format_hover`] / `format_display_pair` / `resolve_display`, which
 /// remain the stable surface.
@@ -3938,7 +4013,20 @@ impl std::fmt::Display for Value {
                 si_value,
                 dimension,
             } => {
-                write!(f, "{} {}", si_value, dimension)
+                // Label only: si_value stays the raw SI magnitude. The empty
+                // label is `dimension_unit_label`'s own way of reporting "this
+                // dimension has no unit", so branch on what it RETURNED rather
+                // than re-derive that condition from the dimension — one
+                // encoding of the contract, shared with `format_hover`, which
+                // binds and tests the label the same way. Without the branch a
+                // dimensionless scalar would render "1.02 " with a trailing
+                // space instead of the composed "1.02 dimensionless".
+                let unit = dimension_unit_label(dimension);
+                if unit.is_empty() {
+                    write!(f, "{} {}", si_value, dimension)
+                } else {
+                    write!(f, "{} {}", si_value, unit)
+                }
             }
             Value::Enum { type_name, variant, .. } => write!(f, "{}::{}", type_name, variant),
             Value::List(items) => {
@@ -4033,11 +4121,17 @@ impl std::fmt::Display for Value {
                 let re_str = fmt_f64(*re);
                 let im_abs_str = fmt_f64(im.abs());
                 let sign = if im.is_sign_negative() { "-" } else { "+" };
-                if dimension.is_dimensionless() {
+                // Same label source as the Scalar arm above and
+                // `format_hover`, so one dimension renders one way wherever it
+                // surfaces: both arms are reachable from a single `reify eval`
+                // cell dump, and curating only the Scalar one would print
+                // "101325 Pa" beside "(3+4i) kg·m^-1·s^-2".
+                let unit = dimension_unit_label(dimension);
+                if unit.is_empty() {
                     write!(f, "{}{}{}", re_str, sign, im_abs_str)?;
                     write!(f, "i")
                 } else {
-                    write!(f, "({}{}{}i) {}", re_str, sign, im_abs_str, dimension)
+                    write!(f, "({}{}{}i) {}", re_str, sign, im_abs_str, unit)
                 }
             }
             Value::Orientation { w, x, y, z } => {
@@ -7544,6 +7638,41 @@ mod tests {
         assert_eq!(format!("{}", v), "(3+4i) m");
     }
 
+    /// The Complex arm sources its unit from `dimension_unit_label`, the same
+    /// resolver the Scalar arm and `format_hover` use, so one dimension renders
+    /// one way across a whole `reify eval` cell dump (task #6674 amendment).
+    ///
+    /// `value_complex_display_dimensioned` above cannot witness that: LENGTH's
+    /// curated and composed spellings are both "m", so it passes either way.
+    /// These rows use dimensions whose two spellings DIFFER.
+    #[test]
+    fn value_complex_display_uses_the_curated_unit_label() {
+        let curated = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert_eq!(
+            format!("{}", curated),
+            "(3+4i) Pa",
+            "a curated dimension must render its registry label, not the composed base-SI form"
+        );
+
+        // The fallback arm, mirroring the Scalar arm's Torque row in
+        // `display_scalar_fallback_and_composite_arms`: an uncurated dimension
+        // keeps the composed base-SI label.
+        let uncurated = Value::Complex {
+            re: 1.0,
+            im: -2.0,
+            dimension: DimensionVector::TORQUE,
+        };
+        assert_eq!(
+            format!("{}", uncurated),
+            "(1-2i) m^2\u{00b7}kg\u{00b7}s^-2\u{00b7}rad^-1",
+            "an uncurated dimension must keep its composed base-SI label"
+        );
+    }
+
     #[test]
     fn value_complex_display_zero_imaginary() {
         let v = Value::Complex {
@@ -10385,6 +10514,190 @@ mod tests {
         }
     }
 
+    // ── kind_name() name-table pin (task #6466) ────────────────────────────
+
+    /// The expected [`Value::kind_name`] string for `v`, spelled out
+    /// independently of the production table.
+    ///
+    /// Deliberately NOT `v.kind_name()` — a delegating "expectation" would
+    /// assert nothing. Exhaustive with no `_` arm, so a newly added `Value`
+    /// variant fails to compile here as well as in `kind_name` itself.
+    fn expected_kind_name(v: &Value) -> &'static str {
+        match v {
+            Value::Bool(_) => "Bool",
+            Value::Int(_) => "Int",
+            Value::Real(_) => "Real",
+            Value::String(_) => "String",
+            Value::Scalar { .. } => "Scalar",
+            Value::Enum { .. } => "Enum",
+            Value::List(_) => "List",
+            Value::Set(_) => "Set",
+            Value::Map(_) => "Map",
+            Value::Option(_) => "Option",
+            Value::Field { .. } => "Field",
+            Value::Lambda { .. } => "Lambda",
+            Value::Tensor(_) => "Tensor",
+            Value::Point(_) => "Point",
+            Value::Vector(_) => "Vector",
+            Value::Complex { .. } => "Complex",
+            Value::Orientation { .. } => "Orientation",
+            Value::Frame { .. } => "Frame",
+            Value::Transform { .. } => "Transform",
+            Value::Plane { .. } => "Plane",
+            Value::Axis { .. } => "Axis",
+            Value::Direction { .. } => "Direction",
+            Value::BoundingBox { .. } => "BoundingBox",
+            Value::Range { .. } => "Range",
+            Value::Matrix(_) => "Matrix",
+            Value::SampledField(_) => "SampledField",
+            Value::StructureInstance(_) => "StructureInstance",
+            Value::GeometryHandle { .. } => "GeometryHandle",
+            Value::AffineMap { .. } => "AffineMap",
+            Value::Selector(_) => "Selector",
+            Value::Feature(_) => "Feature",
+            Value::Undef => "Undef",
+        }
+    }
+
+    /// Every `Value` variant's `kind_name()` string, pinned one variant at a
+    /// time against an independently spelled expectation.
+    ///
+    /// `kind_name` is the single source of truth for the variant-name table
+    /// that `ri_literal`'s `.ri`-serializer rejection text and
+    /// `reify_constraints::value_kind_label` both delegate to (task #6466),
+    /// and neither consumer pins the whole thing: the serializer's test covers
+    /// only the variants it rejects, and `value_kind_label` ends in an
+    /// `other => other.kind_name()` catch-all. Without this test a rename of
+    /// any arm would reach a user-facing diagnostic with nothing red.
+    ///
+    /// Adding a `Value` variant breaks [`expected_kind_name`] to compile; the
+    /// coverage assertion at the end is what then forces a representative
+    /// into `variants` rather than leaving the new arm unexercised.
+    #[test]
+    fn kind_name_is_pinned_for_every_variant() {
+        let dim = DimensionVector::LENGTH;
+        let variants: Vec<Value> = vec![
+            Value::Bool(true),
+            Value::Int(42),
+            Value::Real(1.0),
+            Value::String("x".into()),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: dim,
+            },
+            Value::Enum {
+                type_name: "T".into(),
+                variant: "V".into(),
+                payload: vec![],
+            },
+            Value::List(vec![]),
+            Value::Set(BTreeSet::new()),
+            Value::Map(BTreeMap::new()),
+            Value::Option(None),
+            Value::Field {
+                domain_type: reify_core::ty::Type::dimensionless_scalar(),
+                codomain_type: reify_core::ty::Type::dimensionless_scalar(),
+                source: FieldSourceKind::Analytical,
+                lambda: Arc::new(Value::Undef),
+            },
+            Value::Lambda {
+                params: vec![],
+                body: Box::new(CompiledExpr {
+                    kind: crate::expr::CompiledExprKind::Literal(Value::Int(0)),
+                    result_type: reify_core::ty::Type::dimensionless_scalar(),
+                    content_hash: ContentHash::of(&[0]),
+                }),
+                captures: ValueMap::new(),
+            },
+            Value::Tensor(vec![]),
+            Value::Point(vec![]),
+            Value::Vector(vec![]),
+            Value::Complex {
+                re: 0.0,
+                im: 0.0,
+                dimension: dim,
+            },
+            orient(1.0, 0.0, 0.0, 0.0),
+            Value::Frame {
+                origin: Box::new(Value::Point(vec![])),
+                basis: Box::new(orient(1.0, 0.0, 0.0, 0.0)),
+            },
+            Value::Transform {
+                rotation: Box::new(orient(1.0, 0.0, 0.0, 0.0)),
+                translation: Box::new(Value::Vector(vec![])),
+            },
+            Value::Plane {
+                origin: Box::new(Value::Point(vec![])),
+                normal: Box::new(Value::Vector(vec![])),
+            },
+            Value::Axis {
+                origin: Box::new(Value::Point(vec![])),
+                direction: Box::new(Value::Vector(vec![])),
+            },
+            Value::Direction {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            Value::BoundingBox {
+                min: Box::new(Value::Point(vec![])),
+                max: Box::new(Value::Point(vec![])),
+            },
+            Value::range(None, None, false, false),
+            Value::Matrix(vec![]),
+            Value::SampledField(sample_field_1d_fixture()),
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_id: crate::StructureTypeId(0),
+                type_name: "S".into(),
+                version: 1,
+                fields: crate::PersistentMap::new(),
+            })),
+            Value::GeometryHandle {
+                realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
+            },
+            make_affine_identity(),
+            Value::Selector(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    GeometryHandleRef {
+                        realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
+                        upstream_values_hash: [0u8; 32],
+                        kernel_handle: None,
+                    },
+                    LeafQuery::ByNormal {
+                        dir: [0.0, 0.0, 1.0],
+                        tol_rad: 0.01,
+                    },
+                )
+                .expect("Face + ByNormal is a well-formed leaf selector"),
+            ),
+            Value::Feature(FeatureId::realization("Foo", 3)),
+            Value::Undef,
+        ];
+
+        let mut seen: BTreeSet<&'static str> = BTreeSet::new();
+        for v in &variants {
+            let expected = expected_kind_name(v);
+            assert_eq!(
+                v.kind_name(),
+                expected,
+                "Value::kind_name drifted for a {expected} value"
+            );
+            assert!(
+                seen.insert(expected),
+                "two representatives for {expected} — one per variant, please"
+            );
+        }
+        assert_eq!(
+            seen.len(),
+            32,
+            "every Value variant needs exactly one representative above; \
+             when you add a variant, add one here and bump this count"
+        );
+    }
+
     // ── try_infer_type() tests: None for genuinely ambiguous cases ─────────
 
     #[test]
@@ -10815,6 +11128,25 @@ mod tests {
     }
 
     #[test]
+    fn dimension_unit_label_curates_frequency_and_stiffness() {
+        // Task #6674 grows the curated set (PRD display-unit-preference §4,
+        // final bullet) with two more coherent-SI ladders.
+        assert_eq!(dimension_unit_label(&DimensionVector::FREQUENCY), "Hz");
+        assert_eq!(dimension_unit_label(&DimensionVector::STIFFNESS), "N/m");
+        // TRANSLATIONAL_STIFFNESS is the SAME DimensionVector as STIFFNESS
+        // (dimension.rs:625/:633 — the alias row sits after "Stiffness" so
+        // canonical_name() keeps reporting "Stiffness"), so the alias
+        // inherits the curation for free. Stated as behaviour rather than a
+        // name-identity assertion: whichever name the registry is keyed on,
+        // reaching the dimension through the alias must still yield "N/m".
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::TRANSLATIONAL_STIFFNESS),
+            "N/m",
+            "the TranslationalStiffness alias must inherit Stiffness's curated label"
+        );
+    }
+
+    #[test]
     fn format_hover_pressure_scalar_uses_curated_registry_name() {
         let v = Value::Scalar {
             si_value: 101_325.0,
@@ -10911,6 +11243,132 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── `impl Display for Value` Scalar-arm pins (task #6674) ────────────────
+    // The eval-cell render path: `reify eval` reaches this through
+    // `format!("{}", v)`. Before #6674 nothing pinned Display of a
+    // Pressure/Density/Force/dimensionless Scalar at all, so these three tests
+    // are the safety net under the label swap — the first group is the change,
+    // the other two are the fences that prove the swap is LABEL-ONLY.
+
+    /// Curated coherent-SI labels reach the eval cell: every dimension whose
+    /// registry ladder has a scale-1.0 default rung renders that rung's label
+    /// instead of the composed base-SI symbols.
+    #[test]
+    fn display_scalar_renders_curated_unit_labels() {
+        let cases: &[(DimensionVector, f64, &str)] = &[
+            (DimensionVector::FREQUENCY, 50.0, "50 Hz"),
+            (DimensionVector::STIFFNESS, 1000.0, "1000 N/m"),
+            (DimensionVector::PRESSURE, 101_325.0, "101325 Pa"),
+            // The exact magnitude from the tensegrity_t_prism golden, so this
+            // row doubles as a byte-identity witness for that file.
+            (
+                DimensionVector::FORCE,
+                -3.767_734_597_403_026_5,
+                "-3.7677345974030265 N",
+            ),
+            (DimensionVector::MASS_DENSITY, 1050.0, "1050 kg/m^3"),
+            (DimensionVector::ENERGY, 7.0, "7 J"),
+            (DimensionVector::POWER, 9.0, "9 W"),
+        ];
+        for &(dimension, si_value, expected) in cases {
+            let v = Value::Scalar {
+                si_value,
+                dimension,
+            };
+            assert_eq!(
+                format!("{}", v),
+                expected,
+                "Display of a {dimension:?} scalar should render the curated unit label"
+            );
+        }
+    }
+
+    /// The eval cell renders the RAW SI magnitude, full stop. This is the
+    /// acceptance's "no magnitude changes" clause made executable, and the
+    /// standing fence against a later reroute of this arm through
+    /// `resolve_display` / `format_display_number`: a scaled rung, a
+    /// significant-figure rounding, or engineering notation each break a row
+    /// here.
+    #[test]
+    fn display_scalar_never_rescales_or_rounds_the_magnitude() {
+        let cases: &[(DimensionVector, f64, &str)] = &[
+            // Length's registry default rung is SCALED (mm @ 1e-3); adopting
+            // it would render "3 mm" for this value.
+            (DimensionVector::LENGTH, 0.003, "0.003 m"),
+            // Full f64 spelling, byte for byte: a 12-significant-figure
+            // rounding would truncate this.
+            (
+                DimensionVector::LENGTH,
+                0.005_500_000_000_000_000_5,
+                "0.0055000000000000005 m",
+            ),
+            // No engineering notation: this must not become "1×10^-3 mm".
+            (DimensionVector::LENGTH, 0.000_001, "0.000001 m"),
+            // Angle's default rung is deg @ π/180.
+            (DimensionVector::ANGLE, 0.5, "0.5 rad"),
+            // Already byte-identical between the composed and curated forms.
+            (DimensionVector::MASS, 2.0, "2 kg"),
+            (DimensionVector::MONEY, 25.0, "25 USD"),
+        ];
+        for &(dimension, si_value, expected) in cases {
+            let v = Value::Scalar {
+                si_value,
+                dimension,
+            };
+            assert_eq!(
+                format!("{}", v),
+                expected,
+                "Display of a {dimension:?} scalar must render the raw SI magnitude under its raw-SI label"
+            );
+        }
+    }
+
+    /// The arms the curation does NOT reach, and the recursion by which every
+    /// composite value inherits it.
+    #[test]
+    fn display_scalar_fallback_and_composite_arms() {
+        // An UNCURATED dimension keeps the composed base-SI form — middle-dot
+        // separated, ASCII caret exponents, and never a bare "SI" placeholder
+        // (PRD display-unit-preference §4b).
+        let torque = Value::Scalar {
+            si_value: 4.0,
+            dimension: DimensionVector::TORQUE,
+        };
+        assert_eq!(
+            format!("{}", torque),
+            "4 m^2\u{00b7}kg\u{00b7}s^-2\u{00b7}rad^-1",
+            "an uncurated dimension must keep its composed base-SI label"
+        );
+
+        // THE DIMENSIONLESS GUARD. `dimension_unit_label` returns "" here, so
+        // an unguarded swap would emit "1.02 " with a trailing space. A
+        // dimensionless Scalar is reachable in production — the constraint
+        // solver maps non-Type::Scalar auto params onto DIMENSIONLESS and
+        // writes them straight into eval-result cells.
+        let bare = Value::Scalar {
+            si_value: 1.02,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(
+            format!("{}", bare),
+            "1.02 dimensionless",
+            "a dimensionless scalar must keep the composed \"dimensionless\" word, with no trailing space"
+        );
+
+        // Composite recursion: List/Point/Vector/StructureInstance/Option all
+        // render their elements through this same arm, which is how the eval
+        // goldens inherit the label change.
+        let list = Value::List(vec![Value::Scalar {
+            si_value: 12.0,
+            dimension: DimensionVector::FORCE,
+        }]);
+        assert_eq!(
+            format!("{}", list),
+            "[12 N]",
+            "composite values must inherit the scalar arm's unit label"
+        );
     }
 
     /// THE PRD-§10 FENCE, the value.rs twin of dimension.rs's

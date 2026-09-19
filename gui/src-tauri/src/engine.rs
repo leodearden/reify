@@ -9,7 +9,8 @@ use tracing::warn;
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, find_template};
 use reify_eval::cache::NodeId;
 use reify_eval::tolerance_combine::{
-    OutputTarget, conforms_to_output, extract_output_export_spec,
+    OutputTarget, conforms_to_output, conforms_to_trait, extract_output_export_spec,
+    unenforced_representation_bound_diagnostic,
 };
 use reify_eval::{CancellationHandle, CheckResult, Engine};
 use reify_core::{
@@ -764,6 +765,64 @@ impl Drop for SolveFinishedGuard {
 pub(crate) fn module_key(name: &str) -> String {
     debug_assert!(!name.is_empty(), "module_key called with empty name");
     format!("{}.ri", name)
+}
+
+/// Does `spelling` name the same source file as the filesystem path `path`?
+///
+/// **The two positions are NOT interchangeable — this predicate is
+/// asymmetric.** `spelling` is the loose side: either a real path, or the
+/// stem-only `"<stem>.ri"` module key. `path` is the strict side: the real
+/// filesystem path whose stem is authoritative. `f("part.ri",
+/// "/tmp/x/part.ri")` is `true`; `f("/tmp/x/part.ri", "part.ri")` is `false`,
+/// because only the SECOND argument's stem is ever taken. Both live call
+/// directions honour that (see below); do not "simplify" the call order.
+///
+/// Why the loose side exists: diagnostics and `source_map` entries are stamped
+/// with [`module_key`]`(module_name)` = `"<stem>.ri"` — see `resolve_source`
+/// (:3259-3265), which is what `get_diagnostics` hands to
+/// `diagnostics_to_info`, and `UnresolvedGuiState`'s note at commands.rs:539 —
+/// while the reify-debug write tools receive a caller-supplied REAL path
+/// (`/tmp/x/part.ri`), which is what their ToolDefs advertise. So a bare `==`
+/// between the two is **VACUOUS**: it matches nothing and silently drops every
+/// diagnostic, which is exactly the bug this predicate exists to close. It
+/// accepts either spelling on the loose side and still discriminates on the
+/// stem — `"other.ri"` does not match
+/// `/tmp/x/part.ri`.
+///
+/// The comparison spelling is built with [`module_key`] itself rather than a
+/// second `format!("{}.ri", ...)`, so the matcher and the minter of the key
+/// can never drift.
+///
+/// # The two live call directions
+///
+/// Both put the possibly-stem-only spelling FIRST and the real path SECOND:
+///
+///  * `debug_server::filter_diagnostics_for_file` —
+///    `f(&d.file_path, requested)`: the STAMPED key is the loose side, the
+///    caller's path the strict one.
+///  * `debug_server::update_source_target_matches_active` —
+///    `f(requested, active)`: the CALLER's spelling is the loose side (an AI
+///    client may echo back the stem-only key it read off a diagnostic), the
+///    session's own entry path the strict one.
+///
+/// Both are pinned by `source_key_matches_path_is_directional`, including the
+/// asymmetry itself, so a future tightening (rejecting an absolute `spelling`,
+/// or taking stems on both sides) cannot silently break the active-file guard
+/// while the diagnostics filter stays green.
+///
+/// Gated to match its consumers: `debug_server` is the only one and is itself
+/// `#[cfg(feature = "gui")]` in lib.rs, so an ungated definition is dead code
+/// in the default-feature build that `scripts/verify.sh`'s
+/// `clippy ... -- -D warnings` pass runs.
+#[cfg(feature = "gui")]
+pub(crate) fn source_key_matches_path(spelling: &str, path: &str) -> bool {
+    spelling == path
+        || Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(module_key)
+            .as_deref()
+            == Some(spelling)
 }
 
 /// Returns `true` for any `std` or `std.*` import path.
@@ -2511,6 +2570,69 @@ impl EngineSession {
         Ok(state)
     }
 
+    /// The canonical on-disk `.ri` this session was launched from, or `None`
+    /// for a `load_from_source`-only session.
+    ///
+    /// Exposed because `GuiState.files[].path` is NOT this: those are
+    /// `source_map` keys, i.e. stem-only module keys (`"part.ri"`), and the
+    /// abs-path rewrite lives in `commands::UnresolvedGuiState::resolve`,
+    /// which only the open-file funnel runs. A caller that needs the file to
+    /// WRITE — the reify-debug `reify_save_file` tool (task 5097 δ), whose
+    /// "save the active file" arm would otherwise write a stray relative path
+    /// into the process CWD — must ask for it here.
+    pub fn canonical_file_path(&self) -> Option<&Path> {
+        self.core.file_path()
+    }
+
+    /// The STRING-typed front door to [`Self::apply_param_to_source`]: parse
+    /// `value_str` against the cell's declared type, then write it back into
+    /// the canonical `.ri` source.
+    ///
+    /// This exists because the reify-debug MCP `reify_set_parameter` write tool
+    /// (task 5097 δ, the INV-GUI-2 AI path; PRD
+    /// `docs/prds/v0_6/ai-native-editing.md` §6.1/§6.3) carries JSON strings,
+    /// while `apply_param_to_source` takes a `&Value` — and the three helpers
+    /// that compose the gap ([`parse_cell_id`],
+    /// [`Self::resolve_known_cell_type`], [`parse_value_string_for_cell`]) are
+    /// private to this module. The debug server therefore cannot compose them
+    /// itself; it asks for the composed front door instead of growing a second
+    /// copy of the parse.
+    ///
+    /// # It is deliberately `set_parameter`'s parse
+    ///
+    /// The body is `set_parameter`'s resolve-then-parse prefix verbatim
+    /// (cell lookup BEFORE parse, so "Unknown parameter" stays ahead of any
+    /// parse diagnostic; the `Type` cloned at this call site for the same
+    /// borrow reason `set_parameter` documents), differing only in what it
+    /// hands the parsed value to. That sharing is the point (task #5757): the
+    /// AI path and the property-panel slider must never disagree about what a
+    /// value string denotes, and a bare `"120"` on a `Length` cell must be
+    /// refused with the SAME ladder-rung suggestion on both. No new parsing
+    /// and no new rejection taxonomy is introduced here — every refusal comes
+    /// from a helper that already owns its rule.
+    ///
+    /// # Unit contract
+    ///
+    /// INPUT is a unit-bearing literal (`"120mm"`), because
+    /// `parse_value_string_for_cell` refuses a bare number on any cell whose
+    /// dimension a curated ladder covers. OUTPUT preserves the unit of the
+    /// literal being REPLACED, via `apply_param_to_source`'s
+    /// [`unit_hint_from_default_literal`] — so `param width: Length = 80mm`
+    /// stays millimetres, and `param depth: Length = 0.5m` stays metres, no
+    /// matter which unit the caller wrote. The two are independent: the input
+    /// unit fixes the magnitude, the replaced literal's unit fixes the
+    /// spelling.
+    pub fn apply_param_to_source_str(
+        &mut self,
+        cell_id_str: &str,
+        value_str: &str,
+    ) -> Result<GuiState, String> {
+        let cell_id = parse_cell_id(cell_id_str)?;
+        let cell_type = self.resolve_known_cell_type(&cell_id, cell_id_str)?.clone();
+        let value = parse_value_string_for_cell(value_str, &cell_type)?;
+        self.apply_param_to_source(cell_id_str, &value)
+    }
+
     /// Resolve the byte range [`Self::apply_param_to_source`] may splice over,
     /// or a DISCRIMINATED rejection saying which of the four preconditions
     /// failed (PRD §7 B7 — δ, the MCP `set_parameter` tool, is the consumer
@@ -3053,6 +3175,43 @@ impl EngineSession {
         self.last_reload_error.as_deref()
     }
 
+    /// Is the session holding source it FAILED to compile?
+    ///
+    /// The guard consumers must consult before PERSISTING
+    /// `build_gui_state().files[].content`. That content is NOT
+    /// unconditionally the committed buffer: both
+    /// [`Self::build_files_with_live_edit`] and `build_gui_state`'s cold-start
+    /// early-return deliberately surface the FAILED source there, so
+    /// `files[]` and `compile_diagnostics` come from the same snapshot (the
+    /// one-snapshot invariant). That is right for a read-only `engine_state`
+    /// read — the editor must be able to see the text it just failed to
+    /// compile — and catastrophic for a write-back, which would replace a
+    /// user's canonical `.ri` with source that does not compile (task #5097 δ,
+    /// review finding; the interlock lives in
+    /// `debug_server::reify_save_file_on_engine_and_refresh_baseline`).
+    ///
+    /// Gated on `is_some()` regardless of [`CompileFailureKind`]: `ColdStart`
+    /// reaches `files_early` by the same route, so a kind-specific guard would
+    /// leave that arm open.
+    ///
+    /// Transient, not a wedge: [`Self::commit_state`] clears `compile_failure`,
+    /// so any successful recompile lifts it.
+    ///
+    /// Distinct from [`Self::is_stale`], which reports the *hot-reload* banner
+    /// (`last_reload_error`) rather than the recorded failing SOURCE.
+    ///
+    /// Gated to match its consumers, exactly as [`source_key_matches_path`] is:
+    /// the only production caller is `debug_server`, which is itself
+    /// `#[cfg(feature = "gui")]` in lib.rs, so an ungated definition is dead
+    /// code in the default-feature build that `scripts/verify.sh`'s
+    /// `clippy … -- -D warnings` pass runs. `test` is in the `any` so
+    /// `engine_tests::holds_rejected_source_tracks_the_compile_failure` still
+    /// runs in BOTH feature configurations rather than only under `gui`.
+    #[cfg(any(test, feature = "gui"))]
+    pub(crate) fn holds_rejected_source(&self) -> bool {
+        self.compile_failure.is_some()
+    }
+
     /// Atomically commit all session state after a successful parse+compile+check cycle.
     ///
     /// This wrapper first delegates the five-field core commit to
@@ -3157,11 +3316,28 @@ impl EngineSession {
     }
 
     /// Export geometry to a file.
+    ///
+    /// Refuses outright — writing nothing — when the module declares a
+    /// `RepresentationWithin` bound this path cannot demonstrate it honours; see the
+    /// η gate below and PRD
+    /// `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, C-SURFACE (2).
     pub fn export(&mut self, format: ExportFormat, path: &Path) -> Result<(), String> {
         // split_compiled_and_engine_mut surfaces the compiled-immutable /
         // engine-mutable disjoint-field borrow through the encapsulation boundary.
         let (compiled_opt, engine) = self.core.split_compiled_and_engine_mut();
         let compiled = compiled_opt.ok_or_else(|| "No module loaded".to_string())?;
+
+        // η export refusal — PRD docs/prds/v0_6/precision-nominal-representation-guarantee.md,
+        // C-SURFACE (2). Must precede `engine.build`: that path never emits this
+        // diagnostic, so the `diag.severity == Severity::Error` loop below would catch
+        // NOTHING, and `std::fs::write` runs inside the `Some(data)` arm — only a gate
+        // sited here gates the write at all. Gating on `Some(_)` rather than
+        // `diag.severity` is deliberate: returning `Err` IS the refusal on this surface.
+        // The message is the shared helper's, returned verbatim; the η tests in
+        // `tests/{engine,commands}_tests.rs` pin that and the no-write contract.
+        if let Some(diag) = unenforced_representation_bound_diagnostic(compiled) {
+            return Err(diag.message);
+        }
 
         let result = engine.build(compiled, format);
 
@@ -4254,10 +4430,32 @@ impl EngineSession {
             }
         }
 
+        // Built ONCE here rather than per node: `build_template_node` recurses
+        // per sub-component, so merging inside it would re-clone every stdlib
+        // trait def at every node — O(nodes x traits) on a path the GUI hits on
+        // each refresh. Hoisted, the only per-node cost left is the hash map
+        // `conforms_to_trait` builds, which `build_template_node` now skips for
+        // every node that could not carry the flag anyway.
+        //
+        // The prelude is what carries `Rigid : Physical` (#5558); `Engine::new`
+        // seeds it from `stdlib_loader::load_stdlib()`, so every session already
+        // has it. Same access `build_gui_state` uses; both this and
+        // `self.core.compiled()` are `&`-borrows of `&self`, so no borrow conflict.
+        let trait_defs = merged_trait_defs(compiled, self.core.engine().prelude());
+
         compiled
             .templates
             .iter()
-            .map(|t| build_template_node(t, &t.name, compiled, Some(self.core.engine()), false))
+            .map(|t| {
+                build_template_node(
+                    t,
+                    &t.name,
+                    compiled,
+                    &trait_defs,
+                    Some(self.core.engine()),
+                    false,
+                )
+            })
             .collect()
     }
 
@@ -4820,6 +5018,17 @@ fn build_values(
     values
 }
 
+/// The single producer of `ConstraintData.status`; every comparison against a
+/// verdict token routes through here rather than a hand-written literal. The
+/// wire contract is documented on that field in `types.rs`.
+pub(crate) fn satisfaction_token(s: Satisfaction) -> &'static str {
+    match s {
+        Satisfaction::Satisfied => "satisfied",
+        Satisfaction::Violated => "violated",
+        Satisfaction::Indeterminate => "indeterminate",
+    }
+}
+
 /// Build the `Vec<ConstraintData>` shared between `build_gui_state` and
 /// `build_preview_gui_state`.
 ///
@@ -4842,11 +5051,7 @@ pub(crate) fn build_constraints(
 ) -> Vec<ConstraintData> {
     let mut constraints = Vec::new();
     for entry in &check.constraint_results {
-        let status = match entry.satisfaction {
-            Satisfaction::Satisfied => "Satisfied",
-            Satisfaction::Violated => "Violated",
-            Satisfaction::Indeterminate => "Indeterminate",
-        };
+        let status = satisfaction_token(entry.satisfaction);
         let (expression, parameter_ids) = compiled
             .templates
             .iter()
@@ -5152,7 +5357,15 @@ fn surface_geometry_derived_cells(
     // The overlay is built INSIDE the guard so a pass that surfaces cells but has
     // no Indeterminate constraint left — the non-`Rigid` majority — pays neither
     // the clone nor the dispatch.
-    if surfaced_any && constraints.iter().any(|c| c.status == "Indeterminate") {
+    //
+    // Both Indeterminate comparisons below compare through `satisfaction_token`:
+    // a bare literal out of step with it would disable this entire re-check with
+    // no compile error, surfacing only as a PD constraint stuck Indeterminate.
+    if surfaced_any
+        && constraints
+            .iter()
+            .any(|c| c.status == satisfaction_token(Satisfaction::Indeterminate))
+    {
         let merged: Option<ValueMap> = if cache_sourced.is_empty() {
             None
         } else {
@@ -5166,7 +5379,7 @@ fn surface_geometry_derived_cells(
 
         if let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values) {
             for c in constraints.iter_mut() {
-                if c.status != "Indeterminate" {
+                if c.status != satisfaction_token(Satisfaction::Indeterminate) {
                     continue;
                 }
                 let Some(new_sat) = recheck
@@ -5179,15 +5392,55 @@ fn surface_geometry_derived_cells(
                 if new_sat == Satisfaction::Indeterminate {
                     continue;
                 }
-                c.status = match new_sat {
-                    Satisfaction::Satisfied => "Satisfied",
-                    Satisfaction::Violated => "Violated",
-                    Satisfaction::Indeterminate => "Indeterminate",
-                }
-                .to_string();
+                c.status = satisfaction_token(new_sat).to_string();
             }
         }
     }
+}
+
+/// The trait defs a conformance check must be resolved against: the module's
+/// OWN declared traits, extended with every prelude module's.
+///
+/// A newtype rather than a bare `Vec` because the merge is a PRECONDITION, not
+/// a convenience. A user module's `CompiledModule.trait_defs` holds only the
+/// traits that module declares — `structure def X : Rigid` compiles to a module
+/// with an EMPTY `trait_defs`, because `Rigid` and its `Rigid : Physical`
+/// refinement edge live in the stdlib prelude (`stdlib/structural_physical.ri`).
+/// A bare module set passed to a refinement walk therefore type-checks, runs,
+/// and silently degrades the walk to direct-bound matching with no diagnostic.
+/// The field is private and [`merged_trait_defs`] is the only constructor that
+/// fills it, so outside this module the degraded set is not expressible at all
+/// — the recursion tests reach for [`MergedTraitDefs::empty`], and nothing else
+/// can be built by hand.
+pub(crate) struct MergedTraitDefs(Vec<reify_compiler::CompiledTrait>);
+
+impl MergedTraitDefs {
+    /// No trait defs at all — no refinement edges, so a walk over this set
+    /// recognises only DIRECT bounds. Correct exactly where the templates under
+    /// test declare no trait bounds; `#[cfg(test)]` so it can never stand in
+    /// for the real merge on a production path.
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    fn as_slice(&self) -> &[reify_compiler::CompiledTrait] {
+        &self.0
+    }
+}
+
+/// Merge a module's declared traits with the prelude's, yielding the set every
+/// refinement walk in this file resolves against.
+///
+/// Mirrors `engine_build.rs::build_outputs_with_result`. Shared by
+/// `collect_display_routing`'s `conforms_to_output` gate and
+/// `get_entity_tree`'s `conforms_to_trait` gate so the two cannot drift.
+fn merged_trait_defs(module: &CompiledModule, prelude: &[CompiledModule]) -> MergedTraitDefs {
+    let mut merged = module.trait_defs.clone();
+    for pm in prelude {
+        merged.extend(pm.trait_defs.iter().cloned());
+    }
+    MergedTraitDefs(merged)
 }
 
 // ── PRD-3 γ: DisplayOutput occurrence walk → display_panes ────────────────────
@@ -5221,11 +5474,7 @@ fn collect_display_routing(
     prelude: &[CompiledModule],
     values: &ValueMap,
 ) -> (Vec<DisplayDirective>, Vec<AppearanceDirective>) {
-    // Merge module + prelude trait_defs (mirrors engine_build.rs::build_outputs_with_result).
-    let mut merged_trait_defs = module.trait_defs.clone();
-    for pm in prelude {
-        merged_trait_defs.extend(pm.trait_defs.iter().cloned());
-    }
+    let trait_defs = merged_trait_defs(module, prelude);
 
     let mut directives = Vec::new();
     let mut appearances = Vec::new();
@@ -5249,7 +5498,7 @@ fn collect_display_routing(
             }
 
             // Gate 3: must conform to the Output trait.
-            if !conforms_to_output(&occ_template.trait_bounds, &merged_trait_defs) {
+            if !conforms_to_output(&occ_template.trait_bounds, trait_defs.as_slice()) {
                 continue;
             }
 
@@ -6558,6 +6807,7 @@ pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
+    trait_defs: &MergedTraitDefs,
     engine: Option<&Engine>,
     aux_ancestor: bool,
 ) -> EntityTreeNode {
@@ -6566,21 +6816,32 @@ pub(crate) fn build_template_node(
     let mut children = Vec::new();
 
     // Shared by BOTH the value-cell loop and the realization loop below, so the
-    // two sibling nodes a geometry binding emits (#4954) agree on
-    // `trait_geometry` (#5195). Hoisted out of the value-cell loop, where it
-    // used to be recomputed per cell.
+    // two sibling nodes a geometry binding emits (#4954) agree (#5195).
     //
-    // KNOWN LIMITATION (pre-existing, shared by both call sites, out of scope
-    // for #5195): `trait_bounds` holds DECLARED trait names only, so this fires
-    // for `structure def X : Physical` but NOT for `: Rigid` — even though
-    // `Rigid : Physical` refines it (stdlib/structural_physical.ri:76). A
-    // correct check would resolve the refinement chain
-    // (`reify_eval::conforms_to_trait`) and needs the merged module + prelude
-    // trait_defs threaded in here; that is a separable follow-up. The
-    // consumed-intermediate observable does NOT depend on this flag: the
-    // terminal `geometry` realization is consumed by nothing, so it stays
-    // `default_visible == true` and renders either way.
-    let parent_has_physical = template.trait_bounds.iter().any(|b| b.contains("Physical"));
+    // CONTRACT (#5558): a member named `geometry`, on a template whose trait
+    // bounds equal-or-transitively-refine `"Physical"` — the trait that
+    // declares `geometry : Solid` (stdlib/structural_physical.ri). So `: Rigid`
+    // and its sibling refinements qualify through the chain, while a lookalike
+    // name such as `PhysicalMock` — matched purely on spelling by the previous
+    // `contains("Physical")` probe — does not. Cycle safety and the empty-set
+    // direct-bound case are `conforms_to_trait`'s own, documented there.
+    //
+    // The two cheap necessary conditions gate the walk: `conforms_to_trait`
+    // builds a hash map over the whole merged set (~100 stdlib traits) per
+    // call, and this runs per node on every GUI refresh. Neither guard can
+    // change the result — the flag is only ever read ANDed with a `geometry`
+    // name test, and a template with no bounds conforms to nothing.
+    //
+    // Independent of the consumed-intermediate rule: the terminal `geometry`
+    // realization is consumed by nothing, so it renders either way.
+    let declares_geometry_member = template.value_cells.iter().any(|c| c.id.member == "geometry")
+        || template
+            .realizations
+            .iter()
+            .any(|r| r.name.as_deref() == Some("geometry"));
+    let geometry_is_trait_mandated = declares_geometry_member
+        && !template.trait_bounds.is_empty()
+        && conforms_to_trait(&template.trait_bounds, trait_defs.as_slice(), "Physical");
 
     // Value cells: param, let, auto
     for cell in &template.value_cells {
@@ -6608,7 +6869,7 @@ pub(crate) fn build_template_node(
             type_name: Some(cell.cell_type.to_string()),
             display_name: None,
             has_mesh: false,
-            trait_geometry: is_geometry_member && parent_has_physical,
+            trait_geometry: is_geometry_member && geometry_is_trait_mandated,
             children: vec![],
             freshness,
             default_visible: true,
@@ -6680,10 +6941,12 @@ pub(crate) fn build_template_node(
             type_name: None,
             display_name,
             has_mesh: true,
-            // Mirrors the value-cell heuristic above so the two sibling nodes a
-            // geometry binding emits (#4954) agree — see `parent_has_physical`
-            // for the shared `: Rigid` limitation (#5195).
-            trait_geometry: real.name.as_deref() == Some("geometry") && parent_has_physical,
+            // Mirrors the value-cell branch above so the two sibling nodes a
+            // geometry binding emits (#4954) agree — they read the one shared
+            // `geometry_is_trait_mandated` binding, whose contract is documented
+            // there.
+            trait_geometry: real.name.as_deref() == Some("geometry")
+                && geometry_is_trait_mandated,
             children: vec![],
             freshness,
             // Extends the surfacing-walk rule — shared contract anchor:
@@ -6724,7 +6987,7 @@ pub(crate) fn build_template_node(
             } else {
                 // Thread aux_ancestor: if this sub is aux OR an ancestor was aux,
                 // all descendants inherit default_visible = false.
-                build_template_node(child_template, &sub_path, compiled, engine, aux_ancestor || sub.is_aux).children
+                build_template_node(child_template, &sub_path, compiled, trait_defs, engine, aux_ancestor || sub.is_aux).children
             }
         } else {
             vec![]

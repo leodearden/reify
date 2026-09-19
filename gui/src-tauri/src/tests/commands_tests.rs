@@ -4,7 +4,7 @@ use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
     assert_rigid_mass_props_not_final, cwd_lock, find_moi_principal_constraint,
     rigid_mass_props_fixture_path, rigid_mass_props_session,
-    rigid_mass_props_session_seeded_with_ops, visible_realization_keys,
+    rigid_mass_props_session_seeded_then_failing, visible_realization_keys,
 };
 
 use reify_constraints::SimpleConstraintChecker;
@@ -13,6 +13,9 @@ use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::commands::AppState;
 use crate::engine::EngineSession;
+// The ONE η bounded fixture, shared with the engine-level tests rather than twinned
+// here — see its doc comment for why a second copy is a hazard.
+use crate::tests::engine_tests::bounded_bracket_source;
 
 fn make_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
@@ -20,12 +23,20 @@ fn make_session() -> EngineSession {
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
-fn make_loaded_session() -> EngineSession {
+/// [`make_session`] with `source` loaded under the module name `bracket`.
+///
+/// The `&str`-parameterized form of [`make_loaded_session`], which is what the ~20
+/// neighbouring tests call; both bodies are this one.
+fn make_loaded_session_from(source: &str) -> EngineSession {
     let mut session = make_session();
     session
-        .load_from_source(bracket_source(), "bracket")
+        .load_from_source(source, "bracket")
         .expect("initial load");
     session
+}
+
+fn make_loaded_session() -> EngineSession {
+    make_loaded_session_from(bracket_source())
 }
 
 /// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
@@ -147,7 +158,7 @@ fn constraint_violation_set_thickness_1mm() {
     };
 
     // thickness=1mm violates "thickness > 2mm"
-    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "Violated");
+    let thickness_gt_constraint = state.constraints.iter().find(|c| c.status == "violated");
 
     assert!(
         thickness_gt_constraint.is_some(),
@@ -422,7 +433,7 @@ fn constraint_violation_and_recovery() {
     let violated_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Violated")
+        .filter(|c| c.status == "violated")
         .count();
     assert!(
         violated_count >= 1,
@@ -433,7 +444,7 @@ fn constraint_violation_and_recovery() {
     let satisfied_count = state
         .constraints
         .iter()
-        .filter(|c| c.status == "Satisfied")
+        .filter(|c| c.status == "satisfied")
         .count();
     assert!(
         satisfied_count >= 1,
@@ -447,7 +458,7 @@ fn constraint_violation_and_recovery() {
 
     for c in &state.constraints {
         assert_eq!(
-            c.status, "Satisfied",
+            c.status, "satisfied",
             "all constraints should be satisfied after restoring thickness=5mm, but {} is {}",
             c.node_id, c.status
         );
@@ -486,6 +497,125 @@ fn end_to_end_export_via_impl() {
 
     export_impl(&engine, "step", path.to_str().unwrap()).expect("export should succeed");
     assert!(path.exists(), "exported file should exist");
+}
+
+// --- η export refusal: the three callers of the `EngineSession::export` chokepoint
+// (task 6190) ---
+//
+// The gate lives in `EngineSession::export`; these tests PROVE — rather than assert —
+// that every GUI export caller reaches it, so a refactor giving one its own build path
+// goes red instead of silently reopening the bypass. The shared rationale for the
+// `starts_with` assertions, and the enumeration of the three callers, is argued once in
+// the η cluster header in `engine_tests.rs`.
+
+/// Caller 1 of 3 — `commands::export_impl`, the Tauri command the frontend calls.
+#[test]
+fn export_impl_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::commands::export_impl;
+
+    let engine = Mutex::new(make_loaded_session_from(&bounded_bracket_source()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("e2e_bounded.step");
+
+    let err = export_impl(&engine, "step", path.to_str().unwrap()).expect_err(
+        "export_impl must surface the η refusal for a design declaring a \
+         RepresentationWithin bound",
+    );
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the message reaching the frontend must LEAD with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// Caller 2 of 3 — `mcp_context::TauriToolContext::export`, the MCP tool context.
+///
+/// Load-bearing for a reason caller 1 cannot cover: this one returns
+/// `Result<bool, ToolError>`, so folding the refusal into `Ok(false)` would report a
+/// REFUSED export to the MCP client as a completed one with the diagnostic dropped.
+/// The `match` pins that mapping, not just the message text.
+///
+/// Sited here rather than in its topical home `mcp_context_tests.rs`, which is outside
+/// task 6190's lock footprint; co-locating all three proofs also lets a reader diff the
+/// surfaces' contracts side by side.
+#[test]
+fn export_via_mcp_context_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::mcp_context::TauriToolContext;
+    use reify_mcp::{ReifyToolContext, ToolError};
+
+    let session = make_loaded_session_from(&bounded_bracket_source());
+    let ctx = TauriToolContext::builder(Arc::new(Mutex::new(session))).build();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp_bounded.step");
+
+    let err = ctx
+        .export("step", path.to_str().unwrap())
+        .expect_err("the MCP export tool must surface the η refusal, not report success");
+    match err {
+        ToolError::EngineError(msg) => assert!(
+            msg.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the refusal must reach the MCP client as an EngineError LEADING with the \
+             stable E_* token; got: {msg}"
+        ),
+        other => panic!(
+            "a refused export must map to ToolError::EngineError (the engine's own \
+             refusal), not {other:?}"
+        ),
+    }
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+}
+
+/// Caller 3 of 3 — `debug_server::reify_export_on_engine_and_refresh_baseline`, the
+/// engine-routing core of the `reify_export` AI write tool.
+///
+/// Its own test (`debug_server::tests::write_tools::reify_export_writes_a_non_empty_file`)
+/// covers success only, so without this the third caller's delegation would be the one
+/// unpinned leg of the chokepoint claim. `#[cfg(feature = "gui")]` because
+/// `crate::debug_server` is gated on that feature.
+///
+/// The refusal must also leave the delta baseline untouched: the seam's
+/// `compute_delta` sits after the `?`, so a refused write commits no new state.
+#[cfg(feature = "gui")]
+#[tokio::test]
+async fn reify_export_tool_refuses_a_module_declaring_an_unenforced_representation_bound() {
+    use crate::debug_server::reify_export_on_engine_and_refresh_baseline;
+
+    let engine = Arc::new(Mutex::new(make_loaded_session_from(&bounded_bracket_source())));
+    let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+        std::sync::Mutex::new(None);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ai_bounded.step");
+
+    let err = reify_export_on_engine_and_refresh_baseline(
+        &engine,
+        &last_state,
+        "step",
+        path.to_str().unwrap(),
+    )
+    .await
+    .expect_err("the reify_export write tool must surface the η refusal, not report success");
+    assert!(
+        err.starts_with(reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+        "the refusal must reach the AI client LEADING with the stable E_* token; got: {err}"
+    );
+    assert!(
+        !path.exists(),
+        "NO file may be created at the export target for a refused export (PRD §1.1)"
+    );
+    assert!(
+        last_state.lock().unwrap().is_none(),
+        "a refused export must not refresh the delta baseline — the seam's compute_delta \
+         runs only after a successful write"
+    );
 }
 
 #[test]
@@ -3204,38 +3334,33 @@ fn multi_realization_partial_hide_retains_at_entity_granularity() {
 /// therefore keys on `result.meshes` — the delta's own dispatch record — and
 /// retains only when the cell's realization did NOT run this pass.
 ///
-/// The degeneration is induced without OCCT by NARROWING the
-/// `MockGeometryKernel` seed: the mock's `next_id` is monotonic and never reset,
-/// each dispatch of the box allocates the next id, and seeding `1..=2` leaves the
-/// warm `set_parameter` dispatch UNANSWERED. Its geometry queries then fail with
-/// an `OpContractViolation` — exactly the shape of a failing kernel query or
-/// degenerate geometry in production, and encoded in the delta exactly as a
-/// hash-exempt gap is.
+/// The degeneration is induced without OCCT via `MockGeometryKernel`'s
+/// explicit `fail_after_n_dispatches` knob (task #6471,
+/// `rigid_mass_props_session_seeded_then_failing`): handles 1 and 2 are
+/// seeded to succeed, and every query for a handle past id 2 — i.e. anything
+/// a later dispatch allocates — fails explicitly. That is exactly the shape
+/// of a failing kernel query or degenerate geometry in production, and is
+/// encoded in the delta exactly as a hash-exempt gap is.
 ///
-/// Reviewer suggestion 4: seed-range starvation couples this test to the number
-/// of kernel dispatches the production path happens to perform, which is a
-/// fragile way to say "the geometry query failed". The knob that would fix it
-/// properly (`with_volume_error(h, ..)` / `fail_after_n_dispatches` on
-/// `MockGeometryKernel`) lives in `crates/reify-test-support`, outside this task's
-/// locked scope, so the coupling is instead made EXPLICIT: step (3) asserts,
-/// against the mock's own operation log, that the post-edit rebuild really did
-/// dispatch an op whose handle is past the seeded ceiling. A drift in dispatch
-/// count now fails with a message naming the handles it saw, instead of failing
-/// downstream on a determinacy assertion. The injectable form is filed under
-/// ticket `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
+/// Reviewer suggestion 4 on task #5338: seed-range STARVATION (leaving
+/// handles past a narrow range unseeded and relying on the generic "no mock
+/// result" fallback) coupled this test to the exact number of kernel
+/// dispatches the production path happens to perform. `MockGeometryKernel`
+/// now supports stating "queries for handles past N fail" directly
+/// (`fail_after_n_dispatches`, `crates/reify-test-support/src/mocks.rs`,
+/// task #6471), so the failure is guaranteed by construction and the test no
+/// longer needs a downstream precondition block inspecting the mock's
+/// operation log to confirm it took effect. Implemented under ticket
+/// `tkt_0RSRP1HKTPG0E9XB0YWQVC0RT0`.
 ///
 /// Pre-amendment this test FAILS: the edited rebuild's `Undef` was read as a
 /// delta gap and the pre-edit mass was re-surfaced `determined` / `final` /
 /// `reason = None`, i.e. a stale value presented as fresh and authoritative.
 #[test]
 fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
-    /// The mock seed ceiling: a dispatched op that allocates a handle above this
-    /// has no volume / centroid / inertia reply, so its geometry queries fail.
-    const SEED_CEILING: u64 = 2;
-
     let dir = tempfile::tempdir().expect("tempdir");
     let (path, _text) = rigid_mass_props_tempfile(dir.path());
-    let (session, ops) = rigid_mass_props_session_seeded_with_ops(1..=SEED_CEILING);
+    let (session, dispatch_log) = rigid_mass_props_session_seeded_then_failing(1..=2);
     let engine = Arc::new(Mutex::new(session));
 
     // (1) Cold load: the box realizes to seeded handle 1, so the mass props
@@ -3262,38 +3387,17 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
     }
 
     // (3) Warm edit: the realization's input-cone hash CHANGES, so it is
-    //     dispatched — and its geometry queries now hit an unseeded handle.
-    let ops_before = ops.lock().expect("mock op log").len();
+    //     dispatched — and its geometry queries now hit a handle the mock was
+    //     explicitly configured to fail (`fail_after_n_dispatches(2)` above),
+    //     regardless of which exact handle number the dispatch allocates.
+    let ops_before = dispatch_log.lock().unwrap().len();
     let state = crate::commands::set_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
         .expect("set_parameter_impl");
-    // State the precondition directly rather than trusting the dispatch count: the
-    // edit must have re-executed geometry, and at least one of those ops must have
-    // landed past the seeded ceiling, which is what makes its queries fail. Both
-    // halves matter — no new op at all would mean the realization stayed
-    // hash-exempt (a different scenario, covered by
-    // `warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass`), and a
-    // new op INSIDE the seeded range would mean the queries were answered and
-    // nothing degenerated.
-    let new_handles: Vec<u64> = ops
-        .lock()
-        .expect("mock op log")
-        .iter()
-        .skip(ops_before)
-        .map(|rec| rec.result_handle.0)
-        .collect();
     assert!(
-        !new_handles.is_empty(),
-        "the edit must have re-DISPATCHED the realization — no new kernel op means \
-         it stayed hash-exempt, which is a different scenario than the one this \
-         test induces"
-    );
-    assert!(
-        new_handles.iter().any(|h| *h > SEED_CEILING),
-        "the post-edit dispatch must allocate a handle past the seeded ceiling \
-         ({SEED_CEILING}) so its volume / centroid / inertia queries go unanswered \
-         — that unanswered query IS the degeneration under test. Got new handles \
-         {new_handles:?}; if they are all seeded, the production path's dispatch \
-         count drifted and the seed range needs re-narrowing"
+        dispatch_log.lock().unwrap().len() > ops_before,
+        "the depth edit must have re-DISPATCHED the realization — with no new op the \
+         realization stayed hash-exempt, which is the sibling test's scenario and never \
+         reaches the degeneration guard this test exists to pin"
     );
     let depth = state
         .values
@@ -3452,7 +3556,7 @@ fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
     );
     assert_ne!(
         find_moi_principal_constraint(&state).status,
-        "Satisfied",
+        "satisfied",
         "the `moi_principal[0] > 0` PD constraint must not be re-checked to \
          Satisfied off a RETAINED pre-edit `moi_principal` — that is the same stale \
          value wearing a constraint badge"

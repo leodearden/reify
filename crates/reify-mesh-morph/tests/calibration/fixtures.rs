@@ -247,11 +247,6 @@ pub fn plate_with_hole(
 /// wedge-prism corner order. The executable contract is
 /// `calibration.rs::calibration_fixtures_are_conforming_simplicial_complexes`.
 ///
-/// Measured instance of that property, for anyone checking a change against a
-/// concrete number rather than a predicate: the surface
-/// `boundary::boundary_surface` extracts at n=4 is 248 vertices / 738 edges /
-/// 492 triangles, so `V - E + F = 2`.
-///
 /// ## Element count (P1)
 ///
 /// For `n >= 2`: `tets(n) = 18n³ + 12n² - 6n`. Derivation — the polar zone
@@ -433,12 +428,7 @@ pub fn bracket(
     // along the columns `polar_label` addresses as `n_r - k_r` — i.e. the
     // polar block's radial axis runs OPPOSITE the arms' — so the untwisted
     // (a, k_r) ordering bisected every interface quad the other way from
-    // the arm sharing it. Each such quad then contributed two once-occurring
-    // faces instead of one matched pair, so the blocks still tiled the domain
-    // but the result was not a simplicial complex and its tet-face boundary
-    // carried a doubled interior sheet at every interface (measured at n=4
-    // before this rotation: 128 spurious boundary faces, 89 edges at degree 4).
-    // Reversing both in-plane axes realigns the radial
+    // the arm sharing it. Reversing both in-plane axes realigns the radial
     // axis while keeping orientation: exactly this half turn. Conformity
     // (chi = 2) is pinned by
     // `calibration.rs::calibration_fixtures_are_conforming_simplicial_complexes`.

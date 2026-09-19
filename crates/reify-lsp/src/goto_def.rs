@@ -2,14 +2,17 @@ use reify_ast::ImportKind;
 use reify_core::{ModulePath, SourceSpan};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::{enclosing_decl_at, find_named_member_span, module_name_from_uri};
+use crate::analysis::{
+    enclosing_decl_at, find_named_member_span, module_name_from_uri, name_token_span,
+};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
 ///
-/// Returns the `Location` of the symbol's declaration, or `None` if
-/// the position is not on a navigable identifier (keywords, structure
-/// names, and unknown words return `None`).
+/// Returns the `Location` of the symbol's declaration, or `None` if the
+/// position is not on a navigable identifier. A top-level declaration NAME
+/// resolves to its own name token (task 6388); keywords, and words matching
+/// neither a member nor a top-level declaration, return `None`.
 // G-allow: LSP public API entry point; production caller uses the _in_context/_with_parsed/_from_parsed variant
 pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> Option<Location> {
     // Only needs ParsedModule for declaration spans (compiler discards them).
@@ -34,6 +37,17 @@ pub fn compute_goto_definition_with_parsed(
 ) -> Option<Location> {
     let offset = position_to_offset(source, position);
     let (_word_start, word) = find_word_at_offset(source, offset)?;
+
+    // Phase A (task 6388): the cursor is ON a top-level declaration's OWN name
+    // token. Resolved FIRST because a declaration's own name token can never be
+    // a reference to a member, so answering it here removes any chance that a
+    // pathologically same-named member shadows the definition — and returning
+    // the definition when the cursor is already on it is standard LSP
+    // behaviour. Pinned by
+    // `goto_def_cursor_on_declaration_name_beats_same_named_member`.
+    if let Some(loc) = resolve_decl_name(parsed, source, uri, word, Some(offset)) {
+        return Some(loc);
+    }
 
     // Try to find the enclosing declaration by checking if the cursor offset
     // falls within a declaration's span. If found, search only that declaration
@@ -74,7 +88,119 @@ pub fn compute_goto_definition_with_parsed(
         }
     }
 
+    // Phase C (task 6388): the word NAMES a top-level declaration — a use site
+    // such as `sub b = Bracket()`, `let v = area(2mm)` or `param p : Pressure`.
+    //
+    // Ordering is load-bearing:
+    // - AFTER both member phases, so every pre-existing member resolution keeps
+    //   byte-identical behaviour and a member never loses to a same-named
+    //   declaration. Pinned by
+    //   `goto_def_member_use_wins_over_same_named_top_level_declaration`.
+    // - BEFORE cross-file Phase 2. `compute_goto_definition_cross_file_with_parsed`
+    //   delegates to this core at its Phase 1 slot, so placing Phase C here
+    //   makes a LOCAL declaration win over an IMPORT of the same name — pinned
+    //   by `goto_def_local_declaration_wins_over_same_named_import`.
+    // - Cross-file Phase 0 (cursor inside an `import` span) still runs first, so
+    //   the cursor-on-import contract is untouched.
+    //
+    // The returned range is the NAME TOKEN — deliberately the same shape the
+    // cross-file path returns via `find_declaration_name_span`; closing that
+    // asymmetry is why task 6388 exists. Member resolution above keeps returning
+    // the full member statement span, unchanged.
+    //
+    // KNOWN IMPRECISION, measured and pinned rather than left latent: the match
+    // is purely lexical — no reference-position check, no binding-scope check —
+    // so a word shadowed by a function or lambda parameter, or sitting inside a
+    // comment or a string literal, resolves to the declaration anyway, where it
+    // used to resolve to nothing. Pinned row by row in
+    // `goto_def_phase_c_matches_lexically_ignoring_scope_and_comments`; owned
+    // by #7607.
+    resolve_decl_name(parsed, source, uri, word, None)
+}
+
+/// Resolve `word` to the NAME TOKEN of the top-level declaration it names.
+///
+/// The single body behind task 6388's two same-file phases; `cursor` is what
+/// distinguishes them:
+/// - `Some(offset)` — Phase A, the cursor sits ON a declaration's own name
+///   token: the match must additionally CONTAIN `offset`.
+/// - `None` — Phase C, `word` merely NAMES a declaration from a use site
+///   anywhere in the file: no containment filter.
+///
+/// Where the two calls sit relative to the member phases is the load-bearing
+/// decision, and it lives at the call sites rather than here.
+///
+/// CHEAP DISCRIMINATORS FIRST: name equality, then (Phase A only) cursor
+/// containment in the declaration's statement span — both O(1)-ish — before
+/// paying for [`decl_name_token`], a bounded scan over the declaration's text.
+/// Pre-filtering on the statement span cannot change which declaration matches:
+/// `name_token_span` returns a sub-span of the span it is given, so `offset`
+/// inside the name token always implies `offset` inside the statement span.
+///
+/// When two declarations share a name (already a semantic error) the FIRST in
+/// source order wins.
+///
+/// SCOPE. Top-level declarations only — a `structure def` nested inside a
+/// `purpose` body lives in `PurposeDef.structures`, so it is not resolved
+/// (pinned by `goto_def_purpose_nested_structure_is_not_top_level`). And
+/// same-file only: cross-file goto-def runs the narrower [`decl_name_span_in`]
+/// instead, leaving Purpose/Constraint/Unit/Joint SAME-FILE-navigable until the
+/// use-site collectors learn to walk type expressions (#6539, rolled up in
+/// #6972).
+fn resolve_decl_name(
+    parsed: &reify_ast::ParsedModule,
+    source: &str,
+    uri: &Url,
+    word: &str,
+    cursor: Option<usize>,
+) -> Option<Location> {
+    for decl in &parsed.declarations {
+        let Some((name, span)) = crate::analysis::decl_name_and_span(decl) else {
+            continue;
+        };
+        if name != word {
+            continue;
+        }
+        if let Some(offset) = cursor
+            && (offset < span.start as usize || offset >= span.end as usize)
+        {
+            continue;
+        }
+        let Some(tok) = decl_name_token(source, name, span) else {
+            continue;
+        };
+        if let Some(offset) = cursor
+            && (offset < tok.start as usize || offset >= tok.end as usize)
+        {
+            continue;
+        }
+        return Some(Location {
+            uri: uri.clone(),
+            range: span_to_range(source, tok),
+        });
+    }
     None
+}
+
+/// The byte span of a top-level declaration's own NAME TOKEN, narrowed from the
+/// `(name, statement span)` pair its kind yields — or `None` when that token
+/// cannot be located inside the declaration's span.
+///
+/// The crate's one narrow-and-refuse rule for a declaration name, shared by BOTH
+/// goto-def scans — the same-file [`resolve_decl_name`] and the cross-file
+/// [`decl_name_span_in`], which select a declaration by different kind lists but
+/// narrow its token the same way.
+///
+/// Narrowing uses [`crate::analysis::name_token_span`] — whole-word, bounded to
+/// the declaration's own span, UTF-8-boundary-snapping. Its ZERO-WIDTH fallback
+/// (the name is absent within the span, e.g. a recovered AST node) becomes
+/// `None`: a zero-width `Location` is never a useful jump target, and an empty
+/// span is an exact discriminator because a declaration name is never the empty
+/// string. What refusing costs each consumer is enumerated on
+/// [`decl_name_span_in`].
+fn decl_name_token(source: &str, name: &str, decl_span: SourceSpan) -> Option<SourceSpan> {
+    let token = name_token_span(source, decl_span, name);
+    (!token.is_empty()).then_some(token)
 }
 
 /// Compute go-to-definition with cross-file import resolution.
@@ -225,6 +351,24 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// reference/rename collectors (task κ, 4210) can obtain a renamed structure's
 /// home declaration token uniformly as a `SourceSpan`, independent of the
 /// `Location`/`uri` packaging that goto-def needs.
+///
+/// # This helper feeds REFERENCES, not just cross-file goto-def
+///
+/// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
+/// the `collect_structure_name_spans` home token, `resolve_cross_file_home`
+/// step 2, and the cross-file rename producer.
+///
+/// Its kind list is therefore DELIBERATELY NARROWER than
+/// [`crate::analysis::decl_name_and_span`], the wildcard-free SAME-FILE source,
+/// and must not be "unified" onto it: **adding a kind here changes what the
+/// REFERENCE SET reports**, and for a type-position-only kind it reports the
+/// declaration token ALONE, with every use site absent — the incomplete input a
+/// later rename would trust.
+///
+/// The full argument, the measurement behind it, and the separate allowlist
+/// that gates rename itself (`references::classify_top_level_decl`) live on the
+/// guard test `references::tests::
+/// rename_and_references_unaffected_by_same_file_goto_def_declaration_names`.
 pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<SourceSpan> {
     // Prelude-aware parse for AST-shape consistency across reify-lsp;
     // see task 2525.
@@ -234,7 +378,10 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 
 /// Scan an already-parsed module for the name-token span of the declaration
 /// named `name`, returning the byte [`SourceSpan`] of just the NAME identifier
-/// (located via [`find_name_offset_in_decl`]).
+/// (located via [`crate::analysis::name_token_span`], which matches
+/// whole-word and only within the declaration's own span — a declaration span
+/// starts at its keyword, so an unbounded substring search finds the `s` of
+/// `structure` before the `s` of `structure s`).
 ///
 /// Takes `&ParsedModule` rather than `&str` so a caller that needs more than one
 /// declaration shape pays for exactly one parse; `source` is still required
@@ -252,6 +399,38 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 ///
 /// Declarations are scanned in source order, so in the (ill-formed) case of an
 /// alias and a structure sharing one name, the earlier declaration wins.
+///
+/// A matched declaration whose span does not actually contain its own name
+/// token is REFUSED — `None`, and without resuming the scan. The previous
+/// locator instead fell back to a `name.len()`-wide span anchored at the
+/// declaration start; that bogus WIDE span flowed into the `references.rs`
+/// rename write path and emitted a destructive edit over the declaration's
+/// leading keyword. Resuming the scan would be the mirror-image hazard, letting
+/// a later same-named declaration donate its token — exactly what bounding the
+/// search to the declaration's own span exists to prevent.
+///
+/// What a refusal costs is enumerated per consumer rather than summarised,
+/// because they do not all behave alike — three are inert and one is not:
+/// - [`find_declaration_in_source`] (goto-def) is read-only: no jump. Inert.
+/// - `references.rs::resolve_cross_file_home` step 2 tests only `.is_some()`,
+///   so a structure declared in the primary document stops being recognised as
+///   the home and the query falls through to the import arm — which, in the
+///   home document itself, resolves to nothing. A wholesale `None`. Inert.
+/// - `references.rs::compute_references_cross_file` uses the value only to drop
+///   the declaration token when `include_declaration = false`; with no token to
+///   drop, that filter is a no-op. Inert.
+/// - `references.rs::collect_structure_name_spans` pushes this token into the
+///   span set that `compute_rename_cross_file` turns into edits. A refusal
+///   silently OMITS it, so a rename driven from an IMPORTING document (where
+///   the home resolves through the import arm, never consulting this function)
+///   rewrites every construction site and import token but leaves the
+///   declaration behind — a partial rename. Still strictly better than the old
+///   locator, which rewrote the declaration's leading keyword, but not free.
+///   Making the rename path refuse wholesale when the home token cannot be
+///   located is a follow-up; it is not reachable today, because no parse
+///   observed so far yields a surviving declaration whose span excludes its own
+///   name token (error recovery either keeps the name inside the span or emits
+///   no declaration at all, which this function already answers with `None`).
 fn decl_name_span_in(
     parsed: &reify_ast::ParsedModule,
     source: &str,
@@ -271,34 +450,14 @@ fn decl_name_span_in(
         };
         if decl_name == name {
             // Point to the name within the declaration, not the entire span.
-            // Find the name's byte position within the declaration text.
-            let name_offset = find_name_offset_in_decl(source, span.start, name);
-            return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
+            // Sharing the narrowing with the same-file path is not the oracle
+            // merge this function's doc forbids — that split is over which
+            // KINDS the match above admits, not over how an already-selected
+            // declaration's name token is narrowed.
+            return decl_name_token(source, decl_name, span);
         }
     }
     None
-}
-
-/// Find the byte offset of a declaration's name within the source.
-///
-/// Searches from `decl_start` forward for the name string, returning its offset.
-/// Falls back to `decl_start` if not found (shouldn't happen for valid declarations).
-fn find_name_offset_in_decl(source: &str, decl_start: u32, name: &str) -> u32 {
-    // Clamp to source length to prevent out-of-bounds panic.
-    let mut start = (decl_start as usize).min(source.len());
-
-    // Snap forward to the next valid UTF-8 character boundary if we
-    // landed mid-character (e.g., on a continuation byte 0x80..0xBF).
-    // This mirrors the pattern in offset_to_position (convert.rs:11-18).
-    while start < source.len() && !source.is_char_boundary(start) {
-        start += 1;
-    }
-
-    if let Some(rel_offset) = source[start..].find(name) {
-        (start + rel_offset) as u32
-    } else {
-        decl_start
-    }
 }
 
 #[cfg(test)]
@@ -475,13 +634,28 @@ mod tests {
     }
 
     #[test]
-    fn goto_def_structure_name_returns_none() {
+    fn goto_def_structure_name_resolves_to_its_own_name_token() {
+        // Task 6388: goto-def on a top-level declaration NAME used to return
+        // None — a deliberate non-goal, now lifted. Standard LSP behaviour is
+        // that goto-def on a definition returns that definition, and the
+        // cross-file path (find_declaration_name_span) has always returned the
+        // NAME TOKEN for the very same symbol; this closes that asymmetry.
         let source = reify_test_support::bracket_source();
         // 'Bracket' on line 0: "structure def Bracket {"
         let position = Position::new(0, 16);
-        assert!(
-            compute_goto_definition(source, &test_uri(), position).is_none(),
-            "goto-def on structure name should return None"
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def on a structure name should resolve to its own name token");
+        assert_eq!(loc.uri, test_uri());
+
+        // Derive the expected columns from the fixture rather than hard-coding
+        // 14/21, so the assertion survives a fixture edit.
+        let name_start = source.find("Bracket").expect("fixture declares Bracket");
+        assert_eq!(loc.range.start.line, 0);
+        assert_eq!(loc.range.start.character, name_start as u32);
+        assert_eq!(loc.range.end.line, 0);
+        assert_eq!(
+            loc.range.end.character,
+            (name_start + "Bracket".len()) as u32
         );
     }
 
@@ -692,14 +866,518 @@ mod tests {
     }
 
     #[test]
-    fn goto_def_unknown_word_returns_none() {
+    fn goto_def_declaration_name_resolves_to_itself() {
+        // Task 6388: this source/position pair used to be asserted as None by a
+        // test misleadingly named `goto_def_unknown_word_returns_none` — 'Foo'
+        // is not an unknown word, it is the structure's own name. It now
+        // resolves to its own name token.
         let source = "structure Foo {\n  param x: Length = 5mm\n}";
-        // Position past end of meaningful content
         let position = Position::new(0, 12); // on 'Foo'
-        // 'Foo' is a structure name, should return None
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def on a declaration name should resolve to itself");
+        assert_eq!(loc.uri, test_uri());
+        let name_start = source.find("Foo").expect("source declares Foo");
+        assert_eq!(loc.range.start.line, 0);
+        assert_eq!(loc.range.start.character, name_start as u32);
+        assert_eq!(loc.range.end.line, 0);
+        assert_eq!(loc.range.end.character, (name_start + "Foo".len()) as u32);
+    }
+
+    #[test]
+    fn goto_def_unknown_word_returns_none() {
+        // The genuine no-match contract (task 6388 keeps this covered, with an
+        // honest fixture): a word naming neither a member nor a top-level
+        // declaration still returns None.
+        let source = "structure Foo {\n    let y = nowhere\n}";
+        let unknown = source.find("nowhere").expect("source mentions nowhere");
+        let position = crate::convert::offset_to_position(source, unknown as u32 + 1);
         assert!(
             compute_goto_definition(source, &test_uri(), position).is_none(),
-            "goto-def on structure name should return None"
+            "goto-def on a word matching no member and no declaration should return None"
+        );
+    }
+
+    // --- task 6388: uniform same-file declaration-name resolution ---
+
+    /// The snippet table and `occurrences` are SHARED, not mirrored — see
+    /// `crate::analysis::test_fixtures`.
+    use crate::analysis::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences};
+
+    /// Convert an LSP range back to the `[start, end)` byte range it covers.
+    fn range_to_byte_range(source: &str, range: Range) -> (usize, usize) {
+        (
+            position_to_offset(source, range.start),
+            position_to_offset(source, range.end),
+        )
+    }
+
+    #[test]
+    fn goto_def_cursor_on_declaration_name_resolves_for_every_kind() {
+        for (source, name) in NAMED_DECL_SNIPPETS {
+            let name_offset = source
+                .find(name)
+                .unwrap_or_else(|| panic!("snippet must contain {name:?}: {source}"));
+            // A byte INSIDE the name token, so `find_word_at_offset` yields it.
+            // The midpoint rather than `name_offset + 1`: the latter overshoots
+            // a ONE-character name (e.g. `structure S`, where the token is
+            // `[10, 11)` and offset 11 is already the following space).
+            let position =
+                crate::convert::offset_to_position(source, (name_offset + name.len() / 2) as u32);
+
+            let loc = compute_goto_definition(source, &test_uri(), position)
+                .unwrap_or_else(|| panic!("goto-def on {name:?} returned None for: {source}"));
+            assert_eq!(loc.uri, test_uri(), "uri mismatch for: {source}");
+
+            let (lo, hi) = range_to_byte_range(source, loc.range);
+            assert_eq!(
+                &source[lo..hi],
+                *name,
+                "goto-def range {:?} sliced to {:?}, expected exactly {name:?} for: {source}",
+                loc.range,
+                &source[lo..hi]
+            );
+            assert_eq!(
+                lo, name_offset,
+                "goto-def should land on the DECLARATION's own name token for: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn goto_def_unnamed_declaration_kinds_return_none() {
+        // The three `Declaration` variants that declare no name of their own.
+        // Driven through the SINGLE-FILE entry point on purpose: the cross-file
+        // Phase 0 would navigate an `import` to its target file, which is a
+        // different contract.
+        //
+        // Each row's WORD is chosen to be exactly what a hypothetical name arm
+        // for that variant would return, so the row actually fails if the arm is
+        // ever flipped from None to Some. Pointing the import row at the module
+        // PATH segment `parts`, or the module row at a single letter of a dotted
+        // `a.b.c` path, would leave both rows green under such a change.
+        let cases = [
+            // The ENTITY name an `Import` binds — what an Import name arm would
+            // yield. Correctly None today: `Import` declares no name of its own,
+            // there is no local `Hole` declaration, and no member named `Hole`.
+            ("import parts.Hole", "Hole"),
+            // Single-segment `module a` (the shape every `examples/*.ri` uses),
+            // so the word under the cursor IS the whole module path.
+            ("module a", "a"),
+            ("default Material = steel", "Material"),
+        ];
+        for (source, word) in cases {
+            let offset = source
+                .find(word)
+                .unwrap_or_else(|| panic!("snippet must contain {word:?}: {source}"));
+            // Midpoint, not `offset + 1`: the latter overshoots a ONE-character
+            // word such as `module a`, landing past the end of the source where
+            // `find_word_at_offset` returns None and the assertion goes vacuous.
+            let position =
+                crate::convert::offset_to_position(source, (offset + word.len() / 2) as u32);
+            assert!(
+                compute_goto_definition(source, &test_uri(), position).is_none(),
+                "unnamed declaration kind should not resolve {word:?} for: {source}"
+            );
+        }
+    }
+
+    /// Parse a test fixture the same way the goto-def entry point does, and
+    /// assert it parses clean — a fixture that silently fails to parse would
+    /// make an ordering pin below pass without exercising the conflict it
+    /// claims to set up.
+    fn parse_clean(source: &str) -> reify_ast::ParsedModule {
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean, got {:?} for: {source}",
+            parsed.errors
+        );
+        parsed
+    }
+
+    #[test]
+    fn goto_def_cursor_on_declaration_name_beats_same_named_member() {
+        // ORDERING PIN for Phase A's placement BEFORE both member phases.
+        //
+        // `Bar` holds a member pathologically named `Foo` — the same name as the
+        // structure declared above it. With the cursor on `structure Foo`'s own
+        // name token, Phase A answers first. Merging Phase A into Phase C, or
+        // moving it after the member phases, would let the all-declarations
+        // member fallback find `param Foo` inside `Bar` and jump THERE instead;
+        // this test is what makes that refactor red.
+        let source = "structure Foo {\n    param x : Length = 5mm\n}\nstructure Bar {\n    param Foo : Length = 1mm\n}";
+        let parsed = parse_clean(source);
+
+        // Fixture guard: the shadowing member must really exist, or the pin is
+        // vacuous.
+        let bar = parsed
+            .declarations
+            .iter()
+            .find_map(|d| match d {
+                reify_ast::Declaration::Structure(s) if s.name == "Bar" => Some(s),
+                _ => None,
+            })
+            .expect("fixture declares structure Bar");
+        let shadow = find_named_member_span(&bar.members, "Foo")
+            .expect("fixture: Bar must hold a member named Foo for this pin to bite");
+
+        let decl_name = source.find("Foo").expect("source declares Foo");
+        let position = crate::convert::offset_to_position(source, decl_name as u32 + 1);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("cursor on a declaration's own name token must resolve");
+
+        let (lo, hi) = range_to_byte_range(source, loc.range);
+        assert_eq!(
+            &source[lo..hi],
+            "Foo",
+            "expected the declaration name token"
+        );
+        assert_eq!(
+            lo, decl_name,
+            "must land on `structure Foo`'s own name token, not on the same-named \
+             member at offset {}",
+            shadow.span.start
+        );
+    }
+
+    #[test]
+    fn goto_def_member_use_wins_over_same_named_top_level_declaration() {
+        // ORDERING PIN for Phase C's placement AFTER both member phases — the
+        // "every pre-existing member resolution stays byte-identical" claim.
+        //
+        // A top-level `fn width` shares its name with `S`'s `param width`. A use
+        // of the member must still resolve to the MEMBER statement span; hoisting
+        // Phase C above the member phases would jump to the fn's name token.
+        let source = "fn width(x: Length) -> Length { x }\nstructure S {\n    param width : Length = 5mm\n    let v = width\n}";
+        let parsed = parse_clean(source);
+
+        // Fixture guard: the conflicting top-level declaration must really exist.
+        assert!(
+            parsed.declarations.iter().any(|d| matches!(
+                d,
+                reify_ast::Declaration::Function(f) if f.name == "width"
+            )),
+            "fixture must declare a top-level `fn width` for this pin to bite"
+        );
+
+        let fn_name = source.find("width").expect("fixture declares fn width");
+        let member = source
+            .find("param width")
+            .expect("fixture declares the member");
+        let use_site =
+            source.find("let v = width").expect("fixture holds a use") + "let v = ".len();
+        let position = crate::convert::offset_to_position(source, use_site as u32 + 1);
+
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("a member use must resolve");
+        let (lo, hi) = range_to_byte_range(source, loc.range);
+        assert_eq!(
+            lo,
+            member,
+            "a member use must resolve to the MEMBER statement (offset {member}), \
+             not to the same-named `fn width` name token (offset {fn_name}); got {:?}",
+            &source[lo..hi]
+        );
+        assert!(
+            source[lo..hi].starts_with("param width"),
+            "expected the member statement span, got {:?}",
+            &source[lo..hi]
+        );
+    }
+
+    #[test]
+    fn goto_def_purpose_nested_structure_is_not_top_level() {
+        // DELIBERATE SCOPE BOUNDARY, not an oversight. A `structure def` nested
+        // directly inside a `purpose` body lands in `PurposeDef.structures`, not
+        // in `ParsedModule.declarations`, so it is not a TOP-LEVEL declaration
+        // and task 6388's uniform declaration-name resolution does not reach it.
+        // Whether such a name is even visible outside its enclosing purpose is a
+        // language-semantics question this task does not answer; pinning the
+        // current None keeps the boundary explicit rather than latent.
+        let source = "purpose Exploration() {\n    structure def InPurpose {\n        param x : Length = 5mm\n    }\n}";
+        let offset = source.find("InPurpose").expect("source declares InPurpose");
+        let position = crate::convert::offset_to_position(source, offset as u32 + 1);
+        assert!(
+            compute_goto_definition(source, &test_uri(), position).is_none(),
+            "a purpose-nested structure name is not a top-level declaration"
+        );
+    }
+
+    #[test]
+    fn goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration() {
+        // BOUNDARY PIN, sibling to `goto_def_purpose_nested_structure_is_not_top_level`.
+        //
+        // Task 6388's "uniform across declaration kinds" claim holds at
+        // DECLARATION sites for all eleven named kinds, but a `unit` has no
+        // reachable USE site, and that limit is worth pinning rather than
+        // leaving as a silent hole in the use-site table above.
+        //
+        // The cause is the WORD-SCANNING layer, not the declaration scan:
+        // `find_word_at_offset` treats every alphanumeric byte as an identifier
+        // byte, so a unit-suffixed literal fuses with its number and the cursor
+        // anywhere in `5meter` yields the word `"5meter"` — which never equals
+        // the declaration name `meter`. Widening `decl_name_and_span` cannot
+        // reach this; teaching the scanner to split a unit suffix would.
+        let source = "unit meter : Length\nstructure S {\n    param x : Length = 5meter\n}";
+        let parsed = parse_clean(source);
+
+        let suffix = source
+            .rfind("meter")
+            .expect("fixture uses a `5meter` literal");
+        // Fixture guard: the scanned word really IS the fused literal, so the
+        // None below pins the documented boundary rather than an unrelated miss.
+        assert_eq!(
+            find_word_at_offset(source, suffix).map(|(_, w)| w),
+            Some("5meter"),
+            "the unit suffix must fuse with the numeric literal, or this pin \
+             no longer describes why the use site is unreachable"
+        );
+        assert!(
+            compute_goto_definition_with_parsed(
+                &parsed,
+                source,
+                &test_uri(),
+                crate::convert::offset_to_position(source, suffix as u32)
+            )
+            .is_none(),
+            "a unit-suffixed literal is not a use site the word scanner can reach"
+        );
+
+        // CONTRAST: the same unit's own DECLARATION name is navigable, so this
+        // is a use-site limit, not a missing kind.
+        let decl = source.find("meter").expect("fixture declares `unit meter`");
+        assert!(
+            compute_goto_definition_with_parsed(
+                &parsed,
+                source,
+                &test_uri(),
+                crate::convert::offset_to_position(source, (decl + "meter".len() / 2) as u32)
+            )
+            .is_some(),
+            "the unit DECLARATION name must still resolve to itself"
+        );
+    }
+
+    #[test]
+    fn goto_def_phase_c_matches_lexically_ignoring_scope_and_comments() {
+        // KNOWN-LIMITATION PIN, sibling to
+        // `goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration`
+        // and `goto_def_purpose_nested_structure_is_not_top_level`.
+        //
+        // Phase C is a purely LEXICAL whole-file name match: it fires on any
+        // word equal to a top-level declaration's name, checking neither that
+        // the word sits in a reference position nor that a nearer binding
+        // shadows the name. Each row below therefore JUMPS where the pre-6388
+        // code returned None. Read-only path, so nothing is corrupted — the
+        // cost is precision, and a wrong jump target is worse than no jump.
+        //
+        // PINNED RATHER THAN FIXED, and the pin is the point: without it the
+        // suite asserts nothing about what Phase C should NOT match, so this
+        // imprecision is silent. A correct fix needs a binding-scope model and,
+        // for the last two rows, a lexical-context oracle that this task's
+        // declaration-name remit does not build; and every PARTIAL fix (say, a
+        // `Declaration::Function`-only parameter check) reintroduces the
+        // wildcard per-kind allowlist that `analysis::decl_name_and_span`
+        // exists to remove. Owner: #7607 — FLIP these assertions there rather
+        // than deleting them; each row already names the target it should get.
+        //
+        // `(source, word, use_index, decl_index, what)`, indexing
+        // `occurrences(source, word)`.
+        let cases: &[(&str, &str, usize, usize, &str)] = &[
+            (
+                "fn f(area: Length) -> Length { area }\nfn area(x: Length) -> Length { x }",
+                "area",
+                1,
+                2,
+                "a function parameter used in its own body. The nearest binding \
+                 is `f`'s parameter at occurrence 0; function parameters are \
+                 not entity members, so `find_named_member_span` never saw them",
+            ),
+            (
+                "fn zed(x: Length) -> Length { x }\n\
+                 field def temp : Point3 -> Real { source = analytical { |zed| zed } }",
+                "zed",
+                2,
+                0,
+                "a lambda parameter used in its own body; the binding is the \
+                 `|zed|` parameter at occurrence 1",
+            ),
+            (
+                "structure Bracket {\n    param x : Length = 5mm\n}\n// mentions Bracket here",
+                "Bracket",
+                1,
+                0,
+                "an identifier inside a line COMMENT, which is not a reference \
+                 position at all",
+            ),
+            (
+                "structure Foo {\n    param x : Length = 5mm\n}\n\
+                 structure S {\n    param label : String = \"Foo\"\n}",
+                "Foo",
+                1,
+                0,
+                "an identifier inside a STRING LITERAL, likewise not a \
+                 reference position",
+            ),
+        ];
+
+        for (source, word, use_index, decl_index, what) in cases {
+            let parsed = parse_clean(source);
+            let offsets = occurrences(source, word);
+            let use_offset = offsets[*use_index];
+            let decl_offset = offsets[*decl_index];
+
+            // Fixture guard: the cursor must really scan to `word`, or the row
+            // would pin an unrelated resolution. (The unit-suffix pin exists
+            // because exactly that can fail — `5meter` scans as one word.)
+            assert_eq!(
+                find_word_at_offset(source, use_offset).map(|(_, w)| w),
+                Some(*word),
+                "row {what:?}: the use site must scan to {word:?}: {source}"
+            );
+
+            let loc = compute_goto_definition_with_parsed(
+                &parsed,
+                source,
+                &test_uri(),
+                crate::convert::offset_to_position(source, use_offset as u32),
+            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "row {what:?} no longer resolves at all. If #7607 taught \
+                     Phase C about binding scope, update this row to assert the \
+                     new target instead of removing it: {source}"
+                )
+            });
+
+            assert_eq!(
+                range_to_byte_range(source, loc.range),
+                (decl_offset, decl_offset + word.len()),
+                "row {what:?}: Phase C jumps to the TOP-LEVEL declaration's \
+                 name token — today's documented imprecision, owned by #7607: \
+                 {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn goto_def_use_site_resolves_to_top_level_declaration_name_token() {
+        // Task 6388's headline symptom: goto-def on a USE of a top-level
+        // declaration (far from the declaration itself) must jump to that
+        // declaration's name token. `(source, name, use_occurrence_index)` —
+        // occurrence 0 is always the declaration, so the assertion is that the
+        // jump LEFT the use site and LANDED on the definition.
+        let rows: &[(&str, &str, usize)] = &[
+            // structure construction — the `sub b = Bracket()` case.
+            (
+                "structure def Bracket {\n    param w : Length = 5mm\n}\nstructure Asm {\n    sub b = Bracket()\n}",
+                "Bracket",
+                1,
+            ),
+            // fn call.
+            (
+                "fn area(x: Length) -> Length { x }\nstructure S {\n    let v = area(2mm)\n}",
+                "area",
+                1,
+            ),
+            // type alias in a type-annotation position.
+            (
+                "type Pressure = Force\nstructure S {\n    param p : Pressure = 1.0\n}",
+                "Pressure",
+                1,
+            ),
+            // enum name in a type position (occurrence 2 is `Dir.In`).
+            (
+                "enum Dir { In, Out }\nstructure S {\n    param d : Dir = Dir.In\n}",
+                "Dir",
+                1,
+            ),
+            // trait name in a bound.
+            (
+                "trait Rigid { param mass : Mass }\nstructure S : Rigid {\n    param mass : Mass\n}",
+                "Rigid",
+                1,
+            ),
+            // occurrence construction — `sub o = Welding()`.
+            (
+                "occurrence def Welding {\n    param method : Length = 1mm\n}\nstructure Asm {\n    sub o = Welding()\n}",
+                "Welding",
+                1,
+            ),
+            // field name referenced from an expression.
+            (
+                "field def temp : Point3 -> Real { source = analytical { |p| p } }\nstructure S {\n    let v = temp\n}",
+                "temp",
+                1,
+            ),
+        ];
+
+        for (source, name, use_index) in rows {
+            let offsets = occurrences(source, name);
+            assert!(
+                offsets.len() > *use_index,
+                "fixture must contain a use of {name:?} at occurrence {use_index}: {source}"
+            );
+            let decl_offset = offsets[0];
+            let use_offset = offsets[*use_index];
+            let position =
+                crate::convert::offset_to_position(source, (use_offset + name.len() / 2) as u32);
+
+            let loc = compute_goto_definition(source, &test_uri(), position).unwrap_or_else(|| {
+                panic!("goto-def on the USE of {name:?} returned None for: {source}")
+            });
+            assert_eq!(loc.uri, test_uri(), "uri mismatch for {name:?}: {source}");
+
+            let (lo, hi) = range_to_byte_range(source, loc.range);
+            assert_eq!(
+                &source[lo..hi],
+                *name,
+                "goto-def range sliced to {:?}, expected exactly {name:?} for: {source}",
+                &source[lo..hi]
+            );
+            assert_eq!(
+                lo, decl_offset,
+                "goto-def on a use of {name:?} must land on the DECLARATION's name \
+                 token (offset {decl_offset}), not on the use site (offset {use_offset}): {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn goto_def_local_declaration_wins_over_same_named_import() {
+        // Precedence pin: a LOCAL top-level declaration beats an import of the
+        // same name. This is the one ordering decision task 6388 makes that a
+        // later refactor could silently invert — same-file Phase C runs inside
+        // the single-file core, which the cross-file entry point delegates to at
+        // its Phase 1 slot, so it necessarily precedes cross-file Phase 2.
+        let source = "import parts.Hole\nstructure Hole {\n    param d : Length = 1mm\n}\nstructure Asm {\n    sub h = Hole()\n}";
+        let target_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        let target_uri = parts_uri();
+
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "parts".to_string(),
+            (target_uri.clone(), target_source.to_string()),
+        );
+        let resolver = mock_resolver(map);
+
+        // Occurrence 0 = the import, 1 = the local declaration, 2 = the use.
+        let offsets = occurrences(source, "Hole");
+        assert_eq!(offsets.len(), 3, "fixture should mention Hole three times");
+        let position = crate::convert::offset_to_position(source, offsets[2] as u32 + 1);
+
+        let loc = compute_goto_definition_cross_file(source, &test_uri(), position, &resolver)
+            .expect("goto-def on `sub h = Hole()` should resolve");
+        assert_eq!(
+            loc.uri,
+            test_uri(),
+            "must resolve to the LOCAL declaration, not the imported target"
+        );
+        let (lo, hi) = range_to_byte_range(source, loc.range);
+        assert_eq!(&source[lo..hi], "Hole");
+        assert_eq!(
+            lo, offsets[1],
+            "must land on the local `structure Hole` name token"
         );
     }
 
@@ -1011,44 +1689,10 @@ mod tests {
         );
     }
 
-    // --- find_name_offset_in_decl robustness tests (step-16: panic_on_invalid_span) ---
-
-    #[test]
-    fn find_name_offset_decl_start_exceeds_source_len() {
-        // (a) decl_start=100 but source is only 20 bytes — must not panic.
-        let source = "structure Foo { }"; // 17 bytes
-        let result = find_name_offset_in_decl(source, 100, "Foo");
-        // Should fall back to decl_start since the slice is invalid
-        assert_eq!(result, 100);
-    }
-
-    #[test]
-    fn find_name_offset_decl_start_on_continuation_byte() {
-        // (b) decl_start lands on a UTF-8 continuation byte — must not panic.
-        // "aéb" = [0x61, 0xC3, 0xA9, 0x62], byte 2 is continuation byte 0xA9
-        let source = "a\u{00E9}b Foo";
-        // source = [0x61, 0xC3, 0xA9, 0x62, 0x20, 0x46, 0x6F, 0x6F]
-        //           a     é(1)  é(2)  b     ' '   F     o     o
-        // decl_start=2 is the continuation byte
-        let result = find_name_offset_in_decl(source, 2, "Foo");
-        // Should snap forward and find "Foo" at byte 5
-        assert_eq!(result, 5);
-    }
-
-    #[test]
-    fn find_name_offset_decl_start_exactly_source_len() {
-        // (c) decl_start is exactly source.len() (empty trailing slice) — must not panic.
-        let source = "structure Foo { }";
-        let len = source.len() as u32; // 17
-        let result = find_name_offset_in_decl(source, len, "Foo");
-        // Should fall back to decl_start since there's nothing after
-        assert_eq!(result, len);
-    }
-
     #[test]
     fn find_declaration_in_source_with_multibyte_before_decl() {
         // End-to-end: target source has multi-byte chars before a structure declaration.
-        // Parser should still find the declaration, and find_name_offset_in_decl
+        // Parser should still find the declaration, and the name-token locator
         // should handle any tricky offsets gracefully.
         let target_source =
             "// comment with é accent\nstructure Widget {\n    param size: Length = 5mm\n}";
@@ -1289,5 +1933,102 @@ mod tests {
             find_declaration_name_span("type Speed = Length / Time\n", "Speed").is_none(),
             "the shared helper must not resolve type aliases (rename safety)"
         );
+    }
+
+    /// A declaration whose span does not contain its own name token must yield
+    /// `None`, not a span borrowed from elsewhere and not a zero-width span —
+    /// and the scan must NOT resume past the refusal.
+    ///
+    /// Tree-sitter error recovery can produce a declaration node whose span is
+    /// truncated short of the name. Any span this function returns reaches the
+    /// `references.rs` rename write path, so the only answer that cannot
+    /// corrupt a buffer is a refusal.
+    ///
+    /// The fixture carries TWO same-named declarations on purpose: with a
+    /// single declaration, `return None` and `continue` are indistinguishable.
+    /// Here they are not — a `continue` would hand back the SECOND
+    /// declaration's name token for the FIRST declaration, which is the
+    /// borrow-a-token-from-elsewhere hazard that bounding the search to the
+    /// declaration's own span exists to prevent.
+    #[test]
+    fn decl_name_span_in_refuses_without_resuming_the_declaration_scan() {
+        let source = "structure Widget {\n}\nstructure Widget {\n}\n";
+        let mut parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("_t"));
+        assert_eq!(
+            parsed.declarations.len(),
+            2,
+            "fixture: both same-named declarations must survive the parse"
+        );
+
+        // Truncate the FIRST declaration's span to cover only `struc`, the shape
+        // an error-recovery span can take. Mutating a REAL parse keeps every
+        // other field (AST node, content hash) honest.
+        let mut truncated = false;
+        if let reify_ast::Declaration::Structure(s) = &mut parsed.declarations[0] {
+            s.span = SourceSpan::new(0, 5);
+            truncated = true;
+        }
+        assert!(
+            truncated,
+            "fixture: declarations[0] must be the Structure whose span we truncate"
+        );
+
+        // Anti-vacuity: the second declaration's name token IS locatable, so a
+        // scan that resumed past the refusal would have something to return.
+        let reify_ast::Declaration::Structure(second) = &parsed.declarations[1] else {
+            panic!("fixture: declarations[1] must be the second Structure");
+        };
+        let donor = name_token_span(source, second.span, "Widget");
+        assert!(
+            !donor.is_empty(),
+            "fixture: the second declaration's name token must be locatable, \
+             otherwise a resumed scan would return `None` for the wrong reason"
+        );
+
+        assert_eq!(
+            decl_name_span_in(&parsed, source, "Widget", false),
+            None,
+            "a declaration span that excludes its own name token must be refused \
+             outright: neither a span that would reach the rename write path, nor \
+             the later declaration's token at {donor:?}"
+        );
+    }
+
+    /// A SHORT declaration name must resolve to the declaration's NAME token,
+    /// never to a character inside the leading keyword.
+    ///
+    /// Every declaration span starts at its keyword (`structure`, `fn`, `enum`,
+    /// `trait`, `occurrence def`), and the grammar admits one-character
+    /// identifiers, so a locator that is not whole-word matches the `s` of
+    /// `structure` before the `s` of `structure s`. The resulting span reaches
+    /// the `references.rs` rename write path, where it rewrites byte 0 of the
+    /// user's file.
+    #[test]
+    fn find_declaration_name_span_short_name_is_name_token_not_keyword_prefix() {
+        // (source, name, byte offset of the NAME token)
+        let rows: &[(&str, &str, u32)] = &[
+            ("structure s {\n}\n", "s", 10),
+            ("fn n() -> Length {\n    1mm\n}\n", "n", 3),
+            ("enum e {\n    A,\n}\n", "e", 5),
+            ("trait t {\n}\n", "t", 6),
+            ("occurrence def o {\n}\n", "o", 15),
+            // Control: a name that cannot occur inside its keyword already works.
+            ("structure Widget {\n}\n", "Widget", 10),
+        ];
+
+        for (source, name, name_offset) in rows {
+            let expected = SourceSpan::new(*name_offset, name_offset + name.len() as u32);
+            assert_eq!(
+                &source[expected.start as usize..expected.end as usize],
+                *name,
+                "fixture is wrong: offset {name_offset} in {source:?} is not {name:?}"
+            );
+            assert_eq!(
+                find_declaration_name_span(source, name),
+                Some(expected),
+                "declaration name {name:?} in {source:?} must resolve to its own \
+                 NAME token, not to a character inside the leading keyword"
+            );
+        }
     }
 }

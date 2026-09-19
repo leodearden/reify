@@ -525,6 +525,45 @@ tasks:
       paths:
       - docs/prds/reify-audit-p1-jcodemunch-substrate.md
       expect: absent
+  - name: index-dir-flag-documented
+    binding: capability→producer — gamma landed --jcodemunch-index-dir with the four-rung
+      resolution order (flag, then JCODEMUNCH_INDEX_DIR, then CODE_INDEX_PATH, then
+      $HOME/.code-index) and neither operator-facing skill document mentioned it.
+      Provenance esc-6108-7, an ownership gap surfaced from task 6108. No sibling task was
+      filed because mu already owns this drift class and is wired on 6108. The steward
+      addendum records this check as binding, so its absence from this manifest was itself
+      the drift class mu exists to close — the addendum names the gap as 'nothing greps
+      .claude/skills at all'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: --jcodemunch-index-dir
+      paths:
+      - .claude/skills/audit/SKILL.md
+      - .claude/skills/audit/references/cli-invocation.md
+      expect: present
+  - name: refusal-codes-documented
+    binding: capability→producer — gamma landed three refusal codes (E_JC_INDEX_STALE,
+      E_JC_INDEX_EMPTY, E_JC_INDEX_UNREADABLE) that hard-exit 125 on an all-jcodemunch
+      --pattern set, and neither skill document named any of them. The pattern below is the
+      PREFIX rather than one token, so a fourth CODE cannot silently escape this gate. It
+      does not — and cannot — cover the freshness path's one deliberately TOKEN-LESS refusal
+      (HEAD unreadable, so nothing about the index was established), which carries no marker
+      by design; that case is held by prose in cli-invocation.md 4.1, not by any grep.
+      Same provenance as index-dir-flag-documented (esc-6108-7, task 6108).
+      DELIBERATELY NO expect-absent CHECK ON leodearden/reify UNDER .claude/skills, and none
+      may be added. mu is a correct-the-record leaf, and explaining that the retired git
+      identity is NOT what reify uses requires naming it, so an absence check there would
+      fight the very edit it guards. The retired DB FILENAME is what
+      nonexistent-db-claim-removed bans instead — that was the claim that was false
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_JC_INDEX_
+      paths:
+      - .claude/skills/audit/SKILL.md
+      - .claude/skills/audit/references/cli-invocation.md
+      expect: present
   - name: landed-behaviour-to-document
     binding: capability→producer — gamma (identity + refusal contract), zeta (replacement
       freshness story), eta (unit retirement), ALL wired upstream. The PRD lists eta

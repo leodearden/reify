@@ -8,44 +8,9 @@
 #![cfg(has_gmsh)]
 
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
-use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, Mesh, QueryError};
-
-/// Inline copy of `crates/reify-kernel-manifold/src/test_fixtures.rs:37-67`.
-///
-/// Duplicated rather than dev-dep'ing on `reify-kernel-manifold` to avoid an
-/// awkward layering — gmsh would otherwise dev-depend on manifold solely for
-/// this 30-line fixture. When B-rep test fixtures consolidate into a shared
-/// crate, this helper can move there.
-fn unit_cube_mesh() -> Mesh {
-    Mesh {
-        vertices: vec![
-            0.0, 0.0, 0.0, // 0
-            1.0, 0.0, 0.0, // 1
-            1.0, 1.0, 0.0, // 2
-            0.0, 1.0, 0.0, // 3
-            0.0, 0.0, 1.0, // 4
-            1.0, 0.0, 1.0, // 5
-            1.0, 1.0, 1.0, // 6
-            0.0, 1.0, 1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, so CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
+use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, QueryError};
+use reify_test_support::fixtures::unit_cube_mesh;
+use reify_kernel_gmsh::{ffi, init};
 
 /// Round-trip a unit cube (8 vertices, 12 outward-winding triangles)
 /// through `mesh_to_volume` with the default options + P1 element order.
@@ -531,23 +496,48 @@ fn out_of_bounds_index_errors() {
     );
 }
 
+/// The success-path half of "stop the capture on EVERY exit path".
+///
+/// MEASURED: one unit-cube `mesh_to_volume` emits 82 captured lines, so a
+/// success path that left the capture armed would leave all 82 buffered for
+/// the next caller in this process to report as its own — and this read
+/// would find them. `logger_stop` drains, so empty is the witness that the
+/// guard fired. The error path is covered by
+/// `log_capture_tests::log_capture_guard_folds_captured_lines_into_the_error_and_stops_on_drop`
+/// and, end to end, by
+/// `mesher_poison_recovery::a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error`
+/// — which lives there because it needs a deliberate mesher failure, kept out
+/// of this binary.
+#[test]
+fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
+    let cube = unit_cube_mesh();
+    let kernel = GmshKernel::new();
+    kernel
+        .mesh_to_volume(&cube, &MeshingOptions::default(), ElementOrderTag::P1)
+        .expect("mesh_to_volume must succeed for a closed unit-cube surface");
+
+    // `mesh_to_volume` released GMSH_LOCK on return, so this read is
+    // serialised against any concurrent mesher in this binary rather than
+    // racing one mid-flight.
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let leftover = ffi::logger_get().expect("ffi::logger_get failed");
+    assert!(
+        leftover.is_empty(),
+        "mesh_to_volume must leave gmsh's capture stopped and drained; {} lines left: {leftover:?}",
+        leftover.len(),
+    );
+}
 // Coverage gap: the `surface_tags.is_empty()` branch in
-// `kernel_real::mesh_to_volume` (post-classify_surfaces +
-// post-create_geometry) is intentionally not exercised by an integration
-// test. Empirical investigation showed that the obvious candidate input —
-// a single open triangle — does NOT hit that branch: gmsh's
-// classify_surfaces+create_geometry produces a surface entity even for an
-// open mesh, and the failure surfaces later in `gmshModelMeshGenerate(3)`
-// when HXT cannot 3D-mesh an unclosed region. Worse, an HXT mesh_generate
-// failure leaves thread-local HXT state that survives `gmshClear()` and
-// corrupts the *next* meshing call's output (it returns 0 tets instead
-// of erroring). So an integration test that reliably hits the
-// empty-entities branch isn't reachable from real input geometry, and a
-// test that triggers HXT failure pollutes other tests in the same binary.
-// The branch remains as defensive guarding against future gmsh-version
-// changes; verification relies on code review rather than runtime
-// coverage. The other three reviewer-requested validation tests
+// `kernel_real::mesh_to_volume` is not reachable from real input geometry.
+// gmsh's classify_surfaces+create_geometry produces a surface entity even for
+// an open mesh, so the obvious candidate — a single open triangle — sails
+// past that branch and fails later, at `gmshModelMeshGenerate(3)`, when HXT
+// cannot 3D-mesh an unclosed region. The branch stays as defensive guarding
+// against future gmsh-version changes, verified by code review rather than
+// runtime coverage. The three sibling validation tests above
 // (`vertices_length_not_multiple_of_three_errors`,
-// `indices_length_not_multiple_of_three_errors`,
-// `out_of_bounds_index_errors`) cover the preflight validation that does
-// have testable error paths.
+// `indices_length_not_multiple_of_three_errors`, `out_of_bounds_index_errors`)
+// cover the preflight validation that does have testable error paths.
+//
+// Deliberate mesher failures live in `tests/mesher_poison_recovery.rs`, whose
+// header carries the mechanism and why they are kept out of this binary.

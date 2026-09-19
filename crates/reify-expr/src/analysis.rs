@@ -7,6 +7,52 @@
 //! Follows the same FieldSourceKind pattern as gradient/divergence/curl/laplacian
 //! in calculus.rs: the original field is stored in the lambda slot, and the sample
 //! handler in lib.rs dispatches to pointwise evaluation via reify_stdlib.
+//!
+//! Two tensor-field backings are accepted, and the accepted set is expressed as
+//! a `(source, lambda)` PAIR (see `validate_tensor_field`):
+//!
+//! - `(Analytical | Composed, Value::Lambda { .. })` — a callable backing,
+//!   evaluated pointwise on sample.
+//! - `(Sampled, Value::SampledField(_))` — a grid backing, e.g. the stress
+//!   field `solve_elastic_static` returns. This mirrors the `calculus.rs`
+//!   Sampled arms, which likewise test both halves of the pair.
+//!
+//! The wrapper stays lazy over a Sampled backing: nothing is projected here.
+//!
+//! # Reachability contract for a `Sampled` tensor backing
+//!
+//! This module only decides whether a wrapper may be BUILT. All of the actual
+//! work over a Sampled backing happens later, in `field_reductions.rs`:
+//! `project_sampled_tensor_windows` walks the backing buffer in stride-9
+//! windows, applies the shared `reify_stdlib` kernels
+//! (`compute_von_mises_3x3`, `compute_max_shear_3x3`,
+//! `compute_eigenvalues_3x3`) per window, and hands the resulting stride-1
+//! scalar field to `reduce_sampled_extremum`. Out-of-solid `f64::NAN` sentinel
+//! windows project to NaN and are dropped by the `is_finite()` gate in
+//! `argmax_argmin_index`; an all-non-finite buffer reduces to `Value::Undef`.
+//!
+//! What that makes reachable for a `Field { source: Sampled }` tensor input:
+//!
+//! - `max` / `min` / `argmax` / `argmin` (1-arg) — all four wrapper kinds.
+//! - The 2-arg bounded `max` / `min` / `argmax` / `argmin` — `VonMises` only.
+//!
+//! What is NOT reachable, and why:
+//!
+//! - The 2-arg bounded forms of `MaxShear`, `SafetyFactor` and
+//!   `PrincipalStresses` return `Value::Undef`. Pre-existing and unrelated to
+//!   the Sampled backing — the bounded dispatch simply has no arm for them.
+//!   Already documented at the head of `field_reductions.rs`.
+//! - Pointwise `sample()` of ANY Sampled-backed analysis wrapper returns
+//!   `Value::Undef`. `sample_field_at` in `lib.rs` forwards the INNER field's
+//!   lambda slot — a `Value::SampledField` — into
+//!   `apply_lambda_with_point_unpacking`, which handles `Value::Lambda` only.
+//!   Pinned by the live test
+//!   `sampled_backed_analysis_wrapper_is_constructed_but_pointwise_sample_still_undef`
+//!   in `tests/field_analysis_tests.rs`. This is not a regression from
+//!   admitting the Sampled backing: before it, the wrapper was itself `Undef`,
+//!   so sampling it was `Undef` too. Closing it needs the tensor element
+//!   dimension plumbed through `sample_field_at` plus a stride-3 variant for
+//!   `principal_stresses` — out of scope here, and carried by task #7131.
 
 use std::sync::Arc;
 
@@ -46,17 +92,44 @@ fn tensor_element_dimension(codomain: &Type) -> Option<DimensionVector> {
 ///
 /// Performs validation analogous to `calculus::validate_differentiable_field`:
 /// 1. `field_val` must be `Value::Field { .. }`
-/// 2. `source` must be `Analytical` or `Composed` (derived fields store the
-///    original field in the lambda slot, not a callable Lambda)
-/// 3. `lambda` slot must be `Value::Lambda { .. }` (callable)
-/// 4. `codomain_type` must be a 3×3 matrix/tensor with scalar elements
+/// 2. The `(source, lambda)` PAIR must be one of exactly two accepted shapes:
+///    - `(Analytical | Composed, Value::Lambda { .. })` — the analytical /
+///      derived path: the backing is a callable lambda, sampled pointwise.
+///    - `(Sampled, Value::SampledField(_))` — a grid-backed tensor field, e.g.
+///      the stress field `solve_elastic_static` returns
+///      (`reify_eval::compute_targets::sampled_stress_field`).
+/// 3. `codomain_type` must be a 3×3 matrix/tensor with scalar elements
 ///
 /// Returns `Some((domain_type, codomain_type, element_dimension))` if all
 /// checks pass, `None` otherwise.
 ///
-/// NOTE: Checks 1–3 duplicate the logic in `calculus::validate_differentiable_field`.
-/// A shared base validator would eliminate this duplication, but `calculus.rs` is
-/// outside the scope of this task's module locks. See reviewer suggestion #2.
+/// The pair must be matched on BOTH halves, never on either alone.
+/// `FieldSourceKind::Imported` also carries a `Value::SampledField` in its
+/// lambda slot (`lib.rs`, the Imported sample-dispatch arm), so "any source
+/// with a SampledField lambda" would admit it — but
+/// [`field_reductions::project_sampled_tensor_windows`] requires
+/// `source: Sampled` on the inner field, so an Imported-backed wrapper would
+/// construct successfully and then silently reduce to `Value::Undef`.
+/// Symmetrically, "Sampled with any lambda" would admit malformed fields whose
+/// lambda slot holds no grid at all. The `calculus.rs` eager-lowering arms
+/// (gradient / divergence / curl / laplacian) test both halves for the same
+/// reason.
+///
+/// For a `Sampled` backing the wrapper this validation gates is LAZY: the
+/// stride-9 window projection, the shared `reify_stdlib` per-window kernels and
+/// the out-of-solid NaN skip all happen later, in
+/// `field_reductions::project_sampled_tensor_windows`
+/// (`crates/reify-expr/src/field_reductions.rs`), when the wrapper is reduced.
+///
+/// NOTE: check 1 duplicates `calculus::validate_differentiable_field`; check 2
+/// deliberately DIVERGES from it, so only check 1 is shared logic that a future
+/// common base validator could hoist. `calculus.rs` still hard-rejects every
+/// non-`Analytical | Composed` source inside its validator and handles the
+/// `(Sampled, Value::SampledField)` pair EARLIER, as an eager lowering in
+/// `compute_gradient` / `compute_divergence` / `compute_curl` /
+/// `compute_laplacian` (a Sampled source with any other lambda slot falls
+/// through to the validator and is still rejected). This wrapper instead admits
+/// the pair here and stays LAZY — nothing is projected at construction time.
 fn validate_tensor_field<'a>(
     field_val: &'a Value,
     op: &str,
@@ -78,20 +151,19 @@ fn validate_tensor_field<'a>(
         }
     };
 
+    // Match the (source, lambda) PAIR — see the doc comment for why either
+    // half alone is wrong (Imported is also SampledField-backed).
     if !matches!(
-        source,
-        FieldSourceKind::Analytical | FieldSourceKind::Composed
+        (source, lambda.as_ref()),
+        (
+            FieldSourceKind::Analytical | FieldSourceKind::Composed,
+            Value::Lambda { .. }
+        ) | (FieldSourceKind::Sampled, Value::SampledField(_))
     ) {
         #[cfg(debug_assertions)]
-        eprintln!("[reify-expr] {op}: unsupported source kind {:?}", source);
-        return None;
-    }
-
-    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
-        #[cfg(debug_assertions)]
         eprintln!(
-            "[reify-expr] {op}: lambda slot is not callable: {:?}",
-            lambda
+            "[reify-expr] {op}: unsupported (source, lambda) pair: source {:?}, lambda {:?}",
+            source, lambda
         );
         return None;
     }

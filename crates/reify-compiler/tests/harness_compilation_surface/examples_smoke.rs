@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use reify_test_support::missing_paths_under;
+use reify_test_support::{CTOR_DIAGNOSTIC_ARG_PREFIX, is_ctor_conformance_code};
 
 /// Absolute path to the workspace `examples/` directory, resolved at compile
 /// time from this crate's manifest directory (two levels up).
@@ -176,7 +177,7 @@ const SKIP_SET: &[(&str, &str)] = &[
 /// solve, which is the whole reason the debt exists rather than the migration
 /// simply having been done. Leaving the entries behind after that lands is
 /// caught by [`ctor_conformance_migration_debt_entries_are_all_live`].
-const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
+pub(super) const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
     (
         "trajectory/printer_print_envelope.ri",
         "velocity_limit",
@@ -660,29 +661,6 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
     }
 }
 
-/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance surface (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
-///
-/// Kept deliberately in sync with the identically-named helper in
-/// `struct_ctor_field_conformance_tests.rs`; integration tests are separate
-/// binaries and cannot share a private helper without a support-crate hop, and
-/// the set is small enough that duplication is cheaper than the indirection.
-fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
-    use reify_core::diagnostics::DiagnosticCode;
-    matches!(
-        code,
-        Some(
-            DiagnosticCode::ArgTypeMismatch
-                | DiagnosticCode::SelectorKindMismatch
-                | DiagnosticCode::TypeNotConformingToTrait
-                | DiagnosticCode::TypeNotConformingToStructureRef
-                | DiagnosticCode::TypeNotConformingToVector
-                | DiagnosticCode::CtorUnknownField
-                | DiagnosticCode::CtorArity
-        )
-    )
-}
-
 /// One ctor-conformance diagnostic observed during the corpus walk.
 ///
 /// Carries the offending param name alongside file / code / message so the gate
@@ -739,10 +717,6 @@ fn ctor_conformance_corpus_walk() -> &'static CtorConformanceWalk {
     })
 }
 
-/// The `emit_arg_type_mismatch` message prefix that introduces the offending
-/// param name (`crates/reify-compiler/src/conformance/mod.rs`).
-const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
-
 /// Recover the offending param name from a ctor-conformance diagnostic message.
 ///
 /// A `Diagnostic` carries no structured param field, so the only handle the
@@ -754,7 +728,12 @@ const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
 /// This is a real coupling to diagnostic prose, and it is deliberately guarded
 /// rather than merely commented: if the wording ever drifts so extraction stops
 /// matching, [`ctor_conformance_migration_debt_entries_are_all_live`] goes red
-/// naming the entry that stopped matching.
+/// naming the entry that stopped matching. The prefix it keys on is the shared
+/// `reify_test_support::ctor_conformance::CTOR_DIAGNOSTIC_ARG_PREFIX`, whose
+/// doc comment is where that coupling is recorded.
+///
+/// Single copy, not a duplication: this EXTRACTS the param name, where the
+/// shared `ctor_diagnostic_names_arg` only TESTS for a given one.
 fn param_name_from_ctor_diagnostic(message: &str) -> Option<String> {
     let start = message.find(CTOR_DIAGNOSTIC_ARG_PREFIX)? + CTOR_DIAGNOSTIC_ARG_PREFIX.len();
     let rest = &message[start..];
@@ -762,20 +741,30 @@ fn param_name_from_ctor_diagnostic(message: &str) -> Option<String> {
     Some(rest[..end].to_owned())
 }
 
-/// Whether `entry` (a [`CTOR_CONFORMANCE_MIGRATION_DEBT`] row) waives `v`.
+/// Whether `entry` (a [`CTOR_CONFORMANCE_MIGRATION_DEBT`] row) waives the site
+/// `(file, param)`.
 ///
 /// Both halves of the key must match: the file AND the param. An entry whose
 /// param does not match — including because extraction returned `None` — waives
 /// nothing.
-fn debt_entry_matches(entry: &(&str, &str, &str), v: &CtorConformanceViolation) -> bool {
-    entry.0 == v.file && v.param.as_deref() == Some(entry.1)
+///
+/// Takes the two key halves rather than a [`CtorConformanceViolation`] so the
+/// sibling `ctor_conformance_corpus_survey` module can apply the SAME rule to a
+/// `SurveySite`, which carries the same pair under different field names. The
+/// rule stays defined exactly once.
+pub(super) fn debt_entry_matches(
+    entry: &(&str, &str, &str),
+    file: &str,
+    param: Option<&str>,
+) -> bool {
+    entry.0 == file && param == Some(entry.1)
 }
 
 /// Whether any debt entry waives `v`.
 fn violation_is_waived(v: &CtorConformanceViolation) -> bool {
     CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()
-        .any(|entry| debt_entry_matches(entry, v))
+        .any(|entry| debt_entry_matches(entry, &v.file, v.param.as_deref()))
 }
 
 /// Expiry guard: every [`CTOR_CONFORMANCE_MIGRATION_DEBT`] entry must still
@@ -800,7 +789,12 @@ fn ctor_conformance_migration_debt_entries_are_all_live() {
 
     let stale: Vec<String> = CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()
-        .filter(|entry| !walk.violations.iter().any(|v| debt_entry_matches(entry, v)))
+        .filter(|entry| {
+            !walk
+                .violations
+                .iter()
+                .any(|v| debt_entry_matches(entry, &v.file, v.param.as_deref()))
+        })
         .map(|(file, param, owner)| format!("  {} :: param '{}'  (owner {})", file, param, owner))
         .collect();
 

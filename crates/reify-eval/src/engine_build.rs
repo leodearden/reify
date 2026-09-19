@@ -2222,7 +2222,6 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
 /// - Convert { from }                 → `[BRep, Mesh]`
 /// - Primitive* / Curve*              → `[BRep]` (sources; classified to
 ///   document the 'not a Mesh-accepting consumer' decision; step-4 adds arms)
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
     use Operation::*;
     use ReprKind::{BRep, Mesh, Voxel};
@@ -2303,7 +2302,6 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 /// Unclassified ops (`classify_op_input_reprs` returns `None`) return `false`,
 /// making them conservative: they do not accept Mesh, which forces their
 /// producers to demand BRep.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
     classify_op_input_reprs(op).is_some_and(|s| s.contains(&repr))
 }
@@ -2317,7 +2315,6 @@ fn op_accepts_repr(op: &Operation, repr: ReprKind) -> bool {
 /// classified with multiple reprs that happen to include Voxel alongside
 /// Mesh/BRep — such an op would NOT be Voxel-only-input and must not force
 /// its producer to Voxel demand.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn op_is_voxel_only_input(op: &Operation) -> bool {
     op_accepts_repr(op, ReprKind::Voxel)
         && !op_accepts_repr(op, ReprKind::Mesh)
@@ -13014,11 +13011,12 @@ where
 // tet seam, T6, and the engine-bridge PRD (δ/ε) respectively.
 //
 // The whole seam is `#[allow(dead_code)]` because its consumer — the
-// engine-bridge mixed solve wiring — is a future task; this mirrors the
-// `dispatch_volume_mesh` G-allow pattern above.
+// engine-bridge mixed solve wiring — is a future task: #6371, "Wire
+// build_mixed_region_mesh (T12 layer-B seam) into a production consumer".
+// This mirrors the `dispatch_volume_mesh` G-allow pattern above.
 
 /// Per-element kind tag in a [`MixedRegionMesh`].
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnifiedElementKind {
     /// A mid-surface shell element (one per shell triangle, 6 DOF/node).
@@ -13028,7 +13026,7 @@ pub(crate) enum UnifiedElementKind {
 }
 
 /// One element of the unified mixed mesh, referencing unified node ids.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UnifiedElement {
     /// Whether this element is meshed as a shell or a tet.
@@ -13040,7 +13038,7 @@ pub(crate) struct UnifiedElement {
 
 /// Unified mixed shell/tet mesh: a single node list, per-element kind tags, and
 /// the shell↔tet interface MPC constraint rows.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 #[derive(Debug, Clone)]
 pub(crate) struct MixedRegionMesh {
     /// Unified node positions (world, f64). Shell vertices first, then tet
@@ -13090,6 +13088,51 @@ pub(crate) enum MixedRegionError {
         /// Unified index (into the merged node list) of the offending node.
         node_index: usize,
     },
+    /// `tet`'s connectivity is `Hex` or `Wedge` — `build_mixed_region_mesh` is
+    /// tet-only (task 4996 hardening; the tet-side `VolumeMesh` must carry
+    /// `VolumeConnectivity::Tet`).
+    UnsupportedConnectivity,
+    /// `tet`'s tet index buffer length is not a whole multiple of the
+    /// per-element node count, so it describes no whole number of elements.
+    ///
+    /// Sibling of [`MixedRegionError::UnsupportedConnectivity`]: both reject a
+    /// mis-shaped `VolumeMesh` at the same up-front gate. Without this check
+    /// the `chunks_exact(nodes_per_tet)` walk below would SILENTLY DROP the
+    /// trailing partial chunk and return `Ok` with one fewer tet element than
+    /// the caller supplied — the truncating `tet_indices.len() / nodes_per_tet`
+    /// capacity expression matching the loss, so nothing surfaces it. Mirrors
+    /// `reify_solver_elastic::volume_refine::RefineError::MalformedTetIndices`
+    /// and `reify_mesh_morph::elasticity::ElasticityFailure::MalformedTetIndices`.
+    MalformedTetIndices {
+        /// `tet_indices.len()`.
+        len: usize,
+        /// Per-element node count (4 for P1, 10 for P2).
+        stride: usize,
+    },
+    /// A tet index addresses a vertex that does not exist
+    /// (`>= tet.vertices.len() / 3`).
+    ///
+    /// The SEMANTIC sibling of the two STRUCTURAL checks above, completing the
+    /// structural-then-semantic pair that
+    /// `reify_solver_elastic::volume_refine::tet_shape` and
+    /// `reify_mesh_morph::elasticity::ElasticityFailure` both draw — without it
+    /// this gate would claim a parity it did not have.
+    ///
+    /// Unlike its siblings, this one guards a DEFERRED failure rather than an
+    /// immediate one: nothing in `build_mixed_region_mesh` dereferences the
+    /// connectivity it builds, so an out-of-range index is not a panic here —
+    /// it is copied verbatim into `UnifiedElement::connectivity` as
+    /// `n_shell + i`, yielding an apparently-valid `MixedRegionMesh` whose
+    /// element connectivity dangles past `nodes.len()`. The abort would then
+    /// land in whichever assembly path first indexes `nodes[conn[a]]`, far from
+    /// the malformed input that caused it.
+    InvalidTetIndex {
+        /// The offending index value, as found in `tet.tet_indices()`.
+        vertex_index: u32,
+        /// Number of tet vertices (`tet.vertices.len() / 3`) — the exclusive
+        /// upper bound every tet index must respect.
+        vertex_count: usize,
+    },
 }
 
 impl std::fmt::Display for MixedRegionError {
@@ -13110,6 +13153,24 @@ impl std::fmt::Display for MixedRegionError {
                 f,
                 "unified node {node_index} has a non-finite coordinate (NaN or ±infinity); \
                  it would poison the interface-tying comparisons"
+            ),
+            MixedRegionError::UnsupportedConnectivity => write!(
+                f,
+                "mixed-region assembly is tet-only: a Hex/Wedge VolumeMesh has no \
+                 mixed-region path"
+            ),
+            MixedRegionError::MalformedTetIndices { len, stride } => write!(
+                f,
+                "malformed tet connectivity: {len} indices is not a whole multiple \
+                 of the {stride}-node per-element stride"
+            ),
+            MixedRegionError::InvalidTetIndex {
+                vertex_index,
+                vertex_count,
+            } => write!(
+                f,
+                "tet index {vertex_index} is out of range (the tet mesh has \
+                 {vertex_count} vertices)"
             ),
         }
     }
@@ -13143,13 +13204,75 @@ impl std::error::Error for MixedRegionError {}
 /// preconditions. Returns [`MixedRegionError::NonFiniteNodeCoordinate`] if
 /// any unified node coordinate is non-finite and at least one interface is
 /// present (the pure merge with no interfaces tolerates non-finite nodes,
-/// since it performs no comparison on them).
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+/// since it performs no comparison on them). Returns
+/// [`MixedRegionError::UnsupportedConnectivity`] if `tet`'s connectivity is
+/// `Hex` or `Wedge` (this function is tet-only),
+/// [`MixedRegionError::MalformedTetIndices`] if its tet index buffer length is
+/// not a whole multiple of the per-element node count, or
+/// [`MixedRegionError::InvalidTetIndex`] if an index addresses a vertex that
+/// does not exist. Those last three form the up-front mesh-shape gate and run
+/// **first**, before any allocation; the two structural checks run before the
+/// semantic one, so a buffer that is both mis-sized and out-of-range reports
+/// `MalformedTetIndices`.
+///
+/// # Scope of the guarantee
+///
+/// The gate establishes that the emitted [`MixedRegionMesh`] is *structurally*
+/// addressable: every `UnifiedElement::connectivity` entry it produces on the
+/// tet side indexes a node that exists. It does NOT check vertex ORDERING,
+/// element quality, or degeneracy — a gated mesh is well-formed enough for a
+/// downstream consumer to index safely, not necessarily solvable.
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
     tet: &VolumeMesh,
     interfaces: &[ShellTetInterface],
 ) -> Result<MixedRegionMesh, MixedRegionError> {
+    // ── Connectivity gate: reject Hex/Wedge before ANY allocation ────────────
+    //
+    // Hoisted above the node merge so a mis-routed hex/wedge mesh costs no
+    // O(n_vertices) allocate-and-copy before it is rejected — matching the
+    // fail-fast ordering `refine_with_size_field` establishes on the
+    // reify-solver-elastic side.
+    let tet_indices = tet
+        .tet_indices()
+        .ok_or(MixedRegionError::UnsupportedConnectivity)?;
+    // Per-tet node count (P1 = 4, P2 = 10); tet local node `m` → unified node
+    // `n_shell + m`. The `tet_indices()?` guard above already established
+    // `tet.connectivity` is `Tet`, so `nodes_per_element()` returns 4/10 here —
+    // never 0, making the `%`/`/` below safe.
+    let nodes_per_tet = tet.nodes_per_element();
+    // Shape gate, sibling of the connectivity gate above: a buffer that is not
+    // a whole multiple of the stride describes no whole number of elements.
+    // Without this the `chunks_exact(nodes_per_tet)` element walk below would
+    // silently drop the trailing partial chunk (and the truncating capacity
+    // division would match the loss), so the function would return `Ok` with
+    // one fewer tet than the caller supplied. Mirrors
+    // `reify_solver_elastic::volume_refine::tet_shape`.
+    if !tet_indices.len().is_multiple_of(nodes_per_tet) {
+        return Err(MixedRegionError::MalformedTetIndices {
+            len: tet_indices.len(),
+            stride: nodes_per_tet,
+        });
+    }
+    // Semantic check, after the two structural ones: every index must address
+    // a tet vertex that exists. Unlike its siblings this guards a DEFERRED
+    // failure — nothing below dereferences the connectivity, so a dangling
+    // index is copied verbatim into `UnifiedElement::connectivity` as
+    // `n_shell + i` and the abort lands in whichever assembly path first
+    // indexes `nodes[conn[a]]`. Structural-before-semantic ordering mirrors
+    // `reify_solver_elastic::volume_refine::tet_shape` and
+    // `reify_mesh_morph::elasticity`.
+    let vertex_count = tet.vertices.len() / 3;
+    if let Some(&vertex_index) = tet_indices.iter().find(|&&i| i as usize >= vertex_count) {
+        return Err(MixedRegionError::InvalidTetIndex {
+            vertex_index,
+            vertex_count,
+        });
+    }
+    // Exact (not truncating) now that divisibility is proven.
+    let n_tet_elements = tet_indices.len() / nodes_per_tet;
+
     // ── Merge nodes: shell vertices first, then tet vertices (f32 → f64) ──────
     let n_shell = shell.vertices.len();
     let mut nodes: Vec<[f64; 3]> = Vec::with_capacity(n_shell + tet.vertices.len() / 3);
@@ -13159,26 +13282,17 @@ pub(crate) fn build_mixed_region_mesh(
     }
 
     // ── Elements: one shell element per triangle, one tet element per tet ─────
-    let tet_indices = tet
-        .tet_indices()
-        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)");
+    //
+    // Size by ELEMENT count, not index count: `tet_indices.len()` is 4× (P1) or
+    // 10× (P2) the number of tet elements actually pushed.
     let mut elements: Vec<UnifiedElement> =
-        Vec::with_capacity(shell.triangles.len() + tet_indices.len());
+        Vec::with_capacity(shell.triangles.len() + n_tet_elements);
     for tri in &shell.triangles {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Shell,
             connectivity: vec![tri[0] as usize, tri[1] as usize, tri[2] as usize],
         });
     }
-    // Per-tet node count from the element order (P1 = 4, P2 = 10); tet local
-    // node `m` → unified node `n_shell + m`.
-    let nodes_per_tet = match tet
-        .element_order()
-        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)")
-    {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
     for tet_conn in tet_indices.chunks_exact(nodes_per_tet) {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Tet,
@@ -13320,13 +13434,13 @@ pub(crate) fn build_mixed_region_mesh(
 }
 
 /// Dot product of two 3-vectors.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Squared Euclidean distance between two 3-vectors.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -13336,7 +13450,7 @@ fn dist3_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// Index of the node in `nodes` nearest (Euclidean) to `target`; `None` if
 /// `nodes` is empty. Ties resolve to the lowest index (deterministic).
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, &p) in nodes.iter().enumerate() {
@@ -13363,7 +13477,7 @@ fn nearest_node_index(nodes: &[[f64; 3]], target: [f64; 3]) -> Option<usize> {
 /// (not one per non-finite node) when any candidate's squared distance was
 /// non-finite, as telemetry for the mis-selection this fallback can still
 /// cause.
-#[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
+#[allow(dead_code)] // T12 layer-B seam; consumer pending #6371 (wire build_mixed_region_mesh into a production consumer)
 fn three_nearest_node_indices(nodes: &[[f64; 3]], target: [f64; 3]) -> Vec<usize> {
     // Latches on any non-finite dist3_sq (NaN, or +INFINITY from a non-finite
     // or overflowing coordinate) for the WARN below, and normalizes NaN to
@@ -13623,11 +13737,15 @@ mod dispatch_volume_mesh_tests;
 // below exercise the helper's contract but cannot verify the one-shot guarantee
 // at the call-site level.
 //
-// Not yet wired into the engine's realization pipeline; blocked on task
-// #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in
-// dispatch_volume_mesh). See compute-node-contract.md §6 for the full task
-// history and rejected-alternative rationale.
-#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β)
+// Not yet wired into the engine's realization pipeline; blocked on #4746
+// (hex/wedge Phase A activation), whose WHAT-TO-DO names this helper
+// explicitly — it emits this diagnostic at the `dispatch_volume_mesh`
+// production edge. The cite here was previously task 4744, which is now done
+// and landed WITHOUT wiring this helper. See compute-node-contract.md §6 for
+// the rejected-alternative rationale (why morph is a §3.2 dispatch producer,
+// not a §3.4 ComputeNode) — not for wiring ownership, which that doc still
+// records under the superseded cite and which this comment states instead.
+#[allow(dead_code)] // production wiring pending #4746 (hex/wedge Phase A activation: emits this diagnostic at the dispatch_volume_mesh production edge)
 pub(crate) fn p2_substitution_diagnostic(
     swept_kind: Option<&SweptKind>,
     force_tet: bool,

@@ -5,6 +5,9 @@ src/parser.c
 src/grammar.json
 src/node-types.json
 
+# sha256 manifest of the generated files above — a build stamp, never source.
+src/.generated_outputs.stamp
+
 # tree-sitter CLI binary — not needed in the repo.
 /tree-sitter
 

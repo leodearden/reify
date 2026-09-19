@@ -66,6 +66,26 @@ signal — α is intermediate.
 | no numeric solver bound asserted | numeric floor | render assertions are color/material-state / screenshot deltas via `reify-debug` MCP — **no** AABB/solver tolerance ⇒ G6.1/G6.2 do not fire; no floor to clear | PASS (N/A) |
 | no negative-assertion / rejection signal | rejection-mechanism | ε asserts no "X is rejected" ⇒ branch 4 N/A | PASS (N/A) |
 
+> **CORRECTION 2026-09-03 (#6877) — the ε producer-attribution row is historically accurate and is
+> preserved verbatim; ε's PASS verdict stands.** The first row credits `producer:task-4762` with
+> "the 4 FEA materials gain `: ElasticMaterial + Visual` + editorial appearance". Task 4762 **did**
+> land exactly that, and this row is the record of it. #6877 subsequently *refined* the declared
+> bound to `: DampedMaterial + Visual` (`materials_fea.ri:272` Steel, `:329` Al, `:386` Ti, `:446`
+> ABS), where `trait DampedMaterial : ElasticMaterial + Damped {}` (`:224`) adds a `loss_factor`
+> mixin over the same `ElasticMaterial` base.
+>
+> **The capability this row actually asserts is UNCHANGED.** What ε gates on is that
+> `Steel_AISI_1045` carries its editorial grey-satin `Appearance` — and that member survives the
+> flip intact: `param appearance : Appearance = Appearance(color: Color(r: 0.50, g: 0.50, b: 0.52),
+> finish: Finish.Satin, …)` at `materials_fea.ri:312`, with the other three presets' equivalents at
+> `:369`, `:426` and `:486`. The `Visual` half of the bound is untouched by #6877, so **no re-gate
+> is implied** and no verdict is downgraded.
+>
+> Manifest rows like this one are read as history, not as a live status board — cf.
+> `crates/reify-constraints/tests/cost_robustness_tradeoff_blend.rs:249`, which refers to "a
+> historical pre-γ capability-manifest row". Per this file's preamble ("Evidence verified
+> 2026-06-24 against the reify worktree at HEAD"), the row above is left exactly as gated.
+
 **DAG-direction (anti-inversion) summary:** every capability ε's signal requires is delivered by a task
 **upstream** of ε (δ, and transitively β→4761, γ→4760+4765, α; plus ε→4762). **No** required capability is
 owned by a task that depends on ε. The leaf's premise is producible from its dependency set.

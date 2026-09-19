@@ -1,0 +1,14 @@
+[package]
+name = "reify-builtins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Enum-keyed builtin-signature registry (docs/prds/v0_6/builtin-signature-registry.md task α)"
+
+[dependencies]
+reify-core.workspace = true
+# Derived on the macro-generated id enums so the registry's lint tests can
+# iterate every variant (EnumIter) and pin the row/variant count (EnumCount).
+# Already a workspace dep and the established in-tree enum-exhaustiveness
+# idiom — see reify-core/src/ty.rs:118.
+strum.workspace = true

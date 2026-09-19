@@ -297,6 +297,16 @@ fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         index_binder: _,
         index_domain,
         relate_relations,
+        // The DERIVED arm's clause — `sub b = mirror of a across P { … }`
+        // (task #6615). Deliberately `_`-bound, not folded into the chain
+        // below: its expression-bearing parts (the `SubDerivationKind`
+        // transform operand, each `SubParamOverride` value) and its
+        // `members` are reached only once derived subs elaborate, which is
+        // A-beta (#6616)'s semantics to define — the same deferral, for the
+        // same reason, that `SubDerivation::members`' doc comment records
+        // against every member walker in reify-ast. A-beta must wire both
+        // together rather than inherit either silently.
+        derivation: _,
         span: _,
         content_hash: _,
     } = s;
@@ -1908,19 +1918,13 @@ pub fn compute_rename_cross_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences, parse_one_clean};
     use crate::convert::{offset_to_position, span_to_range};
     use reify_core::ModulePath;
 
     /// Build the name-token span `[start, start + text.len())`.
     fn span_of(start: usize, text: &str) -> SourceSpan {
         SourceSpan::new(start as u32, (start + text.len()) as u32)
-    }
-
-    /// Byte offsets of every whole-word-ish occurrence of `needle` in `source`,
-    /// ascending. `width`/`volume`/etc. never appear as substrings of other
-    /// identifiers in the bracket fixture, so plain match_indices is exact here.
-    fn occurrences(source: &str, needle: &str) -> Vec<usize> {
-        source.match_indices(needle).map(|(i, _)| i).collect()
     }
 
     /// Whether `span` lies fully within the byte range `[lo, hi)`.
@@ -4397,6 +4401,172 @@ structure Assembly {
         );
     }
 
+    #[test]
+    fn rename_and_references_unaffected_by_same_file_goto_def_declaration_names() {
+        // TASK 6388 NON-REGRESSION GUARD — the executable form of that task's
+        // CRITICAL-CONSTRAINT audit.
+        //
+        // 6388 made same-file go-to-definition resolve top-level declaration
+        // names UNIFORMLY across all kinds, via its own scanner
+        // (`analysis::decl_name_and_span` + `goto_def::decl_name_token`). It did
+        // NOT widen `goto_def::find_declaration_name_span`, which feeds the
+        // references home oracle here: `collect_structure_name_spans`,
+        // `resolve_cross_file_home` step 2, and the cross-file rename producer.
+        //
+        // WHY THAT SEPARATION MUST HOLD: the five kinds below are now navigable
+        // by same-file goto-def but are NOT collectible as uses.
+        // `collect_uses`/`collect_idents_in_expr` walk `ExprKind::Ident` in
+        // EXPRESSIONS only, never type expressions, and
+        // `collect_structure_name_spans` adds only `sub _ = Name` construction
+        // sites. A rename built on that reference set moves the DECLARATION
+        // token while silently missing every type-position use — and because
+        // Invariant 5 only checks that edited buffers re-PARSE clean, such a
+        // rename passes validation yet leaves the buffer referencing a name that
+        // no longer exists. (Same shape as the `is_renameable_cross_file`
+        // CAVEAT, which documents the residual gap for the ADMITTED
+        // Structure/Occurrence.)
+        //
+        // TWO GATES, ASSERTED SEPARATELY, because they are separate code:
+        // - RENAME is gated by `classify_top_level_decl`'s own allowlist, which
+        //   never consults `find_declaration_name_span`. The per-kind refusals
+        //   below pin THAT gate.
+        // - The REFERENCE SET is gated by `find_declaration_name_span`. The
+        //   coupling assertion at the tail pins that one. A rename-only
+        //   assertion cannot: widening `find_declaration_name_span` leaves every
+        //   `prepare_rename*` call returning None, so the refusals stay green
+        //   while the reference set silently goes incomplete.
+        let (_docs, resolver) = canonical_workspace();
+
+        // The five kinds whose uses live in TYPE position only, FILTERED from
+        // the shared snippet table rather than re-copied. That table was hoisted
+        // to module scope in `analysis` precisely so it would have one home; a
+        // third verbatim copy here would reintroduce the lockstep-edit burden it
+        // was meant to remove.
+        const TYPE_POSITION_ONLY: [&str; 5] = ["Pressure", "meter", "Foo", "ball", "lightweight"];
+        let kinds: Vec<&(&str, &str)> = NAMED_DECL_SNIPPETS
+            .iter()
+            .filter(|(_, name)| TYPE_POSITION_ONLY.contains(name))
+            .collect();
+        assert_eq!(
+            kinds.len(),
+            TYPE_POSITION_ONLY.len(),
+            "every TYPE_POSITION_ONLY name must still have a row in \
+             NAMED_DECL_SNIPPETS; a renamed or dropped row would silently \
+             shrink this guard"
+        );
+
+        let uri = Url::parse("file:///proj/guard.ri").unwrap();
+        for (source, name) in kinds {
+            // `parse_one_clean` asserts cleanliness FIRST: every assertion in
+            // this loop is NEGATIVE, so a snippet broken by grammar drift would
+            // yield zero declarations and pass vacuously — the guard would stop
+            // guarding in silence.
+            let parsed = parse_one_clean(source, "guard");
+
+            let decl = occurrences(source, name)[0];
+            let pos = offset_to_position(source, decl as u32);
+
+            assert!(
+                prepare_rename(source, &parsed, pos).is_none(),
+                "single-file prepare_rename must refuse the {name:?} declaration \
+                 name (goto-def navigability must not imply renameability): {source}"
+            );
+            assert!(
+                prepare_rename_cross_file(source, &parsed, &uri, pos, &resolver).is_none(),
+                "cross-file prepare_rename_cross_file must refuse the {name:?} \
+                 declaration name: {source}"
+            );
+        }
+
+        // COUPLING between the two halves, stated in the direction that lets the
+        // gap be CLOSED: if either oracle treats the declaration as a home — a
+        // granted rename, or a reported reference set — then that set must COVER
+        // the type-position use.
+        //
+        // Deliberately NOT the earlier form of this assertion, which pinned the
+        // reference-set INCOMPLETENESS ("the type-position use must not be
+        // reported"). That is a deficiency, not a contract: it would red the
+        // moment someone taught `collect_uses`/`collect_idents_in_expr` to walk
+        // type expressions — #6972's remit — reading as a rule forbidding the
+        // improvement. As written, closing the collector gap keeps this green,
+        // while admitting a kind to EITHER oracle without closing it reds.
+        //
+        // The `refs_reported` half is what gives this guard teeth, and it is
+        // MUTATION-VERIFIED: flipping `find_declaration_name_span`'s
+        // `include_aliases` argument to `true` turns the `Pressure` row's
+        // reference set from None into exactly one location — the declaration
+        // token, with the `param p : Pressure` use absent — reddening this
+        // assertion while every refusal above stays green. That is precisely the
+        // regression the refusals alone cannot see.
+        //
+        // Today both antecedents are false (rename refused, no reference set),
+        // so the implication holds vacuously; both are still evaluated on every
+        // run so neither call can rot silently.
+        let use_bearing: &[(&str, &str, &str)] = &[
+            (
+                "type Pressure = Force\nstructure S {\n    param p : Pressure = 1.0\n}",
+                "Pressure",
+                "the `param p : Pressure` type annotation",
+            ),
+            (
+                "unit meter : Length\nstructure S {\n    param x : Length = 5meter\n}",
+                "meter",
+                "the `5meter` literal suffix",
+            ),
+        ];
+
+        for (source, name, use_desc) in use_bearing {
+            let parsed = reify_syntax::parse(source, ModulePath::single("guard_use"));
+            assert!(
+                parsed.errors.is_empty(),
+                "fixture must parse clean, got {:?} for: {source}",
+                parsed.errors
+            );
+            let use_uri = Url::parse("file:///proj/guard_use.ri").unwrap();
+            let occ = occurrences(source, name);
+            assert_eq!(
+                occ.len(),
+                2,
+                "fixture: declaration + exactly one use ({use_desc}): {source}"
+            );
+            let decl_pos = offset_to_position(source, occ[0] as u32);
+            let (use_start, use_end) = (occ[1], occ[1] + name.len());
+
+            let rename_granted =
+                prepare_rename_cross_file(source, &parsed, &use_uri, decl_pos, &resolver).is_some();
+            let refs = compute_references_cross_file(
+                source,
+                &parsed,
+                &use_uri,
+                decl_pos,
+                true,
+                &workspace_docs(&[(use_uri.clone(), source)]),
+                &resolver,
+            );
+            let refs_reported = refs.is_some();
+            // CONTAINS, not starts-at: a collector later taught to report unit
+            // uses might span the whole `5meter` literal rather than just the
+            // suffix, and that would still be a correct closing of the gap.
+            let use_covered = refs.is_some_and(|locs| {
+                locs.iter().any(|l| {
+                    l.uri == use_uri
+                        && position_to_offset(source, l.range.start) <= use_start
+                        && position_to_offset(source, l.range.end) >= use_end
+                })
+            });
+
+            assert!(
+                !(rename_granted || refs_reported) || use_covered,
+                "the {name:?} declaration is treated as a home \
+                 (rename_granted={rename_granted}, refs_reported={refs_reported}) \
+                 but the cross-file reference set does not cover {use_desc}, so a \
+                 rename would move the declaration token and silently miss it. \
+                 Either teach `collect_uses`/`collect_idents_in_expr` to walk type \
+                 expressions, or keep both oracles refusing this kind: {source}"
+            );
+        }
+    }
+
     // --- κ step-9 (task 4210): cross-file rename WorkspaceEdit (Invariant 5) ---
 
     /// Apply LSP `TextEdit`s to `source`, splicing in DESCENDING start order so
@@ -4483,6 +4653,104 @@ structure Assembly {
         assert!(
             main_after.contains("import parts.Bore"),
             "main.ri import renamed to `parts.Bore`: {main_after}"
+        );
+        assert!(
+            main_after.contains("= Bore()"),
+            "main.ri construction site renamed to `Bore()`: {main_after}"
+        );
+    }
+
+    #[test]
+    fn compute_rename_cross_file_one_char_structure_name_does_not_corrupt_keyword() {
+        // BLAST-RADIUS GUARD (task 7529). A declaration span starts at its
+        // keyword, so a name-token locator that is not whole-word matches the
+        // `s` of `structure` before the `s` of `structure s`. That span reaches
+        // this write path: the parts.ri edit rewrites byte 0, yielding
+        // `Boretructure s { … }`, which does not parse.
+        //
+        // The DESTRUCTURED import form is load-bearing and must not be
+        // "simplified" to `import parts.s`: ts_parser classifies a trailing
+        // import-path segment as an entity only when it starts with an
+        // uppercase character, so `import parts.s` lowers to
+        // `ImportKind::Module`, the cross-file home never resolves, and this
+        // test would silently assert nothing. `import parts.{s}` lowers to
+        // `ImportKind::Destructured(["s"])`, which `import_exposes_entity`
+        // admits.
+        const SHORT_PARTS_SRC: &str = "structure s {\n    param diameter: Length = 10mm\n}";
+        const SHORT_MAIN_SRC: &str =
+            "import parts.{s}\nstructure Assembly {\n    sub hole = s()\n}";
+
+        let docs = workspace_docs(&[(parts_uri(), SHORT_PARTS_SRC), (main_uri(), SHORT_MAIN_SRC)]);
+        let mut map = HashMap::new();
+        map.insert(
+            "parts".to_string(),
+            (parts_uri(), SHORT_PARTS_SRC.to_string()),
+        );
+        let resolver = mock_resolver(map);
+
+        let parsed_main = reify_syntax::parse(SHORT_MAIN_SRC, ModulePath::single("main"));
+        // `occurrences` is unusable for a one-character name (every `s` in
+        // `structure`/`parts`/`sub` matches), so anchor on the construction site.
+        let assign = SHORT_MAIN_SRC.find("= s()").expect("fixture: construction site");
+        let main_use = assign + "= ".len(); // the `s` of `= s()`
+        assert_eq!(&SHORT_MAIN_SRC[main_use..main_use + 1], "s");
+
+        let edit = compute_rename_cross_file(
+            SHORT_MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            offset_to_position(SHORT_MAIN_SRC, main_use as u32),
+            "Bore",
+            &docs,
+            &resolver,
+        )
+        .expect("cross-file rename of a one-character name yields a WorkspaceEdit");
+
+        let changes = edit.changes.expect("changes present");
+        assert_eq!(changes.len(), 2, "edit spans both parts.ri and main.ri");
+
+        let parts_edits = changes.get(&parts_uri()).expect("parts.ri edits present");
+        assert_eq!(
+            parts_edits.len(),
+            1,
+            "parts.ri: 1 edit (structure decl token)"
+        );
+        let main_edits = changes.get(&main_uri()).expect("main.ri edits present");
+        assert_eq!(
+            main_edits.len(),
+            2,
+            "main.ri: 2 edits (import token + sub use)"
+        );
+        assert!(
+            parts_edits
+                .iter()
+                .chain(main_edits)
+                .all(|e| e.new_text == "Bore"),
+            "every edit writes Bore"
+        );
+
+        // Invariant 5: apply per-file edits, re-parse, assert ZERO errors in BOTH.
+        let parts_after = apply_edits(SHORT_PARTS_SRC, parts_edits);
+        let main_after = apply_edits(SHORT_MAIN_SRC, main_edits);
+        let parts_reparsed = reify_syntax::parse(&parts_after, ModulePath::single("parts"));
+        assert!(
+            parts_reparsed.errors.is_empty(),
+            "parts.ri re-parses clean after renaming a one-character name: {:?}\n{parts_after}",
+            parts_reparsed.errors
+        );
+        let main_reparsed = reify_syntax::parse(&main_after, ModulePath::single("main"));
+        assert!(
+            main_reparsed.errors.is_empty(),
+            "main.ri re-parses clean after renaming a one-character name: {:?}\n{main_after}",
+            main_reparsed.errors
+        );
+        assert!(
+            parts_after.contains("structure Bore"),
+            "parts.ri now declares `structure Bore` — the keyword is intact: {parts_after}"
+        );
+        assert!(
+            main_after.contains("import parts.{Bore}"),
+            "main.ri import renamed to `parts.{{Bore}}`: {main_after}"
         );
         assert!(
             main_after.contains("= Bore()"),

@@ -294,12 +294,6 @@ impl SolverRegistry {
                 .filter_map(|id| param_lookup.get(id).map(|ap| (*ap).clone()))
                 .collect();
 
-            // Filter current_values to only this component's params
-            let mut sub_values = ValueMap::new();
-            for (k, v) in problem.current_values.iter() {
-                sub_values.insert(k.clone(), v.clone());
-            }
-
             // Attach objective only to the designated component
             let sub_objective = if objective_component == Some(ci) {
                 problem.objective.clone()
@@ -337,14 +331,61 @@ impl SolverRegistry {
             // NEXT field added to `ResolutionProblem` cannot be silently dropped.
             // That warning still holds for every field this literal does not name.
             //
+            // # What the spread COSTS, and why it is kept anyway (task #5721)
+            //
+            // This is the ONE cost accounting for the spreads.  The other two
+            // registry sites cross-reference it rather than restate it, and it
+            // names the constants instead of inlining their current values so a
+            // reader is sent to a definition that cannot go stale.
+            //
+            // `..problem.clone()` clones all six `ResolutionProblem` fields and
+            // immediately discards the four this literal overrides
+            // (`auto_params`, `constraints`, `objective`, `dependent_cells`),
+            // keeping only what it inherits: `current_values` — an O(1)
+            // persistent-`ValueMap` structural-sharing clone — and `functions`,
+            // an `Arc` refcount bump.  The discarded work that is REAL is
+            // `constraints` and `dependent_cells`: genuine `CompiledExpr` deep
+            // clones of the whole model's lists.
+            //
+            // It is kept because that cost is paid ONCE PER COMPONENT, not per
+            // trial, while the sub-problem it builds then drives a best-of-K
+            // multistart (`multistart_points` in solver.rs, K rising with the
+            // component's dimension), each start running Nelder-Mead for up to
+            // a `FEASIBLE_OPT_ITERS_PER_DIM`-scaled iteration budget when
+            // warm-started, or `MAX_ITERS` cold.  EVERY one of those iterations
+            // re-evaluates the entire `constraints` list via
+            // `compute_total_violation` (plus a `build_trial_values` fold).  At
+            // the constants those three names carry today that is roughly FOUR
+            // ORDERS OF MAGNITUDE more evaluations of the list than clones of
+            // it, for a two-dimensional component — a cold path, not the
+            // per-trial hot path `fold_dependent_cells`' own cost model
+            // identifies.
+            //
+            // Restructuring to hoist the invariant tail out of the loop would
+            // therefore trade a real drift guard for a speedup on a path that
+            // is not hot.  The guard is deliberately KEPT.  Its one weakness —
+            // that a NEW field is inherited WHOLESALE here rather than getting
+            // a per-site decision, which is exactly what #5720 had to fix for
+            // `dependent_cells` — is covered by the compile-time tripwire
+            // `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`
+            // (this file's `mod tests`) and its solver.rs sibling, which are
+            // ADDITIVE to the spread, not a replacement for it.
+            //
             // # Why `dependent_cells` is FILTERED per component (task #5720)
             //
-            // It used to be passed wholesale, on the rationale that `sub_values`
-            // carries every cell in `problem.current_values` so every dependent
-            // expression stays evaluable.  That is FALSE for an auto owned by
-            // ANOTHER component: such an auto is in neither `sub_auto_params` nor
-            // (necessarily) `current_values`, so the fold evaluates its `ValueRef`
-            // to `Undef`, writes `Undef` into the cell, and an objective reading
+            // It used to be passed wholesale, on the rationale that
+            // `current_values` reaches every component WHOLE — it is inherited
+            // from the `..problem.clone()` spread below, with no per-component
+            // filter of any kind — so every dependent expression stays
+            // evaluable.  That PREMISE still holds, and is pinned by
+            // `every_component_sub_problem_inherits_the_full_current_values`
+            // (tests/registry_tests.rs); a future task that introduces a real
+            // per-component `current_values` filter breaks it and must revisit
+            // this filter's justification.  What was FALSE is the CONCLUSION
+            // drawn from it, for an auto owned by ANOTHER component: such an
+            // auto is in neither `sub_auto_params` nor (necessarily)
+            // `current_values`, so the fold evaluates its `ValueRef` to
+            // `Undef`, writes `Undef` into the cell, and an objective reading
             // that cell reports `NoProgress { reason: "objective expression
             // evaluated to undefined at solution point" }`.
             //
@@ -412,7 +453,6 @@ impl SolverRegistry {
             let sub_problem = ResolutionProblem {
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
-                current_values: sub_values,
                 objective: sub_objective,
                 dependent_cells: sub_dependent_cells,
                 ..problem.clone()
@@ -733,6 +773,13 @@ fn solve_lexicographic(
     };
 
     // Degenerate case: all terms share one priority — delegate as WeightedSum.
+    //
+    // This is the THIRD `ResolutionProblem` spread site in the registry (task
+    // #5721), and the cheapest: it runs exactly once, overrides only
+    // `objective`, and therefore discards nothing meaningful from the
+    // `..base.clone()`.  It is the shape the staged loop below was made to
+    // mirror in #5189.  Cost accounting is not restated here: it lives at ONE
+    // site, the β comment on `solve_inner`'s `sub_problem`.
     if priority_order.len() == 1 {
         let ws_objective = ObjectiveSet {
             terms: obj.terms.clone(),
@@ -788,6 +835,18 @@ fn solve_lexicographic(
         // priorities the objective carries — a multi-rank lexicographic objective
         // over a joint-drive cluster dropped the per-trial fold at every stage.
         // Override only what genuinely differs per stage.
+        //
+        // COST, and why the spread is kept (task #5721).  `..base.clone()`
+        // runs ONCE PER DISTINCT PRIORITY RANK and each stage then hands its
+        // sub-problem to a full solve, so the same accounting applies as at the
+        // per-component site — which is where it lives, deliberately once: the
+        // β comment on `solve_inner`'s `sub_problem`.  The guard is KEPT here
+        // for the same reason.  Every site is enumerated by the compile-time
+        // tripwires — this file's
+        // `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`
+        // and its solver.rs sibling — which catch the failure mode the spread
+        // itself cannot: a NEW field inherited WHOLESALE instead of getting a
+        // per-site decision.
         let stage_problem = ResolutionProblem {
             auto_params: free_auto_params,
             constraints: accumulated_constraints.clone(),
@@ -1022,4 +1081,72 @@ fn build_band_constraints(
             ge_expr,
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ResolutionProblem;
+
+    /// COMPILE-TIME DRIFT TRIPWIRE for the `ResolutionProblem` field set
+    /// (task #5721 item 2) — registry half of a two-file pin.
+    ///
+    /// SIX production sites in this crate build a `ResolutionProblem` with
+    /// functional-update syntax, inheriting every field their literal does not
+    /// name:
+    ///
+    /// - `registry.rs`: `solve_inner`'s `sub_problem`,
+    ///   `solve_lexicographic`'s `stage_problem` and its degenerate
+    ///   single-priority `ws_problem`
+    /// - `solver.rs`: `solve_cost_robustness_tradeoff`'s `cost_problem`,
+    ///   `rob_problem` and `blend_problem`
+    ///
+    /// Anchors only, deliberately. An earlier revision restated each literal's
+    /// override/inherit set here, and that prose is exactly what drifts — this
+    /// very task had to edit it when site 1 stopped overriding
+    /// `current_values`. Read the literal; the list above only says where.
+    ///
+    /// The spread is deliberately KEPT (see the β/#5189 comments at each site):
+    /// it is the runtime drift guard that stops a newly-added field from being
+    /// silently DROPPED, which is how `dependent_cells` got zeroed in the first
+    /// place. But it buys that at the cost of the opposite failure mode — a new
+    /// field is inherited WHOLESALE at every site, with no one forced to decide
+    /// whether wholesale is right. That is exactly what #5720 had to fix for
+    /// `dependent_cells`, which needed a per-component FILTER rather than a
+    /// blanket pass-through.
+    ///
+    /// This test is the compile-time signal for that second mode: the
+    /// exhaustive destructure carries NO `..` rest pattern, so adding a seventh
+    /// field to `ResolutionProblem` fails to COMPILE here (E0027).
+    ///
+    /// An IDENTICAL pin lives in `solver.rs`, beside that file's three spreads
+    /// (`resolution_problem_field_set_is_pinned_at_the_solver_spread_sites`).
+    /// The duplication is the point: the pin's value is WHERE the break lands,
+    /// and a single copy would break only here while handing the author a list
+    /// of which half the sites live in another file.
+    ///
+    /// It is ADDITIVE to the runtime drift guard, NOT a replacement for it:
+    /// removing a spread in favour of this test would restore the
+    /// silently-dropped-field mode the spreads exist to prevent. Cost
+    /// accounting for the spreads lives at ONE site — the β comment on
+    /// `solve_inner`'s `sub_problem`.
+    ///
+    /// Destructuring a REFERENCE keeps this free — no `ResolutionProblem` is
+    /// constructed, and binding every field to `_` raises no unused warning.
+    #[test]
+    fn resolution_problem_field_set_is_pinned_at_the_registry_spread_sites() {
+        fn pin(p: &ResolutionProblem) {
+            let ResolutionProblem {
+                auto_params: _,
+                constraints: _,
+                current_values: _,
+                objective: _,
+                functions: _,
+                dependent_cells: _,
+            } = p;
+        }
+
+        // Reference `pin` so it is not dead code; calling it would need a
+        // constructed problem, which the tripwire deliberately does not need.
+        let _ = pin as fn(&ResolutionProblem);
+    }
 }
