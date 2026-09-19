@@ -17,11 +17,20 @@ use reify_core::ModulePath;
 /// the name that variant declares — the shared fixture behind
 /// [`crate::analysis::decl_name_and_span`]'s wildcard-free match.
 ///
-/// Consumers, all per-kind loops over this table:
+/// Consumers, each a per-kind loop over this table except where noted:
 /// - `analysis::tests::decl_name_and_span_returns_name_and_span_for_every_named_kind`
 /// - `analysis::tests::named_decl_snippets_cover_every_named_kind`
+/// - `analysis::tests::every_named_decl_snippet_yields_one_symbol_agreeing_with_decl_name_and_span`
+/// - `analysis::tests::document_symbols_include_every_remaining_named_kind` — looks
+///   rows up BY NAME via `named_decl_snippet`, so renaming a row's declared name
+///   panics there rather than silently shrinking its loop
 /// - `goto_def::tests::goto_def_cursor_on_declaration_name_resolves_for_every_kind`
 /// - `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
+///
+/// ADDING A ROW is what a newly-named `Declaration` variant needs after its
+/// `decl_name_and_span` and `kind_index` arms: the loop consumers then cover it
+/// with no edit of their own. `named_decl_snippets_cover_every_named_kind` is
+/// what reds if the row is missing.
 ///
 /// Every snippet is lifted (verbatim or near-verbatim) from an existing passing
 /// source — `crates/reify-syntax/tests/harness_syntax/*` or

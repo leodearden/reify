@@ -1433,10 +1433,14 @@ pub fn compute_document_highlights(
 // The single-file producers above resolve VALUE-member bindings
 // (param/let/auto/sub/port) within one entity body. The machinery below follows
 // the import graph to resolve a STRUCTURE name (a declaration name) across
-// files: its home declaration token, every same-file `sub _ = Name`
-// construction site, and — in each importing document — the import entity token
-// plus its construction sites. The collectors are PURE: the open-document set
-// arrives as `workspace_docs` and target resolution as an injectable
+// files: its home declaration token, every same-file USE SITE, and — in each
+// importing document — the import entity token plus that document's use sites.
+// `collect_decl_name_spans` enumerates the use-site categories and is the ONE
+// place that list is written down: #6539 widened it, and the surfaces that had
+// re-listed it verbatim understated it for exactly as long.
+//
+// The collectors are PURE: the open-document set arrives as `workspace_docs`
+// and target resolution as an injectable
 // `resolve_import` closure (mirroring goto_def's pattern), so the whole
 // cross-file scope logic is unit-testable with an in-memory workspace + a mock
 // resolver. The server handlers assemble both from the live DocumentStore.
@@ -2227,7 +2231,8 @@ pub fn compute_references_cross_file(
         } => {
             let mut locations = Vec::new();
 
-            // Home document: declaration token + same-file construction sites.
+            // Home document: declaration token + every same-file use site
+            // (categories enumerated on `collect_decl_name_spans`).
             let home_parsed =
                 reify_syntax::parse(&home_source, reify_core::ModulePath::single("_home"));
             let home_decl = crate::goto_def::find_declaration_name_span(&home_source, &name);
@@ -2478,10 +2483,11 @@ pub fn prepare_rename_cross_file(
 ///
 /// The edit set is exactly the cross-file reference set
 /// ([`compute_references_cross_file`] with `include_declaration = true`) — the
-/// home declaration token + same-file construction sites, plus each importing
-/// document's import entity token + construction sites — one [`TextEdit`] per
-/// name-token span, grouped by document URI (ascending and non-overlapping
-/// within each file).
+/// home declaration token + every same-file use site, plus each importing
+/// document's import entity token + that document's use sites — one
+/// [`TextEdit`] per name-token span, grouped by document URI (ascending and
+/// non-overlapping within each file). The SCOPE block above names the
+/// categories; [`collect_decl_name_spans`] is where they are enumerated.
 ///
 /// Two refusals keep the multi-file result re-parse-clean (Invariant 5):
 /// `new_name` must be a legal Reify identifier ([`is_valid_rename_identifier`] —
