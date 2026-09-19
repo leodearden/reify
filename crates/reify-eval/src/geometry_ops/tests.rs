@@ -25245,8 +25245,14 @@
     }
 
     /// A `Value::Vector` of three bare dimensionless `Real` components — the
-    /// shape a BARE `plane_yz(10)` / `point3(10, 0, 0)` origin has, and the one
-    /// δ exists to reject.
+    /// shape a BARE `point3(10, 0, 0)` origin has, and the one δ exists to
+    /// reject.
+    ///
+    /// `plane_yz(10)` no longer mints it: units-length ε (task 5746, R11) gates
+    /// the producer, which is exactly why the rows below build their input BY
+    /// HAND. δ's consumer-side gate stays reachable through the five
+    /// construction-datum producers ε leaves dimension-polymorphic, so the rows
+    /// still cover live behaviour rather than a dead path.
     fn bare_real_vector3(x: f64, y: f64, z: f64) -> reify_ir::Value {
         reify_ir::Value::Vector(vec![
             reify_ir::Value::Real(x),
@@ -25624,10 +25630,15 @@
 
     /// The headline δ behaviour for `decode_plane`: a BARE origin is rejected at
     /// every component, with the same `ox`/`oy`/`oz` names and the same wording
-    /// the SCALAR form of the same builtin already used since task 5214. That
-    /// name choice is deliberate — `mirror(b, plane_yz(10))` and
-    /// `mirror(b, 10, 0, 0, 1, 0, 0)` are the same author mistake and now read
-    /// identically.
+    /// the SCALAR form of the same builtin already used since task 5214.
+    ///
+    /// That name choice was argued from `mirror(b, plane_yz(10))` reading
+    /// identically to `mirror(b, 10, 0, 0, 1, 0, 0)`. Units-length ε (task 5746,
+    /// R11) has since rejected `plane_yz(10)` at the PRODUCER, so that
+    /// particular pairing no longer reaches here and now reads
+    /// `plane_yz: offset argument expects Length`. The names stay `ox`/`oy`/`oz`
+    /// for the route that DOES still reach here — a hand-built Plane, and the
+    /// five construction-datum producers ε leaves dimension-polymorphic.
     #[test]
     fn decode_plane_rejects_a_bare_origin_at_every_component() {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -27360,9 +27371,13 @@
                 kernel_handle: Some(parent_handle),
             },
         );
-        // args[1]: a well-formed Plane whose ORIGIN is bare — the exact shape
-        // `plane_xy(10)` produces, and the 1000× hazard δ exists to catch. The
-        // NORMAL beside it stays bare on purpose (D3, BINDING) and must
+        // args[1]: a well-formed Plane whose ORIGIN is bare — the 1000× hazard δ
+        // exists to catch. It is built BY HAND precisely because `plane_xy(10)`
+        // can no longer mint it: units-length ε (task 5746, R11) gates that
+        // producer. Building it here is what keeps δ's consumer-side gate
+        // covered, and the gate is still live — the five construction-datum
+        // producers ε leaves dimension-polymorphic reach it from real source.
+        // The NORMAL beside it stays bare on purpose (D3, BINDING) and must
         // contribute no diagnostic of its own.
         values.insert(
             ValueCellId::new("MySolid", "plane"),

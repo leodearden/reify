@@ -72,6 +72,7 @@
 //! | sweep     | `extrude`/`extrude_symmetric` distance, `pipe` radius (3 fields) | 5744 |
 //! | decoded value | `decode_plane` / `decode_axis` ORIGINS `ox`/`oy`/`oz`; the `nurbs_surface` control-point GRID (the SURFACE sibling of the curve poles 5658 gated) — via the decoded-value route | 5745 |
 //! | transform | `apply_transform`'s `transform` TRANSLATION triple, and `arbitrary_pattern`'s LIST-form per-element translation triples (`translation.x`/`translation.y`/`translation.z`) — via the decoded-value route | 5747 |
+//! | construction datum | `plane_xy`/`plane_xz`/`plane_yz` OFFSET; `axis_x`/`axis_y`/`axis_z` ORIGIN `ox`/`oy`/`oz` — the PRODUCER side, a value-layer gate living in reify-stdlib and reading this module through the 5791 relocation | 5746 |
 //!
 //! The two **5743** rows (`primitive` + `profile`) and the two **5744** rows
 //! (`modify` + `sweep`) are the R7 **raw-`Value`** positions: unlike the
@@ -108,6 +109,23 @@
 //! code, D10's `unresolved (Undef)` message and the all-failures-at-once
 //! precedence across the triple without re-deriving any of it.
 //!
+//! Task 5746 (ε) is the **5746** row's entry. It is the first PRODUCER-side row
+//! in this table: the six construction-datum constructors live in reify-stdlib's
+//! value algebra, not in `geometry_ops`, so they reach this module directly
+//! through the 5791 relocation rather than through either of the routes above.
+//! What ε closes is R11's producer hole, shut at BOTH ends together with task
+//! δ's (5745) consumer-side `decode_plane` / `decode_axis` gate two rows up
+//! (decision D4) — the same rule, no longer enforceable on only one side.
+//!
+//! What ε does NOT close, named here as an explicit RESIDUAL rather than left to
+//! be rediscovered: the FIVE sibling construction-datum constructors `midplane`,
+//! `axis_through`, `plane_through`, the arity-2 `offset` and `frame_at` (task
+//! 4387 / η) stay dimension-POLYMORPHIC. They enforce dimension AGREEMENT among
+//! their inputs, never LENGTH, and ε deliberately does not sweep them up — they
+//! are exactly the producers that keep δ's consumer-side gate live and reachable
+//! from real `.ri` source. That residual is owned by a follow-up task, not by
+//! ε's harness.
+//!
 //! Three things task 5747 (ζ) deliberately LEFT STANDING, each with the reason,
 //! so task 5752's closure guard can lift them rather than rediscover them:
 //!
@@ -134,8 +152,9 @@
 //!   module into `reify-ir` — which reify-stdlib already depends on — and made
 //!   it `pub`, so reify-stdlib CAN call [`accept_arg`] — and does. The mirror is
 //!   DELETED and R12 reads its rejection straight from this module, pinned by
-//!   `r12_rejection_wording_is_the_shared_arg_rejection_template` in
-//!   reify-stdlib's own test module. One owner, nothing left to drift;
+//!   `length_rejection_wording_is_the_shared_arg_rejection_template` in
+//!   reify-stdlib's own test module (renamed from its R12-only spelling when
+//!   task 5746 / R11 joined the same table). One owner, nothing left to drift;
 //! - reify-stdlib's OWN `decompose_transform` (`crates/reify-stdlib/src/geometry.rs`)
 //!   and its consumers. Measured on ζ's final tree, they are NOT uniform, which
 //!   is why ζ did not fold them in wholesale: `affine_from_transform` DISCARDS
