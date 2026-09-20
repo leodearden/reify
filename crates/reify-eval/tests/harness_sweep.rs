@@ -19,5 +19,7 @@ mod sweep_api_smoke;
 mod sweep_e2e;
 #[path = "harness_sweep/sweep_guided_e2e.rs"]
 mod sweep_guided_e2e;
+#[path = "harness_sweep/sweep_pose_guard_e2e.rs"]
+mod sweep_pose_guard_e2e;
 #[path = "harness_sweep/swept_kind_classifier_e2e.rs"]
 mod swept_kind_classifier_e2e;
