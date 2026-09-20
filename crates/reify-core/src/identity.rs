@@ -668,4 +668,48 @@ mod tests {
         assert!("a/b#realization[0]".parse::<RealizationNodeId>().is_err());
         assert!("a]b#realization[0]".parse::<RealizationNodeId>().is_err());
     }
+
+    // ── ValueCellId::from_str (FromStr) ──────────────────────────────
+    //
+    // The PARTIAL inverse of the `"<entity>.<member>"` Display grammar. Only the
+    // unambiguous single-dot case is addressable as a string; see the
+    // non-injectivity test below for why no positional split can do better.
+
+    #[test]
+    fn value_cell_id_from_str_roundtrips_unambiguous_ids() {
+        // Every shape a real mint site produces with exactly one dot in the
+        // rendered string must survive Display → parse unchanged.
+        let cases = [
+            ValueCellId::new("Bracket", "width"),
+            // FIELD_ENTITY_PREFIX form: fields are top-level, not members.
+            ValueCellId::new(FIELD_ENTITY_PREFIX, "gravity"),
+            // Compiler-synthesized member (reify-compiler/src/guards.rs:295).
+            ValueCellId::new("Part", "__guard_0"),
+            // No strict identifier charset, mirroring
+            // `realization_node_id_from_str_hyphenated_entity_roundtrips`.
+            ValueCellId::new("my-part_2", "hole_diameter"),
+            // Keyed member (reify-ir/src/value.rs:4665 `keyed_member_cell`,
+            // asserted at :4796-4798). Brackets and quotes must round-trip:
+            // the rendered id still has exactly one dot.
+            ValueCellId::new("Widget", r#"vents["intake"]"#),
+        ];
+        for id in cases {
+            let parsed: ValueCellId = id
+                .to_string()
+                .parse()
+                .unwrap_or_else(|e| panic!("{id} must round-trip, got {e}"));
+            assert_eq!(parsed, id, "{id} must round-trip unchanged");
+        }
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_missing_separator() {
+        for s in ["", "width"] {
+            assert_eq!(
+                s.parse::<ValueCellId>(),
+                Err(ValueCellIdParseError::MissingSeparator),
+                "{s:?} has no '.' separator, so it names no (entity, member) pair"
+            );
+        }
+    }
 }
