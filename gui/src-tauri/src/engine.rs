@@ -2995,8 +2995,10 @@ impl EngineSession {
     /// observed demand therefore cannot perturb `EvalResult` / `last_eval_set`
     /// (locked by the engine test
     /// `sync_observed_demand_is_zero_behavior_change_and_records_measurement`).
-    /// Unparseable entries are skipped with a warning, never a panic. See
-    /// `docs/prds/v0_6/selective-demand.md` §G6.
+    /// Unparseable entries are skipped, never a panic: realization and
+    /// constraint keys warn individually, while unaddressable CELL ids — a
+    /// standing population, not an event (see the loop) — are counted and
+    /// reported once per sync. See `docs/prds/v0_6/selective-demand.md` §G6.
     pub fn sync_observed_demand(
         &mut self,
         visible_realizations: &[String],
@@ -3017,15 +3019,37 @@ impl EngineSession {
                 ),
             }
         }
+        // A displayed cell whose id does not parse is not an anomaly worth one
+        // warn line per cell per sync: `build_values` emits EVERY cell in
+        // `template.value_cells` verbatim, and the compiler mints auto-arg
+        // cells under a dotted entity (`ValueCellId("<entity>.<sub>", arg)` —
+        // reify-compiler/src/entity.rs:3613/3710). Any model with an `auto` sub
+        // arg therefore displays a steady population of ids the wire format
+        // cannot address (#7717), and syncs fire on every state change. So:
+        // per-cell detail at debug, and ONE warn per sync carrying the count —
+        // a population size is the actionable signal, a name repeated per
+        // keystroke is not.
+        let mut unaddressable = 0usize;
         for cell in displayed_cells {
             match parse_cell_id(cell) {
                 Ok(vc) => engine.add_observed_demand(NodeId::Value(vc)),
-                Err(e) => warn!(
-                    cell = %cell,
-                    error = %e,
-                    "sync_observed_demand: skipping unparseable cell"
-                ),
+                Err(e) => {
+                    unaddressable += 1;
+                    tracing::debug!(
+                        cell = %cell,
+                        error = %e,
+                        "sync_observed_demand: skipping unaddressable cell"
+                    );
+                }
             }
+        }
+        if unaddressable > 0 {
+            warn!(
+                skipped = unaddressable,
+                displayed = displayed_cells.len(),
+                "sync_observed_demand: displayed cells are not addressable as \
+                 '<entity>.<member>' ids and were skipped (per-cell ids at debug)"
+            );
         }
         for constraint in panel_constraints {
             match parse_constraint_key(constraint) {
