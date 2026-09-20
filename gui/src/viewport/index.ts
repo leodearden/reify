@@ -6,7 +6,7 @@ export { MultiViewport } from './MultiViewport';
 export type { MultiViewportProps, PaneConfig } from './MultiViewport';
 export { createScene } from './scene';
 export type { SceneContext } from './scene';
-export { createControls } from './controls';
+export { createControls, syncOrbitUpAxis } from './controls';
 export type { ControlsContext } from './controls';
 export {
   orbitMinDistanceFor,
