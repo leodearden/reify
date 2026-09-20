@@ -129,6 +129,14 @@ async function dispatchAndGetResult(
 describe('pick_entity_at: bridge handler (real three)', () => {
   let capturedHandler: DebugRequestHandler | undefined;
   let selectEntitySpy: ReturnType<typeof vi.fn>;
+  let pickCamera: import('three').PerspectiveCamera;
+
+  /** X offset of the second cube — far enough that no ray hits both. */
+  const FAR_BOX_X = 10;
+  /** Half the unit cube's edge: a face sits this far from its centre. */
+  const HALF_EDGE = 0.5;
+  /** Z the camera keeps while moving over the far cube (matches the beforeEach pose). */
+  const CAM_Z = 5;
 
   const CANVAS_RECT = {
     left: 0,
@@ -166,10 +174,21 @@ describe('pick_entity_at: bridge handler (real three)', () => {
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
 
-    const geometry = new BoxGeometry(1, 1, 1);
-    const mesh = new Mesh(geometry);
+    // Two unit cubes, 10 m apart on X, so the stale camera pose and the live one
+    // resolve to DIFFERENT entities — the discriminator the staleness test needs.
+    const mesh = new Mesh(new BoxGeometry(1, 1, 1));
     mesh.name = 'entity/box';
     scene.add(mesh);
+
+    const farMesh = new Mesh(new BoxGeometry(1, 1, 1));
+    farMesh.name = 'entity/farBox';
+    farMesh.position.set(FAR_BOX_X, 0, 0);
+    scene.add(farMesh);
+
+    mesh.updateMatrixWorld();
+    farMesh.updateMatrixWorld();
+
+    pickCamera = camera;
 
     // Renderer stub — domElement.getBoundingClientRect() returns 800×600 canvas
     const domElement = document.createElement('canvas');
@@ -184,7 +203,7 @@ describe('pick_entity_at: bridge handler (real three)', () => {
       scene,
       camera,
       renderer: renderer as any,
-      getMeshes: () => new Map([['entity/box', mesh]]),
+      getMeshes: () => new Map([['entity/box', mesh], ['entity/farBox', farMesh]]),
       getGhostMeshes: () => new Map(),
       fitToView: vi.fn(),
       flyToEntity: vi.fn(),
@@ -232,6 +251,44 @@ describe('pick_entity_at: bridge handler (real three)', () => {
 
     expect(result).toBeDefined();
     expect(result.hit).toBe(false);
+  });
+
+  it('raycasts through the LIVE camera pose, not the stale matrixWorld rotation (#6496)', async () => {
+    // WHY a camera move leaves matrixWorld's ROTATION behind, and why that is the
+    // shipped state rather than a contrived one:
+    //   • OrbitControls.update() ends by writing object.position then calling
+    //     object.lookAt(target) (OrbitControls.js:784-788);
+    //   • Object3D.lookAt() calls updateWorldMatrix(true, false) FIRST — folding the new
+    //     position in against the OLD quaternion — and only THEN writes this.quaternion.
+    //     It never refreshes matrixWorld again.  So after every controls.update(),
+    //     camera.matrixWorld carries the CURRENT position with the PREVIOUS rotation.
+    //   • Viewport.tsx:478-486 is a render-on-demand loop: controls.update() runs every
+    //     RAF frame, renderer.render() (the usual matrixWorld refresher) only when
+    //     needsRender — so a render is not a reliable resynchroniser either.
+    // Raycaster.setFromCamera consumes camera.matrixWorld and projectionMatrixInverse
+    // ONLY, so an unsynced pick silently casts through that half-stale pose: correct
+    // origin, wrong aim.  That is the #6496 dogfood signature.
+    //
+    // The fixture makes the two poses resolve different entities.  The camera moves to
+    // sit directly above the far cube and turns to face the origin cube:
+    //   stale rotation (identity, still aimed down -Z) → ray hits 'entity/farBox';
+    //   live  rotation (aimed at the origin)           → ray hits 'entity/box'.
+    pickCamera.position.set(FAR_BOX_X, 0, CAM_Z);
+    pickCamera.lookAt(0, 0, 0);
+
+    const result = await dispatchAndGetResult(capturedHandler!, 9, 'pick_entity_at', {
+      x: 400,
+      y: 300,
+    }) as any;
+
+    expect(result.hit).toBe(true);
+    expect(result.entityPath).toBe('entity/box');
+    // Canvas centre → NDC(0,0) → the ray is the straight segment from the camera to the
+    // origin, so the point where it crosses the origin cube's +X face (x = HALF_EDGE) is
+    // simply the camera position scaled by HALF_EDGE / FAR_BOX_X.
+    const f = HALF_EDGE / FAR_BOX_X;
+    expect(result.point.x).toBeCloseTo(FAR_BOX_X * f, 3);
+    expect(result.point.z).toBeCloseTo(CAM_Z * f, 3);
   });
 
   it('pick is query-only — selectEntity is never called', async () => {
