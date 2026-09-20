@@ -1,0 +1,19 @@
+module solver_unification_ineq_eq_two_sided_control
+// PRD evidence — the CONTROL for solver_unification_ineq_eq_penalty_offset.ri.
+// docs/prds/v0_6/geometry-algebra-solver-unification.md §2.6.
+//
+// MEASURED ON MAIN 2128c3692c (2026-08-26): resolves w = 0.01 m, exit 0.
+//
+// Identical to the companion fixture except that the single inequality becomes
+// a two-sided pair. The synthesised centrality objective is then
+// Maximize(min(w - 8mm, 12mm - w)), whose two slack gradients cancel at the
+// interior point, so nothing trades against the equality penalty and w lands
+// exactly on 10mm. This control is what makes the companion's 5.00e-7 a proven
+// centrality-versus-penalty artifact rather than a convergence shortfall --
+// keep the pair together, and keep this one GREEN.
+pub structure SolverUnificationIneqEqTwoSidedControl {
+    param w : Length = auto
+    constraint w >= 8mm
+    constraint w <= 12mm
+    constraint w == 10mm
+}

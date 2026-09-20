@@ -10,7 +10,15 @@
 #   C — happy path: existing --mount dir → exit 0, gc-script invoked as
 #         reclaim --mount <dir>
 #   D — unit file structural assertions:
-#         deploy/systemd/reify-warm-lane-gc.timer (periodic, Persistent, WantedBy)
+#         every tracked deploy/systemd/*.timer file (periodic, WantedBy, and
+#           a Persistent=<truthy>=>OnCalendar= implication guard looped over
+#           each timer plus two synthetic fixtures — task #6419: this timer
+#           currently has NO Persistent= at all on its monotonic-only
+#           OnUnitActiveSec= schedule, since systemd.timer(5) states
+#           Persistent= only takes effect paired with OnCalendar=, but the
+#           guard itself pins only the implication, not that choice, so a
+#           future OnCalendar= migration that re-adds Persistent=true stays
+#           green)
 #         deploy/systemd/reify-warm-lane-gc.service (Type=oneshot, ExecStart ref)
 #   F — drift-guard map wiring: verify-pipeline-infra-tests.txt contains expected rows
 #   V — part-1 verification / green-on-arrival regression guards:
@@ -349,9 +357,72 @@ assert "D1: deploy/systemd/reify-warm-lane-gc.timer exists" \
 assert "D2: timer has periodic directive (OnUnitActiveSec= or OnCalendar=)" \
     bash -c 'grep -qE "^(OnUnitActiveSec=|OnCalendar=)" "$1"' _ "$GC_TIMER"
 
-# D3: timer has Persistent=true (survive missed runs across reboots)
-assert "D3: timer has Persistent=true" \
-    bash -c 'grep -q "^Persistent=true$" "$1"' _ "$GC_TIMER"
+# D3: implication guard — for every TRACKED systemd timer in this repo, if it
+# declares a truthy Persistent= it must also declare OnCalendar=, or the
+# directive is inert per systemd.timer(5) ("Persistent= only has an effect on
+# timers configured with OnCalendar="). This does NOT pin today's choice of
+# "no Persistent= at all" on reify-warm-lane-gc.timer (that absence was
+# task #6419's fix, not an invariant this suite should enforce going forward —
+# see the timer file's own comment for the record of today's tradeoff): a
+# future migration to an OnCalendar= schedule with a working Persistent=true
+# stays green here. systemd's boolean parser accepts true/yes/on/1
+# case-insensitively and tolerates whitespace around `=`, so the matcher
+# mirrors that instead of a literal "Persistent=true" string — a narrower
+# literal match would let e.g. "Persistent=yes" reintroduce this exact bug
+# class silently.
+#
+# _timer_persistent_ok TIMER — 0 (ok) unless TIMER declares a truthy
+# Persistent= without a paired OnCalendar=, in which case 1 (violation).
+_timer_persistent_ok() {
+    local timer="$1"
+    if grep -qiE '^[[:space:]]*Persistent[[:space:]]*=[[:space:]]*(1|yes|true|on)[[:space:]]*$' "$timer"; then
+        grep -qE '^[[:space:]]*OnCalendar[[:space:]]*=' "$timer"
+    fi
+}
+# _timer_persistent_violates TIMER — logical negation of the above, for D3a
+# below: assert() runs its argv directly with no shell, so a bare `!` cannot
+# be passed inline as an assert argument.
+_timer_persistent_violates() {
+    ! _timer_persistent_ok "$1"
+}
+
+# Loops over every tracked deploy/systemd/*.timer file — today that is only
+# reify-warm-lane-gc.timer itself (`git ls-files | grep '\.timer$'`), so the
+# loop is what makes this guard's "class-wide" coverage claim literally true,
+# rather than a hard-coded single path or an unverifiable cross-repo
+# reference (a prior draft of this guard cited "task #6111 /
+# reify-jcodemunch-index.timer", which does not exist anywhere in this repo).
+# It also automatically covers any timer added later with no test-file edit.
+for _gc_sweep_timer_file in "$REPO_ROOT"/deploy/systemd/*.timer; do
+    assert "D3 ($(basename "$_gc_sweep_timer_file")): Persistent=<truthy> (if present) implies OnCalendar= is also present" \
+        _timer_persistent_ok "$_gc_sweep_timer_file"
+done
+
+# D3a/D3b: synthetic fixtures driving BOTH branches of _timer_persistent_ok
+# directly. The loop above is green-on-arrival against every real timer today
+# (none declares Persistent=), so its violation branch is never exercised
+# there — without these, a broken or inverted grep inside the function could
+# regress silently while the loop stayed green.
+D3_FIXTURE_DIR="$(mktemp -d /tmp/test-gc-sweep-d3-fixture-XXXXXX)"
+_TMPDIRS+=("$D3_FIXTURE_DIR")
+
+D3_BAD_FIXTURE="$D3_FIXTURE_DIR/bad.timer"
+cat > "$D3_BAD_FIXTURE" << 'EOF'
+[Timer]
+OnUnitActiveSec=15min
+Persistent = yes
+EOF
+assert "D3a: Persistent = yes with no OnCalendar= is correctly flagged as a violation" \
+    _timer_persistent_violates "$D3_BAD_FIXTURE"
+
+D3_GOOD_FIXTURE="$D3_FIXTURE_DIR/good.timer"
+cat > "$D3_GOOD_FIXTURE" << 'EOF'
+[Timer]
+OnCalendar=daily
+Persistent=on
+EOF
+assert "D3b: Persistent=on paired with OnCalendar= satisfies the implication" \
+    _timer_persistent_ok "$D3_GOOD_FIXTURE"
 
 # D4: timer [Install] WantedBy=timers.target
 assert "D4: timer [Install] WantedBy=timers.target" \

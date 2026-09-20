@@ -1,0 +1,48 @@
+module gui_purpose_surface
+
+// PRD evidence fixture — docs/prds/v0_6/gui-purpose-surface.md
+//
+// Carries three distinct pieces of evidence in one module:
+//
+//   1. `wall_margin` is a MODULE-DECLARED purpose whose verdict depends on a
+//      warm-editable param through an injected let-cell. Dragging `wall` in the
+//      GUI flips it OK <-> VIOLATED, so the ruled staleness UX has something
+//      that genuinely responds to the incremental path. Verified by execution
+//      2026-08-27: wall=100mm -> OK, wall=700mm -> VIOLATED.
+//      A purpose body CANNOT host a working `RepresentationWithin` — every
+//      binding shape tried evaluates INDETERMINATE ("undefined inputs:
+//      <purpose>.subject"), because an entity-ref param never resolves to a
+//      measurable subject. A let over subject params is the achievable
+//      warm-edit-sensitive shape.
+//
+//   2. `BallCheck` carries a kernel-measured `RepresentationWithin` at STRUCTURE
+//      level, which does measure (VIOLATED, sampled deviation ~6.0e-2 m against
+//      a 1um bound — five orders of margin, so the verdict is not marginal).
+//      It degrades to INDETERMINATE whenever the measurement arms are skipped.
+//      That degradation is `check-diagnostic-truthfulness` territory (#5748 /
+//      #5403), NOT this PRD's; it is kept here as the differential control for
+//      BT-3's GUI-equals-check parity row.
+//
+//   3. No purpose is needed for the prelude case: `simulation_ready` and
+//      `design_review` are merged into every module and are activatable against
+//      `Ball` with no per-file declaration — what the GUI selector must surface
+//      for an arbitrary user module.
+
+#precision(50mm)
+
+structure Ball {
+    param radius : Length = 1000mm
+    param wall : Length = 100mm
+    let r = sphere(radius)
+}
+
+structure BallCheck {
+    param subject : Ball
+    constraint RepresentationWithin(subject, 1um)
+}
+
+// Module-declared, let-bearing, warm-edit-sensitive.
+purpose wall_margin(subject : Ball) {
+    let margin = subject.radius - subject.wall
+    constraint margin > 500mm
+}

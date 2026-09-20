@@ -211,21 +211,21 @@ fn rotate_around_with_explicit_deg_unit_realization_lands_in_kernel() {
     }
 }
 
-/// `rotate()` with a bare numeric angle (no unit suffix) should pass the value
-/// through unchanged as radians, **not** convert from degrees.
+/// `rotate()` with a bare numeric angle is REJECTED, and the dimensioned form
+/// it should have been written as lands in the kernel unchanged.
 ///
-/// This locks in the current contract documented by the NOTE at
-/// `geometry_ops.rs:437`: "bare numeric angle is passed through as-is (radians)."
-/// `circular_pattern` treats bare numerics as degrees — this test guards against
-/// accidentally applying the same degree-conversion to `Rotate` when that
-/// follow-up alignment lands.
-///
-/// Input: `1.5707963267948966` (π/2 as a decimal literal).  Expected
-/// `angle_rad ≈ π/2` (pass-through, not `1.5707963267948966 * π/180 ≈ 0.0274`).
+/// INVERTED by PRD 3 leaf γ (task 5779), deliberately. This test previously
+/// locked the OPPOSITE contract — "a bare numeric angle passes through as-is
+/// (radians)" — and guarded against `circular_pattern`'s degree conversion
+/// spreading to `Rotate`. That guard was the right call for the world it was
+/// written in, where the only two options were "bare means radians here" and
+/// "bare means degrees there"; it is superseded because γ removes the premise.
+/// Bare means NEITHER now: the reader demands a dimension and says so, which
+/// is what makes the two conventions stop contradicting each other. Flipping
+/// this assertion IS γ's fix, not a regression being suppressed.
 #[test]
-fn rotate_with_bare_radian_literal_lands_in_kernel() {
+fn rotate_with_bare_radian_literal_is_rejected() {
     // π/2 written as a bare decimal literal — no unit suffix.
-    // The Rotate eval arm passes bare numerics through as-is (radians).
     let source = r#"
         structure def S {
             let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 1.5707963267948966)
@@ -239,7 +239,59 @@ fn rotate_with_bare_radian_literal_lands_in_kernel() {
     let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
     let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
 
-    // Guard: no hard errors.
+    // Assert the DIAGNOSTIC TEXT, not the op count: `rotate` has other ways to
+    // drop an op (a degenerate axis, a missing arg), and any of them would
+    // satisfy a bare "only 1 op reached the kernel".
+    let rejection = result
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("angle argument expects Angle, got "))
+        .unwrap_or_else(|| {
+            panic!(
+                "a bare rotate angle must be rejected by name; got: {:?}",
+                result.diagnostics
+            )
+        });
+    assert_eq!(
+        rejection.severity,
+        Severity::Error,
+        "C1 inv. 3 requires Error so `reify eval` exits nonzero; got: {rejection:?}"
+    );
+    assert!(
+        rejection
+            .message
+            .contains(reify_core::units::ANGLE_MIGRATION_HINT),
+        "the rejection must tell the author how to fix it; got: {:?}",
+        rejection.message
+    );
+
+    // The Rotate op is DROPPED — only the Cylinder reaches the kernel.
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert!(
+            !ops.iter()
+                .any(|o| matches!(o.op, GeometryOp::Rotate { .. })),
+            "the rejected Rotate must not reach the kernel; got: {:?}",
+            ops.iter().map(|o| &o.op).collect::<Vec<_>>()
+        );
+    }
+
+    // CONTROL — the same angle WITH a unit builds clean and lands unconverted.
+    // This is what stops the test above from passing for the wrong reason: γ
+    // gates the angle, it does not break `rotate`.
+    let dimensioned = r#"
+        structure def S {
+            let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 1.5707963267948966rad)
+        }
+    "#;
+    let compiled = parse_and_compile(dimensioned);
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
     let errors: Vec<_> = result
         .diagnostics
         .iter()
@@ -247,32 +299,23 @@ fn rotate_with_bare_radian_literal_lands_in_kernel() {
         .collect();
     assert!(
         errors.is_empty(),
-        "build produced unexpected errors: {:?}",
-        errors
+        "the dimensioned form must build clean: {errors:?}"
     );
 
-    // Both Cylinder and Rotate must reach the kernel.
     let ops = ops_ref.lock().unwrap();
     assert_eq!(
         ops.len(),
         2,
-        "expected 2 kernel ops (Cylinder + Rotate), got {}",
+        "expected Cylinder + Rotate, got {}",
         ops.len()
     );
-
-    // Op 1 must be Rotate with angle_rad ≈ π/2 — the bare literal is passed
-    // through unchanged (not degree-converted).
     match &ops[1].op {
-        GeometryOp::Rotate { angle_rad, .. } => {
-            assert!(
-                (angle_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
-                "angle_rad should be π/2 ({:.9}) for bare radian input, got {:.9} \
-                 (if this is ~0.0274 the eval accidentally converted as degrees)",
-                std::f64::consts::FRAC_PI_2,
-                angle_rad
-            );
-        }
-        other => panic!("expected GeometryOp::Rotate at ops[1], got {:?}", other),
+        GeometryOp::Rotate { angle_rad, .. } => assert!(
+            (angle_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+            "a dimensioned angle reaches the kernel UNCONVERTED — the gate \
+             classifies, it does not convert; expected π/2, got {angle_rad:.9}"
+        ),
+        other => panic!("expected GeometryOp::Rotate at ops[1], got {other:?}"),
     }
 }
 

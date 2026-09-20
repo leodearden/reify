@@ -105,7 +105,8 @@ a CPU-priority problem. verify.sh already differentiates — **task** verifies r
 `nice -n 15 ionice -c2 -n7`, **merge** verifies at `nice -n 5` (no ionice) — a substantial gap. But:
 
 - The merge verify draws rustc tokens from the **same 32-token cargo jobserver**
-  (`/tmp/reify-jobserver`; `verify.py:1632` applies `verify_env` to both roles) as up to
+  (`/tmp/reify-jobserver` — the reify-side jobserver service's FIFO; dark-factory
+  only applies `verify_env` role-uniformly, in `verify.py`'s `_resolve_verify_env`) as up to
   **24 task lanes** (`max_concurrent_tasks: 24`) — ~25 consumers, one pool. **Token hand-off is
   priority-blind:** a merge `rustc` blocked waiting for a token is *not runnable*, so its `nice -5`
   never gets to matter. `nice`/`ionice` govern *scheduling among runnable threads*; the jobserver

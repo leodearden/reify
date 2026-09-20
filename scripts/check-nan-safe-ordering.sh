@@ -18,12 +18,56 @@
 # and `.unwrap_or` sit on separate lines (e.g. modal_ops.rs
 # `frequency_ascending_order`). In practice `Ordering::Equal` as an `unwrap_or`
 # fallback is always a comparator fallback; a legitimately-guarded site opts out
-# via the escape below. `f64::total_cmp` produces no `unwrap_or`, so the
-# sanctioned fix is never flagged.
+# via the escape below.
 #
-# COVERED SCOPE (exactly — mirrors the task 5093 spec): the FEA numeric crates
-# reify-solver-elastic, reify-kernel-gmsh, reify-fdm, reify-shell-extract,
-# reify-mesh-morph, plus reify-eval's compute_targets/ and modal_ops.rs.
+# ACCEPTED OVER-FLAG (measured, task 5159). This header used to claim that
+# "`f64::total_cmp` produces no `unwrap_or`, so the sanctioned fix is never
+# flagged". THAT IS FALSE: the fragment match also flags a comparator built
+# the sanctioned way, when the `Option<Ordering>` being defaulted comes from
+# `find`/`max_by`/`min_by` instead of from `partial_cmp`:
+#     .map(|(x, y)| x.total_cmp(y)).find(|o| !o.is_eq()).unwrap_or(Equal)
+# Live instances: `impl Ord for SampledField` in crates/reify-ir/src/value.rs
+# (two — the nested `cmp_floats` helper and the `axis_grids` leg), both
+# OUTSIDE the covered scope below, so the gate is green on the real tree.
+#
+# The over-flag is RETAINED DELIBERATELY — do not "tidy" the matcher. The
+# reasoning is recorded once, canonically, in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" §G; it is
+# NOT restated here, because three copies of one argument is the drift the
+# same decision exists to stop. Behaviour you need at this file: the site is
+# flagged, and `// nan-safe:allow — <reason>` is the sanctioned response.
+# Pinned by block (hJ) of tests/infra/test_nan_safe_ordering_guard_wired.sh.
+#
+# COVERED SCOPE (exactly): the FEA numeric crates reify-solver-elastic,
+# reify-kernel-gmsh, reify-fdm, reify-shell-extract, reify-mesh-morph, plus
+# reify-eval's compute_targets/ and modal_ops.rs — the task 5093 spec — AND
+# reify-stdlib, added by task #6376 once its four class-A sites were hardened
+# and its three class-B sites annotated, AND reify-constraints, added by task
+# #6377 once `eval_objective_set` was made to fail closed on a non-finite
+# accumulator. Those two tasks are the two halves of decision 9's widening
+# trigger; with #6377 landed the trigger is FULLY fired.
+#
+# THE RULE behind that list (so a new crate can be judged, not guessed): the
+# covered scope is the PHYSICAL/GEOMETRIC NUMERIC SOLVE PATH. Cache-eviction
+# scores, warm-pool cost ordering, version/event ordering and IR `Value`
+# ordering are deliberately OUT — a mis-sorted eviction candidate costs a
+# cache miss, a mis-sorted principal stress is a wrong engineering answer.
+#
+# The excluded set, the per-site census behind the call, and the condition
+# under which the scope widens are recorded ONCE, canonically, in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" (task
+# 5159) — read it before touching SCOPE_PATHSPECS. Do NOT add or remove an
+# entry without updating decision 9 AND the (hK) exclusion pins in
+# tests/infra/test_nan_safe_ordering_guard_wired.sh — the three are meant to
+# fail together.
+#
+# WARNING: this scope is NARROWER than INV-FEA-3's registry wording used to
+# suggest ("numeric crates"), and decision 9's 2026-08-20 census found
+# genuinely UNGUARDED sites outside it. Only reify-eval's engine_build.rs now
+# remains there, owned by filed follow-up hardening and NOT by this gate — do
+# not read this gate's green as evidence that it is safe. (reify-stdlib was on
+# that list until task #6376 hardened it, and reify-constraints until task
+# #6377 did; both are now in scope above.)
 #
 # PRODUCTION-CODE VIEW: each raw line is reduced to its production code by a
 # single LEFT-TO-RIGHT LEXER (`_strip_line`), not a comment-tail regex strip.
@@ -38,14 +82,22 @@
 # over-extending it (swallowing a production hazard below) or releasing it
 # early (false-REDing a legitimate test-module hazard).
 #
-# Measured on this gate's own 121-file scan set: no file's brace-depth
-# bookkeeping ends the file mid-drift (both views return depth to 0 by EOF),
-# but the per-line view diverges from the old raw-$0 view on 508 lines across
-# 40 of the 121 files (worst: reify-fdm/src/toolpath.rs, 187 lines) — so the
-# bookkeeping was drifting mid-file even though it happened to re-balance by
-# EOF. The fix is verdict-neutral on the live tree: both the old and the
-# lexed view flag 0 sites across all 121 files today. This closes a latent
-# hazard, not a live bug.
+# Measured WHEN THIS LEXER LANDED, on the 121-file scan set of the day (task
+# 5093/5159 era — the scan set has grown twice since; do NOT read 121 as a
+# current figure, and do not inline a fresh one here either, because it goes
+# stale on every widening. The authoritative count and its measurement history
+# live in docs/prds/compute-fea-hardening.md decision 9, "Measured widening
+# cost"): no file's brace-depth bookkeeping ended the file mid-drift (both
+# views returned depth to 0 by EOF), but the per-line view diverged from the
+# old raw-$0 view on 508 lines across 40 of those 121 files (worst:
+# reify-fdm/src/toolpath.rs, 187 lines) — so the bookkeeping was drifting
+# mid-file even though it happened to re-balance by EOF. The fix was
+# verdict-neutral on the tree of the day: both the old and the lexed view
+# flagged 0 sites across all 121 files. This closes a latent hazard, not a
+# live bug. The old raw-$0 view no longer exists in this script, so the
+# divergence half of that measurement is historical and not re-measurable;
+# the balance half IS, and was re-measured on 2026-09-01 against the current
+# (post-#6376/#6377) scan set — every file still ends balanced, no WARN.
 #
 # EXCLUDED:
 #   - comments and string literals, per the PRODUCTION-CODE VIEW above;
@@ -97,6 +149,13 @@ fi
 
 # Covered-scope pathspecs. Single-star git pathspecs are NOT path-boundary-aware,
 # so 'crates/reify-fdm/*.rs' matches every tracked .rs at any depth under it.
+#
+# Scope rule: the physical/geometric numeric solve path (see COVERED SCOPE in
+# the header). Adding or removing an entry here requires updating
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" and the
+# (hK) pins in tests/infra/test_nan_safe_ordering_guard_wired.sh in the same
+# change — those pins assert the current exclusions and will fail if this
+# list moves without them.
 SCOPE_PATHSPECS=(
     'crates/reify-solver-elastic/*.rs'
     'crates/reify-kernel-gmsh/*.rs'
@@ -105,6 +164,8 @@ SCOPE_PATHSPECS=(
     'crates/reify-mesh-morph/*.rs'
     'crates/reify-eval/src/compute_targets/*.rs'
     'crates/reify-eval/src/modal_ops.rs'
+    'crates/reify-stdlib/*.rs'
+    'crates/reify-constraints/*.rs'
 )
 
 # Tracked .rs sources in scope, minus integration-test dirs (tests/ excluded per
@@ -327,10 +388,11 @@ function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
 # per the `carried_in && code == ""` skip above, likely went entirely
 # unscanned. That fails SILENTLY toward GREEN (an unscanned line cannot be
 # flagged), so it is surfaced here rather than left to discover itself.
-# Verdict-neutral (a warning, not a failure): this gate's own 121-file scan
-# set measurably ends every file balanced today (see PRODUCTION-CODE VIEW
-# above), so promoting this to a hard failure once that is trusted tree-wide
-# is a follow-up, not a day-one behavior change.
+# Verdict-neutral (a warning, not a failure): this gate's own scan set
+# measurably ends every file balanced today — re-measured 2026-09-01 on the
+# current set, see PRODUCTION-CODE VIEW above — so promoting this to a hard
+# failure once that is trusted tree-wide is a follow-up, not a day-one
+# behavior change.
 END {
     if (in_str || in_raw || in_block > 0 || depth != 0)
         printf "WARN: %s: lexer state unbalanced at EOF (str=%d raw=%d block=%d depth=%d)\n", FILENAME, in_str, in_raw, in_block, depth > "/dev/stderr"

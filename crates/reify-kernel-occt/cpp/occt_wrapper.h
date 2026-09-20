@@ -192,6 +192,18 @@ rust::String shape_type_name(const OcctShape& shape);
 
 // --- Boolean operations ---
 
+/// Fuse / cut / intersect two shapes.
+///
+/// The stored result is NORMALIZED, not the raw `BRepAlgoAPI_*::Shape()`:
+/// BRepAlgoAPI always wraps its answer in a bare `TopoDS_COMPOUND`, which fails
+/// the SOLID|COMPSOLID|SHELL guard in `is_watertight`/`is_closed` and defeats
+/// `BRepExtrema_DistShapeShape`'s inner-solution test in
+/// `query_distance`/`min_clearance`. All three ops route through the shared
+/// `normalize_boolean_result` (occt_wrapper.cpp), which tightens the wrapper to
+/// the topology-preserving type the result actually is — one solid → bare
+/// SOLID, several → COMPSOLID, none → the compound untouched (task 7054).
+/// Callers must therefore classify the stored repr from the real shape (see
+/// `shape_type_name`) rather than assuming Solid.
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
@@ -797,6 +809,22 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
 // --- Thicken / Shell / Offset Solid ---
 
 std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance);
+
+/// Offset a single open face by `distance` along its normal using
+/// `BRepOffsetAPI_MakeOffsetShape` in Skin (surface) mode, producing a fresh
+/// parallel surface (offset_surface θ). Positive `distance` offsets along the
+/// face's +normal. Throws (surfaced as `Err`) when `distance` is ~0 or the
+/// result is degenerate/invalid.
+///
+/// Caller (`OcctKernel::execute`) registers the result as `BRepKind::Face`,
+/// which assumes a single-face input -- true for every current DSL surface
+/// producer (rectangle/circle/ellipse/nurbs_surface profiles). Skin mode
+/// also accepts a multi-face shell, but a shell input would offset to a
+/// shell result and the caller-side `BRepKind::Face` tag would then be
+/// inaccurate; there is no shell-valued surface producer today, so this is
+/// latent. Revisit (classify the result's actual TopoDS shape type, or
+/// reject shell input) if one is ever added.
+std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance);
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
 

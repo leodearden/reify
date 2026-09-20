@@ -309,3 +309,126 @@ structure S {
           unit: (unit_expr
             (unit_name)))
         right: (number_literal)))))
+
+;###############################################################################
+; U+00B7 MIDDLE DOT (`·`) as unit_mul — task #5784, angle-units leaf κ
+;
+; PRD docs/prds/v0_6/angle-units-surface-convergence.md cluster C, decision 7a.
+; UNIT_MUL_OP fires on ASCII `*` OR U+00B7, both gated by `is_unit_start`
+; (scanner.c) and both lowering to the SAME `UnitExpr::Mul` — so the rows below
+; are identical to their `*`-spelled twins earlier in this file.
+;
+; DOCUMENTATION, NOT ENFORCEMENT: no gate executes this corpus (scripts/verify.sh
+; never invokes `tree-sitter test`, and package.json has no scripts block). The
+; live regression signal for everything U+00B7 is
+; tree-sitter-reify/tests/unit_middot_mul_grammar_tests.rs, which cargo runs.
+;
+; WHY ONLY THREE ROWS, AND NO NEGATIVE OR BOUNDARY ONES. Because nothing runs
+; this file, every row here is a hand-maintained copy of a contract enforced
+; elsewhere, and a copy that cannot go RED diverges from the parser silently on
+; the next grammar edit. So this block keeps only what it can pay for: the
+; primitive (`5N·m`), U+00B7 mixed with `/` (`5N·m/rad`), and the exact string
+; `Display for DimensionVector` emits (`5m^2·kg·s^-2·rad^-1`) — the case that
+; motivates the whole leaf. The adjacency negatives (`5N·3`, `5N· m`, `5N ·m`),
+; the B7 boundary (`5 · 3`, which has no general `·` operator to fall back on)
+; and the two statement-boundary cases all live as executed `reject_*` / boundary
+; tests in unit_middot_mul_grammar_tests.rs instead. Do not re-add them here:
+; their expected trees can only be written as `(UNEXPECTED 183)` pins (183 =
+; 0xB7), which are a GLR error-recovery RENDERING artifact rather than a language
+; contract — only the PRESENCE of an error is contractual.
+;
+; One rule when editing this file, learned the hard way: comments are
+; `;`-prefixed, NEVER `#`. Everything between a row's `---` and the next `===` is
+; that row's expected tree, and `#` is not a comment there — a `#` header is
+; absorbed into the row ABOVE and breaks THAT row. The same idiom appears in
+; test/corpus/imaginary_literal.txt (cited by FILE: a line range rots on the
+; first edit and nothing validates it).
+;
+; Every expected tree here was transcribed from a real parse, never hand-written.
+; Check manually on the FULL corpus — a filtered run hides a broken neighbour:
+;   bash scripts/tree-sitter-generate.sh && cd tree-sitter-reify && tree-sitter test
+; (without the generate step: "No language found" — the parser is gitignored).
+;###############################################################################
+================================================================================
+unit_expr: Mul(N, m)  [5N·m] — U+00B7 unit_mul
+================================================================================
+
+structure S {
+  let x = 5N·m
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            (unit_name))
+          right: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+unit_expr: Div(Mul(N, m), rad)  [5N·m/rad] — U+00B7 mixed with `/`, left-assoc
+================================================================================
+
+structure S {
+  let x = 5N·m/rad
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            left: (unit_expr
+              (unit_name))
+            right: (unit_expr
+              (unit_name)))
+          right: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+unit_expr: Mul(Mul(Mul(Pow(m,2), kg), Pow(s,-2)), Pow(rad,-1))  [5m^2·kg·s^-2·rad^-1]
+================================================================================
+
+structure S {
+  let x = 5m^2·kg·s^-2·rad^-1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            left: (unit_expr
+              left: (unit_expr
+                base: (unit_expr
+                  (unit_name))
+                exponent: (signed_integer))
+              right: (unit_expr
+                (unit_name)))
+            right: (unit_expr
+              base: (unit_expr
+                (unit_name))
+              exponent: (signed_integer)))
+          right: (unit_expr
+            base: (unit_expr
+              (unit_name))
+            exponent: (signed_integer)))))))

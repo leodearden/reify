@@ -403,8 +403,9 @@ fn trait_object_arg_accepted_for_trait_typed_param_via_refinement() {
 // struct to the flange's trait-typed `material` param — no longer holds
 // after 1876 promoted `Material` from a trait to a canonical struct. The
 // new end-to-end coverage for the flange lives in
-// `tests/material_struct_tests.rs::boltflange_compiles_with_material_default`
-// (step-9 of task 1876).
+// `tests/harness_physical_modeling/material_struct_tests.rs`, fn
+// `boltflange_compiles_with_material_default` (step-9 of task 1876; #5694
+// consolidated that file out of the tests/ root into that harness).
 
 /// Refinement test: a struct that conforms via a refinement chain is accepted.
 ///

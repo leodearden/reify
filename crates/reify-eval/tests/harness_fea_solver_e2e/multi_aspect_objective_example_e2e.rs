@@ -24,7 +24,7 @@
 //! Import set and compile→eval→assert skeleton mirror
 //! `crates/reify-eval/tests/continuous_cost_min_example_e2e.rs`. The negative
 //! assertion pattern mirrors
-//! `crates/reify-compiler/tests/objective_dimension_coherence.rs::mixed_dimension_money_mass_emits_error`.
+//! `crates/reify-compiler/tests/harness_result_annotation/objective_dimension_coherence.rs::mixed_dimension_money_mass_emits_error`.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};

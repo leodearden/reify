@@ -615,6 +615,149 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_ARG_TYPE_MISMATCH`
     /// (see `docs/prds/type-hygiene.md` ζ §"Compile-time arg-type guard").
     ArgTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `StructureInstanceCtor`
+    /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
+    /// struct-ctor-conformance ε).
+    /// Emitted when a structure-constructor call supplies a NAMED argument whose
+    /// name matches no DECLARED parameter of the target structure — the site that
+    /// previously appended the argument leniently as `__arg{i}` with no
+    /// diagnostic at all.
+    ///
+    /// The suppressing predicate is the structure's `Param` PLUS `Auto { .. }`
+    /// value cells, at any visibility — the same externally-settable member-set
+    /// predicate used by `crates/reify-compiler/src/connect.rs` and
+    /// `crates/reify-compiler/src/traits.rs`. `param x : T = auto` / `auto(free)`
+    /// lowers to `ValueCellKind::Auto { free }`, so a named argument for an
+    /// `auto`-declared param is NOT an unknown field: it names a parameter the
+    /// author visibly wrote. (Counting only `Param` cells made this code assert
+    /// the opposite of the source on every auto-param structure.)
+    ///
+    /// That set is deliberately WIDER than the declared-parameter set, and is not
+    /// a claim about what a param is. `let m : T = auto` inside a structure lowers
+    /// to the SAME `Auto` cell as an auto param, and today's IR carries no
+    /// discriminator — so this code counts every `Auto` cell as possibly-declared
+    /// and stays SILENT on a named argument that targets one. Over-inclusion here
+    /// can only cost a diagnostic; it can never make this code state a falsehood,
+    /// which is the one failure mode it must not have. A named argument targeting
+    /// an auto LET is therefore leniently accepted, not diagnosed — the residual
+    /// `Auto`-slot binding gap is owned by #6705; the IR change that would make
+    /// the origin knowable is tracked by its own follow-up task. Contrast
+    /// [`Self::CtorArity`], which must print a NUMBER and so uses the narrower
+    /// visibility-keyed view.
+    ///
+    /// The lenient `__arg{i}` push is deliberately NOT gated by that predicate —
+    /// it keys off the positionally-bindable slot set, as it always did — so the
+    /// emitted IR is byte-for-byte the same whether or not this diagnostic fires.
+    ///
+    /// Canonical message form:
+    /// `"E_CTOR_UNKNOWN_FIELD: unknown named argument '{field}' in call to
+    /// '{Ctor}'; '{Ctor}' has no parameter with that name"`
+    ///
+    /// The `E_CTOR_UNKNOWN_FIELD: ` prefix is part of the message because
+    /// `reify check` renders `{severity}: {message}` and never prints the
+    /// `DiagnosticCode`; the prefix is what makes the mnemonic observable at the
+    /// CLI (in-file emit-site precedent: `E_FALLBACK_TYPE: ` / `E_PRIV_MEMBER_ACCESS`).
+    /// The label sits at the offending argument's own span (PRD §6 C3), reading
+    /// `"unknown named argument"`.
+    ///
+    /// Multiplicity: exactly ONE diagnostic per unknown named argument (an
+    /// unknown field name is a per-argument author error and each typo needs its
+    /// own span to be actionable), satisfying PRD §6 C2(ii) "at most one
+    /// diagnostic per (arg, fact)". A duplicate of a *known* parameter is NOT an
+    /// unknown field and keeps its own pre-existing duplicate-named-arg Error.
+    ///
+    /// Severity: emitted at the task-5302 `CTOR_FIELD_CONFORMANCE_SEVERITY` knob
+    /// (`crates/reify-compiler/src/conformance/mod.rs`) — **Warning at ε, Error
+    /// at δ**. The emit site never hard-codes a severity, so δ stays a literal
+    /// one-const flip. PRD §6 C2(i) type anti-cascade deliberately does NOT gate
+    /// this code: an unknown field name is a structural fact decidable without
+    /// reference to any argument's type, so a poisoned argument must not suppress
+    /// it (the typo often *caused* the downstream type error).
+    ///
+    /// Distinct from [`Self::ArgTypeMismatch`] (and not folded into it): that code
+    /// reports an expected-vs-found TYPE for an argument that legitimately binds
+    /// to a parameter, whereas here the named parameter does not exist at all —
+    /// there is no expected type to report, and the fix is a rename rather than a
+    /// value change. Minting a dedicated code (following the `SelectorKindMismatch`
+    /// minting precedent) lets the β corpus survey and the δ flip count
+    /// structural author errors separately from type errors.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CTOR_UNKNOWN_FIELD`
+    /// (see `docs/prds/struct-ctor-field-type-conformance.md` §7 row 11).
+    CtorUnknownField,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `StructureInstanceCtor`
+    /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
+    /// struct-ctor-conformance ε).
+    /// Emitted when a structure-constructor call supplies more arguments than the
+    /// target structure DECLARES parameters, and at least one positional argument
+    /// found no slot — the site that previously appended each surplus argument
+    /// leniently as `__arg{call_idx}` with no diagnostic at all.
+    ///
+    /// Canonical message form:
+    /// `"E_CTOR_ARITY: {Ctor}() expects at most {ndeclared} {argument|arguments},
+    /// got {nargs}"`
+    ///
+    /// `{ndeclared}` is the DECLARED parameter count — every `Param` cell, plus
+    /// each `Auto { .. }` cell whose `visibility` is `Public` — and the
+    /// singular/plural noun keys off that same count. It is deliberately not the
+    /// count of positionally-bindable slots: reporting the slot count made this
+    /// message state a ceiling the source contradicts (`expects at most 1
+    /// argument` on a structure declaring two, one of them `auto`).
+    ///
+    /// The visibility conjunct is what keeps an auto LET out of the ceiling.
+    /// `let m : T = auto` lowers to the SAME `ValueCellKind::Auto { free }` cell
+    /// as `param m : T = auto`, so counting every `Auto` cell inflated the ceiling
+    /// into a second false-message class — `expects at most 2 arguments` on a
+    /// structure declaring ONE param beside an auto let — and silenced the
+    /// param-less case outright. A param defaults to `Public`, a let to `Private`,
+    /// so visibility separates them for every shape in the corpus. It is a
+    /// heuristic, not a proof: `priv param x : T = auto` is read as a let and
+    /// understates the ceiling by one. No predicate over today's IR can be right
+    /// for both — the cells are byte-identical — and `priv`'s own meaning favours
+    /// this reading, since a private member is not part of the constructor's
+    /// externally-settable surface. Carrying the origin explicitly in the IR (a
+    /// `from_param` discriminant on the `Auto` variant, or a declared-param name
+    /// list on `TopologyTemplate`) is what removes the ambiguity, and is tracked by
+    /// its own follow-up task. Unlike [`Self::CtorUnknownField`], this code cannot
+    /// simply widen its view: it prints the count, so an over-wide view is itself
+    /// a false statement.
+    ///
+    /// Residual scope: a call whose argument count is WITHIN the declared count
+    /// but which still overflows the positionally-bindable slots — because `auto`
+    /// params are not positionally bindable today — is deliberately NOT diagnosed
+    /// here. That is a binding defect, not an arity one (the surplus argument
+    /// lands in a garbage `__arg{i}` member), and this code cannot state a true
+    /// fact about it. It is owned by #6705.
+    ///
+    /// The `{argument|arguments}` noun and the `"expects … , got …"` shape are
+    /// reused verbatim from `crates/reify-compiler/src/arg_check.rs` so ctor
+    /// arity reads identically to builtin arity; the accompanying label text is
+    /// that module's centralised `"wrong number of arguments"`. The
+    /// `E_CTOR_ARITY: ` prefix is part of the message for the same CLI-visibility
+    /// reason described on [`Self::CtorUnknownField`].
+    ///
+    /// Multiplicity: exactly ONE diagnostic per CALL SITE, anchored at the FIRST
+    /// over-arity positional argument. Arity is a call-level fact — `W("a","b","c")`
+    /// against a 1-param structure is one mistake, not three — matching every
+    /// existing arity diagnostic in the repo (`arg_check.rs` emits one per call,
+    /// never one per surplus argument).
+    ///
+    /// Severity: emitted at the task-5302 `CTOR_FIELD_CONFORMANCE_SEVERITY` knob
+    /// (`crates/reify-compiler/src/conformance/mod.rs`) — **Warning at ε, Error
+    /// at δ**, never a hard-coded severity, so δ stays a literal one-const flip.
+    /// PRD §6 C2(i) type anti-cascade does NOT gate this code either: an argument
+    /// count is decidable with no reference to any argument's type.
+    ///
+    /// Distinct from [`Self::ArgTypeMismatch`]: a surplus positional argument has no
+    /// parameter slot, hence no expected type to compare against — the fact
+    /// reported is the call's shape, not a value's type. Distinct also from the
+    /// `arg_check.rs` builtin arity errors, which are hard-coded `Severity::Error`
+    /// for *builtin* calls; this code covers structure constructors and must move
+    /// with the ctor-conformance knob.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CTOR_ARITY`
+    /// (see `docs/prds/struct-ctor-field-type-conformance.md` §7 row 12).
+    CtorArity,
     /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
     /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
@@ -1608,6 +1751,135 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_UNRESOLVED_NAME`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     UnresolvedName,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — the **terminal first-arg
+    /// fallback** of the `NoUserFunctions` arm of the `FunctionCall` ladder.
+    ///
+    /// Emitted as `Severity::Warning` when a call's CALLEE is neither
+    ///
+    /// 1. a builtin name in the closed-world union computed by
+    ///    `reify_compiler::is_known_builtin` (every classification family, plus
+    ///    the `FIRST_ARG_TYPED_NAMES` allowlist and the
+    ///    `EVAL_DEFERRED_BUILTIN_NAMES` manifest), NOR
+    /// 2. a name the enclosing module DECLARES — its `fn`s (local + prelude)
+    ///    and its structures, whose constructors share call syntax.
+    ///
+    /// The warning is additionally withheld when the callee names a local of
+    /// `Type::Function` — a function-typed value applied by bare name, as in
+    /// `fn apply(f: (Real) -> Real) -> Real = f(1.0)`.
+    ///
+    /// Condition 2 is not redundant, and reading it as such was the original
+    /// defect: a **fn body** compiles against a function table that is still
+    /// being built in source order, so a call to a later-declared sibling
+    /// arrives here with a perfectly real name. The full account lives beside
+    /// the field that carries the vocabulary,
+    /// `reify_compiler::scope::CompilationScope::declared_callable_names`, and
+    /// is deliberately not restated here.
+    ///
+    /// Before task #5371 such a call compiled with ZERO diagnostics and
+    /// silently adopted its first argument's type — `line(point3(1mm,2mm,3mm),
+    /// …)` type-checked clean as `Scalar<LENGTH>`.
+    ///
+    /// Canonical message form:
+    /// `"unresolved function: <name>"`
+    ///
+    /// # How this differs from [`DiagnosticCode::UnresolvedName`]
+    ///
+    /// They are neighbours, not synonyms, and consumers matching on the code
+    /// depend on the split:
+    ///
+    /// | | `UnresolvedName` | `UnresolvedFunction` |
+    /// |---|---|---|
+    /// | mnemonic | `E_UNRESOLVED_NAME` | `W_UNRESOLVED_FUNCTION` |
+    /// | severity | Error | Warning |
+    /// | what is unresolved | an unbound IDENTIFIER in expression context | the CALLEE of a `FunctionCall`, declared nowhere in the module |
+    /// | origin | `expr.rs:670-681`, `annotations.rs:321` | the terminal fallback in `expr.rs` |
+    ///
+    /// It is also distinct from [`DiagnosticCode::FnTypeArgUnresolved`], which
+    /// concerns an unresolved TYPE ARGUMENT of a call that *did* resolve.
+    ///
+    /// # Why a Warning, and what changes it
+    ///
+    /// The mnemonic is `W_UNRESOLVED_FUNCTION` per the crate's severity
+    /// convention (`W_*` → Warning, `E_*` → Error). Warn-mode is deliberate and
+    /// interim: #5371 changes NO typing, so the existing corpus cannot break on
+    /// it, and the corpus sweep must be green before the severity can move.
+    /// **#5997 flips this to `E_UNRESOLVED_FUNCTION`/`Severity::Error` behind a
+    /// break-glass env knob**; #6014 (registry ω) then deletes the fallback
+    /// itself, at which point this code becomes the sole outcome of a
+    /// lookup miss rather than a warning layered over a guess.
+    UnresolvedFunction,
+    /// Origin: `crates/reify-compiler/src/expr.rs` — the same **terminal
+    /// first-arg fallback** as [`DiagnosticCode::UnresolvedFunction`], one
+    /// check earlier.
+    ///
+    /// Emitted as `Severity::Warning` when the callee IS a known builtin but
+    /// an **arg-aware** ladder arm declined the call because its ARGUMENT
+    /// SHAPE was not the family's. Three arms are arg-aware:
+    ///
+    /// | family | resolver | declines when |
+    /// |---|---|---|
+    /// | list-helper | `list_helpers::infer_list_helper_return_type` | arg0 is not a `List`, or the lambda's return type is wrong |
+    /// | field-op | `units::field_op_result_type` | arg0 is not a `Field` (or not a `Function`, for `fn_field`) |
+    /// | affine-algebra | `units::affine_map_algebra_result_type` | arg0 is not an `AffineMap` / `Point` |
+    ///
+    /// Each returns `None` for anti-cascade reasons, and at the call site that
+    /// `None` is indistinguishable from "not my name" — so the call slid to
+    /// the fallback and was typed from arg0 with **no diagnostic at all**.
+    /// Measured pre-#5371: `single(42)` and `sample(42, 7)` both compiled
+    /// clean as `Int`.
+    ///
+    /// Canonical message form:
+    /// `"builtin '<name>' does not recognise this argument shape"`, with the
+    /// expected shape carried in the label. The mnemonic is
+    /// `W_BUILTIN_ARG_SHAPE`.
+    ///
+    /// # Mutually exclusive with `UnresolvedFunction`
+    ///
+    /// The two are complements, never a hierarchy: "I have never heard of this
+    /// name" and "I know this name and you called it wrong" cannot both hold
+    /// of one call. All three families above are inside `is_known_builtin`'s
+    /// closed world, so a call carrying this code is by construction not
+    /// unresolved. It also suppresses the legacy bare zero-arg warning, on the
+    /// same one-defect-one-line reasoning.
+    ///
+    /// # The fallback has THREE outcomes, and the third is silence
+    ///
+    /// A callee the enclosing module declares but that this body cannot yet
+    /// resolve (a forward-referenced sibling `fn`, a constructor inside any
+    /// trait fn body — static or assoc, or a function-typed local applied by
+    /// bare name) emits neither this code nor `UnresolvedFunction` nor the
+    /// legacy zero-arg warning, and is still typed from arg0. Pinned by
+    /// `forward_referenced_sibling_emits_neither_warning` and
+    /// `forward_reference_typing_is_byte_identical`.
+    ///
+    /// That silence is narrower than the pre-#5371 open-world silence in the
+    /// general case — it is granted only to names the module demonstrably
+    /// declares — but it is **strictly WIDER for one case**, and #5997 must not
+    /// discover that by surprise: a ZERO-ARG call to such a name used to earn
+    /// the legacy "cannot infer return type of zero-arg function" warning, and
+    /// now earns nothing. `known` is false (it is not a builtin) so the legacy
+    /// warning is suppressed, and the name is declared so `UnresolvedFunction`
+    /// is suppressed too. The result is a silent `dimensionless_scalar()`
+    /// default for a call the compiler could not resolve.
+    ///
+    /// That is a deliberate ruling, not an oversight — the alternative is to
+    /// tell the user their forward-referenced sibling has an uninferrable
+    /// return type, which is a mechanical consequence of a compiler-internal
+    /// ordering rather than anything they can act on. It is called out here
+    /// because it is the one place #5371 removed a signal outright, and is
+    /// recorded as an explicit precondition on #5997 in
+    /// `docs/notes/unresolved-function-warn-sweep-2026-08-29.md`.
+    ///
+    /// # Interim, and deliberately non-poisoning
+    ///
+    /// This code changes NO typing — the fallback still adopts arg0. That is
+    /// what makes it corpus-safe. **#6002 introduces a sibling
+    /// `E_BuiltinArgShape` that POISONS the cell to `Type::Error`**; this code
+    /// is not that, and must not be conflated with it by a consumer matching
+    /// on either. #6014 (registry ω) supersedes both by deleting the fallback
+    /// outright, at which point an unrecognised arg shape becomes an ordinary
+    /// signature mismatch against the builtin's registry row.
+    BuiltinArgShapeUnrecognized,
     /// Origin: `crates/reify-eval/src/shell_extract_compute.rs` (γ trampoline
     /// mapping of [`reify_shell_extract::SegmentationError::InvalidThreshold`]).
     ///
@@ -2439,6 +2711,84 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_MIXED_DIMENSION`
     /// (severity convention: `E_*` → Error).
     ObjectiveDimensionIncoherent,
+    /// Origin:
+    /// `crates/reify-compiler/src/compile_builder/post_passes.rs::phase_inert_objective_check`
+    /// (module-level post-pass, task γ #5417 — PRD
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 3
+    /// / §4.2).
+    ///
+    /// Canonical message prefix: `"E_OBJECTIVE_INERT: ..."`, naming the
+    /// entity, the objective sense, and the full set of never-auto cells the
+    /// objective reads, with a label anchored on one of those cells'
+    /// `ValueCellDecl.span`.
+    ///
+    /// Emitted as a `Severity::Error` when a template's declared
+    /// `minimize`/`maximize` is *structurally inert*: every value it reads
+    /// resolves, within the module, to a cell that can never be `auto` —
+    /// so the objective can never influence any solved value (the INV-SF-3
+    /// silently-useless-intent failure this PRD exists to eradicate). This is
+    /// a STATIC check (no eval) and therefore gates `reify check`.
+    ///
+    /// The predicate fires only on a positive proof and bails conservatively
+    /// on every ambiguity, so a false `ObjectiveInert` is structurally
+    /// impossible. Correctly excluded cases:
+    /// - Any objective term containing an opaque node (`MethodCall` such as
+    ///   `minimize cost(self.descendants)`, structural query, `Lambda`,
+    ///   `CrossSubGeometryRef`, or an `Error`-typed subexpr) — these carry
+    ///   zero compile-time `ValueRef`s yet genuinely couple to a child's auto
+    ///   at eval time.
+    /// - A pure-literal objective (`minimize 1mm`) — empty resolvable-ref set.
+    /// - Any ref that does not resolve to a cell of the template.
+    /// - An objective transitively reaching an `auto` cell through a
+    ///   `let`/`default_expr` chain.
+    /// - An auto living in `guarded_groups[*].{members,else_members}` (a
+    ///   `where`-clause auto) rather than in `value_cells`.
+    /// - A cell auto-overridden at a sub-instance elsewhere in the module
+    ///   (`sub c : Child { k = auto }`), which makes `Child`'s objective
+    ///   genuinely governing.
+    /// - Purpose objectives, which live on `CompiledPurpose.objective` and are
+    ///   excluded structurally (the post-pass never touches them).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_INERT`
+    /// (severity convention: `E_*` → Error).
+    ObjectiveInert,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs` (the objective solve
+    /// paths — single-scope and merged-cluster — beside the #4804
+    /// `W_SOLVER_OPTIMALITY_UNPROVEN` sites; task γ #5417 — PRD
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 3
+    /// / §4.2).
+    ///
+    /// Canonical message prefix: `"E_OBJECTIVE_UNCONSUMED: ..."`, naming the
+    /// scope, the declared objective, and the FULL set of unconsumed autos —
+    /// one diagnostic per objective declaration (the #5014 aggregation rule),
+    /// never one per component or per solver trial.
+    ///
+    /// Emitted as a `Severity::Error` at eval time when a *user-declared*
+    /// objective transitively reaches at least one `auto` param, yet ZERO
+    /// solver components consumed that objective — the
+    /// `reify_constraints::objective_consumption` fact is `NoComponents`,
+    /// `NoAutoParams`, or `FallbackComponentZero` — and at least one reached
+    /// auto is still unbound after the run. The canonical shape is a purely
+    /// unconstrained optimisation (`param a = auto(free)` +
+    /// `minimize (a-3.0)*(a-3.0)` with no constraints), where the
+    /// decomposition builds zero components and the registry drops the
+    /// objective silently.
+    ///
+    /// Correctly excluded cases:
+    /// - A governing objective whose autos a solving component consumed
+    ///   (`Consumed { .. }`) — the healthy case.
+    /// - The *vacuous-healthy* case: every objective-reachable auto is
+    ///   concretely bound this run (connector-pinned autos are partitioned
+    ///   out of `auto_params`; solver-bound autos land in `resolved_params`).
+    /// - Synthesised Chebyshev-centre objectives (task 4013), which by
+    ///   definition have `template.objective == None`; the gate keys off
+    ///   `template.objective.is_some()`.
+    /// - A let-indirected objective, which is already transitively consumed
+    ///   through `ResolutionProblem.dependent_cells`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_UNCONSUMED`
+    /// (severity convention: `E_*` → Error).
+    ObjectiveUnconsumed,
     /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_scope_coupling`.
     ///
     /// Severity: Warning — detection-only; no automatic fixup is attempted.
@@ -2529,6 +2879,90 @@ pub enum DiagnosticCode {
     /// has no effect.  The solve continues with kernel defaults (this is advisory,
     /// not an error).
     BucklingOptionUnsupported,
+    /// Origin: `crates/reify-eval/src/compute_targets/buckling.rs` and
+    /// `crates/reify-eval/src/modal_ops.rs`, via the shift-honoring solve paths
+    /// (leaves γ #7260 and δ #7261).  Minted here unemitted by leaf α (#7258) so
+    /// the two sibling wiring leaves do not both edit this file (PRD §10 α).
+    ///
+    /// Canonical message form — ONE template with an OPTIONAL count, never two
+    /// drifting messages (PRD §5.4 precision limit):
+    /// `"W_ShiftSkippedModes: the shift sigma = <σ> skipped [<N> ]mode(s) below it; the result is a window around sigma, not the bottom of the spectrum"`.
+    ///
+    /// Emitted as a `Severity::Warning` (PRD-prose mnemonic `W_ShiftSkippedModes`)
+    /// when a shifted solve reports `EigenSolverResult.shift_skipped_modes == true`
+    /// — i.e. some eigenvalue of the pencil lies strictly between zero and σ and is
+    /// absent from the returned set.
+    ///
+    /// Advisory, not an error: inspecting a frequency band around σ is a
+    /// legitimate use, so a user who never asks "what is the first mode?" is
+    /// warned once and otherwise unobstructed.  Refusal lands on the incorrect
+    /// USE instead — see `FirstModeNotInShiftedResult`.
+    ///
+    /// The count is optional because the two implementations differ in precision:
+    /// the dense path computes the whole spectrum via QZ and counts exactly, while
+    /// the Lanczos path's Cholesky/LU discriminator yields only a boolean (an exact
+    /// count would need an inertia-revealing LDL^T that faer's sparse LU does not
+    /// expose).  Omitting the count is always correct; including it is only correct
+    /// on the dense path.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.4, contract
+    /// clause C5, and boundary test BT4.
+    ShiftSkippedModes,
+    /// Origin: `crates/reify-solver-elastic/src/eigensolve.rs`, the shift-invert
+    /// `K − σB` factorization dispatch (leaf β #7259).  Minted here unemitted by
+    /// leaf α (#7258).
+    ///
+    /// Canonical message form:
+    /// `"E_ShiftAtEigenvalue: the shift sigma = <σ> lies on an eigenvalue of the pencil, so K − sigma·B is singular; move sigma off the eigenvalue"`.
+    ///
+    /// Emitted as a `Severity::Error` (PRD-prose mnemonic `E_ShiftAtEigenvalue`)
+    /// when the shifted factorization detects a singular or numerically degenerate
+    /// `K − σB`.  Detection is two-part, because faer's
+    /// `LuError::SymbolicSingular` reports only STRUCTURAL rank deficiency —
+    /// partial-pivot LU on a numerically tiny pivot returns `Ok` and yields
+    /// garbage: (1) the symbolic-singular error directly, and (2) a
+    /// post-factorization guard on the recovered spectrum (non-finite λ, or a
+    /// back-substitution residual above the documented threshold).
+    ///
+    /// NO automatic perturbation is performed.  Nudging σ and continuing is
+    /// exactly the silent-substitution class this PRD exists to close; if
+    /// perturbation is ever wanted it arrives as an explicit opt-in knob, never as
+    /// a default.  The message therefore names the offending σ and tells the author
+    /// to move it.
+    ///
+    /// This code has no counterpart on the DENSE path: `solve_eigen_dense` never
+    /// forms `K − σB` (σ is a sort key there, not a factorization), so contract
+    /// clause C6 is satisfied vacuously and σ on an eigenvalue is a well-posed
+    /// selection rather than a failure.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.3, contract
+    /// clause C6, and boundary test BT5.
+    ShiftAtEigenvalue,
+    /// Origin: the three `modes[0]` helpers — `critical_load`,
+    /// `safety_factor_buckling` (`crates/reify-eval/src/compute_targets/buckling.rs`)
+    /// and `first_frequency` (`crates/reify-eval/src/modal_ops.rs`) — once leaf ε
+    /// (#7262) converts them from pure `.ri` bodies to `@optimized` trampolines.
+    /// Minted here unemitted by leaf α (#7258).
+    ///
+    /// Canonical message form:
+    /// `"E_FirstModeNotInShiftedResult: <helper> cannot answer 'what is the first mode?' — the solve used shift sigma = <σ>, which skipped mode(s) below it, so the first mode is not in the result"`.
+    ///
+    /// Emitted as a `Severity::Error` (PRD-prose mnemonic
+    /// `E_FirstModeNotInShiftedResult`) when one of those helpers is handed a
+    /// result whose C5 provenance says modes were skipped.  Without the refusal the
+    /// helper returns the multiplier of whichever mode was nearest σ, which is
+    /// HIGHER than the true first mode — the unconservative direction: a column
+    /// reported to hold 160 kN that buckles at 41 kN, or a fundamental reported at
+    /// 300 Hz that is really at 30 Hz.
+    ///
+    /// The refusal mechanism is a coded Error, NOT `Value::Undef`: `Undef` is the
+    /// silent-failure sentinel (INV-SF-1), which is the opposite of the loudness
+    /// this PRD is for.  Per INV-SF-2 an `Error` exits `reify eval` non-zero, so the
+    /// wrong number can never reach a report.
+    ///
+    /// References: PRD `docs/prds/v0_6/shift-invert-eigensolve.md` §5.4, contract
+    /// clause C5, and boundary test BT4.
+    FirstModeNotInShiftedResult,
     /// Origin: `crates/reify-compiler/src/diagnostics.rs::dup_member_key_error`,
     /// wired into the keyed-sub pre-pass in
     /// `crates/reify-compiler/src/entity.rs` (`MemberDecl::Sub` arm).
@@ -2777,6 +3211,43 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/geometric-relations.md` §9 δ).
     RelateExpectsRelation,
+    /// Origin: `crates/reify-compiler/src/relation_signatures.rs` (the `tangent`
+    /// arm of `check_relation_arg_types`, geometric-relations tangent).
+    ///
+    /// Canonical message form:
+    /// ``"tangent: no tangency between `Direction` and `Direction`; supported: \
+    /// cylinder/cylinder tangent(Axis, Axis, r1, r2), …"``
+    ///
+    /// Emitted as `Severity::Error` when a `tangent` call's first two operand
+    /// types do not classify into one of the four curated tangency combos
+    /// (cylinder/cylinder `(Axis, Axis)`, cylinder/plane `(Axis, Plane)`,
+    /// sphere/plane `(Point, Plane)`, sphere/sphere `(Point, Point)` — the plane
+    /// combos in either operand order), or when the call's arity does not match
+    /// the radius count that combo requires (one radius per CURVED surface: 3
+    /// args for the plane combos, 4 for the curved/curved ones).
+    ///
+    /// Unlike the rest of the relation family, tangent's legality is a property
+    /// of the operand PAIR rather than of either slot alone — `(Axis, Plane)` is
+    /// a cylinder resting on a plane while `(Plane, Plane)` is two planes that
+    /// never touch — so it cannot be policed through `relation_operand_datum`'s
+    /// single-`ExpectedDatum`-across-both-slots table and gets its own arm.
+    ///
+    /// This must be a COMPILE-time rejection because the residual layer cannot
+    /// fail loudly: an unhandled operand shape there contributes zero Jacobian
+    /// rows, which the rank partition files as *redundant* with a 0 rank
+    /// contribution and post-solve verification reads as residual `0.0` — a
+    /// tangency request wholly ignored and reported as satisfied (the
+    /// silent-failure class `docs/legibility/design-invariants.md` forbids).
+    /// With this gate the residual layer's unsupported arm is unreachable from
+    /// `.ri`.
+    ///
+    /// A radius slot carrying the wrong physical dimension is NOT this code — it
+    /// draws the UNIT layer's `ArgTypeMismatch`, so a unit error and an
+    /// unsupported geometry pairing stay distinguishable.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_TANGENT_OPERANDS_UNSUPPORTED`
+    /// (severity convention: `E_*` → Error).
+    TangentOperandsUnsupported,
     /// Origin: `crates/reify-eval/src/relate_solve.rs` (the pre-solve
     /// trace-to-ground connectivity check in `solve_relate_scope`,
     /// geometric-relations η).
@@ -3801,6 +4272,302 @@ pub enum DiagnosticCode {
     /// round-trips automatically (follows the `TraitRefinementChainTooDeep`
     /// too-deep precedent).
     ExpressionNestingTooDeep,
+    /// Origin: every `arg_acceptance`-backed chokepoint, on BOTH sides of the
+    /// eval/stdlib split. The original (task 5743) is
+    /// `crates/reify-eval/src/geometry_ops.rs` — `eval_named_arg_length` (every
+    /// LENGTH-semantic geometry arg: primitive/profile dimensions, pattern
+    /// spacing, mirror-plane and circular-pattern axis origins), plus the two
+    /// quiet-degrade readers `resolve_spec_arg` and `resolve_density_arg`.
+    ///
+    /// Since task 5791 the origin ALSO covers the reify-stdlib READER and FIELD
+    /// surface: `reify_ir::arg_acceptance::accept_field` (the struct-field
+    /// sibling of `accept_arg`), the reify-stdlib `diagnose` classifiers (the 8
+    /// `*_diagnose` re-exports in `crates/reify-stdlib/src/lib.rs`), and the
+    /// `ComputeOutcome::Failed { diagnostics, .. }` transport that carries them
+    /// out. That widening is not speculative: the `bbox` arm at
+    /// `crates/reify-stdlib/src/geometry.rs:1670-1681` (task 6081) has carried
+    /// this code since 2026-08-27, which is the already-shipped counter-example
+    /// proving the old eval-only line was too narrow.
+    ///
+    /// One code for one rejection REASON, across both surfaces — BINDING ruling
+    /// A7 (Leo, 2026-08-30, esc-5791-3) and PRD
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1's
+    /// RECONCILIATION block (landed b3ba3228f5). `ArgDimensionMismatch` is
+    /// deliberately NOT minted.
+    ///
+    /// Canonical message form:
+    /// `"{builtin}: {arg_name} argument expects {expected}, got {got}; {hint}"`
+    ///
+    /// The wording is owned SOLELY by
+    /// `crates/reify-ir/src/arg_acceptance.rs`'s `ArgRejection::message` — producers
+    /// attach this code, they never re-phrase the text. That single-owner rule is
+    /// what lets the ANGLE (PRD 3) and reader (PRD 5) follow-ups inherit
+    /// byte-identical diagnostics, and it is why the migration hint (e.g.
+    /// ``"pass a dimensioned length such as `5mm`"``) lives on the `ArgSpec`
+    /// rather than at any call site.
+    ///
+    /// Emitted when a builtin argument that carries a PHYSICAL DIMENSION by
+    /// contract is given a bare/dimensionless number or a value of the wrong
+    /// dimension. The hazard is the silent 1000x one: `Value::as_f64` reads a
+    /// bare `12` as SI **metres**, so `box(12, ...)` is a 12-metre box, not a
+    /// 12mm one.
+    ///
+    /// SEVERITY-NEUTRAL: this code pins the *reason*, not the *severity*. It
+    /// rides `Severity::Error` at the op-failing chokepoint (`eval_named_arg_length`,
+    /// whose `Err` makes `compile_geometry_op` drop the op), and deliberately
+    /// keeps `Severity::Warning` at the two legacy quiet-degrade readers
+    /// (`resolve_spec_arg` / `resolve_density_arg`), which return `None` and let
+    /// the build continue. Promoting those two is a real exit-code change for
+    /// `edges_at_height` / `geo_equiv` / `faces_by_normal` / the density ladder
+    /// and is tracked as its own follow-up — do not "fix" the asymmetry by
+    /// reading this doc as a severity contract.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DIMENSIONED_ARG_REJECTED`
+    /// (see `docs/prds/v0_6/units-length-gate-completion.md`).
+    ///
+    /// Minting rationale (PRD Open Question 1, DECIDED HERE by task 5743):
+    /// - Distinct from [`DimensionMismatch`], whose documented origin is
+    ///   reify-compiler's binary-op / range-bounds sites and whose canonical form
+    ///   `"dimension mismatch in {op}: {left} vs {right}"` is an OPERATOR-level
+    ///   invariant (Add/Sub-specific), not a builtin parameter contract.
+    /// - Distinct from [`ArgTypeMismatch`], which was the closer candidate and
+    ///   was considered seriously — its own doc says its `{type_name}`
+    ///   deliberately mirrors this runtime `ArgRejection::message` wording. It is
+    ///   rejected because its documented Origin is the COMPILE layer
+    ///   (`builtin_signatures` / conformance), and PRD decision D2 keeps compile
+    ///   and eval as two first-class, independently observable layers: PRD leaf
+    ///   eta will emit `ArgTypeMismatch` at the compile layer for these very same
+    ///   argument positions, so sharing one code would make "which layer rejected
+    ///   this?" unanswerable from the code alone.
+    /// - ONE shared runtime code, not one per dimension: PRDs 3 (ANGLE) and 5
+    ///   (readers) are chartered to reuse THIS variant and must NOT mint
+    ///   per-dimension siblings.
+    ///
+    /// Cost of minting is near zero: `DiagnosticCode` is `#[non_exhaustive]`,
+    /// has no `impl` block anywhere in the workspace (no `as_str`/`Display`/
+    /// `FromStr`/exhaustive match-on-self), no exhaustiveness test, no docs
+    /// registry, no `reify-audit` check and no mirrored GUI enum — so this is a
+    /// one-variant addition that serde round-trips automatically (same
+    /// non-breaking argument as `ExpressionNestingTooDeep` above).
+    DimensionedArgRejected,
+    /// Origin:
+    /// `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
+    /// — the single shared refusal builder, emitted from BOTH export surfaces:
+    /// `reify build -o <file>` (`cmd_build`'s `-o` arm, `crates/reify-cli/src/main.rs`)
+    /// and the occurrence-driven `Engine::build_outputs_with_result`
+    /// (`crates/reify-eval/src/engine_build.rs`).
+    ///
+    /// Emitted as a `Severity::Error` when the module declares a
+    /// `RepresentationWithin` bound that the export path cannot demonstrate it
+    /// honours. The artifact is then **REFUSED** — no bytes are written and no
+    /// pre-existing file at the destination is truncated — rather than written
+    /// and reported successful, which is the failure described in PRD
+    /// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1
+    /// (task **η** / C-SURFACE (2)). `Error` severity is load-bearing, not
+    /// cosmetic: it is what `cmd_build`'s existing
+    /// `diagnostics.iter().any(|d| d.severity == Severity::Error)` gate keys
+    /// on, so the refusal exits non-zero with no new CLI exit logic
+    /// (PRD INV-SF-2: "η rides `cmd_build`'s existing gate rather than adding a
+    /// per-code bolt-on").
+    ///
+    /// The refusal is a STATIC module-shape decision taken before any deviation
+    /// is measured, so it fires for any declared bound, achievable or not.
+    /// Narrowing it to genuinely unachievable bounds is follow-on task **θ**,
+    /// which is hard-blocked on task 6085 giving the export path a real
+    /// tessellation-tolerance measurement (PRD §5 dependency table, §9 task θ).
+    ///
+    /// Canonical message form:
+    /// `"E_REPR_BOUND_UNENFORCED_ON_EXPORT: <subject>: <bound> …"` — built by
+    /// `unenforced_representation_bound_diagnostic` from
+    /// `compute_representation_bounds`' subject → tightest-bound table, so every
+    /// bounded subject is named in deterministic `BTreeMap` order.
+    ///
+    /// PRD-prose mnemonic: `E_REPR_BOUND_UNENFORCED_ON_EXPORT` (severity
+    /// convention: `E_*` → Error). Its message-embedded twin is
+    /// `reify_eval::E_REPR_BOUND_UNENFORCED_ON_EXPORT`, which exists because the
+    /// CLI integration tests observe only captured stderr TEXT and have no
+    /// access to this typed code.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, has no
+    /// exhaustive match-on-self anywhere in the workspace (the only `match self`
+    /// arms in this file are on `Severity`), and derives feature-gated serde
+    /// `Serialize`/`Deserialize` with `rename_all = "PascalCase"` — so adding one
+    /// variant is non-breaking for downstream consumers and round-trips
+    /// automatically (same non-breaking argument as `ExpressionNestingTooDeep`
+    /// and `DimensionedArgRejected` above).
+    RepresentationBoundUnenforcedOnExport,
+    /// Origin: `crates/reify-eval/src/engine_eval.rs::Engine::eval_cached`
+    /// (task **5240**) — the guarded-groups fall-through at the head of that
+    /// function.
+    ///
+    /// Emitted as a `Severity::Warning` when `eval_cached` is handed a module
+    /// whose templates carry a non-empty `guarded_groups` (a `where`-block).
+    /// The incremental path cannot evaluate guarded cells, so it delegates
+    /// wholesale to the cold `eval()` — which handles them correctly — and
+    /// tags the delegation with this code.
+    ///
+    /// **This is an INTERNAL engine note, not a user fault.** Unlike every
+    /// other eval-time diagnostic (circular let-binding, param-override
+    /// mismatch, sub-component lookup failure, solver Infeasible/NoProgress),
+    /// nothing about the user's source is wrong when it fires: the values
+    /// returned are the correct cold-eval ones. It exists so a caller can tell
+    /// "the incremental cache was bypassed for this call" from "the cache
+    /// served everything" — the two are otherwise indistinguishable, because
+    /// the bypass branch's `CacheStats` hit/miss/early-cutoff counters are all
+    /// zero either way.
+    ///
+    /// Because it is not user-facing, `reify-lsp`'s eval-diagnostic merge
+    /// (`crates/reify-lsp/src/diagnostics.rs::compute_diagnostics_with_state`)
+    /// is the one consumer that deliberately DROPS it: every valid `.ri` file
+    /// using `where` — including the shipped stdlib
+    /// `crates/reify-compiler/stdlib/determinacy_purposes.ri` and
+    /// `examples/m5_guarded_enum.ri` — would otherwise show a spurious editor
+    /// warning that flickers in and out as the user types, depending on
+    /// whether that keystroke took the warm path. That filter matches on this
+    /// code, never on the message prose, so a copy-edit to the wording cannot
+    /// silently re-open the leak.
+    ///
+    /// Minting rationale: same as `RepresentationBoundUnenforcedOnExport`
+    /// above — `DiagnosticCode` is `#[non_exhaustive]` with no exhaustive
+    /// match-on-self anywhere in the workspace, so adding one variant is
+    /// non-breaking and round-trips through the feature-gated serde derives
+    /// automatically.
+    EvalCachedGuardedGroupsFallback,
+    /// Origin: all FOUR `@optimized`-target-not-registered emission sites, and
+    /// only those:
+    ///   - `crates/reify-eval/src/engine_eval.rs::evaluate_params_and_lets_unified` (SOFT)
+    ///   - `crates/reify-eval/src/engine_eval.rs::evaluate_let_bindings` (SOFT)
+    ///   - `crates/reify-eval/src/engine_admin.rs::dispatch_compute_node` (HARD)
+    ///   - `crates/reify-eval/src/engine_compute.rs::run_compute_dispatch` (HARD)
+    ///
+    /// Two canonical message forms, both single-sourced from
+    /// `engine_compute.rs`'s `NO_TRAMPOLINE_STEM` and built by the constructor
+    /// pair beside it (`Engine::soft_no_trampoline_diagnostic`, a method so the
+    /// empty-registry predicate below is spelled exactly once /
+    /// `hard_no_trampoline_diagnostic`):
+    /// - SOFT: `"@optimized target \"<t>\": no registered compute trampoline (falling back to body-inlining)"`
+    /// - HARD: `"@optimized target \"<t>\": no registered compute trampoline"`
+    ///
+    /// The clause is present only at the SOFT sites because body-inlining is
+    /// what those two call sites actually go on to do; the HARD sites return
+    /// `Err` and never inline, so claiming a fallback there would be false.
+    ///
+    /// SEVERITY POLICY (task 5311; RULING in
+    /// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4). At the two SOFT
+    /// sites the severity is conditioned on the engine's compute registry:
+    /// `Severity::Warning` iff the registry is entirely EMPTY, `Severity::Error`
+    /// otherwise. An empty registry means the *driver* declared a
+    /// trampoline-free posture — `reify check` and `reify-lsp` both construct
+    /// their engine without calling `register_compute_trampolines` — so the
+    /// missing trampoline is expected, not a defect, and reporting it as an
+    /// error while exiting 0 is a loud/silent mismatch. A driver that
+    /// registered SOME trampolines (`reify eval`, `reify build`: 19 production
+    /// targets) and is still missing THIS one is a genuine defect, so the
+    /// severity stays `Severity::Error` there and keeps gating those exit codes.
+    /// At the two HARD sites the severity is UNCONDITIONALLY `Severity::Error`
+    /// — see `hard_no_trampoline_diagnostic`'s rustdoc for why the predicate is
+    /// inapplicable there on the merits.
+    ///
+    /// The CODE is PRESERVED across that severity flip, deliberately: it names
+    /// the CAUSE, while the severity reports how much the caller's posture
+    /// makes that cause matter. Downstream tooling and tests should therefore
+    /// match on this code rather than on the severity or on message substrings
+    /// (the `hex_wedge_mesh_diagnostic` precedent below does the same).
+    ///
+    /// SIDE EFFECT OF CARRYING A CODE AT ALL — worth knowing before editing
+    /// either constructor. `reify-cli`'s `dedup_diagnostics` short-circuits on
+    /// `code.is_some()`, and its `merge_build_diagnostics` keys on the code, so
+    /// a CODED entry is exempt from within-list collapsing while an UNCODED one
+    /// is not. Before this variant existed the diagnostic was uncoded, so two
+    /// byte-identical copies from two `@optimized` call sites collapsed into
+    /// ONE printed line on `cmd_check`'s realization sub-path; they now both
+    /// survive, so the line count under `check` is per CALL SITE rather than
+    /// per distinct message. Measured on `examples/anisotropic_bar.ri`: two
+    /// `solver::elastic_static` lines; on `examples/fdm_bracket.ri`: three
+    /// lines over two distinct targets. That is the behaviour
+    /// `dedup_diagnostics`' own rationale asks for — a coded entry's
+    /// multiplicity is a per-callout fact, not re-run noise — and the
+    /// coded-vs-uncoded split is pinned by `dedup_collapses_only_uncoded_entries`
+    /// and `dedup_exempts_the_coded_missing_trampoline_pair` in
+    /// `crates/reify-cli/src/main.rs`.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, carries no
+    /// `VARIANT_COUNT` backstop, and is never matched exhaustively anywhere in
+    /// the workspace, so adding one variant is purely additive and round-trips
+    /// through the feature-gated serde derives automatically.
+    NoRegisteredComputeTrampoline,
+    /// Origin: the FEA load-kind read surface,
+    /// `crates/reify-eval/src/compute_targets/elastic_static.rs::extract_loads`
+    /// (:4111-4152), whose `PointLoad` / `PressureLoad` / `Gravity`
+    /// if/else-if chain has NO `else` arm and therefore silently DISCARDS every
+    /// other `type_name`. The two kinds this code exists for are stdlib-declared
+    /// but solver-unreachable: `TractionLoad`
+    /// (`crates/reify-compiler/stdlib/fea_multi_case.ri:447`) and `BodyForce`
+    /// (:477). An author who writes either one today gets a silently
+    /// zero-contribution solve rather than a fault.
+    ///
+    /// Emitted at `Severity::Error`. Per PRD
+    /// `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 6, BOTH kinds
+    /// self-identify in their own `.ri` comments as PLACEHOLDERS needing a
+    /// type-surface extension this PRD does not own, so INV-SF-3 forbids the
+    /// silent no-op and they get an explicit NAMED REJECTION rather than a
+    /// wire-up. CONSTRUCTING a `TractionLoad`/`BodyForce` value stays legal —
+    /// only passing one to a solver errors.
+    ///
+    /// Canonical message form:
+    /// `"{solver}: unsupported FEA load kind '{type_name}'"`
+    ///
+    /// PRD-prose mnemonic: `E_FeaLoadKindUnsupported` (severity convention:
+    /// `E_*` → Error).
+    ///
+    /// The EMITTING call site is leaf γ3's, NOT task 5791's — α mints the
+    /// vocabulary only. Note that the existing guard
+    /// `extract_loads_unknown_type_name_is_silently_skipped`
+    /// (`elastic_static.rs:8493-8524`) asserts ZERO NUMERIC CONTRIBUTION and
+    /// NOT the absence of a diagnostic, so γ3 can start emitting without
+    /// retargeting it.
+    ///
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no
+    /// `impl` block anywhere in the workspace (no `as_str`/`Display`/`FromStr`/
+    /// exhaustive match-on-self), no exhaustiveness test, no docs registry, no
+    /// `reify-audit` check and no mirrored GUI enum
+    /// (`crates/reify-lsp/src/convert.rs:435-459` is a deliberate 4-variant
+    /// representative spread, not a census) — so this is a one-variant addition
+    /// that is non-breaking for downstream consumers and round-trips through
+    /// the feature-gated serde derives automatically (same measured argument as
+    /// `DimensionedArgRejected` and `EvalCachedGuardedGroupsFallback` above).
+    FeaLoadKindUnsupported,
+    /// Origin: `crates/reify-compiler/src/connect.rs::resolve_chain_endpoint`
+    /// (spec §6.2 `chain` default-port inference).
+    ///
+    /// Canonical message:
+    /// `"chain element '<name>' has no port usable as '<dir>'"` /
+    /// `"chain element '<name>' has several ports usable as '<dir>' (…)"`.
+    ///
+    /// One code covers BOTH the zero- and several-candidate arms because they
+    /// are one rule — "exactly one candidate port in this role" — and a reader
+    /// acting on either takes the same remedy (name the port explicitly on
+    /// that element). Splitting them would make the code a restatement of the
+    /// message text rather than of the rule.
+    ///
+    /// PRD-prose mnemonic: `E_ChainPortNotUnique` (severity convention:
+    /// `E_*` → Error).
+    ChainPortNotUnique,
+    /// Origin: `crates/reify-compiler/src/connect.rs::resolve_chain_endpoint`
+    /// (spec §6.2 "a chain element must denote exactly one occurrence").
+    ///
+    /// Canonical message: `"chain element '<name>' names a whole collection,
+    /// not one occurrence; chain its elements, e.g. 'forall v in <name>: chain
+    /// v -> ...'"`.
+    ///
+    /// Distinct from `ChainPortNotUnique`: the element's port may well be
+    /// unique — the defect is that the name denotes N occurrences, so the
+    /// inferred port belongs to none of them. The remedies differ too (index
+    /// the element or go through `forall`, rather than dot a port onto it).
+    ///
+    /// PRD-prose mnemonic: `E_ChainElementNotAnOccurrence` (severity
+    /// convention: `E_*` → Error).
+    ChainElementNotAnOccurrence,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4293,6 +5060,96 @@ mod tests {
         assert_eq!(s, "\"DimensionMismatch\"");
     }
 
+    // --- DimensionedArgRejected tests (units-length β, task 5743 step-1) ---
+    //
+    // This is the shared RUNTIME code for "a builtin argument that must carry a
+    // physical dimension was given a bare / wrongly-dimensioned value", emitted
+    // from the `crates/reify-ir/src/arg_acceptance.rs`-backed chokepoints in
+    // `crates/reify-eval/src/geometry_ops.rs` and in reify-stdlib's `diagnose`
+    // classifiers.
+    //
+    // As with `DimensionMismatch` above, Copy/Clone/PartialEq/Eq/Hash/Debug are
+    // already covered by the variant-agnostic `diagnostic_code_derives` test, so
+    // only the serde wire-format test is kept here — it is the one genuinely
+    // variant-specific, genuinely falsifiable claim (the exact PascalCase string
+    // the GUI reads).
+    //
+    // A reviewer amendment removed two tests that could not fail for any edit
+    // that still compiles: a `Copy`/`PartialEq` round-trip on this variant, and
+    // pairwise `assert_ne!`s against `DimensionMismatch` / `ArgTypeMismatch`
+    // (discriminant inequality between distinct unit variants is guaranteed by
+    // the `PartialEq` derive). The RULING those `assert_ne!`s were standing in
+    // for is PRD Open Question 1, decided in task 5743 — the runtime
+    // dimensioned-arg rejection gets its OWN code rather than reusing either
+    // candidate, because `DimensionMismatch` is Add/Sub-operator-specific and
+    // `ArgTypeMismatch` is the COMPILE-layer twin for the very same positions
+    // (PRD leaf η), and sharing one code across both layers would make "which
+    // layer rejected this?" unanswerable from the code alone (PRD decision D2).
+    // That ruling lives in the variant's own doc comment and in
+    // `docs/prds/v0_6/units-length-gate-completion.md`; it is a naming decision,
+    // not a runtime behaviour a test can pin.
+
+    // --- FeaLoadKindUnsupported tests (dimension-checked-readers α, task 5791) ---
+    //
+    // The ONE variant this task mints. Per BINDING ruling A7 (Leo, 2026-08-30,
+    // esc-5791-3) `ArgDimensionMismatch` is NOT minted — the dimension
+    // rejection reason reuses the shipped `DimensionedArgRejected` — so there
+    // is deliberately no test for it here.
+    //
+    // No exhaustiveness test is written over `DiagnosticCode`. MEASURED: the
+    // enum is `#[non_exhaustive]`, there is no `impl DiagnosticCode` anywhere
+    // in the workspace, no `as_str`/`Display`/`FromStr`, no exhaustiveness
+    // test, no docs registry and no mirrored GUI enum
+    // (`crates/reify-lsp/src/convert.rs:435-459` is a deliberate 4-variant
+    // representative spread, not a census). A variant addition therefore has
+    // exactly zero other update obligations.
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FeaLoadKindUnsupported`
+    /// serializes as `"FeaLoadKindUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`), and deserializes back to the same variant.
+    /// This is the wire form downstream tooling reads as an opaque string, so
+    /// it is a compatibility surface.
+    ///
+    /// RED until step-12 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn fea_load_kind_unsupported_serializes_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FeaLoadKindUnsupported).unwrap();
+        assert_eq!(s, "\"FeaLoadKindUnsupported\"");
+
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, DiagnosticCode::FeaLoadKindUnsupported);
+    }
+
+    /// The variant attaches through the ordinary builder and reads back, at
+    /// `Severity::Error` — PRD §6 decision 6: the stdlib-declared but
+    /// solver-unreachable FEA load kinds get an explicit named REJECTION rather
+    /// than the silent no-op INV-SF-3 forbids.
+    ///
+    /// RED until step-12 adds the variant.
+    #[test]
+    fn fea_load_kind_unsupported_attaches_to_a_diagnostic() {
+        use super::Severity;
+
+        let d = Diagnostic::error("unsupported FEA load kind 'TractionLoad'")
+            .with_code(DiagnosticCode::FeaLoadKindUnsupported);
+        assert_eq!(d.code, Some(DiagnosticCode::FeaLoadKindUnsupported));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::DimensionedArgRejected`
+    /// serializes as `"DimensionedArgRejected"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). This is the wire form the GUI reads as an
+    /// opaque string (`gui/src/types.ts`), so it is a compatibility surface.
+    ///
+    /// RED until step-2 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn dimensioned_arg_rejected_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DimensionedArgRejected).unwrap();
+        assert_eq!(s, "\"DimensionedArgRejected\"");
+    }
+
     // --- GeometryUnbounded tests (geometry-traits task 2312) ---
     // Pairs with the conformance-walker producer in
     // `crates/reify-compiler/src/conformance/mod.rs` for the call-site
@@ -4675,6 +5532,36 @@ mod tests {
     fn diagnostic_code_relate_expects_relation_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::RelateExpectsRelation).unwrap();
         assert_eq!(s, "\"RelateExpectsRelation\"");
+    }
+
+    // --- TangentOperandsUnsupported tests (task 5540 — E_TANGENT_OPERANDS_UNSUPPORTED) ---
+    // Pairs with the `tangent` arm of `check_relation_arg_types` in
+    // `crates/reify-compiler/src/relation_signatures.rs`. Variant-agnostic
+    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
+    // `diagnostic_code_derives` above; only the variant-specific round-trip and
+    // severity tests are added here.
+
+    /// `DiagnosticCode::TangentOperandsUnsupported` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::TangentOperandsUnsupported)`.
+    /// Pins the error-severity contract for E_TANGENT_OPERANDS_UNSUPPORTED.
+    #[test]
+    fn tangent_operands_unsupported_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("tangent: no tangency between `Plane` and `Plane`")
+            .with_code(DiagnosticCode::TangentOperandsUnsupported);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::TangentOperandsUnsupported));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TangentOperandsUnsupported`
+    /// serializes as `"TangentOperandsUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_tangent_operands_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TangentOperandsUnsupported).unwrap();
+        assert_eq!(s, "\"TangentOperandsUnsupported\"");
     }
 
     // --- AssemblyGlobalFloat tests (task 4387 η — E_ASSEMBLY_GLOBAL_FLOAT) ---
@@ -5231,6 +6118,75 @@ mod tests {
         assert_eq!(s, "\"UnresolvedName\"");
     }
 
+    // --- UnresolvedFunction tests (task 5371 — W_UNRESOLVED_FUNCTION) ---
+    // Pairs with the terminal first-arg fallback in
+    // `crates/reify-compiler/src/expr.rs`'s `NoUserFunctions` ladder, which
+    // previously typed an entirely unknown CALLEE from its first argument and
+    // emitted nothing at all. Mirrors the `UnresolvedName` block directly
+    // above; the variant-agnostic derives are covered by
+    // `diagnostic_code_derives`.
+
+    /// `DiagnosticCode::UnresolvedFunction` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    ///
+    /// Constructed as a WARNING, not an error, because #5371 is warn-mode-first:
+    /// the mnemonic is `W_UNRESOLVED_FUNCTION` and #5997 owns the flip to
+    /// `E_UNRESOLVED_FUNCTION`.
+    #[test]
+    fn diagnostic_code_unresolved_function_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::UnresolvedFunction);
+        assert_eq!(d.code, Some(DiagnosticCode::UnresolvedFunction));
+        assert_eq!(d.severity, crate::Severity::Warning);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::UnresolvedFunction`
+    /// serializes as `"UnresolvedFunction"` (PascalCase, from
+    /// `rename_all = "PascalCase"`). The LSP ships this string on the wire, so
+    /// a rename is a breaking change for editor consumers.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_unresolved_function_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::UnresolvedFunction).unwrap();
+        assert_eq!(s, "\"UnresolvedFunction\"");
+    }
+
+    // The two codes' DISTINCTNESS is not tested here: `assert_ne!` between two
+    // variants of one enum is true by construction and cannot fail. The claim
+    // that matters — a mis-shaped known builtin yields
+    // `BuiltinArgShapeUnrecognized` and an unknown callee yields
+    // `UnresolvedFunction` — is an end-to-end mapping, pinned in
+    // `reify-compiler/tests/harness_type_checking/unresolved_function_tests.rs`
+    // (`mis_shaped_known_builtins_are_never_reported_unresolved` and
+    // `every_reachable_arg_shape_arm_warns_once_with_its_parameter_list`).
+
+    // --- BuiltinArgShapeUnrecognized tests (task 5371 — W_BUILTIN_ARG_SHAPE) ---
+    // The sibling of `UnresolvedFunction` at the same terminal fallback: the
+    // callee IS a known builtin, but an arg-aware ladder arm (list-helper /
+    // affine-algebra / field-op) returned `None` because the ARGUMENT SHAPE was
+    // not the family's, and the call then rode the fallback silently.
+
+    /// `DiagnosticCode::BuiltinArgShapeUnrecognized` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)`.
+    ///
+    /// Constructed as a WARNING: #5371 changes no typing, so a mis-shaped call
+    /// keeps compiling. #6002's sibling `E_BuiltinArgShape` is the code that
+    /// POISONS to `Type::Error`; this one deliberately does not.
+    #[test]
+    fn diagnostic_code_builtin_arg_shape_with_code_round_trips() {
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::BuiltinArgShapeUnrecognized);
+        assert_eq!(d.code, Some(DiagnosticCode::BuiltinArgShapeUnrecognized));
+        assert_eq!(d.severity, crate::Severity::Warning);
+    }
+
+    /// Under `feature = "serde"` the code serializes PascalCase; the LSP ships
+    /// this string on the wire, so a rename breaks editor consumers.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_builtin_arg_shape_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::BuiltinArgShapeUnrecognized).unwrap();
+        assert_eq!(s, "\"BuiltinArgShapeUnrecognized\"");
+    }
+
     /// Pins per-variant severity + variant-existence at the reify-types layer
     /// for all five multi-kernel-phase-3 variants in one table. Although the
     /// dispatcher-side `<builder>_carries_<severity>_severity_and_code` tests
@@ -5390,6 +6346,52 @@ mod tests {
     fn diagnostic_code_objective_dimension_incoherent_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::ObjectiveDimensionIncoherent).unwrap();
         assert_eq!(s, "\"ObjectiveDimensionIncoherent\"");
+    }
+
+    // --- ObjectiveInert / ObjectiveUnconsumed tests
+    // (task γ #5417 — E_OBJECTIVE_INERT / E_OBJECTIVE_UNCONSUMED) ---
+    // Pair with the compile-time inert-objective post-pass
+    // (`reify-compiler/src/compile_builder/post_passes.rs::phase_inert_objective_check`)
+    // and the eval-time zero-component consumption diagnostic
+    // (`reify-eval/src/engine_eval.rs`), mirroring the ObjectiveConflict and
+    // ObjectiveDimensionIncoherent test pairs above.
+
+    /// Each γ code survives `Diagnostic::error(...).with_code(...)` and is
+    /// reported back as itself — the one variant-specific thing construction
+    /// can get wrong, and what catches an enum reorganisation that drops or
+    /// collapses a variant.
+    ///
+    /// Deliberately NOT asserted, following the leaner `#4791` block below
+    /// rather than the older `ObjectiveConflict` pair above: that
+    /// `Diagnostic::error` yields `Severity::Error` (true of every code, and
+    /// covered by the severity tests), and that `{:?}` over a
+    /// `#[derive(Debug)]` fieldless enum prints the variant name (true of every
+    /// variant, and a property of the derive rather than of γ). Both held for
+    /// ANY code, so neither could ever red for a γ-specific reason.
+    #[test]
+    fn diagnostic_code_objective_gamma_variants_round_trip() {
+        for code in [
+            DiagnosticCode::ObjectiveInert,
+            DiagnosticCode::ObjectiveUnconsumed,
+        ] {
+            assert_eq!(Diagnostic::error("x").with_code(code).code, Some(code));
+        }
+    }
+
+    /// Under `feature = "serde"`, each γ code serializes to its exact
+    /// PascalCase wire string (from `rename_all = "PascalCase"`) — the form
+    /// the LSP/MCP consumers match on.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_objective_gamma_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::ObjectiveInert, "\"ObjectiveInert\""),
+            (DiagnosticCode::ObjectiveUnconsumed, "\"ObjectiveUnconsumed\""),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
+        }
     }
 
     // --- CostTradeoffNonMoneyArg / CostTradeoffInvalidLambda tests
@@ -5602,6 +6604,67 @@ mod tests {
         assert_eq!(s, "\"BucklingOptionUnsupported\"");
     }
 
+    // --- §5.3/§5.4 shift-invert DiagnosticCode tests (task α, #7258) ---
+    // Three new shift-contract codes, minted here unemitted: γ (#7260) and δ
+    // (#7261) emit them, β (#7259) raises `ShiftAtEigenvalue`.  Mirrors the
+    // `diagnostic_code_shell_extract_variants_constructible` + `_serde_pascal_case`
+    // pattern: construct via `Diagnostic::error(...).with_code(code)` (the code
+    // round-trips) and assert PascalCase serde wire strings.  Severity is NOT
+    // asserted here — see the first test's doc comment for why it could not be.
+
+    /// A compile-time EXISTENCE fence for the three shift-contract variants,
+    /// plus a `with_code` round-trip.  That is all it is, and all it claims.
+    ///
+    /// It deliberately does NOT assert the PRD §5.3/§5.4 severity split, because
+    /// it cannot: `Diagnostic::warning` hardcodes `Severity::Warning` and
+    /// `Diagnostic::error` hardcodes `Severity::Error`, while `with_code` only
+    /// sets `code` — so any severity asserted here is a property of the
+    /// constructor this test itself chose, entirely independent of which
+    /// `DiagnosticCode` is attached.  Swapping the codes between the two
+    /// constructors would leave such a test green.  The real severity binding
+    /// lives at the emit sites, and is pinned by the tests landed with them:
+    /// γ (#7260), δ (#7261) and ε (#7262).
+    ///
+    /// The `Debug` repr is intentionally not asserted — the neighbouring
+    /// `BucklingOptionUnsupported` block documents that as deliberately unpinned
+    /// cosmetic output with no consumer contract.
+    ///
+    /// RED: the three variants do not exist → compile fail.
+    /// GREEN after step-2 adds them to `DiagnosticCode`.
+    #[test]
+    fn diagnostic_code_shift_variants_constructible() {
+        let codes = [
+            DiagnosticCode::ShiftSkippedModes,
+            DiagnosticCode::ShiftAtEigenvalue,
+            DiagnosticCode::FirstModeNotInShiftedResult,
+        ];
+        for code in codes {
+            let d = Diagnostic::error("x").with_code(code);
+            assert_eq!(d.code, Some(code), "code mismatch for {code:?}");
+        }
+    }
+
+    /// Under `feature = "serde"`, each shift-contract code serializes to its
+    /// PascalCase wire string (from `rename_all = "PascalCase"`).  These are the
+    /// wire identifiers the capability manifest binds, so they are pinned here
+    /// rather than left to follow a future rename of the Rust identifier.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_shift_variants_serde_pascal_case() {
+        let cases = [
+            (DiagnosticCode::ShiftSkippedModes, "\"ShiftSkippedModes\""),
+            (DiagnosticCode::ShiftAtEigenvalue, "\"ShiftAtEigenvalue\""),
+            (
+                DiagnosticCode::FirstModeNotInShiftedResult,
+                "\"FirstModeNotInShiftedResult\"",
+            ),
+        ];
+        for (code, expected) in cases {
+            let s = serde_json::to_string(&code).unwrap();
+            assert_eq!(s, expected, "serde mismatch for {code:?}");
+        }
+    }
+
     // --- §7 shell-extract DiagnosticCode tests (task ε, #3837) ---
     // Six new PRD §7 extraction-failure codes.  Mirrors the
     // `diagnostic_code_stackup_variants_constructible` + `_serde_pascal_case`
@@ -5767,6 +6830,85 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::OpContractViolation).unwrap();
         assert_eq!(s, "\"OpContractViolation\"");
     }
+
+    // --- CtorUnknownField / CtorArity tests (task 5303 — struct-ctor-conformance ε;
+    //     E_CTOR_UNKNOWN_FIELD / E_CTOR_ARITY) ---
+    // Pairs with the two structural emit sites in the `StructureInstanceCtor`
+    // by-name binder in `crates/reify-compiler/src/expr.rs` (the sites that
+    // previously appended an unknown named arg / an over-arity positional arg
+    // leniently as `__arg{i}` with no diagnostic at all).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+    //
+    // NOTE on severity: the `with_code` round-trip tests below build via
+    // `Diagnostic::error(..)` purely to mirror the `OpContractViolation`
+    // precedent's shape — they pin that `with_code` preserves the code and does
+    // not perturb the severity it was handed. They deliberately do NOT pin the
+    // severity these codes are EMITTED at: that is read from
+    // `CTOR_FIELD_CONFORMANCE_SEVERITY` (`crates/reify-compiler/src/conformance/mod.rs`,
+    // Warning at ε, Error at δ) and is pinned by the ε probes in
+    // `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`, so
+    // δ's one-const flip does not have to touch this file.
+
+    /// `DiagnosticCode::CtorUnknownField` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, preserving both the code and the
+    /// severity it was constructed with. Catches a future enum reorganisation
+    /// that DROPS the variant; a RENAME is caught by the sibling
+    /// `diagnostic_code_ctor_unknown_field_serde_pascal_case`, which pins the
+    /// externally-visible LSP wire identifier.
+    #[test]
+    fn diagnostic_code_ctor_unknown_field_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorUnknownField);
+        assert_eq!(d.code, Some(DiagnosticCode::CtorUnknownField));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CtorUnknownField` serializes
+    /// as `"CtorUnknownField"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// This pins the LSP wire identifier: `crates/reify-lsp/src/convert.rs`
+    /// routes `DiagnosticCode` to its LSP form through serde precisely so new
+    /// variants need no registration there, which makes this string the
+    /// externally-visible contract for the code.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ctor_unknown_field_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CtorUnknownField).unwrap();
+        assert_eq!(s, "\"CtorUnknownField\"");
+    }
+
+    /// `DiagnosticCode::CtorArity` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, preserving both the code and the
+    /// severity it was constructed with.
+    #[test]
+    fn diagnostic_code_ctor_arity_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorArity);
+        assert_eq!(d.code, Some(DiagnosticCode::CtorArity));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CtorArity` serializes as
+    /// `"CtorArity"` (PascalCase, from `rename_all = "PascalCase"`). Same LSP
+    /// wire-identifier rationale as
+    /// [`diagnostic_code_ctor_unknown_field_serde_pascal_case`].
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ctor_arity_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CtorArity).unwrap();
+        assert_eq!(s, "\"CtorArity\"");
+    }
+
+    // NOTE: no "these three codes are distinct" test lives here. With the derived
+    // `PartialEq` on this fieldless enum, `assert_ne!` between named variants is a
+    // compile-time tautology — it cannot fail for any change that still compiles,
+    // so it carries no regression signal. The property it appeared to guard (the
+    // three facts one bad ctor call can carry stay SEPARATELY COUNTABLE) is
+    // guarded executably by `all_three_ctor_faults_on_one_call_emit_exactly_one_
+    // diagnostic_each` in `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
+    // and the externally-visible identifiers are pinned by the serde tests above.
 
     // --- ReservedTypeName tests (task 4591 — W_RESERVED_TYPE_NAME) ---
     // Pairs with the lint pass in
@@ -6421,6 +7563,42 @@ mod tests {
     fn diagnostic_code_enum_type_arg_conflict_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::EnumTypeArgConflict).unwrap();
         assert_eq!(s, "\"EnumTypeArgConflict\"");
+    }
+
+    // --- RepresentationBoundUnenforcedOnExport tests (task eta #6170 —
+    //     E_REPR_BOUND_UNENFORCED_ON_EXPORT) ---
+    // Pairs with the export refusal built by
+    // `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
+    // and emitted from both `reify build -o <file>` and
+    // `Engine::build_outputs_with_result`.
+    //
+    // Only the serde WIRE FORMAT is pinned here, because it is the only property
+    // of this variant that lives in this crate: `rename_all = "PascalCase"` makes
+    // the emitted string a compatibility surface for downstream consumers, and
+    // nothing else in reify-core observes the variant.
+    //
+    // Deliberately NOT tested here: a `Diagnostic::error(..).with_code(..)`
+    // round-trip. It would exercise the generic constructor and builder — whose
+    // behaviour is variant-agnostic and already covered by
+    // `diagnostic_code_derives` and the sibling code tests above — while
+    // asserting nothing specific to this variant. The contract that actually
+    // matters (the REFUSAL carries this code at `Severity::Error`, which is what
+    // `cmd_build`'s existing `any(|d| d.severity == Severity::Error)` exit gate
+    // keys on) is pinned where the refusal is BUILT and USED:
+    // `tolerance_combine::tests::unenforced_representation_bound_diagnostic_returns_error_for_direct_bound`,
+    // the `engine_build` Mode-B tests, and the CLI integration tests in
+    // `cli_representation_within.rs`.
+
+    /// Under `feature = "serde"`,
+    /// `DiagnosticCode::RepresentationBoundUnenforcedOnExport` serializes as
+    /// `"RepresentationBoundUnenforcedOnExport"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_representation_bound_unenforced_on_export_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::RepresentationBoundUnenforcedOnExport).unwrap();
+        assert_eq!(s, "\"RepresentationBoundUnenforcedOnExport\"");
     }
 }
 

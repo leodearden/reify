@@ -12,7 +12,31 @@
 #   (d) heavy (+) smoke partition -- no overlap, no orphan.
 #   (e) resolve-to-disk -- every atom parsed from the ACTUAL emitted offline
 #       -E expression maps to a real crates/<pkg>/tests/<bin>.rs file, and
-#       the parsed count is exactly 6 (no silent membership drift).
+#       the parsed count is exactly 8 (task 6368 added the 7th and task 2930
+#       the 8th, both test-scoped atoms), PLUS every ` & test(/^<stem>::/)`
+#       sub-clause the lib carries survives VERBATIM into that emitted
+#       expression.
+#
+# WHAT THE DRIFT-GUARD IN THIS FILE DOES AND DOES NOT COVER. Every atom
+# parser here -- heavy_atoms(), parse_atoms_from_plan(), _resolve_atoms_ok's
+# _atom_re -- matches only the `package(X) & binary(Y)` PREFIX of an atom.
+# That is deliberate (it must keep counting test-scoped and whole-binary
+# atoms alike), but it makes the count / no-orphan / resolve-to-disk trio
+# BINARY-MEMBERSHIP guards, not whole-atom guards: on their own they would
+# stay green if the 7th atom's ` & test(...)` clause were silently deleted,
+# even though that converts it to whole-binary and evicts all 247 tests in
+# harness_fea_solver_e2e from the merge gate to relieve one -- the exact
+# outcome esc-6368-2 rescoped AWAY from. Two things close that, at
+# different granularities, and neither is this file's parsers:
+#   - the EXACT-LITERAL pin on the clause lives in
+#     tests/infra/test_heavy_filter_atoms.sh Assertion C (and the
+#     resolve-the-stem-to-disk check in its Assertion F). That suite owns
+#     the clause's spelling; this one deliberately does not duplicate it.
+#   - the clause SURVIVING verify.sh's interpolation into the real emitted
+#     plan is what this file adds, in assertion (e) below -- derived from
+#     the lib rather than hardcoded, so a legitimate future stem rename does
+#     not false-fail here, with a >=1-clause non-vacuity guard so a DELETED
+#     clause cannot pass it vacuously.
 #
 # Plus a non-vacuity self-check that deliberately breaks the partition
 # (dangling atom / dropped atom / injected overlap) and asserts the guard's
@@ -166,11 +190,59 @@ _dump_plan_evidence() {
     printf '%s\n' "$raw" >&2
 }
 
+# ---------------------------------------------------------------------------
+# Pipeline-free containment primitives.
+#
+# WHY THESE EXIST -- DO NOT "SIMPLIFY" THEM BACK INTO `... | grep -qF`.
+# This file runs under `set -o pipefail`. `grep -q` exits the INSTANT it
+# matches; an upstream stage that is still flushing the rest of the plan is
+# then killed by SIGPIPE (rc 141), and pipefail promotes that 141 to the
+# whole pipeline's status. So `printf %s "$plan" | grep -v '^#' | grep -qF X`
+# reports X ABSENT precisely when X is PRESENT early enough to cut the
+# upstream short. It is a race on grep's output-buffer flush boundary, so it
+# is intermittent and PLAN-LENGTH dependent, which is why it lay dormant for
+# so long. Measured on this repo, same host, same needle ('-E "not ('):
+#   - activation A/B: 0/40 spurious failures against the 7-atom plan
+#     (5433 B), 5/40 against the 8-atom plan (5633 B). Task 2930's 8th atom
+#     did not introduce the bug, it lengthened the plan past the flush
+#     boundary and armed it.
+#   - fix proof, 8-atom plan, 400 iterations: old pipeline 69/400 spurious
+#     failures (17%), these primitives 0/400.
+# Task 2930's verify attempt-1 failed exactly here (assertion (b),
+# role=merge) with the needle plainly present in the very plan that the FAIL
+# dumped alongside it -- the tell for this bug, since a real drift would
+# fail with the needle genuinely absent from the dump.
+#
+# The absence helpers were the worse half: there the same stray 141 makes
+# `! <pipeline>` TRUE, i.e. a VACUOUS PASS in a drift guard -- green because
+# the check crashed, not because the partition was clean.
+#
+# The fix is structural, not a retry: keep the containment test out of any
+# pipeline whose downstream can exit early. _plan_cmds/_plan_header put grep
+# in TERMINAL position (it reads to EOF, so nothing can SIGPIPE it) and hand
+# back a plain string; _has/_lacks then match with bash's own `case`, which
+# forks nothing and has no exit-status race at all. `"$2"` inside the case
+# pattern is quoted, so the needle is matched as a FIXED STRING (glob
+# metacharacters in it stay literal) -- same semantics as grep -F.
+# ---------------------------------------------------------------------------
+
+# _plan_cmds <raw-plan> — the plan's COMMAND lines (every non-'#' line).
+_plan_cmds() { printf '%s\n' "$1" | grep -v '^#' || true; }
+
+# _plan_header <raw-plan> — the plan's '# verify.sh plan' header line(s).
+_plan_header() { printf '%s\n' "$1" | grep '^# verify.sh plan' || true; }
+
+# _has <haystack> <needle> — 0 iff <haystack> contains <needle> literally.
+_has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+
+# _lacks <haystack> <needle> — 0 iff <haystack> does NOT contain <needle>.
+_lacks() { case "$1" in *"$2"*) return 1 ;; *) return 0 ;; esac; }
+
 _gate_has() {
     # $1=role $2=knob-mode $3=needle (fixed string)
     local raw rc=0
     raw="$(plan_for "$1" "$2")" || rc=$?
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$raw" | grep -v '^#' | grep -qF -- "$3"; then
+    if [ "$rc" -eq 0 ] && _has "$(_plan_cmds "$raw")" "$3"; then
         return 0
     fi
     _dump_plan_evidence "_gate_has $1 $2 '$3'" "$raw" "$rc"
@@ -180,7 +252,7 @@ _gate_lacks() {
     # $1=role $2=knob-mode $3=needle (fixed string)
     local raw rc=0
     raw="$(plan_for "$1" "$2")" || rc=$?
-    if [ "$rc" -eq 0 ] && ! printf '%s\n' "$raw" | grep -v '^#' | grep -qF -- "$3"; then
+    if [ "$rc" -eq 0 ] && _lacks "$(_plan_cmds "$raw")" "$3"; then
         return 0
     fi
     _dump_plan_evidence "_gate_lacks $1 $2 '$3'" "$raw" "$rc"
@@ -202,10 +274,33 @@ offline_plan() {
     printf '%s' "$_OFFLINE_PLAN_CACHE"
 }
 
-# heavy_atoms — the 6 `package(X) & binary(Y)` atoms parsed directly out of
+# heavy_atoms — the 8 `package(X) & binary(Y)` atoms parsed directly out of
 # REIFY_HEAVY_NEXTEST_FILTER (the lib source-of-truth, A1), one per line.
+# PREFIX-ONLY by design: a test-scoped atom's trailing ` & test(...)` clause
+# is not captured here, so this (and everything built on it) is a
+# binary-membership view. See the header's coverage note; the clause itself
+# is covered by heavy_test_scope_clauses() below plus
+# tests/infra/test_heavy_filter_atoms.sh Assertions C/F.
+#
+# 8 counts FILTER ATOMS, not distinct package+binary pairs. Since task 2930
+# added the 8th atom, TWO atoms (task 6368's and task 2930's) share the same
+# `package(reify-eval) & binary(harness_fea_solver_e2e)` prefix and differ
+# only in the ` & test(...)` clause this parser deliberately does not
+# capture -- so 8 atoms resolve to 7 DISTINCT binaries. That is exactly the
+# semantics of tests/infra/test_heavy_filter_atoms.sh's parser too, so 8 is
+# the correct number for BOTH guards. Do not "fix" either parser to dedupe:
+# the two are deliberately independent drift guards, and deduping one would
+# desynchronise them.
 heavy_atoms() {
     printf '%s' "$REIFY_HEAVY_NEXTEST_FILTER" | grep -oE 'package\([a-z0-9_-]+\) & binary\([a-z0-9_-]+\)'
+}
+
+# heavy_test_scope_clauses — the ` & test(/^<stem>::/)` sub-clauses carried by
+# REIFY_HEAVY_NEXTEST_FILTER (the lib source-of-truth, A1), one per line.
+# The complement of heavy_atoms(): that one sees only the prefix every atom
+# shares, this one sees only the suffix that narrows an atom below whole-binary.
+heavy_test_scope_clauses() {
+    printf '%s' "$REIFY_HEAVY_NEXTEST_FILTER" | grep -oE '& test\(/\^[a-z0-9_]+::/\)'
 }
 
 # parse_atoms_from_plan [text] — the `package(X) & binary(Y)` atoms parsed
@@ -216,6 +311,8 @@ heavy_atoms() {
 # ACTUAL emitted -E expression rather than REIFY_HEAVY_NEXTEST_FILTER
 # directly -- proving verify.sh's real output resolves to disk (assertion e),
 # not merely the lib source-of-truth (which heavy_atoms() already covers).
+# PREFIX-ONLY, exactly like heavy_atoms(): the emitted-plan counterpart for
+# test-scope clauses is _test_scope_clauses_survive_ok below, not this.
 parse_atoms_from_plan() {
     local cmds
     if [ "$#" -eq 0 ]; then
@@ -229,7 +326,7 @@ parse_atoms_from_plan() {
 _offline_header_has() {
     local plan rc=0
     plan="$(offline_plan)" || rc=$?
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$plan" | grep '^# verify.sh plan' | grep -qF -- "$1"; then
+    if [ "$rc" -eq 0 ] && _has "$(_plan_header "$plan")" "$1"; then
         return 0
     fi
     _dump_plan_evidence "_offline_header_has '$1'" "$plan" "$rc"
@@ -238,7 +335,7 @@ _offline_header_has() {
 _offline_cmds_has() {
     local plan rc=0
     plan="$(offline_plan)" || rc=$?
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$plan" | grep -v '^#' | grep -qF -- "$1"; then
+    if [ "$rc" -eq 0 ] && _has "$(_plan_cmds "$plan")" "$1"; then
         return 0
     fi
     _dump_plan_evidence "_offline_cmds_has '$1'" "$plan" "$rc"
@@ -247,7 +344,7 @@ _offline_cmds_has() {
 _offline_lacks() {
     local plan rc=0
     plan="$(offline_plan)" || rc=$?
-    if [ "$rc" -eq 0 ] && ! printf '%s\n' "$plan" | grep -qF -- "$1"; then
+    if [ "$rc" -eq 0 ] && _lacks "$plan" "$1"; then
         return 0
     fi
     _dump_plan_evidence "_offline_lacks '$1'" "$plan" "$rc"
@@ -267,13 +364,26 @@ _offline_has_cargo_line() {
     return 1
 }
 _offline_all_cargo_lines_idle_class() {
-    local plan cmds rc=0
+    local plan cmds rc=0 _line _offender=0
     plan="$(offline_plan)" || rc=$?
     if [ "$rc" -eq 0 ]; then
-        cmds="$(printf '%s\n' "$plan" | grep -v '^#')"
-        if ! printf '%s\n' "$cmds" | grep -E '(^| )cargo ' | grep -vq 'nice -n 19 ionice -c3 cargo'; then
-            return 0
-        fi
+        cmds="$(_plan_cmds "$plan")"
+        # Pipeline-free for the same reason as _has/_lacks above -- and this
+        # site was the worst of them. `grep -E ... | grep -vq ...` exits 0 on
+        # the FIRST cargo line MISSING the idle prefix, so a SIGPIPE'd
+        # upstream (rc 141, promoted by pipefail) turned the enclosing
+        # `! <pipeline>` TRUE and this check reported CLEAN on the very
+        # violation it had just found -- a false PASS, not a flake. Note the
+        # spelling was `grep -vq`, not `grep -q`, so it also hides from a
+        # naive `grep -n "grep -q"` sweep of this file.
+        while IFS= read -r _line; do
+            case "$_line" in
+                "cargo "*|*" cargo "*) ;;   # a cargo command line — must be idle-class
+                *) continue ;;              # not a cargo line — not this check's business
+            esac
+            _has "$_line" 'nice -n 19 ionice -c3 cargo' || { _offender=1; break; }
+        done <<< "$cmds"
+        [ "$_offender" -eq 0 ] && return 0
     fi
     _dump_plan_evidence "_offline_all_cargo_lines_idle_class" "$plan" "$rc"
     return 1
@@ -312,17 +422,67 @@ _no_orphan_ok() {
     [ -n "$atoms" ] || return 1
     while IFS= read -r _atom; do
         [ -n "$_atom" ] || continue
-        printf '%s\n' "$expr" | grep -qF -- "$_atom" || return 1
+        _has "$expr" "$_atom" || return 1
     done <<< "$atoms"
     return 0
 }
 
-_atom_count_is_6() {
+# _test_scope_clauses_survive_ok — 0 iff the lib carries AT LEAST ONE
+# ` & test(...)` clause AND every one of them appears VERBATIM in the ACTUAL
+# emitted offline -E expression. Two distinct defects, one check:
+#   - clause DELETED from the lib -> the >=1 non-vacuity guard fires. This is
+#     the hole the header's coverage note names: every prefix-only parser in
+#     this file (count-8 / no-orphan / resolve-to-disk) stays green through
+#     that deletion, because the atom keeps its package()/binary() prefix and
+#     its binary keeps resolving -- it has merely widened from one test to all
+#     247 in harness_fea_solver_e2e.
+#   - clause MANGLED in transit -> the verbatim grep -F fires. Nothing
+#     previously asserted that verify.sh interpolates the clause into the
+#     emitted plan intact; the plan is built by shell string-concatenation
+#     around an expression containing `(`, `/`, `^` and `::`, so "the lib says
+#     X" and "the plan carries X" are genuinely separate claims.
+# Derived from the lib rather than hardcoded, deliberately: the exact-literal
+# pin belongs to tests/infra/test_heavy_filter_atoms.sh Assertion C, so a
+# legitimate future stem rename lands as ONE expected failure there rather
+# than also false-failing here.
+#
+# Takes an optional [expr-text] override (default: the ACTUAL offline plan's
+# command lines), matching _no_orphan_ok / _no_overlap_ok / _resolve_atoms_ok,
+# so the non-vacuity self-check below can feed a synthetic clause-stripped
+# expression through the SAME check rather than a re-implementation of it.
+_test_scope_clauses_survive_ok() {
+    local clauses expr rc=0
+    clauses="$(heavy_test_scope_clauses)" || return 1
+    [ -n "$clauses" ] || return 1
+    if [ "$#" -eq 0 ]; then
+        expr="$(offline_plan | grep -v '^#')" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            _dump_plan_evidence "_test_scope_clauses_survive_ok (driver failed)" "$expr" "$rc"
+            return 1
+        fi
+    else
+        expr="$1"
+    fi
+    while IFS= read -r _clause; do
+        [ -n "$_clause" ] || continue
+        if _lacks "$expr" "$_clause"; then
+            # Only dump when checking the REAL plan -- an override miss is the
+            # self-check's expected outcome, not evidence worth archiving.
+            if [ "$#" -eq 0 ]; then
+                _dump_plan_evidence "_test_scope_clauses_survive_ok (clause '$_clause' absent from emitted plan)" "$expr" "$rc"
+            fi
+            return 1
+        fi
+    done <<< "$clauses"
+    return 0
+}
+
+_atom_count_is_8() {
     local atoms n
     atoms="$(parse_atoms_from_plan)" || return 1
     n=0
     [ -n "$atoms" ] && n="$(printf '%s\n' "$atoms" | wc -l | tr -d '[:space:]')"
-    [ "$n" -eq 6 ]
+    [ "$n" -eq 8 ]
 }
 
 # _resolve_atoms_ok [atom-list] — 0 iff <atom-list> (default:
@@ -353,10 +513,11 @@ _resolve_atoms_ok() {
 }
 
 # assert_guard_rejects — non-vacuity self-check: proves the guard's own
-# resolve-to-disk / orphan / overlap checks actually DETECT a deliberately
-# broken partition (dangling atom / dropped atom / injected overlap), and
-# still ACCEPT the real, unmodified partition (the guard is green on truth,
-# not merely unconditionally red). Mirrors
+# resolve-to-disk / orphan / overlap / test-scope checks actually DETECT a
+# deliberately broken partition (dangling atom / dropped atom / injected
+# overlap / stripped test-scope clause), and still ACCEPT the real,
+# unmodified partition (the guard is green on truth, not merely
+# unconditionally red). Mirrors
 # tests/infra/test_run_all_classification.sh's injected-drift self-check.
 assert_guard_rejects() {
     local real_atoms first_atom remaining_atoms
@@ -384,11 +545,31 @@ assert_guard_rejects() {
     local overlap_expr="${REIFY_HEAVY_NEXTEST_FILTER} | (package(reify-solver-elastic) & binary(solver_gate_smoke))"
     if _no_overlap_ok "$overlap_expr"; then return 1; fi
 
-    # (4) sanity -- the REAL, unmodified partition must still be ACCEPTED by
-    # all three checks (default args -- actual offline plan / actual lib).
+    # (4) dropped test-scope clause -- the REAL emitted expression with every
+    # ` & test(/^<stem>::/)` clause stripped out, i.e. exactly what a silent
+    # widening of a test-scoped atom to its whole binary looks like on the
+    # wire. _test_scope_clauses_survive_ok must REJECT it. This is the break
+    # that motivated the check: checks (1)-(3) above, and every prefix-only
+    # parser in this file, ACCEPT this same input unchanged -- the atoms still
+    # count 8, still resolve to disk, still show no orphan and no overlap.
+    local stripped_expr
+    stripped_expr="$(offline_plan | grep -v '^#' | sed 's/ & test(\/\^[a-z0-9_]*::\/)//g')" || return 1
+    [ -n "$stripped_expr" ] || return 1
+    # Self-check the fixture itself: the strip must actually have removed
+    # something, or (4) would prove nothing.
+    local _clause_re='& test\(/\^[a-z0-9_]+::/\)'
+    if [[ "$stripped_expr" =~ $_clause_re ]]; then return 1; fi
+    if _test_scope_clauses_survive_ok "$stripped_expr"; then return 1; fi
+    # ...and the prefix-only checks really are blind to that same break, which
+    # is what makes the new check load-bearing rather than redundant.
+    _resolve_atoms_ok "$(parse_atoms_from_plan "$stripped_expr")" || return 1
+
+    # (5) sanity -- the REAL, unmodified partition must still be ACCEPTED by
+    # all four checks (default args -- actual offline plan / actual lib).
     _resolve_atoms_ok || return 1
     _no_orphan_ok || return 1
     _no_overlap_ok || return 1
+    _test_scope_clauses_survive_ok || return 1
 
     return 0
 }
@@ -504,19 +685,26 @@ assert "crates/reify-solver-elastic/tests/solver_gate_smoke.rs exists on disk (r
 # ---------------------------------------------------------------------------
 # Assertion (e): resolve-to-disk -- every atom parsed from the ACTUAL
 # emitted offline -E expression maps to a real test file, and the parsed
-# count is exactly 6 (no silent membership drift).
+# count is exactly 8 (task 6368 added the 7th atom, task 2930 the 8th; both
+# are test-scoped, and both scope the same binary). Both are
+# BINARY-MEMBERSHIP checks (prefix-only parsers, see the header note), so a
+# third check covers the part they structurally cannot: that the lib's
+# ` & test(...)` clauses survive verbatim into the emitted expression.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Assertion (e): resolve-to-disk -- ACTUAL emitted offline plan atoms ---"
 
-# Both parse atoms out of the ACTUAL emitted offline -E expression -- nextest-
-# only, same reasoning as assertion (d)'s orphan check above (task 5599).
+# All three parse the ACTUAL emitted offline -E expression -- nextest-only,
+# same reasoning as assertion (d)'s orphan check above (task 5599).
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
-    assert "offline plan atoms: exactly 6 parsed (no silent membership drift)" \
-        _atom_count_is_6
+    assert "offline plan atoms: exactly 8 parsed (no silent membership drift)" \
+        _atom_count_is_8
 
     assert "offline plan atoms: every parsed atom resolves to a real crates/<pkg>/tests/<bin>.rs file" \
         _resolve_atoms_ok
+
+    assert "offline plan: >=1 test-scope clause in the lib, and every one survives verbatim into the emitted -E expression (a dropped clause widens its atom to the whole binary; the prefix-only parsers above cannot see that)" \
+        _test_scope_clauses_survive_ok
 else
     assert 'offline plan atoms, nextest unavailable: no -E expression exists to parse atoms from (cargo-test fallback has no -E support)' \
         _offline_lacks '-E "('
@@ -533,7 +721,7 @@ echo "--- Non-vacuity self-check: guard detects an injected partition break ---"
 # Nextest-only: assert_guard_rejects mutates and re-checks the emitted -E
 # expression, which does not exist on the cargo-test fallback (task 5599).
 if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
-    assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap), and still accept the real one" \
+    assert "guard checks reject a deliberately-broken partition (dangling atom / dropped atom / injected overlap / stripped test-scope clause), and still accept the real one" \
         assert_guard_rejects
 else
     echo "  (skipped: nextest unavailable -- no -E expression to break and re-check)"

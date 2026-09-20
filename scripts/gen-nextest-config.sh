@@ -36,13 +36,34 @@
 #              else parsed from /proc/meminfo (MemTotal kB → GiB); else RAM
 #              term is skipped so non-Linux/unreadable hosts keep CPU-only.
 #
-# Global pool derivation (task 5984; when REIFY_NEXTEST_TEST_THREADS is unset):
+# Global pool derivation (task 5984, DEFAULT UN-NARROWED task 6018; when
+# REIFY_NEXTEST_TEST_THREADS is unset):
 #   tt = min(HARD_CAP, nproc)                [nproc term skipped if unavailable]
 #
-#   HARD_CAP:  REIFY_NEXTEST_TEST_THREADS_HARD_CAP (default 16, strict
-#              digits-only).  16 matches the dark-factory half
-#              (dark_factory:3589, pytest `-n auto` -> `-n 16`) so neither
-#              fleet gains CPU share over the other.
+#   HARD_CAP:  REIFY_NEXTEST_TEST_THREADS_HARD_CAP (strict digits-only), whose
+#              DEFAULT is the resolved host CPU count itself.  The min() then
+#              collapses to nproc and this derivation applies NO ceiling below
+#              what nextest would pick on its own; the knob stays as the escape
+#              hatch for a host that genuinely needs tightening.
+#
+#              WHY NO DEFAULT NARROWING (task 6018).  This defaulted to the
+#              literal 16 to match what was then believed to be a pytest
+#              `-n 16` on the dark-factory side.  That number was ALREADY WRONG
+#              when it landed and is wronger now (re-measured first-hand in
+#              6018's review-amendment pass): dark_factory:3589 targets `-n 8`
+#              — an operator decision dated 2026-08-03, the same day this
+#              file's 16 was authored, explicitly superseding the original
+#              `-n 16` proposal — and it is still `pending`, so both
+#              dark-factory pyprojects run `-n auto` (= 32 here) today.
+#              But the number is the lesser error.  The reasoning does not
+#              transfer at all: under pytest-xdist every worker
+#              RE-COLLECTS the whole suite (a fixed ~19.4 CPU-s per worker), so
+#              cutting workers deletes a real measured overhead.  cargo-nextest
+#              executes pre-built test binaries with no per-thread collection
+#              phase, so a thread costs nothing until it runs a test and
+#              narrowing the pool buys none of that saving while costing
+#              wall-clock.  Do not reintroduce a cross-fleet symmetry argument
+#              here — full rationale in .config/nextest.toml.
 #   nproc:     the SAME resolved host CPU count as above.
 #
 #   The result is clamped to >= 1: HARD_CAP=0 is digits-only-VALID and would
@@ -58,16 +79,26 @@
 #   nextest behaviour for `max-threads = 0`.
 #
 #   NO RAM TERM — deliberate, and asymmetric with the occt cap ON PURPOSE.
-#   This cap's justification is CPU-share symmetry and runqueue depth, not RSS:
+#   Any bound on this key is about runqueue depth, not RSS:
 #   orchestrator-reify.service holds 25.3 GiB memory.current against only
 #   3.6 GiB anon (rest = reclaimable cargo page cache), and a live
 #   df-verify-reify-*.scope measured 25.4 GiB current / 0.1 GiB anon.  OCCT
 #   threads really do carry ~2 GiB anon each, which is why that term belongs on
 #   the occt cap and not here.  Full rationale: .config/nextest.toml.
 #
-#   Host-relative rather than a bare literal, for the task 4621 reason: a fixed
-#   16 equals nproc on a 16t laptop (no reduction at all) and oversubscribes an
-#   8-core host or CPU-quota'd container 2x.
+#   HOST-RELATIVE rather than a bare literal, for the task 4621 reason: a fixed
+#   literal oversubscribes every host smaller than itself (a 32 on an 8-core box
+#   or a CPU-quota'd container is 4x) and reduces nothing on a host at or below
+#   it.  Task 6018 pushed that reasoning one step further: the DEFAULT ceiling
+#   is now nproc itself, so the derivation tracks the host exactly and narrows
+#   only when an operator sets REIFY_NEXTEST_TEST_THREADS_HARD_CAP (tighten the
+#   derivation) or REIFY_NEXTEST_TEST_THREADS (replace it verbatim).  Task 6374
+#   closed the last gap in that argument: the CHECKED-IN TEMPLATE this script
+#   rewrites was itself a bare literal (32) until then, so the manual
+#   `cargo nextest run` path — the one that bypasses this script entirely — still
+#   carried the oversubscription this paragraph describes.  It now reads
+#   `test-threads = "num-cpus"`, nextest's own host-relative spelling, so every
+#   path is host-relative and only the reify-side knobs need this generator.
 #
 # Env knobs (all strictly digits-only validated):
 #   REIFY_OCCT_NEXTEST_MAX_THREADS  — explicit occt-group override; wins verbatim.
@@ -88,18 +119,48 @@
 #                                       docs/notes/multi-process-occt-bench.md).
 #   REIFY_NEXTEST_TEST_THREADS      — explicit global-pool override; wins verbatim.
 #   REIFY_NEXTEST_TEST_THREADS_HARD_CAP
-#                                   — global-pool upper ceiling (default 16).
+#                                   — global-pool upper ceiling.  DEFAULT is the
+#                                       resolved host CPU count (task 6018), so
+#                                       unset = no narrowing; set it to tighten.
 #                                       Ignored when REIFY_NEXTEST_TEST_THREADS
 #                                       is set (the explicit override wins).
+#   REIFY_NEXTEST_CLI_TEST_THREADS  — NOT an input to the derivation.  It reports
+#                                       the `--test-threads=N` value the CALLER
+#                                       will put on the nextest command line, so
+#                                       the two can be compared here — the one
+#                                       place the derived pool exists.  Three-way
+#                                       contract (task 6375):
+#                                         unset/empty/non-digit -> no output, no
+#                                           behaviour change whatsoever;
+#                                         <= derived pool -> one stderr note
+#                                           naming both values; path still
+#                                           printed, exit 0.  Capping BELOW the
+#                                           pool is the sanctioned offline-lane
+#                                           use and stays legal;
+#                                         >  derived pool -> stderr error naming
+#                                           both values, exit 64, NOTHING on
+#                                           stdout.  nextest's CLI
+#                                           --test-threads outranks
+#                                           --config-file, so such a value would
+#                                           silently RAISE the pool above this
+#                                           derivation — the config file would
+#                                           be generated, honoured by nothing,
+#                                           and the narrowing would read as
+#                                           effective while being absent.
+#                                       Guard: tests/infra/test_verify_test_threads.sh
+#                                       Test 6.  verify.sh exports it at one site.
 #
 # occt cap:
 #   Workstation (32t, ~125 GiB): min(24,32,62)=24 — bit-identical to pre-4621.
 #   Laptop (16t, 32 GiB):        min(24,16,16)=16 — avoids 24×2 GiB ≈ 48 GiB OOM.
 #   Laptop (16t, 16 GiB):        min(24,16,8)=8.
-# global pool:
-#   Workstation (32t): min(16,32)=16 — the reduction this task exists for.
-#   Laptop (16t):      min(16,16)=16.
-#   8-core host:       min(16,8)=8   — no oversubscription.
+# global pool (HARD_CAP defaults to nproc, so the min() collapses to nproc):
+#   Workstation (32t): 32 — the host CPU count; no ceiling below it.
+#   Laptop (16t):      16.
+#   8-core host:       8   — no oversubscription.
+#   Tightening escape hatch, on the same 32t workstation:
+#     REIFY_NEXTEST_TEST_THREADS_HARD_CAP=8 -> min(8,32)=8.
+#   Neither nproc nor getconf resolves: ${_nproc:-32} last resort -> 32.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -201,11 +262,23 @@ case "${REIFY_OCCT_NEXTEST_MAX_THREADS:-}" in
 esac
 
 # ---------------------------------------------------------------------------
-# Global [profile.default] test-threads pool cap (task 5984).
+# Global [profile.default] test-threads pool cap (task 5984; default un-narrowed
+# task 6018).
 #
-# tt = min(HARD_CAP=16, nproc)  — the nproc term is skipped when unavailable,
-# mirroring the occt min()'s skip-unavailable-term structure above, so a host
-# without nproc/getconf falls back to HARD_CAP rather than erroring.
+# tt = min(HARD_CAP, nproc), where HARD_CAP DEFAULTS to the resolved host CPU
+# count — so by default the min() collapses to nproc and nothing here narrows
+# the pool below what nextest would pick.  The nproc term is skipped when
+# unavailable, mirroring the occt min()'s skip-unavailable-term structure above,
+# so a host without nproc/getconf falls back to HARD_CAP rather than erroring —
+# and since the default HARD_CAP is derived from that same unresolved nproc,
+# that path lands on the ${_nproc:-32} last-resort constant.  That constant used
+# to be kept textually equal to a `test-threads = 32` integer literal in
+# .config/nextest.toml; task 6374 moved that template value to nextest's
+# host-relative `"num-cpus"`, so there is no literal left to couple it to.  It is
+# now the value emitted ONLY when neither `nproc` nor `getconf _NPROCESSORS_ONLN`
+# resolves, and it is pinned BEHAVIOURALLY — Test 17l in
+# tests/infra/test_occt_gated_scope.sh forces that branch with exit-1 shims on
+# PATH and checks the constant documented here is the one actually emitted.
 #
 # Same strict digits-only parse idiom as REIFY_OCCT_NEXTEST_MAX_THREADS: empty,
 # non-digit or whitespace-padded input falls through to the derivation.
@@ -214,10 +287,20 @@ case "${REIFY_NEXTEST_TEST_THREADS:-}" in
     (''|*[!0-9]*)
         # Explicit override not set (or invalid) — derive host-relative cap.
 
-        # HARD_CAP: upper ceiling, default 16 (matches dark_factory:3589's
-        # pytest -n 16 so neither fleet gains CPU share over the other).
+        # HARD_CAP: upper ceiling.  DEFAULT = the resolved host CPU count
+        # ($_nproc), so min(HARD_CAP, nproc) collapses to nproc and this
+        # derivation imposes NO ceiling below what nextest would itself pick
+        # (task 6018).  ${_nproc:-32} is the LAST RESORT, reached only when
+        # neither `nproc` nor `getconf _NPROCESSORS_ONLN` resolved — mirroring
+        # the occt derivation's skip-unavailable-term structure.  It no longer
+        # has a cross-file twin (task 6374 moved .config/nextest.toml's template
+        # value to `"num-cpus"`); Test 17l pins it behaviourally instead, by
+        # forcing this branch and checking the emitted value.  Task 6374
+        # deliberately did NOT re-value it: on a host where neither tool resolves
+        # 32 oversubscribes a small container while 1 would serialise verify
+        # entirely, and that trade is out of scope for a spelling change.
         case "${REIFY_NEXTEST_TEST_THREADS_HARD_CAP:-}" in
-            (''|*[!0-9]*) tt_hard_cap=16 ;;
+            (''|*[!0-9]*) tt_hard_cap="${_nproc:-32}" ;;
             (*)           tt_hard_cap="${REIFY_NEXTEST_TEST_THREADS_HARD_CAP}" ;;
         esac
 
@@ -259,6 +342,29 @@ esac
 # nextest rejection for `max-threads = 0`.
 if [ "$tt" -lt 1 ]; then tt=1; fi
 
+# ---------------------------------------------------------------------------
+# CLI --test-threads vs the derived pool (task 6375).
+#
+# Placed AFTER the clamp on purpose: the comparison must use the value actually
+# emitted, not a pre-clamp intermediate.
+#
+# Same strict digits-only parse idiom as the two knobs above, with $(( 10#... ))
+# base-10 forcing, so a leading-zero value cannot abort the script as invalid
+# octal under `set -euo pipefail` and anything unparseable falls through to
+# today's exact behaviour: no output, no behaviour change.
+# ---------------------------------------------------------------------------
+case "${REIFY_NEXTEST_CLI_TEST_THREADS:-}" in
+    (''|*[!0-9]*) ;;
+    (*)
+        _cli_tt=$(( 10#${REIFY_NEXTEST_CLI_TEST_THREADS} ))
+        if [ "$_cli_tt" -gt "$tt" ]; then
+            echo "gen-nextest-config.sh: ERROR — --test-threads=${_cli_tt} exceeds the derived global pool of ${tt}. nextest's CLI --test-threads outranks --config-file, so ${_cli_tt} would REPLACE the generated [profile.default] test-threads = ${tt} and silently raise the pool above this derivation. Refusing to generate a config that nothing would honour." >&2
+            exit 64
+        fi
+        echo "gen-nextest-config.sh: note — --test-threads=${_cli_tt} caps below the derived global pool of ${tt}; the CLI value wins (it outranks --config-file) and the effective pool is ${_cli_tt}." >&2
+        ;;
+esac
+
 # Create a fresh temp file.  Template ends in X's (do NOT combine --suffix with
 # a .toml-terminated template — that form errors on some systems; empirically
 # confirmed during planning that the plain X-terminated template works).
@@ -270,7 +376,9 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/reify-nextest-occt.XXXXXX")
 # per-test slow-timeout/terminate-after ceilings, task 5141) and every other
 # [profile.default] key is untouched.
 #
-# `^test-threads = [0-9][0-9]*$` (task 5984) is LINE-anchored but NOT
+# `^test-threads = \("num-cpus"\|[0-9][0-9]*\)$` (task 5984; WIDENED to this
+# alternation by task 6374, when the checked-in template moved from the bare
+# integer 32 to nextest's host-relative `"num-cpus"`) is LINE-anchored but NOT
 # section-anchored, and is correct only while exactly one line in the file
 # matches it.  Unlike the occt anchor — safe because `occt = { max-threads = N }`
 # is unique by key NAME — `test-threads` is a generic nextest PROFILE key: a
@@ -279,6 +387,17 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/reify-nextest-occt.XXXXXX")
 # silently clobbering the second profile's deliberate setting.  The current
 # [[profile.default.overrides]] blocks carry no such key, so the precondition
 # holds today.
+#
+# AN ALTERNATION, NOT `.*`, AND THAT IS LOAD-BEARING.  The lazy widening
+# `^test-threads = .*$` would match ANY right-hand side, including a second
+# profile's — which would make the uniqueness precondition above a tautology and
+# Test 17k's count vacuous, so the clobber this whole block guards against would
+# ship silently.  The alternation covers exactly the two spellings the template
+# may legitimately carry and nothing else.  The integer branch is deliberately
+# RETAINED rather than replaced: this script is copied into scratch repos by
+# seven other infra suites, and an operator or a future revert may legitimately
+# put an integer back — a spelling-specific anchor would silently no-op there
+# instead of failing loudly.
 #
 # That precondition is CHECKED, not merely asserted here: Test 17k in
 # tests/infra/test_occt_gated_scope.sh pins that exactly one line matches this
@@ -293,7 +412,7 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/reify-nextest-occt.XXXXXX")
 # BOTH anchors in ONE generate and checks both landed, converting the silent
 # no-op into a loud CI failure.
 sed -e "s/^occt = { max-threads = [0-9][0-9]* }$/occt = { max-threads = ${cap} }/" \
-    -e "s/^test-threads = [0-9][0-9]*$/test-threads = ${tt}/" \
+    -e "s/^test-threads = \(\"num-cpus\"\|[0-9][0-9]*\)$/test-threads = ${tt}/" \
     "$REPO_ROOT/.config/nextest.toml" > "$tmp"
 
 # Stdout contract: ONLY the path.

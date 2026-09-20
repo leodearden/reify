@@ -1,4 +1,13 @@
 //! Tests for connected-component decomposition of constraint problems.
+//!
+//! Every call below passes an EMPTY `dependent_cells` (`&[]`), and that is
+//! itself an assertion, not boilerplate: PRD2 α's INVARIANT D1 requires models
+//! with no dependent cells to decompose BYTE-IDENTICALLY to pre-α. An empty
+//! slice yields an empty `dependent_cell_auto_reads` map, which makes
+//! `expand_refs_through_dependent_cells` insert nothing — so these expectations
+//! are exactly the pre-α ones and must never move. The transitive (non-empty
+//! `dependent_cells`) behaviour is pinned by the layer-2 units in
+//! `decompose.rs`'s own `mod tests`.
 
 use reify_constraints::decompose_into_components;
 use reify_test_support::*;
@@ -29,7 +38,7 @@ fn three_independent_constraints_three_components() {
         (cnid("Part", 2), c3),
     ];
 
-    let components = decompose_into_components(&auto_params, &constraints, None);
+    let components = decompose_into_components(&auto_params, &constraints, None, &[]);
     assert_eq!(
         components.len(),
         3,
@@ -56,7 +65,7 @@ fn shared_param_merges_into_one_component() {
 
     let constraints = vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)];
 
-    let components = decompose_into_components(&auto_params, &constraints, None);
+    let components = decompose_into_components(&auto_params, &constraints, None, &[]);
     assert_eq!(
         components.len(),
         1,
@@ -86,7 +95,7 @@ fn chain_constraints_single_component() {
 
     let constraints = vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)];
 
-    let components = decompose_into_components(&auto_params, &constraints, None);
+    let components = decompose_into_components(&auto_params, &constraints, None, &[]);
     assert_eq!(
         components.len(),
         1,
@@ -106,7 +115,7 @@ fn empty_constraints_zero_components() {
     let auto_params = vec![single_auto_param(vcid("Part", "a"))];
 
     let constraints: Vec<(_, _)> = vec![];
-    let components = decompose_into_components(&auto_params, &constraints, None);
+    let components = decompose_into_components(&auto_params, &constraints, None, &[]);
     assert_eq!(
         components.len(),
         0,
@@ -128,7 +137,7 @@ fn constraint_without_auto_params_excluded() {
 
     let constraints = vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)];
 
-    let components = decompose_into_components(&auto_params, &constraints, None);
+    let components = decompose_into_components(&auto_params, &constraints, None, &[]);
 
     // C2 references no auto params, so it should be excluded
     // Only C1 should appear in a component
@@ -181,7 +190,7 @@ fn collect_value_refs_handles_nested_conditional() {
     // Single constraint using the conditional expression
     let constraints = vec![(cnid("Part", 0), conditional)];
 
-    let components = decompose_into_components(&auto_params, &constraints, None);
+    let components = decompose_into_components(&auto_params, &constraints, None, &[]);
 
     // All 4 params referenced by one constraint → 1 component with all 4 params
     assert_eq!(
@@ -228,7 +237,7 @@ fn objective_merges_independent_params_into_one_component() {
     obj_refs.insert(b.clone());
 
     // decompose_into_components with objective refs should merge both into 1 component
-    let components = decompose_into_components(&auto_params, &constraints, Some(&obj_refs));
+    let components = decompose_into_components(&auto_params, &constraints, Some(&obj_refs), &[]);
     assert_eq!(
         components.len(),
         1,

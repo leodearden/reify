@@ -23,6 +23,10 @@
 //! eval-side consumer of those builtins (`kinematic_stdlib_smoke.rs`): that unit is
 //! within ~700 lines of the 20 kLOC C1 cap (tests/infra/test_harness_kloc_cap.sh), while
 //! this one has ample headroom.
+#[path = "harness_geometry/dimensionless_sub_pose_diagnostic_e2e.rs"]
+mod dimensionless_sub_pose_diagnostic_e2e;
+#[path = "harness_geometry/empty_boolean_result_diagnostic_e2e.rs"]
+mod empty_boolean_result_diagnostic_e2e;
 #[path = "harness_geometry/euler_convention_surface.rs"]
 mod euler_convention_surface;
 #[path = "harness_geometry/geometry_conditional_e2e.rs"]
@@ -37,18 +41,30 @@ mod geometry_handle_freshness;
 mod geometry_handle_persistent_cache_round_trip;
 #[path = "harness_geometry/geometry_handle_value_cell_e2e.rs"]
 mod geometry_handle_value_cell_e2e;
+#[path = "harness_geometry/geometry_length_args_units_e2e.rs"]
+mod geometry_length_args_units_e2e;
 #[path = "harness_geometry/geometry_let_value_cell_gamma.rs"]
 mod geometry_let_value_cell_gamma;
 #[path = "harness_geometry/geometry_query_kernel_dispatch.rs"]
 mod geometry_query_kernel_dispatch;
 #[path = "harness_geometry/geometry_sub_ref_e2e.rs"]
 mod geometry_sub_ref_e2e;
+#[path = "harness_geometry/modify_sweep_length_units_e2e.rs"]
+mod modify_sweep_length_units_e2e;
+#[path = "harness_geometry/offset_surface_e2e.rs"]
+mod offset_surface_e2e;
+#[path = "harness_geometry/primitive_profile_length_units_e2e.rs"]
+mod primitive_profile_length_units_e2e;
+#[path = "harness_geometry/rounded_corner_runtime_constraint.rs"]
+mod rounded_corner_runtime_constraint;
 #[path = "harness_geometry/symbolic_geometry_eval.rs"]
 mod symbolic_geometry_eval;
 #[path = "harness_geometry/symbolic_selector_composition_eval.rs"]
 mod symbolic_selector_composition_eval;
 #[path = "harness_geometry/symbolic_selector_eval.rs"]
 mod symbolic_selector_eval;
+#[path = "harness_geometry/transform_translation_length_units_e2e.rs"]
+mod transform_translation_length_units_e2e;
 #[path = "harness_geometry/trait_assoc_fn_cylinder.rs"]
 mod trait_assoc_fn_cylinder;
 #[path = "harness_geometry/trait_assoc_fn_static_e2e.rs"]

@@ -4,6 +4,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, Type, ValueCellId};
+// `reify-expr` is an optional dependency enabled by `containment-doubles`
+// (which `eval-helpers` includes); see the rationale on its entry in
+// Cargo.toml. Only the ContainmentQuery double below needs it, so both the
+// import and that double carry the same gate.
+#[cfg(feature = "containment-doubles")]
+use reify_expr::ContainmentQuery;
 use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap, VolumeMesh};
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -827,6 +833,52 @@ impl QueryKey {
     }
 }
 
+/// Extract the "primary" handle associated with `query` — the handle used
+/// both for the generic (handle-only) fallback lookup in
+/// `MockGeometryKernel::query` and for the `fail_after_n_dispatches` gate
+/// (task #6471). For multi-handle queries this picks the same representative
+/// handle the generic fallback historically used (e.g. `from` for `Distance`,
+/// `actual` for `MaxDeviation`).
+fn primary_handle(query: &GeometryQuery) -> GeometryHandleId {
+    match query {
+        GeometryQuery::Volume(id) => *id,
+        GeometryQuery::SurfaceArea(id) => *id,
+        GeometryQuery::Centroid(id) => *id,
+        GeometryQuery::BoundingBox(id) => *id,
+        GeometryQuery::Distance { from, .. } => *from,
+        GeometryQuery::MomentOfInertia { handle, .. } => *handle,
+        GeometryQuery::AdjacentFaces { shape, .. } => *shape,
+        GeometryQuery::AncestorFacesOfEdge { shape, .. } => *shape,
+        GeometryQuery::SharedEdges { shape, .. } => *shape,
+        GeometryQuery::IsWatertight(id) => *id,
+        GeometryQuery::IsManifold(id) => *id,
+        GeometryQuery::IsOrientable(id) => *id,
+        GeometryQuery::IsClosed(id) => *id,
+        GeometryQuery::IsConnected(id) => *id,
+        GeometryQuery::IsBounded(id) => *id,
+        GeometryQuery::CenterOfMass { handle, .. } => *handle,
+        GeometryQuery::InertiaTensor { handle, .. } => *handle,
+        GeometryQuery::EdgeLength(id) => *id,
+        GeometryQuery::EdgeTangent(id) => *id,
+        GeometryQuery::FaceNormal(id) => *id,
+        GeometryQuery::FaceSurfaceKind(id) => *id,
+        GeometryQuery::EdgeCurveKind(id) => *id,
+        GeometryQuery::OwnerBody(id) => *id,
+        GeometryQuery::ClosestPointOnShape { handle, .. } => *handle,
+        GeometryQuery::PointOnShape { handle, .. } => *handle,
+        GeometryQuery::Contains { handle, .. } => *handle,
+        GeometryQuery::GeoEquiv { left, .. } => *left,
+        GeometryQuery::SurfaceAngle { face_a, .. } => *face_a,
+        GeometryQuery::FaceNormalAt { handle, .. } => *handle,
+        GeometryQuery::CurveCurvatureAt { handle, .. } => *handle,
+        GeometryQuery::SurfaceCurvatureAt { handle, .. } => *handle,
+        GeometryQuery::MaxDeviation { actual, .. } => *actual,
+        GeometryQuery::FaceAnalyticDatum(id) => *id,
+        GeometryQuery::EdgeAnalyticDatum(id) => *id,
+        GeometryQuery::ShapeLocalTolerance(id) => *id,
+    }
+}
+
 /// The canned interchange mesh the mock kernels hand back from `tessellate`
 /// and `realize_mesh_from_voxel`: a closed, consistently outward-wound unit
 /// tetrahedron (V0=(0,0,0), V1=(1,0,0), V2=(0,1,0), V3=(0,0,1)).
@@ -902,6 +954,24 @@ pub struct MockGeometryKernel {
     queries: HashMap<GeometryHandleId, Value>,
     /// Per-query-type results (takes precedence over generic).
     typed_queries: HashMap<QueryKey, Value>,
+    /// Explicit per-query-type FAILURE seeding (task #6471): takes precedence
+    /// over `typed_queries` / `queries`. Lets a test state "this query fails"
+    /// directly — e.g. `with_volume_error(handle, err)` — mirroring the
+    /// `with_extract_vertices_error` pattern below, instead of achieving the
+    /// same effect by leaving `handle` unseeded and relying on the generic
+    /// "no mock result for …" fallback (seed-range starvation).
+    typed_query_errors: HashMap<QueryKey, QueryError>,
+    /// When `Some(n)`, every query whose [`primary_handle`] has an id greater
+    /// than `n` fails, regardless of query type or whether `typed_queries` /
+    /// `queries` also has an entry for that handle. Set via
+    /// `fail_after_n_dispatches` (task #6471) — the coarser sibling of
+    /// `typed_query_errors`: states "queries past handle `n` fail" directly,
+    /// replacing the seed-range-starvation mechanism where a test picked a
+    /// narrow success range and let handles past it go unanswered. The field
+    /// name reflects the intended usage (ids ARE dispatch ordinals for handles
+    /// `execute` / `make_compound` allocated); the gate itself is purely
+    /// `handle.0 > n` — see `fail_after_n_dispatches`'s doc.
+    fail_queries_after_dispatch: Option<u64>,
     /// Per-parent edge-extraction results; `Ok(vec)` or `Err(e)`.
     extracted_edges: HashMap<GeometryHandleId, Result<Vec<GeometryHandleId>, QueryError>>,
     /// Per-parent face-extraction results; `Ok(vec)` or `Err(e)`.
@@ -914,6 +984,11 @@ pub struct MockGeometryKernel {
     /// default-Err (drives the honest-degradation projection path). Mirrors
     /// the configurable-output pattern of the query-result builders above.
     volume_mesh_output: Option<VolumeMesh>,
+    /// Number of `GeometryKernel::reset()` calls received (task 5212). Held
+    /// behind an `Arc<Mutex<…>>` — like the `operations` recorder — so a test
+    /// can observe the count across the engine ownership boundary after the
+    /// mock is moved into `Engine::geometry_kernels`. Read via `reset_count()`.
+    reset_calls: Arc<Mutex<usize>>,
 }
 
 impl MockGeometryKernel {
@@ -924,11 +999,33 @@ impl MockGeometryKernel {
             tessellate_tolerances: Arc::new(Mutex::new(Vec::new())),
             queries: HashMap::new(),
             typed_queries: HashMap::new(),
+            typed_query_errors: HashMap::new(),
+            fail_queries_after_dispatch: None,
             extracted_edges: HashMap::new(),
             extracted_faces: HashMap::new(),
             extracted_vertices: HashMap::new(),
             volume_mesh_output: None,
+            reset_calls: Arc::new(Mutex::new(0)),
         }
+    }
+
+    /// Number of `GeometryKernel::reset()` calls this mock has received
+    /// (task 5212). Reads through the shared `Arc<Mutex<…>>`, so it stays
+    /// observable after the mock is moved into `Engine::geometry_kernels` —
+    /// letting reload-wiring tests assert reset fires exactly once per
+    /// whole-file reload and never on a slider edit. Mirrors `op_count()`.
+    pub fn reset_count(&self) -> usize {
+        *self.reset_calls.lock().unwrap()
+    }
+
+    /// Shared handle to the `reset()` call counter (task 5212). Clone this
+    /// BEFORE the mock is boxed into `Engine::geometry_kernels` /
+    /// `EngineSession::new`, then read `*handle.lock().unwrap()` afterward to
+    /// observe reset calls across the ownership boundary — `reset_count()`
+    /// itself needs `&MockGeometryKernel`, which the boxed `dyn GeometryKernel`
+    /// no longer exposes. Mirrors `operations_ref()`.
+    pub fn reset_calls_ref(&self) -> Arc<Mutex<usize>> {
+        self.reset_calls.clone()
     }
 
     /// Configure a generic query response for a specific handle (fallback for all query types).
@@ -1098,6 +1195,78 @@ impl MockGeometryKernel {
             },
             value,
         );
+        self
+    }
+
+    /// Configure a Volume query to explicitly FAIL for a specific handle
+    /// (task #6471). `kernel.query(&GeometryQuery::Volume(handle))` returns
+    /// `Err(err)` — takes precedence over `with_volume_result` / the generic
+    /// fallback for the same handle. Mirrors `with_extract_vertices_error`:
+    /// states "this query fails" directly instead of leaving `handle`
+    /// unseeded and relying on the generic "no mock result" fallback.
+    pub fn with_volume_error(mut self, handle: GeometryHandleId, err: QueryError) -> Self {
+        self.typed_query_errors.insert(QueryKey::Volume(handle), err);
+        self
+    }
+
+    /// Configure a Centroid query to explicitly FAIL for a specific handle
+    /// (task #6471). See [`Self::with_volume_error`] for the semantics.
+    pub fn with_centroid_error(mut self, handle: GeometryHandleId, err: QueryError) -> Self {
+        self.typed_query_errors
+            .insert(QueryKey::Centroid(handle), err);
+        self
+    }
+
+    /// Configure an InertiaTensor query to explicitly FAIL for a specific
+    /// handle and density (task #6471). `density` must be bits-equal to the
+    /// value the query is issued with, matching `with_inertia_tensor_result`.
+    /// See [`Self::with_volume_error`] for the general semantics.
+    ///
+    /// # Panics (debug)
+    /// Panics if `density` is NaN — NaN bits are not equal to themselves,
+    /// which would silently break HashMap lookup.
+    pub fn with_inertia_tensor_error(
+        mut self,
+        handle: GeometryHandleId,
+        density: f64,
+        err: QueryError,
+    ) -> Self {
+        let density_bits = density_bits(density);
+        self.typed_query_errors.insert(
+            QueryKey::InertiaTensor {
+                handle,
+                density_bits,
+            },
+            err,
+        );
+        self
+    }
+
+    /// Configure the mock to FAIL every query whose [`primary_handle`] has an
+    /// id GREATER THAN `n`, regardless of query type and regardless of whether
+    /// `typed_queries` / `queries` also has a (now-shadowed) entry for that
+    /// handle (task #6471).
+    ///
+    /// # The gate is a handle-ID threshold, not a dispatch counter
+    /// The dispatch-flavoured NAME describes the INTENDED usage, and holds
+    /// exactly for handles allocated by `execute` / `make_compound`: `next_id`
+    /// starts at 1 and is bumped by nothing else, so for those handles
+    /// "id > n" is precisely "allocated by the `(n+1)`-th or later dispatch".
+    /// The equivalence does NOT hold for a handle a test invents directly
+    /// (e.g. seeding `GeometryHandleId(5)` having dispatched nothing), nor for
+    /// the sub-entity handles handed back by seeded `extract_edges` /
+    /// `extract_faces`, which never allocate via `next_id`. Such handles are
+    /// still failed whenever their id exceeds `n` — they were simply never
+    /// "dispatched", so read the gate mechanically as `handle.0 > n`.
+    ///
+    /// This is the coarse-grained sibling of `with_volume_error` and friends:
+    /// where those target one query type on one handle, this states "the
+    /// kernel goes degenerate past handle `n`" directly, replacing the
+    /// seed-range-starvation idiom of seeding success only up to `n` and
+    /// relying on the generic "no mock result" fallback to fail everything
+    /// past it incidentally.
+    pub fn fail_after_n_dispatches(mut self, n: u64) -> Self {
+        self.fail_queries_after_dispatch = Some(n);
         self
     }
 
@@ -1675,6 +1844,14 @@ impl Default for MockGeometryKernel {
 }
 
 impl GeometryKernel for MockGeometryKernel {
+    /// Record a `reset()` call (task 5212). Overrides the trait no-op default
+    /// so reload-wiring tests can assert the engine invokes `reset()` on every
+    /// registered kernel exactly once per whole-file reload. Increments the
+    /// shared counter read by `reset_count()`.
+    fn reset(&mut self) {
+        *self.reset_calls.lock().unwrap() += 1;
+    }
+
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let id = GeometryHandleId(self.next_id);
         self.next_id += 1;
@@ -1698,8 +1875,40 @@ impl GeometryKernel for MockGeometryKernel {
     }
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
-        // Check per-query-type map first
+        // Explicit per-query-type FAILURE seeding (task #6471) takes
+        // precedence over everything else — a test that configured this
+        // wants the failure enforced, not shadowed by a coincidentally
+        // seeded success.
         let key = QueryKey::from_query(query);
+        if let Some(err) = self.typed_query_errors.get(&key) {
+            return Err(err.clone());
+        }
+
+        // Coarse-grained `fail_after_n_dispatches` gate (task #6471): fails
+        // every query whose primary handle has an id past the configured
+        // ceiling, regardless of query type — a handle-ID threshold, which
+        // coincides with a dispatch ordinal only for handles `execute` /
+        // `make_compound` allocated (see the builder's doc). Checked
+        // before the `typed_queries` lookup as well as the OwnerBody
+        // special-case and the generic fallback, so it uniformly covers all
+        // three — in particular a success seeded past the ceiling by
+        // `with_volume_result` and friends (which all write to
+        // `typed_queries`) cannot shadow it, which would otherwise leave the
+        // gate inert against the ordinary seeding path.
+        if let Some(ceiling) = self.fail_queries_after_dispatch {
+            let handle = primary_handle(query);
+            if handle.0 > ceiling {
+                return Err(QueryError::QueryFailed(format!(
+                    "MockGeometryKernel: query for {handle:?} explicitly failed — \
+                     handle id > {ceiling} (configured via \
+                     fail_after_n_dispatches({ceiling})). Note this gates on \
+                     handle ID, which equals dispatch ordinal only for handles \
+                     allocated by execute/make_compound"
+                )));
+            }
+        }
+
+        // Check per-query-type map next
         if let Some(value) = self.typed_queries.get(&key) {
             return Ok(value.clone());
         }
@@ -1716,58 +1925,14 @@ impl GeometryKernel for MockGeometryKernel {
             )));
         }
 
-        // Fall back to generic handle-only map
-        let handle_id = match query {
-            GeometryQuery::Volume(id) => id,
-            GeometryQuery::SurfaceArea(id) => id,
-            GeometryQuery::Centroid(id) => id,
-            GeometryQuery::BoundingBox(id) => id,
-            GeometryQuery::Distance { from, .. } => from,
-            GeometryQuery::MomentOfInertia { handle, .. } => handle,
-            GeometryQuery::AdjacentFaces { shape, .. } => shape,
-            GeometryQuery::AncestorFacesOfEdge { shape, .. } => shape,
-            GeometryQuery::SharedEdges { shape, .. } => shape,
-            GeometryQuery::IsWatertight(id) => id,
-            GeometryQuery::IsManifold(id) => id,
-            GeometryQuery::IsOrientable(id) => id,
-            // θ conformance predicates (task #4171)
-            GeometryQuery::IsClosed(id) => id,
-            GeometryQuery::IsConnected(id) => id,
-            GeometryQuery::IsBounded(id) => id,
-            GeometryQuery::CenterOfMass { handle, .. } => handle,
-            GeometryQuery::InertiaTensor { handle, .. } => handle,
-            GeometryQuery::EdgeLength(id) => id,
-            GeometryQuery::EdgeTangent(id) => id,
-            GeometryQuery::FaceNormal(id) => id,
-            GeometryQuery::FaceSurfaceKind(id) => id,
-            GeometryQuery::EdgeCurveKind(id) => id,
-            // OwnerBody is handled above the generic fallback because its
-            // miss path produces a domain-specific error message. The
-            // exhaustiveness guard retains this arm so a future kernel
-            // change is forced to revisit the dispatch table.
-            GeometryQuery::OwnerBody(id) => id,
-            // Topology selectors (task 2324) — generic fallback returns the
-            // canonical first handle, parallel to the Distance arm.
-            GeometryQuery::ClosestPointOnShape { handle, .. } => handle,
-            GeometryQuery::PointOnShape { handle, .. } => handle,
-            GeometryQuery::Contains { handle, .. } => handle,
-            GeometryQuery::GeoEquiv { left, .. } => left,
-            GeometryQuery::SurfaceAngle { face_a, .. } => face_a,
-            GeometryQuery::FaceNormalAt { handle, .. } => handle,
-            GeometryQuery::CurveCurvatureAt { handle, .. } => handle,
-            GeometryQuery::SurfaceCurvatureAt { handle, .. } => handle,
-            // ζ / C4: generic fallback uses the `actual` handle as the
-            // representative handle (parallel to the Distance `from` arm).
-            GeometryQuery::MaxDeviation { actual, .. } => actual,
-            // ε: single-handle analytic-datum + tolerance queries fall back to
-            // their handle, parallel to the FaceSurfaceKind / EdgeCurveKind arms.
-            GeometryQuery::FaceAnalyticDatum(id) => id,
-            GeometryQuery::EdgeAnalyticDatum(id) => id,
-            GeometryQuery::ShapeLocalTolerance(id) => id,
-        };
+        // Fall back to generic handle-only map. `primary_handle` is the same
+        // handle-extraction table this match used to inline (task #6471
+        // factored it out so the `fail_after_n_dispatches` gate above shares
+        // it rather than duplicating the arms).
+        let handle_id = primary_handle(query);
 
         self.queries
-            .get(handle_id)
+            .get(&handle_id)
             .cloned()
             .ok_or_else(|| QueryError::QueryFailed(format!("no mock result for {:?}", handle_id)))
     }
@@ -2164,6 +2329,48 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
         self.captured.lock().unwrap().push(problem.clone());
         self.inner.solve(problem)
+    }
+}
+
+/// A [`ContainmentQuery`] that answers every query with a pre-programmed
+/// `Option<bool>`, ignoring the region and point it is handed.
+///
+/// Requires the `containment-doubles` feature (which is what supplies
+/// `reify-expr`; `eval-helpers` includes it).
+///
+/// The trivial stub for tests that do not exercise real `restrict`/`sample`
+/// containment resolution but must still supply the capability: constructing
+/// it needs no `Engine` and no geometry kernel.
+///
+/// One parameterized double rather than a family of zero-field ones (a struct
+/// per answer): the answers a `ContainmentQuery` can give are exactly the three
+/// inhabitants of `result`, so a test needing a different answer sets the field
+/// instead of adding another struct here.
+///
+/// Choose `result` by the semantics [`ContainmentQuery`] documents for its
+/// return value — the three are NOT interchangeable, even where two of them
+/// produce the same observable `Value`:
+/// - `Some(true)` — the point is inside the region.
+/// - `Some(false)` — the point is strictly outside.
+/// - `None` — containment is *indeterminate* (non-geometry region, malformed
+///   point, kernel error). This yields `Value::Undef`, the same value
+///   `Some(false)` yields, but for a different reason — so a test that means
+///   "outside" must say `Some(false)`, not `None`.
+///
+/// `crates/reify-expr/tests/field_op_dispatch_tests.rs` imports this double
+/// directly (task #6322, follow-up to #6216) rather than hand-rolling its
+/// own copy — see the `reify-expr` entry in this crate's Cargo.toml for the
+/// measured reason the `containment-doubles`/`eval-helpers` split exists.
+#[cfg(feature = "containment-doubles")]
+pub struct MockContainmentQuery {
+    /// The answer returned for every `(region, point)` pair.
+    pub result: Option<bool>,
+}
+
+#[cfg(feature = "containment-doubles")]
+impl ContainmentQuery for MockContainmentQuery {
+    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+        self.result
     }
 }
 
@@ -3135,7 +3342,7 @@ mod tests {
             .execute(&GeometryOp::Draft {
                 target: target.id,
                 faces: vec![],
-                angle: Value::Real(0.05),
+                angle: Value::angle(0.05),
                 plane: plane.id,
             })
             .unwrap();
@@ -3150,7 +3357,15 @@ mod tests {
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert!(faces.is_empty(), "expected empty faces for back-compat draft");
-                assert_eq!(*angle, Value::Real(0.05));
+                assert_eq!(
+                    *angle,
+                    Value::angle(0.05),
+                    "Draft fixtures are retyped to ANGLE ahead of δ's (5780) draft \
+                     gate — task 5777. Production's draft path is still an ungated \
+                     raw-Value passthrough (`let angle = eval_arg(\"angle\")?` in \
+                     reify-eval's modify_draft), so for a bare .ri literal it still \
+                     emits Value::Real today"
+                );
                 assert_eq!(*plane, GeometryHandleId(2));
             }
             other => panic!("expected Draft, got {:?}", other),
@@ -3486,6 +3701,212 @@ mod tests {
 
         let vol = kernel.query(&GeometryQuery::Volume(id)).unwrap();
         assert_eq!(vol, mm3(1000.0)); // typed wins
+    }
+
+    // Task #6471 step-2: pin the DOCUMENTED precedence of the coarse
+    // `fail_after_n_dispatches` gate relative to the per-query-type maps.
+    // Full chain: `typed_query_errors` -> gate -> `typed_queries` ->
+    // OwnerBody special-case -> generic `queries` fallback.
+
+    #[test]
+    fn mock_fail_after_n_dispatches_overrides_seeded_success() {
+        // The gate must fire for a handle past the ceiling even when
+        // `with_volume_result` seeded a success for it — `with_*_result`
+        // writes to `typed_queries`, which is the ordinary seeding path, so
+        // if that shadowed the gate the gate would be near-inert in practice.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(5), Value::Real(1.0))
+            .fail_after_n_dispatches(2);
+
+        let result = kernel.query(&GeometryQuery::Volume(GeometryHandleId(5)));
+        assert!(
+            result.is_err(),
+            "handle 5 is past ceiling 2 — the gate must win over the seeded \
+             typed_queries success, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn mock_fail_after_n_dispatches_leaves_handles_at_or_below_ceiling_seeded() {
+        // Guard against over-correction: the gate must not fail everything.
+        // Handles at/below the ceiling keep returning their seeded value.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(1), mm3(1000.0))
+            .with_volume_result(GeometryHandleId(2), mm3(2000.0))
+            .fail_after_n_dispatches(2);
+
+        let below = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .expect("handle 1 is below ceiling 2 — seeded success must survive");
+        assert_eq!(below, mm3(1000.0));
+
+        let at_ceiling = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(2)))
+            .expect("handle 2 is AT ceiling 2 — seeded success must survive");
+        assert_eq!(at_ceiling, mm3(2000.0));
+    }
+
+    #[test]
+    fn mock_typed_query_error_overrides_fail_after_n_dispatches() {
+        // `typed_query_errors` stays the highest-precedence knob: a handle
+        // below the ceiling seeded via `with_volume_error` returns that
+        // SPECIFIC error, not the gate's generic message. Tests match on the
+        // specific diagnostic text, so the coarse gate must not replace it.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_error(
+                GeometryHandleId(1),
+                QueryError::QueryFailed("deliberate volume failure".to_string()),
+            )
+            .fail_after_n_dispatches(2);
+
+        let err = kernel
+            .query(&GeometryQuery::Volume(GeometryHandleId(1)))
+            .expect_err("with_volume_error must make this handle fail");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(
+                msg, "deliberate volume failure",
+                "the specific seeded error must win over the gate's generic message"
+            ),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+    }
+
+    // Task #6471 amendment: `with_centroid_error` / `with_inertia_tensor_error`
+    // shipped alongside the tested `with_volume_error` with no coverage of
+    // their own. `with_inertia_tensor_error` in particular bit-keys on the
+    // density, so a caller whose density is not bits-equal to the queried one
+    // gets a silent HashMap miss instead of the seeded failure — pin that.
+
+    #[test]
+    fn mock_with_centroid_error_fails_that_handle_and_overrides_seeded_success() {
+        let failing = GeometryHandleId(1);
+        let ok = GeometryHandleId(2);
+        let centroid = Value::String("{\"x\":0,\"y\":0,\"z\":0}".to_string());
+
+        let kernel = MockGeometryKernel::new()
+            // Same handle seeded BOTH ways: the error must outrank the success,
+            // matching `typed_query_errors`' documented top precedence.
+            .with_centroid_result(failing, centroid.clone())
+            .with_centroid_error(
+                failing,
+                QueryError::QueryFailed("deliberate centroid failure".to_string()),
+            )
+            .with_centroid_result(ok, centroid.clone());
+
+        let err = kernel
+            .query(&GeometryQuery::Centroid(failing))
+            .expect_err("with_centroid_error must make this handle fail");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(
+                msg, "deliberate centroid failure",
+                "the seeded error must win over the same handle's seeded success"
+            ),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+
+        // Scoping: the seeding is per-handle, not global.
+        let unaffected = kernel
+            .query(&GeometryQuery::Centroid(ok))
+            .expect("handle 2 was never seeded to fail");
+        assert_eq!(unaffected, centroid);
+
+        // Scoping: it is also per-QUERY-TYPE — a Volume query on the failing
+        // handle is untouched by a Centroid error.
+        assert!(
+            kernel.query(&GeometryQuery::Volume(failing)).is_err(),
+            "Volume is unseeded here, so it falls through to the generic \
+             \"no mock result\" miss rather than the centroid error"
+        );
+    }
+
+    #[test]
+    fn mock_with_inertia_tensor_error_hits_only_the_bits_matching_density() {
+        let id = GeometryHandleId(1);
+        let tensor = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+
+        let kernel = MockGeometryKernel::new()
+            // Success seeded at BOTH densities; failure seeded at 7850.0 only.
+            .with_inertia_tensor_result(id, 7850.0, tensor.clone())
+            .with_inertia_tensor_result(id, 2700.0, tensor.clone())
+            .with_inertia_tensor_error(
+                id,
+                7850.0,
+                QueryError::QueryFailed("deliberate inertia failure".to_string()),
+            );
+
+        let err = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 7850.0,
+            })
+            .expect_err("bits-equal density must hit the seeded error");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(msg, "deliberate inertia failure"),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+
+        // A DIFFERENT density is a different key, so it misses the seeded
+        // error entirely and resolves to its own seeded success. This is the
+        // silent-miss failure mode a caller hits when the density they seed
+        // is not the one the query is issued with.
+        let other_density = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 2700.0,
+            })
+            .expect("density 2700.0 was never seeded to fail");
+        assert_eq!(
+            other_density, tensor,
+            "the error is keyed on (handle, density_bits) — 2700.0 must not \
+             inherit 7850.0's failure"
+        );
+    }
+
+    #[test]
+    fn mock_with_inertia_tensor_error_canonicalizes_signed_zero_density() {
+        // Mirrors `mock_with_inertia_tensor_result_canonicalizes_signed_zero_density`:
+        // both directions go through `density_bits`, so ±0.0 share one key.
+        let id = GeometryHandleId(1);
+
+        // The seeded payloads are matched exactly: a `query` that MISSES the
+        // seeded key still errors, via the generic fallback
+        // (`no mock result for ...`), so `.is_err()` alone would pass whether
+        // or not ±0.0 canonicalize to one key.
+        let kernel = MockGeometryKernel::new().with_inertia_tensor_error(
+            id,
+            -0.0_f64,
+            QueryError::QueryFailed("seeded at -0.0".to_string()),
+        );
+        let err = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 0.0_f64,
+            })
+            .expect_err("insert -0.0 / query +0.0 should hit the same key");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(msg, "seeded at -0.0"),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+
+        let kernel = MockGeometryKernel::new().with_inertia_tensor_error(
+            id,
+            0.0_f64,
+            QueryError::QueryFailed("seeded at +0.0".to_string()),
+        );
+        let err = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: -0.0_f64,
+            })
+            .expect_err("insert +0.0 / query -0.0 should hit the same key");
+        match err {
+            QueryError::QueryFailed(msg) => assert_eq!(msg, "seeded at +0.0"),
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
     }
 
     // step-15: integration test — multi-op workflow with queries + inspection
@@ -4613,4 +5034,16 @@ mod tests {
             "extract_vertices must not increment is_orientable"
         );
     }
+
+    // No unit test pins `MockContainmentQuery` here: one could only restate its
+    // own one-line body (`self.result`), and sampled argument pairs cannot
+    // establish the "for every (region, point)" claim anyway. The double is
+    // already load-bearing in the consuming tests, which fail loudly on any
+    // behaviour change — reify-eval's
+    // `cell_eval_ctx_containment_resolves_via_wired_query` only reaches
+    // `Value::Real(42.0)` because its `result: Some(true)` instance answers
+    // inside, and the determinacy assertions in the same module fail if a
+    // `result: None` instance ever starts resolving. Those tests also perform
+    // the `&dyn ContainmentQuery` coercion, so it needs no separate guard here
+    // either.
 }

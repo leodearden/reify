@@ -177,7 +177,7 @@ fn generic_enum_valid_payload_types_emit_no_diagnostics() {
 fn generic_enum_bare_scalar_payload_emits_only_bare_scalar_type() {
     // The bare type name is injected via `format!` rather than written as a
     // literal `: Scalar` substring in this file: the corpus-cleanliness guard
-    // (crates/reify-cli/tests/corpus_no_bare_scalar.rs) bans exactly that
+    // (crates/reify-cli/tests/harness_cli/corpus_no_bare_scalar.rs) bans exactly that
     // pattern anywhere under `crates/**/*.rs` outside its two parse-only
     // carve-outs, which this file isn't. This fixture is an intentional
     // negative case — the point is that the compiler still rejects bare

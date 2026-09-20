@@ -66,7 +66,7 @@ let within_yield = peak_stress < yield_limit     // Bool
 validated by
 [`crates/reify-compiler/tests/multi_load_bracket_example_tests.rs`](../../crates/reify-compiler/tests/multi_load_bracket_example_tests.rs)
 and
-[`crates/reify-eval/tests/multi_load_bracket_e2e.rs`](../../crates/reify-eval/tests/multi_load_bracket_e2e.rs).)*
+[`crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_bracket_e2e.rs`](../../crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_bracket_e2e.rs).)*
 
 ### `solve_load_cases` signature
 
@@ -168,7 +168,7 @@ Returns the name of the case whose `scalar_fn`-derived field has the largest glo
 let critical_case = worst_case(results, |r| r)
 ```
 
-This idiom is exercised in [`crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`](../../crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs).
+This idiom is exercised in [`crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_case_stdlib_smoke.rs`](../../crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_case_stdlib_smoke.rs).
 
 ---
 

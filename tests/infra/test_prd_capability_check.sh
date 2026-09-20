@@ -14,14 +14,20 @@
 # that test; this preflight exists so the log SAYS SO, because the original
 # failure's real cost was attribution, not the red itself.
 #
-# UNLIKE tests/infra/test_prd_gate_corpus.sh, whose identical-looking guard
-# early-exits, this one deliberately does NOT gate: the corpus gate's entire
-# payload is the probe run, whereas here exactly ONE of the suite's unit tests
-# needs the grammar substrate and every other one is hermetic (count left
-# unstated on purpose — it moves).  Skipping the script would trade a spurious
-# RED for a silent whole-suite coverage hole in exactly the sandboxed roles this
-# task exists to serve.  The SKIP line is informational; both asserts below
-# still run.
+# CONTRAST WITH THE prd_gate WRAPPERS (test_prd_gate_corpus.sh,
+# test_prd_gate_compiler_type_hygiene.sh).  Since task 5897 those two consult
+# the SAME preflight through scripts/prd-gate-substrate-guard.sh, and neither
+# early-exits either: an unusable substrate drops only their GRAMMAR-kind rows
+# and their check-kind rows still run and are still asserted, behind a loud
+# banner naming what was dropped.  Here the preflight goes one step further and
+# is purely INFORMATIONAL — it gates nothing at all — because exactly ONE of
+# this suite's unit tests needs the grammar substrate and every other one is
+# hermetic (count left unstated on purpose — it moves), so the suite self-skips
+# that single test from the inside.  Same house rule in all three, at three
+# granularities: a missing toolchain costs you the rows that needed it and
+# nothing more.  Skipping a whole script would trade a spurious RED for a silent
+# coverage hole in exactly the sandboxed roles this work exists to serve.  The
+# SKIP line below is informational; both asserts still run.
 #
 # The preflight below runs at most one real tree-sitter subprocess, and a
 # time-bounded one (_SUBSTRATE_PROBE_TIMEOUT_S in prd-capability-check.py), so a

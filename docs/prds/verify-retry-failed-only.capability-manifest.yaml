@@ -135,7 +135,9 @@ tasks:
   capabilities:
   - name: merge-request-retry-failed-only-arg-and-threading
     binding: capability→producer (dark_factory) — verified_green:bool=False caller-vouched-bool
-      precedent server.py:1099; consumed by ε (operator resubmit) + D2
+      precedent server.py:1099 (DF anchor author-verified at decompose time 2026-07-19;
+      dated evidence, not a live breadcrumb — grep verified_green); consumed by ε
+      (operator resubmit) + D2
     verdict: PASS
     delivered_check:
       kind: manual
@@ -191,7 +193,9 @@ tasks:
   capabilities:
   - name: m1-autonomous-retry-category-gated-and-budgeted
     binding: capability→producer (dark_factory) — M1 bounded infra-transient retry
-      seam merge_queue.py:1787-1902, CategoryPolicy.is_infra_transient; gated on dark_factory:2821
+      seam merge_queue.py:1787-1902, CategoryPolicy.is_infra_transient (DF anchor
+      author-verified at decompose time 2026-07-19; dated evidence, not a live breadcrumb
+      — grep CategoryPolicy.is_infra_transient); gated on dark_factory:2821
       (done); INV-4 (deterministic red never enters retry path); D2 upstream
     verdict: PASS
     delivered_check:
@@ -205,8 +209,9 @@ tasks:
   capabilities:
   - name: shadow-baseline-partial-map-merge
     binding: capability→producer (dark_factory) — on_result callback merge_queue.py:1556,1583-1587
-      → merge_shadow.py; INV-2 (merge attempt-0 ∪ retry before storage ⇒ no phantom
-      cold-shadow divergence); D2 upstream
+      (DF anchor author-verified at decompose time 2026-07-19; dated evidence, not a live
+      breadcrumb — grep on_result) → merge_shadow.py; INV-2 (merge attempt-0 ∪ retry
+      before storage ⇒ no phantom cold-shadow divergence); D2 upstream
     verdict: PASS
     delivered_check:
       kind: manual

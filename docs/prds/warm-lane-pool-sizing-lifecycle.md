@@ -3,6 +3,7 @@
 **Status:** active · version-agnostic infrastructure foundation · authored 2026-07-11 · durable-fix layer for the recurring warm-lane ENOSPC wedge (2026-07-10 esc-5078-2). Complements — does **not** duplicate — the in-flight acute fixes **task 5167** (terminal-task rebase-orphan lane reclaim) and **task 5168** (GC free-before-reseed ENOSPC deadlock), and the landed `warm-lane-pool-space-safety.md` PRD.
 **Source:** live lane/GC telemetry audit (2026-07-11, this PRD's G6 investigation) + spawn brief `warm-lane-pool-sizing-audit.md`. Memory: `project_warm_lane_accretion_falsepreserve_rca`.
 **Scope guard (inherited, load-bearing):** warmth never narrows the gate (verify-scope-contract C2). This PRD bounds the pool's *disk footprint* and makes accretion *observable + admission-gated*; it never trades verify coverage.
+**Code anchors:** any `path:line` below is dated evidence from the 2026-07-11 audit, not a live breadcrumb — do not re-anchor it; grep the symbol or source literal named beside it to find the code today.
 
 ---
 

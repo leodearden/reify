@@ -143,7 +143,7 @@ fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
     // Ok(Value::String(json-point3)) for a valid planar face handle.
     //
     // Numeric pin (x≈0, y≈0, z≈1 for the +Z face within 1e-9) is in step-1:
-    //   reify-kernel-occt/tests/face_differential_integration.rs::
+    //   reify-kernel-occt/tests/harness_occt/face_differential_integration.rs::
     //     geometry_query_face_normal_at_on_top_face_of_box_encodes_z_normal
     for &face in &faces {
         let result = kernel.query(&GeometryQuery::FaceNormalAt {

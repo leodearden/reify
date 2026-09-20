@@ -204,6 +204,33 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
             if n != ncols {
                 return Value::Undef;
             }
+            // INV-FEA-3 / task #6376 — FAIL CLOSED on non-finite INPUT.
+            // The sibling "complex_eigenvalues" arm below carries the SAME
+            // one-line input guard. It also keeps an OUTPUT guard, but that is
+            // a different check answering a different question (it protects
+            // the List<Complex<Q>> contract) — do not read it as covering the
+            // input hazard.
+            //
+            // On the INPUT rather than the eigenvalue output, deliberately:
+            //   - it covers the symmetric AND general branches in one place;
+            //   - nalgebra is never handed a non-finite matrix. That is not
+            //     merely tidy: under nalgebra 0.34.2,
+            //     `DMatrix::complex_eigenvalues()` on a NaN-bearing matrix
+            //     DOES NOT TERMINATE (`Schur::do_decompose` runs with
+            //     `max_niter = 0` and its convergence comparisons are never
+            //     true on NaN), so the general branch's call at the bottom of
+            //     this arm would hang the evaluator rather than return;
+            //   - it closes the ordering hazard where `sanitize_value` runs
+            //     per element AFTER the sort, turning a NaN spectrum into
+            //     List([Undef, ...]) instead of a single Undef.
+            // It cannot live upstream: `rank2_components` validates shape and
+            // dimension only, and `Value::as_f64` passes NaN/±Inf straight
+            // through. Scoped to THIS arm — pushing it into
+            // `matrix_components_f64`/`rank2_components` would silently change
+            // determinant/inverse/transpose/outer/trace too.
+            if data.iter().any(|x| !x.is_finite()) {
+                return Value::Undef;
+            }
             let make_val = |x: f64| -> Value {
                 if dim == DimensionVector::DIMENSIONLESS {
                     sanitize_value(Value::Real(x))
@@ -220,7 +247,7 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
             if is_symmetric {
                 // Symmetric tridiagonalization + QR: guaranteed-real, exact to ~1e-14.
                 let mut eigs: Vec<f64> = m.symmetric_eigenvalues().iter().copied().collect();
-                eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                eigs.sort_by(|a, b| a.total_cmp(b));
                 Value::List(eigs.into_iter().map(make_val).collect())
             } else {
                 // General path: real-input Schur → complex eigenvalues.
@@ -235,8 +262,7 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                 if complex_eigs.iter().all(|c| c.im.abs() <= 1e-9 * (c.re.hypot(c.im) + 1.0)) {
                     // Project to reals: imaginary parts are numerical noise.
                     let mut real_eigs: Vec<f64> = complex_eigs.iter().map(|c| c.re).collect();
-                    real_eigs
-                        .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    real_eigs.sort_by(|a, b| a.total_cmp(b));
                     Value::List(real_eigs.into_iter().map(make_val).collect())
                 } else {
                     // Genuinely complex spectrum: documented Undef (not silent).
@@ -253,11 +279,28 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
             if n != ncols {
                 return Value::Undef;
             }
+            // INV-FEA-3 / task #6376 — FAIL CLOSED on non-finite INPUT, before
+            // nalgebra sees it. Identical idiom and identical result (Undef)
+            // to the "eigenvalues" arm above.
+            //
+            // The output guard below CANNOT stand in for this one: under
+            // nalgebra 0.34.2, `complex_eigenvalues()` on a NaN-bearing matrix
+            // never returns (`Schur::do_decompose` with `max_niter = 0`; NaN
+            // convergence tests never fire), so the output guard is
+            // unreachable and the evaluator hangs instead of degrading.
+            // Measured on this tree: without this guard,
+            // `complex_eigenvalues_non_finite_entry_returns_undef` is killed
+            // by timeout rather than failing.
+            if data.iter().any(|x| !x.is_finite()) {
+                return Value::Undef;
+            }
             let m = DMatrix::from_row_slice(n, n, &data);
             let raw_eigs: Vec<Complex<f64>> = m.complex_eigenvalues().iter().copied().collect();
-            // Eigenvalues of a finite real matrix are always finite; guard
-            // defensively so the returned List never mixes Complex and Undef
-            // variants (which would violate the List<Complex<Q>> contract).
+            // Eigenvalues of a finite real matrix are always finite, and the
+            // input guard above has already established finiteness; this stays
+            // as defense-in-depth so the returned List never mixes Complex and
+            // Undef variants (which would violate the List<Complex<Q>>
+            // contract).
             if raw_eigs.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
                 return Value::Undef;
             }
@@ -280,8 +323,8 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                     _ => (f64::INFINITY, f64::INFINITY),
                 };
                 ar.partial_cmp(&br)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(ai.partial_cmp(&bi).unwrap_or(std::cmp::Ordering::Equal))
+                    .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — never NaN: this arm early-returns Undef above on any non-finite re/im, and the non-Complex destructure fallback is (f64::INFINITY, f64::INFINITY), which is totally ordered
+                    .then(ai.partial_cmp(&bi).unwrap_or(std::cmp::Ordering::Equal)) // nan-safe:allow — same early-return and same totally-ordered fallback as the line above
             });
             Value::List(items)
         }),
@@ -780,6 +823,93 @@ mod tests {
             assert!((eigs[0] - 1.0).abs() < 1e-10, "eig0={}", eigs[0]);
             assert!((eigs[1] - 2.0).abs() < 1e-10, "eig1={}", eigs[1]);
             assert!((eigs[2] - 4.0).abs() < 1e-10, "eig2={}", eigs[2]);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    /// NaN on the DIAGONAL of an otherwise-symmetric matrix must yield
+    /// `Value::Undef` itself, not `List([Undef, Undef, Undef])`.
+    ///
+    /// This is the exact hole: the symmetry test in the `eigenvalues` arm
+    /// compares only strict off-diagonal pairs (`(i+1..n)`), so the DIAGONAL
+    /// is never inspected and a NaN there reaches the symmetric branch's sort.
+    /// `sanitize_value` runs AFTER that sort, per element, which is what
+    /// produces the list-of-Undef instead of a single Undef.
+    ///
+    /// RED before the input guard lands (INV-FEA-3, task #6376).
+    #[test]
+    fn eigenvalues_nan_on_diagonal_symmetric_returns_undef() {
+        let m = make_matrix(&[
+            &[f64::NAN, 1.0, 2.0],
+            &[1.0, f64::NAN, 3.0],
+            &[2.0, 3.0, f64::NAN],
+        ]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        assert!(
+            result.is_undef(),
+            "eigenvalues(NaN-diagonal symmetric matrix) must be Undef itself, \
+             not a List, got {:?}",
+            result
+        );
+    }
+
+    /// ±Inf entries must also fail closed, on BOTH branches.
+    ///
+    /// (b) is the adjacent narrow hole recorded in decision 9: the general
+    /// branch's classification predicate reads
+    /// `|im| <= 1e-9*(re.hypot(im) + 1.0)`, and `f64::NAN.hypot(f64::INFINITY)`
+    /// is `inf`, so `inf <= inf` is true and a NaN real part can reach the
+    /// sort. An INPUT guard closes it regardless of whether nalgebra can
+    /// actually emit that pair.
+    ///
+    /// RED before the input guard lands (INV-FEA-3, task #6376).
+    #[test]
+    fn eigenvalues_non_finite_entry_returns_undef() {
+        // (a) symmetric branch: +inf on the diagonal.
+        let sym = make_matrix(&[
+            &[f64::INFINITY, 1.0, 0.0],
+            &[1.0, 2.0, 0.0],
+            &[0.0, 0.0, 3.0],
+        ]);
+        let sym_result = eval_builtin("eigenvalues", &[sym]);
+        assert!(
+            sym_result.is_undef(),
+            "eigenvalues(symmetric matrix with +inf) must be Undef, got {:?}",
+            sym_result
+        );
+
+        // (b) general branch: NON-symmetric (data[0*3+1] != data[1*3+0])
+        // carrying +inf.
+        let general = make_matrix(&[
+            &[1.0, 2.0, 0.0],
+            &[7.0, f64::INFINITY, 0.0],
+            &[0.0, 0.0, 3.0],
+        ]);
+        let general_result = eval_builtin("eigenvalues", &[general]);
+        assert!(
+            general_result.is_undef(),
+            "eigenvalues(non-symmetric matrix with +inf) must be Undef, got {:?}",
+            general_result
+        );
+    }
+
+    /// Positive control: the input guard must not over-reject the happy path.
+    ///
+    /// Reuses the input from `eigenvalues_symmetric_3x3`; asserts the result
+    /// is still a `List` of the expected length in ascending order.
+    #[test]
+    fn eigenvalues_finite_symmetric_still_returns_sorted_list() {
+        let m = make_matrix(&[&[2.0, 1.0, 0.0], &[1.0, 3.0, 1.0], &[0.0, 1.0, 2.0]]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 3);
+            let eigs: Vec<f64> = items.iter().map(|v| v.as_f64().unwrap()).collect();
+            assert!(
+                eigs[0] <= eigs[1] && eigs[1] <= eigs[2],
+                "eigenvalues must be ascending, got {:?}",
+                eigs
+            );
         } else {
             panic!("expected List, got {:?}", result);
         }
@@ -1708,6 +1838,49 @@ mod tests {
     #[test]
     fn complex_eigenvalues_non_matrix_returns_undef() {
         assert!(eval_builtin("complex_eigenvalues", &[Value::Real(5.0)]).is_undef());
+    }
+
+    /// (e) Guard: a non-finite ENTRY → Undef, on the `complex_eigenvalues`
+    /// builtin itself (INV-FEA-3, task #6376 amendment).
+    ///
+    /// The arm's pre-existing guard inspects the OUTPUT of
+    /// `DMatrix::complex_eigenvalues()`, which is unreachable for a NaN input:
+    /// under nalgebra 0.34.2 that call DOES NOT TERMINATE on a NaN-bearing
+    /// matrix (`Schur::do_decompose` runs with `max_niter = 0` and its
+    /// convergence comparisons are never true on NaN), so the evaluator hangs
+    /// instead of returning `Undef`. Only the INPUT guard closes it.
+    ///
+    /// NOTE FOR FUTURE EDITORS: deleting that input guard makes this test HANG
+    /// rather than fail — a timeout/killed run here means the guard went
+    /// missing, not that the harness is sick. The same is true of
+    /// `eigenvalues_non_finite_entry_returns_undef`'s general-branch leg.
+    #[test]
+    fn complex_eigenvalues_non_finite_entry_returns_undef() {
+        // (a) NaN — the hanging case.
+        let nan = make_matrix(&[
+            &[f64::NAN, 1.0, 2.0],
+            &[3.0, 4.0, 5.0],
+            &[6.0, 7.0, 8.0],
+        ]);
+        let nan_result = eval_builtin("complex_eigenvalues", &[nan]);
+        assert!(
+            nan_result.is_undef(),
+            "complex_eigenvalues(NaN-bearing matrix) must be Undef, got {:?}",
+            nan_result
+        );
+
+        // (b) ±Inf — same fail-closed contract.
+        let inf = make_matrix(&[
+            &[1.0, 2.0, 0.0],
+            &[7.0, f64::NEG_INFINITY, 0.0],
+            &[0.0, 0.0, 3.0],
+        ]);
+        let inf_result = eval_builtin("complex_eigenvalues", &[inf]);
+        assert!(
+            inf_result.is_undef(),
+            "complex_eigenvalues(-inf-bearing matrix) must be Undef, got {:?}",
+            inf_result
+        );
     }
 
     // --- list_matrix_components_f64 characterization tests (step-1 RED / step-2 GREEN) ---

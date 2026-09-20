@@ -3,6 +3,11 @@
 # Rewritten 2026-07-19 from the initial hand-rolled shape (which the commit_planning stamper's
 # strict schema would reject — caught during the sibling merge-gate-riders decompose).
 # task_id values hand-stamped (batch flipped before this rewrite).
+# DATED EVIDENCE, 2026-07-19: the path:line anchors in the `binding` strings below record
+# where each symbol stood at that rewrite. They are provenance, not live breadcrumbs; do not
+# re-anchor them, grep the symbol instead. No DF commit SHA is claimed — these anchors were
+# never re-located against one. (`binding` is free text, never machine-parsed; the enforced
+# artifact is `delivered_check`, which is pattern-only by contract.)
 # Program record: milestone 5254; folded-into-existing capabilities (W2a/W2c→dark_factory:2821,
 # W3b→dark_factory:2822, trivial-pass red-main precheck→dark_factory:2823, manifest-row
 # gate→reify:5252) and the 2026-07-19 operator config batch (verify_use_cgroup_scope,
@@ -123,7 +128,7 @@ tasks:
     title: "DF: extend ENV_TRANSIENT broken-worktree patterns to _merge-verify collateral shapes"
     capabilities:
       - name: "collateral-shapes-classified-env-transient"
-        binding: "capability→producer — DF-side (verify_classify.py:160-163); replay corpus archived (reify data/verify-logs/{5164,5071}); hard dep on dark_factory:2821 (wired)"
+        binding: "capability→producer — DF-side (`_VERIFY_ENV_BROKEN_RE`, verify_classify.py:160-163); replay corpus archived (reify data/verify-logs/{5164,5071}); hard dep on dark_factory:2821 (wired)"
         verdict: PASS
         delivered_check:
           kind: manual

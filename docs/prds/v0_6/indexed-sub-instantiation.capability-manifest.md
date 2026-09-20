@@ -41,10 +41,12 @@ Evidence fixtures committed beside this manifest at
 `single_sub_pose_resolves.ri`, `posed_subs_distance_query_unresolvable.ri`,
 `self_collection_count_redirect_rejected.ri`, `collection_expr_index_resolves.ri`).
 Two pre-existing defects surfaced by the run: the tree-sitter corpus red on
-main (`imaginary_literal.txt`, 218/219) is NEW — filed as independent task
-**#5492** (not part of this batch); the `orient_identity` zero-arg
-return-type silent-default-Real warning was ALREADY tracked — **#5344**
-(pending) with follow-up **#5380** — no duplicate filed.
+main at decompose time (2026-07-25; `imaginary_literal.txt`, 218/219) was
+NEW — filed as independent task **#5492** (not part of this batch), since
+fixed — corpus green as of re-measurement 2026-09-03: 246/246; the
+`orient_identity` zero-arg return-type silent-default-Real warning was
+ALREADY tracked — **#5344** (pending) with follow-up **#5380** — no
+duplicate filed.
 Grammar gate: the ONE novel production (indexer clause) is α's deliverable;
 its fixture FAILS to parse today by design (probe #4) — `grammar_confirmed=false`
 on α only, true elsewhere (all other surfaces parse today: probes #5–#7 contexts).
@@ -122,12 +124,13 @@ diagnostics carry codes by construction (§3.6).
   the target fixture reaches 0 ERROR nodes from the indexer delta alone).
   Committed baselines: `tests/prd-gate/fixtures/indexed_sub_{inst,coll,spec}_arm_baseline.ri`,
   `indexed_sub_forall_range_baseline.ri` (all re-verified exit 0 / 0 ERROR,
-  2026-07-25). **`tree-sitter test` corpus is NOT green on main** (218/219;
-  pre-existing, sub-arm-UNRELATED failure in `test/corpus/imaginary_literal.txt`
-  — filed as independent task #5492) and the corpus is not CI-run — α's
-  regression signal is therefore the four committed baselines + the
-  reify-syntax parser suites (incl.
-  `crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs`,
+  2026-07-25). **At decompose time, `tree-sitter test` corpus was NOT green
+  on main** (218/219; pre-existing, sub-arm-UNRELATED failure in
+  `test/corpus/imaginary_literal.txt` — filed as independent task #5492,
+  since fixed; see the evidence-fixtures paragraph above) and the corpus is
+  not CI-run — α's regression signal is therefore the four committed
+  baselines + the reify-syntax parser suites (incl.
+  `crates/reify-syntax/tests/harness_syntax/sub_decl_specialization_body_parser_tests.rs`,
   the List-disambiguation pins), NOT blanket `tree-sitter test` exit 0.
 - `at-clause-grammar-substrate` → PASS. The `at <pose>` clause exists on
   all three sub arms (task 3899 lineage); the indexer rides the existing

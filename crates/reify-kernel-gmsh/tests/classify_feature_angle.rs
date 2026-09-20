@@ -1,0 +1,165 @@
+//! Root-cause guard: `classify_surfaces` must actually separate a box's
+//! planar faces into distinct B-rep entities (#6200).
+//!
+//! Only compiled / run when `cfg(has_gmsh)` is set by `build.rs`. On stub
+//! builds this file is empty and the test binary contains zero tests —
+//! preserving the all-OK posture of `cargo test -p reify-kernel-gmsh` on
+//! hosts without libgmsh.
+//!
+//! # Why a census guard, and not just the fill fraction
+//!
+//! `tests/volume_fill_fraction.rs` pins the SYMPTOM of #6200 (an incomplete
+//! tetrahedralization). This file pins its MECHANISM, so a future regression
+//! fails with a message naming the actual cause rather than a bare volume
+//! mismatch.
+//!
+//! The defect existed because a code comment asserted a B-rep property the
+//! code did not produce — `kernel_real.rs` claimed a π/2 threshold "splits cube
+//! faces into separate B-rep surface entities", while gmsh in fact logged
+//! `Found 2 model surfaces` / `Found 1 model curves` and fell back to a purely
+//! topological split (`Level 0 partition with 12 triangles split in 2 parts
+//! because poincare characteristic 2 is not 0`). Nothing tested the claim.
+//!
+//! This guard therefore imports the PRODUCTION angle constants rather than
+//! re-typing a literal. A test carrying its own copy of the angle would
+//! re-create exactly the gap that caused the bug: someone could change the
+//! production constant and the guard would keep passing against a stale
+//! literal. Importing makes it structurally undriftable.
+//!
+//! Measured entity census on a welded 8-vertex box (dim2 / dim1 / dim0):
+//! at a 90° feature angle 2 / 4 / 4; below 90°, 8 / 14 / 8. gmsh
+//! over-decomposes (8 surfaces for 6 planar faces), which is why the
+//! assertions are lower bounds rather than exact pins — the property that
+//! matters is that the faces are SEPARATED at all.
+
+#![cfg(has_gmsh)]
+
+use reify_kernel_gmsh::CLASSIFY_FEATURE_ANGLE;
+
+// The box fixture is shared with `tests/fill_metrics_tests.rs` and
+// `tests/volume_fill_fraction.rs` through `tests/common/mod.rs`: this guard and
+// the symptom guard must agree on what "a box" is, or one can go green against
+// geometry the other never meshes.
+//
+// `entity_census` is shared through the same module with
+// `tests/node_attachment_producer.rs` (#6830) — same reason, one dimension up:
+// the two files replayed the identical raw-FFI classify prelude and had to be
+// updated in lockstep. Only the prelude is shared; the assertions below are
+// this guard's own contract and stay here.
+mod common;
+use common::{entity_census, prismatic_box_mesh};
+
+/// The production feature angle must be strictly BELOW a box's 90° dihedral.
+///
+/// gmsh's sharp-edge test is strictly-greater-than, so a threshold equal to the
+/// dihedral angle never fires. This is the whole of #6200 in one assertion, and
+/// it is checked without touching gmsh at all.
+#[test]
+fn feature_angle_is_strictly_below_a_right_dihedral() {
+    // Both operands are `const`, so the comparison is compile-time foldable and
+    // a runtime `assert!` on it trips `clippy::assertions_on_constants`; the
+    // `const` block pins the relationship at compile time instead. That is
+    // strictly stronger here — a regression fails the build rather than waiting
+    // for this test to be RUN on a `has_gmsh` host. The message loses the
+    // interpolated angle (a const panic takes a literal only); the offending
+    // value is `kernel_real.rs`'s `CLASSIFY_FEATURE_ANGLE`.
+    const {
+        assert!(
+            CLASSIFY_FEATURE_ANGLE < std::f64::consts::FRAC_PI_2,
+            "a box's dihedral angle is EXACTLY π/2 and gmsh's sharp-edge test is \
+             strictly-greater-than, so any CLASSIFY_FEATURE_ANGLE >= π/2 fails to \
+             register a box's own edges as sharp (#6200)"
+        )
+    };
+}
+
+/// A box's six planar faces must be separated into distinct B-rep surfaces,
+/// its twelve edges into curves, and its eight corners into dim-0 entities.
+///
+/// Measured at the pre-#6200 90° angle: 2 surfaces / 4 curves / 4 corners —
+/// all three RED. Measured below 90°: 8 / 14 / 8.
+#[test]
+fn classify_separates_a_box_into_planar_brep_faces() {
+    let (n0, n1, n2) = entity_census(&prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6200_classify_census");
+
+    assert!(
+        n2 >= 6,
+        "classify_surfaces produced {n2} dim-2 entities for a box's 6 planar faces \
+         (census dim0/dim1/dim2 = {n0}/{n1}/{n2}). At a 90° feature angle this reads 2: \
+         gmsh registers none of the box's edges as sharp and falls back to a purely \
+         topological split, so create_geometry reparametrizes 2 non-planar patches \
+         instead of 6 planar faces and the region handed to HXT is not the full box (#6200)."
+    );
+    assert!(
+        n1 >= 12,
+        "classify_surfaces produced {n1} dim-1 entities for a box's 12 edges \
+         (census dim0/dim1/dim2 = {n0}/{n1}/{n2}). At a 90° feature angle this reads 4 (#6200)."
+    );
+    assert!(
+        n0 >= 8,
+        "classify_surfaces produced {n0} dim-0 entities for a box's 8 corners \
+         (census dim0/dim1/dim2 = {n0}/{n1}/{n2}). At a 90° feature angle this reads 4 — \
+         the same 'no corner (dim-0) entities' degeneracy already documented at \
+         mesh_boundary.rs and refine_volume.rs (#6200)."
+    );
+}
+
+/// The same census on the slender box the production path actually meshes,
+/// confirming the decomposition is not an artefact of cubic symmetry.
+#[test]
+fn classify_separates_a_slender_box_into_planar_brep_faces() {
+    let (n0, n1, n2) = entity_census(&prismatic_box_mesh(1.0, 0.1, 0.1), "reify_6200_classify_census");
+    assert!(
+        n2 >= 6 && n1 >= 12 && n0 >= 8,
+        "box 1.0x0.1x0.1 m: census dim0/dim1/dim2 = {n0}/{n1}/{n2}, expected at least \
+         8/12/6. A 10:1 box has the same exactly-90° dihedral angles as a cube, so it \
+         fails identically at a 90° feature angle (#6200)."
+    );
+}
+
+/// The shared census helper must be self-isolating: two back-to-back
+/// invocations on identical geometry, under DIFFERENT gmsh model names, must
+/// return the identical triple.
+///
+/// This is the precondition that makes ONE definition safe to share across two
+/// test binaries and three call sites. It pins two properties at once:
+///
+/// - **No accumulated gmsh state.** The helper's `ffi::clear()`-first /
+///   `ffi::clear()`-last discipline means invocation *n+1* sees a clean model
+///   database, so a census never depends on what ran before it.
+/// - **`model_name` is purely diagnostic.** `ffi::clear()` runs *before*
+///   `ffi::model_add`, wiping all models, so the name cannot reach the result —
+///   it only labels gmsh's own log output when a census test fails. Passing two
+///   different names and asserting one triple makes that a tested property
+///   rather than a comment.
+///
+/// It also proves the back-to-back call is deadlock-free: each invocation
+/// scopes its own `init::GMSH_LOCK` guard, which drops at return.
+///
+/// Provenance — MEASURED on this branch, not guessed. A scratch probe running
+/// exactly this double invocation returned `welded_a=(8,14,8)
+/// welded_b=(8,14,8)`. The `>= 8/12/6` floor is the same bound
+/// `classify_separates_a_box_into_planar_brep_faces` and
+/// `classify_separates_a_slender_box_into_planar_brep_faces` already assert
+/// (written there as `n2 >= 6 && n1 >= 12 && n0 >= 8`; the tuple order here is
+/// `(n0, n1, n2)` = vertices/curves/surfaces, hence 8/12/6).
+#[test]
+fn entity_census_is_isolated_across_invocations() {
+    let a = entity_census(&prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6830_census_a");
+    let b = entity_census(&prismatic_box_mesh(1.0, 1.0, 1.0), "reify_6830_census_b");
+
+    assert_eq!(
+        a, b,
+        "two censuses of identical geometry disagreed ({a:?} vs {b:?}). Either the helper \
+         leaks gmsh state across invocations (its leading ffi::clear() is not doing its job) \
+         or the diagnostic-only `model_name` argument is reaching the result — both break the \
+         precondition for sharing one census definition across test binaries."
+    );
+    assert!(
+        a.0 >= 8 && a.1 >= 12 && a.2 >= 6,
+        "census dim0/dim1/dim2 = {}/{}/{}, expected at least 8/12/6 for a welded unit cube. \
+         An isolated helper that returns a DEGENERATE census twice would satisfy the equality \
+         above, so this floor pins that both invocations actually classified the box (#6200).",
+        a.0, a.1, a.2
+    );
+}

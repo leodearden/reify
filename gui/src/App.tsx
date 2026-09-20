@@ -783,6 +783,16 @@ const App: Component = () => {
   // designViewportActive prop does not allocate a new array on every reactive pulse.
   const hasMeshes = createMemo(() => Object.keys(engineStore.state.meshes).length > 0);
 
+  // AutoResolvePanel mount predicate — DATA-gated, not `autoResolve.active`-gated,
+  // so a completed loop stays readable instead of vanishing when it lands.
+  //
+  // Deliberately a SINGLE accessor with TWO consumers: the side-panel
+  // `grid-template-rows` builder (which sizes this panel's track) and the
+  // `<Show>` that mounts it. Those two must agree exactly — a track/child
+  // mismatch shifts every subsequent child up a track and collapses chat into a
+  // 4px strip — so they share the expression rather than each restating it.
+  const hasAutoResolvePanel = createMemo(() => engineStore.state.autoResolve.iterations.length > 0);
+
   // Effective visibility memo: re-evaluates whenever explicit overrides or treeGeneration
   // changes.  treeGeneration is incremented by the effect above after setTree runs, which
   // guarantees that getAllEffective() sees the up-to-date nodeByPath on every call.
@@ -2181,7 +2191,7 @@ const App: Component = () => {
               class={styles.sidePanel}
               style={{ 'grid-template-rows': (() => {
                 const hasMech = mechanismStore.state.descriptors.length > 0;
-                const hasAR = engineStore.state.autoResolve.active;
+                const hasAR = hasAutoResolvePanel();
                 const hasChat = chatOpen();
                 const base = `${layoutStore.state.designTreeHeight}px 4px ${layoutStore.state.propertyHeight}px 4px`;
                 // Middle tracks: one `auto` per optional panel present (autoResolve then
@@ -2232,9 +2242,13 @@ const App: Component = () => {
                 onConstraintSelect={handleConstraintSelect}
                 onAskClaude={handleAskClaude}
               />
-              {/* AutoResolvePanel: auto-promotes when a param=auto loop is active,
-                  auto-restores (unmounts) when complete — no bookkeeping needed. */}
-              <Show when={engineStore.state.autoResolve.active}>
+              {/* AutoResolvePanel: promotes once a param=auto loop reports its
+                  FIRST iteration, and stays readable after the loop completes —
+                  a finished loop's result is exactly what the user wants to
+                  read. Cleared by the next loop's first iteration or by a
+                  full-state reload. Shares `hasAutoResolvePanel` with the
+                  grid-track builder above, which sizes this panel's track. */}
+              <Show when={hasAutoResolvePanel()}>
                 <AutoResolvePanel state={engineStore.state.autoResolve} />
               </Show>
               {/* SolverProgressOverlay: shows after >1s of in-flight CG solver

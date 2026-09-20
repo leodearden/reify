@@ -17,7 +17,7 @@
 //! Mirrors the harness pattern from `crates/reify-lsp/tests/shadowing_lsp_tests.rs`.
 //!
 //! PRD reference: docs/prds/phase-3-grammar-fiction-triage-log.md §B3.
-//! Compiler-side coverage: crates/reify-compiler/tests/specialization_scope_e2e_tests.rs.
+//! Compiler-side coverage: crates/reify-compiler/tests/harness_langcore/specialization_scope_e2e_tests.rs.
 
 use std::sync::Arc;
 

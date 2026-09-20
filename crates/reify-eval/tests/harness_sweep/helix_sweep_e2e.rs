@@ -8,7 +8,7 @@
 //! (behind `GeometryOp::Sweep`) failed — surfacing as an Error-severity
 //! geometry diagnostic with no mesh/STEP produced. After the fix the sweep
 //! succeeds end-to-end. This is a higher layer than the kernel integration
-//! test in `reify-kernel-occt/tests/helix_sweep_integration.rs`: it
+//! test in `reify-kernel-occt/tests/harness_occt/helix_sweep_integration.rs`: it
 //! additionally covers the compile → eval geometry-error diagnostic channel
 //! and the mesh / STEP output path.
 //!

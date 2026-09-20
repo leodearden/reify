@@ -34,7 +34,7 @@ The choke-point already exists: `compute_delta(&AppState.last_state, new_state)`
 2. `debug_server.rs` mutations (`open_file`, `set_fea_case`) use a *different* channel (`query_frontend("apply_gui_state")`) and never touch `AppState.last_state` (latent bug #7 — the next real command diffs against a stale baseline).
 3. The `claude_bridge.rs` interception reaches the choke-point not at all (§2.1).
 
-**Closing (1) and (2), and extracting one `apply_engine_mutation` choke-point that all of GUI/debug/FS-watcher route through, is owned by the `gui-state-sync` PRD** (INV-GUI-1 + INV-GUI-2 core). This PRD **depends on** that work and completes INV-GUI-2 for the AI/MCP entry point.
+**Closing (1) and (2), and extracting the single mutation choke-point that all of GUI/debug/FS-watcher route through, is owned by the `gui-state-sync` PRD** (INV-GUI-1 + INV-GUI-2 core). That work landed as `EngineSession::post_engine_call_telemetry` plus a debug-side delta-baseline refresh (§6.2) — **not** as the single `apply_engine_mutation` fn this PRD originally anticipated. This PRD **depends on** that work and completes INV-GUI-2 for the AI/MCP entry point.
 
 ### 2.3 Source of truth today (the finding that fixes the design)
 
@@ -46,7 +46,7 @@ The user GUI slider (`EngineSession::set_parameter`, `engine.rs:1928`) calls `ed
 
 Deferred bookmark, sequenced **after** the hotspot-hardening waves, because it has hard upstream dependencies that must land first (see §7 / §8):
 
-- **`gui-state-sync` PRD** — the single `apply_engine_mutation` choke-point (INV-GUI-2 core) + compile-time-forced full-field `GuiState` coverage (INV-GUI-1). AI mutation must **not** go live until every `GuiState` field has forced sync coverage, or AI edits silently desync the viewport.
+- **`gui-state-sync` PRD** — the mutation/emission choke-point `EngineSession::post_engine_call_telemetry` (INV-GUI-2 core) + compile-time-forced full-field `GuiState` coverage (INV-GUI-1). AI mutation must **not** go live until every `GuiState` field has forced sync coverage, or AI edits silently desync the viewport.
 - **Wave-1 hygiene task** — corrects `system-prompt.ts` to the real tool surface and deletes the dead `claude_bridge.rs` interception (otherwise widening the allowlist reactivates the unsynced class).
 - **Source-write-back substrate** (owned here, Phase 1) — three primitives that do not exist today (G3, §6).
 
@@ -55,7 +55,7 @@ Deferred bookmark, sequenced **after** the hotspot-hardening waves, because it h
 Three moves, in dependency order:
 
 1. **Source-write-back substrate (Phase 1, owned here).** Build the missing primitives so a structured "set parameter X = V" becomes a surgical `.ri` source edit: resolve the param default's byte span, serialize `V` to a unit-preserving `.ri` literal, splice, write disk, and recompile through the choke-point. `update_source`/`commit_state` is the existing write-back *sink*; the retained `parsed_cache` already holds the exact default span. (Full substrate audit in §6.)
-2. **AI/MCP exposure (Phase 2, owned here).** Register the reify-mcp write tools on the **reify-debug HTTP MCP server** (`debug_server.rs tool_defs()`), so they become `mcp__reify-debug__*` — already covered by the sidecar allowlist glob and reachable over the existing transport. Route every one through the `gui-state-sync` `apply_engine_mutation` choke-point; `reify_set_parameter`/`reify_update_source` additionally go through the Phase-1 write-back path. Extend `docs/debug-mcp-contract.md` + parity tests.
+2. **AI/MCP exposure (Phase 2, owned here).** Register the reify-mcp write tools on the **reify-debug HTTP MCP server** (`debug_server.rs tool_defs()`), so they become `mcp__reify-debug__*` — already covered by the sidecar allowlist glob and reachable over the existing transport. Route every one so `gui-state-sync`'s `post_engine_call_telemetry` fires after the mutation commits, AND refresh the debug delta baseline via `compute_delta` (§6.2); `reify_set_parameter`/`reify_update_source` additionally go through the Phase-1 write-back path. Extend `docs/debug-mcp-contract.md` + parity tests.
 3. **User-slider durable-edit fix + invariant enforcement (Phase 3, owned here).** Re-home `EngineSession::set_parameter` (GUI slider/edit-box) onto the same write-back path (perf-preserving — §9 Q3), and add the INV-GUI-2 (AI-path) architecture test and the INV-GUI-3 source-canonical enforcement test, following the registry's warn→enforce rollout with a break-glass knob.
 
 ## 5. Resolved design decisions
@@ -65,7 +65,7 @@ Three moves, in dependency order:
 | D1 | **`reify_set_parameter` writes back to `.ri` source** (not an ephemeral engine-state override). | `INV-GUI-3`: source is canonical. Structured AI edits become file edits and reconcile with the FS-watcher; Claude reads its own edits back. |
 | D2 | **The user GUI slider is *also* wrong and must write durable source edits** through the same path. | Same invariant; the ephemeral-second-source model is a pre-existing bug, filed here as the companion slider-fix task (η). |
 | D3 | **MCP home = the reify-debug HTTP server** (`mcp__reify-debug__*`). | Lowest friction: the sidecar already writes an MCP config pointing at reify-debug (`session.ts:330`) and the allowlist is `mcp__reify-debug__*` (`session.ts:81`). Aligns with Wave-1 pointing the prompt at `mcp__reify-debug__*`. No new server/transport/allowlist entry. |
-| D4 | **All AI/MCP mutations route through the `gui-state-sync` `apply_engine_mutation` choke-point** (not a private emit). | `INV-GUI-2`: every AI-driven mutation path shares the same state-sync choke-point as user-driven mutations. |
+| D4 | **All AI/MCP mutations route through the `gui-state-sync` choke-point pair — `post_engine_call_telemetry` + debug delta-baseline refresh** (§6.2), not a private emit. | `INV-GUI-2`: every AI-driven mutation path shares the same state-sync choke-point as user-driven mutations. |
 | D5 | **`gui-state-sync` owns the choke-point extraction + full-field coverage + GUI/debug/watcher routing; this PRD depends on it** and owns only the AI/MCP entry point + source-write-back + slider fix. | Matches `docs/invariants.md` INV-GUI-1/INV-GUI-2 ownership; keeps this bookmark scoped and sequenced after the hardening waves. |
 | D6 | **Write-back = span-splice + `update_source`, not a full AST re-serializer.** | No round-tripping pretty-printer exists (§6); the exact default span is retained and `update_source` accepts full text. Splice is minimal and preserves user formatting/comments. |
 | D7 | **The in-process recompile is authoritative; the disk write's FS-watcher re-fire is idempotent.** | `reify_set_parameter` writes disk **and** recompiles in-process (so the tool result carries diagnostics synchronously and the viewport updates live); the watcher re-fire reloads identical content → empty delta (agent-confirmed same pattern as editor save). Answers the hard-req-2 FS-watcher reconciliation. |
@@ -82,20 +82,20 @@ Audit verdict (2026-07-06): the write-back **sink** (`update_source`→`commit_s
 
 ### 6.2 The choke-point seam (owned by `gui-state-sync`; specified here so the two PRDs agree — G4)
 
-This PRD consumes, and must not fork, the single mutation choke-point. Expected shape (owner: `gui-state-sync`):
+This PRD consumes, and must not fork, the single mutation choke-point.
 
-```
-fn apply_engine_mutation<F>(engine, last_state, emit_sink, mutate: F) -> Result<GuiState>
-where F: FnOnce(&mut EngineSession) -> Result<()>
-// runs `mutate`, builds the new GuiState, compute_delta(last_state, new) [advances last_state],
-// emit_delta(emit_sink, delta) covering ALL 13 GuiState fields, returns the snapshot.
-```
+**AS LANDED (2026-08, verified at gate release — this supersedes the single-`apply_engine_mutation` shape this PRD originally anticipated).** `gui-state-sync`'s signature diverged, and per this section's own reconcile clause the divergence is recorded here rather than forked. There is no `apply_engine_mutation` symbol anywhere in the codebase; the seam is a **pair** of cooperating mechanisms:
 
-Invariants this PRD relies on: (a) `last_state` advanced exactly once per mutation (no stale-baseline race — fixes bug #7 for debug-hosted tools too); (b) the delta covers **every** `GuiState` field (INV-GUI-1) so an AI edit cannot leave any field stale; (c) the `emit_sink` is reachable from the debug-server thread (the reify-debug tools run there). If `gui-state-sync`'s signature diverges, reconcile at that PRD (it is the seam owner) — **do not** add a second emit path here.
+1. **Emission choke-point** — `EngineSession::post_engine_call_telemetry()` (`gui/src-tauri/src/engine.rs`, §8 L4). Every engine-mutating entry point (`load_from_source`, `set_parameter`, `load_file`, `update_source`, `load_from_compiled`, …) calls this ONE method *after committing state*; it fires the full emit quintet in a fixed order (auto-resolve → fea-case → …) instead of each entry point hand-rolling its own copy.
+2. **Debug delta-baseline refresh** — `crate::diff::compute_delta(last_state, &gui_state)` called for its side effect right after a debug-server mutation (`gui/src-tauri/src/debug_server.rs`, task 5035 L6). Debug-server mutations run the engine forward but never otherwise touch `last_state`, so without this the next NORMAL command diffs against a pre-debug baseline (survey latent bug #7). Wrapped for reuse as `open_source_into_engine_and_refresh_baseline` and `set_fea_case_on_engine_and_refresh_baseline`.
+
+Invariants this PRD relies on, restated against the landed pair: (a) `last_state` advanced exactly once per mutation (no stale-baseline race — fixes bug #7 for debug-hosted tools too); (b) the delta covers **every** `GuiState` field (INV-GUI-1) so an AI edit cannot leave any field stale — enforced at compile time by the `gui_state_schema.rs` field muncher; (c) the emission path is reachable from the debug-server thread (the reify-debug tools run there).
+
+**Two carried-over caveats the AI write tools must honour:** (i) on the debug path the `StateDelta` returned by `compute_delta` is deliberately **discarded** — the full `GuiState` reaches the frontend via the caller's synchronous `query_frontend` push, not `emit_delta` (§4 D7); (ii) the refresh lands before the frontend push, which assumes **debug ops never overlap a normal command** — an AI tool that mutates concurrently with a user command breaks that assumption. Reconcile any further divergence at `gui-state-sync` (it is the seam owner) — **do not** add a second emit path here.
 
 ### 6.3 MCP tool exposure (Phase 2)
 
-Add the five reify-mcp write tools to `debug_server.rs tool_defs()` + dispatch, namespaced under reify-debug. Each dispatch handler wraps its mutation in `apply_engine_mutation` (§6.2); `reify_set_parameter`/`reify_update_source` route through `apply_param_to_source` / `update_source` respectively. Reconcile with the **existing** debug `open_file`/`set_fea_case` (which `gui-state-sync` re-homes onto the choke-point) — do not duplicate `open_file`. Update `docs/debug-mcp-contract.md` §0 and the parity tests (`debugParity.test.ts`, `debugContract.test.ts`, `debug_boundary_tests.rs`).
+Add the five reify-mcp write tools to `debug_server.rs tool_defs()` + dispatch, namespaced under reify-debug. Each dispatch handler routes its mutation through the §6.2 choke-point pair, mirroring the existing `open_source_into_engine_and_refresh_baseline` / `set_fea_case_on_engine_and_refresh_baseline` helpers in `debug_server.rs`; `reify_set_parameter`/`reify_update_source` route through `apply_param_to_source` / `update_source` respectively. Reconcile with the **existing** debug `open_file`/`set_fea_case` (which `gui-state-sync` re-homes onto the choke-point) — do not duplicate `open_file`. Update `docs/debug-mcp-contract.md` §0 and the parity tests (`debugParity.test.ts`, `debugContract.test.ts`, `debug_boundary_tests.rs`).
 
 ## 7. Boundary-test sketch (B+H — the integration gate's observable signal)
 
@@ -111,15 +111,15 @@ Add the five reify-mcp write tools to `debug_server.rs tool_defs()` + dispatch, 
 
 ## 8. Pre-conditions for activating
 
-1. `gui-state-sync` PRD landed: `apply_engine_mutation` choke-point (INV-GUI-2 core) + compile-time-forced full-field `GuiState` coverage (INV-GUI-1) + GUI/debug/FS-watcher routing (incl. bug #7 fix). **Real `add_dependency` edges wired at decompose time once `gui-state-sync`'s tasks exist.**
-2. Wave-1 hygiene task landed: `system-prompt.ts` names the real `mcp__reify-debug__*` tools; dead `claude_bridge.rs` interception deleted.
+1. ✅ **VERIFIED 2026-08 at gate release (#5117).** `gui-state-sync` PRD landed: the §6.2 choke-point pair (INV-GUI-2 core) + compile-time-forced full-field `GuiState` coverage (INV-GUI-1) + GUI/debug/FS-watcher routing (incl. bug #7 fix). **Real `add_dependency` edges wired at decompose time once `gui-state-sync`'s tasks exist.**
+2. ✅ **VERIFIED 2026-08 at gate release (#5117).** Wave-1 hygiene task landed: `system-prompt.ts` names the real `mcp__reify-debug__*` tools (7 of them); the dead `reify_`-prefixed `claude_bridge.rs` interception is deleted — note the *file* survives for its transport/event role, only the interception was removed (see its in-file notes; mutation now goes via the reify-debug HTTP MCP server).
 3. Phase-1 substrate (α/β/γ) — owned here, upstream of the AI wiring.
 
 ## 9. Cross-PRD relationship (G4)
 
 | Other PRD / work | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
-| `gui-state-sync` (to be authored) | consumes | `apply_engine_mutation` choke-point (§6.2); full-field `GuiState` delta coverage | **gui-state-sync** | blocked-on (edge at decompose) |
+| `gui-state-sync` (landed) | consumes | `post_engine_call_telemetry` + debug delta-baseline refresh (§6.2); full-field `GuiState` delta coverage | **gui-state-sync** | blocked-on (edge at decompose) |
 | Wave-1 hygiene task | consumes | `system-prompt.ts` real tool surface; dead `claude_bridge.rs` interception deleted | **Wave-1** | blocked-on (edge at decompose) |
 | `docs/debug-mcp-contract.md` (reify-debug) | extends | new write-tool `ToolDef`s in `tool_defs()`; reconcile with existing `open_file`/`set_fea_case` | **this PRD** | queued |
 | `docs/invariants.md` | establishes | `INV-GUI-2` (AI/MCP entry point half), `INV-GUI-3` (source-canonical) | **this PRD** | registered (proposed) |
@@ -136,12 +136,12 @@ All tasks: `planning_mode=True`, filed as **deferred bookmarks** (exclude `commi
 - **γ — `EngineSession::apply_param_to_source(cell_id, &Value)`** (splice + disk-write + recompile through the choke-point, atomic) · modules: `gui/src-tauri/src/engine.rs`. · *unlocks:* δ, η, ι. · **depends on** gui-state-sync choke-point. · INV-GUI-3.
 
 **Phase 2 — AI/MCP exposure (owned here; INV-GUI-2 AI path; intermediate → ζ):**
-- **δ — expose reify-mcp write tools on the reify-debug MCP server**, routed through `apply_engine_mutation`; `reify_set_parameter`→γ; extend contract + parity tests; reconcile with existing `open_file` · modules: `gui/src-tauri/src/debug_server.rs`, `gui/src-tauri/src/mcp_context.rs`, `docs/debug-mcp-contract.md`, `gui/src/__tests__/debugContract.test.ts`. · *unlocks:* ζ, θ. · **depends on** gui-state-sync, Wave-1, γ. · INV-GUI-2.
+- **δ — expose reify-mcp write tools on the reify-debug MCP server**, routed through the §6.2 choke-point pair; `reify_set_parameter`→γ; extend contract + parity tests; reconcile with existing `open_file` · modules: `gui/src-tauri/src/debug_server.rs`, `gui/src-tauri/src/mcp_context.rs`, `docs/debug-mcp-contract.md`, `gui/src/__tests__/debugContract.test.ts`. · *unlocks:* ζ, θ. · **depends on** gui-state-sync, Wave-1, γ. · INV-GUI-2.
 
 **Phase 3 — integration gate + slider fix + enforcement (leaves):**
 - **ζ — integration gate (PRIMARY LEAF, the G2 signal + §7 B1–B5, B7).** Claude issues `mcp__reify-debug__reify_set_parameter` in the ChatPanel on `prj/printer_v01` → viewport + property panel update live without a file reload **and** `printer.ri` on disk reflects the new value. · *signal:* debug-MCP mesh/value delta + on-disk file assertion (§7). · **depends on** δ, γ, gui-state-sync, Wave-1. · INV-GUI-2 + INV-GUI-3.
 - **η — user-slider durable-edit fix (LEAF; §7 B6).** Re-home `EngineSession::set_parameter` onto γ; perf-preserving (§9 Q3). · *signal:* user GUI param edit → `.ri` on disk updates durably; viewport syncs (debug-MCP drag + file assertion). · **depends on** γ, gui-state-sync. · INV-GUI-3.
-- **θ — INV-GUI-2 architecture test (AI/MCP entry point) (LEAF).** Assert every reify-debug write tool flows through `apply_engine_mutation`; warn→enforce rollout + break-glass env knob. · *signal:* the arch test fails if a write tool bypasses the choke-point. · **depends on** δ. · INV-GUI-2.
+- **θ — INV-GUI-2 architecture test (AI/MCP entry point) (LEAF).** Assert every reify-debug write tool flows through the §6.2 choke-point pair; warn→enforce rollout + break-glass env knob. **Enforcement gap to close:** `post_engine_call_telemetry` has NO structural source-introspection guard today — `gui-state-sync` deliberately enforces it per-entry-point via behavioral emitter tests (`<name>_emits_fea_diagnostics`, `tests/engine_tests.rs`), an explicitly accepted tradeoff. θ must therefore either add the structural check or extend that behavioral cluster to cover each new write tool; a new entry point that skips both loses telemetry silently. · *signal:* the arch test fails if a write tool bypasses the choke-point. · **depends on** δ. · INV-GUI-2.
 - **ι — INV-GUI-3 source-canonical enforcement (LEAF).** Test/lint asserting every value-mutation path writes back to source (`.ri` reflects; no ephemeral-only durable path). · *signal:* the test fails on a mutation path that skips write-back. · **depends on** γ, η. · INV-GUI-3.
 
 DAG: `α,β → γ → {δ,η,ι}`; `δ → {ζ,θ}`; `{gui-state-sync, Wave-1} → {γ?,δ,ζ,η}`. ζ is the primary integration leaf (C-as-integration-gate); η/θ/ι are additional leaves.

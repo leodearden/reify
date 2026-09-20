@@ -1,0 +1,18 @@
+module driver_parity_two_sided_auto
+// PRD evidence: docs/prds/v0_6/solver-driver-parity.md §4.6 case 2, §5 B5.
+// The discriminating NEGATIVE case for driver_parity_one_sided_auto.ri: two-sided
+// bounds give the Chebyshev centre a real interior argmax, so this fixture MUST
+// keep resolving and MUST NOT draw the one-sided diagnostic. Without this pin the
+// B4 refusal could be implemented as a blanket "inequality-pinned auto is refused".
+//
+// Baseline measured on main 2128c3692c (2026-08-26):
+//   reify eval -> TwoSided.rod.length = 0.01 m   (the analytic centre of [8,12])
+pub structure Rod {
+    param length : Length = 5mm
+    let body = cylinder(3mm, length)
+}
+pub structure TwoSided {
+    sub rod = Rod(length: auto)
+    constraint self.rod.length >= 8mm
+    constraint self.rod.length <= 12mm
+}

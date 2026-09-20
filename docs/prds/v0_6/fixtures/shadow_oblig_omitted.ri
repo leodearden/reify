@@ -1,0 +1,15 @@
+// enum-shadow-coherence.md fixture: obligation collision, OMITTED member (R2).
+// Same shadowing as shadow_oblig_redeclared.ri but the `appearance` member is
+// omitted, so trait Visual's own prelude-typed default fills the slot.
+// Pre-#5429 AND post-#5429 (probe 2026-08-19/20): 0 diagnostics; Widget.appearance
+// silently lowers to StructureRef("Appearance") — the local enum is ignored,
+// the exact silent conflation #5429 exists to eliminate.
+// Target (task gamma): the same obligation Error as the redeclared form —
+// writing the member out and omitting it must agree.
+module shadow_oblig_omitted
+
+enum Appearance { Matte, Glossy }
+
+structure def Widget : Visual {
+    param size : Length = 1mm
+}

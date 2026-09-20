@@ -5,7 +5,7 @@
 //! therefore fails to compile — the idiomatic RED for an API-surface addition in
 //! this codebase (cf. reify-ast/tests/api_surface_decl.rs).
 //!
-//! Models on crates/reify-syntax/tests/unit_decl_tests.rs.
+//! Models on crates/reify-syntax/tests/harness_syntax/unit_decl_tests.rs.
 
 use reify_ast::*;
 

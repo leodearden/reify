@@ -1,0 +1,16 @@
+// driver-contract PRD, baseline B4: a geometry-dependent @test is structurally
+// Indeterminate under the kernel-free test runner, and Indeterminate exits 0.
+//
+// Measured at main 9a992fc2f2 (2026-08-26), target/debug/reify:
+//   reify test  -> exit 0, "INDETERMINATE TestBlockVolume"
+//                        / "test result: ok. 0 passed; 0 failed; 1 indeterminate"
+//   reify check -> exit 0, "INDETERMINATE ... undefined inputs: TestBlockVolume.body"
+//
+// Post-fix: leaf ε gives the runner a BRep kernel so the verdict is real, and leaf
+// λ makes an Indeterminate verdict exit non-zero absent @allow_indeterminate.
+module driver_contract_geometry_test_indeterminate
+@test structure TestBlockVolume {
+    param w : Length = 10mm
+    let body = cube(w)
+    constraint volume(body) >= 2000mm^3
+}

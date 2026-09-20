@@ -33,13 +33,19 @@
 //!
 //! ## Deliberately out of scope here
 //!
-//! `JcodemunchClient::initialize` (`src/jcodemunch_client.rs`) accepts a 202,
-//! an empty body, or valid-JSON-that-is-not-an-initialize-result as a
-//! successful MCP handshake. That is a real but *separate* fail-soft hole,
-//! and it is not what caused the #5830 flake: the in-suite recycler
-//! (`spawn_mock_mcp` in `cli.rs`) answers `initialize` with a fully
-//! well-formed JSON-RPC result carrying `protocolVersion`, `capabilities` and
-//! `serverInfo`, which any realistic response validation would accept — so
+//! `JcodemunchClient::initialize` (`src/jcodemunch_client.rs`) does not
+//! validate the *body* of the `initialize` response. Since #6106 it does
+//! require the server to assign a session — a response with no
+//! `Mcp-Session-Id` header is rejected — so the residual hole is narrower
+//! than it was: a response that DOES carry a session id but whose body is a
+//! 202, empty, or valid-JSON-that-is-not-an-initialize-result is still
+//! accepted as a successful handshake.
+//!
+//! That residual is a real but *separate* fail-soft hole, and it is not what
+//! caused the #5830 flake: the in-suite recycler (`spawn_mock_mcp` in
+//! `cli.rs`) answers `initialize` with a fully well-formed JSON-RPC result
+//! carrying `protocolVersion`, `capabilities` and `serverInfo` — and now a
+//! session id too — which any realistic response validation would accept, so
 //! hardening the handshake would have left the flake untouched. Task #5832
 //! tracks that hardening; it needs live-wire verification against a running
 //! jcodemunch serve, which is a different verification budget from this

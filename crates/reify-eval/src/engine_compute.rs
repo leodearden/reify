@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::{ComputeNodeId, ContentHash, Diagnostic, ValueCellId, VersionId};
+use reify_core::{ComputeNodeId, ContentHash, Diagnostic, DiagnosticCode, ValueCellId, VersionId};
 use reify_ir::{OpaqueState, Value};
 
 use crate::cache::NodeId;
@@ -83,6 +83,135 @@ impl ComputeDispatchRegistry {
             volume_mesh_boundary_demand_targets: HashSet::new(),
         }
     }
+}
+
+// ── Missing-trampoline diagnostic: one stem, two constructors (task 5311) ─────
+//
+// All FOUR `@optimized`-target-not-registered emission sites route through the
+// constructor pair below rather than each formatting its own `format!`, so
+// "byte-identical wording across all four" is STRUCTURAL rather than
+// conventional, and `DiagnosticCode::NoRegisteredComputeTrampoline` has exactly
+// one attachment point per form.
+//
+// Why the wording is load-bearing: severity is asserted by 2 tests
+// workspace-wide, but the message TEXT is asserted by ~10 that are entirely
+// severity-blind (`no_stale_undef_invariant_gate.rs`'s `TRAMPOLINE_MISSING`
+// sites, `test_runner.rs`, `cli_build_fea.rs`). Changing the severity is a
+// two-test change; changing this stem is a ten-test change. Single-sourcing it
+// makes the expensive edit impossible to make by accident.
+//
+// TRAP for anyone writing a matcher against these messages: the co-resident
+// `"@optimized target {t:?}: compute trampoline was cancelled"` Error in
+// `engine_admin.rs::dispatch_compute_node` shares this message's
+// `"@optimized target {t:?}: "` PREFIX and must KEEP gating build/eval exit
+// codes. Never widen a matcher to the prefix alone — match the stem below, or
+// better, match `DiagnosticCode::NoRegisteredComputeTrampoline`.
+
+/// The single source of truth for the missing-trampoline message body.
+///
+/// Both constructors below build their message from this const; nothing else
+/// in the workspace may spell it out inline.
+const NO_TRAMPOLINE_STEM: &str = "no registered compute trampoline";
+
+impl crate::Engine {
+    /// Build the SOFT-site missing-trampoline diagnostic — the form emitted by
+    /// the two `engine_eval.rs` call sites that push a diagnostic and then FALL
+    /// THROUGH to body-inlining.
+    ///
+    /// The `(falling back to body-inlining)` clause is present here because it
+    /// is literally what those two sites go on to do.
+    ///
+    /// A METHOD, not a free function taking a `registry_empty: bool`: the
+    /// emptiness predicate is the POLICY, and the two call sites must not each
+    /// compute it. A bare positional bool would let an inverted-polarity typo
+    /// at one site compile and silently flip that site's severity — the same
+    /// class of duplicated-policy drift this constructor pair exists to stop
+    /// for the message text. Reading `self.compute_registry` here spells it
+    /// exactly once.
+    ///
+    /// The severity, per the task-5311 RULING in
+    /// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4:
+    ///
+    /// - registry entirely EMPTY ⇒
+    ///   [`Severity::Warning`](reify_core::Severity::Warning). An empty compute
+    ///   registry means the driver declared a trampoline-free posture rather
+    ///   than forgetting one trampoline. `reify check` (whose `cmd_check`
+    ///   constructs its engines without ever calling
+    ///   `register_compute_trampolines`) and `reify-lsp` (`Engine::new` with no
+    ///   registration) are both in that posture, and reporting a posture as an
+    ///   `error:` while exiting 0 is the loud/silent mismatch this task closes.
+    /// - registry NON-empty ⇒ [`Severity::Error`](reify_core::Severity::Error).
+    ///   A driver that registered SOME trampolines and is still missing THIS
+    ///   one is a genuine defect. `reify eval` and `reify build` both register
+    ///   the 19-target production bundle, so they stay on this arm and the
+    ///   diagnostic keeps gating their exit codes.
+    ///
+    /// The [`DiagnosticCode`] is the SAME on both arms by design: the code
+    /// names the cause, the severity reports how much the caller's posture
+    /// makes that cause matter.
+    ///
+    /// BOTH SOFT sites and BOTH arms are covered:
+    /// `evaluate_params_and_lets_unified` by the e2e pair in
+    /// `tests/compute_dispatch_registry.rs`
+    /// (`e2e_unregistered_optimized_target_emits_diagnostic_and_inlines` /
+    /// `…_on_a_nonempty_registry_stays_an_error`), and `evaluate_let_bindings`
+    /// by `evaluate_let_bindings_trampoline_severity_tests` in `engine_eval.rs`,
+    /// which drives that second site directly on an empty and a non-empty
+    /// registry.
+    pub(crate) fn soft_no_trampoline_diagnostic(&self, target: &str) -> Diagnostic {
+        let message = format!(
+            "@optimized target {target:?}: {NO_TRAMPOLINE_STEM} (falling back to body-inlining)"
+        );
+        let diagnostic = if self.compute_registry.fns.is_empty() {
+            Diagnostic::warning(message)
+        } else {
+            Diagnostic::error(message)
+        };
+        diagnostic.with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
+    }
+}
+
+/// Build the HARD-site missing-trampoline diagnostic — the form emitted by
+/// [`crate::Engine::dispatch_compute_node`] and
+/// [`crate::Engine::run_compute_dispatch`], both of which return `Err` rather
+/// than falling back.
+///
+/// Same [`NO_TRAMPOLINE_STEM`] as the SOFT form, but the
+/// `(falling back to body-inlining)` clause is deliberately ABSENT: fallback is
+/// the eval-loop caller's behaviour, not these helpers'. Direct callers of
+/// either function do NOT body-inline, so the clause would be a false promise.
+///
+/// The severity is UNCONDITIONALLY [`Severity::Error`](reify_core::Severity::Error)
+/// — the empty-registry predicate that
+/// [`Engine::soft_no_trampoline_diagnostic`](crate::Engine::soft_no_trampoline_diagnostic)
+/// applies is deliberately NOT applied here. Per the task-5311 RULING in
+/// `docs/prds/v0_6/check-diagnostic-truthfulness.md` D4, on the merits:
+///
+/// 1. `fns.is_empty()` can never be true in production at either HARD site.
+///    `dispatch_compute_node` has ZERO non-test callers workspace-wide, and
+///    `run_compute_dispatch`'s `None` arm is reached in production only via
+///    `insert_shell_extract_upstream`, which sits INSIDE the
+///    `compute_dispatch("solver::elastic_static").is_some()` branch — so the
+///    registry is non-empty by construction there. Applying the predicate would
+///    change exactly zero user-observable behaviour while making the contract
+///    murkier.
+/// 2. `dispatch_compute_node`'s rustdoc PROMISES its `Err` arm carries at least
+///    one `Severity::Error`. An `Err` carrying only a Warning is incoherent,
+///    and would be silently swallowed by `reify build` / `reify eval`'s
+///    `has_error_diagnostic` exit gate — a returned failure that stops gating.
+/// 3. `reify check` — the driver whose loud/silent mismatch task 5311 closes —
+///    can only ever reach the two SOFT sites, traced end to end. Nothing
+///    user-observable is lost by leaving these two unconditional.
+///
+/// Both HARD sites are guarded positively by
+/// `dispatch_compute_node_unregistered_target_is_error_and_coded_even_on_an_empty_registry`
+/// and `run_compute_dispatch_unregistered_target_is_error_and_coded_even_on_an_empty_registry`,
+/// which feed an EMPTY registry and assert Error anyway.
+pub(crate) fn hard_no_trampoline_diagnostic(target: &str) -> Diagnostic {
+    Diagnostic::error(format!(
+        "@optimized target {target:?}: {NO_TRAMPOLINE_STEM}"
+    ))
+    .with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
 }
 
 // Task #5079 / PRD compute-fea-hardening.md D1 (Contract C2): the
@@ -624,14 +753,31 @@ impl crate::Engine {
             }
             // Step 3d: Unregistered target — synthesise a Failed diagnostic.
             //
-            // NOTE: the production caller (`engine_eval.rs`) pre-gates on
+            // NOTE: the value-cell caller (`engine_eval.rs`) pre-gates on
             // registration — it body-inlines the unregistered-target path and
             // emits its own diagnostic (PRD §9 Q1) before ever reaching this
-            // function.  This arm is therefore unreachable from production code
-            // and exists as a defensive fallback for direct test calls and any
-            // future caller that does not pre-gate.  The synthesised diagnostic
-            // text intentionally matches the `dispatch_compute_node` wording so
-            // the two helper surfaces stay consistent.
+            // function.  This arm is NOT, however, unreachable from production
+            // code (a claim this comment made until task 5311, and which was
+            // false): it IS reached on a PARTIALLY-registered engine via
+            // `insert_shell_extract_upstream`, which synthesises a
+            // `shell-extract::extract` dispatch from INSIDE the
+            // `compute_dispatch("solver::elastic_static").is_some()` branch and
+            // therefore does not pre-gate on ITS OWN target.  That is the
+            // task-5578 signature, corroborated by
+            // `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs`, whose
+            // constructor doc records the eval sweep hitting
+            // `@optimized target "shell-extract::extract": no registered
+            // compute trampoline` for exactly this reason.
+            //
+            // Note the corollary, which is why the HARD sites do not take the
+            // empty-registry downgrade: every production entry to this arm
+            // comes from inside a branch already gated on a REGISTERED target,
+            // so the registry is non-empty by construction here.
+            //
+            // The diagnostic text matching `dispatch_compute_node`'s wording is
+            // now enforced STRUCTURALLY rather than by convention — both call
+            // `hard_no_trampoline_diagnostic`, which single-sources the message
+            // from `NO_TRAMPOLINE_STEM`.
             //
             // ζ / step-10: restore the prior just like Cancelled / Failed —
             // an unregistered target is morally equivalent to a Failed
@@ -650,10 +796,7 @@ impl crate::Engine {
                     );
                 }
                 Err(DispatchError::Failed(
-                    vec![Diagnostic::error(format!(
-                        "@optimized target {:?}: no registered compute trampoline",
-                        target
-                    ))],
+                    vec![hard_no_trampoline_diagnostic(target)],
                     vec![],
                 ))
             }
@@ -822,6 +965,120 @@ impl crate::Engine {
     }
 }
 
+/// Owned, `Send + Sync` [`reify_ir::ComputeDispatch`] adapter over a snapshot
+/// of an [`Engine`](crate::Engine)'s compute-fn registry (task #4880).
+///
+/// Wires the `DimensionalSolver` cost loop (via `reify_expr::EvalContext`'s
+/// `compute_dispatch` hook) to the same `@optimized` trampolines the engine's
+/// own `ComputeNode` lowering dispatches to, so an `@optimized` function
+/// evaluated from inside a constraint-solve candidate (e.g.
+/// `solve_elastic_static` under a `minimize .. where ..` auto-resolution)
+/// returns its real trampoline result instead of falling through to
+/// body-eval `Undef`.
+///
+/// ## Owned, not borrowed
+///
+/// [`Self::from_engine`] CLONES the fn-pointer map (`ComputeFn` is `Copy`)
+/// rather than holding a live `&Engine`. Two reasons (task #4880 design
+/// decision):
+///
+/// 1. **Send + Sync**: [`ComputeFn`] is a `Copy + Send + Sync` fn-pointer, so
+///    `OptimizedComputeDispatcher` and `&OptimizedComputeDispatcher` are
+///    `Send + Sync` unconditionally — required because
+///    `reify_constraints::ConstraintCostFunction` (consumed by argmin's
+///    `Executor`) must stay `Send + Sync` once it carries a
+///    `dispatch: Option<&dyn reify_ir::ComputeDispatch>` field. A `&Engine`
+///    adapter would additionally require `Engine: Sync`, which is not
+///    guaranteed.
+/// 2. **Borrow cleanliness**: the engine's auto-resolution call sites live
+///    inside `&mut self` eval loops and take a temporary `&self` solver
+///    borrow via `lookup_solver_for_module`. Building the dispatcher with
+///    `from_engine(self)` releases its `&self` borrow immediately, so
+///    `Some(&dispatcher)` never aliases the solver borrow.
+///
+/// [`Self::dispatch`] mirrors [`Engine::dispatch_compute_node`](crate::Engine::dispatch_compute_node)'s
+/// reference semantics: a fresh [`CancellationHandle`] per call, empty
+/// `realization_inputs` (the box-dims `@optimized` targets this task wires —
+/// `solver::elastic_static` — mesh internally from value inputs and always
+/// receive empty realization inputs in production), `&Value::Undef` options,
+/// and no prior warm state (cold per-candidate solves; cross-candidate
+/// warm-start is a future perf-only enhancement).
+///
+/// ## Panic containment
+///
+/// It also mirrors the `catch_unwind` guard task #5079 put on
+/// [`Engine::invoke_compute_trampoline`] (INV-FEA-2 / PRD
+/// `docs/prds/compute-fea-hardening.md` contract C2), rather than calling the
+/// resolved `ComputeFn` raw. It cannot simply CALL `invoke_compute_trampoline`
+/// — that needs an `&Engine`, which is exactly the borrow this owned snapshot
+/// exists to avoid — so the guard is reproduced here, and the two must be kept
+/// in step.
+///
+/// This is not defensive decoration. `dispatch` is reached from
+/// `reify_expr::eval_expr` inside `ConstraintCostFunction::cost`, i.e. from
+/// underneath argmin's `Executor`, which does not catch panics — so an
+/// unguarded panicking trampoline would unwind straight out of `Engine::eval`
+/// into the CLI/GUI instead of degrading to `Failed` -> `None` -> ordinary
+/// body-eval. It fires once per Nelder-Mead trial point, and the compute
+/// targets it reaches (`compute_targets/elastic_static.rs`) panic on
+/// malformed input by design.
+#[derive(Debug, Clone)]
+pub struct OptimizedComputeDispatcher {
+    fns: HashMap<&'static str, ComputeFn>,
+}
+
+impl OptimizedComputeDispatcher {
+    /// Snapshot `engine`'s registered `@optimized` compute-fn map.
+    ///
+    /// `pub(crate)`: constructing one only makes sense from this crate's own
+    /// auto-resolution call sites — the four in engine_eval.rs (cold per-template,
+    /// warm per-template, merged-cluster ranked, warm merged-cluster) and the two
+    /// in engine_edit.rs (`edit_param`, `edit_source`) — which alone have both an
+    /// `&Engine` and the reason to bridge it into a [`reify_ir::ComputeDispatch`]
+    /// for the constraint solver. (An earlier draft of this list also named
+    /// `concurrent.rs`; that module no longer exists.)
+    pub(crate) fn from_engine(engine: &crate::Engine) -> Self {
+        Self::from_registry(&engine.compute_registry)
+    }
+
+    /// Snapshot a [`ComputeDispatchRegistry`] directly.
+    ///
+    /// Same result as [`Self::from_engine`], but borrows only the ONE field instead
+    /// of the whole `Engine`. That matters at the `engine_edit.rs` call sites: both
+    /// live in `&mut self` methods that already hold a mutable borrow of another
+    /// engine field across the region (`edit_source` holds `&mut self.warm_pool` via
+    /// `PendingWarmSeedsGuard`), so a whole-`&self` reborrow is rejected by the
+    /// borrow checker while a disjoint field borrow is accepted.
+    pub(crate) fn from_registry(registry: &ComputeDispatchRegistry) -> Self {
+        Self {
+            fns: registry.fns.clone(),
+        }
+    }
+}
+
+impl reify_ir::ComputeDispatch for OptimizedComputeDispatcher {
+    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value> {
+        let f = self.fns.get(target).copied()?;
+        let cancellation = CancellationHandle::new();
+        // Task #5079's `catch_unwind` guard, reproduced (see the type's
+        // "Panic containment" doc for why this cannot delegate to
+        // `Engine::invoke_compute_trampoline` and why an unguarded call here
+        // escapes `Engine::eval` entirely). `AssertUnwindSafe` is sound for
+        // the same reason it is there: every capture is a shared, unmutated
+        // reference. A caught panic collapses to `None`, which is this
+        // trait's documented "fall back to ordinary body evaluation" signal —
+        // the same outcome a `Failed` outcome already produces.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f(args, &[], &Value::Undef, None, &cancellation)
+        }));
+        match outcome {
+            Ok(ComputeOutcome::Completed { result, .. }) => Some(result),
+            Ok(ComputeOutcome::Failed { .. }) | Ok(ComputeOutcome::Cancelled) => None,
+            Err(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::RealizationNodeId;
@@ -830,7 +1087,8 @@ mod tests {
 
     use crate::Engine;
     use crate::engine_compute::{
-        ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent,
+        ComputeFn, ComputeOutcome, OptimizedComputeDispatcher, RealizationReadHandle,
+        RealizedContent,
     };
     use crate::graph::CancellationHandle;
 
@@ -1075,6 +1333,103 @@ mod tests {
             matches!(engine.freshness(&node), Freshness::Pending { .. }),
             "post-failed-trampoline VC freshness must be Pending, not Final or Failed",
         );
+    }
+
+    /// Task 5311 — the second HARD-site guard, pinned POSITIVELY.
+    ///
+    /// Same shape as (b) above, but with NO trampoline registered at all, so
+    /// `run_compute_dispatch` takes its `None` arm. The engine's compute
+    /// registry is entirely EMPTY here — precisely the input that DOWNGRADES
+    /// the diagnostic to `Severity::Warning` at the two SOFT sites in
+    /// `engine_eval.rs`. This HARD site does NOT apply that predicate, so the
+    /// severity must stay `Severity::Error`; a later sweep applying the
+    /// predicate uniformly across all four sites turns this red.
+    ///
+    /// Why the predicate is inapplicable here ON THE MERITS, not merely because
+    /// a test would break: in production this `None` arm is reached only via
+    /// `insert_shell_extract_upstream`, which sits INSIDE the
+    /// `compute_dispatch("solver::elastic_static").is_some()` branch. The
+    /// registry is therefore non-empty by construction at every production
+    /// entry to this arm, so `fns.is_empty()` could never be true and applying
+    /// it would change exactly zero user-observable behaviour while making the
+    /// contract murkier.
+    ///
+    /// The `(falling back to body-inlining)` clause must remain ABSENT for the
+    /// same reason as at `dispatch_compute_node`: this helper returns `Err` and
+    /// never inlines.
+    #[test]
+    fn run_compute_dispatch_unregistered_target_is_error_and_coded_even_on_an_empty_registry() {
+        use crate::engine_compute::DispatchError;
+
+        // No register_compute_fn call at all — the registry stays EMPTY.
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        assert!(
+            engine
+                .compute_dispatch("test::never_registered_eps5311")
+                .is_none(),
+            "precondition: the target must be unregistered",
+        );
+
+        let cell = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(7), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let handle = CancellationHandle::new(); // not cancelled
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::never_registered_eps5311",
+            &[Value::Int(7)],
+            &[],
+            &Value::Undef,
+            &handle,
+            VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
+        );
+
+        match result {
+            Err(DispatchError::Failed(diags, _)) => {
+                let error_diag = diags
+                    .iter()
+                    .find(|d| d.severity == reify_core::Severity::Error)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "the HARD sites do NOT apply the empty-registry \
+                             downgrade — this arm is unreachable in production \
+                             with an empty registry, so the predicate would \
+                             change nothing; got: {diags:?}"
+                        )
+                    });
+                assert_eq!(
+                    error_diag.code,
+                    Some(reify_core::DiagnosticCode::NoRegisteredComputeTrampoline),
+                    "the HARD form carries the SAME code as the SOFT form; got: {error_diag:?}"
+                );
+                assert!(
+                    error_diag
+                        .message
+                        .contains("test::never_registered_eps5311"),
+                    "expected the diagnostic to name the unknown target, got: {error_diag:?}"
+                );
+                assert!(
+                    !error_diag.message.contains("falling back to body-inlining"),
+                    "the fallback clause is deliberately omitted at the HARD \
+                     sites: this helper returns Err and never inlines; got: \
+                     {error_diag:?}"
+                );
+            }
+            other => panic!("expected Err(DispatchError::Failed(…)), got {other:?}"),
+        }
     }
 
     /// A panic must be caught the same way when driven through
@@ -4018,6 +4373,93 @@ mod tests {
                 "expected Err(DispatchError::Failed(_diags, sd)), got {other:?}"
             ),
         }
+    }
+
+    // ── task #4880 step-7 RED / step-8 GREEN: OptimizedComputeDispatcher ────
+    //
+    // `OptimizedComputeDispatcher` is the OWNED `reify_ir::ComputeDispatch`
+    // adapter this task's producer wiring (steps 9-10) attaches to the
+    // `DimensionalSolver` cost loop via `from_engine`. It is built here (not
+    // in an external `tests/*.rs` integration test) because `from_engine` is
+    // `pub(crate)` — the owned snapshot must never outlive/alias the `&self`
+    // solver borrow taken inside the engine's `&mut self` eval loops (task
+    // #4880 design decision), so external crates have no business
+    // constructing one directly.
+    //
+    // `dispatch` mirrors `Engine::dispatch_compute_node`'s semantics exactly:
+    // empty realization_inputs, `&Value::Undef` options, no prior warm state,
+    // a fresh `CancellationHandle` per call; `Completed{result}` -> `Some`,
+    // `Failed`/`Cancelled`/unregistered -> `None`.
+
+    #[test]
+    fn optimized_compute_dispatcher_dispatches_registered_target() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::probe", identity_fn as ComputeFn);
+
+        let d = OptimizedComputeDispatcher::from_engine(&engine);
+        let probe = Value::Scalar {
+            si_value: 42.0,
+            dimension: reify_core::DimensionVector::DIMENSIONLESS,
+        };
+
+        assert_eq!(
+            reify_ir::ComputeDispatch::dispatch(&d, "test::probe", std::slice::from_ref(&probe)),
+            Some(probe),
+            "a registered target must dispatch to its ComputeFn's Completed result"
+        );
+    }
+
+    #[test]
+    fn optimized_compute_dispatcher_unregistered_target_returns_none() {
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let d = OptimizedComputeDispatcher::from_engine(&engine);
+        let args = [Value::Scalar {
+            si_value: 1.0,
+            dimension: reify_core::DimensionVector::DIMENSIONLESS,
+        }];
+
+        assert_eq!(
+            reify_ir::ComputeDispatch::dispatch(&d, "unregistered::x", &args),
+            None,
+            "an unregistered target (no ComputeFn registered) must dispatch to None"
+        );
+    }
+
+    /// Task #5079's crash-safety floor (INV-FEA-2) applied to THIS dispatch
+    /// path: a panicking `ComputeFn` must become `None` — the trait's
+    /// "fall back to ordinary body evaluation" signal — not an unwind.
+    ///
+    /// WHY THIS NEEDS ITS OWN TEST rather than riding on
+    /// `invoke_compute_trampoline`'s. `OptimizedComputeDispatcher` cannot call
+    /// `invoke_compute_trampoline` (that needs an `&Engine`, the borrow the
+    /// owned snapshot exists to avoid), so it reproduces the `catch_unwind`
+    /// guard instead — and a reproduced guard is exactly the kind that drifts
+    /// back out. Dropping it would not fail any other test in this crate: this
+    /// path is reached only from `reify_expr::eval_expr` under argmin's
+    /// `Executor`, which does not catch panics, so the unwind would surface as
+    /// a CLI/GUI crash rather than a red test.
+    ///
+    /// Reuses `panics_str_fn` (below) — the same fixture the
+    /// `invoke_compute_trampoline` panic tests use, so the two guards are
+    /// pinned against identical input.
+    #[test]
+    fn optimized_compute_dispatcher_catches_panicking_trampoline() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::panics", panics_str_fn as ComputeFn);
+
+        let d = OptimizedComputeDispatcher::from_engine(&engine);
+        let args = [Value::Scalar {
+            si_value: 1.0,
+            dimension: reify_core::DimensionVector::DIMENSIONLESS,
+        }];
+
+        assert_eq!(
+            reify_ir::ComputeDispatch::dispatch(&d, "test::panics", &args),
+            None,
+            "a panicking ComputeFn reached through OptimizedComputeDispatcher must be \
+             caught and reported as None (fall through to body-eval), not unwind into \
+             the constraint solver's cost loop"
+        );
     }
 
     // ── Task #5079 step-1: RED — catch_unwind crash-safety floor ───────────

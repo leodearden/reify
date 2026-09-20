@@ -9,6 +9,9 @@
 //! integration-test crate root, where a bare `mod <file>;` would resolve to the sibling
 //! `tests/<file>.rs`, not the `harness_traits/` subdir.
 //!
+//! Task #5695 (leaf CMP-5) added `assoc_type_projection_reduction_tests`, which pins the
+//! same assoc-type surface as this unit's `trait_assoc_type_resolution_tests`.
+//!
 //! Task #6082 lands `euler_convention_arg_types.rs` here rather than as a top-level
 //! standalone `tests/euler_convention_arg_types.rs` (which
 //! scripts/check-harness-baseline-registration.sh flags
@@ -20,6 +23,8 @@
 //! it pins a callable's declared argument and return types — here the two Euler builtins'
 //! `EulerConvention` argument slot and their declared result types. Its `include_str!`
 //! fixture consumers climb to `../fixtures/` from the subdir.
+#[path = "harness_traits/assoc_type_projection_reduction_tests.rs"]
+mod assoc_type_projection_reduction_tests;
 #[path = "harness_traits/euler_convention_arg_types.rs"]
 mod euler_convention_arg_types;
 #[path = "harness_traits/fn_arg_trait_conformance_tests.rs"]
@@ -62,6 +67,8 @@ mod trait_assoc_type_conformance_tests;
 mod trait_assoc_type_qualified_resolution_tests;
 #[path = "harness_traits/trait_assoc_type_resolution_tests.rs"]
 mod trait_assoc_type_resolution_tests;
+#[path = "harness_traits/trait_body_deferred_check_tests.rs"]
+mod trait_body_deferred_check_tests;
 #[path = "harness_traits/trait_bounds_tests.rs"]
 mod trait_bounds_tests;
 #[path = "harness_traits/trait_conformance_tests.rs"]

@@ -948,8 +948,9 @@ fn project_safety_factor_sampled(lambda: &Value) -> Option<SampledField> {
 ///
 /// # NaN handling
 ///
-/// A `None` from `compute_eigenvalues_3x3` (all-NaN window — out-of-solid
-/// FEA sentinel) maps to `f64::NAN`, which the `is_finite()` gate in
+/// A `None` from `compute_eigenvalues_3x3` (ANY non-finite read entry, not
+/// just an all-NaN window — the out-of-solid FEA sentinel is the motivating
+/// case) maps to `f64::NAN`, which the `is_finite()` gate in
 /// `reduce_sampled_extremum` / `argmax_argmin_index` skips.
 ///
 /// The lambda slot of a `PrincipalStresses` field holds the ORIGINAL tensor

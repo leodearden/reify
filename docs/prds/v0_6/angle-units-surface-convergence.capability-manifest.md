@@ -3,10 +3,18 @@
 Mechanizes G3 + G6 for every leaf of `docs/prds/v0_6/angle-units-surface-convergence.md`.
 Built at decompose, **2026-07-29**, against `main` @ `bd10b6d0e1`.
 
-**Drift status:** `git diff --name-only dc83d4fd60..bd10b6d0e1 -- crates/ tree-sitter-reify/
-examples/ gui/` is **EMPTY** — the PRD was authored at `dc83d4fd60` and no source file has moved
-since, so every §3 file:line anchor holds verbatim. Everything in §Corrections is an *author-time
-measurement* re-measured this session, not drift.
+**Drift status (as of decompose, `bd10b6d0e1`):** `git diff --name-only dc83d4fd60..bd10b6d0e1
+-- crates/ tree-sitter-reify/ examples/ gui/` was **EMPTY** — the PRD was authored at `dc83d4fd60`
+and no source file had moved since, so every §3 file:line anchor held verbatim. Everything in
+§Corrections is an *author-time measurement* re-measured that session, not drift.
+
+**Re-anchored 2026-09-18 (task #7550), against `main` @ `ea896581d1`:** that no-drift claim no
+longer holds. `crates/reify-eval/src/arg_acceptance.rs` moved to `crates/reify-ir/` (task #5791's
+decompose), so the §3 anchors naming it are re-measured against TODAY's tree rather than
+`bd10b6d0e1` — read them as-of the re-anchor date, not as-of decompose. One decompose-time PREMISE
+went with it: `angle_spec` is no longer absent repo-wide (see the §3 row below). The verdicts
+themselves are left as the decompose-time record; re-adjudicating them belongs with the producing
+task's status, not here.
 
 **Probe vectors.** `target/release/reify` (built 2026-07-28 20:47; freshness verified — no
 `crates/**/*.rs` or `stdlib/*.ri` is newer) via `reify eval` / `reify check`; `tree-sitter parse
@@ -34,10 +42,21 @@ stamped into the filed task descriptions as `DECOMPOSE ADDENDUM — BINDING`.
 
 ### C1 — κ's scanner contract is factually wrong; coding to it yields a dead branch
 
-PRD §5 C2: *"`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`)"*; §3.8: *"a
+PRD §5 C2, **as it read at decompose**: *"`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`)"*; §3.8: *"a
 scanner-local widening … plus a **UTF-8-aware read**"*. `tree-sitter-reify/src/tree_sitter/parser.h:49`
 declares `int32_t lookahead;` — tree-sitter delivers **decoded codepoints**. U+00B7 arrives as the
 single value `0xB7`; `0xC2` is never observable and one unmodified `advance()` consumes both bytes.
+
+**Provenance (2026-08-29, task 5949).** Both quoted strings above are the PRD's **pre-correction**
+wording and are no longer asserted there as fact: task 5949 corrected §5 C2 and §3.8 **in place**.
+Grepping the PRD for either still hits, by design — expect that rather than absence. Every such
+hit is one of two kinds, and neither is C2 or §3.8 asserting the byte contract: the superseded
+wording quoted inside that PRD's `CORRECTION 2026-08-29` block, or the corrected sentence's own
+explicit negation of it (§5 C2: "**not** the UTF-8 byte pair `0xC2 0xB7`"; §3.8: "no UTF-8-aware
+decoding is required"). No hit count is pinned here — that would be a transient fact about a
+companion file, falsified by any later rewording of C2 or §3.8 and checked by nothing. C1 remains
+the binding record of *why* the contract is a codepoint; every anchor, measurement and verdict
+below is unchanged.
 
 Controlled experiment (three isolated repo copies, isolated `XDG_CACHE_HOME`, recompilation proven
 by a deliberate `#error` variant that failed to build):
@@ -237,7 +256,7 @@ are the seed). No other leaf hits it. **Zero G7 waivers in this batch.**
   exemplar that will actively teach the thing ι's diagnostic exists to correct. **Folded into ο**,
   with the runtime coupling flagged: read by path at
   `crates/reify-eval/tests/unit_expressions_e2e.rs:20`, and `:17` cited by
-  `crates/reify-compiler/tests/materials_fea_tests.rs:274-280`.
+  `crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs:274-280`.
 
 ### C13 — η may split; co-existence is non-fatal
 
@@ -281,7 +300,7 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `arg_acceptance` has `length_spec`/`density_spec`/`accept_arg` and **no** `angle_spec` | `grep:crates/reify-eval/src/arg_acceptance.rs:86,103,117`; `angle_spec` absent repo-wide | PASS |
+| `arg_acceptance` has `length_spec`/`density_spec`/`accept_arg` and **no** `angle_spec` | `grep:crates/reify-ir/src/arg_acceptance.rs:298,337,635`; `angle_spec` absent repo-wide **at decompose** — since DELIVERED, `pub fn angle_spec()` at `crates/reify-ir/src/arg_acceptance.rs:411` (re-measured 2026-09-18, #7550) | PASS *as of `bd10b6d0e1`* |
 | **the ANGLE rejection mechanism fires today** (G6 branch 4) | `probe: reify eval faces_by_normal(b,0.0,0.0,1.0,0.01)` → **exit 1**, `error: faces_by_normal: tol argument expects Angle, got Real` | PASS — rejection observed |
 | the hint is absent today (what β adds is observable) | same probe: **no** `pass a dimensioned angle` clause; `grep:geometry_ops.rs:8755` `resolve_scalar_dim_arg`, call site `:8767-8771` passes `migration_hint: None` | PASS |
 | the shared `DiagnosticCode` | `producer:task-5743` (PRD 1 β: *"introduce ONE shared DiagnosticCode … PRDs 3 and 5 reuse this code"*) — **upstream** | PASS |
@@ -418,8 +437,8 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 | Capability | Evidence | Verdict |
 |---|---|---|
 | the chunks exist and are stale | `grep:crates/reify-mcp/src/tools/chunks/units.md:36` *"35 standard named dimensions"* (real 51 → 52 after η); `:50` "Angle as Base Dimension" | PASS |
-| the exemplar corpus + its bidirectional gate | `examples/best_practices/` (7 files incl. `INDEX.md`, `bolt_circle.ri`); `INDEX.md:43` bolt_circle row; gate `crates/reify-compiler/tests/examples_smoke.rs` | PASS |
-| gap (b) target + its runtime coupling | `grep:examples/unit_expressions.ri:10,19`; `crates/reify-eval/tests/unit_expressions_e2e.rs:20`; `crates/reify-compiler/tests/materials_fea_tests.rs:274-280` | PASS |
+| the exemplar corpus + its bidirectional gate | `examples/best_practices/` (8 files incl. `INDEX.md`, `bolt_circle.ri`); `INDEX.md:53` bolt_circle row; gate `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` | PASS |
+| gap (b) target + its runtime coupling | `grep:examples/unit_expressions.ri:10,19`; `crates/reify-eval/tests/unit_expressions_e2e.rs:20`; `crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs:274-280` | PASS |
 | cheatsheet anchors | `grep:.claude/skills/reify-design/SKILL.md:53` (**Quantities:**), `:135` (**Always units**) | PASS |
 | ρ asserts findability, not a build | scripted grep-and-read over the chunks + `INDEX.md`; no new capability asserted | PASS |
 

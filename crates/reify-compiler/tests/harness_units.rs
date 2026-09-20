@@ -19,6 +19,22 @@
 //! this same `harness_units.rs` root, so μ should add its module here rather than create
 //! a second unit-subsystem harness.
 //!
+//! Routing vs. the sibling `harness_units_materials.rs` root — read this before adding a
+//! unit test. The two unit-flavoured roots exist by concurrent construction, not by design:
+//! task #5284 (leaf CMP-2, compiler test-harness consolidation batch 2 of 6) swept the
+//! pre-existing `unit_declaration_tests.rs` / `unit_registry_tests.rs` into
+//! `harness_units_materials.rs`, a separate root, because this file did not exist at that
+//! batch's fork base — #5786 created it on main while the sweep was in flight.
+//!
+//! Routing between this root and `harness_units_materials.rs` (surface vs. machinery): see
+//! that file's header; do not fold the two roots together — PRD §C3 and the `harness_units`
+//! delivered_check require this file to keep existing.
+//!
+//! The "μ should add its module here rather than create a second unit-subsystem harness"
+//! steer above is scoped to #5789's angle-units work only — it is NOT an invitation to move
+//! `unit_declaration_tests.rs` / `unit_registry_tests.rs` (or any future compiler-machinery
+//! test) here.
+//!
 //! Explicit `#[path]` is required: this harness root is an integration-test crate root,
 //! where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
 //! `harness_units/` subdir. The shared `common` helper module is declared here (via
@@ -31,3 +47,22 @@ mod common;
 
 #[path = "harness_units/torque_unit_tests.rs"]
 mod torque_unit_tests;
+
+// Task #5095 (ai-native-editing β): the `.ri` source-literal serializer's
+// parse-back round-trip property. Consolidated here rather than landed as a
+// standalone `tests/ri_literal_roundtrip.rs` — that form is
+// `reason=unregistered-standalone` to
+// scripts/check-harness-baseline-registration.sh, and the sanctioned remedy is
+// consolidation, not a new baseline grandfather row. `harness_units` is the
+// right root because the property under test is exactly that every unit symbol
+// the serializer emits re-parses as the same bare built-in; it needs no
+// `common` helper (it drives `reify_test_support::eval_source` directly), so it
+// does not re-declare one.
+#[path = "harness_units/ri_literal_roundtrip.rs"]
+mod ri_literal_roundtrip;
+
+#[path = "harness_units/unit_middot_mul_tests.rs"]
+mod unit_middot_mul_tests;
+
+#[path = "harness_units/volume_unit_tests.rs"]
+mod volume_unit_tests;

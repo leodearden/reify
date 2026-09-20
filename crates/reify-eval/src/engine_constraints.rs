@@ -14,7 +14,8 @@ use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput,
     ConstraintResult, DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput,
-    PersistentMap, Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
+    PersistentMap, ReprKind, Satisfaction, StructureInstanceData, StructureTypeId, Value,
+    ValueMap,
 };
 
 use crate::topology_selectors;
@@ -283,6 +284,29 @@ pub struct GdtCallout {
     pub zone_shape: Option<String>,
 }
 
+/// Does any leaf operand of `expr` resolve to `Undef` in `values`?
+///
+/// This is deliberately the SAME predicate the language-level
+/// `SimpleConstraintChecker` uses to choose between its two Indeterminate
+/// reasons (`classify_undef`, crates/reify-constraints/src/lib.rs): collect
+/// every leaf `ValueRef` and ask whether any of them is undefined.  Keeping it
+/// identical is what makes the peel's "decline this entry" decision in
+/// [`Engine::dispatch_constraints`] exact rather than approximate — an entry is
+/// declined precisely when the checker will answer `undefined inputs: <cell>`,
+/// never when it would answer `operator undefined for these operand kinds`
+/// (the misattribution task 6169 ζ exists to eliminate).
+///
+/// Cost note (C2): only ever called on an entry that already matched the
+/// `RepresentationWithin` shape AND evaluated to `Indeterminate`, so the
+/// `collect_value_refs` allocation is off both hot paths — a non-assertion
+/// module never reaches it, and a measuring surface reaches it only for a
+/// subject it could not resolve.
+fn has_undefined_operand(expr: &CompiledExpr, values: &ValueMap) -> bool {
+    expr.collect_value_refs()
+        .iter()
+        .any(|id| values.get_or_undef(id).is_undef())
+}
+
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
     /// implementation or the language-level `ConstraintChecker`, preserving
@@ -310,6 +334,41 @@ impl Engine {
     /// other.  The fast-path early-return (no registered impls, no
     /// RepresentationWithin) is preserved so non-assertion modules incur zero
     /// overhead (C2).
+    ///
+    /// ## Surfaces that do not measure (task-6169 ζ, C-SURFACE 1)
+    ///
+    /// `achieved_repr_tol` being empty does NOT imply "no RepresentationWithin
+    /// in this batch" — it also covers every surface that never measured at
+    /// all (`reify build`, which never calls `set_capture_repr_tol`; and
+    /// stub-mode `reify check`, where tessellation cannot run).  Gating the
+    /// fast path on the map alone therefore sent live assertions to the
+    /// language-level checker, which has no access to the map and blamed the
+    /// operand kinds for an Indeterminate that is really a property of the
+    /// surface.  The guard now also requires that no entry in the batch is a
+    /// RepresentationWithin *shape*, so such an entry always reaches the peel
+    /// below and is answered engine-side.
+    ///
+    /// The added conjunct is free on both hot paths:
+    /// - `entries.iter().any(..)` allocates nothing, and
+    ///   [`crate::tolerance_combine::match_representation_within_shape`]
+    ///   rejects at Gate 2 on `expr.kind` or on the
+    ///   `function_name != "RepresentationWithin"` compare — strictly before
+    ///   its only allocation (`name.clone()`, reachable solely after the name
+    ///   AND arity gates pass).  A non-assertion module thus pays an O(n) scan
+    ///   of enum discriminants and str compares, strictly cheaper than the
+    ///   `map(..).collect()` that immediately follows inside the body it
+    ///   guards, and then takes the identical path.
+    /// - `&&` short-circuits, so a measuring surface (non-empty map) never
+    ///   evaluates the scan at all.
+    ///
+    /// Reusing the canonical recogniser rather than a local copy of Gate 2 is
+    /// deliberate: the fast-path predicate and the peel's own gates are
+    /// literally the same function, so a future IR variant added to Gate 2
+    /// cannot leave a real RepresentationWithin silently taking the fast path
+    /// again.  Over-approximation is safe by construction — a false positive
+    /// merely costs the (already-existing) peel allocation and yields an
+    /// identical result, since a non-matching entry falls into `rest` and
+    /// reaches the same checker in the same order.
     pub(crate) fn dispatch_constraints<'a>(
         &self,
         entries: Vec<(ConstraintNodeId, &'a CompiledExpr, Option<&'a str>)>,
@@ -322,15 +381,27 @@ impl Engine {
         }
 
         // ── Fast path for non-assertion modules (C2) ──────────────────────────
-        // When `achieved_repr_tol` is empty (no tessellation has run) AND no
-        // optimised impls are registered, we know no entry can be a live
-        // `RepresentationWithin` assertion — skip the pre-pass entirely and use
-        // the original zero-allocation path.  This covers the universal
-        // non-assertion case: every `reify check` call on a module without
-        // `RepresentationWithin` constraints, where `cmd_check` never calls
-        // `set_capture_repr_tol` / `tessellate_realizations` and the map stays
-        // empty.
-        if self.achieved_repr_tol.is_empty() && self.optimization_registry.is_empty() {
+        // Taken only when this batch provably contains no `RepresentationWithin`
+        // assertion and no optimised impl is registered — then the pre-pass can
+        // be skipped entirely for the original zero-allocation path.  This
+        // covers the universal non-assertion case: every `reify check` /
+        // `reify build` call on a module without `RepresentationWithin`
+        // constraints, where the map is empty because nothing ever asked for a
+        // measurement.
+        //
+        // The third conjunct is what makes the first two sound (task-6169 ζ,
+        // C-SURFACE 1): an empty `achieved_repr_tol` also describes a surface
+        // that never measured, so on its own it cannot distinguish "no
+        // assertion here" from "an assertion nobody measured".  Scanning for
+        // the shape settles that directly, and costs nothing on either hot path
+        // — see this method's doc comment for the allocation and
+        // short-circuiting argument.
+        if self.achieved_repr_tol.is_empty()
+            && self.optimization_registry.is_empty()
+            && !entries.iter().any(|(_, expr, _)| {
+                crate::tolerance_combine::match_representation_within_shape(expr).is_some()
+            })
+        {
             let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = entries
                 .into_iter()
                 .map(|(id, expr, _target)| (id, expr))
@@ -345,12 +416,14 @@ impl Engine {
         }
 
         // ── RepresentationWithin interception ─────────────────────────────────
-        // Reached only when `achieved_repr_tol` is non-empty (a tessellation
-        // ran) or an optimised impl is registered.  Peel RepresentationWithin
-        // entries off the batch before bucketing so that they never reach the
-        // language-level ConstraintChecker (which has no access to
-        // self.achieved_repr_tol).  Each matched entry is evaluated engine-side;
-        // unmatched entries go to the existing paths.
+        // Reached when `achieved_repr_tol` is non-empty (a tessellation ran),
+        // or an optimised impl is registered, or this batch carries a
+        // RepresentationWithin shape on a surface that never measured (ζ).
+        //
+        // Peel RepresentationWithin entries off the batch before bucketing so
+        // that they never reach the language-level ConstraintChecker (which has
+        // no access to self.achieved_repr_tol).  Each matched entry is evaluated
+        // engine-side; unmatched entries go to the existing paths.
         //
         // Two-vector approach avoids a second allocation pass: we collect
         // `rest` in-order so the original (id, expr, target) tuples remain
@@ -368,14 +441,99 @@ impl Engine {
                 values,
                 &self.achieved_repr_tol,
             ) {
+                // ── Operand-definedness outranks surface attribution ──────────
+                //
+                // The peel claims a RepresentationWithin on SHAPE alone, but an
+                // `Indeterminate` engine answer carries no information about the
+                // constraint — it only says "this surface produced no achieved
+                // deviation for the subject".  When a leaf operand is *genuinely
+                // undefined*, that is not the reason the user needs: the
+                // language-level checker already has a strictly better-attributed
+                // one — `undefined inputs: <cell>` — naming the very cell that
+                // must be bound.  Speaking about the surface instead would
+                // discard a correct cause and hand the user a two-hop dead end
+                // (`reify build` → "run `reify check`" → "check that the subject
+                // declares a realization", when the subject was never bound at
+                // all), which is the same INV-SF-4 misattribution class ζ exists
+                // to remove, merely relocated a third time.
+                //
+                // So decline the entry: push it to `rest` and let it reach the
+                // checker exactly as it did before ζ.  The definedness predicate
+                // is the same one the checker itself uses (`classify_undef`'s
+                // has-undef branch: any leaf `ValueRef` that is `Undef` in
+                // `values`), so "declined here" ⇔ "the checker will say
+                // `undefined inputs`" by construction — this can never route an
+                // entry into the `operator undefined for these operand kinds`
+                // branch that ζ eliminates.
+                //
+                // Only the `Indeterminate` arm is declined.  A `Satisfied` /
+                // `Violated` engine answer is a real measurement (reached via
+                // `resolve_repr_tol_key`'s deliberately hydration-INDEPENDENT
+                // type-name scan, which resolves without the subject cell being
+                // populated), and must not be thrown away just because the cell
+                // is unhydrated.
+                Some((Satisfaction::Indeterminate, _)) if has_undefined_operand(expr, values) => {
+                    rest.push((i, id, expr, target));
+                }
                 Some((satisfaction, diag_opt)) => {
                     // Engine-side result from the achieved-repr-tol map.
+                    let mut messages: Vec<Diagnostic> = diag_opt.into_iter().collect();
+
+                    // C-SURFACE (1): say *why* we cannot answer, and point at
+                    // the surface that can (INV-SF-4), with a machine-readable
+                    // code (INV-SF-6).  Severity is Info, not Warning or Error
+                    // — this is the routine outcome of running `reify build` on
+                    // any bounded module, and nothing is wrong with the design.
+                    //
+                    // The `is_empty()` gate is load-bearing: it is exactly the
+                    // condition the old fast-path guard tested, so this is a
+                    // one-for-one swap of a misattributed Warning for an
+                    // attributable Info — no other constraint gains or loses a
+                    // diagnostic.  In particular the C1 case (tessellation ran,
+                    // but this subject's key is unresolvable) keeps its existing
+                    // silent Indeterminate, which is what keeps `reify check`
+                    // output unchanged — for a DEFINED subject.  An UNBOUND one
+                    // never reaches this arm: the decline arm above it fires
+                    // first regardless of `achieved_repr_tol`, pushing the entry
+                    // to `rest` so the checker attributes the real cause.  That
+                    // is the one shape whose `reify check` output does differ
+                    // from pre-ζ (silent Indeterminate -> `undefined inputs`),
+                    // and it is deliberate: gating the decline on `is_empty()`
+                    // would restore the silence only by reinstating the
+                    // misattribution ζ removes.  Pinned by
+                    // `measuring_surface_with_unbound_subject_still_attributes_the_undefined_input`.
+                    //
+                    // That gate is MODULE-wide rather than per-subject, so a
+                    // module which measures at least one subject still leaves an
+                    // unmeasurable sibling with a bare Indeterminate.  Narrowing
+                    // it to "this subject's key did not resolve" needs a new
+                    // signal out of `eval_representation_within` and inverts the
+                    // regression guard
+                    // `measuring_surface_indeterminate_carries_no_attribution_diagnostic`,
+                    // so it is deliberately out of scope here and filed as
+                    // follow-up ticket tkt_0RSR81KF1TYDY8PDANNHQZCFV2.
+                    //
+                    // Which REMEDY the reason names is a pure function of two
+                    // engine fields with no loop-local input — see
+                    // [`Engine::unmeasured_reason`] for the three-cause taxonomy
+                    // and why the arms are ordered as they are.  `id` is embedded
+                    // in the text so `labeled_diagnostics` can substitute a
+                    // user-facing label, exactly as the language-level checker's
+                    // message does.
+                    if matches!(satisfaction, Satisfaction::Indeterminate)
+                        && self.achieved_repr_tol.is_empty()
+                    {
+                        let reason = self.unmeasured_reason();
+                        messages.push(
+                            Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
+                                .with_code(DiagnosticCode::ConstraintIndeterminate),
+                        );
+                    }
+
                     rw_slots[i] = Some(ConstraintResult {
                         id,
                         satisfaction,
-                        diagnostics: ConstraintDiagnostics {
-                            messages: diag_opt.into_iter().collect(),
-                        },
+                        diagnostics: ConstraintDiagnostics { messages },
                     });
                     any_rw = true;
                 }
@@ -578,6 +736,180 @@ impl Engine {
             .map(|r| r.expect("dispatch_constraints: every slot must be filled"))
             .collect();
         (constraint_results, dispatch_diagnostics)
+    }
+    /// The reason clause for a `RepresentationWithin` Indeterminate on a run
+    /// whose `achieved_repr_tol` is empty (task-6169 ζ, C-SURFACE 1).
+    ///
+    /// A pure function of two engine properties, because an empty map has THREE
+    /// distinct causes and each has a different fix:
+    ///   1. **No kernel able to tessellate the subject is registered** — this
+    ///      run cannot measure anything at all (a stub-mode binary, whichever
+    ///      subcommand asked) → the remedy is a kernel.
+    ///   2. **Capable kernel present, capture OFF** — nobody ever asked for a
+    ///      measurement on this surface (`reify build`, `reify eval`) → the
+    ///      remedy is `reify check`.
+    ///   3. **Capable kernel present, capture ON, still nothing measured** —
+    ///      tessellation ran (or would have) but produced no achieved deviation
+    ///      for THIS subject.
+    ///
+    /// Kernel capability is tested FIRST, ahead of `capture_repr_tol`, so the
+    /// remedy handed to the user is always TERMINAL.  Testing capture first
+    /// sent a stub-mode `reify build` into arm 2 — "run `reify check`" — whose
+    /// only answer on that same binary is arm 1's "build with OCCT": a two-hop
+    /// dead end, and a milder instance of the very defect class C-SURFACE 1
+    /// exists to remove.
+    ///
+    /// ## Why capability, not `default_kernel_name.is_none()`
+    ///
+    /// An earlier revision discriminated on `default_kernel_name.is_none()`.
+    /// That is **never true on any shipped binary**, so arm 1 was dead code on
+    /// exactly the surfaces it was written for.  `reify-kernel-manifold`'s
+    /// `inventory::submit!` is UNCONDITIONAL (no `cfg` gate — its `manifold3d`
+    /// dep compiles its own C++ tree, so there is no "manifold absent" case),
+    /// and `crates/reify-cli/src/main.rs`'s `extern crate reify_kernel_manifold
+    /// as _;` states verbatim that the `"manifold"` key is always present in
+    /// the binary's registry.  `pick_lexmin_brep_kernel` ends in
+    /// `.or_else(|| registered.values().next())`, so a stub-mode (no-OCCT)
+    /// binary still gets `default_kernel_name == Some("manifold")` — a
+    /// Mesh-only kernel that cannot tessellate the B-rep subject.  The old test
+    /// coverage passed only because `Engine::new(checker, None)` (unit tests)
+    /// is the sole shape that reaches an empty registry.
+    ///
+    /// So the question arm 1 must actually ask is not "is *a* kernel
+    /// registered" but "is a kernel that can produce the measurement
+    /// registered".  OCCT is the only BRep producer in the workspace
+    /// (`reify-kernel-occt`'s submit is `cfg(has_occt)`-gated; manifold claims
+    /// Mesh only, openvdb Voxel/Mesh), so `supports_any_repr(ReprKind::BRep)`
+    /// over this engine's own kernels is an exact test for "this binary was
+    /// built with OCCT".
+    ///
+    /// Capability is read off the static registry keyed by this engine's own
+    /// `geometry_kernels` names, because `GeometryKernel` is a behavioural
+    /// trait with no descriptor accessor — see
+    /// [`Engine::has_repr_capable_kernel`].  Kernel-absence is still read as a
+    /// fact about the BINARY rather than merely this engine because every
+    /// surface that both dispatches constraints and can carry a
+    /// `RepresentationWithin` builds its engine with
+    /// `Engine::with_registered_kernel` (`cmd_check`'s assertion branch,
+    /// `cmd_build`, the GUI session); `eval()` never dispatches constraints, so
+    /// the CLI's deliberately kernel-free `eval` engines cannot reach here.
+    ///
+    /// Emitting arm 2's remedy unconditionally would also put "run `reify
+    /// check`" into the diagnostics of the pre-`check()` pass inside
+    /// `tessellate_realizations` (engine_build.rs), which runs before the map is
+    /// populated and is therefore precisely a surface that DOES measure.
+    ///
+    /// Arm 3 is deliberately CAUSE-NEUTRAL and mentions neither `kernel` nor
+    /// `OCCT`.  Blaming the kernel there would be a false statement — one is
+    /// demonstrably registered — and exactly the INV-SF-4 misattribution this
+    /// task exists to remove, merely relocated from the operand kinds to the
+    /// kernel.  With a kernel present the engine genuinely cannot tell whether
+    /// the subject declares no realization at all, or declares one whose
+    /// type-name scan key could not be resolved, so it states the observable
+    /// fact and points at the actionable check rather than asserting a cause it
+    /// has not established.
+    fn unmeasured_reason(&self) -> &'static str {
+        if !self.has_repr_capable_kernel() {
+            "this run does not measure representation tolerance because no \
+             geometry kernel able to tessellate the subject is registered; \
+             such a geometry kernel is required — build with OCCT to evaluate \
+             this RepresentationWithin bound"
+        } else if !self.capture_repr_tol {
+            "this evaluation surface does not measure representation tolerance \
+             (no tessellation ran, so no achieved deviation exists for the \
+             subject); run `reify check` to evaluate this RepresentationWithin \
+             bound"
+        } else {
+            "no realization of the subject was tessellated on this run, so no \
+             achieved deviation exists for it and this run does not measure \
+             representation tolerance; check that the subject declares a \
+             realization"
+        }
+    }
+
+    /// Whether this engine holds a geometry kernel that can produce the
+    /// representation measurement a `RepresentationWithin` bound needs — i.e.
+    /// one claiming at least one `(_, ReprKind::BRep)` pair.
+    ///
+    /// This is the arm-1 discriminator of [`Engine::unmeasured_reason`]; see
+    /// that method's "Why capability, not `default_kernel_name.is_none()`"
+    /// section for why kernel PRESENCE is the wrong question (manifold
+    /// registers unconditionally, so no shipped binary has an empty registry).
+    ///
+    /// ## Why the answer is RECORDED at construction, not looked up here
+    ///
+    /// `self.geometry_kernels` is a `BTreeMap<String, Box<dyn GeometryKernel>>`
+    /// and [`reify_ir::GeometryKernel`] is a purely behavioural trait
+    /// (`execute` / `execute_with_history` / `query`) with no capability
+    /// accessor — the descriptor lives on the `KernelRegistration` record, not
+    /// on the kernel object.  Keying the static registry by this engine's own
+    /// kernel NAMES looks like it asks the capability question about the
+    /// kernels THIS engine holds, but it does NOT on any shipped binary:
+    /// [`Engine::with_registered_kernel`] — the constructor every production
+    /// constraint-dispatching surface uses (reify-cli `cmd_check` /
+    /// `cmd_build`, the GUI `EngineSession`) — forwards through
+    /// `Engine::with_prelude`, which files the picked adapter under the
+    /// synthetic `Engine::DEFAULT_KERNEL_NAME` key, NEVER under its real
+    /// registry name.  That key resolves to `None` in the registry, so a
+    /// lookup-only implementation hands back the benefit-of-the-doubt `true`
+    /// unconditionally and arm 1 of [`Engine::unmeasured_reason`] is dead on
+    /// exactly the surfaces it was written for (task 6169 review round).
+    ///
+    /// So the inventory-driven constructors record the picked registration's
+    /// declared capability into `Engine::repr_capable_kernel` while they still
+    /// hold it, and this method reads that first.  One `Engine` field is what
+    /// that costs; the lookup shape cannot be made to work from here.
+    ///
+    /// ## An UNRECORDED kernel is not evidence of INcapacity
+    ///
+    /// When nothing was recorded (`repr_capable_kernel == None`) a kernel whose
+    /// name is absent from the static registry counts as capable.  The only
+    /// shape that produces one is `Engine::new` /
+    /// `with_prelude` with a caller-supplied `Some(kernel)`, which inserts
+    /// under the synthetic `Engine::DEFAULT_KERNEL_NAME` key documented to
+    /// collide with no real adapter name — a unit-test seam, never a CLI or
+    /// GUI surface (both build via `with_registered_kernel`, which DOES
+    /// record).  Such an adapter
+    /// has DECLARED nothing, so reading it as incapable would have the engine
+    /// assert a fact it has not established — the same INV-SF-4 sin ζ removes.
+    /// The rule is therefore: judge a kernel by the capabilities it declared,
+    /// and give one that declared none the benefit of the doubt.  Concretely
+    /// this keeps `Engine::new(checker, Some(stub))` standing in for a
+    /// measurement-capable `reify build` engine in tests that must run in both
+    /// kernel modes.
+    ///
+    /// An EMPTY `geometry_kernels` still yields `false` on both paths (the
+    /// recorded path stores `false` when the picker yielded nothing) — there
+    /// is no adapter to extend any benefit to — preserving the stub-mode semantics the
+    /// previous discriminator had for `Engine::new(checker, None)`.
+    ///
+    /// ## Cost
+    ///
+    /// `(reg.descriptor)()` allocates a fresh `CapabilityDescriptor` per
+    /// examined kernel, exactly as `pick_lexmin_brep_kernel` does.  That is
+    /// acceptable here for the same reason it is there — and more so: this runs
+    /// only on the cold path where a `RepresentationWithin` already came back
+    /// Indeterminate with an empty map, never on the C2 hot path, which returns
+    /// before any of this.
+    fn has_repr_capable_kernel(&self) -> bool {
+        // Construction-recorded answer wins: the inventory-driven constructors
+        // are the only sites that hold the `KernelRegistration` the capability
+        // is declared on, and `with_registered_kernel` (the constructor EVERY
+        // production surface uses) files its pick under the synthetic
+        // `DEFAULT_KERNEL_NAME`, which no registry lookup can resolve.
+        if let Some(capable) = self.repr_capable_kernel {
+            return capable;
+        }
+        // Fallback: the caller-supplied-kernel seam (`Engine::new` /
+        // `with_prelude` with `Some(kernel)`), which records nothing. An
+        // adapter that declared nothing gets the benefit of the doubt; an
+        // EMPTY map still yields `false` (no adapter to extend it to).
+        let registry = crate::kernel_registry::registry();
+        self.geometry_kernels.keys().any(|name| {
+            registry
+                .get(name.as_str())
+                .is_none_or(|reg| (reg.descriptor)().supports_any_repr(ReprKind::BRep))
+        })
     }
 
     /// Replace occurrences of the raw ConstraintNodeId string in diagnostic
@@ -3174,6 +3506,87 @@ structure def Probe {
         assert!(
             pos(&geometric_id) < pos(&scalar_id) && pos(&scalar_id) < pos(&ordinary_id),
             "weave must preserve caller (declaration) order"
+        );
+    }
+}
+
+#[cfg(test)]
+mod unmeasured_reason_capability_tests {
+    use reify_constraints::SimpleConstraintChecker;
+
+    use crate::Engine;
+
+    /// The shipped stub-mode shape, isolated to the ONE axis on which a
+    /// CAPABILITY test differs from a PRESENCE test: a registered kernel that
+    /// cannot produce a BRep tessellation and that IS this engine's
+    /// `default_kernel_name`.
+    ///
+    /// Every no-OCCT CLI/GUI binary is in exactly this shape —
+    /// `reify-kernel-manifold`'s `inventory::submit!` is unconditional, so
+    /// `pick_lexmin_brep_kernel`'s `.or_else(|| registered.values().next())`
+    /// fallback hands a stub binary `default_kernel_name == Some("manifold")`
+    /// — and it is unreachable through any public `Engine` constructor in this
+    /// crate's test binary: `with_registered_kernel{,s}` consult the LIVE
+    /// registry, which on an OCCT build always yields OCCT. Hence a unit test
+    /// that sets the field directly rather than an integration test.
+    ///
+    /// `"openvdb"` stands in for the CLI's `"manifold"`. reify-eval links no
+    /// manifold adapter, so `"manifold"` is absent from THIS binary's registry
+    /// and would take [`Engine::has_repr_capable_kernel`]'s deliberate
+    /// benefit-of-the-doubt path for kernels that declared nothing. OpenVDB is
+    /// registered here and declares Voxel/Mesh only: the same "registered, but
+    /// cannot produce the measurement" fact, expressed with a kernel this
+    /// binary actually holds.
+    ///
+    /// ## Why this gate is load-bearing
+    ///
+    /// It is the only test in this task's suite that is RED against the
+    /// previous `default_kernel_name.is_none()` discriminator on an OCCT
+    /// build. That predicate read a `Some` default as "a kernel can measure",
+    /// so with capture ON it selected arm 3 — "check that the subject declares
+    /// a realization" — blaming the subject for a kernel's missing capability.
+    /// The suite's other non-measuring cases all reach their incapable kernel
+    /// set via `Engine::new(_, None)`, whose `default_kernel_name` is `None`;
+    /// the old predicate routed those to arm 1 as well, so they pass under
+    /// BOTH discriminators and cannot catch a regression here.
+    #[test]
+    fn registered_non_brep_default_kernel_is_not_measurement_capable() {
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        if !engine.ensure_openvdb_kernel() {
+            eprintln!(
+                "skipping stub-mode capability gate: OpenVDB is absent from this \
+                 binary's inventory registry (cfg(not(has_openvdb)))"
+            );
+            return;
+        }
+        // The axis under test: the Mesh-only adapter is not merely present, it
+        // is what the lex-min picker would hand a stub-mode binary.
+        engine.default_kernel_name =
+            Some(crate::kernel_registry::openvdb_kernel_name().to_string());
+        // Capture ON, so `capture_repr_tol` cannot be what selects the arm.
+        engine.set_capture_repr_tol(true);
+
+        assert!(
+            !engine.has_repr_capable_kernel(),
+            "a kernel declaring no (_, ReprKind::BRep) pair cannot produce the \
+             measurement, however the lex-min picker selected it as default"
+        );
+
+        let reason = engine.unmeasured_reason();
+        assert!(
+            reason.contains("geometry kernel"),
+            "INV-SF-4: the missing CAPABILITY is the established cause and is \
+             what must be named. Got: {reason:?}"
+        );
+        assert!(
+            !reason.contains("check that the subject declares a realization"),
+            "arm 3 blames the subject for a kernel's missing capability — the \
+             misattribution class ζ exists to remove, merely relocated. Got: {reason:?}"
+        );
+        assert!(
+            !reason.contains("reify check"),
+            "arm 2 sends a stub-mode run to a subcommand whose binary has no \
+             capable kernel either — the two-hop dead end. Got: {reason:?}"
         );
     }
 }

@@ -1,0 +1,19 @@
+module driver_parity_auto_ctl
+// PRD evidence: docs/prds/v0_6/solver-driver-parity.md §1, §5 B1/B2.
+// A constructor-argument `auto` pinned by a constant equality. The solved value
+// is 10mm; the child's default is 5mm, so the two are distinguishable in the
+// realized geometry.
+//
+// Baseline measured on main 2128c3692c (2026-08-26):
+//   reify check -> exit 0, "No constraints violated (1 indeterminate)."
+//   reify eval  -> AutoCtl.rod.length = 0.01 m   (solver wired here only)
+//   reify build -> exit 0, STEP cylinder z-extent -5mm (the DEFAULT, not 10mm)
+// Target after this PRD: check reports Satisfied; build's z-extent is -10mm.
+pub structure Rod {
+    param length : Length = 5mm
+    let body = translate(cylinder(3mm, length), 0mm, 0mm, 0mm - length)
+}
+pub structure AutoCtl {
+    sub rod = Rod(length: auto)
+    constraint self.rod.length == 10mm
+}

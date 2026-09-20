@@ -303,7 +303,7 @@ access). The correct file list is the table above.
    generic `conforms<T,R>`, escape-hatch deferred). Tests: known-good
    (`box(10mm,10mm,10mm)` → true on all three) and known-bad (open shell
    built via direct BRep — see fixture pattern in
-   `crates/reify-kernel-occt/tests/conformance_integration.rs`) shapes.
+   `crates/reify-kernel-occt/tests/harness_occt/conformance_integration.rs`) shapes.
 6. **Specialization escape hatch — compile-time warning + runtime
    short-circuit.** Compile-time: emit `W_TRAIT_USER_ASSERTED` once per
    `(structure_def, geometry_marker_bound)` pair when `: Watertight` (or

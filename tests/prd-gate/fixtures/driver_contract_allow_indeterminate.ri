@@ -1,0 +1,18 @@
+// driver-contract PRD, grammar + semantic evidence for the ruled indeterminate-
+// tolerant annotation spelling (@allow_indeterminate as a sibling of @test).
+//
+// Measured at main 9a992fc2f2 (2026-08-26):
+//   tree-sitter parse --quiet -> exit 0, 0 ERROR nodes (no grammar work needed)
+//   reify check / reify test  -> "warning: unknown annotation @allow_indeterminate"
+//
+// That warning IS the baseline: the annotation parses and is loudly unregistered,
+// so leaf λ's work is a SCHEMAS entry plus a consumer in the test runner, not
+// grammar. Post-fix the warning disappears and the test's Indeterminate verdict
+// stops gating the exit code.
+module driver_contract_allow_indeterminate
+@test
+@allow_indeterminate
+structure TestToleratedIndeterminate {
+    param w : Length = auto
+    constraint w > 0mm
+}

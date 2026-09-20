@@ -55,15 +55,17 @@ tasks:
   title: angle_spec() in arg_acceptance; retire the hint-less inline ANGLE spec
   capabilities:
   - name: angle-spec-absent-today
-    binding: capability→producer (this leaf) — grep:crates/reify-eval/src/arg_acceptance.rs:86
-      density_spec, :103 length_spec, :117 accept_arg; no angle_spec anywhere in the
-      repo
+    binding: capability→producer (this leaf) — grep:crates/reify-ir/src/arg_acceptance.rs:298
+      density_spec, :337 length_spec, :635 accept_arg; no angle_spec anywhere in the
+      repo AT DECOMPOSE — since DELIVERED, pub fn angle_spec() at
+      crates/reify-ir/src/arg_acceptance.rs:411 (re-measured 2026-09-18, task 7550;
+      anchors re-measured against main @ ea896581d1, not bd10b6d0e1)
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: pub fn angle_spec
       paths:
-      - crates/reify-eval/src/arg_acceptance.rs
+      - crates/reify-ir/src/arg_acceptance.rs
       expect: present
   - name: angle-rejection-mechanism-fires
     binding: 'rejection-check (G6 branch 4) — probe: reify eval faces_by_normal(b,0.0,0.0,1.0,0.01)
@@ -83,7 +85,7 @@ tasks:
       kind: grep
       pattern: pass a dimensioned angle such as
       paths:
-      - crates/reify-eval/src/arg_acceptance.rs
+      - crates/reify-ir/src/arg_acceptance.rs
       expect: present
   - name: shared-diagnostic-code-upstream
     binding: DAG-direction — producer:task 5743 (PRD 1 β) mints the shared bare/wrong-dimension
@@ -305,7 +307,9 @@ tasks:
       `int32_t lookahead;`, i.e. decoded codepoints. Controlled experiment: patching
       scanner.c:250 to (c==''*''||c==0xB7) makes the fixture exit 0; patching it to
       the PRD''s 0xC2/0xB7 byte pair leaves it exit 1 (dead branch). PRD §5 C2''s
-      "UTF-8 0xC2 0xB7" and §3.8''s "UTF-8-aware read" are VOID'
+      "UTF-8 0xC2 0xB7" and §3.8''s "UTF-8-aware read" are VOID; both were corrected
+      in the PRD text itself by task 5949 (2026-08-29), so the quoted strings are the
+      pre-correction wording'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -638,7 +642,7 @@ tasks:
       expect: absent
   - name: unit-expressions-is-runtime-coupled
     binding: unlisted premise — grep:crates/reify-eval/tests/unit_expressions_e2e.rs:20
-      loads examples/unit_expressions.ri by path; crates/reify-compiler/tests/materials_fea_tests.rs:274-280
+      loads examples/unit_expressions.ri by path; crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs:274-280
       cites its :17. Edits must keep both green
     verdict: PASS
 - label: π

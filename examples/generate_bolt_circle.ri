@@ -7,6 +7,23 @@
 //   (50, 0, 0), (0, 50, 0), (-50, 0, 0), (0, -50, 0)  [mm]
 // The index `i` is a 0-based `Int`; `i * 2 * pi / bolt_count` promotes to a
 // dimensionless `Real` angle, and `radius * cos/sin` yields a `Length`.
+//
+// TODO(#5385): revisit the note below when the geometry-in-generate fix lands.
+// It is plain prose, so nothing would otherwise flag it going stale; this cite
+// is what forces the revisit (an orphaned cite fails the PTODO gate).
+//
+// VALUE-KIND LIMITATION (state of `main`, 2026-08-23) — geometry constructed
+// inside a `generate` lambda yields `undef` elements under a green `check`, so
+// place geometry with the pattern builtins (`linear_pattern`,
+// `circular_pattern`, `arbitrary_pattern`) instead. #5385 fixes the cold
+// `check`/`eval`/build paths; the residual that survives it is narrower — a
+// repeat no-op tessellate under selective demand, i.e. the GUI's rebuild path —
+// and is tracked as #6460. This file's lambda computes point3 values only,
+// which is why it is unaffected either way. Trust the task records #5385 and
+// #6460 over this note for the FUNCTIONAL fix; `docs/prds/v0_6/
+// eradicate-silent-undef.md` is canonical only for the loudness arm (it puts
+// the generate-of-geometry functional fix out of scope, and does not mention
+// #6460 at all).
 
 structure BoltCircle {
     let bolt_count = 4

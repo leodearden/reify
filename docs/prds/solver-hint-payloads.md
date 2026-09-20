@@ -2,7 +2,7 @@
 
 **Status:** v0.1 scope.
 **Spec reference:** `docs/reify-language-spec.md` §12.1.
-**Pre-existing infrastructure:** Tasks **#275** (compiler-side annotation extraction → `SolverHint { kind, collection, span }` on `ValueCellDecl`) and **#276** (solver-side integration through engine + constraint solver) are **done**. `extract_solver_hints` in `crates/reify-compiler/src/annotations.rs` parses the two arg form `@solver_hint("<kind>", <ident>)` and recognises `discrete_set` / `prefer_stock`. Tests exist at `crates/reify-compiler/tests/solver_hint_tests.rs`.
+**Pre-existing infrastructure:** Tasks **#275** (compiler-side annotation extraction → `SolverHint { kind, collection, span }` on `ValueCellDecl`) and **#276** (solver-side integration through engine + constraint solver) are **done**. `extract_solver_hints` in `crates/reify-compiler/src/annotations.rs` parses the two arg form `@solver_hint("<kind>", <ident>)` and recognises `discrete_set` / `prefer_stock`. Tests exist at `crates/reify-compiler/tests/harness_geometry_solver/solver_hint_tests.rs`.
 
 This PRD is about the **payload data the hints reference**: the `<ident>` second arg today resolves to a *name string* but there are no stdlib collections under those names for designs to point at. Without payloads, every realistic `@solver_hint` use site needs to define its own collection — which defeats the point ("standard bolt lengths" should be a stdlib fact, not per-design boilerplate).
 
@@ -27,7 +27,7 @@ Doc comments are mandatory on both collections. They surface in the doc generato
 
 ### 2. Wire-up validation
 
-Add an integration test at `crates/reify-compiler/tests/solver_hint_payload_tests.rs` (or fold into the existing `solver_hint_tests.rs`) that:
+Add an integration test at `crates/reify-compiler/tests/harness_geometry_solver/solver_hint_payload_tests.rs` (or fold into the existing `solver_hint_tests.rs`) that:
 
 - Compiles a small structure annotated `@solver_hint("discrete_set", standard_bolt_lengths) param length : Length = auto` under `compile_with_stdlib` — succeeds, no warnings, the resulting `ValueCellDecl.solver_hints` carries the right `collection` and resolves to a `Vec<Length>` of the expected length when looked up.
 - Same but for `prefer_stock` + `standard_sheet_thicknesses`.

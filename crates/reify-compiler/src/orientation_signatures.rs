@@ -1,88 +1,251 @@
-//! Compiler result-type signatures for the two Euler-angle builtins
-//! (task #6082): `orient_euler` / `orient_to_euler`.
+//! Compiler result-type signatures for the orientation / transform / frame
+//! builtins: the **constructor** family (task 5344) and the Euler
+//! **decomposer** family (task #6082).
 //!
-//! Modelled on `parse_signatures.rs`'s name-family + result-type-resolver
-//! pattern (`is_parse_typed_fn` / `parse_fn_result_type`). Like the parse
-//! family — and unlike the math-linalg family — the result type here is
-//! arg-INDEPENDENT: each name always resolves to the same type regardless of
-//! which of the twelve conventions the call selects.
+//! Holds the single source of truth for the orientation/transform/frame
+//! constructor builtin name family ([`ORIENTATION_TYPED_FN_NAMES`]), the
+//! name-only classification predicate ([`is_orientation_typed_fn`]), and the
+//! name→nominal-type resolver ([`orientation_typed_fn_result_type`]).
 //!
-//! # Why the family exists
+//! These constructors all map to a FIXED nominal type independent of their
+//! arguments. Without this arm they fall through the `expr.rs`
+//! `NoUserFunctions` ladder to the first-arg fallback, which mistypes them and
+//! warns on the zero-arg members.
 //!
-//! Neither name belonged to any signature module, so both fell through to
-//! `expr.rs`'s terminal first-arg fallback, which is literally
-//! `compiled_args[0].result_type.clone()` — the type of whatever happens to sit
-//! at argument 0. That rule has nothing to do with what either builtin
-//! evaluates to, and it was wrong for both in the same way:
+//! [`ORIENTATION_TYPED_FN_NAMES`]'s doc comment is the SINGLE SOURCE OF TRUTH
+//! for this family's membership and the rationale behind it — which names are
+//! in, which are deliberately out, and the two traps encoded in the list.
+//! Everything else in this crate that needs that rationale (the `expr.rs`
+//! ladder arm, the tests below) points there rather than restating it.
 //!
-//! - `orient_euler(EulerConvention.XYZ, a, b, c)` — arg 0 is the CONVENTION, so
-//!   the constructed rotation was typed `Enum("EulerConvention")`, the mode
-//!   selector's own type.
-//! - `orient_to_euler(q, EulerConvention.XYZ)` — arg 0 was the convention too,
-//!   before #6082 flipped the decomposer subject-first; the flip alone would
-//!   have merely re-aimed the fallback at `Orientation(3)`, trading one wrong
-//!   static type for another.
+//! The second family is one name, `orient_to_euler`
+//! ([`ORIENTATION_EULER_FN_NAMES`] / [`is_orientation_euler_fn`] /
+//! [`orientation_euler_result_type`]). It is a separate resolver rather than
+//! 19 rows in the first because it answers a different question: the
+//! constructors map to a fixed NOMINAL type, while the decomposer returns a
+//! `List<Angle>`. Its own doc comment carries the full rationale, including
+//! why the similarly-spelled `orient_euler` belongs to the constructor family
+//! and not to it.
 //!
-//! # Why not a `.ri pub fn` declaration
-//!
-//! A `.ri` fn declaration with a body is the one place a full
-//! arguments-plus-return signature is directly expressible, but it is
-//! forbidden here: `crates/reify-compiler/stdlib/geometry_traits.ri` documents
-//! that such a declaration becomes a `CompiledFunction` dispatched through
-//! `eval_user_function_call` (pure value eval), which would SHADOW the Rust
-//! `eval_builtin` arm in `reify-stdlib/src/orientation.rs` and break evaluation
-//! outright. The sanctioned route is the two-seam split #6082 uses: argument
-//! types via `builtin_signatures::builtin_arg_slots`, return type via this
-//! module plus an `expr.rs` ladder arm.
-//!
-//! # Scope
-//!
-//! Deliberately exactly these two names, not all `orient_*`. The remaining
-//! mistyped orientation builtins (`orient_log`, `orient_to_axis_angle`,
-//! `orient_compose`, …) are part of the fallback population owned by task
-//! #6004's signature registry (`docs/prds/v0_6/builtin-signature-registry.md`);
-//! claiming them here would pre-empt that family and enlarge the reciprocal
-//! disjointness churn in `units.rs` for no gain.
+//! Mirrors the `joint_signatures.rs` module structure (task 4311 recipe).
 
 use reify_core::Type;
 
-/// The complete set of Euler-angle builtin names the compiler types via
-/// [`orientation_euler_result_type`]. Single source of truth — mirrors
-/// `PARSE_FN_NAMES` in `parse_signatures.rs`.
-pub const ORIENTATION_EULER_FN_NAMES: &[&str] = &["orient_euler", "orient_to_euler"];
+/// The complete set of orientation/transform/frame constructor builtin names
+/// recognised by the compiler. Single source of truth — imported into the
+/// `units.rs` test module to pin disjointness from all sibling families.
+///
+/// **18 names** grouped by target nominal type:
+/// - **Orientation producers** (10) → `Type::Orientation(3)`: `orient_identity`,
+///   `orient_quaternion`, `orient_euler`, `orient_basis`, `orient_look_at`,
+///   `orient_axis_angle`, `orient_exp`, `orient_inverse`, `orient_compose`,
+///   `orient_slerp`. Eval dispatch: `reify_stdlib::orientation::eval_orientation`.
+/// - **Frame producers** (2) → `Type::Frame(3)`: `frame3`, `frame3_identity`.
+///   Eval dispatch: `reify_stdlib::geometry::eval_geometry`.
+/// - **Transform producers** (6) → `Type::Transform(3)`: `transform3`,
+///   `transform3_identity`, `transform_compose`, `transform_inverse`,
+///   `transform_exp`, `frame_to_frame`. Eval dispatch:
+///   `reify_stdlib::geometry::eval_geometry`.
+///
+/// # The family is NOT uniform — never replace this list with a prefix rule
+///
+/// This MUST stay an explicit list. A `starts_with("orient_")` /
+/// `starts_with("transform_")` prefix rule would newly MISTYPE all FOUR
+/// DECOMPOSERS, which share a prefix with a genuine producer but return a
+/// different value kind and are deliberately EXCLUDED:
+/// - `orient_log` → `Value::Vector` (the rotation vector / log map),
+/// - `orient_to_euler` → `Value::List` of Angles,
+/// - `orient_to_axis_angle` → `Value::Map` `{angle, axis}`,
+/// - `transform_log` → `Value::Map` (twist).
+///
+/// The two `Value::Map` cases have no clean `Type` variant and `orient_log`'s
+/// quantity slot needs a dimension ruling, so per-name typing for the
+/// decomposers is out of scope here (a follow-up).
+///
+/// `frame_at` is likewise EXCLUDED: `units.rs::datum_constructor_result_type`
+/// already types it `Type::Frame(3)` as part of the DATUM family, so claiming
+/// it here would double-classify the name across two resolvers.
+///
+/// # Two traps encoded in this list
+///
+/// 1. **`frame_to_frame` is a Transform, not a Frame.** Despite the `frame_`
+///    prefix it returns `Value::Transform` (`geometry.rs:512`) — it computes the
+///    rigid motion mapping one frame onto another.
+/// 2. **The digit is meaningful.** The digit-carrying `transform3` /
+///    `transform3_identity` CONSTRUCTORS are distinct from the digitless
+///    `transform_compose` / `transform_inverse` / `transform_exp` OPERATIONS;
+///    both groups land on `Type::Transform(3)`, but the spelling split is real
+///    and must not be "tidied".
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const ORIENTATION_TYPED_FN_NAMES: &[&str] = &[
+    // Orientation producers (10): → Type::Orientation(3)
+    "orient_identity",
+    "orient_quaternion",
+    "orient_euler",
+    "orient_basis",
+    "orient_look_at",
+    "orient_axis_angle",
+    "orient_exp",
+    "orient_inverse",
+    "orient_compose",
+    "orient_slerp",
+    // Frame producers (2): → Type::Frame(3)
+    "frame3",
+    "frame3_identity",
+    // Transform producers (6): → Type::Transform(3)
+    "transform3",
+    "transform3_identity",
+    "transform_compose",
+    "transform_inverse",
+    "transform_exp",
+    // Trap: `frame_` prefix, but returns Value::Transform (geometry.rs:512).
+    "frame_to_frame",
+];
 
-/// Is `name` a Euler-angle builtin typed by [`orientation_euler_result_type`]?
-/// Name-only classification, mirroring `parse_signatures::is_parse_typed_fn` (a
-/// `.contains` over the single-source-of-truth slice). Case-sensitive: Reify
-/// function names are snake_case.
+/// Is `name` an orientation/transform/frame constructor builtin the compiler
+/// types via [`orientation_typed_fn_result_type`]? Name-only classification —
+/// a `.contains` over the single-source-of-truth slice
+/// [`ORIENTATION_TYPED_FN_NAMES`]. Case-sensitive.
+pub(crate) fn is_orientation_typed_fn(name: &str) -> bool {
+    ORIENTATION_TYPED_FN_NAMES.contains(&name)
+}
+
+/// Result type for an orientation/transform/frame constructor builtin — a fixed
+/// nominal type keyed on `name` alone.
+///
+/// Adopts a name-only INFALLIBLE `-> Type` shape rather than the args-aware
+/// `-> Option<Type>` / `&[CompiledExpr]` shapes used by the arity-sensitive
+/// families, because every result type here is argument-INDEPENDENT: there is
+/// no argument whose type or count could change the answer. (The shape was
+/// modelled on `parse_fn_result_type`, whose module task #6001 α replaced with
+/// the `reify-builtins` row table.)
+///
+/// The per-name mapping is the grouping documented on
+/// [`ORIENTATION_TYPED_FN_NAMES`], one match arm per group.
+///
+/// ## Cell-type / value-kind agreement
+///
+/// Unlike the joint family (which types a `Value::Map` cell as a
+/// `Type::StructureRef`), here the Type↔Value correspondence is EXACT:
+/// `Type::Orientation(3)` ⇄ `Value::Orientation`, `Type::Frame(3)` ⇄
+/// `Value::Frame`, `Type::Transform(3)` ⇄ `Value::Transform`.
+///
+/// This makes the change guard-SATISFYING rather than guard-breaking. Before
+/// this family existed, eval produced a `Value::Orientation` into a cell
+/// statically typed `Real` (via the first-arg fallback), so
+/// `reify_eval::value_type_kind_matches` had a static/runtime kind DISAGREEMENT
+/// at every such site. Assigning the correct static type makes that guard agree
+/// where it previously did not — no `StructureRef` escape hatch is relied upon.
+///
+/// Only reached for names in [`ORIENTATION_TYPED_FN_NAMES`] (the caller gates on
+/// [`is_orientation_typed_fn`]); the `_` arm is therefore unreachable in
+/// practice and returns a harmless `Type::dimensionless_scalar()`. The
+/// `every_orientation_fn_name_maps_to_a_non_scalar_result_type` test makes a
+/// silent fallthrough loud.
+pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
+    match name {
+        // ── Section (1): Orientation producers (10) → Orientation(3) ─────────
+        // Eval: reify_stdlib::orientation::eval_orientation → Value::Orientation.
+        "orient_identity"
+        | "orient_quaternion"
+        | "orient_euler"
+        | "orient_basis"
+        | "orient_look_at"
+        | "orient_axis_angle"
+        | "orient_exp"
+        | "orient_inverse"
+        | "orient_compose"
+        | "orient_slerp" => Type::Orientation(3),
+
+        // ── Section (2): Frame producers (2) → Frame(3) ──────────────────────
+        // Eval: reify_stdlib::geometry::eval_geometry → Value::Frame.
+        "frame3" | "frame3_identity" => Type::Frame(3),
+
+        // ── Section (3): Transform producers (6) → Transform(3) ──────────────
+        // Eval: reify_stdlib::geometry::eval_geometry → Value::Transform.
+        // `frame_to_frame` belongs HERE, not in section (2) — see trap 1 on
+        // ORIENTATION_TYPED_FN_NAMES.
+        "transform3"
+        | "transform3_identity"
+        | "transform_compose"
+        | "transform_inverse"
+        | "transform_exp"
+        | "frame_to_frame" => Type::Transform(3),
+
+        // Unreachable in practice — the caller gates on is_orientation_typed_fn.
+        _ => Type::dimensionless_scalar(),
+    }
+}
+
+// ─── Euler DECOMPOSER family (task #6082) ────────────────────────────────────
+
+/// The Euler-angle **decomposer** names the compiler types via
+/// [`orientation_euler_result_type`] — today exactly one, `orient_to_euler`.
+/// Single source of truth, imported into the `units.rs` test module to pin
+/// disjointness from every sibling family, [`ORIENTATION_TYPED_FN_NAMES`]
+/// included.
+///
+/// # `orient_euler` is deliberately NOT here
+///
+/// The obvious reading of "the Euler family" — both `orient_euler` and
+/// `orient_to_euler` — is WRONG, and the split is load-bearing rather than an
+/// oversight. The two names differ in the only way this file cares about:
+///
+/// - `orient_euler` COMPOSES three angles into a rotation. It is a
+///   fixed-nominal-type producer like its nine siblings, so it belongs to
+///   [`ORIENTATION_TYPED_FN_NAMES`] above, which already maps it to
+///   `Type::Orientation(3)`.
+/// - `orient_to_euler` DECOMPOSES a rotation back into three angles. It
+///   returns a `Value::List` of Angles, which is not a nominal orientation
+///   type at all — which is exactly why the constructor family's
+///   no-prefix-rule section EXCLUDES it, together with the other three
+///   decomposers.
+///
+/// Claiming `orient_euler` here too would double-classify it across two
+/// resolvers in this same file and break the reciprocal disjointness the
+/// `units.rs` tests pin in both directions.
+///
+/// # Why the other three decomposers stay untyped
+///
+/// `orient_to_axis_angle` and `transform_log` return `Value::Map`, which has no
+/// clean `Type` variant, and `orient_log`'s quantity slot needs a dimension
+/// ruling. All three belong to task #6004's signature registry
+/// (`docs/prds/v0_6/builtin-signature-registry.md`); claiming them here would
+/// pre-empt that family for no gain.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const ORIENTATION_EULER_FN_NAMES: &[&str] = &["orient_to_euler"];
+
+/// Is `name` a Euler decomposer typed by [`orientation_euler_result_type`]?
+/// Name-only classification — a `.contains` over the single-source-of-truth
+/// slice [`ORIENTATION_EULER_FN_NAMES`]. Case-sensitive.
 pub(crate) fn is_orientation_euler_fn(name: &str) -> bool {
     ORIENTATION_EULER_FN_NAMES.contains(&name)
 }
 
-/// Result type for a Euler-angle builtin. Arg-independent — reify-stdlib's
-/// `eval_builtin` arms (`crates/reify-stdlib/src/orientation.rs`) return the
-/// same SHAPE for a given name regardless of which convention is selected:
+/// Result type for a Euler decomposer. Arg-INDEPENDENT, like its constructor
+/// counterpart above: the convention argument selects WHICH angles come back,
+/// never the shape of the answer.
 ///
-/// - `orient_euler` — a CONSTRUCTOR: composes the three angles about the
-///   convention's body axes into one rotation, so → `Type::Orientation(3)`.
-/// - `orient_to_euler` — a DECOMPOSER: returns the three angles that rebuild
-///   the rotation under the same convention, evaluated as a 3-element
-///   `Value::List` of `DimensionVector::ANGLE` scalars, so →
-///   `Type::List(Box::new(Type::angle()))`.
+/// `orient_to_euler` evaluates (`reify_stdlib::orientation`) to a 3-element
+/// `Value::List` of `DimensionVector::ANGLE` scalars, so →
+/// `Type::List(Box::new(Type::angle()))`. The `Type::angle()` element — not a
+/// bare dimensionless scalar — is the load-bearing half: it is what lets the
+/// result flow into a `List<Angle>` parameter, the user-observable signal task
+/// #6082 exists to deliver.
 ///
-/// Only reached for the two Euler names (the caller gates on
-/// [`is_orientation_euler_fn`]); the `_` arm is therefore unreachable in
-/// practice and returns `Type::Orientation(3)` as a harmless default — the
-/// broader of the two, and the type any future `orient_*` name added to the
-/// slice would most likely want. The
-/// `every_orientation_euler_fn_name_maps_to_its_declared_result_type` test
-/// below pins each name's arm so a name added without one cannot silently
-/// absorb this default.
+/// Only reached for names in [`ORIENTATION_EULER_FN_NAMES`] (the caller gates
+/// on [`is_orientation_euler_fn`]); the `_` arm is therefore unreachable in
+/// practice, and returns the same type as the single real arm so that a name
+/// added to the slice without its own arm cannot change behaviour silently.
+/// The `every_orientation_euler_fn_name_maps_to_its_declared_result_type` test
+/// makes such an addition loud instead.
 pub(crate) fn orientation_euler_result_type(name: &str) -> Type {
     match name {
-        "orient_euler" => Type::Orientation(3),
         "orient_to_euler" => Type::List(Box::new(Type::angle())),
-        _ => Type::Orientation(3),
+        // Unreachable in practice — the caller gates on is_orientation_euler_fn.
+        _ => Type::List(Box::new(Type::angle())),
     }
 }
 
@@ -90,41 +253,377 @@ pub(crate) fn orientation_euler_result_type(name: &str) -> Type {
 mod tests {
     use super::*;
 
-    /// `is_orientation_euler_fn` recognises both Euler builtin names.
+    /// Independent fixture — the 18 expected names in the family. Deliberately
+    /// does NOT reference `ORIENTATION_TYPED_FN_NAMES` so a drift in that slice
+    /// is caught against this independent list (mirrors
+    /// `joint_signatures::tests::EXPECTED_NAMES`).
+    ///
+    /// Derived BY HAND, once, from the eval dispatchers
+    /// `reify_stdlib::orientation::eval_orientation` (13 arms: 10 producers + 3
+    /// decomposers) and `reify_stdlib::geometry::eval_geometry`. That derivation
+    /// is NOT enforced by any test: `reify-compiler` does not depend on
+    /// `reify-stdlib` (not even at dev scope) and `reify-stdlib` exports no
+    /// enumerable list of its dispatch arm names, so a new `orient_*` producer
+    /// added there would silently fall back to the first-arg mistyping this
+    /// module exists to fix. Closing that gap needs a `reify-stdlib` dev-dep and
+    /// an exported name list — both outside task 5344's file scope; filed as a
+    /// follow-up.
+    const EXPECTED_NAMES: [&str; 18] = [
+        // Orientation producers (10) → Type::Orientation(3)
+        "orient_identity",
+        "orient_quaternion",
+        "orient_euler",
+        "orient_basis",
+        "orient_look_at",
+        "orient_axis_angle",
+        "orient_exp",
+        "orient_inverse",
+        "orient_compose",
+        "orient_slerp",
+        // Frame producers (2) → Type::Frame(3)
+        "frame3",
+        "frame3_identity",
+        // Transform producers (6) → Type::Transform(3)
+        "transform3",
+        "transform3_identity",
+        "transform_compose",
+        "transform_inverse",
+        "transform_exp",
+        // `frame_` prefix, Transform group — trap 1 on ORIENTATION_TYPED_FN_NAMES.
+        "frame_to_frame",
+    ];
+
+    // ── Name-family contract (step-1 RED / step-2 GREEN) ─────────────────────
+
+    /// `is_orientation_typed_fn` recognises every expected constructor name.
     #[test]
-    fn is_orientation_euler_fn_recognises_both_names() {
-        assert!(is_orientation_euler_fn("orient_euler"));
+    fn is_orientation_typed_fn_recognises_all_expected_names() {
+        for name in EXPECTED_NAMES {
+            assert!(
+                is_orientation_typed_fn(name),
+                "is_orientation_typed_fn({name:?}) must be true \
+                 (orientation/transform/frame constructor family)"
+            );
+        }
+    }
+
+    /// The FOUR decomposers are deliberately EXCLUDED — see the
+    /// no-prefix-rule section of [`ORIENTATION_TYPED_FN_NAMES`] for why.
+    ///
+    /// The eval sites the exclusion was derived from, for re-checking it:
+    /// `orient_log` `orientation.rs:203`, `orient_to_euler`
+    /// `orientation.rs:264`, `orient_to_axis_angle` `orientation.rs:440`,
+    /// `transform_log` `geometry.rs:677`.
+    #[test]
+    fn is_orientation_typed_fn_rejects_the_four_decomposers() {
+        assert!(
+            !is_orientation_typed_fn("orient_log"),
+            "must reject decomposer 'orient_log' (returns Value::Vector)"
+        );
+        assert!(
+            !is_orientation_typed_fn("orient_to_euler"),
+            "must reject decomposer 'orient_to_euler' (returns Value::List of Angles)"
+        );
+        assert!(
+            !is_orientation_typed_fn("orient_to_axis_angle"),
+            "must reject decomposer 'orient_to_axis_angle' (returns Value::Map{{angle, axis}})"
+        );
+        assert!(
+            !is_orientation_typed_fn("transform_log"),
+            "must reject decomposer 'transform_log' (returns Value::Map twist)"
+        );
+    }
+
+    /// `frame_at` is NOT a member — see the `frame_at` exclusion note on
+    /// [`ORIENTATION_TYPED_FN_NAMES`]. Load-bearing, not an oversight.
+    #[test]
+    fn is_orientation_typed_fn_rejects_frame_at() {
+        assert!(
+            !is_orientation_typed_fn("frame_at"),
+            "'frame_at' belongs to the datum family (datum_constructor_result_type \
+             already types it Frame(3)) — claiming it here would double-classify"
+        );
+    }
+
+    /// `is_orientation_typed_fn` rejects sibling-family names, the empty name,
+    /// and unknown names.
+    #[test]
+    fn is_orientation_typed_fn_rejects_other_family_and_unknown_names() {
+        // Sibling families — one representative each.
+        assert!(
+            !is_orientation_typed_fn("affine_identity"),
+            "must reject affine-map-constructor 'affine_identity' (general affine, not rigid)"
+        );
+        assert!(
+            !is_orientation_typed_fn("affine_from_transform"),
+            "must reject 'affine_from_transform' — it CONSUMES a Transform and \
+             produces an AffineMap, so it belongs to the affine family"
+        );
+        assert!(!is_orientation_typed_fn("vec"), "must reject math-linalg 'vec'");
+        assert!(
+            !is_orientation_typed_fn("prismatic"),
+            "must reject joint-constructor 'prismatic'"
+        );
+        assert!(
+            !is_orientation_typed_fn("parse_length"),
+            "must reject parse-family 'parse_length'"
+        );
+        assert!(
+            !is_orientation_typed_fn("nominal"),
+            "must reject tolerancing-marker 'nominal'"
+        );
+        // `project` deliberately mirrors its first argument's type, so the
+        // first-arg fallback is already CORRECT for it — claiming it here would
+        // be a regression, not a fix.
+        assert!(
+            !is_orientation_typed_fn("project"),
+            "must reject 'project' — its first-arg fallback is already correct"
+        );
+        // Empty / unknown.
+        assert!(!is_orientation_typed_fn(""), "must reject empty name");
+        assert!(
+            !is_orientation_typed_fn("does_not_exist"),
+            "must reject unrelated name"
+        );
+    }
+
+    /// Case-sensitivity invariant: Reify function names are snake_case, so
+    /// capitalised forms must not match (mirrors
+    /// `is_joint_typed_fn_is_case_sensitive`).
+    #[test]
+    fn is_orientation_typed_fn_is_case_sensitive() {
+        assert!(
+            !is_orientation_typed_fn("Orient_Identity"),
+            "capitalised form must not match"
+        );
+        assert!(
+            !is_orientation_typed_fn("ORIENT_IDENTITY"),
+            "upper-case form must not match"
+        );
+        assert!(
+            !is_orientation_typed_fn("Transform3"),
+            "capitalised form must not match"
+        );
+    }
+
+    /// `ORIENTATION_TYPED_FN_NAMES` is exactly the 18 expected names: correct
+    /// count, every expected name present, and no extra entry. Mirrors
+    /// `joint_typed_fn_names_are_exactly_the_17`.
+    #[test]
+    fn orientation_typed_fn_names_are_exactly_the_18() {
+        assert_eq!(
+            ORIENTATION_TYPED_FN_NAMES.len(),
+            EXPECTED_NAMES.len(),
+            "ORIENTATION_TYPED_FN_NAMES must hold exactly {} names, got {:?}",
+            EXPECTED_NAMES.len(),
+            ORIENTATION_TYPED_FN_NAMES
+        );
+        // Every expected name is in the slice.
+        for name in EXPECTED_NAMES {
+            assert!(
+                ORIENTATION_TYPED_FN_NAMES.contains(&name),
+                "ORIENTATION_TYPED_FN_NAMES must contain {name:?}"
+            );
+        }
+        // No extra name beyond the expected fixture.
+        for name in ORIENTATION_TYPED_FN_NAMES {
+            assert!(
+                EXPECTED_NAMES.contains(name),
+                "ORIENTATION_TYPED_FN_NAMES has unexpected entry {name:?} not in the fixture"
+            );
+        }
+    }
+
+    // ── Result-type resolution (step-3 RED / step-4 GREEN) ───────────────────
+
+    /// All 18 names, pinning the three target types. Looped over the three
+    /// target groups rather than asserted per name; the assert message
+    /// interpolates `{name}`, so a wrong mapping still names the exact function
+    /// in the failure output.
+    #[test]
+    fn orientation_typed_fn_result_type_maps_each_name_to_its_nominal_type() {
+        // Orientation producers (10) → Type::Orientation(3).
+        for name in [
+            "orient_identity",
+            "orient_quaternion",
+            "orient_euler",
+            "orient_basis",
+            "orient_look_at",
+            "orient_axis_angle",
+            "orient_exp",
+            "orient_inverse",
+            "orient_compose",
+            "orient_slerp",
+        ] {
+            assert_eq!(
+                orientation_typed_fn_result_type(name),
+                Type::Orientation(3),
+                "{name} must map to Type::Orientation(3)"
+            );
+        }
+        // Frame producers (2) → Type::Frame(3).
+        for name in ["frame3", "frame3_identity"] {
+            assert_eq!(
+                orientation_typed_fn_result_type(name),
+                Type::Frame(3),
+                "{name} must map to Type::Frame(3)"
+            );
+        }
+        // Transform producers (6) → Type::Transform(3).
+        for name in [
+            "transform3",
+            "transform3_identity",
+            "transform_compose",
+            "transform_inverse",
+            "transform_exp",
+            "frame_to_frame",
+        ] {
+            assert_eq!(
+                orientation_typed_fn_result_type(name),
+                Type::Transform(3),
+                "{name} must map to Type::Transform(3)"
+            );
+        }
+    }
+
+    /// ACCEPTANCE PIN (the task's named test): `orient_axis_angle(axis, angle)`
+    /// must resolve to `Type::Orientation(3)` and DECISIVELY NOT a Vector.
+    ///
+    /// Its first argument is the rotation AXIS, a `Vector{3}` — so the old
+    /// first-arg fallback silently produced `Vector{3}` for every
+    /// `orient_axis_angle` call site (9 of them in prj/printer_v01/printer.ri).
+    /// That is the exact mistyping this family fixes.
+    #[test]
+    fn orient_axis_angle_result_type_is_orientation_not_vector() {
+        assert_eq!(
+            orientation_typed_fn_result_type("orient_axis_angle"),
+            Type::Orientation(3),
+            "orient_axis_angle(axis, angle) must resolve to Orientation(3)"
+        );
+        assert!(
+            !matches!(
+                orientation_typed_fn_result_type("orient_axis_angle"),
+                Type::Vector { .. }
+            ),
+            "orient_axis_angle must NOT adopt the first-arg (axis) Vector type"
+        );
+    }
+
+    /// Guards trap 1 on [`ORIENTATION_TYPED_FN_NAMES`]: `frame_to_frame` must
+    /// type as `Type::Transform(3)`, NOT the `Type::Frame(3)` a prefix-based
+    /// grouping would wrongly assign.
+    #[test]
+    fn frame_to_frame_result_type_is_transform_not_frame() {
+        assert_eq!(
+            orientation_typed_fn_result_type("frame_to_frame"),
+            Type::Transform(3),
+            "frame_to_frame returns Value::Transform despite its frame_ prefix"
+        );
+        assert_ne!(
+            orientation_typed_fn_result_type("frame_to_frame"),
+            Type::Frame(3),
+            "frame_to_frame must NOT be grouped with the Frame producers"
+        );
+    }
+
+    /// The three ZERO-ARG members are the only names in the family that could
+    /// trip the "cannot infer return type of zero-arg function" warning, because
+    /// that warning is emitted solely from the first-arg fallback's
+    /// `unwrap_or_else` branch (reached only when `compiled_args.first()` is
+    /// `None`). Resolving them by name alone is what silences it.
+    #[test]
+    fn zero_arg_constructors_resolve_without_the_first_arg_fallback() {
+        assert_eq!(
+            orientation_typed_fn_result_type("orient_identity"),
+            Type::Orientation(3)
+        );
+        assert_eq!(
+            orientation_typed_fn_result_type("frame3_identity"),
+            Type::Frame(3)
+        );
+        assert_eq!(
+            orientation_typed_fn_result_type("transform3_identity"),
+            Type::Transform(3)
+        );
+    }
+
+    /// Anti-fallthrough lock: no name in the family may resolve to a scalar.
+    /// The resolver's `_` arm returns `Type::dimensionless_scalar()` and is
+    /// meant to be unreachable (the caller gates on `is_orientation_typed_fn`),
+    /// so a name that silently reaches it would be indistinguishable from the
+    /// old buggy fallback. This test makes that failure loud.
+    #[test]
+    fn every_orientation_fn_name_maps_to_a_non_scalar_result_type() {
+        for name in ORIENTATION_TYPED_FN_NAMES {
+            // `Type::dimensionless_scalar()` IS a `Type::Scalar`, so this single
+            // negative covers the `_` arm's exact return value as well as any
+            // other scalar spelling a future arm could produce.
+            assert!(
+                !matches!(orientation_typed_fn_result_type(name), Type::Scalar { .. }),
+                "{name} fell through to the unreachable `_` scalar arm — every \
+                 family member must have an explicit match arm"
+            );
+        }
+    }
+
+    // ── Euler DECOMPOSER family (task #6082) ─────────────────────────────────
+
+    /// `is_orientation_euler_fn` recognises the decomposer.
+    #[test]
+    fn is_orientation_euler_fn_recognises_orient_to_euler() {
         assert!(is_orientation_euler_fn("orient_to_euler"));
     }
 
-    /// `is_orientation_euler_fn` rejects sibling `orient_*` builtins, other
-    /// families, the empty name, and an unrelated name.
+    /// THE SPLIT, pinned from this side: `orient_euler` must NOT be in the
+    /// decomposer family. It is a CONSTRUCTOR, owned by
+    /// [`ORIENTATION_TYPED_FN_NAMES`] and already typed `Orientation(3)` there.
     ///
-    /// The `orient_*` siblings are the point: this family is deliberately
-    /// narrow, and claiming `orient_log` / `orient_to_axis_angle` /
-    /// `orient_compose` here would pre-empt task #6004's registry.
+    /// This is the exact reciprocal of
+    /// `is_orientation_typed_fn_rejects_the_four_decomposers`, which pins the
+    /// same boundary from the constructor side. Both directions are asserted
+    /// because a name in BOTH slices would be double-classified by two
+    /// resolvers in this one file — and the `expr.rs` ladder would silently
+    /// resolve it with whichever arm comes first, which is not a contract
+    /// anyone should have to read the ladder order to know.
+    #[test]
+    fn is_orientation_euler_fn_rejects_the_orient_euler_constructor() {
+        assert!(
+            !is_orientation_euler_fn("orient_euler"),
+            "'orient_euler' COMPOSES angles into a rotation — it is a \
+             constructor owned by ORIENTATION_TYPED_FN_NAMES, which types it \
+             Orientation(3). Only the DECOMPOSER orient_to_euler belongs here, \
+             despite the near-identical spelling"
+        );
+        assert!(
+            is_orientation_typed_fn("orient_euler"),
+            "the other half of the same contract: orient_euler must be claimed \
+             by the constructor family, not merely absent from this one"
+        );
+    }
+
+    /// `is_orientation_euler_fn` rejects the three decomposers task #6004's
+    /// registry owns, other families, the empty name, and an unknown name.
+    ///
+    /// `orient_to_axis_angle` is the point of the `orient_to_` pair: this
+    /// family matches whole names, never prefixes.
     #[test]
     fn is_orientation_euler_fn_rejects_siblings_and_unknown_names() {
         assert!(
             !is_orientation_euler_fn("orient_log"),
-            "must reject sibling orient_log (task #6004's registry owns it)"
+            "must reject decomposer orient_log (task #6004's registry owns it)"
         );
         assert!(
             !is_orientation_euler_fn("orient_to_axis_angle"),
-            "must reject sibling orient_to_axis_angle — note the shared \
-             `orient_to_` prefix: this family matches whole names, not prefixes"
+            "must reject orient_to_axis_angle — note the shared `orient_to_` \
+             prefix: this family matches whole names, not prefixes"
         );
         assert!(
-            !is_orientation_euler_fn("orient_compose"),
-            "must reject sibling orient_compose"
+            !is_orientation_euler_fn("transform_log"),
+            "must reject decomposer transform_log"
         );
         assert!(
             !is_orientation_euler_fn("orient_inverse"),
-            "must reject sibling orient_inverse"
-        );
-        assert!(
-            !is_orientation_euler_fn("parse_length"),
-            "must reject parse-family 'parse_length'"
+            "must reject constructor orient_inverse"
         );
         assert!(!is_orientation_euler_fn(""), "must reject empty name");
         assert!(
@@ -134,45 +633,26 @@ mod tests {
     }
 
     /// Case-sensitivity invariant: Reify function names are snake_case, so
-    /// PascalCase/SCREAMING_SNAKE forms must not match (mirrors
-    /// `is_parse_typed_fn_is_case_sensitive`).
+    /// PascalCase / SCREAMING_SNAKE forms must not match.
     #[test]
     fn is_orientation_euler_fn_is_case_sensitive() {
-        assert!(!is_orientation_euler_fn("Orient_Euler"));
+        assert!(!is_orientation_euler_fn("Orient_To_Euler"));
         assert!(!is_orientation_euler_fn("ORIENT_TO_EULER"));
     }
 
-    /// `ORIENTATION_EULER_FN_NAMES` is exactly the two Euler names — membership
-    /// both ways plus an exact count (mirrors
-    /// `parse_fn_names_are_exactly_the_two`).
+    /// `ORIENTATION_EULER_FN_NAMES` is exactly the one decomposer name —
+    /// membership plus an exact count, so a name added without being
+    /// considered fails here first.
     #[test]
-    fn orientation_euler_fn_names_are_exactly_the_two() {
-        const EXPECTED: [&str; 2] = ["orient_euler", "orient_to_euler"];
+    fn orientation_euler_fn_names_are_exactly_orient_to_euler() {
         assert_eq!(
-            ORIENTATION_EULER_FN_NAMES.len(),
-            EXPECTED.len(),
-            "ORIENTATION_EULER_FN_NAMES must hold exactly {} names, got {:?}",
-            EXPECTED.len(),
-            ORIENTATION_EULER_FN_NAMES
-        );
-        for name in EXPECTED {
-            assert!(
-                ORIENTATION_EULER_FN_NAMES.contains(&name),
-                "ORIENTATION_EULER_FN_NAMES must contain {name:?}"
-            );
-        }
-    }
-
-    /// The constructor composes to a rotation.
-    #[test]
-    fn orient_euler_result_type_is_orientation3() {
-        assert_eq!(
-            orientation_euler_result_type("orient_euler"),
-            Type::Orientation(3)
+            ORIENTATION_EULER_FN_NAMES,
+            ["orient_to_euler"],
+            "ORIENTATION_EULER_FN_NAMES must hold exactly the one decomposer"
         );
     }
 
-    /// The decomposer returns the three angles, dimensioned.
+    /// The decomposer returns the three angles, DIMENSIONED.
     ///
     /// `Type::angle()` — not a bare dimensionless scalar — is the load-bearing
     /// half: it is what lets the result flow into a `List<Angle>` parameter,
@@ -186,20 +666,17 @@ mod tests {
     }
 
     /// Every name in `ORIENTATION_EULER_FN_NAMES` must have its OWN arm in
-    /// `orientation_euler_result_type`. Pins against the unreachable `_`
-    /// default silently absorbing a future name added to the slice without a
-    /// matching arm — the same failure mode
-    /// `every_parse_fn_name_maps_to_a_non_string_result_type` guards in the
-    /// parse family. Here the default is a real type rather than a suspicious
-    /// one, so "differs from the default" is not a usable proxy; the check is
-    /// instead an explicit per-name expectation table, which fails to compile
-    /// (not merely to assert) if the family grows without being considered.
+    /// `orientation_euler_result_type`, pinned by an explicit expectation
+    /// table that fails to COMPILE (not merely to assert) if the family grows
+    /// without the new name being given a declared result type.
+    ///
+    /// The `_` arm returns the same type as the single real arm, so "differs
+    /// from the default" is not a usable proxy for fallthrough here — which is
+    /// precisely why this table is the guard.
     #[test]
     fn every_orientation_euler_fn_name_maps_to_its_declared_result_type() {
-        let expected: [(&str, Type); 2] = [
-            ("orient_euler", Type::Orientation(3)),
-            ("orient_to_euler", Type::List(Box::new(Type::angle()))),
-        ];
+        let expected: [(&str, Type); 1] =
+            [("orient_to_euler", Type::List(Box::new(Type::angle())))];
         assert_eq!(
             expected.len(),
             ORIENTATION_EULER_FN_NAMES.len(),
@@ -215,8 +692,7 @@ mod tests {
             assert_eq!(
                 orientation_euler_result_type(name),
                 want,
-                "orientation_euler_result_type({name:?}) must be its declared \
-                 type, not the unreachable `_` default"
+                "orientation_euler_result_type({name:?}) must be its declared type"
             );
         }
     }

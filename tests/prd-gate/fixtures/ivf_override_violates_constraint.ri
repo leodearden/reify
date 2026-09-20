@@ -1,0 +1,13 @@
+// δ baseline probe: an instance override that violates a child constraint.
+// TODAY (pre-fix): reify check exits 0 — constraints are checked template-scoped
+// at defaults (Bar's default length = 100mm passes), so Top.bad's length = -5mm
+// override is silently accepted. Post-fix (leaf δ), this must report VIOLATED (B9).
+module ivf_override_violates_constraint
+pub structure Bar {
+    param length : Length = 100mm
+    let body = translate(cylinder(3mm, length), 0mm, 0mm, 0mm - length / 2)
+    constraint length > 0mm
+}
+pub structure Top {
+    sub bad = Bar(length: 0mm - 5mm) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+}

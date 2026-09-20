@@ -1,0 +1,591 @@
+prd: docs/prds/v0_6/geometry-algebra-solver-unification.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 6668
+  title: 'solver-unification α: attribute-carrying datums — stop dropping radius/semi-angle/apex'
+  capabilities:
+  - name: analytic-datum-production-wired
+    binding: capability→producer, wired on main — face_analytic_datum/edge_analytic_datum
+      (occt_wrapper) → OcctKernel::query → analytic_surface_datum_to_value; AnalyticSurfaceDatum
+      already carries scalar1/scalar2 across the FFI.
+    verdict: PASS
+  - name: radius-reaches-the-datum
+    binding: producer-self — today datum_from_value hard-codes radius:None and Datum::Axis.radius
+      is
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'radius: Some\('
+      expect: present
+      paths:
+      - crates/reify-eval/src/feature_datum.rs
+  - name: dead-field-removed
+    binding: producer-self — the allow(dead_code) on the radius slot goes away with the field
+      becoming live.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: allow\(dead_code\)\]\s*radius
+      expect: absent
+      paths:
+      - crates/reify-eval/src/feature_datum.rs
+  - name: surface-kind-vocabulary-aligned
+    binding: capability→producer, wired on main — reify_ir::FaceSurfaceKind/EdgeCurveKind
+      already name Torus and are consumed by selector_vocabulary_v2; the analytic extractor
+      does not. α aligns them.
+    verdict: PASS
+  - name: subsumes-5588-item-1
+    binding: 'EXECUTED at decompose — #5588 was rescoped to item 2 only and now depends on
+      alpha (deps [5540, 6668]); no inversion. Alpha''s declared extent was widened to the
+      two relate_solve.rs files item 1 named (Operand, is_datum), so this is not producer-extent-short.
+      Item 2''s stated blocker was found STALE twice over: call-site trait conformance is
+      live and wired (check_trait_arg_conformance from entities_phase.rs into conformance/mod.rs''s
+      Type::TraitObject arm; #2227 and #4081 both done), so the ty.rs ''deferred'' comment
+      is itself a docs-truth defect and was the sole basis for parking the task; and an intersection
+      type may not be needed at all, since ''trait Watertight : Closed + Manifold {}'' already
+      ships in stdlib/geometry_traits.ri with transitive refinement checking. The rescoped
+      task records the real question - nominal vs structural spelling - as a fork to be ruled
+      on.'
+    verdict: PASS
+- label: β
+  task_id: 6669
+  title: 'solver-unification β: the LoweringTable — total relation×datum-kind coverage, one
+    codimension'
+  capabilities:
+  - name: todays-silent-accept-observed
+    binding: rejection-check, OBSERVED (inverted) — reify check on the committed fixture exits
+      0 with "All constraints satisfied." and EMPTY stderr; the rejection capability is confirmed
+      ABSENT, which is the defect β closes.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_RELATION_NOT_LOWERABLE
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: no-silent-zero-fallthrough
+    binding: producer-self — the seven silent-zero paths all resolve to Unavailable/Ambiguous;
+      the residual catch-all disappears.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: _ => Vec::new\(\)
+      expect: absent
+      paths:
+      - crates/reify-constraints/src/relate_solve.rs
+  - name: four-dispatch-sites-to-consolidate
+    binding: capability→producer, wired on main — residual_dispatch, coincident_residual,
+      distance_residual, on_residual, all on the production solve_relate_scope path.
+    verdict: PASS
+  - name: parallel-ddof-table-folded
+    binding: capability→producer, wired on main — relation_delta_dof / relation_delta_dof_kinds
+      / relation_operand_datum in relation_signatures.rs.
+    verdict: PASS
+  - name: datum-lattice-is-fixed-not-invented
+    binding: capability→producer — docs/design/geometric-relations.md §2 + decision log §14
+      (locked 2026-06-08); Value::{Direction,Point,Axis,Plane,Frame} all first-class.
+    verdict: PASS
+  - name: grammar
+    binding: N/A — no novel syntax; the committed fixture parses and runs today.
+    verdict: PASS
+- label: γ
+  task_id: 6670
+  title: 'solver-unification γ: tangent rows through the table (adopting #5540''s operand-conditional
+    ΔDOF)'
+  capabilities:
+  - name: tangent-in-vocabulary
+    binding: capability→producer, wired on main — RELATION_FN_NAMES includes tangent; relation_fn_result_type
+      → Type::Relation. Probe-confirmed to typecheck and build at exit 0 today.
+    verdict: PASS
+  - name: per-combo-ddof
+    binding: 'producer:task-5540 UPSTREAM (hard edge). #5540 carries the amended table: sphere/plane
+      1, sphere/sphere 1, cyl/cyl 1, cyl/plane 2, plus the relation_delta_dof_kinds-stays-None
+      reviewer coupling note. γ adopts, never re-derives. DAG verified.'
+    verdict: PASS
+  - name: radius-reaches-operand
+    binding: producer:task-α UPSTREAM (intra-batch edge). Without α a cylinder is indistinguishable
+      from a line at residual_dispatch.
+    verdict: PASS
+  - name: axis-projects-from-cylinder
+    binding: capability→producer, wired on main — datum_projection_result_type Geometry→.axis;
+      probe-observed axis(point(0.025 m, 0 m, 0 m), direction(0, 0, 1)).
+    verdict: PASS
+  - name: numeric-floor
+    binding: no bare bound — tangency is asserted against ζ's scaled tolerance ladder, not
+      a guessed absolute.
+    verdict: PASS
+- label: δ
+  task_id: 6671
+  title: 'solver-unification δ: typed per-constraint refusal, coded diagnostics, component
+    containment'
+  capabilities:
+  - name: whole-resolve-kill-is-real
+    binding: capability→producer, wired on main — SolverRegistry::solve_inner's NoProgress
+      arm returns from inside the component loop, discarding merged_values.
+    verdict: PASS
+  - name: diagnostics-uncoded-today
+    binding: capability→producer, greppable ABSENCE — reify-constraints emits zero W_/E_ mnemonics
+      of its own; NoProgress becomes a bare Diagnostic::warning with no code and no span.
+      INV-SF-6.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Constraint solver made no progress
+      expect: absent
+      paths:
+      - crates/reify-eval/src/engine_eval.rs
+      - crates/reify-eval/src/engine_edit.rs
+  - name: diagnosticcode-extensible
+    binding: capability→producer, wired on main — ConstraintViolated / ConstraintIndeterminate
+      / ConstraintUnsatisfiable / ConstraintNonUnique / SolverOptimalityUnproven / RobustnessFloorInfeasible
+      is the pattern δ extends.
+    verdict: PASS
+  - name: not-duplicating-6659
+    binding: 'DAG-direction — #6659 is in-progress with a live claimant and ships the refusal
+      SHAPE only; its own text says this PRD subsumes the trap via residual lowering. No edge:
+      δ must not block on an in-flight interim.'
+    verdict: PASS
+  - name: not-duplicating-5416
+    binding: 'scope split — #5416 owns the pre-dispatch auto-KIND envelope (supports_auto_kind);
+      δ owns the in-dispatch CONSTRAINT-lowering refusal. #5416''s own text names them complementary.'
+    verdict: PASS
+- label: ε
+  task_id: 6672
+  title: 'solver-unification ε: forward-mode dual-number autodiff over CompiledExpr'
+  capabilities:
+  - name: no-autodiff-to-collide-with
+    binding: capability→producer, greppable ABSENCE — no autodiff/num-dual/Gradient/Jacobian
+      impl anywhere in crates/; the only argmin solver module imported anywhere is neldermead.
+    verdict: PASS
+  - name: compiledexpr-traversable
+    binding: capability→producer, wired on main — CompiledExprKind (25 variants) + eval_expr,
+      the single evaluation entry the solver already uses via ctx_with.
+    verdict: PASS
+  - name: fd-agreement-bound-clears-its-floor
+    binding: numeric floor STATED and CLEARED — central differences carry a truncation-plus-cancellation
+      error floor of order 1e-8 relative at a well-scaled step; the asserted agreement bound
+      is 1e-6 > 1e-8. A tighter bound would test the reference, not the implementation. Non-smooth
+      nodes excluded by construction.
+    verdict: PASS
+  - name: branch-signature-record
+    binding: producer-self — ε emits the active-branch signature for every kink variant; λ
+      consumes it.
+    verdict: PASS
+- label: ζ
+  task_id: 6673
+  title: 'solver-unification ζ: dimensional scaling layer (nominal scales + nominal tolerances)'
+  capabilities:
+  - name: dimensions-available-per-value
+    binding: capability→producer, wired on main — Value::Scalar{si_value, dimension}, DimensionVector
+      (10-basis incl. Angle and Money), dimension_of. Every solver value is SI base units
+      by construction.
+    verdict: PASS
+  - name: tolerance-hierarchy-exists
+    binding: capability→producer, wired on main — RelateTolerance::{kernel_local, solver_convergence,
+      assertion}, the only coherent ladder in the codebase. Private fields, one ctor, no setters;
+      ζ makes it configurable.
+    verdict: PASS
+  - name: single-sourced-with-verdicts
+    binding: 'producer:task-6653 UPSTREAM (hard edge). #6653 creates the shared relative+dimension-aware-floor
+      policy; ζ consumes it rather than minting a second epsilon. DAG verified: #6653 has
+      no deps and depends on no leaf here.'
+    verdict: PASS
+  - name: scaling-gap-is-real
+    binding: capability→producer — FD_STEP is one constant for metres and radians; LM damping
+      adds a scalar to a diagonal mixing m² and rad²; FEASIBILITY_THRESHOLD is a dimension-blind
+      absolute on raw SI.
+    verdict: PASS
+- label: η
+  task_id: 6675
+  title: 'solver-unification η: trust-region Gauss-Newton over Householder QR, typed termination
+    causes'
+  capabilities:
+  - name: damped-gn-loop-exists
+    binding: capability→producer, wired on main — gauss_newton_solve (relate_solve.rs), reached
+      in production via solve_frame ← solve_relate_scope ← build_with_geometry_output.
+    verdict: PASS
+  - name: duplicate-rank-pass-folded
+    binding: capability→producer, wired on main — add_rows_rank (normalized Gram-Schmidt)
+      serves partition_driving_set and rank_of SEPARATELY from the step's normal_equations/solve6.
+      One QR replaces both.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn normal_equations
+      expect: absent
+      paths:
+      - crates/reify-constraints/src/relate_solve.rs
+  - name: cause-conflation-is-real
+    binding: capability→producer — solve_frame emits only Solved/Infeasible; iteration-limit,
+      λ-ceiling breakout and true inconsistency share one hand-written message; the caller's
+      NoProgress arm is annotated "defensive" and is dead.
+    verdict: PASS
+  - name: gradient-norm-certificate
+    binding: producer:task-ε UPSTREAM (intra-batch edge) — a ||J^T r|| certificate requires
+      a Jacobian, which ε delivers.
+    verdict: PASS
+  - name: no-argmin-adoption-premise
+    binding: capability→producer, VERIFIED in the vendored registry — argmin 0.10 ships gaussnewton_method,
+      gaussnewton_linesearch, trustregion_method (dogleg/Steihaug/Cauchy), newton, quasinewton,
+      and NO Levenberg-Marquardt. The build-not-adopt reasoning rests on that inventory, not
+      an assumption.
+    verdict: PASS
+- label: θ
+  task_id: 6676
+  title: 'solver-unification θ: multi-body pose vector — every at-auto sub in a scope is solved'
+  capabilities:
+  - name: single-body-limit-is-real
+    binding: capability→producer, wired on main — const FRAME_DOF = 6, state is [f64; 6] not
+      a Vec, every linalg helper hard-typed to it, and solve_relate_scope takes scope.auto_unknowns.first().
+      No Vec<FrameUnknown> API exists.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: auto_unknowns\.first\(\)
+      expect: absent
+      paths:
+      - crates/reify-eval/src/relate_solve.rs
+  - name: grounding-already-walks-all
+    binding: capability→producer, wired on main — trace_to_ground walks every auto unknown
+      for the global-float check, so a second auto sub already passes grounding and is then
+      never placed. That asymmetry is θ's RED.
+    verdict: PASS
+  - name: silent-identity-premise
+    binding: source-derived; submitted to the D3 workflow (leaf `theta`) for behavioural confirmation
+      before release.
+    verdict: PASS
+- label: ι
+  task_id: 6677
+  title: 'solver-unification ι: UnifiedProblem — one variable vector, one residual vector
+    (integration gate)'
+  capabilities:
+  - name: resolutionproblem-widenable
+    binding: capability→producer, wired on main — the struct plus build_solver_problem / build_merged_solver_problem
+      and two inline literals on the edit path. Empty new fields reproduce today's problem
+      exactly.
+    verdict: PASS
+  - name: shared-per-trial-fold-reused
+    binding: producer:task-5467 (done) — landed the ONE shared dependent-cell fold. ι consumes
+      it; no fourth fold site (three existing sites carry debug_assert! backstops).
+    verdict: PASS
+  - name: relate-solve-reachable-to-reroute
+    binding: capability→producer, wired on main — solve_scopes has exactly one production
+      call site, inside build_with_geometry_output. A single seam to move.
+    verdict: PASS
+  - name: byte-identity-NOT-asserted
+    binding: regime check — byte-identity is the wrong regime for an ITERATIVE result and
+      right only for a CLOSED-FORM one. ι asserts problem-construction identity plus same-verdict-and-value-within-the-shared-tolerance-policy,
+      never trailing-digit identity. Corpus tests pinning iterative output to full precision
+      are re-baselined by the leaf that moves them.
+    verdict: PASS
+- label: κ
+  task_id: 6678
+  title: 'solver-unification κ: squared-slack inequalities, retire PENALTY_WEIGHT, re-encode
+    centrality'
+  capabilities:
+  - name: defect-measured-derived-and-controlled
+    binding: rejection-check OBSERVED + DERIVED — the committed fixture reports "max absolute
+      residual 5.00e-7" at exit 1; the value is derived from cost = -slack + PENALTY_WEIGHT*(w-target)^2
+      giving w*-target = 1/(2*PENALTY_WEIGHT) = 5e-7, and discriminated by the committed two-sided
+      control which solves cleanly because opposing slack gradients cancel.
+    verdict: PASS
+  - name: penalty-machinery-to-retire
+    binding: capability→producer, wired on main — PENALTY_WEIGHT, comparison_violation, constraint_violation,
+      ConstraintCostFunction::cost.
+    verdict: PASS
+  - name: slack-collection-exists
+    binding: capability→producer, wired on main — collect_slack_terms, collect_floor_terms;
+      three inequality-derived structures sharing one op-rule pact.
+    verdict: PASS
+  - name: centrality-encoding-to-replace
+    binding: capability→producer, wired on main — build_centrality_objective folds min as
+      nested Conditionals and warns above CENTRALITY_SLACK_WARN_THRESHOLD about its own O(2^n)
+      growth. Its gate is unchanged by κ.
+    verdict: PASS
+  - name: ten-metre-half-NOT-claimed
+    binding: 'DAG-direction honesty — w >= 8mm → 10 m is the CEILING of the dimension-default
+      box (default_bounds_for LENGTH → (1e-6, 10.0)) reached by maximising the sole slack.
+      That box is #6655''s subject, not κ''s. Soft coordination, no edge; B8 is phrased so
+      κ alone satisfies it via an honest underdetermined verdict.'
+    verdict: PASS
+  - name: robustness-floor-composes
+    binding: capability→producer, wired on main — synthesise_floor_constraints, objective_is_money,
+      RobustnessFloorInfeasible. slack >= m becomes g - m - s^2 = 0.
+    verdict: PASS
+- label: λ
+  task_id: 6679
+  title: 'solver-unification λ: kinks — active-branch Jacobian, branch-change contraction,
+    loud chatter escape'
+  capabilities:
+  - name: kink-inventory-enumerable
+    binding: capability→producer, wired on main — Conditional, Match, comparison BinOps, Kleene
+      And/Or/Implies; stdlib min/max/abs/clamp/sign/floor/ceil/round/mod; field reductions;
+      the Undef cliffs (eval_div zero-denominator, sanitize_value, argument short-circuit).
+    verdict: PASS
+  - name: kinks-work-derivative-free-today
+    binding: capability→producer, probe-confirmed — expr_min.ri, expr_if.ri, expr_abs.ri,
+      expr_sqrt.ri all solve today. λ must not regress them; that is its floor.
+    verdict: PASS
+  - name: branch-signature-record
+    binding: producer:task-ε UPSTREAM (intra-batch edge) — ε's signal explicitly includes
+      emitting the record for every kink variant.
+    verdict: PASS
+  - name: disjunction-refused-not-approximated
+    binding: producer-self — today Or silently becomes min(violation_left, violation_right)
+      in constraint_violation; λ replaces it with E_SOLVER_DISJUNCTION_UNSUPPORTED naming
+      P3 as owner.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_SOLVER_DISJUNCTION_UNSUPPORTED|SolverDisjunctionUnsupported
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+- label: μ
+  task_id: 6680
+  title: 'solver-unification μ: reduced-gradient objective loop, first-order optimality certificate,
+    multipliers'
+  capabilities:
+  - name: optimality-vocabulary-extensible
+    binding: capability→producer, wired on main — OptimalityStatus::{ProvenOptimal, BestFound{reason},
+      FeasibilityOnly} and BestFoundReason::{IterationLimit, ConvergedWithinBudget, Unreported}
+      in reify-ir/src/ranked.rs, consumed by W_SOLVER_OPTIMALITY_UNPROVEN. FirstOrderStationary
+      is a new variant on an existing enum.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: FirstOrderStationary
+      expect: present
+      paths:
+      - crates/reify-ir/src/ranked.rs
+  - name: single-objective-fold-preserved
+    binding: capability→producer, wired on main — eval_objective_set. P3's stated constraint
+      is that CP-SAT's solve_ranked scores through the SAME fold; μ calls it and does not
+      replace it. Three fold sites already carry debug_assert! backstops against a fourth.
+    verdict: PASS
+  - name: null-space-basis
+    binding: producer:task-η UPSTREAM (intra-batch edge) — the QR that yields Z is η's deliverable.
+    verdict: PASS
+  - name: gradient-availability
+    binding: producer:task-ε UPSTREAM (intra-batch edge).
+    verdict: PASS
+  - name: 5016-not-contradicted
+    binding: 'scope check — #5016 (done) ratified NM + α-clustering + deterministic multistart
+      and rejected MINLP/seeded global solvers: a ruling about the GLOBAL strategy. μ replaces
+      the LOCAL solver beneath it; multistart, clustering and ranking are untouched, and NM
+      survives as λ''s non-smooth escape. Recorded so a dispatch-time architect does not read
+      this as re-litigation.'
+    verdict: PASS
+  - name: todays-optimality-vocabulary
+    binding: source-derived; submitted to the D3 workflow (leaf `mu`) for behavioural confirmation
+      against examples/continuous_cost_min.ri before release.
+    verdict: PASS
+- label: ν
+  task_id: 6681
+  title: 'solver-unification ν: capability-based routing replaces name-based classification'
+  capabilities:
+  - name: name-based-classifier-exists
+    binding: capability→producer, wired on main — ConstraintClassifier::classify → DomainFlags::into_domain,
+      is_geometry_qualified_name (11 literal names).
+    verdict: PASS
+  - name: std-geo-prefix-is-NOT-live
+    binding: anti-fiction check, greppable ABSENCE — the compiler builds every stdlib qualified
+      name as format!("std::{}", name); the std geo prefix appears outside classifier.rs only
+      in test files. The PRD is written against the 11-name matches! arm, not the dead prefixes.
+    verdict: PASS
+  - name: trait-fix-pre-specified
+    binding: 'absorbs #6523 — EXECUTED. #6523 was CANCELLED into this leaf at decompose after
+      its content was ported into nu''s details: the exact trait signature, the domain_spec
+      delegation target from #5467 (can_enumerate is literally domain_spec(...).is_ok()),
+      and the ''PRECONDITION on the Logical slot'' doc block above domain_of_auto whose DELETION
+      is the completion marker. Cancelled rather than parked because a pending task is dispatchable
+      and would have collided with nu on decompose.rs; an exhaustive reverse-dependency scan
+      over all 6696 project tasks (cross-checked against an independent id enumeration, with
+      a positive control) confirmed ZERO dependents, so nothing needed re-pointing. nu''s
+      declared files widened to registry.rs + cpsat.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: cpsat::can_enumerate
+      expect: absent
+      paths:
+      - crates/reify-constraints/src/decompose.rs
+  - name: let-boundary-asymmetry-observed
+    binding: rejection-check OBSERVED — probe p_a_mixed.ri; a let-bound distance call puts
+      only ValueRefs in the constraint tree, classifies Dimensional and SOLVES, while the
+      inline call classifies Geometric and dies. Two identical models, two answers.
+    verdict: PASS
+- label: ξ
+  task_id: 6682
+  title: 'solver-unification ξ: retire the 3D SolveSpace expression path (keep libslvs for
+    2D sketch)'
+  capabilities:
+  - name: retiring-surface-delimited
+    binding: capability→producer, wired on main — delete SolveSpaceSolver, GeometricPattern,
+      recognize_pattern and its helpers; KEEP SystemBuilder, get_sketch_normal, add_sketch,
+      emit_sketch_constraint, solve_sketch, all of slvs_sys.rs and sketch.rs.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn recognize_pattern
+      expect: absent
+      paths:
+      - crates/reify-constraints/src/solvespace.rs
+  - name: sketch-path-survives
+    binding: capability→producer, wired on main — solve_sketch takes a typed SketchSystem
+      and never touches ResolutionProblem or the registry. HONEST NOTE — it has no production
+      consumer outside its own crate and tests; keeping it keeps a landed substrate awaiting
+      constrained-2d-sketch's language surface, not live user-facing behaviour.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn solve_sketch
+      expect: present
+      paths:
+      - crates/reify-constraints/src/solvespace.rs
+  - name: antiparallel-premise-under-verification
+    binding: .contains("parallel") precedes the antiparallel case in recognize_pattern — source-certain.
+      But relate-block relations route through relate_solve.rs, which HAS a correct antiparallel
+      residual, so the bug may be reachable only via the registry auto-param path. Submitted
+      to the D3 workflow (leaf `xi`) to establish which path a user can reach it from, and
+      to report honestly if it is unreachable from .ri source today.
+    verdict: PASS
+- label: ο
+  task_id: 6683
+  title: 'solver-unification ο: the GeometryQuery arm — dependency-inverted, budgeted, typed'
+  capabilities:
+  - name: min-clearance-arity-2-RESOLVED
+    binding: 'producer-absent, RESOLVED not waived — the arity-2 min_clearance(a,b) overload
+      is belt leaf #5441 (pending), outside this batch and not upstream of ο. Only the arity-3
+      kinematic min_clearance(snapshot,a,b) in KINEMATIC_QUERY_NAMES exists. Signal re-homed
+      onto distance.'
+    verdict: PASS
+  - name: distance-is-the-replacement
+    binding: capability→producer, wired on main — registered in GEOMETRY_QUERY_NAMES with
+      a geometry_query_result_type arm, and probe-confirmed to evaluate (p_a_mixed.ri → gap
+      = 0.009999999999999997 m) on the BUILD path. The pure value-eval path refuses explicitly,
+      so ο's signal is stated against reify build.
+    verdict: PASS
+  - name: belt-overloads-ride-for-free
+    binding: 'DAG-direction, no edge — the arm dispatches on the existing reify_ir::GeometryQuery
+      variant, not a builtin name, so #5441–#5443''s overloads become drivable when they land.
+      No orphan, no dependency, no duplicated work. NOTE reify_ir::GeometryQuery is already
+      a pub enum, so the trait is named GeometryDispatch (parallel to ComputeDispatch) and
+      TAKES that enum.'
+    verdict: PASS
+  - name: dependency-inversion-shape
+    binding: 'capability→producer, wired on main — ComputeDispatch (trait in reify-ir, OptimizedComputeDispatcher
+      in reify-eval, consumed by reify-constraints), task #4880 done. reify-constraints/Cargo.toml
+      depends on NO kernel crate and no reify-geometry, so the inversion is forced, not chosen.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: trait GeometryDispatch
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: option-anti-pattern-avoided
+    binding: ComputeDispatch::dispatch -> Option<Value> conflates unregistered/failed/cancelled
+      and callers fall back silently. GeometryDispatchOutcome is a typed 3-variant enum instead.
+      The precedent is copied in shape, not in defect.
+    verdict: PASS
+  - name: signed-distance
+    binding: 'producer:task-6251 UPSTREAM (hard edge). All five interference/clearance queries
+      bottom out in one NON-NEGATIVE BRepExtrema_DistShapeShape, which carries no penetration-depth
+      gradient, so a clearance residual cannot push apart from inside — the Jacobian is identically
+      zero exactly where the solver needs it. Until #6251 lands, a zero-valued clearance residual
+      emits a tier-2 refusal rather than converging on a zero gradient. DAG verified.'
+    verdict: PASS
+  - name: posed-operands
+    binding: 'producer:task-6583 UPSTREAM — HARD edge ADDED BY THE D3 RUN. Measured on main
+      2ea72cc5e8: cross-sub distance does NOT resolve on the build path (inline form reports
+      "operator undefined for these operand kinds: StructureInstance"; let-bound form leaves
+      the cell undef; the at-auto pose stays identity under >= 5mm, >= 500mm and no constraint
+      alike). The arm queries POSED operands; #6583 makes an operand carry its sub placement.
+      pending, high, no deps - no inversion. Was producer-absent before this edge.'
+    verdict: PASS
+  - name: min-clearance-arity2-silently-accepted
+    binding: rejection-check, OBSERVED ABSENT - reify check on an arity-2 min_clearance(a,b)
+      fixture exits 0 with INDETERMINATE, never a rejection. The missing overload is not even
+      diagnosed, which sharpens the re-homing recorded above.
+    verdict: PASS
+- label: π
+  task_id: 6684
+  title: 'solver-unification π: doc chunks — the relation vocabulary and the drivable-query
+    idiom'
+  capabilities:
+  - name: vocabulary-genuinely-undocumented
+    binding: greppable ABSENCE, re-verified this session — a case-insensitive grep for tangent|concentric|antiparallel|coincident|flush|fasten|"at
+      auto"|relate across ALL 17 chunks returns nothing. All ten RELATION_FN_NAMES are absent.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: concentric|tangent
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/constraints.md
+  - name: omission-detector-cannot-catch-it
+    binding: capability→producer, greppable — reify-audit's PDOCCOVER census reads registries
+      only from crates/reify-compiler/src/units.rs; RELATION_FN_NAMES lives in relation_signatures.rs,
+      structurally outside the census. Recorded so π is not assumed redundant with an automated
+      gate.
+    verdict: PASS
+  - name: chunk-leaf-collision-avoided
+    binding: 'scope split — belt ν #5446 (at-auto+relate idiom, clearance family, wire, belt_path),
+      sketch θ #5513, #5389 (in-progress, existing clearance-oracle content), #5347. π documents
+      the RELATION VOCABULARY and the drivable-query idiom only. No edge; scope recorded.'
+    verdict: PASS
+  - name: spec-amendment-is-narrow
+    binding: π carries docs/reify-language-spec.md §10.3's Cross-domain row (the orchestrator
+      framing survives; only "the classifier partitions, it cannot span" is corrected) and
+      constrained-2d-sketch.md §11's O3-scoped refinement. No spec rewrite.
+    verdict: PASS
+- label: ρ
+  task_id: 6685
+  title: 'solver-unification ρ: best-practices exemplar — named relations vs hand algebra'
+  capabilities:
+  - name: corpus-gate-exists
+    binding: capability→producer, wired on main — examples_smoke.rs::best_practices_index_matches_corpus_directory
+      pins the bidirectional file↔INDEX-row invariant, and best_practices_constraint_gate.rs
+      (#6215) requires every constraint Satisfied or pinned Indeterminate with a documented
+      reason. File and row must land in ONE commit.
+    verdict: PASS
+  - name: idiom-is-real-by-then
+    binding: producer:tasks γ, κ, ο UPSTREAM (intra-batch edges) — the exemplar can only be
+      authored once the idiom it demonstrates actually works.
+    verdict: PASS
+- label: σ
+  task_id: 6686
+  title: 'solver-unification σ: reify-design cheatsheet index line + discoverability acceptance'
+  capabilities:
+  - name: cheatsheet-is-an-index-not-a-playbook
+    binding: capability→producer — the overlay's docs-truth gate item 3 requires a one-line
+      index entry pointing at ρ's corpus file, never an inline playbook.
+    verdict: PASS
+  - name: discoverability-acceptance
+    binding: kind manual by nature — an intent-level findability transcript, committed with
+      the task.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: intent-level findability is a judged transcript, not a grep; the leaf commits
+        the transcript as its evidence.
+- label: τ
+  task_id: 6687
+  title: 'solver-unification τ: PRD close — terminal stamp, freeze header, LIVE/AS-AUTHORED
+    map'
+  capabilities:
+  - name: terminal-vocabulary-closed
+    binding: capability→producer — exactly three values (SHIPPED/SUPERSEDED/WITHDRAWN), matched
+      case-insensitively on the first token after the Status label. Freeze-header shape per
+      v0_6/data-carrying-enums.md and kernel-seam-contracts.md.
+    verdict: PASS
+  - name: cancelled-sibling-disposition
+    binding: recorded — a cancelled sibling counts as satisfied for τ's dependency edge; if
+      the scheduler treats it as unmet, the decompose steward removes the edge by hand and
+      applies the stamp in a docs-only commit rather than leaving τ permanently blocked.
+    verdict: PASS
+  - name: dependency-shape
+    binding: τ depends on EVERY other leaf via real add_dependency edges.
+    verdict: PASS

@@ -1,0 +1,53 @@
+module damped_material_preset_conformance
+
+// PRD gate fixture: docs/prds/v0_6/damped-modal-bonded-heterogeneous.md,
+// leaf α (#6877).
+//
+// Sibling to `damped_material_mixin_conformance.ri`. The two split the work:
+// that one pins the SUBSTRATE using probe-local trait names (`DampedProbe` /
+// `DampedElasticProbe`) chosen so they do NOT collide with the stdlib; THIS
+// one pins the LANDED STDLIB SURFACE — the exact spelling the PRD §Goal puts
+// in front of a user, plus the preset η values α added.
+//
+// Both are read and compiled by
+// `crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs`
+// (`prd_gate_damped_material_fixtures_compile_clean`) and registered in
+// `scripts/verify.sh`'s `_RUST_COUPLED_RI_FIXTURES`, which is what makes them
+// genuinely gated — `tests/prd-gate/README.md` is explicit that nothing
+// compiles this directory wholesale.
+//
+// Note on dimensions: `loss_factor` is `Real` (dimensionless), so the known
+// wart #6870 — trait-typed member access erases dimensions — does not bite
+// here. A dimensioned member read through `custom` / `preset` below would.
+
+// The PRD §Goal user spelling: conform to the named intersection directly.
+// `MySteel` must declare BOTH parents' params — the four from
+// `ElasticMaterial` plus `loss_factor` from `Damped` — because
+// `DampedMaterial` has an empty body and requirements are collected
+// transitively.
+//
+// `appearance` is deliberately OMITTED: `Visual` supplies it as a trait
+// default (stdlib/materials_appearance.ri), so this also exercises
+// default injection alongside the transitive requirements.
+structure def MySteel : DampedMaterial + Visual {
+    param youngs_modulus : Pressure = 205GPa
+    param poisson_ratio : Real = 0.29
+    param density : Density = 7850kg/m^3
+    param yield_stress : Option<Pressure> = some(310MPa)
+    param loss_factor : Real = 0.0006
+}
+
+structure PresetDampingSurface {
+    param custom : DampedMaterial = MySteel()
+    param preset : DampedMaterial = ABS_Plastic()
+
+    let custom_eta : Real = custom.loss_factor
+    let preset_eta : Real = preset.loss_factor
+
+    // η > 0 for a real damped material.
+    constraint custom_eta > 0.0
+    // The physically meaningful ordering: a polymer (~2e-2) damps far more
+    // than a metal (~6e-4). Pinned so a future η edit that inverts the
+    // material classes is caught here rather than in a solver result.
+    constraint preset_eta > custom_eta
+}

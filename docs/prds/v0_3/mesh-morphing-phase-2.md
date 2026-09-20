@@ -58,7 +58,7 @@ See §7 for the full test sketch. Distribution:
 
 - Producer-side (Gmsh `NodeAttachment` shape): `crates/reify-kernel-gmsh/tests/node_attachment_producer.rs`
 - Consumer-side (`compute_dirichlet_bcs::OnVertex` resolves): `crates/reify-mesh-morph/tests/boundary_on_vertex.rs`
-- OCCT Projector impl: `crates/reify-kernel-occt/tests/projector_impl.rs` (extending the established pattern at `tests/closest_point_on_shape_integration.rs` and `tests/point_on_shape_integration.rs` — both already exercise `BRepExtrema_DistShapeShape` against sub-shape kinds)
+- OCCT Projector impl: `crates/reify-kernel-occt/tests/harness_occt/projector_impl.rs` (extending the established pattern at `tests/closest_point_on_shape_integration.rs` and `tests/point_on_shape_integration.rs` — both already exercise `BRepExtrema_DistShapeShape` against sub-shape kinds)
 - Engine-level end-to-end: `crates/reify-eval/tests/morph_e2e_with_vertex_bcs.rs`
 
 Pattern mirrors `compute-node-contract.md` §7 and `shell-extract-engine-bridge.md` §8. The two-way producer/consumer split is essential for triaging regressions in isolation — a centralized integration suite collapses the two failure modes into a single signal.
@@ -254,7 +254,7 @@ Four test files, one per producer/consumer side plus the engine-level e2e.
 
 ### §7.3 OCCT Projector
 
-`crates/reify-kernel-occt/tests/projector_impl.rs`:
+`crates/reify-kernel-occt/tests/harness_occt/projector_impl.rs`:
 
 - Construct `OcctProjector` over a real `OcctKernel` with a box `TopoDS_Solid`.
 - For each of: a known face's `project_onto_face`, a known edge's `project_onto_edge`, a known vertex's `vertex_position` — query with a fixed off-shape point (or no point, for vertex).
@@ -281,7 +281,7 @@ Five tasks. All terminate in user-observable behaviour per [[feedback_task_chain
 - `BRepKind::Vertex` variant; `OcctKernel::extract_vertices` impl + stub; per-op attribute population extended (extrude / revolve / sweep / loft / box).
 - New `Role::CornerVertex` (variant shape decided at impl time per §3.1).
 - Vertex-attribute seeding wired through `engine_build.rs` realization-ops path symmetrically with face/edge seeding.
-- **User-observable signal:** new test `extract_vertices_and_attribute_seeding_box` (in `crates/reify-eval/tests/topology_attribute_vertex_seeding.rs`) asserts:
+- **User-observable signal:** new test `extract_vertices_and_attribute_seeding_box` (in `crates/reify-eval/tests/harness_topology_selector/topology_attribute_vertex_seeding.rs`) asserts:
   - `extract_vertices(box_handle).len() == 8`
   - Each vertex carries a `TopologyAttribute` entry with `Role::CornerVertex` and stable `(feature_id, local_index)` across a `thickness`-param tick
 - Dependencies: none (foundation of the bundle).

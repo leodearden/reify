@@ -133,8 +133,28 @@
 //!   codomain:vec3<Length>}` backed by a `SampledField{kind:Regular3D}`.
 //!   `data.len() == grid_count × 3`; layout is row-major x-outer/z-inner, with
 //!   the 3 displacement components (dx, dy, dz) stored contiguously per grid point.
-//!   Every grid point lies inside the solid (prismatic box), so all samples are finite
-//!   (no NaN sentinels for the cantilever geometry).
+//!   Out-of-solid grid points carry `f64::NAN` for all 3 components — the SAME
+//!   PRD §3 sentinel the `stress` bullet below documents. The two fields'
+//!   sentinel contracts are identical; neither is exempt.
+//!
+//!   A PRISMATIC body does **not** exempt `displacement` from that sentinel.
+//!   All-finite requires the solve MESH to tile the AABB the grid spans — a
+//!   property of that mesh, not a consequence of the geometry being a box: §7a
+//!   spans the grid over `aabb(&fea.coords)`, i.e. the realized tet mesh's own
+//!   AABB, so a mesh that under-fills its AABB emits sentinels even for a box.
+//!   The realized path DID under-fill when #6154 measured it — about a third of
+//!   a prismatic box's grid points carried the sentinel, and the sentinel was
+//!   behaving correctly throughout. That under-coverage was a defect in the gmsh
+//!   tetrahedralization upstream of this crate, and it was fixed under #6200
+//!   (landed); the realized box measures complete fill today. The conditional
+//!   above is unchanged by either event, because it is a property of the MESH:
+//!   any future mesh regression re-arms the sentinel, which is exactly what
+//!   `solve_elastic_static_body_e2e::assert_box_grid_miss_measurement` guards
+//!   live, on both this field and `stress`. The measurement,
+//!   its provenance, and the resolution are recorded once in PRD
+//!   `docs/prds/v0_4/fea-result-model.md` §11 Q2 (task #6154). Those figures are
+//!   deliberately NOT restated here — no test pins them, so a second copy would
+//!   go stale silently.
 //!
 //! - **`stress`** — `Value::Field{source:Sampled, domain:point3<Length>,
 //!   codomain:tensor(2,3,Pressure)}` backed by a `SampledField{kind:Regular3D}`.
@@ -830,9 +850,11 @@ pub fn solve_elastic_static_trampoline(
             // for the shell path (PRD §7). Undef = honest-absence sentinel,
             // consistent with the tet convention for frame/shell_channels.
             ("divergence".to_string(), Value::Undef),
-            // task 4565/β: gradient and curl are tet-only derivative channels.
+            // task 4565/β: gradient and curl are tet-only derivative channels;
+            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set.
             ("gradient".to_string(), Value::Undef),
             ("curl".to_string(), Value::Undef),
+            ("rotation".to_string(), Value::Undef),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -1176,6 +1198,12 @@ pub fn solve_elastic_static_trampoline(
     let stress_field = super::sampled_stress_field(stress_sf);
     let div_field = super::sampled_divergence_field(div_sf);
     let grad_field = super::sampled_gradient_field(grad_sf);
+    // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
+    // here rather than resampled independently — note there is deliberately NO
+    // 6th entry in the `resample_multi_nodal_to_grid` call above, so the channel
+    // costs no extra BVH pass and shares curl's grid bit-identically. Derived
+    // BEFORE `curl_sf` is moved into `sampled_curl_field` below.
+    let rotation_field = super::sampled_rotation_field(super::rotation_sf_from_curl(&curl_sf));
     let curl_field = super::sampled_curl_field(curl_sf);
 
     // ── A-posteriori adaptive refinement (task 4902; v1 mesh-free UNIFORM
@@ -1218,6 +1246,45 @@ pub fn solve_elastic_static_trampoline(
     // loop's own "bit-stable per-iteration solves" invariant (see
     // `solve_and_estimate`'s `deterministic: true` comment) for iteration 1
     // only. Deferred rather than risking that subtlety in a focused amendment.
+    //
+    // PERF NOTE, LOCALIZED lane (reviewer_comprehensive/performance, task 4909
+    // amendment). The gmsh-realized lane selected below carries four costs the
+    // note above (written for 4902's uniform lane) does not cover:
+    //
+    //  1. Double coarse solve, the same shape as the uniform lane's: the
+    //     localized lane's FIRST `solve_and_estimate` re-solves the very
+    //     realized mesh the single-shot `fea` above just computed. Not
+    //     eliminated for the same reason given above — `AdaptiveProblem` /
+    //     `run_adaptive_refinement` live in `reify_solver_elastic::adaptive`,
+    //     outside this task's locked scope, and cannot accept a pre-computed
+    //     first estimate.
+    //  2. Serialized remeshes: `RealizedAdaptiveProblem` forces
+    //     `deterministic: true`, which sets `General.NumThreads = 1` in
+    //     `refine_volume_with_size_field`, and every remesh additionally
+    //     serializes on the process-global `reify_kernel_gmsh::init::GMSH_LOCK`.
+    //     Load-bearing, not incidental: it is what makes the loop's
+    //     per-iteration output bit-stable.
+    //  3. `max_dofs` bounds whether a FURTHER refine happens, not how large a
+    //     single remesh may grow the mesh — `run_adaptive_refinement` evaluates
+    //     it only after `solve_and_estimate` returns. A sliver element yields a
+    //     near-zero `(6V)^(1/3)` characteristic size that `dorfler_size_hints`
+    //     halves again, and the resulting mesh is fully solved before the cap
+    //     can fire. Clamping the per-element hints to a floor derived from the
+    //     mesh's own size distribution would fix this, but it changes the
+    //     meaning of the size field handed to gmsh and would need its own RED
+    //     test against a real sliver mesh; deliberately NOT done as a
+    //     drive-by amendment.
+    //  4. Each refine is a FULL remesh from the extracted boundary surface, not
+    //     an incremental subdivision, and the size field's surface projection
+    //     (`project_volume_to_surface_vertices`) is O(n_surf x n_vol). Both are
+    //     properties of the landed `reify-solver-elastic` primitive and are
+    //     surfaced to callers in the lane's post-loop Info diagnostic.
+    //
+    // Cancellation IS handled: `RealizedAdaptiveProblem::solve_and_estimate`
+    // polls the ambient cancel handle on every CG iteration and the post-loop
+    // check below returns `ComputeOutcome::Cancelled`, so a long adaptive body
+    // solve is interruptible at CG granularity (the gmsh remesh itself is an
+    // FFI call and is not).
     let adaptive_params = extract_adaptive_params(options_vi);
     let aposteriori_fields: [(String, Value); 3] =
         if adaptive_params.adaptive && let MaterialModel::Isotropic(iso) = &model {
@@ -1231,36 +1298,217 @@ pub fn solve_elastic_static_trampoline(
                  adaptively-refined mesh; only convergence_status/global_relative_energy_error \
                  reflect the refinement loop's outcome (v1 scope)",
             ));
-            let mut problem = CantileverAdaptiveProblem::new(
-                *iso,
-                length,
-                width,
-                height,
-                tip_force,
-                pressures.clone(),
-                body_force,
-                bc_override.clone(),
-            );
             let budget = RefinementBudget {
                 target_accuracy: adaptive_params.target_accuracy,
                 max_refinement_iterations: adaptive_params.max_refinement_iterations,
                 max_dofs: adaptive_params.max_dofs,
             };
-            let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-                .expect("CantileverAdaptiveProblem::refine is Infallible");
-            // Perf-cost visibility (reviewer_comprehensive/performance, task
-            // 4902 amendment): `refine` uniformly doubles all three grid axes
-            // per iteration (~8x DOF growth), so an `adaptive: true` request
-            // can reach a mesh far larger than the single-shot solve above
-            // with no caller-visible signal beyond this diagnostic —
-            // `max_dofs`/`max_refinement_iterations` bound the growth, but
-            // the achieved cost was otherwise only discoverable by
-            // instrumenting the solve.
-            let (nx, ny, nz) = problem.grid;
-            route_diagnostics.push(Diagnostic::info(format!(
-                "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
-                problem.last_n_dofs
-            )));
+
+            // ── Lane selection (task 4909) ────────────────────────────────
+            //
+            // The gmsh-realized LOCALIZED lane genuinely consumes the Dörfler
+            // marks (a gmsh size-field remesh); 4902's UNIFORM lane ignores
+            // them and doubles a synthetic grid. Take the localized lane only
+            // when every precondition holds:
+            //
+            //  * a realized `VolumeMesh` is present — the localized lane has
+            //    no synthetic mesh to fall back on, and the boundary must be
+            //    extracted from the mesh gmsh actually produced (so it is
+            //    read from the handle, NOT rebuilt from the widened
+            //    `SolverMesh`, which has already been orphan-compacted);
+            //  * libgmsh is linked in THIS build — a runtime const, never
+            //    `cfg(has_gmsh)`, because a cfg emitted by the gmsh crate's
+            //    build.rs does not propagate to dependents and would compile
+            //    to false on every host;
+            //  * no selector-resolved BC override — `bc_override` is a Vec of
+            //    node INDICES resolved against the PRE-refine mesh, and a
+            //    remesh preserves no index, so carrying it into iteration 2
+            //    would apply clamps and loads to arbitrary unrelated nodes: a
+            //    wrong answer with no diagnostic, strictly worse than an
+            //    honest uniform fallback;
+            //  * the boundary actually extracts.
+            //
+            // A `None` here is not a failure — it means "use the uniform
+            // lane", and the reason is surfaced as a Warning so the caller can
+            // see WHICH precondition failed.
+            let realized_lane_seed: Option<RealizedAdaptiveProblem> =
+                if let Some(vm) = realized_handle.and_then(|h| h.volume_mesh()) {
+                if !reify_solver_elastic::GMSH_AVAILABLE {
+                    route_diagnostics.push(Diagnostic::warning(
+                        "adaptive refinement: a realized volume mesh is present but libgmsh is \
+                         not available in this build, so mark-driven local refinement cannot \
+                         run; falling back to uniform (non-mark-consuming) refinement",
+                    ));
+                    None
+                } else if bc_override.is_some() {
+                    route_diagnostics.push(Diagnostic::warning(
+                        "adaptive refinement: selector-resolved boundary conditions are node \
+                         INDEX sets resolved against the pre-refinement mesh, and a remesh \
+                         preserves no node index; falling back to uniform (non-mark-consuming) \
+                         refinement to avoid applying the constraints to unrelated nodes",
+                    ));
+                    None
+                } else {
+                    match reify_solver_elastic::boundary_surface_mesh(vm) {
+                        Ok(surface) => {
+                            // `new` returns `None` for a mesh this crate cannot
+                            // widen. Unreachable from HERE — `realized_handle`
+                            // was selected by `realized_solver_mesh_with_handle`,
+                            // which already ran the same
+                            // `volume_mesh_to_solver_mesh` gate — but the
+                            // constructor is `pub(crate)` and must not be
+                            // trusted to be called only from this one site, so
+                            // the ladder handles it rather than unwrapping.
+                            let seeded = RealizedAdaptiveProblem::new(
+                                *iso,
+                                vm.clone(),
+                                surface,
+                                reify_solver_elastic::MeshingOptions::default(),
+                                tip_force,
+                                pressures.clone(),
+                                body_force,
+                            );
+                            if seeded.is_none() {
+                                route_diagnostics.push(Diagnostic::warning(
+                                    "adaptive refinement: the realized volume mesh is not a \
+                                     widenable P1 tet mesh, so the localized lane cannot solve \
+                                     on it; falling back to uniform (non-mark-consuming) \
+                                     refinement",
+                                ));
+                            }
+                            seeded
+                        }
+                        Err(e) => {
+                            route_diagnostics.push(Diagnostic::warning(format!(
+                                "adaptive refinement: could not extract a boundary surface from \
+                                 the realized volume mesh ({e}); falling back to uniform \
+                                 (non-mark-consuming) refinement"
+                            )));
+                            None
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+
+            // The UNIFORM lane, verbatim 4902. Reached both when the localized
+            // lane was never entered and when it failed at runtime, so both
+            // paths land on identical, already-tested behaviour rather than
+            // two hand-copied bodies.
+            let run_uniform_lane = || {
+                let mut problem = CantileverAdaptiveProblem::new(
+                    *iso,
+                    length,
+                    width,
+                    height,
+                    tip_force,
+                    pressures.clone(),
+                    body_force,
+                    bc_override.clone(),
+                );
+                let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
+                    .expect("CantileverAdaptiveProblem's AdaptiveProblem seam is Infallible");
+                // Perf-cost visibility (reviewer_comprehensive/performance,
+                // task 4902 amendment): `refine` uniformly doubles all three
+                // grid axes per iteration (~8x DOF growth), so an
+                // `adaptive: true` request can reach a mesh far larger than
+                // the single-shot solve above with no caller-visible signal
+                // beyond this diagnostic.
+                let (nx, ny, nz) = problem.grid;
+                let diag = Diagnostic::info(format!(
+                    "adaptive refinement finished at {} DOFs on a {nx}×{ny}×{nz} grid",
+                    problem.last_n_dofs
+                ));
+                (status, problem.last_global_indicator, diag)
+            };
+
+            let (status, last_global_indicator, lane_diagnostic) = match realized_lane_seed {
+                Some(mut problem) => {
+                    let n_elements_before = problem.element_count();
+                    match run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA) {
+                        Ok(status) => {
+                            let n_elements_after = problem.element_count();
+                            // Lane-specific post-loop diagnostic. Reports the
+                            // pre/post element counts because a CONCENTRATION
+                            // of elements is the observable signature of
+                            // mark-driven local refinement — something the
+                            // uniform fallback structurally cannot report,
+                            // since it never remeshes. Also records the two
+                            // costs inherited from the reify-solver-elastic
+                            // primitive so a caller can see them: each refine
+                            // is a FULL remesh from surface (not an
+                            // incremental subdivision), and the size field's
+                            // surface projection is O(n_surf x n_vol).
+                            //
+                            // Phrased on `refine_count`, NOT on lane selection
+                            // (reviewer_comprehensive amendment):
+                            // `run_adaptive_refinement` can return without ever
+                            // calling `refine` — `max_refinement_iterations: 0`
+                            // (documented as legitimate), or a first estimate
+                            // already within `target_accuracy` — and claiming a
+                            // mark-driven remesh in those cases would be a false
+                            // statement that callers (including the step-19 e2e,
+                            // which parses this string) read as evidence the
+                            // refine ran. Both wordings keep the same
+                            // `elements N -> M` tail so the parse contract holds
+                            // either way.
+                            let diag = Diagnostic::info(if problem.refine_count == 0 {
+                                format!(
+                                    "adaptive refinement finished at {} DOFs; the gmsh-realized \
+                                     LOCALIZED lane was selected but the budget terminated \
+                                     before any mark-driven remesh ran (0 refinement \
+                                     iterations): elements {n_elements_before} -> \
+                                     {n_elements_after}",
+                                    problem.last_n_dofs
+                                )
+                            } else {
+                                format!(
+                                    "adaptive refinement finished at {} DOFs; refinement was \
+                                     LOCALIZED and mark-driven (a gmsh-realized size-field \
+                                     remesh consuming the Dörfler-marked set, {} refinement \
+                                     iteration(s)): elements {n_elements_before} -> \
+                                     {n_elements_after}. Cost note: each refinement iteration \
+                                     is a FULL remesh from the extracted boundary surface, not \
+                                     an incremental subdivision, and the per-element size field \
+                                     is projected onto that surface by an O(n_surf x n_vol) \
+                                     nearest-vertex scan",
+                                    problem.last_n_dofs, problem.refine_count
+                                )
+                            });
+                            (status, problem.last_global_indicator, diag)
+                        }
+                        Err(e) => {
+                            // libgmsh IS linked but this remesh failed (an open
+                            // or non-manifold surface, zero classified corner
+                            // entities, ...). An `adaptive: true` request must
+                            // never regress from "an answer with
+                            // uniform-fallback a-posteriori fields" to Failed,
+                            // so re-run on the uniform lane.
+                            route_diagnostics.push(Diagnostic::warning(format!(
+                                "adaptive refinement: the gmsh-realized local refinement failed \
+                                 at runtime ({e}); falling back to uniform \
+                                 (non-mark-consuming) refinement"
+                            )));
+                            run_uniform_lane()
+                        }
+                    }
+                }
+                None => run_uniform_lane(),
+            };
+            // Post-loop cancel check (reviewer_comprehensive amendment), the
+            // exact shape of §6b above and for the same compute-node-contract
+            // §2 reason: a cancel raised DURING the refinement loop makes every
+            // CG solve from that point on bail early (BOTH lanes'
+            // `solve_and_estimate` pass `ambient_cg_cancel_poll()` as their CG
+            // progress callback), so the a-posteriori triple below would be
+            // computed from partial displacements. §6b fires before this branch and cannot see a
+            // cancel raised after it. Returning `Cancelled` leaves the output VC
+            // `Freshness::Pending` rather than caching a bogus partial result.
+            if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return ComputeOutcome::Cancelled;
+            }
+            route_diagnostics.push(lane_diagnostic);
             // task 4910: build the Pa-valued error_indicator Field from the
             // COARSE seed solve (`fea` above — the SAME mesh that produced
             // displacement/stress), resampled onto the SAME `grid`, so the
@@ -1294,11 +1542,7 @@ pub fn solve_elastic_static_trampoline(
             let error_indicator_value = Value::Option(Some(Box::new(
                 super::sampled_error_indicator_field(error_indicator_sf),
             )));
-            aposteriori_adaptive_fields(
-                &status,
-                problem.last_global_indicator,
-                error_indicator_value,
-            )
+            aposteriori_adaptive_fields(&status, last_global_indicator, error_indicator_value)
         } else if adaptive_params.adaptive {
             // step-19/20: `adaptive: true` on a non-isotropic material
             // (anisotropic or heterogeneous) — `compute_zz_indicator` is
@@ -1359,6 +1603,10 @@ pub fn solve_elastic_static_trampoline(
         // Shell path emits Undef (PRD §7).
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
+        // ruling #6164: rotation = ∇×u / 2, the designated crossing where the
+        // radian enters (Vector3<Angle>). Derived from the curl SampledField at
+        // wrap time and stored nowhere. Shell path emits Undef (PRD §7).
+        ("rotation".to_string(), rotation_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -1647,6 +1895,26 @@ pub(crate) fn has_usable_realized_solver_mesh(
 /// ids are unioned and mapped to node indices via
 /// [`super::bc_resolve::boundary_node_set`] against `realized.boundary()`.
 ///
+/// # Multi-support UNION invariant (normative; task 6663)
+///
+/// Every support's resolved face handles are UNIONED into ONE clamp node set,
+/// and all three translational DOFs are applied to all of them. There is no
+/// count-based branch and no degradation: a second support ADDS a face rather
+/// than reinterpreting the model, and a third naming an already-covered face is
+/// a no-op on the union. Pinned that way by
+/// `loads_supports_to_bc_node_sets_unions_multiple_support_faces`.
+///
+/// This is deliberately CONTRASTED with `modal_ops::build_dirichlet_bcs`, which
+/// until task 6663 DID reinterpret: two supports naming both beam-axis end faces
+/// flipped the whole model to the pin-pin realization regardless of support kind,
+/// silently dropping any third support. The static path never had that defect.
+///
+/// Realizing a pinned face as a full clamp is also physically right here: a
+/// solid tet body records `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`
+/// (`reify-solver-elastic/src/shell_boundary.rs:133-140`), i.e. face-pin equals
+/// face-clamp per face. What differs in the modal case is the STRUCTURE two
+/// clamped END FACES describe, not any single face's DOF count.
+///
 /// Returns `(clamp_nodes, load_nodes, diagnostics)`:
 /// - `clamp_nodes` — `Some(sorted node set)` when ≥1 support carried a `target`;
 ///   `None` when NO support carried one (→ the trampoline keeps the coordinate
@@ -1670,8 +1938,8 @@ pub(crate) fn loads_supports_to_bc_node_sets(
 ) -> (Option<Vec<u32>>, Option<Vec<u32>>, Vec<Diagnostic>) {
     let boundary = realized.boundary();
     let mut diagnostics = Vec::new();
-    let clamp = target_node_set(supports, boundary, "FixedSupport", &mut diagnostics);
-    let load = target_node_set(loads, boundary, "PointLoad", &mut diagnostics);
+    let clamp = target_node_set(supports, boundary, &mut diagnostics);
+    let load = target_node_set(loads, boundary, &mut diagnostics);
     (clamp, load, diagnostics)
 }
 
@@ -1684,12 +1952,21 @@ pub(crate) fn loads_supports_to_bc_node_sets(
 /// set)`; if that set is empty (absent realized boundary, empty handle list, or
 /// no resolved handle matched a boundary face) a `FeaFailure::SelectorNoMatch`
 /// Error is pushed into `diagnostics` — the trampoline turns it into `Failed`
-/// rather than silently applying an empty BC (step-16). `kind` (`"FixedSupport"`
-/// / `"PointLoad"`) names the offending side in the diagnostic.
+/// rather than silently applying an empty BC (step-16).
+///
+/// The diagnostic names the offending item(s) by their own
+/// `StructureInstance.type_name`, so a `PinnedSupport` is reported as a
+/// `PinnedSupport` (task 6663 — it used to be reported as a `FixedSupport`,
+/// hard-coded by the caller). That leaves the message byte-identical for
+/// `FixedSupport` / `PointLoad` inputs, which is why no caller-supplied fallback
+/// label is needed: `any_target` and the `target_bearing_types` push happen on
+/// the SAME iteration, and the `!any_target` early return above means the label
+/// is only ever read when at least one type name was collected. The old
+/// `kind: &str` parameter existed solely to fill an unreachable
+/// `target_bearing_types.is_empty()` arm and was dropped as dead code.
 fn target_node_set(
     list: &Value,
     boundary: Option<&reify_ir::BoundaryAssociation>,
-    kind: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Vec<u32>> {
     let items = match list {
@@ -1698,6 +1975,9 @@ fn target_node_set(
     };
     let mut faces: Vec<reify_ir::GeometryHandleId> = Vec::new();
     let mut any_target = false;
+    // Distinct type names of the items that actually carried a target — the
+    // label the SelectorNoMatch diagnostic names below (task 6663).
+    let mut target_bearing_types: Vec<&str> = Vec::new();
     for item in items {
         let Value::StructureInstance(data) = item else {
             continue;
@@ -1706,6 +1986,9 @@ fn target_node_set(
             continue;
         };
         any_target = true;
+        if !target_bearing_types.contains(&data.type_name.as_str()) {
+            target_bearing_types.push(data.type_name.as_str());
+        }
         for hv in handles {
             if let Some(ghr) = reify_ir::value::GeometryHandleRef::from_geometry_handle(hv)
                 && let Some(id) = ghr.kernel_handle
@@ -1728,8 +2011,21 @@ fn target_node_set(
         // an empty boundary condition (design_decision[6], step-16). The
         // `selector` string names the side and the resolved face handles for
         // debuggability; `nearest` stays None (no nearest-match heuristic here).
+        //
+        // The label comes from the offending item's OWN `type_name` so a
+        // `PinnedSupport` is not reported as a `FixedSupport` (task 6663).
+        //
+        // Non-empty by construction: `any_target` is set on the SAME iteration
+        // that pushes into `target_bearing_types`, and `!any_target` returned
+        // above — so there is no fallback branch to take here, only an invariant
+        // to state.
+        debug_assert!(
+            !target_bearing_types.is_empty(),
+            "any_target implies at least one collected type_name",
+        );
+        let label = target_bearing_types.join("/");
         let selector = format!(
-            "{kind} target resolved to {} face handle(s) {:?} but matched no boundary node \
+            "{label} target resolved to {} face handle(s) {:?} but matched no boundary node \
              on the realized mesh",
             faces.len(),
             faces,
@@ -1914,6 +2210,13 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// | shell_channels    | `fields["shell_channels"]` ShellStress fields  | `None`          |
 /// | solve_time_ms     | (not stored in Value)                          | `0`             |
 /// | aposteriori       | see below (task #4942)                         | `None`          |
+///
+/// `rotation` is intentionally ABSENT from this table: it is not extracted and
+/// not persisted. Ruling #6164 derives it from the `curl` slab at wrap time
+/// (`value_from_elastic_result`), because it is a pure ×½ of a slab already on
+/// the wire and the binary header is frozen (`curl_len` at a fixed byte offset,
+/// byte-exact golden test). So this direction needs no `rotation` arm, and
+/// existing persisted entries gain a correct `.rotation` for free.
 ///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
@@ -2180,9 +2483,24 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(sf) => super::sampled_gradient_field(sf),
         None => Value::Undef,
     };
-    let curl_field = match build_sf(er.curl.clone(), "curl") {
-        Some(sf) => super::sampled_curl_field(sf),
-        None => Value::Undef,
+    // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
+    // never persisted — the compute-contract wire header is frozen (`curl_len`
+    // at a fixed byte offset, byte-exact golden test), and rotation is a pure
+    // ×½ of a slab already on the wire. Deriving here means every EXISTING
+    // persisted cache entry gains a correct `.rotation` for free, with no
+    // format version bump and no new `elastic_result_from_value` extract arm.
+    //
+    // ONE `build_sf` feeds BOTH channels, mirroring the live tet path's single
+    // `curl_sf`. Splitting them into two independent `match` arms would both
+    // rebuild the slab twice on the cache-HIT path (the cheap one) and let a
+    // future edit to curl's reconstruction land on one arm only, silently
+    // desynchronising the two channels.
+    let (curl_field, rotation_field) = match build_sf(er.curl.clone(), "curl") {
+        Some(sf) => {
+            let rotation = super::sampled_rotation_field(super::rotation_sf_from_curl(&sf));
+            (super::sampled_curl_field(sf), rotation)
+        }
+        None => (Value::Undef, Value::Undef),
     };
 
     // shell_channels: None → Value::Undef; Some(ch) → ShellStress StructureInstance.
@@ -2236,6 +2554,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("divergence".to_string(), div_field),
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
+        ("rotation".to_string(), rotation_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -3211,7 +3530,16 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
     /// same `Infallible` for its synthetic stubs).
     type Error = std::convert::Infallible;
 
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
+        // The refinement loop is interruptible at CG granularity: a cancel
+        // raised mid-loop bails out of the current solve and is turned into
+        // `ComputeOutcome::Cancelled` by the wiring site's post-loop check. A
+        // gmsh remesh is an FFI call and stays uninterruptible.
+        let mut cancel_poll = ambient_cg_cancel_poll();
+        let progress_opt: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl> = cancel_poll
+            .as_mut()
+            .map(|c| c as &mut dyn FnMut(usize, f64) -> CgIterationControl);
+
         let model = MaterialModel::Isotropic(self.material);
         let (fea, _fresh_warm) = solve_cantilever_fea(
             &model,
@@ -3231,7 +3559,7 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
             self.body_force,
             true, // deterministic: bit-stable per-iteration solves.
             None,
-            None,
+            progress_opt,
             self.bc_override.clone(),
             Some(self.grid),
         );
@@ -3255,11 +3583,12 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         self.last_global_indicator = zz.global_relative_energy_error;
         self.last_n_dofs = n_dofs;
 
-        AdaptiveEstimate {
-            global_indicator: zz.global_relative_energy_error,
+        Ok(AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
             per_element: zz.per_element,
             n_dofs,
-        }
+            qoi: None,
+        })
     }
 
     fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
@@ -3276,6 +3605,388 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         // deferred to follow-up task 4909.
         let (nx, ny, nz) = self.grid;
         self.grid = (nx * 2, ny * 2, nz * 2);
+        Ok(())
+    }
+}
+/// A CG per-iteration callback that ONLY polls the ambient cancel handle.
+///
+/// `None` when no cancel handle is installed in the current dispatch context,
+/// so a caller passes `progress: None` and the solver takes its no-callback
+/// entry point exactly as before.
+///
+/// Why both adaptive lanes need one (reviewer_comprehensive/performance
+/// amendment): the trampoline's §6b cancel check fires ONCE, before the
+/// adaptive branch, so without this a single `adaptive: true` request runs its
+/// whole refinement budget — up to `DEFAULT_MAX_REFINEMENT_ITERATIONS`
+/// refinements plus that many + 1 full CG solves, each on a strictly larger
+/// mesh — with no way to interrupt it. Cancellation rides the ambient
+/// `solver_progress` dispatch context rather than the trampoline's
+/// (deliberately unused) `_cancellation` parameter, so nothing has to be
+/// threaded through the `AdaptiveProblem` trait, whose signature this task does
+/// not own.
+///
+/// Cancel-poll ONLY, no `SolverProgressSink` emission: the sink reports a
+/// single "cg" solve's iteration/residual stream, and interleaving one stream
+/// per refinement iteration would make the residual sequence read as a
+/// diverging solve. The seed solve already feeds the sink.
+fn ambient_cg_cancel_poll() -> Option<impl FnMut(usize, f64) -> CgIterationControl> {
+    let cancel = crate::solver_progress::current_solve_dispatch_context()
+        .and_then(|(_sink, cancel)| cancel)?;
+    Some(move |_iter: usize, _residual: f64| -> CgIterationControl {
+        if cancel.is_cancelled() {
+            CgIterationControl::Cancel
+        } else {
+            CgIterationControl::Continue
+        }
+    })
+}
+
+// ── RealizedAdaptiveProblem (task 4909) ──────────────────────────────────────
+
+/// One characteristic size per element of `(coords, tets)`, in element order:
+/// `(6·V)^(1/3)` of each tet's [`tet_volume_p1`].
+///
+/// `6·V` undoes the canonical tet-volume formula `V = |det J| / 6`, recovering
+/// a length on the same scale as the mesh's actual element sizes.
+/// [`refine_marked_elements`]'s `current_sizes` argument wants a
+/// characteristic *size* per element, not a volume.
+///
+/// Within THIS crate it is the single definition of the convention: it is used
+/// BOTH to seed `current_sizes` at construction and to recompute it after every
+/// remesh (step-14). The same definition must be used both times or
+/// `current_sizes` stops being comparable across a refine, and the size field
+/// handed to gmsh silently changes meaning.
+///
+/// It is NOT, however, the single source workspace-wide — an independent copy of
+/// the same `(6*V)^(1/3)` scalar lives as `characteristic_size_from_volume` /
+/// `current_sizes_from_nodes_conns` in `reify-solver-elastic`'s
+/// `tests/aposteriori_validation.rs` harness (pinned there by its own
+/// `characteristic_size_from_volume_recovers_cube_root_edge_proxy_for_known_tet_volume`
+/// test), and nothing makes the two drift loudly. Hoisting one scalar
+/// `characteristic_size_from_volume` into `reify_solver_elastic::adaptive` next
+/// to `dorfler_size_hints` (which consumes the convention) and calling it from
+/// both sites is the real fix; it is deferred because `adaptive.rs` and that
+/// harness are outside this task's locked scope.
+fn characteristic_sizes_from_solver_mesh(coords: &[[f64; 3]], tets: &[[usize; 4]]) -> Vec<f64> {
+    tets.iter()
+        .map(|conn| {
+            let phys: [[f64; 3]; 4] =
+                [coords[conn[0]], coords[conn[1]], coords[conn[2]], coords[conn[3]]];
+            (6.0 * tet_volume_p1(&phys)).cbrt()
+        })
+        .collect()
+}
+
+/// The **gmsh-realized** [`AdaptiveProblem`]: a-posteriori refinement that
+/// genuinely CONSUMES the Dörfler-marked element set, by remeshing the
+/// realized volume under a mark-driven size field.
+///
+/// # Sibling of, not replacement for, [`CantileverAdaptiveProblem`]
+///
+/// Task 4902's uniform lane stays exactly as it is and remains the fallback.
+/// The two differ in every axis that matters — mesh source (realized
+/// `VolumeMesh` vs synthetic grid), refine mechanism (gmsh size-field remesh
+/// vs per-axis grid doubling), error type ([`RefineError`] vs `Infallible`),
+/// and BC model (coordinate re-derivation per remesh vs stable node indices)
+/// — so folding them behind one struct would mean a runtime enum in every
+/// method and would put 4902's already-tested fallback behaviour at risk on a
+/// path that must stay a safe harbour.
+///
+/// # Why `surface` is held FIXED for the whole loop
+///
+/// `refine_marked_elements` always remeshes the volume FROM the supplied
+/// surface, so every mesh the loop ever holds is a child of the ONE boundary
+/// extracted at construction. The "the mesh being refined must have come from
+/// that same surface" contract then holds transitively for every iteration.
+/// Re-extracting the boundary from each refined mesh would let the surface
+/// drift (each remesh retriangulates it), progressively decoupling the size
+/// field from the geometry for no benefit, and would pay an extra O(n)
+/// extraction per iteration.
+///
+/// # Why BCs must stay coordinate-selected
+///
+/// A remesh preserves NO node index. `solve_cantilever_fea`'s realized arm
+/// re-derives the AABB grid and the x_min/x_max BC node sets from coordinates
+/// on every call, which is exactly what a topology-changing remesh needs — so
+/// this problem passes `bc_override: None` unconditionally. A
+/// selector-resolved (task 4092) `bc_override` is a Vec of node INDICES
+/// resolved against the PRE-refine mesh; carrying it into iteration 2 would
+/// apply clamps and loads to arbitrary unrelated nodes, a wrong answer with no
+/// diagnostic. The wiring site (step-16) therefore refuses this lane outright
+/// when a `bc_override` is present.
+///
+/// # Inherited costs
+///
+/// Each `refine` is a FULL remesh from surface, not an incremental
+/// subdivision; and `project_volume_to_surface_vertices` is O(n_surf × n_vol)
+/// (its own comment notes a spatial index would be needed at production
+/// scale). Both are properties of the landed `reify-solver-elastic` primitive,
+/// not of this wiring, and are surfaced to callers in the post-loop Info
+/// diagnostic.
+///
+/// Confined to isotropic materials for the same reason as
+/// [`CantileverAdaptiveProblem`]: `compute_zz_indicator` asserts P1 4-node
+/// connectivity and takes `&IsotropicElastic`.
+pub(crate) struct RealizedAdaptiveProblem {
+    material: IsotropicElastic,
+    /// Current realized volume mesh (P1 tets). Replaced WHOLESALE by `refine`.
+    volume_mesh: reify_ir::VolumeMesh,
+    /// The closed boundary `volume_mesh` was extracted from, held FIXED for
+    /// the whole loop and forwarded unchanged to `refine_marked_elements` on
+    /// every iteration. See the struct doc.
+    surface: reify_ir::Mesh,
+    /// One characteristic size per element of `volume_mesh`, in element order;
+    /// recomputed from the NEW mesh after every remesh.
+    current_sizes: Vec<f64>,
+    meshing_options: reify_solver_elastic::MeshingOptions,
+    tip_force: [f64; 3],
+    pressures: Vec<PressureSpec>,
+    body_force: [f64; 3],
+    /// The most recent `solve_and_estimate()`'s `global_relative_energy_error`
+    /// — populated on EVERY call, so `aposteriori_adaptive_fields` can thread
+    /// a populated value regardless of the terminal `ConvergenceStatus`.
+    /// Mirrors [`CantileverAdaptiveProblem`]'s field of the same name.
+    pub(crate) last_global_indicator: f64,
+    /// The most recent `solve_and_estimate()`'s DOF count. Surfaced in the
+    /// post-loop diagnostic so a caller can see the achieved mesh cost.
+    pub(crate) last_n_dofs: usize,
+    /// How many times `refine` has run to completion.
+    ///
+    /// `run_adaptive_refinement` can return WITHOUT ever calling `refine` — a
+    /// `max_refinement_iterations: 0` budget (documented as legitimate: "one
+    /// solve, zero refinements"), or a first estimate already at or under
+    /// `target_accuracy`. The post-loop diagnostic reads this so it never
+    /// claims a mark-driven remesh that did not happen
+    /// (reviewer_comprehensive amendment).
+    pub(crate) refine_count: usize,
+}
+
+impl RealizedAdaptiveProblem {
+    /// Seed a problem from an initial realized mesh and its extracted
+    /// boundary.
+    ///
+    /// `current_sizes` is computed fresh from each element's volume, so it is
+    /// correct from the very first solve — not just after the first `refine`.
+    ///
+    /// `meshing_options.mesh_size` is deliberately left EXACTLY as the caller
+    /// passed it, including `None` (reviewer_comprehensive amendment). An
+    /// earlier revision seeded it to the median characteristic size of the
+    /// initial mesh; that was inert and is removed rather than documented as
+    /// future-proofing. `refine_marked_elements` →
+    /// `refine_with_size_field_validated` →
+    /// `reify_kernel_gmsh::refine_volume_with_size_field` reads ONLY
+    /// `options.deterministic` and `options.threads`; the per-vertex size field
+    /// supersedes any baseline, and that function's own comment says its
+    /// `Mesh.MeshSizeMax` is "deliberately NOT `options.mesh_size`". Two things
+    /// must be settled before any future revision wires it through: the units
+    /// (`MeshingOptions::mesh_size` is documented in millimetres, while these
+    /// characteristic sizes are in the model's own coordinate units — metres in
+    /// the `.ri` fixtures, a 1000x error if crossed), and whether re-introducing
+    /// a baseline would re-create the very clamp `refine_volume.rs` defends
+    /// against. This struct's `meshing_options` therefore carries only
+    /// `deterministic`/`threads` to the remesher today.
+    ///
+    /// `deterministic: true` is load-bearing, not decorative — it forces
+    /// `General.NumThreads = 1` in the remesher, which is what makes the
+    /// loop's per-iteration output bit-stable.
+    ///
+    /// Returns `None` when `volume_mesh` is not a widenable P1 tet mesh (the
+    /// same `volume_mesh_to_solver_mesh` gate the solve itself runs), so the
+    /// wiring site can fall back rather than construct a problem that would
+    /// fail on its first solve. Making that promise real in the SIGNATURE (an
+    /// earlier revision returned `Self` and swallowed the rejection into an
+    /// empty `current_sizes`) is what keeps `solve_and_estimate` free of a
+    /// degenerate arm that would have reported `relative_error: 0.0` — read
+    /// by `run_adaptive_refinement` as "converged with zero error" on a mesh
+    /// that was never solved.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        material: IsotropicElastic,
+        volume_mesh: reify_ir::VolumeMesh,
+        surface: reify_ir::Mesh,
+        mut meshing_options: reify_solver_elastic::MeshingOptions,
+        tip_force: [f64; 3],
+        pressures: Vec<PressureSpec>,
+        body_force: [f64; 3],
+    ) -> Option<Self> {
+        let (coords, tets) = volume_mesh_to_solver_mesh(&volume_mesh)?;
+        let current_sizes = characteristic_sizes_from_solver_mesh(&coords, &tets);
+        meshing_options.deterministic = true;
+        Some(Self {
+            material,
+            volume_mesh,
+            surface,
+            current_sizes,
+            meshing_options,
+            tip_force,
+            pressures,
+            body_force,
+            last_global_indicator: 0.0,
+            last_n_dofs: 0,
+            refine_count: 0,
+        })
+    }
+
+    /// Element count of the CURRENT mesh.
+    ///
+    /// Read before and after the loop so the post-loop diagnostic can report
+    /// the CONCENTRATION the refinement achieved — the observable signature of
+    /// mark-driven local refinement, which the uniform fallback structurally
+    /// cannot report because it never remeshes.
+    pub(crate) fn element_count(&self) -> usize {
+        self.volume_mesh
+            .tet_indices()
+            .map(|i| i.len() / self.volume_mesh.nodes_per_element().max(1))
+            .unwrap_or(0)
+    }
+}
+
+impl AdaptiveProblem for RealizedAdaptiveProblem {
+    /// A gmsh remesh CAN fail at runtime (an open or non-manifold surface,
+    /// zero classified corner entities, or libgmsh absent from this build —
+    /// `RefineError::GmshUnavailable` and `RefineError::Gmsh(..)` are
+    /// distinct, already-modelled variants). The wiring site catches this and
+    /// re-runs on the uniform lane rather than failing the solve.
+    type Error = reify_solver_elastic::RefineError;
+
+    /// Solve on the CURRENT realized mesh and estimate the Z-Z error.
+    ///
+    /// Never touches `surface` — only `refine` does — so this runs in a
+    /// gmsh-free build exactly as it does in a gmsh build.
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
+        // REUSE: `volume_mesh_to_solver_mesh` already performs both the P1
+        // gate AND the orphan-vertex compaction that real gmsh output demands
+        // (an element-unreferenced node gets no stiffness contribution,
+        // inflating n_dofs and panicking in apply_dirichlet_row_elimination).
+        // Widenability is a CONSTRUCTION invariant, not a runtime condition:
+        // `new` returns `None` for a non-widenable seed and `refine` raises a
+        // `RefineError` for a non-widenable remesh result, so `self.volume_mesh`
+        // is always widenable here. An earlier revision carried a "degrade
+        // honestly" arm returning `relative_error: 0.0`; that was the opposite
+        // of honest — `run_adaptive_refinement` tests
+        // `est.relative_error <= budget.target_accuracy` FIRST, so 0.0 reads as
+        // `Converged { final_indicator: 0.0 }` and the caller is told the solve
+        // converged perfectly on a mesh that was never solved
+        // (reviewer_comprehensive amendment).
+        let (coords, tet_connectivity) = volume_mesh_to_solver_mesh(&self.volume_mesh).expect(
+            "RealizedAdaptiveProblem holds a widenable P1 tet mesh by construction: \
+             `new` gates the seed and `refine` gates every remesh result",
+        );
+
+        // The refinement loop is interruptible at CG granularity: a cancel
+        // raised mid-loop bails out of the current solve and is turned into
+        // `ComputeOutcome::Cancelled` by the wiring site's post-loop check. A
+        // gmsh remesh is an FFI call and stays uninterruptible.
+        let mut cancel_poll = ambient_cg_cancel_poll();
+        let progress_opt: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl> = cancel_poll
+            .as_mut()
+            .map(|c| c as &mut dyn FnMut(usize, f64) -> CgIterationControl);
+
+        let model = MaterialModel::Isotropic(self.material);
+        let (fea, _fresh_warm) = solve_cantilever_fea(
+            &model,
+            // Placeholder dims: on the `provided_mesh` (realized) path these
+            // are entirely unused — nx/ny/nz come from the mesh AABB and the
+            // BC node sets from coordinates; `length`/`width`/`height` reach
+            // only the `!realized` synthetic-box and box-face-pressure
+            // branches.
+            1.0,
+            1.0,
+            1.0,
+            Some((coords, tet_connectivity)),
+            self.tip_force,
+            // No warm-state carryover: a remesh invalidates it outright (the
+            // DOF count changes), so there is nothing to reuse.
+            None,
+            &self.pressures,
+            self.body_force,
+            // Bit-stable per-iteration solves — the loop's stability invariant.
+            true,
+            None,
+            progress_opt,
+            // Coordinate BC selection, re-derived per solve. See the struct doc:
+            // node indices do not survive a remesh, so an index-based override
+            // cannot be carried across an iteration.
+            None,
+            // Synthetic-grid override is meaningless on the realized path.
+            None,
+        );
+
+        let elements = isotropic_stress_elements(
+            &fea.coords,
+            &fea.tet_connectivity,
+            &fea.u,
+            &self.material,
+        );
+        let vmesh = volume_mesh_from_solver_mesh(&fea.coords, &fea.tet_connectivity);
+        let zz = compute_zz_indicator(&elements, &vmesh, &self.material);
+
+        let n_dofs = 3 * fea.coords.len();
+        self.last_global_indicator = zz.global_relative_energy_error;
+        self.last_n_dofs = n_dofs;
+
+        Ok(AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
+            per_element: zz.per_element,
+            n_dofs,
+            qoi: None,
+        })
+    }
+
+    /// Consume the Dörfler-marked set by remeshing the volume under a
+    /// mark-driven size field.
+    ///
+    /// This is what 4902's uniform lane could not do: `refine_marked_elements`
+    /// halves each marked element's characteristic size (`dorfler_size_hints`)
+    /// and hands the resulting per-element field to gmsh, which remeshes the
+    /// volume enclosed by `surface`. Refinement is therefore LOCALIZED to the
+    /// marked region rather than applied uniformly.
+    ///
+    /// # Ordering
+    ///
+    /// `current_sizes` is recomputed from the NEW mesh, and `surface` is
+    /// deliberately NOT updated — every iteration remeshes from the same
+    /// boundary, which is what makes the "the mesh being refined came from
+    /// that surface" contract hold transitively across the whole loop (see the
+    /// struct doc). `volume_mesh` is replaced last, so an error leaves the
+    /// problem untouched and the caller can still fall back on a consistent
+    /// state.
+    ///
+    /// # Cost
+    ///
+    /// A FULL remesh from surface, not an incremental subdivision, and
+    /// `project_volume_to_surface_vertices` is O(n_surf × n_vol). Both are
+    /// properties of the `reify-solver-elastic` primitive; the wiring site
+    /// surfaces them to callers in its post-loop diagnostic.
+    fn refine(&mut self, marked: &[usize]) -> Result<(), Self::Error> {
+        let refined = reify_solver_elastic::refine_marked_elements(
+            &self.surface,
+            &self.volume_mesh,
+            marked,
+            &self.current_sizes,
+            &self.meshing_options,
+        )?;
+
+        // The remesh succeeded at the FFI level, but the mesh it produced must
+        // also be one this crate can widen and solve on. Reported as
+        // `Gmsh(OperationFailed)` rather than `UnsupportedConnectivity`: the
+        // several causes `volume_mesh_to_solver_mesh` folds into `None`
+        // (non-P1 order, ragged index or vertex buffer, out-of-range index)
+        // cannot be distinguished here, and `UnsupportedConnectivity`'s
+        // Display would assert a specific Hex/Wedge cause we have not
+        // established. The message says exactly what was observed.
+        let (coords, tets) = volume_mesh_to_solver_mesh(&refined).ok_or_else(|| {
+            reify_solver_elastic::RefineError::Gmsh(reify_ir::GeometryError::OperationFailed(
+                "refine_marked_elements returned a VolumeMesh that is not a \
+                 widenable P1 tet mesh (non-P1 order, malformed index/vertex \
+                 buffer, or an out-of-range index)"
+                    .to_string(),
+            ))
+        })?;
+
+        self.current_sizes = characteristic_sizes_from_solver_mesh(&coords, &tets);
+        self.volume_mesh = refined;
+        self.refine_count += 1;
         Ok(())
     }
 }
@@ -5429,7 +6140,7 @@ mod tests {
     /// step-11 RED (task 4902): `CantileverAdaptiveProblem::solve_and_estimate`
     /// solves the coarse isotropic cantilever (tip load) at its current grid
     /// resolution and reports a Z-Z `AdaptiveEstimate`:
-    /// - `global_indicator` finite and in `[0, 1)` — this MEASURES the
+    /// - `relative_error` finite and in `[0, 1)` — this MEASURES the
     ///   empirical η_global magnitude the step-15 e2e converged-target `0.9`
     ///   must exceed (achievability basis for e2e case (a); see plan design
     ///   decisions — error energy cannot exceed solution energy in relative
@@ -5438,7 +6149,7 @@ mod tests {
     /// - `per_element.len()` == the solve's tet count.
     /// - `n_dofs` == `3 * n_nodes`.
     /// - the problem records `last_global_indicator` == the returned
-    ///   `global_indicator` (threaded into `aposteriori_adaptive_fields` even
+    ///   `relative_error` (threaded into `aposteriori_adaptive_fields` even
     ///   on a budget-capped `NotConverged` outcome — see step-7/8).
     ///
     /// RED: `CantileverAdaptiveProblem` does not exist yet → compile-fail
@@ -5462,12 +6173,14 @@ mod tests {
             None,
         );
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
 
         assert!(
-            est.global_indicator.is_finite() && (0.0..1.0).contains(&est.global_indicator),
-            "global_indicator must be finite and in [0, 1), got {}",
-            est.global_indicator
+            est.relative_error.is_finite() && (0.0..1.0).contains(&est.relative_error),
+            "relative_error must be finite and in [0, 1), got {}",
+            est.relative_error
         );
 
         // Default synthetic_grid_counts(1.0, 0.1) = (nx=60, ny=1, nz=6).
@@ -5486,8 +6199,8 @@ mod tests {
         );
 
         assert_eq!(
-            problem.last_global_indicator, est.global_indicator,
-            "the problem must record the returned global_indicator"
+            problem.last_global_indicator, est.relative_error,
+            "the problem must record the returned relative_error"
         );
     }
 
@@ -5561,7 +6274,9 @@ mod tests {
         // `refine` ran at least once: a fresh solve_and_estimate at the
         // problem's now-current (post-loop) grid resolution must report
         // strictly more dofs than the initial resolution.
-        let final_est = problem.solve_and_estimate();
+        let final_est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         assert!(
             final_est.n_dofs > initial_dofs,
             "expected refine() to have grown the mesh past the initial {} dofs, got {}",
@@ -6066,6 +6781,161 @@ mod tests {
         );
         // shell9_result_fields panics unless the outcome is Completed.
         let _fields = shell9_result_fields(outcome);
+    }
+
+    // ── task 6663: static-path multi-support union + diagnostic labelling ─────
+
+    /// Build a `Value::List` of supports, each `(type_name, face handle)` pair
+    /// becoming one `StructureInstance` with a one-element `target` handle list.
+    ///
+    /// Shared by the two task-6663 tests below; mirrors the `support_with_target`
+    /// closure in `face_selector_targets_drive_bc_node_sets`, generalized to N
+    /// supports and to a caller-chosen support type name.
+    fn supports_with_targets(items: &[(&str, u64)]) -> Value {
+        use reify_ir::{GeometryHandleId, PersistentMap, StructureInstanceData, StructureTypeId};
+        Value::List(
+            items
+                .iter()
+                .map(|(type_name, id)| {
+                    let handle = Value::GeometryHandle {
+                        realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                        upstream_values_hash: [0u8; 32],
+                        kernel_handle: Some(GeometryHandleId(*id)),
+                    };
+                    let fields: PersistentMap<String, Value> =
+                        [("target".to_string(), Value::List(vec![handle]))]
+                            .into_iter()
+                            .collect();
+                    Value::StructureInstance(Box::new(StructureInstanceData {
+                        type_id: StructureTypeId(u32::MAX),
+                        type_name: (*type_name).to_string(),
+                        version: 1,
+                        fields,
+                    }))
+                })
+                .collect(),
+        )
+    }
+
+    /// The realized box fixture shared by the two task-6663 tests: `[0,2] × [0,0.5]
+    /// × [0,0.5]`, reps `[2,1,1]` → 12 nodes, `node_idx = iz·6 + iy·3 + ix`.
+    /// Face handle 201 is attributed the x_min nodes `{0,3,6,9}`, handle 202 the
+    /// x_max nodes `{2,5,8,11}`. Same construction as
+    /// `face_selector_targets_drive_bc_node_sets`.
+    fn task6663_two_face_handle() -> (RealizationReadHandle, Vec<u32>, Vec<u32>) {
+        use reify_ir::{BoundaryAssociation, GeometryHandleId, NodeAttachment};
+        let dims = [2.0_f64, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let x_min_face = vec![0u32, 3, 6, 9];
+        let x_max_face = vec![2u32, 5, 8, 11];
+        let mut boundary = BoundaryAssociation::default();
+        for &n in &x_min_face {
+            boundary.associate(n, NodeAttachment::OnFace(GeometryHandleId(201)));
+        }
+        for &n in &x_max_face {
+            boundary.associate(n, NodeAttachment::OnFace(GeometryHandleId(202)));
+        }
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        vm.boundary = Some(boundary);
+        (vm_read_handle(vm), x_min_face, x_max_face)
+    }
+
+    /// Task 6663 acceptance clause 2 — the STATIC path does NOT share the modal
+    /// defect, pinned as a durable artifact rather than asserted in prose.
+    ///
+    /// `modal_ops::build_dirichlet_bcs` used to REINTERPRET the whole model once
+    /// two supports named both beam-axis end faces (dropping any third support and
+    /// flipping to pin-pin). `loads_supports_to_bc_node_sets` does the opposite:
+    /// every support's resolved face handles are UNIONED into one clamp node set,
+    /// sorted and deduped, with no count-based branch, no degradation to a single
+    /// face and no partial-DOF realization — a second support ADDS a face.
+    ///
+    /// Expected to pass on first run; that pass IS the investigation result.
+    #[test]
+    fn loads_supports_to_bc_node_sets_unions_multiple_support_faces() {
+        let (handle, x_min_face, x_max_face) = task6663_two_face_handle();
+
+        // TWO supports carrying DISTINCT resolved face targets.
+        let supports = supports_with_targets(&[("FixedSupport", 201), ("FixedSupport", 202)]);
+        let loads = shell9_make_point_loads(1000.0); // no target → None
+
+        let (clamp, load, diags) = loads_supports_to_bc_node_sets(&handle, &loads, &supports);
+
+        let mut expected: Vec<u32> = x_min_face.iter().chain(x_max_face.iter()).copied().collect();
+        expected.sort_unstable();
+        assert_eq!(
+            clamp,
+            Some(expected),
+            "two supports with distinct face targets must UNION into one clamp node \
+             set (sorted, deduped) — no count-based branch, no degradation to a \
+             single face",
+        );
+        assert_eq!(load, None, "a load with no target must stay None (coordinate fallback)");
+        assert!(diags.is_empty(), "a fully-matched support set emits no diagnostics, got {diags:?}");
+
+        // A THIRD support naming an already-covered face must not drop anything or
+        // change the realization — it is idempotent on the union, not a trigger.
+        let supports3 = supports_with_targets(&[
+            ("FixedSupport", 201),
+            ("FixedSupport", 202),
+            ("FixedSupport", 201),
+        ]);
+        let (clamp3, _, diags3) = loads_supports_to_bc_node_sets(&handle, &loads, &supports3);
+        assert_eq!(
+            clamp3, clamp,
+            "a third support must ADD a face (or be a no-op on an already-covered \
+             one), never reinterpret the model",
+        );
+        assert!(diags3.is_empty(), "expected no diagnostics, got {diags3:?}");
+    }
+
+    /// Task 6663: a `SelectorNoMatch` diagnostic must name the OFFENDING support
+    /// type, not a hard-coded one.
+    ///
+    /// `loads_supports_to_bc_node_sets` used to pass the literal `"FixedSupport"`
+    /// as a hard-coded `kind` label, so a `PinnedSupport` whose target resolves
+    /// to zero boundary nodes was reported as a `FixedSupport` — the wrong
+    /// support type in the only message the author sees. RED until
+    /// `target_node_set` derived the label from the item's own
+    /// `StructureInstance.type_name`; that parameter has since been dropped
+    /// entirely (its only remaining use was an unreachable fallback arm), so
+    /// this test now guards the sole surviving label path.
+    #[test]
+    fn selector_no_match_diagnostic_names_the_offending_support_type() {
+        let (handle, _, _) = task6663_two_face_handle();
+
+        // A lone PinnedSupport whose target handle matches no boundary face.
+        let supports = supports_with_targets(&[("PinnedSupport", 999)]);
+        let loads = shell9_make_point_loads(1000.0); // no target → no diagnostic
+
+        let (clamp, _, diags) = loads_supports_to_bc_node_sets(&handle, &loads, &supports);
+
+        assert_eq!(
+            clamp,
+            Some(Vec::new()),
+            "a present-but-unmatched target still returns Some(empty) — the caller \
+             Fails on the diagnostic rather than silently applying an empty BC",
+        );
+        let selector_no_match: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::FeaSelectorNoMatch))
+            .collect();
+        assert_eq!(
+            selector_no_match.len(),
+            1,
+            "expected exactly one SelectorNoMatch diagnostic, got {diags:?}",
+        );
+        let message = &selector_no_match[0].message;
+        assert!(
+            message.contains("PinnedSupport"),
+            "the SelectorNoMatch diagnostic must name the offending support type \
+             (PinnedSupport), got: {message}",
+        );
+        assert!(
+            !message.contains("FixedSupport"),
+            "the SelectorNoMatch diagnostic must not mislabel a PinnedSupport as a \
+             FixedSupport, got: {message}",
+        );
     }
 
     // ── task 4092: present-but-empty target → SelectorNoMatch (step-15 RED) ────
@@ -8908,6 +9778,23 @@ mod tests {
                 "curl".to_string(),
                 super::super::sampled_curl_field(make_sf("curl", 3, 500.0)),
             ),
+            // ruling #6164: the live tet path emits a `rotation` channel derived
+            // from the curl SampledField (= curl/2), so the round-trip fixture
+            // must carry it too — it models what production actually produces.
+            //
+            // NOTE this makes the round trip a second, stronger guard on the
+            // derive: `elastic_result_from_value` deliberately does NOT extract
+            // rotation (no rotation slab is persisted — the wire header is
+            // frozen), so hash identity holds ONLY IF `value_from_elastic_result`
+            // re-derives byte-for-byte the same field from the curl slab. If the
+            // derive ever drifted between the live and cache paths, this test
+            // would red.
+            (
+                "rotation".to_string(),
+                super::super::sampled_rotation_field(super::super::rotation_sf_from_curl(
+                    &make_sf("curl", 3, 500.0),
+                )),
+            ),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -11038,5 +11925,1119 @@ mod tests {
         let mut value_inputs = shell9_valid_inputs();
         value_inputs[5] = malformed_supports;
         assert_gate_does_not_reject(value_inputs);
+    }
+
+    // ── task 4909: RealizedAdaptiveProblem ───────────────────────────────────
+
+    /// step-11 RED (task 4909):
+    /// `RealizedAdaptiveProblem::solve_and_estimate` solves on the REALIZED
+    /// tet mesh it was handed — not on a synthetic box — and reports a Z-Z
+    /// `AdaptiveEstimate` sized by that mesh.
+    ///
+    /// The `n_dofs` assertion is deliberately expressed against what
+    /// `volume_mesh_to_solver_mesh` yields rather than against the raw vertex
+    /// count: that helper compacts orphan (element-unreferenced) vertices out,
+    /// and a real gmsh remesh CAN emit them. Left in, an orphan node gets no
+    /// stiffness contribution, silently inflating `n_dofs` and panicking
+    /// downstream in `apply_dirichlet_row_elimination` ("no explicit diagonal
+    /// entry"). Pinning the post-compaction count is what keeps the two in
+    /// step.
+    ///
+    /// No gmsh: `solve_and_estimate` never touches `surface` (only `refine`
+    /// does), so this runs unconditionally in every build.
+    ///
+    /// RED: `RealizedAdaptiveProblem` does not exist yet → compile-fail until
+    /// step-12.
+    #[test]
+    fn realized_adaptive_problem_solve_and_estimate_reports_per_element_and_dofs_of_the_realized_mesh()
+     {
+        let iso = IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        };
+        // Non-degenerate x-extent: the realized arm re-derives the coordinate
+        // x_min/x_max BC node sets from the mesh AABB on every solve.
+        let volume_mesh = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]);
+
+        let (coords, tets) = volume_mesh_to_solver_mesh(&volume_mesh)
+            .expect("a P1 Freudenthal box is a widenable solver mesh");
+        let expected_tets = tets.len();
+        let expected_dofs = 3 * coords.len();
+
+        let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
+            .expect("a P1 tet box has an extractable boundary");
+
+        let mut problem = RealizedAdaptiveProblem::new(
+            iso,
+            volume_mesh,
+            surface,
+            reify_solver_elastic::MeshingOptions {
+                mesh_size: Some(0.25),
+                deterministic: true,
+                ..Default::default()
+            },
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
+
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
+
+        assert_eq!(
+            est.per_element.len(),
+            expected_tets,
+            "per_element must have one entry per tet of the REALIZED mesh",
+        );
+        assert_eq!(
+            est.n_dofs, expected_dofs,
+            "n_dofs must be 3 * the POST-COMPACTION node count",
+        );
+        assert!(
+            est.relative_error.is_finite() && est.relative_error >= 0.0,
+            "relative_error must be finite and non-negative, got {}",
+            est.relative_error,
+        );
+        assert_eq!(
+            problem.last_global_indicator, est.relative_error,
+            "the problem must record the returned relative_error",
+        );
+        assert_eq!(
+            problem.last_n_dofs, est.n_dofs,
+            "the problem must record the returned n_dofs",
+        );
+    }
+
+    /// Centroid of tet `conn` over `coords`.
+    fn tet_centroid_of(coords: &[[f64; 3]], conn: &[usize; 4]) -> [f64; 3] {
+        let mut c = [0.0_f64; 3];
+        for &n in conn {
+            for a in 0..3 {
+                c[a] += coords[n][a] / 4.0;
+            }
+        }
+        c
+    }
+
+    /// `sizes[e]` for the element `e` whose centroid is nearest `query`.
+    ///
+    /// A POSITION lookup, not an index one: `refine` performs a full remesh
+    /// from surface and preserves NO element index, so a marked element's
+    /// index before the refine has no relationship to any index after it.
+    fn nearest_element_size_at(
+        coords: &[[f64; 3]],
+        conns: &[[usize; 4]],
+        sizes: &[f64],
+        query: [f64; 3],
+    ) -> f64 {
+        let (best, _) = conns
+            .iter()
+            .map(|conn| tet_centroid_of(coords, conn))
+            .enumerate()
+            .map(|(e, c)| {
+                let d2 = (0..3).map(|a| (c[a] - query[a]).powi(2)).sum::<f64>();
+                (e, d2)
+            })
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .expect("mesh must be non-empty");
+        sizes[best]
+    }
+
+    /// Build a `RealizedAdaptiveProblem` whose `volume_mesh` is REAL GMSH
+    /// OUTPUT (remeshed from a hand-built box's extracted boundary) and whose
+    /// `surface` is that gmsh mesh's own extracted boundary.
+    ///
+    /// Reaches gmsh only through `reify_solver_elastic` re-exports — naming
+    /// `reify_kernel_gmsh::*` from a reify-eval test binary would pull gmsh's
+    /// `inventory::submit!` in and break OCCT-only registry assertions
+    /// (reify-eval/Cargo.toml's dead-strip invariant).
+    fn gmsh_realized_problem(seed_size: f64) -> RealizedAdaptiveProblem {
+        let opts = reify_solver_elastic::MeshingOptions {
+            mesh_size: Some(seed_size),
+            deterministic: true,
+            ..Default::default()
+        };
+        let seed = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [8, 1, 1]);
+        let seed_surface = reify_solver_elastic::boundary_surface_mesh(&seed)
+            .expect("a P1 tet box has an extractable boundary");
+        let (_, seed_tets) =
+            volume_mesh_to_solver_mesh(&seed).expect("the hand-built seed is widenable");
+        let volume_mesh = reify_solver_elastic::refine_with_size_field(
+            &seed_surface,
+            &seed,
+            &vec![seed_size; seed_tets.len()],
+            &opts,
+        )
+        .expect("seeding a real gmsh volume from the box boundary must succeed");
+        let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
+            .expect("a gmsh-produced P1 tet mesh has an extractable boundary");
+
+        RealizedAdaptiveProblem::new(
+            IsotropicElastic {
+                youngs_modulus: 200e9,
+                poisson_ratio: 0.3,
+            },
+            volume_mesh,
+            surface,
+            opts,
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem")
+    }
+
+    /// step-13 RED (task 4909): `refine` genuinely CONSUMES the Dörfler-marked
+    /// element set — it drives a real gmsh size-field remesh that grows the
+    /// mesh and shrinks the elements in the marked region.
+    ///
+    /// This is the assertion that distinguishes 4909 from 4902: the uniform
+    /// fallback lane ignores `marked` entirely and doubles a synthetic grid.
+    ///
+    /// Sampling is by POSITION, never by index — a full remesh preserves no
+    /// index. The shape mirrors the landed, always-on, passing
+    /// `fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh` in
+    /// `reify-solver-elastic`'s `tests/aposteriori_validation.rs`, which is
+    /// what makes this premise achievable on a box under real gmsh.
+    ///
+    /// Deliberately NO far-region "roughly unchanged" numeric band: that
+    /// test's landed sibling is `#[ignore]`d for cross-gmsh-version
+    /// instability, and resurrecting the shape on an always-on merge gate
+    /// would be knowingly planting a flaky test.
+    ///
+    /// Gated on the RUNTIME const, not `cfg(has_gmsh)`: a cfg emitted by the
+    /// gmsh crate's build.rs does not propagate to dependents, so a cfg gate
+    /// here would compile to false on every host including ones with libgmsh.
+    ///
+    /// RED: `impl AdaptiveProblem for RealizedAdaptiveProblem` does not exist
+    /// yet, so `refine` is not a method → compile-fail until step-14.
+    #[test]
+    fn realized_adaptive_problem_refine_consumes_marks_and_shrinks_the_marked_region() {
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping: libgmsh not available in this build");
+            return;
+        }
+
+        let mut problem = gmsh_realized_problem(0.05);
+
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
+        let marked = reify_solver_elastic::mark_dorfler(&est.per_element, DORFLER_THETA);
+        assert!(
+            !marked.is_empty(),
+            "a bending load state must Dorfler-mark at least one element, \
+             otherwise the rest of this test proves nothing",
+        );
+
+        let (coords_before, conns_before) = volume_mesh_to_solver_mesh(&problem.volume_mesh)
+            .expect("the seeded gmsh mesh is widenable");
+        let n_before = conns_before.len();
+
+        // Sample at the centroid of the WORST marked element — the place the
+        // size field is asked to shrink hardest.
+        let worst = *marked
+            .iter()
+            .max_by(|&&a, &&b| {
+                est.per_element[a]
+                    .partial_cmp(&est.per_element[b])
+                    .unwrap()
+            })
+            .expect("marked is non-empty");
+        let marked_point = tet_centroid_of(&coords_before, &conns_before[worst]);
+        let size_marked_before = problem.current_sizes[worst];
+
+        problem
+            .refine(&marked)
+            .expect("refine must succeed when GMSH_AVAILABLE");
+
+        let (coords_after, conns_after) = volume_mesh_to_solver_mesh(&problem.volume_mesh)
+            .expect("the refined gmsh mesh is widenable");
+        let n_after = conns_after.len();
+
+        assert!(
+            n_after > n_before,
+            "a mark-driven refine must strictly grow the element count: \
+             {n_before} -> {n_after}",
+        );
+        assert_eq!(
+            problem.current_sizes.len(),
+            n_after,
+            "current_sizes must track the NEW element count",
+        );
+
+        let size_marked_after = nearest_element_size_at(
+            &coords_after,
+            &conns_after,
+            &problem.current_sizes,
+            marked_point,
+        );
+        assert!(
+            size_marked_after < size_marked_before,
+            "the marked region's characteristic size must shrink: \
+             before={size_marked_before}, after={size_marked_after}",
+        );
+
+        // An EMPTY marked set halves nothing (`dorfler_size_hints` returns
+        // `current_sizes` verbatim), so the remesh runs against an unchanged
+        // size field and cannot concentrate anywhere. Comparing the two runs
+        // from the same seed is what proves the growth above was driven by the
+        // MARKS and not merely by re-meshing.
+        let mut unmarked = gmsh_realized_problem(0.05);
+        unmarked
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
+        unmarked
+            .refine(&[])
+            .expect("an empty marked set must still remesh cleanly");
+        let (_, conns_unmarked) = volume_mesh_to_solver_mesh(&unmarked.volume_mesh)
+            .expect("the unmarked remesh is widenable");
+        assert!(
+            n_after > conns_unmarked.len(),
+            "a MARK-DRIVEN refine must grow the mesh strictly more than an \
+             empty-mark remesh of the same seed: marked={n_after}, \
+             unmarked={}",
+            conns_unmarked.len(),
+        );
+    }
+
+    /// `ElasticOptions` with `adaptive: true`, `shell_force: Off` (forces the
+    /// tet/solid path deterministically) and a budget that performs EXACTLY
+    /// one refine: `target_accuracy` is deliberately unreachable and the
+    /// iteration cap is 1, so the loop does one mark-driven refine and two
+    /// solves. That bounds wallclock while still proving the refine ran.
+    fn adaptive_options() -> Value {
+        let fields: PersistentMap<String, Value> = [
+            (
+                "shell_force".to_string(),
+                Value::Enum {
+                    type_name: "ShellForce".to_string(),
+                    variant: "Off".to_string(),
+                    payload: vec![],
+                },
+            ),
+            ("adaptive".to_string(), Value::Bool(true)),
+            ("target_accuracy".to_string(), Value::Real(1.0e-6)),
+            ("max_refinement_iterations".to_string(), Value::Int(1)),
+            ("max_dofs".to_string(), Value::Int(2_000_000)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Drive the trampoline on the dims layout with `adaptive: true` and the
+    /// given realization inputs, returning `(fields, diagnostics)`.
+    fn run_adaptive_trampoline(
+        realization_inputs: &[RealizationReadHandle],
+    ) -> (PersistentMap<String, Value>, Vec<reify_core::Diagnostic>) {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            // No `target` on any Load/Support, so `bc_override` stays `None`
+            // and BC selection is coordinate-based - the only model that
+            // survives a remesh.
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            adaptive_options(),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome = solve_elastic_static_trampoline(
+            &value_inputs,
+            realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        match outcome {
+            ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } => match result {
+                Value::StructureInstance(d) => (d.fields, diagnostics),
+                other => panic!("expected ElasticResult StructureInstance, got {other:?}"),
+            },
+            other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+        }
+    }
+
+    /// Substring every LOCALIZED (gmsh-realized) post-loop diagnostic carries.
+    /// Settled once here; the step-19 `.ri` end-to-end asserts against the same
+    /// wording.
+    const LOCALIZED_LANE_MARKER: &str = "gmsh-realized";
+    /// Substring the 4902 UNIFORM post-loop diagnostic carries.
+    const UNIFORM_LANE_MARKER: &str = "grid";
+
+    /// step-15 RED (task 4909): the adaptive branch must SELECT the
+    /// gmsh-realized localized lane when a realized mesh is present, and must
+    /// leave 4902's uniform lane byte-preserved when it is not.
+    ///
+    /// Case A (realized handle present) is the new lane. Case B (no realized
+    /// mesh) is the regression guard: 4902's behaviour must be untouched on
+    /// the path that has no realized mesh, which is why the two lanes are
+    /// separate structs rather than one struct with a runtime enum.
+    ///
+    /// Case A's localized assertion is gated on the runtime
+    /// `GMSH_AVAILABLE`; case B is unconditional.
+    ///
+    /// RED: the branch only ever constructs `CantileverAdaptiveProblem`, so no
+    /// localized diagnostic exists and case A sees the uniform one.
+    #[test]
+    fn adaptive_branch_selects_the_gmsh_realized_lane_when_a_realized_mesh_is_present() {
+        // ── Case B: no realized mesh → 4902's uniform lane, unchanged. ──
+        let (fields_b, diags_b) = run_adaptive_trampoline(&[]);
+        assert!(
+            matches!(
+                fields_b.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_))),
+            ),
+            "the uniform lane must still produce a real adaptive triple, got: {:?}",
+            fields_b.get("global_relative_energy_error"),
+        );
+        assert!(
+            diags_b
+                .iter()
+                .any(|d| d.message.contains("adaptive refinement finished")
+                    && d.message.contains(UNIFORM_LANE_MARKER)),
+            "the synthetic path must keep 4902's UNIFORM grid diagnostic, got: {diags_b:?}",
+        );
+        assert!(
+            !diags_b
+                .iter()
+                .any(|d| d.message.contains(LOCALIZED_LANE_MARKER)),
+            "the synthetic path has no realized mesh and must NOT claim the \
+             localized lane, got: {diags_b:?}",
+        );
+
+        // ── Case A: realized mesh present → the gmsh-realized localized lane. ──
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            eprintln!("skipping case A: libgmsh not available in this build");
+            return;
+        }
+        let realized = [vm_read_handle(make_box_tet_volume_mesh(
+            [1.0, 0.1, 0.1],
+            [6, 1, 1],
+        ))];
+        let (fields_a, diags_a) = run_adaptive_trampoline(&realized);
+
+        assert!(
+            matches!(
+                fields_a.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_))),
+            ),
+            "the realized lane must produce the REAL adaptive triple, not the \
+             non-adaptive defaults, got: {:?}",
+            fields_a.get("global_relative_energy_error"),
+        );
+        assert!(
+            matches!(fields_a.get("error_indicator"), Some(Value::Option(Some(_)))),
+            "the realized lane must produce a real error_indicator field, got: {:?}",
+            fields_a.get("error_indicator"),
+        );
+
+        let localized = diags_a
+            .iter()
+            .find(|d| d.message.contains(LOCALIZED_LANE_MARKER))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an Info diagnostic naming the LOCALIZED gmsh lane, got: {diags_a:?}"
+                )
+            });
+        assert_eq!(
+            localized.severity,
+            reify_core::Severity::Info,
+            "the localized-lane diagnostic must be Info",
+        );
+        assert!(
+            localized.message.contains("mark-driven"),
+            "the localized diagnostic must say the refinement was mark-driven, \
+             got: {}",
+            localized.message,
+        );
+        assert!(
+            localized.message.contains("elements"),
+            "the localized diagnostic must report element counts so a caller \
+             can see the achieved refinement, got: {}",
+            localized.message,
+        );
+        assert!(
+            !diags_a
+                .iter()
+                .any(|d| d.message.contains("adaptive refinement finished")
+                    && d.message.contains(UNIFORM_LANE_MARKER)),
+            "the realized lane must NOT also emit the uniform-grid diagnostic, \
+             got: {diags_a:?}",
+        );
+    }
+
+    /// A P1 tet mesh whose face `(0,1,2)` is shared by THREE elements.
+    ///
+    /// Deliberately chosen over the Hex mesh the step description names:
+    /// a Hex `VolumeMesh` never REACHES `boundary_surface_mesh`, because
+    /// `volume_mesh_to_solver_mesh` rejects it upstream, so
+    /// `realized_solver_mesh_with_handle` yields no handle at all and the
+    /// localized lane is never even considered. A non-manifold TET mesh is
+    /// the reachable trigger: it widens cleanly (P1, stride-4, in-range
+    /// indices) so a handle IS selected, and only then does boundary
+    /// extraction fail — which is the arm under test. x-extent is 1.0, well
+    /// above `MIN_SOLVE_X_EXTENT`.
+    fn non_manifold_tet_mesh() -> reify_ir::VolumeMesh {
+        reify_ir::VolumeMesh {
+            #[rustfmt::skip]
+            vertices: vec![
+                0.0, 0.0,  0.0, // 0 |
+                1.0, 0.0,  0.0, // 1 |- shared face (0,1,2)
+                0.0, 1.0,  0.0, // 2 |
+                0.0, 0.0,  1.0, // 3 apex above
+                0.0, 0.0, -1.0, // 4 apex below
+                1.0, 1.0,  1.0, // 5 third apex
+            ],
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices: vec![0, 1, 2, 3, 0, 1, 2, 4, 0, 1, 2, 5],
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// A realized P1 tet mesh gmsh CANNOT remesh: two DISJOINT boxes.
+    ///
+    /// The trigger for the runtime-failure arm (reviewer_comprehensive
+    /// amendment). Every earlier precondition passes — it widens (P1, stride-4,
+    /// in-range indices, so a handle IS selected), its boundary extracts
+    /// cleanly (two closed, manifold, correctly-wound shells: 72 triangles),
+    /// and it solves (both components span x in [0, 1.0], so the realized arm's
+    /// coordinate BC selection clamps and loads BOTH and the stiffness is
+    /// non-singular). Only the remesh fails, which is exactly the arm under
+    /// test: `refine_volume_with_size_field` builds ONE surface loop from the
+    /// classified dim=2 entities, and two disjoint shells do not bound one
+    /// volume. Measured here on libgmsh 4.15.2:
+    /// `RefineError::Gmsh(OperationFailed("gmshModelMeshGenerate: ierr=1
+    /// (HXT 3D mesh failed)"))`.
+    ///
+    /// The assertions below deliberately do NOT pin that message — they pin
+    /// the WIRING behaviour (Completed, the runtime-failure Warning, the
+    /// uniform-grid Info, no localized Info), so nothing here is coupled to a
+    /// gmsh version's error text. If a future gmsh learns to mesh two disjoint
+    /// shells this test reds at "expected a Warning naming the specific
+    /// reason", which correctly means THE FIXTURE stopped triggering the arm:
+    /// the fix is a new gmsh-hostile fixture, never a weakened assertion.
+    ///
+    /// A single tet was tried first and REJECTED as a fixture: gmsh does not
+    /// error on it, it HANGS (>20 minutes, measured), which would wedge the
+    /// merge gate rather than red it.
+    fn two_disjoint_boxes_tet_mesh() -> reify_ir::VolumeMesh {
+        let a = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]);
+        let b = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]);
+        let n_a = (a.vertices.len() / 3) as u32;
+        // Offset the second box in +y so the two never touch: a shared face or
+        // vertex would make it one component (or non-manifold), and the
+        // boundary extractor would reject it before the remesh is ever tried.
+        let mut vertices = a.vertices.clone();
+        vertices.extend(
+            b.vertices
+                .iter()
+                .enumerate()
+                .map(|(i, v)| if i % 3 == 1 { v + 0.5 } else { *v }),
+        );
+        let (
+            reify_ir::VolumeConnectivity::Tet { indices: ia, .. },
+            reify_ir::VolumeConnectivity::Tet { indices: ib, .. },
+        ) = (&a.connectivity, &b.connectivity)
+        else {
+            unreachable!("make_box_tet_volume_mesh always emits Tet connectivity")
+        };
+        let mut indices = ia.clone();
+        indices.extend(ib.iter().map(|i| i + n_a));
+        reify_ir::VolumeMesh {
+            vertices,
+            connectivity: reify_ir::VolumeConnectivity::Tet {
+                indices,
+                order: ElementOrderTag::P1,
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// step-17 RED (task 4909): when the gmsh-realized lane cannot run, the
+    /// solve must FALL BACK to 4902's uniform lane — never fail.
+    ///
+    /// The load-bearing claim: an `adaptive: true` request must NEVER regress
+    /// from "an answer with uniform-fallback a-posteriori fields" to
+    /// `ComputeOutcome::Failed` just because the gmsh lane was unavailable.
+    /// Every trigger below asserts the SAME two outcomes — `Completed` with a
+    /// real a-posteriori triple, plus a Warning naming the specific reason.
+    #[test]
+    fn adaptive_branch_falls_back_to_uniform_refinement_when_the_gmsh_lane_is_unavailable() {
+        use reify_ir::{
+            BoundaryAssociation, GeometryHandleId, NodeAttachment, PersistentMap,
+            StructureInstanceData, StructureTypeId,
+        };
+
+        // ── (a) A `target`-carrying Support forces `bc_override` to Some. ──
+        //
+        // Node indices do NOT survive a remesh, so an index-based override
+        // cannot be carried into iteration 2 — the lane must refuse rather
+        // than silently clamp unrelated nodes.
+        let dims = [2.0_f64, 0.5, 0.5];
+        let reps = [2usize, 1, 1];
+        let x_min_face = [0u32, 3, 6, 9];
+        let x_max_face = [2u32, 5, 8, 11];
+        let h_clamp = GeometryHandleId(201);
+        let h_load = GeometryHandleId(202);
+        let mut boundary = BoundaryAssociation::default();
+        for &n in &x_max_face {
+            boundary.associate(n, NodeAttachment::OnFace(h_clamp));
+        }
+        for &n in &x_min_face {
+            boundary.associate(n, NodeAttachment::OnFace(h_load));
+        }
+        let mut vm = make_box_tet_volume_mesh(dims, reps);
+        vm.boundary = Some(boundary);
+
+        let geom_handle = |id: GeometryHandleId| -> Value {
+            Value::GeometryHandle {
+                realization_ref: reify_core::RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: Some(id),
+            }
+        };
+        let supports_with_target: Value = {
+            let fields: PersistentMap<String, Value> = [(
+                "target".to_string(),
+                Value::List(vec![geom_handle(h_clamp)]),
+            )]
+            .into_iter()
+            .collect();
+            Value::List(vec![Value::StructureInstance(Box::new(
+                StructureInstanceData {
+                    type_id: StructureTypeId(u32::MAX),
+                    type_name: "FixedSupport".to_string(),
+                    version: 1,
+                    fields,
+                },
+            ))])
+        };
+
+        let value_inputs_a = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            supports_with_target,
+            adaptive_options(),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome_a = solve_elastic_static_trampoline(
+            &value_inputs_a,
+            &[vm_read_handle(vm)],
+            &Value::Undef,
+            None,
+            &cancellation,
+        );
+        assert_fell_back_to_uniform(
+            outcome_a,
+            expected_fallback_marker("selector-resolved"),
+            "(a) bc_override present",
+        );
+
+        // ── (b) A realized mesh whose boundary cannot be extracted. ──
+        let (_, diags_b) = {
+            let outcome = run_adaptive_trampoline_outcome(&[vm_read_handle(non_manifold_tet_mesh())]);
+            assert_fell_back_to_uniform(
+                outcome,
+                expected_fallback_marker("boundary surface"),
+                "(b) non-manifold realized mesh",
+            )
+        };
+        if reify_solver_elastic::GMSH_AVAILABLE {
+            // Only reachable in a gmsh build: without libgmsh the selector
+            // short-circuits before boundary extraction is ever attempted, so
+            // no `RefineError` Display text exists to be carried.
+            assert!(
+                diags_b
+                    .iter()
+                    .any(|d| d.message.contains("non-manifold")),
+                "the boundary-extraction warning must carry the RefineError's own \
+                 Display text so the caller can see WHY, got: {diags_b:?}",
+            );
+        }
+
+        // ── (b2) A Hex realized mesh must also never Fail. ──
+        //
+        // Unlike (b) this one is invisible to the lane selector entirely
+        // (`volume_mesh_to_solver_mesh` rejects Hex upstream, so no handle is
+        // selected and the solve runs on the synthetic box), so NO warning
+        // names boundary extraction. The load-bearing half still holds: the
+        // outcome is Completed with a real adaptive triple.
+        let hex = reify_ir::VolumeMesh {
+            vertices: (0..8u32)
+                .flat_map(|i| {
+                    [
+                        (i & 1) as f32,
+                        ((i >> 1) & 1) as f32,
+                        ((i >> 2) & 1) as f32,
+                    ]
+                })
+                .collect(),
+            connectivity: reify_ir::VolumeConnectivity::Hex {
+                indices: (0..8u32).collect(),
+            },
+            normals: None,
+            boundary: None,
+        };
+        let (fields_b2, diags_b2) =
+            match run_adaptive_trampoline_outcome(&[vm_read_handle(hex)]) {
+                ComputeOutcome::Completed {
+                    result,
+                    diagnostics,
+                    ..
+                } => match result {
+                    Value::StructureInstance(d) => (d.fields, diagnostics),
+                    other => panic!("(b2) expected ElasticResult, got {other:?}"),
+                },
+                other => panic!("(b2) an adaptive request must never Fail, got {other:?}"),
+            };
+        assert!(
+            matches!(
+                fields_b2.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_))),
+            ),
+            "(b2) a Hex realized mesh must still produce a real adaptive triple",
+        );
+        assert!(
+            !diags_b2
+                .iter()
+                .any(|d| d.message.contains(LOCALIZED_LANE_MARKER)),
+            "(b2) a Hex mesh must not reach the localized lane, got: {diags_b2:?}",
+        );
+
+        // ── (c) libgmsh IS linked, but the remesh fails at RUNTIME. ──
+        //
+        // The one arm that reaches `run_uniform_lane()` AFTER the localized
+        // lane has already run and mutated `route_diagnostics`, and the arm
+        // that carries the never-regress-to-`Failed` claim in its hardest
+        // form: the lane was entered, a real gmsh call was made, and it
+        // failed mid-loop. Unreachable in a stub build, where the selector
+        // short-circuits on `GMSH_AVAILABLE` long before any remesh.
+        if reify_solver_elastic::GMSH_AVAILABLE {
+            let outcome_c =
+                run_adaptive_trampoline_outcome(&[vm_read_handle(two_disjoint_boxes_tet_mesh())]);
+            let (_, diags_c) = assert_fell_back_to_uniform(
+                outcome_c,
+                "failed at runtime",
+                "(c) runtime RefineError",
+            );
+            // What separates (c) from (a)/(b)/(d): the lane was genuinely
+            // ENTERED. None of the FOUR selector-level refusals may have
+            // fired — if one did, the fixture stopped exercising the runtime
+            // arm and the case above would be passing vacuously.
+            for refused in [
+                "libgmsh is not available",
+                "selector-resolved",
+                "could not extract a boundary surface",
+                "is not a widenable P1 tet mesh",
+            ] {
+                assert!(
+                    !diags_c.iter().any(|d| d.message.contains(refused)),
+                    "(c) the localized lane must have been ENTERED and failed at RUNTIME, \
+                     but a selector-level refusal ({refused:?}) fired instead, got: {diags_c:?}",
+                );
+            }
+        }
+
+        // ── (d) The lane is gated by the RUNTIME const, not a cfg. ──
+        //
+        // Verified in a stub build and skipped-as-satisfied in a gmsh build:
+        // when `GMSH_AVAILABLE` is false NO realized mesh may reach the
+        // localized lane, however well-formed it is.
+        if !reify_solver_elastic::GMSH_AVAILABLE {
+            let outcome_d = run_adaptive_trampoline_outcome(&[vm_read_handle(
+                make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]),
+            )]);
+            assert_fell_back_to_uniform(outcome_d, "libgmsh", "(d) !GMSH_AVAILABLE");
+        }
+    }
+
+    /// Drive the adaptive trampoline and return the raw outcome.
+    fn run_adaptive_trampoline_outcome(
+        realization_inputs: &[RealizationReadHandle],
+    ) -> ComputeOutcome {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            adaptive_options(),
+        ];
+        let cancellation = CancellationHandle::new();
+        solve_elastic_static_trampoline(
+            &value_inputs,
+            realization_inputs,
+            &Value::Undef,
+            None,
+            &cancellation,
+        )
+    }
+
+    /// The Warning marker a fallback case must carry IN THIS BUILD.
+    ///
+    /// The lane selector tests `GMSH_AVAILABLE` FIRST — before `bc_override`
+    /// and before boundary extraction — so in a stub build EVERY realized-mesh
+    /// case falls back for the same reason ("libgmsh is not available in this
+    /// build") and none of the downstream markers is ever emitted. Pinning the
+    /// gmsh-build wording unconditionally would red this test on any host
+    /// without `/opt/reify-deps`'s libgmsh, which the design explicitly
+    /// supports (the whole lane is gated on a RUNTIME const precisely so stub
+    /// builds behave, and case (d) below runs only in one). Selecting the
+    /// expected marker on the same runtime const keeps the assertion
+    /// load-bearing in both builds rather than merely skipping it in one.
+    fn expected_fallback_marker(gmsh_build_marker: &str) -> &str {
+        if reify_solver_elastic::GMSH_AVAILABLE {
+            gmsh_build_marker
+        } else {
+            "libgmsh"
+        }
+    }
+
+    /// Assert the SAME two outcomes every fallback trigger must produce:
+    /// `Completed` with a real uniform-lane a-posteriori triple, and a
+    /// Warning whose message contains `reason_marker`.
+    ///
+    /// The Completed-plus-real-triple half is the load-bearing, unconditional
+    /// claim (an `adaptive: true` request must never regress to `Failed`); the
+    /// reason marker is chosen per build by `expected_fallback_marker`.
+    fn assert_fell_back_to_uniform(
+        outcome: ComputeOutcome,
+        reason_marker: &str,
+        case: &str,
+    ) -> (PersistentMap<String, Value>, Vec<reify_core::Diagnostic>) {
+        let (fields, diagnostics) = match outcome {
+            ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } => match result {
+                Value::StructureInstance(d) => (d.fields, diagnostics),
+                other => panic!("{case}: expected an ElasticResult, got {other:?}"),
+            },
+            other => panic!(
+                "{case}: an `adaptive: true` request must NEVER regress to Failed just \
+                 because the gmsh lane could not run, got {other:?}"
+            ),
+        };
+        assert!(
+            matches!(
+                fields.get("global_relative_energy_error"),
+                Some(Value::Option(Some(_))),
+            ),
+            "{case}: the uniform fallback must still produce a real a-posteriori triple, \
+             got: {:?}",
+            fields.get("global_relative_energy_error"),
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("adaptive refinement finished")
+                    && d.message.contains(UNIFORM_LANE_MARKER)),
+            "{case}: 4902's UNIFORM lane must have run, got: {diagnostics:?}",
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Info
+                    && d.message.contains(LOCALIZED_LANE_MARKER)),
+            "{case}: the localized lane's post-loop Info must NOT have been emitted, \
+             got: {diagnostics:?}",
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.severity
+                == reify_core::Severity::Warning
+                && d.message.contains(reason_marker)),
+            "{case}: expected a Warning naming the specific reason ({reason_marker:?}), \
+             got: {diagnostics:?}",
+        );
+        (fields, diagnostics)
+    }
+
+    /// step-17 RED, trigger (c): a `RefineError` raised at RUNTIME (libgmsh
+    /// linked, but this remesh cannot be performed) must propagate out of
+    /// `refine` so the wiring site can catch it and re-run the uniform lane.
+    ///
+    /// Injected deterministically rather than by hunting for a gmsh-hostile
+    /// geometry: a `current_sizes` / element-count mismatch is exactly the
+    /// `SizeHintsLengthMismatch` guard `refine_marked_elements` runs BEFORE
+    /// any gmsh call, so this is build-independent and cannot flake across
+    /// gmsh versions.
+    #[test]
+    fn realized_adaptive_problem_refine_propagates_a_refine_error() {
+        let volume_mesh = make_box_tet_volume_mesh([1.0, 0.1, 0.1], [4, 1, 1]);
+        let surface = reify_solver_elastic::boundary_surface_mesh(&volume_mesh)
+            .expect("a P1 tet box has an extractable boundary");
+        let mut problem = RealizedAdaptiveProblem::new(
+            IsotropicElastic {
+                youngs_modulus: 200e9,
+                poisson_ratio: 0.3,
+            },
+            volume_mesh,
+            surface,
+            reify_solver_elastic::MeshingOptions::default(),
+            [0.0, 0.0, -1000.0],
+            vec![],
+            [0.0; 3],
+        )
+        .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
+        // Desynchronise the size field from the mesh.
+        problem.current_sizes.truncate(1);
+
+        let err = problem
+            .refine(&[0])
+            .expect_err("a desynchronised size field must raise a RefineError");
+        assert!(
+            matches!(
+                err,
+                reify_solver_elastic::RefineError::SizeHintsLengthMismatch { .. }
+            ),
+            "expected SizeHintsLengthMismatch, got: {err:?}",
+        );
+    }
+    // ── ruling #6164: the `rotation` derivative channel ───────────────────────
+    //
+    // step-5 RED. `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the
+    // radian enters the elastic-result algebra. It is DERIVED from the `curl`
+    // SampledField at wrap time in every production path and STORED IN NONE —
+    // see `rotation_sf_from_curl`'s doc comment for the wire-format reason.
+    //
+    // These three tests pin all three production paths, plus the negative
+    // no-wire-change guarantee.
+
+    /// Shared helper: pull the `SampledField` out of a `Value::Field { Sampled }`,
+    /// asserting the source kind on the way through.
+    fn rot6164_sampled(v: &Value, what: &str) -> SampledField {
+        match v {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "{what} must be a Sampled field"
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf.clone(),
+                    other => panic!("{what} lambda must be Value::SampledField, got {other:?}"),
+                }
+            }
+            other => panic!("{what} must be Value::Field, got {other:?}"),
+        }
+    }
+
+    // The `rotation == curl/2 on the bit-identical grid` assertion is
+    // enumerated ONCE, beside `rotation_sf_from_curl` itself, so the tet path
+    // and the cache-reconstruction path below cannot drift apart from each
+    // other or from the wrapper unit test.
+    use super::super::assert_rotation_is_half_of;
+
+    /// (a) TET path — the live `solve_elastic_static_trampoline` tet/solid route
+    /// must emit a `"rotation"` key whose SampledField is the `"curl"` field
+    /// halved element-wise, bit-exactly, on the bit-identical grid.
+    ///
+    /// `shell_force=Off` forces the tet route deterministically (same idiom as
+    /// `trampoline_consumes_realized_volume_mesh`).
+    ///
+    /// This test ALSO carries the "no 6th resample entry" guarantee: unit tests
+    /// build in debug, so the `debug_assert_eq!(sampled.len(), 5)` in the tet
+    /// path is live here. Bumping `resample_multi_nodal_to_grid` to a 6th entry
+    /// to resample rotation independently would trip that assert and red this
+    /// test — which is exactly the intent (rotation costs no extra BVH pass).
+    ///
+    /// RED: nothing writes a `"rotation"` key yet.
+    #[test]
+    fn rotation_channel_tet_path_is_curl_halved() {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        let curl_v = fields
+            .get("curl")
+            .expect("tet ElasticResult must carry a curl field");
+        let rot_v = fields
+            .get("rotation")
+            .expect("tet ElasticResult must carry a rotation field (ruling #6164)");
+
+        let curl_sf = rot6164_sampled(curl_v, "curl");
+        let rot_sf = rot6164_sampled(rot_v, "rotation");
+        assert!(
+            !curl_sf.data.is_empty(),
+            "fixture sanity: the tet curl channel must be populated"
+        );
+        assert_rotation_is_half_of(&rot_sf, &curl_sf, "tet");
+
+        // The declared codomain is the whole point: Vector3<Angle>, not
+        // vec3(dimensionless_scalar()) like curl.
+        match rot_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::angle()),
+                "rotation codomain must be Vector3<Angle> (ruling #6164)"
+            ),
+            other => panic!("rotation must be Value::Field, got {other:?}"),
+        }
+        match curl_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                "curl codomain must STAY Vector3<Real> — ruling #6164 HALF 1 \
+                 decides curl is dimensionless; retyping it would put a radian \
+                 into the operator algebra"
+            ),
+            other => panic!("curl must be Value::Field, got {other:?}"),
+        }
+    }
+
+    /// (b) SHELL path — derivative channels are out of scope for the shell
+    /// solver (PRD §7), so `rotation` joins divergence/gradient/curl in the
+    /// honest-absence `Value::Undef` convention.
+    ///
+    /// RED: the shell fields map has no `"rotation"` key at all, so the
+    /// `.expect` fires.
+    #[test]
+    fn rotation_channel_shell_path_is_undef() {
+        // Same 50mm × 10mm × 1mm steel-flexure fixture as
+        // `shell_route_trampoline_populates_shell_channels`.
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.05),
+            shell9_make_len(0.01),
+            shell9_make_len(0.001),
+            shell9_make_point_loads(10.0),
+            shell9_make_supports(),
+            shell9_make_options("On"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        // Fixture sanity: confirm this really is the shell route.
+        assert!(
+            matches!(fields.get("curl"), Some(Value::Undef)),
+            "fixture sanity: the shell route must emit curl=Undef"
+        );
+        assert!(
+            matches!(
+                fields.get("shell_channels"),
+                Some(Value::StructureInstance(_))
+            ),
+            "fixture sanity: the shell route must emit a real ShellStress"
+        );
+
+        assert!(
+            matches!(
+                fields
+                    .get("rotation")
+                    .expect("shell ElasticResult must carry a rotation key (ruling #6164)"),
+                Value::Undef
+            ),
+            "shell rotation must be Value::Undef — honest-absence, matching the \
+             divergence/gradient/curl convention (PRD §7)"
+        );
+    }
+
+    /// (c) CACHE-RECONSTRUCTION path — THE LOAD-BEARING ONE.
+    ///
+    /// `value_from_elastic_result` rebuilds an `ElasticResult` `Value` from the
+    /// persisted compute-contract record. That record carries a `curl` slab and
+    /// NO rotation slab — and it never will, because the binary wire header is
+    /// frozen (`curl_len` at a fixed byte offset, byte-exact golden test).
+    ///
+    /// This test proves that deriving rotation at wrap time means EXISTING
+    /// persisted cache entries gain a correct `.rotation` for free: an `er` with
+    /// only a curl slab must reconstruct to a rotation field bit-identical to
+    /// what the live tet path produces from the same data.
+    ///
+    /// RED: the cache fields map has no `"rotation"` key yet.
+    #[test]
+    fn rotation_channel_cache_reconstruction_derives_from_curl_slab() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        // Regular3D grid, 1 division per axis -> 2 nodes per axis -> 8 nodes.
+        let n_nodes = 8usize;
+        // Deliberately non-power-of-two curl values so a halving bug cannot
+        // hide behind a coincidentally exact result.
+        let curl: Vec<f64> = (0..n_nodes * 3).map(|i| 3.0 + i as f64 * 5.0).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: (0..n_nodes * 9).map(|i| i as f64 * 0.5).collect(),
+            curl: curl.clone(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let curl_sf = rot6164_sampled(
+            d.fields.get("curl").expect("reconstructed curl field"),
+            "curl",
+        );
+        let rot_sf = rot6164_sampled(
+            d.fields
+                .get("rotation")
+                .expect("reconstructed ElasticResult must carry a rotation field (ruling #6164)"),
+            "rotation",
+        );
+        assert_eq!(
+            curl_sf.data, curl,
+            "fixture sanity: the curl slab must round-trip unchanged"
+        );
+        assert_rotation_is_half_of(&rot_sf, &curl_sf, "cache");
+
+        // Cross-path identity: the cache route must produce exactly what the
+        // live tet route's wrap step produces from the same curl SampledField.
+        let live = super::super::rotation_sf_from_curl(&curl_sf);
+        assert_eq!(
+            rot_sf.data, live.data,
+            "cache-reconstructed rotation must be bit-identical to the live tet \
+             path's derive from the same curl data"
+        );
+        assert_eq!(rot_sf.name, live.name);
     }
 }

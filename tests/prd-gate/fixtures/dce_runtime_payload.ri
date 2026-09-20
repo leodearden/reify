@@ -1,0 +1,52 @@
+module dce_runtime_payload
+
+// PRD docs/prds/v0_6/goal-oriented-error-estimation.md leaf α (BT7).
+//
+// Data-carrying enum payload values that are NOT compile-time literals: a
+// param-dependent expression (`w`, `w * 2.0`) and a negated literal (`-1.0`,
+// a unary-minus EXPRESSION, not a literal). Measured 2026-09-11 at main
+// 191d6c85ba: this file parses (grammar gate exit 0) but `reify check` exits 1
+// with `non-constant payload value for field 'width' of variant 'Rect' is not
+// yet supported` (crates/reify-compiler/src/variant_construct.rs, the
+// Literal-only payload arm). Leaf α's landing flips that: `reify eval`
+// evaluates the construction and the `match` reads the payload back.
+enum Shape {
+    Circle { radius: Length },
+    Rect { width: Length, height: Length, sign: Real },
+    Dot,
+}
+
+structure def RuntimePayload {
+    param w : Length = 20mm
+
+    // Param-dependent AND negated-literal payload values in one construction.
+    let outline : Shape = Rect { width: w, height: w * 2.0, sign: -1.0 }
+
+    let area = match outline {
+        Circle { radius: r } => 3.14159 * r * r,
+        Rect { width: a, height: b, sign: s } => a * b * s,
+        Dot => 0mm * 0mm
+    }
+
+    // With w = 20mm: area = 20mm * 40mm * -1.0 = -800 mm².
+    constraint area < 0mm * 0mm
+
+    // INV-SF-7 adjacency-regression case: a multi-line construction whose
+    // field values end lines (a quantity literal, then a bare identifier). The
+    // line breaks must not change any payload value: big_area == 20mm * 40mm.
+    let big : Shape = Rect {
+        width: w,
+        height: 40mm,
+        sign: 1.0,
+    }
+    let big_area = match big {
+        Rect { width: a, height: b, sign: s } => a * b * s,
+        Circle { radius: r } => 3.14159 * r * r,
+        Dot => 0mm * 0mm
+    }
+    constraint big_area == 20mm * 40mm
+}
+
+structure Test {
+    let p = RuntimePayload()
+}

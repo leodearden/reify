@@ -27,12 +27,13 @@ partition it's given and fail safe (requeue/escalate) instead of crashing when s
 
 A `/deb` root-cause session plus a 3-agent investigation (2026-06-22) established:
 
-- **Single dispatch path.** `workflow.py:1372` → `git_ops.create_worktree`, which tries the pool
-  internally and on `None` cold-creates at `git_ops.py:960`. There is **no** un-migrated legacy
+- **Single dispatch path.** `workflow.py`'s `await self.git_ops.create_worktree(` is the only
+  entry; `create_worktree` tries the pool internally (`await self.acquire_warm_lane(`) and on
+  `None` cold-created below it. There is **no** un-migrated legacy
   dispatch path; ζ #1788 is fully wired. So cold `<task_id>` worktrees are *live cold-fallback*, not
   partial-migration leftovers — exactly the path the operator's new "no cold fallback" policy targets.
 - **The re-seed contract is broken end-to-end.** `seed-warm-lane.sh:281-285` clobber-refuses; the
-  consumer (`git_ops.py:1429`, `:1520`) doesn't `rm` first and logs "proceeding with retained target
+  consumer inside `git_ops.py` doesn't `rm` first and logs "proceeding with retained target
   — degraded warmth" (fired 10× in 11h). Both modes (`--fresh-checkout`, `--reset-in-place`) reach
   the clone block, and production always passes `--fresh-checkout`.
 - **Re-seed alone is not sufficient.** Built lanes share almost nothing with the *current* base gen
@@ -125,15 +126,17 @@ seam:
 
 Substrate is shell / dark-factory Python / XFS — the `.ri` grammar/semantic gate is **N/A**
 (host-checks only, same as the parent `warm-lane-pool-cow-seeding.md` / `…-activation-seam.md`). All
-assumed capabilities were verified live on 2026-06-22:
+assumed capabilities were verified live on 2026-06-22. **Any `path:line` left below is dated
+evidence from that verification, not a live breadcrumb** — do not re-anchor it; grep the symbol
+named beside it to find the code today.
 
-- Single dispatch path: `grep workflow.py:1372` → `create_worktree`; pool attempt `git_ops.py:789-809`;
-  cold add `git_ops.py:960`.
+- Single dispatch path: `grep workflow.py` `git_ops.create_worktree(` → `create_worktree`; pool
+  attempt `pool_info = await self.acquire_warm_lane(`; cold add below it in the same method.
 - Clobber guard + clone block: `seed-warm-lane.sh:276-296` (refusal at `:281-285`).
 - Requeue plumbing (transient/exit-75) exists: `harness.py:3285-3303`.
 - Escalate plumbing (RuntimeError → blocked + L1) exists: `git_ops.py:907-908`, `harness.py:2797`.
-- Merge-side disk-guard precedent to mirror: `merge_queue.py:552-611`, `config.py:1182`
-  (`merge_verify_min_free_disk_bytes`); prune scope `verify.py:2716`.
+- Merge-side disk-guard precedent to mirror: `merge_queue.py` / `config.py`
+  (`merge_verify_min_free_disk_bytes`); prune scope in `verify.py`.
 - Reflink/XFS proven (the live pool runs on it; `warm-lane-preflight.sh` Check 2 probes it).
 
 ## 7. Cross-PRD / cross-repo relationship (G4)

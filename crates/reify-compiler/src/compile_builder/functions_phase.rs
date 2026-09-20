@@ -76,6 +76,15 @@ pub(crate) fn phase_functions(
         // Passing `&ctx.functions` as the "prior compiled functions" parameter lets
         // a function resolve a call to an earlier sibling declaration (forward
         // references are not supported at the function layer).
+        //
+        // The order-INDEPENDENT companion to that order-dependent table
+        // (task #5371), merged ONCE for the whole phase and borrowed by every
+        // body scope below. It changes nothing about which overload resolves;
+        // see `CompilationScope::declared_callable_names` for what it is for.
+        let declared_callables = crate::functions::declared_callable_names(
+            &ctx.declared_fn_names,
+            &ctx.resolution_structure_names,
+        );
         for fn_def in fn_refs {
             if let Some(compiled_fn) = compile_function(
                 fn_def,
@@ -84,6 +93,7 @@ pub(crate) fn phase_functions(
                 &ctx.alias_registry,
                 &ctx.resolution_structure_names,
                 &ctx.resolution_trait_names,
+                &declared_callables,
                 Some(&merged_registry),
                 &mut ctx.diagnostics,
             ) {

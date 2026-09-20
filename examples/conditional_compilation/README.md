@@ -85,4 +85,4 @@ The siblings (`platform_linux.ri`, `platform_wasm.ri`) define their own types, c
 clean single-file, and are **not** skipped.
 
 The full two-way behaviour is exercised end-to-end by
-`crates/reify-cli/tests/cli_check_cfg_example.rs` running the real `reify` binary.
+`crates/reify-cli/tests/harness_cli/cli_check_cfg_example.rs` running the real `reify` binary.

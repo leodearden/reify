@@ -2815,7 +2815,7 @@ structure Assembly {
     /// #4636 amendment — reviewer_comprehensive test-duplication finding):
     /// factors out exactly the pieces that
     /// `execute_realization_ops_cache_hit_reforwards_solid_attribute_to_reused_manifold_handle`
-    /// and `execute_realization_ops_convert_loop_skips_forward_for_non_seeded_parent`
+    /// and `execute_realization_ops_convert_loop_skips_forward_for_parent_whose_seed_failed`
     /// build IDENTICALLY, verbatim — three zero-initialized call counters
     /// (tessellate/ingest/union) plus a `"manifold"` kernel entry wired to
     /// `next_ingest_id: 1000` and its `BooleanUnion @ Mesh`-only
@@ -4745,17 +4745,36 @@ structure Assembly {
     /// insert unconditionally, or that recorded a bogus entry on a source
     /// miss, would not be caught by an engine-level test without this.
     ///
-    /// Uses [`reify_ir::GeometryOp::Tube`] as the non-seeded parent:
-    /// `is_seedable_primitive` (primitive_attribute_seed.rs) recognises only
-    /// Box/Cylinder/Sphere/Cone/Wedge/Torus/HalfSpace — `Tube` is a
-    /// `PrimitiveKind` at the compiler level (composed at the kernel layer as
-    /// `boolean_cut` of two cylinders) but is deliberately excluded from that
-    /// match, so `record_solid_attribute` is never called for its result
-    /// handle. This is a real, already-shipped "non-seeded parent", not a
-    /// synthetic op, and it needs zero extra mock staging:
-    /// `seed_primitive_attributes_for_handle` short-circuits to `Ok(())` for
-    /// a non-seedable op before touching the kernel at all
-    /// (primitive_attribute_seed.rs:144-151).
+    /// Uses [`reify_ir::GeometryOp::Tube`] as the parent that ends up
+    /// unseeded, and reaches that state through the seed-ERROR branch — NOT
+    /// the non-seedable no-op branch, which is what the name said before task
+    /// #6550 made `Tube` a seedable primitive.
+    ///
+    /// The mechanism today: the seeder DOES call
+    /// `extract_faces(GeometryHandleId(1))` for the Tube. The mock below
+    /// deliberately stages extraction fixtures only for the BOX's handle
+    /// (id 2), so the Tube's call returns `Err`, the engine pushes a WARNING
+    /// (not an Error) diagnostic, and `record_solid_attribute` is skipped
+    /// because it is gated on `seed_result.is_ok()`. The Tube therefore still
+    /// reaches the `'convert:` loop with no solid-level entry to forward,
+    /// which is the state every assertion below is about.
+    ///
+    /// The UNSTAGED fixture for handle 1 is LOAD-BEARING, so the premise is
+    /// asserted EXECUTABLY rather than merely documented: the first assertion
+    /// below requires the seeding-failure warning to be present. A future
+    /// author who "helpfully" stages `with_extracted_*` for
+    /// `GeometryHandleId(1)` would make the Tube seed successfully — and that
+    /// assertion turns the test RED instead of letting the rest of it pass
+    /// vacuously.
+    ///
+    /// Not retargeted onto a still-non-seedable op, deliberately. Candidates
+    /// do exist — `GeometryOp::Pipe` carries `parent_role: ParentRole::None`
+    /// (reify-ir/src/geometry.rs) and is still a seeder no-op, as do the curve
+    /// constructors — but a Pipe needs a path wire and its own capability
+    /// entry, which would replace this fixture wholesale for no gain: the
+    /// contract under test is what the `'convert:` loop does with a parent
+    /// carrying no solid attribute, and HOW the parent came to lack one is
+    /// immaterial to it.
     ///
     /// Unions the unseeded Tube (step0/left) with a normally-seeded Box
     /// (step1/right) so both the negative and positive forwarding outcomes
@@ -4766,7 +4785,7 @@ structure Assembly {
     /// mirroring the sibling cross-kernel conversion tests' `next_ingest_id:
     /// 1000` convention.
     #[test]
-    fn execute_realization_ops_convert_loop_skips_forward_for_non_seeded_parent() {
+    fn execute_realization_ops_convert_loop_skips_forward_for_parent_whose_seed_failed() {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
         use reify_core::Type;
         use reify_ir::{
@@ -4870,8 +4889,23 @@ structure Assembly {
             None,
         );
 
+        // ── PREMISE (executable, not documented): the Tube's seed must have
+        //    FAILED. This is what keeps the unstaged `GeometryHandleId(1)`
+        //    fixture honest — stage it and this assertion reds, instead of the
+        //    rest of the test silently passing on a parent that IS seeded. ──
+        assert!(
+            state.diagnostics.iter().any(|d| {
+                d.message
+                    .contains("topology-attribute seeding failed for NonSeededParent")
+                    && d.message.contains("op 0")
+            }),
+            "the Tube at op 0 must fail to seed (its extraction fixture is deliberately \
+             unstaged), leaving it with no solid-level attribute to forward: {:?}",
+            state.diagnostics
+        );
+
         // Sanity: the build itself must succeed (no error diagnostics, no
-        // kernel_error_out) — a non-seeded parent degrades gracefully rather
+        // kernel_error_out) — a failed seed degrades gracefully rather
         // than failing the realization.
         let errors: Vec<_> = state
             .diagnostics
@@ -4880,12 +4914,12 @@ structure Assembly {
             .collect();
         assert!(
             errors.is_empty(),
-            "a non-seeded parent must degrade gracefully, not error: {:?}",
+            "a failed seed must degrade gracefully, not error: {:?}",
             errors
         );
         assert!(
             state.kernel_error_out.is_none(),
-            "a non-seeded parent must degrade gracefully, not error: {:?}",
+            "a failed seed must degrade gracefully, not error: {:?}",
             state.kernel_error_out
         );
         assert_eq!(
@@ -6355,6 +6389,14 @@ structure Assembly {
                 label: "OffsetSolid → [target]",
             },
             Case {
+                op: GeometryOp::OffsetSurface {
+                    target: GeometryHandleId(105),
+                    distance: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(105)],
+                label: "OffsetSurface → [target]",
+            },
+            Case {
                 op: GeometryOp::Shell {
                     target: GeometryHandleId(84),
                     thickness: Value::Real(0.002),
@@ -6376,7 +6418,7 @@ structure Assembly {
                 op: GeometryOp::Draft {
                     target: GeometryHandleId(70),
                     faces: vec![],
-                    angle: Value::Real(0.1),
+                    angle: Value::angle(0.1),
                     plane: GeometryHandleId(71),
                 },
                 expected: vec![GeometryHandleId(70)],
@@ -6475,7 +6517,7 @@ structure Assembly {
                 // the parent list would be silently missed without this case.
                 label: "LoftGuided → profiles only; guides excluded (constraints, not parents)",
             },
-            // ── Remaining primitives (task 4671 step-3: full 47-variant coverage) ─
+            // ── Remaining primitives (task 4671 step-3: full 48-variant coverage) ─
             Case {
                 op: GeometryOp::Sphere { radius: Value::Real(0.005) },
                 expected: vec![],
@@ -6776,7 +6818,7 @@ structure Assembly {
     // ── substitute_op_parents unit tests ─────────────────────────────────────
 
     /// Characterizes the per-variant-family parent-handle substitution semantics
-    /// of `substitute_op_parents`. For every non-Split variant (47 total):
+    /// of `substitute_op_parents`. For every non-Split variant (48 total):
     /// builds an op with known handle ids, applies `substitute_op_parents` with
     /// a mapping that remaps those ids, and asserts that only the PARENT fields
     /// are rewritten — non-parent fields (Pipe.path, Sweep.path, SweepGuided.path
@@ -6785,7 +6827,7 @@ structure Assembly {
     ///   from the map are left as-is (tested via Union left absent from map).
     ///
     /// All expected values are hardcoded independently of the L1 table, so
-    /// full 47-variant coverage gives full validation of the table's
+    /// full 48-variant coverage gives full validation of the table's
     /// `parent_role` column for this function.
     ///
     /// Stays GREEN against the current per-variant fn; the coverage-completeness
@@ -7049,6 +7091,10 @@ structure Assembly {
             10, 110, "OffsetSolid"
         );
         check_single_target!(
+            GeometryOp::OffsetSurface { target: h(10), distance: Value::Real(0.002) },
+            10, 110, "OffsetSurface"
+        );
+        check_single_target!(
             GeometryOp::Shell { target: h(10), thickness: Value::Real(0.002), faces_to_remove: vec![0], open_face_handles: vec![] },
             10, 110, "Shell"
         );
@@ -7059,13 +7105,14 @@ structure Assembly {
 
         // Draft.plane is a constraint, not a parent — must NOT be remapped
         {
-            let mut op = GeometryOp::Draft { target: h(10), faces: vec![], angle: Value::Real(0.1), plane: h(20) };
+            let mut op = GeometryOp::Draft { target: h(10), faces: vec![], angle: Value::angle(0.1), plane: h(20) };
             seen.insert(GeometryOpDiscriminants::from(&op));
             substitute_op_parents(&mut op, &make_map(&[(10, 110), (20, 220)]));
             match &op {
-                GeometryOp::Draft { target, plane, .. } => {
+                GeometryOp::Draft { target, angle, plane, .. } => {
                     assert_eq!(*target, h(110), "Draft.target must be remapped");
                     assert_eq!(*plane, h(20), "Draft.plane must NOT be remapped (reference constraint)");
+                    assert_eq!(*angle, Value::angle(0.1), "Draft.angle must be an ANGLE-dimensioned Value and must survive parent remapping unchanged (task 5777)");
                 }
                 _ => panic!("op must still be Draft"),
             }
@@ -7475,7 +7522,10 @@ structure Assembly {
                 op: GeometryOp::Draft {
                     target: h(1),
                     faces: vec![],
-                    angle: r(0.1),
+                    // NOT `r(..)` — that closure builds a bare `Value::Real` and is
+                    // shared with the LENGTH-semantic Chamfer/Shell/Thicken cases
+                    // in this same table, so it must stay as it is (task 5777).
+                    angle: Value::angle(0.1),
                     plane: h(2),
                 },
                 expected: Operation::ModifyDraft,
@@ -7504,6 +7554,14 @@ structure Assembly {
                 },
                 expected: Operation::ModifyOffsetSolid,
                 label: "OffsetSolid → ModifyOffsetSolid",
+            },
+            Case {
+                op: GeometryOp::OffsetSurface {
+                    target: h(1),
+                    distance: r(0.002),
+                },
+                expected: Operation::ModifyOffsetSurface,
+                label: "OffsetSurface → ModifyOffsetSurface",
             },
             Case {
                 op: GeometryOp::OffsetCurve {
@@ -10088,5 +10146,565 @@ structure Assembly {
              reachable through the evaluator and not only through hand-built \
              ValueMaps; got values:\n{:#?}",
             result.values
+        );
+    }
+    // ── task 6170 (precision-nominal η): Mode-B export refusal ────────────────
+    //
+    // The occurrence-driven (`reify build`, no `-o`) half of the export refusal.
+    // PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1 /
+    // task η / C-SURFACE (2): a design declaring a `RepresentationWithin` bound
+    // the export path cannot demonstrate it honours must REFUSE the artifact
+    // rather than write it and report success.
+    //
+    // Geometry is a cheap `box`, never a sphere: η's refusal is a static
+    // module-shape decision taken before any measurement, so these tests import
+    // none of the 5-20 s OCCT tessellation cost the PRD §6 gate-cost rule warns
+    // about (and `ExportRecordingKernel` wraps `MockGeometryKernel` anyway — no
+    // OCCT at all). Nothing here touches the filesystem: `/tmp/d` is only a
+    // `design_dir` for path resolution, and every assertion is on the in-memory
+    // artifact.
+
+    // ── Shared η Mode-B harness ───────────────────────────────────────────────
+    //
+    // Every η test below runs the SAME setup (two recorder buffers → an
+    // `ExportRecordingKernel` → an `Engine` with a `MockConstraintChecker` →
+    // `build_outputs_with_result` against the `/tmp/d` design dir) and, for the
+    // refusal cases, the SAME per-artifact "find the Error diagnostic, assert the
+    // typed code, assert the E_* token" triplet. Only the module source varies.
+    // Both are factored here so a change to the refusal contract is edited once
+    // rather than five times. Deliberately module-local and deliberately NOT
+    // retrofitted onto the older tests above: their inline setup is the
+    // established convention in this file and each varies the kernel differently
+    // (injected warnings, recorded options, executed handles).
+
+    /// What [`run_build_outputs`] observed: the returned bundle plus both
+    /// serializer-side signals.
+    struct BuildOutputsProbe {
+        outputs: crate::BuildOutputs,
+        /// Snapshot of the recording kernel's `exported` log. EMPTY is η's
+        /// strongest assertion — the refusal precedes serialization, so no bytes
+        /// can leak by any route, not merely that produced bytes were discarded.
+        exported: Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>,
+        /// How many times `export_with_options` was actually called — the
+        /// positive-direction counterpart used by the C2 negative below.
+        export_calls: usize,
+    }
+
+    /// Compile `src` with the stdlib prelude and drive
+    /// [`crate::Engine::build_outputs_with_result`] through a recording kernel.
+    ///
+    /// `/tmp/d` is a `design_dir` for path resolution ONLY — nothing here touches
+    /// the filesystem, and `ExportRecordingKernel` wraps `MockGeometryKernel`, so
+    /// no OCCT tessellation is imported either (PRD §6 gate-cost rule).
+    fn run_build_outputs(src: &str) -> BuildOutputsProbe {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(src);
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+        let recorded_options = kernel.recorded_options();
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let outputs =
+            engine.build_outputs_with_result(&module, std::path::Path::new("/tmp/d"), None);
+
+        let exported = exported.lock().unwrap().clone();
+        let export_calls = recorded_options.lock().unwrap().len();
+        BuildOutputsProbe {
+            outputs,
+            exported,
+            export_calls,
+        }
+    }
+
+    /// Assert `art` is an η refusal and return its refusal message for any
+    /// further (attribution) assertions.
+    ///
+    /// The three properties asserted here ARE the refusal contract, and they are
+    /// asserted together because each is load-bearing on its own:
+    /// * EMPTY bytes — what makes the CLI writer (which gates on
+    ///   `!bytes.is_empty()`, never on `format`) write no file.
+    /// * An `Error`-severity diagnostic — what the CLI's exit gate keys on.
+    /// * The typed [`reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport`]
+    ///   AND the [`crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT`] token — downstream
+    ///   tooling matches the code; the CLI integration tests see only captured
+    ///   stderr text and so match the token.
+    ///
+    /// `label` names the occurrence under test so a failure in a multi-occurrence
+    /// loop says which one broke.
+    fn assert_is_refusal(art: &crate::ExportArtifact, label: &str) -> String {
+        assert!(
+            art.bytes.is_empty(),
+            "the refused artifact `{label}` must carry ZERO bytes — that is what makes \
+             the CLI writer (which gates on `!bytes.is_empty()`) write no file; got {} \
+             bytes",
+            art.bytes.len()
+        );
+        let refusal = art
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == reify_core::Severity::Error)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the refused artifact `{label}` must carry an Error-severity \
+                     diagnostic — that is what the CLI's exit gate keys on; got {:?}",
+                    art.diagnostics
+                )
+            });
+        assert_eq!(
+            refusal.code,
+            Some(reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport),
+            "the refusal on `{label}` must carry the typed code so downstream tooling \
+             matches on it rather than on message substrings"
+        );
+        assert!(
+            refusal
+                .message
+                .contains(crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the refusal message on `{label}` must embed the E_* token for the CLI \
+             integration tests, which observe only captured stderr text; got: {}",
+            refusal.message
+        );
+        refusal.message.clone()
+    }
+
+    /// A module declaring a `RepresentationWithin` bound has its `Output`
+    /// occurrence RECOGNIZED but REFUSED: one artifact, declared path and format
+    /// preserved, zero bytes, an `Error` diagnostic carrying
+    /// [`reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport`] —
+    /// and no `export_with_options` call at all.
+    ///
+    /// Each assertion is load-bearing:
+    /// * ONE artifact with the DECLARED path/format — the occurrence is
+    ///   recognized, not silently skipped. Zero artifacts would drive the CLI's
+    ///   "the design declares no `: Output` occurrences" message, which is FALSE
+    ///   for exactly the modules η targets.
+    /// * EMPTY bytes — this is what makes the CLI writer skip the file
+    ///   (it gates on `!bytes.is_empty()`, never on `format`).
+    /// * The recording kernel's `exported` log EMPTY — the strongest signal
+    ///   available: the refusal happens BEFORE serialization, so no bytes can
+    ///   leak by any route, not merely that produced bytes were discarded.
+    ///
+    /// RED until step-6 adds the gate: today the occurrence exports normally, so
+    /// this sees non-empty bytes, no Error diagnostic and one recorded export.
+    /// That failure IS §1.1 reproduced at the engine boundary.
+    #[test]
+    fn build_outputs_refuses_export_for_module_declaring_representation_within() {
+        use std::path::PathBuf;
+
+        // The `repr_within_with_stl_output.ri` fixture's shape: a geometry
+        // structure owning an `: Output` occurrence, plus a SEPARATE checker
+        // structure declaring the bound on it (the canonical idiom).
+        let probe = run_build_outputs(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+}
+
+structure DCheck {
+    param subject : D
+    constraint RepresentationWithin(subject, 1mm)
+}"#,
+        );
+
+        assert_eq!(
+            probe.outputs.artifacts.len(),
+            1,
+            "the STLOutput occurrence must still be RECOGNIZED (one artifact), so the \
+             CLI reports it as refused rather than claiming the design declares no \
+             `: Output` occurrences; got {}",
+            probe.outputs.artifacts.len()
+        );
+        let art = &probe.outputs.artifacts[0];
+        assert_eq!(
+            art.path,
+            PathBuf::from("/tmp/d/o.stl"),
+            "the refused artifact must carry the TRUE declared destination so a caller \
+             can see which export was refused"
+        );
+        assert_eq!(
+            art.format,
+            reify_ir::ExportFormat::Stl,
+            "the refused artifact must preserve the DSL-driven format"
+        );
+        assert_is_refusal(art, "D.o");
+
+        assert!(
+            probe.exported.is_empty(),
+            "export_with_options must NEVER be called for a refused occurrence — the \
+             refusal precedes serialization, so no bytes can leak by any route; got {:?}",
+            probe.exported
+        );
+    }
+
+    /// A module with TWO Output occurrences refuses BOTH, and each refusal names
+    /// the occurrence and destination it refused.
+    ///
+    /// The refusal itself is module-level — one bound anywhere refuses every
+    /// occurrence (a deliberate posture; see the `(2a)` comment in
+    /// `engine_build.rs` for why narrowing needs the realization graph). That
+    /// makes the shared message identical across occurrences, so without
+    /// per-occurrence attribution `cmd_build` prints the same ~300-char line once
+    /// per occurrence with nothing distinguishing the copies — `cmd_build`
+    /// surfaces `artifact.diagnostics` and never `artifact.path`, so the path
+    /// alone cannot tell them apart. This test is what pins the attribution
+    /// contract chosen at `(5a)`:
+    ///
+    /// * BOTH occurrences are refused (not just the first) — the shared
+    ///   diagnostic is attached to every refused artifact, so the CLI's
+    ///   "all N `: Output` occurrence(s) were deferred or failed" branch fires
+    ///   with the right N.
+    /// * Every refusal message carries the shared E_* token AND typed code, so
+    ///   the stable-token assertions in the CLI integration tests hold for any
+    ///   occurrence count.
+    /// * The two messages are DISTINCT and each names its own occurrence + path,
+    ///   mirroring the sibling subject-unresolved / kernel-export-failed
+    ///   artifacts, which name both for the same reason.
+    /// * `export_with_options` is still never called — the blast radius does not
+    ///   grow with the occurrence count.
+    #[test]
+    fn build_outputs_refuses_every_output_occurrence_with_per_occurrence_attribution() {
+        use std::path::PathBuf;
+
+        let probe = run_build_outputs(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub a = STLOutput(subject: part, resolution: 0.2mm, path: "a.stl")
+    sub b = STLOutput(subject: part, resolution: 0.2mm, path: "b.stl")
+}
+
+structure DCheck {
+    param subject : D
+    constraint RepresentationWithin(subject, 1mm)
+}"#,
+        );
+
+        assert_eq!(
+            probe.outputs.artifacts.len(),
+            2,
+            "BOTH Output occurrences must be recognized-and-refused, so the CLI's \
+             'all N `: Output` occurrence(s) were deferred or failed' branch reports \
+             the right N; got {:?}",
+            probe
+                .outputs
+                .artifacts
+                .iter()
+                .map(|a| a.path.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let mut messages = Vec::new();
+        for (art, (sub_name, file)) in probe
+            .outputs
+            .artifacts
+            .iter()
+            .zip([("a", "a.stl"), ("b", "b.stl")])
+        {
+            assert_eq!(
+                art.path,
+                PathBuf::from(format!("/tmp/d/{file}")),
+                "declaration-order walk must preserve each occurrence's declared path"
+            );
+            let message = assert_is_refusal(art, &format!("D.{sub_name}"));
+            assert!(
+                message.contains(&format!("`D.{sub_name}`")),
+                "the refusal must name the occurrence it refused (`D.{sub_name}`), so \
+                 repeated copies are distinguishable; got: {message}"
+            );
+            assert!(
+                message.contains(&format!("/tmp/d/{file}")),
+                "the refusal must name the destination it refused, mirroring the \
+                 sibling subject-unresolved artifact; got: {message}"
+            );
+            messages.push(message);
+        }
+
+        assert_ne!(
+            messages[0], messages[1],
+            "the two refusals must NOT be byte-identical — an unattributed repeat of \
+             the module-level message carries zero information for the reader"
+        );
+
+        assert!(
+            probe.exported.is_empty(),
+            "no occurrence may reach export_with_options, however many are refused; \
+             got {:?}",
+            probe.exported
+        );
+    }
+
+    /// The C2 negative: the SAME module with the bound-declaring structure
+    /// DELETED exports completely normally.
+    ///
+    /// This is the regression guard for PRD C2 / §3.1(f) — every existing
+    /// unbounded design keeps exporting byte-identically once the refusal lands.
+    /// A gate that over-fired would refuse every export in the repo, so this test
+    /// is what bounds the blast radius of step-6.
+    ///
+    /// # Scope: the η DELTA only
+    ///
+    /// The artifact SHAPE for this exact module — one artifact, `format == Stl`,
+    /// `path == /tmp/d/o.stl`, non-empty bytes, one export call — is already
+    /// pinned by [`build_outputs_drives_single_stl_output`] above, which uses a
+    /// byte-identical module. Re-asserting it here would be a second copy of
+    /// somebody else's contract, so this test asserts only what η could
+    /// plausibly break:
+    ///
+    /// * bytes are still produced (the refusal did NOT fire), and
+    /// * NO Error-severity diagnostic appears (the refusal did not ride in as a
+    ///   diagnostic while leaving the bytes alone), and
+    /// * `export_with_options` ran exactly once (serialization was reached, not
+    ///   short-circuited).
+    ///
+    /// GREEN today and must STAY green.
+    #[test]
+    fn build_outputs_exports_normally_without_a_representation_within_bound() {
+        // Byte-identical to the refusal test's module MINUS `structure DCheck`
+        // (and to `build_outputs_drives_single_stl_output`'s module, which owns
+        // the artifact-shape assertions this test deliberately does not repeat).
+        let probe = run_build_outputs(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+}"#,
+        );
+
+        let art = probe.outputs.artifacts.first().unwrap_or_else(|| {
+            panic!(
+                "the single STLOutput occurrence must still yield an artifact; got {}",
+                probe.outputs.artifacts.len()
+            )
+        });
+        assert!(
+            !art.bytes.is_empty(),
+            "an UNBOUNDED module must still export bytes — the refusal must not fire \
+             here (PRD C2)"
+        );
+        assert!(
+            !art.diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Error),
+            "an unbounded module must carry NO Error diagnostic; got {:?}",
+            art.diagnostics
+        );
+        assert_eq!(
+            probe.export_calls, 1,
+            "export_with_options must be called exactly once for the unbounded module — \
+             serialization is untouched by η"
+        );
+    }
+
+    /// A DisplayOutput occurrence in a BOUNDED module keeps its info-severity
+    /// [`crate::I_DISPLAY_OUTPUT_DEFERRED`] artifact — η does not turn it into a
+    /// refusal.
+    ///
+    /// # What this pins that no other test does
+    ///
+    /// The `(5a)` refusal gate sits AFTER the `OutputTarget::DisplayDeferred`
+    /// arm, which `continue`s. That ordering is load-bearing but invisible:
+    /// hoisting the `if let Some(d) = &refusal` block above the target match
+    /// would keep every OTHER η test green (they all declare file targets) while
+    /// silently converting deferred viewport sinks into Errors. The damage would
+    /// be real — a DisplayOutput writes no file, so there is nothing for η to
+    /// withhold; the build would flip from exit-0 to exit-1 and print a refusal
+    /// naming an EMPTY path. This test is the only thing standing between that
+    /// edit and a green suite.
+    ///
+    /// The module mixes BOTH sink kinds under one bound so the assertions are
+    /// two-sided: the file target must STILL be refused (proving the gate is
+    /// live here, not merely absent) while the display target must still defer.
+    #[test]
+    fn build_outputs_defers_display_output_even_in_a_bounded_module() {
+        use reify_core::Severity;
+        use std::path::PathBuf;
+
+        // The refusal test's module PLUS a DisplayOutput sibling on the same
+        // subject, so one `RepresentationWithin` bound covers both sinks.
+        let probe = run_build_outputs(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+    sub d = DisplayOutput(subject: part)
+}
+
+structure DCheck {
+    param subject : D
+    constraint RepresentationWithin(subject, 1mm)
+}"#,
+        );
+        let outputs = &probe.outputs;
+
+        // (a) The DisplayOutput still yields exactly one INFO artifact.
+        let deferred: Vec<&crate::ExportArtifact> = outputs
+            .artifacts
+            .iter()
+            .filter(|a| {
+                a.diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(crate::I_DISPLAY_OUTPUT_DEFERRED))
+            })
+            .collect();
+        assert_eq!(
+            deferred.len(),
+            1,
+            "the DisplayOutput occurrence must still surface exactly one \
+             I_DISPLAY_OUTPUT_DEFERRED artifact in a bounded module — a refusal gate \
+             hoisted above the DisplayDeferred arm would swallow it; got artifacts {:?}",
+            outputs
+                .artifacts
+                .iter()
+                .map(|a| a.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+        let display = deferred[0];
+        assert!(
+            display.path.as_os_str().is_empty(),
+            "a viewport sink has no destination, so its artifact path stays EMPTY; got {}",
+            display.path.display()
+        );
+        assert!(
+            display.bytes.is_empty(),
+            "the deferred display artifact carries zero bytes (it is a skipped entry, \
+             not a file); got {} bytes",
+            display.bytes.len()
+        );
+        assert!(
+            !display
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error),
+            "η must NOT attach an Error to a deferred viewport sink — that would flip a \
+             DisplayOutput-only build from exit-0 to exit-1 while naming an empty path; \
+             got {:?}",
+            display.diagnostics
+        );
+        assert!(
+            display.diagnostics.iter().all(|d| d.severity == Severity::Info),
+            "every diagnostic on the deferred display artifact is info-severity; got {:?}",
+            display.diagnostics
+        );
+
+        // (b) Two-sided: the FILE sibling under the SAME bound IS still refused,
+        //     so (a) reflects the ordering rather than a gate that never fired.
+        let refused: Vec<&crate::ExportArtifact> = outputs
+            .artifacts
+            .iter()
+            .filter(|a| {
+                a.diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport))
+            })
+            .collect();
+        assert_eq!(
+            refused.len(),
+            1,
+            "the STLOutput sibling must still be refused under the same bound — \
+             otherwise this test would pass with the gate switched off entirely; got {}",
+            refused.len()
+        );
+        assert_eq!(
+            refused[0].path,
+            PathBuf::from("/tmp/d/o.stl"),
+            "the refused FILE artifact still carries its true declared destination"
+        );
+        assert!(
+            refused[0].bytes.is_empty(),
+            "the refused file artifact carries zero bytes"
+        );
+
+        // (c) Neither sink reached the serializer.
+        assert!(
+            probe.exported.is_empty(),
+            "no occurrence may reach export(): the DisplayOutput defers and the \
+             STLOutput is refused; got {:?}",
+            probe.exported
+        );
+    }
+
+    /// A bound declared ON THE `: Output` OCCURRENCE TEMPLATE ITSELF — the v0_2
+    /// per-purpose-tolerance idiom — is REFUSED, exactly like one declared on a
+    /// separate checker structure.
+    ///
+    /// # Why this shape needs its own test
+    ///
+    /// `docs/prds/v0_2/per-purpose-tolerance.md`'s documented way to DEMAND an
+    /// export tolerance is to put the constraint in the Output occurrence's own
+    /// body — `occurrence def TightSTL : Output { param subject : D  constraint
+    /// RepresentationWithin(subject, 1um) }` (see
+    /// `crate::tolerance_combine::extract_output_tolerance_bound` and
+    /// `reify_test_support::tolerance_fixtures::step_output_template_with_body`,
+    /// which build precisely this template). That is a `ValueRef` typed
+    /// `StructureRef` plus a LENGTH literal — the exact shape
+    /// `match_representation_within_shape` recognises — and user-defined
+    /// occurrence templates DO live in `module.templates`, so
+    /// `compute_representation_bounds` picks the bound up and η refuses.
+    ///
+    /// # The decision this pins: REFUSE, deliberately
+    ///
+    /// So the design that demands an export tolerance the supported way is the
+    /// design η refuses. That is the intended verdict TODAY and the safe
+    /// direction, because the demanded tolerance is not yet plumbed anywhere:
+    /// task 6085 has not landed `kernel.export()`-side honouring, so nothing on
+    /// the export path reads that bound, let alone demonstrates it is met.
+    /// Exempting this shape would ship PRD §1.1 verbatim — an artifact written
+    /// against an unhonoured bound, exit 0 — for exactly the designs that asked
+    /// for the tolerance most explicitly.
+    ///
+    /// The seam un-blocks in the other direction: once 6085 gives the export path
+    /// a real measurement, task θ (#6173) narrows the refusal from "any declared
+    /// bound" to "a bound this export cannot demonstrate it honours", at which
+    /// point a demanded-and-honoured tolerance stops being refused. This test is
+    /// what makes that flip a deliberate edit with a red test rather than a
+    /// silent behaviour change.
+    #[test]
+    fn build_outputs_refuses_a_bound_declared_on_the_output_occurrence_itself() {
+        let probe = run_build_outputs(
+            r#"occurrence def TightSTL : Output {
+    param subject : D
+    param path : String
+    param resolution : Length = 0.2mm
+    param format : OutputFormat = OutputFormat.STL
+    constraint RepresentationWithin(subject, 1um)
+}
+
+structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = TightSTL(subject: part, path: "o.stl")
+}"#,
+        );
+
+        assert_eq!(
+            probe.outputs.artifacts.len(),
+            1,
+            "the user-defined `: Output` occurrence must still be RECOGNIZED (trait-bound \
+             conformance, not a name match), so it is reported as refused rather than as \
+             absent; got {:?}",
+            probe
+                .outputs
+                .artifacts
+                .iter()
+                .map(|a| a.path.clone())
+                .collect::<Vec<_>>()
+        );
+        let message = assert_is_refusal(&probe.outputs.artifacts[0], "D.o");
+        assert!(
+            message.contains("D (bound 1.000e-6 m)"),
+            "the refusal must name the bound read off the OCCURRENCE template — subject \
+             `D` at the declared 1um — proving the bound came from the occurrence body \
+             and not from some other declaration; got: {message}"
+        );
+        assert!(
+            probe.exported.is_empty(),
+            "a bound declared on the Output occurrence itself must still refuse BEFORE \
+             serialization; got {:?}",
+            probe.exported
         );
     }

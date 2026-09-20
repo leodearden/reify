@@ -52,7 +52,7 @@ Named consumers:
 - **A stdlib `.ri` conformance example that runs in CI** — `examples/structural_traits_dimensioned.ri`
   (new), exercising Rigid/Flexible/ElasticallyDeformable/Plastic/Sealed/ThermallyConductive
   with dimensioned literals.
-- **The existing conformance suite** `crates/reify-compiler/tests/structural_physical_tests.rs`
+- **The existing conformance suite** `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_tests.rs`
   (updated to assign dimensioned values; stays green).
 
 The doc-reconcile (β) introduces no runtime mechanism — it aligns documentation with the

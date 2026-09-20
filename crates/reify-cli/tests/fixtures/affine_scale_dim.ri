@@ -8,6 +8,18 @@
 //
 // Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
 // runtime Warning diagnostic.
+//
+// Declares its module explicitly: without it, `reify eval` also emits
+// W_MODULE_DECL_MISSING ("expected `module affine_scale_dim`"), whose text
+// contains the substring "affine_scale". The old CLI assertion was the
+// conjunction `contains("affine_scale") && contains("dimensionless")`, so that
+// warning independently supplied the first conjunct and left only
+// "dimensionless" doing real work — half-strength, not vacuous (the module
+// warning says neither "dimensionless" nor "degenerate", so the real
+// diagnostic could not have been absent). Hence the decl here plus a single
+// contiguous anchor in cli_affine_eval.rs (task 6155).
+
+module affine_scale_dim
 
 structure def AffineScaleDim {
     let m = affine_scale(2mm, 1.0, 1.0)

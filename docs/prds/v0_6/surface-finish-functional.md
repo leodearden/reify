@@ -93,7 +93,7 @@ The capstone's correctness rests on **what already exists**. Each row was re-ver
   `trait Costed : Buy { param quantity_produced : Real; let line_cost : Money = unit_cost *
   quantity_produced }`; assemblies aggregate via the dimension-preserving `.sum` builtin
   (`[a.line_cost, b.line_cost].sum : Scalar<Money>`). `examples/cost_aggregation.ri` + locked-total test
-  `crates/reify-compiler/tests/cost_aggregation_tests.rs` are the precedent.
+  `crates/reify-compiler/tests/harness_units_materials/cost_aggregation_tests.rs` are the precedent.
 - **Egress consumers (both shipped, both done):** the 3MF `<basematerials>` per-body color path
   (`reify-ir/src/geometry.rs` `write_3mf` + `reify-eval/src/engine_build.rs` `resolve_instance_color` →
   `resolve_appearance`) from PRD-1 δ (#4763); the viewport recolor from `resolve_appearance` from PRD-2
@@ -390,7 +390,7 @@ third-producer subsumption end-to-end before γ (cost breadth) and ε (the secon
   unchanged material/neutral (B5, back-compat); `Appearance` shapes unchanged. Verified end-to-end through
   δ (C-as-integration-gate). *Prereqs:* α, **PRD-1 #4761 (done)**. `grammar_confirmed = true`.
 - **γ — cost + mass roll-up (LEAF, DSL-native).** *Modules:* `examples/surface_finish_cost.ri` +
-  a locked-value test mirroring `crates/reify-compiler/tests/cost_aggregation_tests.rs`. *Leaf.* *Signal:*
+  a locked-value test mirroring `crates/reify-compiler/tests/harness_units_materials/cost_aggregation_tests.rs`. *Leaf.* *Signal:*
   `reify eval` of the committed example yields `total_finishing_cost = 24 USD` (flat, nested BOM,
   deterministic — B6) **and** a top-level `CoatedPlate` yields `coat_cost = 1.2 USD`, `coat_mass =
   0.0018 kg` (area-based realized — B7); a Rust test asserts these exact values. *Prereqs:* α.

@@ -5,8 +5,16 @@
 # directory-vs-file predicate (C-P1..C-P4) required by the task-lock-charter-
 # lifecycle PRD (docs/prds/task-lock-charter-lifecycle.md §4.1).
 #
-# No skip guard: the predicate is host-independent (C-P3 — pure string, no
-# filesystem stat, no model call), so the test runs on every host.
+# Skip-guard scope — read this before adding a block that touches the filesystem.
+# Cycles 1-8 carry NO skip guard, because the predicate they exercise is
+# host-independent (C-P3 — pure string, no filesystem stat, no model call), so
+# they run identically on every host.  Cycles 9-10 are the exception and are
+# deliberately different in kind: they are live-corpus drift alarms that sweep the
+# ACTUAL tracked corpus via git, so they are host-dependent by construction.  Each
+# confines that dependence to its own block with a `git rev-parse --git-dir` probe
+# and SKIPs cleanly when $REPO_ROOT is not a git checkout.  A new block may touch
+# the filesystem only if it carries the same probe; without one it belongs in the
+# pure-string 1-8 family.
 #
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
 
@@ -229,11 +237,22 @@ echo "--- Cycle 4: --list-extensions drift guard + coherence ---"
 # dark-factory-evidenced only — reify tracks zero .csv files.  Its behavioural
 # coverage is the coherence loop below, which classifies every emitted extension;
 # the incident narrative lives with _EXTS in scripts/lock-charter-guard.sh, not
-# here.  Per-entry test cycles are deliberately NOT the convention: widening the
-# allowlist costs exactly three pin edits — _EXTS, this CANONICAL_EXTS, and
-# lcl_canonical_extensions() in tests/infra/lock_charter_harness_lib.sh — and no
-# bespoke cycle, because this block's equality assertion is already strictly
-# stronger than any single-entry presence check.
+# here.  Per-entry test cycles are deliberately NOT the convention, because this
+# block's equality assertion is already strictly stronger than any single-entry
+# presence check.
+#
+# HOW TO WIDEN THE ALLOWLIST — canonical enumeration, owned HERE.  This is the one
+# site that states it; _EXTS's header in scripts/lock-charter-guard.sh and Cycle 10
+# below both POINT at this list rather than restate it, so the procedure has a
+# single place to drift from.  Adding an extension is FOUR lockstep edits:
+#   1. _EXTS in scripts/lock-charter-guard.sh          — the α source of truth
+#   2. this CANONICAL_EXTS                              — the α pin
+#   3. lcl_canonical_extensions() in tests/infra/lock_charter_harness_lib.sh
+#   4. γ's copies (dark-factory shared/src/shared/locking.py and
+#      fused-memory/.../lock_charter_guard.py, plus their own pins)
+# _EXTS is a SHARED α/γ vector: a unilateral α widening re-opens exactly the seam
+# divergence this subsystem exists to close, and γ's cross-source drift comparison
+# goes RED on the γ side instead of here.
 CANONICAL_EXTS="c
 cc
 cjs
@@ -286,6 +305,7 @@ stl
 svg
 template
 timer
+tombstones
 toml
 ts
 tsx
@@ -586,10 +606,9 @@ done
 # are extensionless and must never be admitted), and it keeps this sweep correct
 # if reify ever vendors a submodule.
 #
-# Host-dependence is confined to this block by the rev-parse probe below, which
-# SKIPs cleanly outside a git checkout — the file header's "no skip guard, the
-# predicate is host-independent (C-P3)" promise holds for Cycles 1-8, which stay
-# pure-string.
+# Host-dependence is confined to this block by the rev-parse probe below — see
+# the file header, which scopes the C-P3 pure-string/no-skip promise to Cycles 1-8
+# and names this cycle as one of the two live-corpus exceptions.
 #
 # Green on arrival (7 reify names ⊂ the 8 pinned).  Per G6 it was shown to FIRE
 # rather than assumed to: deleting `project-checks` from _EXTLESS in a scratch
@@ -639,11 +658,269 @@ else
     assert "live-corpus drift: sweep found at least one tracked extensionless basename" \
         test -n "$_tracked_extless"
 
+    # `grep -cxF -- "$_name"` — the `--` is load-bearing for the same reason
+    # Cycle 10's copy documents at length: without it a basename beginning with a
+    # dash is parsed by grep as an option bundle rather than as a pattern, so the
+    # assertion errors out instead of answering the question.  Zero such tracked
+    # basenames today (measured -> 0), and extensionless basenames are if anything
+    # MORE likely to acquire one than post-dot extension tokens are, so both
+    # live-corpus alarms carry the hardening rather than one documenting the
+    # hazard and its sibling standing exposed.
     while IFS= read -r _name; do
         [ -z "$_name" ] && continue
         assert "live-corpus drift: '$_name' present in --list-extensionless" \
-            test "$(printf '%s\n' "$_emitted" | grep -cxF "$_name")" -eq 1
+            test "$(printf '%s\n' "$_emitted" | grep -cxF -- "$_name")" -eq 1
     done <<< "$_tracked_extless"
+fi
+
+# ---------------------------------------------------------------------------
+# Cycle 10 — live-corpus extension drift alarm (standing guard against a stale
+# _EXTS).  The extension-side mirror of Cycle 9.
+#
+# Cycle 4 above already compares --list-extensions against CANONICAL_EXTS and
+# does so with a full equality assert, which is strictly stronger than any
+# presence check — in ONE direction.  CANONICAL_EXTS is a pin living in this
+# same repo, so it moves whenever _EXTS moves: it catches an accidental EDIT to
+# the allowlist and can never catch a MISSING entry, because nobody edits the
+# pin to mention an extension they did not know they needed.  #5726 was exactly
+# that failure on exactly this vector — 22 tracked extensions the list
+# misclassified as directories, found by a human running a manual sweep, not by
+# a gate.  This block converts that sweep into a standing CI signal, the same
+# conversion Cycle 9 performs for the extensionless vector.  The two are
+# complementary, not redundant: Cycle 4 owns the accidental-edit direction,
+# Cycle 10 owns the missing-entry direction.
+#
+# SUBSET, not equality, and measured to be binding here rather than merely
+# inherited from Cycle 9: the sweep finds 37 extensions while _EXTS carries 60,
+# and the 23-entry gap is legitimate because this is a SHARED α/γ vector —
+#   cc cjs csv cts cxx diff example example-systemd-config gitattributes
+#   gitmodules hh hpp jsonl jsx log mts python-version scss step stl svg
+#   template typed
+# have no reify file behind them today.  An equality assertion would be RED
+# permanently and would fight the shared nature of the list.  Over-coverage is
+# the safe direction — an entry with no reify file costs nothing, a missing
+# entry costs a rejected charter.
+#
+# HONEST SCOPE LIMIT — this alarm would NOT have caught the `csv` drift that
+# motivated #6067, and must not be read as closing that gap.  reify tracks zero
+# .csv files (measured: `git ls-files '*.csv' | wc -l` -> 0); the evidence lived
+# in dark-factory's corpus (plans/evidence/scheduler-scoring-2026-08-06/*.csv).
+# Cycle 10 defends against reify-corpus-driven drift only — a NEW tracked reify
+# extension landing with no allowlist entry, i.e. the #5726 shape.  At the time
+# #6067 was filed, the cross-source half (γ's Tier-2 comparison) was also open:
+# a path-resolution bug dropped that test at collection, so it skipped on every
+# run (esc-6067-2).  MEASURED 2026-08-27 (#6856): that half is no longer open —
+# dark-factory tasks 3843/4080 re-armed BOTH of γ's Tier-2 cross-source guards
+# on a layout-independent resolver, and fresh -rs plus injected-drift runs
+# confirm both the extension and extensionless comparisons now run and fire.
+# Cycle 10 here still only covers the reify-corpus direction; the
+# cross-source direction is covered from γ's side, not by this file — see the
+# "Cross-repo seam: γ" header note in scripts/lock-charter-guard.sh for the
+# current-state detail, deliberately not restated here.
+#
+# LAST-dot extraction is the filter rule.  The extension side, unlike the
+# extensionless side, can surface non-extension tokens, and the answer is not a
+# token blacklist — it is asking exactly the question the guard answers.
+# _is_file_path()'s `local ext="${seg##*.}"` in scripts/lock-charter-guard.sh
+# takes the post-LAST-dot token, so the sweep extracts the same way.  Cited by
+# SYMBOL, not by line number, and deliberately: both files are comment-dense, so
+# a line pin rots as soon as anything is inserted above it — an earlier draft of
+# this very comment cited `:232` and was stale before it landed, because the
+# _EXTS header hunk it shipped alongside pushed the line down to 239.  Measured on
+# today's corpus: last-dot yields 36 clean real extensions and zero junk;
+# first-dot yields 73 tokens, 38 of which still contain a dot, off the corpus's
+# dotted-basename family (split.structure-Board.md, split.enum-Grade.md,
+# foo.module.css, bar.e2e.test.ts, d.ts).  Faithfulness to the predicate is what
+# makes the sweep junk-free — any other extraction would alarm on tokens
+# _is_file_path() never inspects, producing REDs no allowlist edit can fix.
+#
+# THIS IS A DELIBERATE FOURTH VARIANT of the canonical sweep command, not a
+# fourth copy.  The other three (the _EXTLESS header in
+# scripts/lock-charter-guard.sh, Cycle 7's provenance comment, Cycle 9's
+# executable form) are kept BYTE-IDENTICAL on purpose.  Cycle 10 differs in
+# exactly one place: its terminal branch selects DOTTED final segments and
+# reduces each to its post-last-dot token, where they select dotless ones via
+# `grep -v '\.'`.  Everything through the `split($2, s, "/")` final-segment
+# extraction is identical — including the mode-160000 gitlink filter, carried for
+# the reason Cycle 9 gives.  Do not "unify the four": collapsing them silently
+# breaks either this alarm or Cycle 9.
+#
+# Host-dependence is confined to this block by the rev-parse probe below — see the
+# file header, which scopes the C-P3 pure-string/no-skip promise to Cycles 1-8.
+#
+# A RED HERE means a new tracked reify path has landed that the allowlists do not
+# cover.  READ WHICH ASSERTION FIRED FIRST — this block's two halves have
+# DIFFERENT repair procedures, because the backstop classifies both vectors:
+#
+#   * EXTENSION case — the token loop's "'<ext>' present in --list-extensions",
+#     or a backstop REJECT of a path whose final segment is DOTTED.  The fix is
+#     the FOUR-part lockstep widening enumerated in Cycle 4's comment above —
+#     α's three pins PLUS γ's copies, never _EXTS alone.  That enumeration is
+#     stated there once and pointed at from here on purpose, so the next widening
+#     has one prose site to keep true instead of three.
+#
+#   * EXTENSIONLESS case — a backstop REJECT of a path whose final segment is
+#     DOTLESS.  This is NOT an extension miss and Cycle 4's enumeration is the
+#     wrong procedure for it: the fix is the _EXTLESS lockstep documented in
+#     Cycle 9 above (α's _EXTLESS PLUS γ's EXTENSIONLESS_FILENAMES copies), and
+#     Cycle 9's own assertion will normally RED beside this one.
+#
+# Green on arrival (37 swept ⊂ the 60 pinned) — by construction, since a RED on
+# arrival would mean the allowlist was already broken.  Per G6 it was shown to
+# FIRE rather than assumed to: deleting `ri` from _EXTS in a scratch copy of the
+# guard (59 -> 58 entries) turns this block from 41 passed / 0 failed to
+# 38 passed / 3 failed — the block's two halves reporting the same drift from
+# opposite ends, the backstop in both of its shapes:
+#   FAIL: live-corpus: guard check over the tracked corpus exits 0
+#   FAIL: live-corpus: guard accepts every tracked path
+#   FAIL: live-corpus ext drift: 'ri' present in --list-extensions
+# The first two say a tracked path stopped classifying as a file — by exit code
+# and by stdout, the two shapes that are asserted separately because a regression
+# can produce either without the other; the block also prints the first five
+# offending paths (`REJECT crates/reify-cli/tests/fixtures/affine_algebra.ri` …)
+# so the reader sees WHICH paths broke.  The third names the allowlist entry
+# whose absence caused it.  Targeted, not vacuous, not over-broad — the other 38
+# assertions in the block stay green.  (Suite-wide the same mutant is
+# 321 passed / 8 failed: it also REDs Cycle 1's `examples/foo.ri` classify pins,
+# Cycle 3's two all-file list gates and Cycle 4's equality assert, as it should.
+# The mutant total is 329 rather than the green 330 because Cycle 4's per-entry
+# loop has one fewer entry to iterate over.)
+# Mutant not committed; the guard was restored from a byte-copy and `git diff`
+# re-confirmed empty.
+#
+# The gitlink filter both halves carry was likewise measured rather than argued:
+# feeding a synthetic `ls-files -s -z` stream of
+# `160000 … TAB graphiti`, `100644 … TAB src/a.rs`, `160000 … TAB vendor/mem0`
+# through the awk above emits `src/a.rs` alone, and `classify graphiti` exits 1
+# (REJECT) — i.e. without the filter a vendored submodule would RED the backstop
+# with no legitimate fix.  Synthetic stream not committed.
+#
+# The tab-split parse was likewise shown to matter rather than argued to, and it
+# matters MORE here than in Cycle 9 — the extension side has a failure mode the
+# extensionless side does not.  In a scratch repo tracking `docs/notes.md`,
+# `data/report v2.csv` and `docs/foo.bar baz.qux`:
+#   -z + FS="\t" form  -> csv md qux   (correct)
+#   whitespace $4 form -> bar md       (wrong, in TWO distinct ways)
+# The first is Cycle 9's documented PHANTOM mode (`docs/foo.bar baz.qux` truncates
+# at the space, and its post-dot token `bar` names an extension that exists
+# nowhere).  The second is unique to here: `data/report v2.csv` truncates to
+# `data/report`, now DOTLESS, so the dotted branch DROPS it and the real `csv` is
+# never checked — the alarm quietly weakens instead of failing loudly.  On the
+# extensionless side a truncated path stays dotless and is still swept, so that
+# silent-miss mode cannot arise there.  reify tracks zero paths containing a space
+# today (measured: `git ls-files | grep -c ' '` -> 0), so both are latent — but a
+# standing alarm over a GROWING corpus is exactly where latent parse bugs surface.
+# Scratch repo not committed.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 10: live-corpus drift alarm (_EXTS covers tracked corpus) ---"
+
+if ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "  SKIP: $REPO_ROOT is not a git checkout — live-corpus sweep unavailable"
+else
+    run_list_extensions
+    assert "live-corpus ext drift: --list-extensions exits 0" test "$GUARD_RC" -eq 0
+    _emitted_exts="$GUARD_OUT"
+
+    # PREDICATE-FAITHFUL BACKSTOP.  Hand the WHOLE tracked corpus to the guard's
+    # own `check` and require every path to classify as a file.  This re-USES
+    # _is_file_path() instead of re-implementing its extraction rule, so unlike
+    # the token sweep below it cannot drift from the predicate, and it covers both
+    # vectors plus any future rejection reason at once.  Concretely it closes the
+    # one gap the token sweep is structurally blind to: a tracked final segment
+    # ending in a dot (`docs/foo.`) reduces to an EMPTY extension token, which the
+    # sweep's `seg != ""` filter drops, yet _is_file_path() REJECTs it — verified
+    # by injecting `docs/foo.` into this stream (-> `REJECT docs/foo.`, exit 1).
+    # Zero such paths today (measured: 0 tracked segments matching /\.$/).
+    #
+    # VECTOR-NEUTRAL BY CONSTRUCTION, and its label says so: `check` classifies
+    # BOTH vectors, so a RED here is not necessarily an extension miss.  See the
+    # two-branch fix guidance in the block header — a dotless-segment REJECT is
+    # Cycle 9's _EXTLESS repair, not Cycle 4's four-part _EXTS widening.
+    #
+    # SAME GITLINK-FILTERED SOURCE as the token sweep below, and for the reason
+    # Cycle 9 gives: a submodule mount point is extensionless, so _is_file_path()
+    # REJECTs it and this assertion would go RED with no legitimate fix — the only
+    # green would be adding the submodule's name to _EXTLESS, which that list's
+    # enumerated-exception invariant forbids.  reify tracks zero gitlinks today
+    # (measured -> 0), so like Cycle 9's copy this is hardening against corpus
+    # growth.  The filter is spelled out again here rather than hoisted into one
+    # shared stream because the sweep below is held BYTE-IDENTICAL with Cycle 9's
+    # executable form and the two prose copies (see "DELIBERATE FOURTH VARIANT"
+    # above); hoisting would silently break that invariant to save two lines.
+    #
+    # NON-VACUITY IS ASSERTED, NOT ARGUED.  `check` ACCEPTs an EMPTY path list
+    # (the [] defer-to-architect value), so an empty fed list would pass silently.
+    # The guard against that is the `test -n "$_tracked_paths"` assertion below,
+    # deliberately in place of a prose path count: this block's whole premise is
+    # that the corpus GROWS, so a hardcoded count is stale by the next landing
+    # (an earlier draft claimed 3829 and was wrong at review time).  Injecting a
+    # single directory-shaped path (`crates/reify-core/src`) turns the assertion
+    # RED — measured, not assumed.
+    #
+    # THE EXIT CODE IS ASSERTED ALONGSIDE THE OUTPUT because they fail in
+    # different shapes: a `check` that regressed to exiting non-zero while
+    # printing NOTHING (a parse error, a `set -u` trip inside the check branch, a
+    # usage-error exit 2 on stdin input) satisfies an output-only assertion and
+    # would pass silently.  The `--list-extensions exits 0` assertion above does
+    # not cover it — that catches a script broken for every subcommand, not one
+    # broken for `check` alone.
+    #
+    # The token loop below is KEPT alongside all of this because it fails
+    # differently and both diagnostics are worth having: `check` names the
+    # offending PATH, the loop names the exact allowlist ENTRY to add, which is
+    # what the G6 mutant evidence above is built on.
+    #
+    # -z keeps the git->awk half newline-safe (measured: 0 tracked paths contain a
+    # newline); awk then emits newline-separated paths, which is what `check`
+    # reads.  Fed through run_check_stdin rather than a pipe into `check` so the
+    # EXIT CODE is capturable (GUARD_RC) — a pipeline inside `$( )` would hand
+    # back only stdout.
+    _tracked_paths="$(
+        git -C "$REPO_ROOT" ls-files -s -z \
+            | awk 'BEGIN { RS = "\0"; FS = "\t" }
+                   $1 !~ /^160000 / { print $2 }'
+    )"
+    assert "live-corpus: sweep fed at least one tracked path" test -n "$_tracked_paths"
+
+    run_check_stdin "$_tracked_paths"
+    _corpus_rejects="$GUARD_OUT"
+    if [ -n "$_corpus_rejects" ]; then
+        printf '%s\n' "$_corpus_rejects" | sed -n '1,5s/^/    /p'
+    fi
+    assert "live-corpus: guard check over the tracked corpus exits 0" \
+        test "$GUARD_RC" -eq 0
+    assert "live-corpus: guard accepts every tracked path" \
+        test -z "$_corpus_rejects"
+
+    # Tracked, non-gitlink, DOTTED final segments, reduced to their post-LAST-dot
+    # token.  Same sweep command as Cycle 9 through the gitlink filter and the
+    # final-segment split; only the terminal branch differs.
+    _tracked_exts="$(
+        git -C "$REPO_ROOT" ls-files -s -z \
+            | awk 'BEGIN { RS = "\0"; FS = "\t" }
+                   $1 !~ /^160000 / {
+                       n = split($2, s, "/"); seg = s[n]
+                       if (seg ~ /\./) { sub(/^.*\./, "", seg); if (seg != "") print seg }
+                   }' \
+            | LC_ALL=C sort -u
+    )"
+
+    # Non-vacuity: the sweep must actually find something, or every assertion
+    # below would pass by finding nothing to check.
+    assert "live-corpus ext drift: sweep found at least one tracked extension" \
+        test -n "$_tracked_exts"
+
+    # `grep -cxF -- "$_e"` — the `--` is not decoration.  Without it an extension
+    # token beginning with a dash would be parsed by grep as an option bundle
+    # rather than as a pattern, so the assertion would error out instead of
+    # answering the question.  Zero such tokens today (measured -> 0); this is the
+    # same hardening-against-corpus-growth argument the tab-split carries.
+    while IFS= read -r _e; do
+        [ -z "$_e" ] && continue
+        assert "live-corpus ext drift: '$_e' present in --list-extensions" \
+            test "$(printf '%s\n' "$_emitted_exts" | grep -cxF -- "$_e")" -eq 1
+    done <<< "$_tracked_exts"
 fi
 
 # ---------------------------------------------------------------------------

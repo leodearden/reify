@@ -25,9 +25,10 @@ stamped by commit_planning).
   tessellation/boolean tolerance ≪ band (torus precedent: `assert_volume_near(…,0.02)`).
 - `loud-envelope-rejection` — **producer: this leaf** — `E_ThreadSolidOutOfEnvelope` +
   recorded UndefCause are α's own deliverable; house pattern proven at
-  `crates/reify-stdlib/src/tolerancing.rs:197-214` (`diagnose`, re-exported to
-  reify-expr `lib.rs:1960,1989`). Eval-exit-nonzero substrate: cmd_eval Severity::Error
-  gate (task 4458).
+  `crates/reify-stdlib/src/tolerancing.rs` (`pub fn diagnose`, re-exported as
+  reify-stdlib `tolerancing_diagnose`, consumed by reify-expr
+  `emit_undef_builtin_diagnostics`). Eval-exit-nonzero substrate: cmd_eval
+  Severity::Error gate (task 4458).
 
 ## β — #thread_repr pragma + ambient constant (rows 4–6)
 
@@ -58,8 +59,9 @@ stamped by commit_planning).
   behavioural test `crates/reify-eval/tests/ports_mechanical_thread_eval.rs:191-272`;
   `examples/bracket.ri:10-12`.
 - `iso-it-tolerance-wired` — **PASS** (wired) —
-  `crates/reify-stdlib/src/tolerancing.rs:112-128`, dispatcher arm `:15-22`, reached
-  from `eval_builtin` (`crates/reify-stdlib/src/lib.rs:225,286`); value pin precedent
+  `crates/reify-stdlib/src/tolerancing.rs` (`fn iso_it_tolerance`), dispatcher arm in
+  `fn eval_tolerancing`, reached from `eval_builtin`
+  (`crates/reify-stdlib/src/lib.rs:225,286`); value pin precedent
   24.969 µm (`crates/reify-compiler/tests/tolerancing_tests.rs:1177-1262`).
 - `string-param-type` — **PASS** (wired) — `examples/cost_aggregation.ri:22`
   (`param supplier : String`); FitDesignation.letter PTODO(#5391) per C3/INV-SF-5.
@@ -85,9 +87,20 @@ stamped by commit_planning).
   **#5580** (the rope seat is a half-round with its arc centre on the land surface, so
   only the radially **inner** half of the swept tube is ever stock — the outer half
   sweeps through air above the land, except where it emerges into the flanges at the
-  band ends); band width and L_helix formula unchanged.
-- `target-file-caveat` — **PASS** (wired) — `prj/printer_v01/dev_capstan.ri:27-30`
-  MODELLING CAVEATS header names the exact gap + #5342/#5343.
+  band ends); band width and L_helix formula unchanged. Symbols re-anchored onto
+  the DIN 15061 oversize seat arc by **#5683** — `r` is the seat **arc** radius
+  `0.53·rope_dia`, not the rope radius, and `R` is the arc-centre radius
+  `seat_c = pitch_r + r − rope_dia/2`, not `pitch_r`; the arc centre still lies ON
+  the land surface (`land_r = seat_c`), so the inner-half reasoning above holds
+  verbatim, and the formula shape and the ±15% band width are both unchanged.
+- `target-file-caveat` — **PASS** (wired) — the "HELICAL GROOVE itself is not
+  modelled" caveat this row tracked was retired from `dev_capstan.ri`'s
+  MODELLING CAVEATS header by this leaf (`b47aff5eed`): the rope channel is
+  modelled for real via `groove_profile`/`groove_path`/`groove_cutter` →
+  `difference(drum_blank, groove_cutter)` in `prj/printer_v01/dev_capstan.ri`
+  (`helix()` + `sweep()` composition), refined by #5580. Built on #5342's
+  helix-sweep capability (upstream producer — #5342/#5343 are not themselves
+  cited in the file).
 
 ## ε — printer retrofit + first fastener holes (row 12)
 

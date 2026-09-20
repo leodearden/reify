@@ -5,7 +5,10 @@ decompose time **by direct code-trace** (orchestrator / fused-memory Python + re
 shell substrate — the `.ri` grammar gate and `scripts/prd-decompose-verify.mjs` are
 **N/A** here, per the PRD §6 / `cpu-load-admission-control` / `warm-lane-pool`
 precedent). Evidence forms: `grep:<file>:<line> wired-on-main` · `producer:task-<label>
-upstream` · `substrate:<file>:<line> exists`. Any FAIL value (`declared-only` ·
+upstream` · `substrate:<file>:<line> exists`. **The line numbers in the dark-factory
+evidence rows are dated provenance at the pinned HEAD `f15c295914` (see Repos below),
+not live breadcrumbs** — do not re-anchor them; grep the symbol named beside each one.
+Rows naming an edit target rather than an observation cite the symbol only. Any FAIL value (`declared-only` ·
 `test-only` · `producer-absent` · `producer-extent-short` · `producer-downstream` ·
 `rejection-absent`) blocks the batch.
 
@@ -59,7 +62,7 @@ Signal: `submit_task`/`commit_planning` with a directory in `metadata.files` is
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| Task-creation path to hook the backstop into | `grep:fused-memory/src/fused_memory/server/tools.py:2356 submit_task` + `:2626 commit_planning` (wired-on-main) | **PASS** |
+| Task-creation path to hook the backstop into | `grep:fused-memory/src/fused_memory/server/tools.py submit_task` + `commit_planning` (wired-on-main) | **PASS** |
 | Predicate spec to enforce (shared with α) | `producer:task-α upstream` (α→γ external-dep edge); OQ#1 — γ re-implements against α's spec + shared test vector | **PASS** |
 | Rejection mechanism fires on a dir path at submit (rejection-check) | `producer:task-γ` (γ builds the backstop) — observed firing in ζ row 1/3 | **PASS** (producer upstream of ζ) |
 | Wired into a consumer (anti-orphan) | downstream `producer:task-ζ` (γ→ζ) asserts it via the submit path | **PASS** |
@@ -78,7 +81,7 @@ branch, only after BRE acquire (C-S2).
 |---|---|---|
 | In-memory release `held ∖ plan` on success + `lock_released` event | `grep:scheduler.py:3436 stale = current_set - needed_set` → `:3442 release_subset` → `:3444-3448 lock_released/'plan_refinement'` (**already wired-on-main**, `6f29517823` 2026-04-21); called from `workflow.py:2448/2560/2720` on any `plan_modules != self.modules` | **PASS** (already present — δ does **not** re-implement it) |
 | Acquire half `plan ∖ held` (existing BRE, composes) | `grep:scheduler.py:3440 try_acquire_additional` (wired-on-main) | **PASS** (already present) |
-| **Persist tightened set to `metadata.files` on the success branch** (the δ residual) | `producer:task-δ` (DF) — substrate: success path `workflow.py:2465 self.modules = plan_modules` is in-memory only; the requeue branch `scheduler.py:3466-3469 update_task(... {'files': needed})` is the **pattern to mirror** onto the success path | **PASS** (producer = δ; substrate confirmed) |
+| **Persist tightened set to `metadata.files` on the success branch** (the δ residual) | `producer:task-δ` (DF) — substrate: the success path's scope assignment in `workflow.py` is in-memory only (grep `_reconcile_scope_locks` / `derive_modules` to find it today; it read `self.modules = plan_modules` at the pinned HEAD, since refactored); the requeue branch `scheduler.py` `update_task(... {'files': needed})` is the **pattern to mirror** onto the success path | **PASS** (producer = δ; substrate confirmed) |
 | Waiter dispatches after release (downstream of release) | existing scheduler dispatch on freed lock (`get_scheduler_events task_started`); observed in ζ row 5 | **PASS** |
 | Observability ζ asserts on | `grep:scheduler.py:3444 EventType.lock_released` (wired); per-module vs single `set_to_plan` event is OQ#4 (decide during δ) | **PASS** |
 | Wired into a consumer (anti-orphan) | downstream `producer:task-ζ` (δ→ζ) | **PASS** |
@@ -98,7 +101,7 @@ set; **revalidation** passes are unaffected (C-A2).
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| Architect plan-derivation input assembly (the hide-point) | `substrate:orchestrator/src/orchestrator/mcp/plan_tools.py:404 create_plan` / `:503 update_plan_metadata`; `BriefingAssembler.build_plan_tightening_prompt` `workflow.py:216`. **Exact field to suppress = ⚠️ confirm-at-impl** (PRD §6 / OQ#3) | **PASS-with-⚠️** (hide-point is a known tactical OQ, DF-owned; not a blocker) |
+| Architect plan-derivation input assembly (the hide-point) | `substrate:orchestrator/src/orchestrator/mcp/plan_tools.py create_plan` / `update_plan_metadata`; `BriefingAssembler.build_plan_tightening_prompt`. **Exact field to suppress = ⚠️ confirm-at-impl** (PRD §6 / OQ#3) | **PASS-with-⚠️** (hide-point is a known tactical OQ, DF-owned; not a blocker) |
 | First-derivation vs revalidation distinction (C-A2 — anti-anchor first only) | `grep:workflow.py:2146 revalidation = False` / `:2209 revalidation = True` + `build_revalidation_prompt` `:255` — the two paths are already distinguishable on main | **PASS** |
 | Derived `plan.files` independent of queue-time set | `producer:task-ε` (DF builds the suppression) | **PASS** |
 | Wired into a consumer (anti-orphan) | downstream `producer:task-ζ` (ε→ζ); ε is also what makes δ's existing release fire (un-dormants it) | **PASS** |

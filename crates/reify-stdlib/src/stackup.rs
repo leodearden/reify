@@ -586,7 +586,7 @@ fn monte_carlo_stackup(args: &[Value]) -> Value {
 
     // R-7 linear interpolation quantile on a sorted copy
     let mut sorted = gaps.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); // nan-safe:allow — never NaN: parse_chain -> len_scalar -> validate_dimensioned_scalar returns None on !si_value.is_finite() (helpers.rs), so monte_carlo_stackup returns Undef before sampling. Deliberately "never NaN", not "always finite" — a pathological overflow to ±Inf is still possible and is still totally ordered by partial_cmp, which is all this site needs
 
     debug_assert!(sorted.iter().all(|v| v.is_finite()),
         "MC: gap sample unexpectedly non-finite — PRNG or chain design error");

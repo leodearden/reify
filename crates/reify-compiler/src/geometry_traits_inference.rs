@@ -33,7 +33,7 @@
 //! - [`try_infer_traits_for_function_call`] — returns `Some(InferredTraits)`
 //!   for every explicitly-dispatched function name, or `None` for the
 //!   unknown-name fallback. Consumed by the coverage test in
-//!   `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+//!   `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 //! - [`infer_traits_for_expr`] — walks a `CompiledExpr` tree by FunctionCall
 //!   name. This is the **primary** consumer-facing entry point: the conformance
 //!   walker calls it from `crates/reify-compiler/src/conformance/mod.rs`.
@@ -62,7 +62,7 @@
 //! [`infer_primitive`] and `"half_space" => Some(unbounded_convex())` in
 //! [`try_infer_traits_for_function_call_in_env`]. The end-to-end negative
 //! conformance test is in
-//! `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+//! `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 //!
 //! When a new Unbounded source lands, double-check that every routing path
 //! the conformance walker uses is updated. In particular, both the **direct**
@@ -742,7 +742,7 @@ fn infer_geom_ref(
 ///
 /// This function is consumed by the coverage test
 /// `every_geometry_function_name_has_explicit_dispatch_arm` in
-/// `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+/// `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 /// That test iterates `crate::GEOMETRY_FUNCTION_NAMES` and asserts `Some(_)`
 /// for each name. Adding a name to `GEOMETRY_FUNCTION_NAMES` without a
 /// corresponding arm here causes the test to fail loudly.
@@ -866,6 +866,16 @@ pub fn try_infer_traits_for_function_call_in_env(
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
             Some(InferredTraits::curve())
         }
+
+        // ─── Surface-offset modify → surface_freeform() (2-D, non-planar) ────
+        // offset_surface (θ, task 4192) takes a surface target and produces a
+        // fresh Surface, so it infers `GeomDim::Surface` — deliberately a
+        // DEDICATED arm, NOT the `combine_modify` arm above, whose
+        // `combine_modify()` hardcodes `GeomDim::Solid` (correct for
+        // `offset_solid`, wrong here). `surface_freeform()` (not `surface()`)
+        // because the input surface is not necessarily planar/closed (e.g. a
+        // nurbs_surface target), so offset_surface can't claim planar=true.
+        "offset_surface" => Some(InferredTraits::surface_freeform()),
 
         // ─── Curve-offset modify → curve() (1-D result) ─────────────────
         // offset_curve (ι, task 4193) takes a curve target and produces a fresh

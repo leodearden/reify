@@ -10,7 +10,7 @@ Grammar gate: **N/A batch-wide** — every target shape parses today (all probes
 |---|---|---|
 | chained scalar reads already evaluate (regression floor, not new work) | probe: `reify eval member_chain_scalar.ri` → `Test.v = 0.014 m`, `Test.direct = 0.007 m` (ctor overrides threaded through nested instances) | PASS |
 | derived-let instance reads already evaluate | probe: `member_let_read.ri` → `Test.drill = 0.008 m` | PASS |
-| privacy substrate exists (D6 reuses, not invents) | `crates/reify-compiler/tests/priv_member_visibility_tests.rs` on main; `E_PRIV_MEMBER_ACCESS` registered `crates/reify-core/src/diagnostics.rs:3391` | PASS (wired) |
+| privacy substrate exists (D6 reuses, not invents) | `crates/reify-compiler/tests/harness_langcore/priv_member_visibility_tests.rs` on main; `E_PRIV_MEMBER_ACCESS` registered `crates/reify-core/src/diagnostics.rs:3391` | PASS (wired) |
 | member read-back path to absorb | `template.value_cells` read-back `crates/reify-compiler/src/expr.rs:6506-6560`; `materialize_template_lets` `crates/reify-expr/src/lib.rs:1123-1179` | PASS (wired) |
 
 ## β — type-driven geometry-position acceptance (intermediate)

@@ -7,6 +7,7 @@
 mod classifier;
 mod cpsat;
 mod decompose;
+mod dual_jacobian;
 pub mod relate_solve;
 mod registry;
 pub mod sketch;
@@ -15,7 +16,7 @@ mod solver;
 mod solvespace;
 
 pub use classifier::ConstraintClassifier;
-pub use cpsat::CpSatSolver;
+pub use cpsat::{CpSatSolver, SolveAllResult};
 pub use decompose::{SubProblem, decompose_into_components};
 // Loop-closure Newton solver was relocated to reify-stdlib (task 2678) to
 // resolve a would-be cycle: `reify_stdlib::snapshot` needs to invoke the
@@ -24,7 +25,7 @@ pub use decompose::{SubProblem, decompose_into_components};
 // primitives).  These re-exports preserve the original
 // `reify_constraints::{NewtonConfig, ...}` paths so downstream callers
 // (reify-eval tests, reify-constraints integration tests) compile unchanged.
-pub use registry::SolverRegistry;
+pub use registry::{ObjectiveConsumption, SolverRegistry, objective_consumption};
 pub use reify_stdlib::loop_closure_solver::{
     LoopClosureChain, LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
     mechanism_loop_closure_chains, newton_solve, solve_loop_closure,
@@ -45,6 +46,18 @@ pub use sketch::{
     SketchBuildError, SketchConstraint, SketchConstraintDef, SketchConstraintId, SketchEntity,
     SketchEntityDef, SketchEntityId, SketchEntityKind, SketchSlotKind, SketchSolveResult,
     SketchSystem, SketchValueField, SolvedSketchEntity,
+};
+// Task #6672 (solver-unification ε): the forward-mode AD adapter.  The module
+// is private and the crate root is the ONLY path to it, so
+// `reify_constraints::residual_jacobian` is not merely the preferred spelling
+// — it is the reachable one.  `Jacobian` names `reify_expr` types in its
+// public shape (`BranchRecord`, `KinkSite`), and `residual_jacobian_with_seeds`
+// — the variant an iterating consumer hoists its `Seeds` through — names one
+// more; a consumer reads those from reify-expr, which η (#6675), μ (#6680) and
+// λ (#6679) all depend on anyway.  Passing them through a second crate root is
+// a surface to add when a consumer asks for it, not before.
+pub use dual_jacobian::{
+    Jacobian, JacobianError, residual_jacobian, residual_jacobian_with_seeds,
 };
 pub use solver::DimensionalSolver;
 // γ cost_robustness_tradeoff (task #4791): re-exported so integration tests can
@@ -112,40 +125,22 @@ fn classify_undef(
 }
 
 /// A short human-readable label for the kind of a defined `Value`.
+///
+/// Delegates to [`Value::kind_name`] for every plain arm; the two enriched
+/// arms below (`Scalar<{dimension}>`, `Enum<{type_name}>`) are the only
+/// local special cases this crate needs.
+///
+/// The `other =>` catch-all means a NEWLY ADDED `Value` variant compiles here
+/// silently and gets its bare name — unlike `kind_name` itself, which is
+/// exhaustive and breaks to compile. So when a variant lands carrying a
+/// payload worth interpolating into a constraint diagnostic, this function
+/// must be revisited by hand. `operand_kind_labels_carry_their_enriched_payloads`
+/// pins the two existing enrichments against accidental absorption.
 fn value_kind_label(v: &Value) -> String {
     match v {
-        Value::Bool(_) => "Bool".to_string(),
-        Value::Int(_) => "Int".to_string(),
-        Value::Real(_) => "Real".to_string(),
-        Value::String(_) => "String".to_string(),
         Value::Scalar { dimension, .. } => format!("Scalar<{}>", dimension),
         Value::Enum { type_name, .. } => format!("Enum<{}>", type_name),
-        Value::Tensor(_) => "Tensor".to_string(),
-        Value::Matrix(_) => "Matrix".to_string(),
-        Value::List(_) => "List".to_string(),
-        Value::Set(_) => "Set".to_string(),
-        Value::Map(_) => "Map".to_string(),
-        Value::Option(_) => "Option".to_string(),
-        Value::Point(_) => "Point".to_string(),
-        Value::Vector(_) => "Vector".to_string(),
-        Value::Complex { .. } => "Complex".to_string(),
-        Value::Orientation { .. } => "Orientation".to_string(),
-        Value::Frame { .. } => "Frame".to_string(),
-        Value::Transform { .. } => "Transform".to_string(),
-        Value::Plane { .. } => "Plane".to_string(),
-        Value::Axis { .. } => "Axis".to_string(),
-        Value::Direction { .. } => "Direction".to_string(),
-        Value::BoundingBox { .. } => "BoundingBox".to_string(),
-        Value::Range { .. } => "Range".to_string(),
-        Value::Field { .. } => "Field".to_string(),
-        Value::Lambda { .. } => "Lambda".to_string(),
-        Value::SampledField(_) => "SampledField".to_string(),
-        Value::StructureInstance(_) => "StructureInstance".to_string(),
-        Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
-        Value::AffineMap { .. } => "AffineMap".to_string(),
-        Value::Selector(_) => "Selector".to_string(),
-        Value::Feature(_) => "Feature".to_string(), // task 4808 / P1 γ
-        Value::Undef => "Undef".to_string(),
+        other => other.kind_name().to_string(),
     }
 }
 
@@ -548,6 +543,62 @@ mod tests {
         assert!(
             !msg.contains("undefined inputs"),
             "expected NO 'undefined inputs' in message: {msg}"
+        );
+    }
+
+    /// The two enriched operand-kind labels — `Scalar<{dimension}>` and
+    /// `Enum<{type_name}>` — are all that is left of `value_kind_label` now
+    /// that every other arm delegates to `Value::kind_name` (task #6466).
+    ///
+    /// They are therefore one deletion away from being absorbed by the
+    /// `other =>` catch-all, which would silently downgrade every
+    /// "operator undefined for these operand kinds" diagnostic from
+    /// `Scalar<m>` to a bare `Scalar` and from `Enum<Fit>` to a bare `Enum`.
+    /// `operator_undefined_dimension_mismatch` above does NOT catch that: it
+    /// asserts only `contains("Scalar")`, which a bare label still satisfies.
+    /// This test asserts the payload is present, so the catch-all cannot
+    /// swallow the enrichment unnoticed.
+    #[test]
+    fn operand_kind_labels_carry_their_enriched_payloads() {
+        // A length scalar compared against an enum: both leaves are defined,
+        // but `as_f64` returns None for an Enum, so eval_cmp yields Undef and
+        // the diagnostic reports the distinct operand KINDS.
+        let checker = SimpleConstraintChecker;
+        let len_cell = vcid("Obj", "len_val");
+        let fit_cell = vcid("Obj", "fit_val");
+        let len_ref = CompiledExpr::value_ref(len_cell.clone(), Type::length());
+        let fit_ref = CompiledExpr::value_ref(fit_cell.clone(), Type::Enum("Fit".to_string()));
+        let expr = CompiledExpr::binop(BinOp::Gt, len_ref, fit_ref, Type::Bool);
+
+        let mut values = ValueMap::new();
+        values.insert(len_cell, mm(1.0));
+        values.insert(fit_cell, Value::enum_unit("Fit", "Loose"));
+
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(cnid("Obj", 0), &expr)]),
+            values: &values,
+            functions: &[],
+            determinacy: None,
+        };
+
+        let results = checker.check(&input);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].satisfaction, Satisfaction::Indeterminate);
+        let msg = &results[0].diagnostics.messages[0].message;
+        assert!(
+            msg.contains("operator undefined"),
+            "expected 'operator undefined' in message: {msg}"
+        );
+        // `DimensionVector::LENGTH` Displays as its base-unit symbol, "m".
+        assert!(
+            msg.contains("Scalar<m>"),
+            "expected the dimension-enriched 'Scalar<m>' label, not a bare \
+             'Scalar', in message: {msg}"
+        );
+        assert!(
+            msg.contains("Enum<Fit>"),
+            "expected the type-name-enriched 'Enum<Fit>' label, not a bare \
+             'Enum', in message: {msg}"
         );
     }
 

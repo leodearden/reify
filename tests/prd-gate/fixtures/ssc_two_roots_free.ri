@@ -1,0 +1,15 @@
+module ssc_two_roots_free
+// PRD EVIDENCE — docs/prds/v0_6/solution-set-completeness.md (leaf delta; BT2).
+// Same two roots (10mm, 14mm) declared auto(free).
+// TODAY: commits to ONE root silently; the only diagnostic is the generic,
+// code-less "resolved via auto(free) -- result is not uniquely determined",
+// which fires for every free auto whether or not multiplicity exists.
+// AFTER: a coded warning naming BOTH roots and which was selected.
+pub structure Rod {
+    param length : Length = 5mm
+    let body = translate(cylinder(3mm, length), 0mm, 0mm, 0mm - length)
+}
+pub structure SscTwoRootsFree {
+    sub rod = Rod(length: auto(free))
+    constraint abs(self.rod.length - 12mm) == 2mm
+}

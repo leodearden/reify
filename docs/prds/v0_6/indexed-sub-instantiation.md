@@ -52,7 +52,7 @@ depend on `generate`).
 
 | Mechanism | Consumer (user surface or PRD) |
 |---|---|
-| Indexed sub declaration (`sub idlers[i in 0..4] = IdlerPulley(...) at pose(i)`) | printer_v01 idler/tendon arrays (and every array-shaped assembly). User-observable leaf: a committed `examples/` file distills the printer corner-idler + tendon-span blocks into two indexed declarations, realizes the same body set at the same world poses as the hand-placed baseline, CI-run (§7 task ζ). |
+| Indexed sub declaration (`sub idlers[i in 0..<4] = IdlerPulley(...) at pose(i)`) | printer_v01 idler/tendon arrays (and every array-shaped assembly). User-observable leaf: a committed `examples/` file distills the printer corner-idler + tendon-span blocks into two indexed declarations, realizes the same body set at the same world poses as the hand-placed baseline, CI-run (§7 task ζ). |
 | Per-instance realization + posing | The **sub-placement surfacing walk** (`docs/prds/v0_6/sub-placement-and-surfacing.md` §4/§5): closes its §10 deferral #1 ("collection-sub per-element placement … requires per-instance realization handles"). Viewport, STEP export, interference/distance queries, mass properties all see placed instances through the existing walk — no new consumer surface invented. |
 | Ordered instance collection in expression position | The parallel **placement/relations/belt PRD** (authoring 2026-07-24): `belt_path` v1 takes an explicit pulley list; an indexed collection reference supplies it (§4 seam). |
 | `forall i in <range>` iteration | Cross-instance constraints (`idlers[i]` vs `idlers[i+1]` — the chained-tangency shape) and index-parametric checks; consumed by the belt PRD's per-pulley reasoning and by ordinary `.ri` authors. |
@@ -96,10 +96,10 @@ prerequisite task (α); all other mechanisms extend probe-verified existing subs
 ### §3.1 — Surface syntax: the indexed-instantiation form
 
 ```reify
-sub idlers[i in 0..4] = IdlerPulley(sheave_od: r_pitch * 2)
+sub idlers[i in 0..<4] = IdlerPulley(sheave_od: r_pitch * 2)
     at transform3(orient_identity(), vec3(x_of(i), corner_y, z_of(i)))
 
-sub tendons[i in 0..4] = LinearTendon(length: span(i))
+sub tendons[i in 0..<4] = LinearTendon(length: span(i))
     at transform3(rot_to_y, vec3(0mm, span(i) / 2, z_of(i)))
 ```
 
@@ -112,9 +112,26 @@ seq('[', field('binder', $.identifier), 'in', field('domain', $._expression), ']
 
 Everything after `=` is the existing instantiation grammar **unchanged** — named
 ctor arguments, `at <pose>`, and (syntactically) the trailing `relate` block — with the
-binder in scope throughout. The domain expression must type as `Range<Int>`
-(`0..n` is existing `range_expression` grammar; `0..4` = indices 0,1,2,3, matching the
-established exclusive-upper Range semantics).
+binder in scope throughout. The domain expression must type as `Range<Int>` — existing
+`range_expression` grammar, both arms of it.
+
+**Range-operator convention (normative; corrected 2026-08-21 — see the correction note
+at the end of this section).** Reify has two two-sided range operators and this PRD uses
+the second one for index domains:
+
+| Spelling | Semantics | `0..N` yields | Use for |
+|---|---|---|---|
+| `a..b` | **inclusive both ends** (spec §2.8) | `0..4` = 0,1,2,3,4 — **5** indices | an explicitly-named first..last index pair |
+| `a..<b` | **exclusive upper** (spec §2.8) | `0..<4` = 0,1,2,3 — **4** indices | **count-shaped domains — the default in this PRD** |
+
+Every index domain in this PRD is count-shaped ("N instances"), so every one is spelled
+`0..<N`, where N is the count. `__count_<name>` is then `N` with no `- 1` anywhere, and a
+`param`-driven bound (§3.7) reads `[i in 0..<n_idlers]` = exactly `n_idlers` instances.
+
+Both spellings are landed language surface and both parse in the indexer clause: the
+domain field is `$._expression` and `range_expression` covers both arms (verified — a
+`sub a[i in D]` probe for D in {`0..4`, `0..<4`, `0..(2+2)`, `0..n`} reaches the same
+interim rejection in all four cases). Nothing in α's grammar needs to change.
 
 Declared meaning: `idlers` is a collection sub of element type `IdlerPulley` with
 derived count cell `__count_idlers = |domain|`; element `i` is the template instantiated
@@ -144,6 +161,42 @@ constant (literal bounds or const-foldable expressions of literals/defaults). A 
 bound in phase 1 emits `E_INDEXED_SUB_DYNAMIC_COUNT` naming phase 2 — never a silent
 zero-element elaboration. Phase 2 (§3.7) lifts this.
 
+**Correction note (2026-08-21, Leo — esc-5482-3 / esc-5481-3).** As first drafted, this
+section asserted that `0..4` = indices 0,1,2,3 "matching the established exclusive-upper
+Range semantics". **Both clauses were false.** Reify's `..` is inclusive on both ends and
+always has been, and reify's exclusive-upper operator is `..<` — the original text
+appears to have generalised from Rust's `..`/`..=`, which reify inverts. Evidence, all
+landed and mutually consistent: `docs/reify-language-spec.md:158` and its EBNF
+(`:2819-2820`) and precedence table (`:2869`); both grammars
+(`tree-sitter-reify/grammar.js:1412-1415`, `gui/src/editor/reify.grammar:1240-1241`);
+the parser (`crates/reify-syntax/src/ts_parser.rs:3441`, `upper_inclusive:
+!exclusive_upper`); `contains` (`crates/reify-expr/src/lib.rs:3568-3573`); the round-trip
+formatter (`gui/src-tauri/src/engine.rs:6186`); and α's own landed test
+(`crates/reify-syntax/tests/harness_syntax/indexed_sub_instantiation_parser_tests.rs:300-303`),
+which asserts of the literal `0..4` that "`..` (as opposed to `..<`) is inclusive on both
+ends".
+
+The ruling was to **change the operator, not the arithmetic**: every count in this PRD
+was written self-consistently against the intended exclusive-upper rule, so switching the
+index domains to `..<` preserves every intended cardinality (4 idlers stays 4, `n_idlers`
+stays `n_idlers`) instead of renumbering ~14 sites. Corrected here: §1 consumer row,
+§3.1 (this section), §3.2 grow/shrink, §3.3 neighbour example, §3.7, §6.1 rows 1 and 5,
+§9 Q1. Sites deliberately **not** changed, because they were already correct: §6.3
+rows 1–2 and §7 σ2 (count-language, no range literal), §7 β "3-element" and §7 ζ "4 + 4"
+(both now match their `..<` declarations).
+
+**The committed target-surface fixture keeps `..` on purpose.**
+`docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri:34,37` still reads
+`sub idlers[i in 0..4]` / `forall i in 0..3`. That is deliberate and must not be
+"fixed" to `..<`: the fixture is `include_str!`'d by α's landed parser test, which
+asserts `(lower_inclusive, upper_inclusive) == (true, true)` **on that literal** — it is
+the repo's parser coverage for the inclusive form in the indexer clause. Read under the
+true semantics the fixture is valid and self-consistent (5 idlers indexed 0–4; `forall i
+in 0..3` gives i ∈ {0,1,2,3}, so `idlers[i + 1]` reaches `idlers[4]` and stays in range)
+— it is simply a 5-element example, not the 4-element one §3.1 shows. Task β (#5482) may
+**add** a `..<` declaration to that fixture for exclusive-form coverage, but must not
+convert the existing `..` one without updating that landed test in the same diff.
+
 **v1 restriction (relate):** a per-element `relate` block on an indexed sub parses (it
 rides the instantiation arm) but emits `E_INDEXED_SUB_RELATE_UNSUPPORTED` in v1,
 pointing at the placement/relations seam (§4). Explicit `at` transforms only.
@@ -154,9 +207,9 @@ The element's **index is its identity**. NodeId paths reuse the existing positio
 scheme (probe #1: `Rig.idlers[0].od` — nothing new to invent). Contract under N change
 (phase 2, but fixed now because it shapes everything):
 
-- **Grow (`0..4` → `0..5`):** instance 4 is appended; instances 0–3 keep their NodeId
+- **Grow (`0..<4` → `0..<5`):** instance 4 is appended; instances 0–3 keep their NodeId
   paths, cells, realizations, GUI entity paths, and warm-eval cache entries untouched.
-- **Shrink (`0..4` → `0..3`):** instance 3 and everything derived from it (cells,
+- **Shrink (`0..<4` → `0..<3`):** instance 3 and everything derived from it (cells,
   realization, forall-emitted decls, meshes) is removed. Any surviving reference to a
   dropped index (`idlers[3]` in a constraint or let) becomes a **loud eval-graph
   failure** (`E_INDEXED_SUB_INDEX_OUT_OF_RANGE`), never a silent undef.
@@ -189,7 +242,7 @@ escape hatch. Revisit only with a concrete consumer (§8).
   makes cross-instance constraints expressible:
 
   ```reify
-  forall i in 0..3 : constraint distance(idlers[i].axis, idlers[i + 1].axis) > min_gap
+  forall i in 0..<3 : constraint distance(idlers[i].axis, idlers[i + 1].axis) > min_gap
   ```
 
   Non-literal bounds in phase 1 get the same loud `E_INDEXED_SUB_DYNAMIC_COUNT`
@@ -243,7 +296,9 @@ diagnostic **fires** (G6 branch-4: the rejection is observed, not assumed).
 Static-N (phase 1) delivers full value alone — all printer_v01 counts are architectural
 constants. Phase 2 makes the domain bound a live parameter:
 
-- `sub idlers[i in 0..n_idlers]` with `param n_idlers : Int` — the derived count cell
+- `sub idlers[i in 0..<n_idlers]` with `param n_idlers : Int` — exactly `n_idlers`
+  instances (§3.1 convention: count-shaped domains are `..<`, so no `- 1` at the use
+  site) — the derived count cell
   depends on the param; a warm `edit_param` rides the **existing, landed**
   collection-count re-elaboration phase (probe #11), extended to (a) run the §3.4
   expansion helper for added/removed indices, (b) evict dropped-tail realizations and
@@ -292,11 +347,11 @@ gate (ζ) names §6 rows as its signal.
 
 | Scenario | Preconditions | Postconditions |
 |---|---|---|
-| Indexed declaration elaborates | α+β | `sub ps[i in 0..3] = Pulley(od: 20mm + i * 2mm)` yields cells `ps[0].od = 20mm`, `ps[1].od = 22mm`, `ps[2].od = 24mm`; `ps.count == 3`. |
+| Indexed declaration elaborates | α+β | `sub ps[i in 0..<3] = Pulley(od: 20mm + i * 2mm)` yields cells `ps[0].od = 20mm`, `ps[1].od = 22mm`, `ps[2].od = 24mm`; `ps.count == 3`. |
 | Binder scoping | α+β | binder `i` resolves inside ctor args and pose; referencing `i` outside the declaration is an unresolved-name error. |
-| Dynamic bound rejected loudly (v1) | β | `[i in 0..n]` with `param n` ⇒ `E_INDEXED_SUB_DYNAMIC_COUNT` observed; zero silent elements. |
+| Dynamic bound rejected loudly (v1) | β | `[i in 0..<n]` with `param n` ⇒ `E_INDEXED_SUB_DYNAMIC_COUNT` observed; zero silent elements. |
 | relate block rejected loudly (v1) | β | indexed sub with `relate {}` ⇒ `E_INDEXED_SUB_RELATE_UNSUPPORTED` observed. |
-| Range forall unrolls | δ | `forall i in 0..2 : constraint ps[i].od < ps[i + 1].od` emits 2 per-element constraints (`forall@i[0..1]`), all checked. |
+| Range forall unrolls | δ | `forall i in 0..<2 : constraint ps[i].od < ps[i + 1].od` emits 2 per-element constraints (labelled `forall@i[0]` and `forall@i[1]`), all checked — `i + 1` reaches `ps[2]`, the last element of the row-1 `0..<3` declaration. |
 
 ### 6.2 eval ↔ kernel/surfacing (per-instance realization)
 
@@ -433,9 +488,12 @@ registrations in its own diff per CLAUDE.md.
 
 ## §9 — Open questions (tactical)
 
-1. **Binder spelling for count-only arrays** — allow omitting the binder
-   (`sub legs[in 0..4]` or `[4]`) when args/pose don't use `i`? Suggested: no — one
-   form, `W_UNUSED` conventions apply to an unused binder. Decide at α.
+1. **Binder spelling for count-only arrays** — ~~allow omitting the binder
+   (`sub legs[in 0..<4]` or `[4]`) when args/pose don't use `i`?~~ **DECIDED at α
+   (#5481, landed):** no binder-omission form. There is exactly one surface syntax; an
+   unused binder is a matter for the usual `W_UNUSED` conventions, not a second form.
+   `[in 0..<4]` and `[4]` are both parse errors — the binder slot is `$.identifier`.
+   Recorded in the grammar at `tree-sitter-reify/grammar.js` (indexer-clause comment).
 2. **`W_INDEXED_SUB_NO_POSE` exact trigger** — warn on "no `at` clause" only, or also
    on a pose expression that doesn't reference the binder (constant pose for all
    instances)? Suggested: both, second as a distinct note. Decide at γ.
