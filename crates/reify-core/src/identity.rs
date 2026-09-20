@@ -173,6 +173,20 @@ pub enum ValueCellIdParseError {
     /// than one `(entity, member)` reading and cannot say which cell is meant.
     /// See [`ValueCellId`]'s [`Display`](fmt::Display) docs for the three
     /// families that collide here.
+    ///
+    /// KNOWN LIMITATION — this refusal is SYNTACTIC, decided from the string
+    /// alone, so it also refuses ids that name exactly one real cell. A port
+    /// composite member (`Bracket` + `mount.width`) and a keyed member whose
+    /// key holds a dot (`Widget` + `vents["a.b"]`) are both unambiguous ONCE
+    /// the compiled cell set is in hand: enumerate the split points, and
+    /// accept when exactly one candidate appears in that set. reify-core sees
+    /// no cell set, so the context-free layer cannot make that call, and it
+    /// refuses rather than guess. Neither family reaches a string-addressed
+    /// boundary today (the GUI and MCP `set_parameter` paths gate on
+    /// `template.value_cells`, where neither is reachable), so nothing is
+    /// observably lost — but the door is closed until the ids stop being
+    /// joined into one string. #7717 reopens it at the source by carrying
+    /// `{entity, member}` structurally over the GUI wire.
     Ambiguous,
 }
 
@@ -878,6 +892,12 @@ mod tests {
     fn value_cell_id_from_str_rejects_keyed_member_with_dotted_key() {
         // A key carrying a dot pushes a second dot into the member half, so the
         // keyed-member form stops being addressable as a string …
+        //
+        // This is a CAPABILITY LOSS pinned deliberately, not a latent bug being
+        // ratified: the entity half here is undotted, so this id does name one
+        // cell and a cell-set lookup could recover it. See the KNOWN LIMITATION
+        // on `ValueCellIdParseError::Ambiguous` and #7717 — if that refusal is
+        // ever lifted, this assertion is the one that must change with it.
         let dotted_key = ValueCellId::new("Widget", r#"vents["a.b"]"#);
         assert_eq!(
             dotted_key.to_string().parse::<ValueCellId>(),
