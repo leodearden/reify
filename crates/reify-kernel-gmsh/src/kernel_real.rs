@@ -284,25 +284,34 @@ impl GmshKernel {
     /// `options`: user-tunable knobs (see [`MeshingOptions`](crate::MeshingOptions)).
     /// `element_order`: P1 (4-node) or P2 (10-node) tets.
     ///
-    /// # Global mesh-size clamp: leaves nothing
+    /// # Global mesh-size options: inherits nothing, leaves nothing
     ///
-    /// Since task #6298 this function **leaves the
-    /// `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` pair at gmsh's documented
-    /// defaults on every exit path**, early `?`-returns included, via
-    /// [`crate::mesh_size_scope::MeshSizeScope`]. Gmsh's option table is
-    /// process-global and `gmshClear()` does not reset it, so without that
-    /// restore the resolved size written below would outlive the call and pin
-    /// every later *defaults-relying* gmsh call in the process to a size
-    /// nobody requested.
+    /// Gmsh's option table is process-global and `gmshClear()` does not reset
+    /// it. Via [`crate::mesh_size_scope::MeshSizeScope`], this function
+    /// **enters at gmsh's documented defaults for every size option and leaves
+    /// them there on every exit path**, early `?`-returns included.
+    ///
+    /// Both directions matter here, and the inbound one is the subtler. The
+    /// clamp writes below are skipped when the resolved size is `0.0`, so such
+    /// a call writes no size option at all; entering at defaults is what stops
+    /// it inheriting the table wholesale. Outbound, the resolved size written
+    /// below would otherwise outlive the call and pin every later
+    /// *defaults-relying* gmsh call in the process to a size nobody requested.
+    ///
+    /// Task #6298 closed the outbound direction for the
+    /// `Mesh.MeshSizeMin`/`MeshSizeMax` pair; #6968 widened it to all five
+    /// size options and added the inbound half. The three size-SOURCE options
+    /// are why the widening was needed: this function never writes them, so
+    /// before #6968 it passed a sibling's leaked
+    /// `Mesh.MeshSizeExtendFromBoundary` through untouched — a silent CARRIER,
+    /// damaging its successors while its own output stayed put.
     ///
     /// The claim is enforced, not asserted:
-    /// `tests/mesh_to_volume_clamp_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`
-    /// straddles one of these calls with two runs of the same
-    /// `mesh_plane_2d(_, _, None, …)` probe and requires them to be equal.
-    ///
-    /// This is the outbound direction only. Inbound, the clamp writes are
-    /// skipped when the resolved size is `0.0`, so such a call still inherits
-    /// whatever is in the table — task #6212 owns that hole.
+    /// `tests/mesh_to_volume_tests.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`
+    /// reads all five options back after a call made from a poisoned table,
+    /// and
+    /// `tests/mesh_size_option_hermeticity.rs` pins both call-order directions
+    /// against the other entry points in one process.
     ///
     /// # Errors
     ///
@@ -407,17 +416,15 @@ impl GmshKernel {
         // makes that structural rather than a comment a refactor can violate —
         // see `mesh_size_scope`'s "Why it borrows the lock guard".
         //
-        // The pair is restored to gmsh's DEFAULTS, not to the values found on
-        // entry: this crate's FFI surface has no `option_get_number`, so "as
-        // found" is not observable here, and defaults are what a
-        // defaults-relying caller expects anyway.
-        //
-        // This closes the OUTBOUND direction only. The remaining INBOUND hole
-        // — when `resolved_size <= 0.0` the two writes below are skipped and
-        // this call inherits whatever a sibling left in the table — is
-        // deliberately out of #6298's scope and owned by name by task #6212,
-        // which also owns the still-unshared `Mesh.MeshSizeFromPoints` /
-        // `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` trio.
+        // Defaults are the target in BOTH directions, not the values found on
+        // entry — which is what makes the discipline total: entering at
+        // defaults means "as found" is always "defaults", so the restore never
+        // needs to read the table back, and the INBOUND hole below (when
+        // `resolved_size <= 0.0` the two writes are skipped) closes without
+        // needing to be reached. The scope covers all five size options, so
+        // the `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+        // `MeshSizeExtendFromBoundary` trio this function never writes is no
+        // longer carried through from a sibling either (task #6968).
         let _size_scope =
             crate::mesh_size_scope::MeshSizeScope::entered(_guard.size_scope_witness())?;
 
@@ -446,7 +453,10 @@ impl GmshKernel {
         // Resolve mesh size: caller override > auto-derived from smallest
         // triangle edge. `auto_mesh_size_from_features` returns 0.0 for
         // empty meshes; we leave the gmsh defaults in place in that case
-        // (skip the SetNumber call).
+        // (skip the SetNumber call) — and since #6968 those are gmsh's ACTUAL
+        // defaults, established on entry by `_size_scope`, rather than
+        // whatever a sibling entry point last left in the process-global
+        // table.
         let resolved_size = match options.mesh_size {
             Some(s) => s,
             None => {
