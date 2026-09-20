@@ -14,6 +14,65 @@
 //! [`allow_marker_body`]: two sibling marker grammars resemble this one and
 //! are measurably not it.
 
+/// `true` when `b` is an ASCII word byte (`[A-Za-z0-9_]`) — the single
+/// alphabet for every hand-rolled `\b` word-boundary check in this crate's
+/// scanners, so `union` is never satisfied by `disunion` / `union_all` /
+/// `reunion` and `done` is never satisfied by `abandoned` / `undone`.
+///
+/// A byte predicate over arbitrary UTF-8: every non-ASCII byte reads as a
+/// boundary, which is what lets the callers do byte-offset arithmetic over
+/// text they never validated.
+pub(crate) fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// `true` when `needle` occurs in `haystack` delimited by word boundaries on
+/// BOTH sides — a hand-rolled `\b<needle>\b` over [`is_word_byte`]'s
+/// alphabet. An empty `needle` never matches; it would otherwise match at
+/// every position.
+///
+/// Case-SENSITIVE. A caller needing case-insensitive matching pre-lowercases
+/// `haystack` and passes a lowercase ASCII `needle` — which is what PTODO's
+/// terminal-token lane does (`ptodo.rs` lowercases at the two sites that
+/// build the slices, and its needles are the literals `done` / `cancelled`).
+///
+/// UTF-8-safe on BOTH arguments; neither is assumed ASCII. A match index is
+/// always a char boundary — the needle's first byte is either ASCII or a
+/// UTF-8 lead byte, and neither can occur mid-char — but the
+/// boundary-rejected RETRY must still step by a whole CHARACTER, or a
+/// non-ASCII needle would re-slice from inside a continuation byte and
+/// panic. That is not hypothetical: `units.rs` is a units registry, so a
+/// `"µm"` / `"°C"` entry is ordinary, and one boundary-rejected occurrence
+/// anywhere in PDOCCOVER's ~8MB of chunk prose was enough to take the whole
+/// detector down. A scanner whose contract is "unreadable input is skipped
+/// fail-safe (no finding, no panic)" must have no panic reachable from
+/// corpus content.
+pub(crate) fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hb = haystack.as_bytes();
+    let mut start = 0;
+    while let Some(rel) = haystack[start..].find(needle) {
+        let idx = start + rel;
+        let after = idx + needle.len();
+        let left_ok = idx == 0 || !is_word_byte(hb[idx - 1]);
+        let right_ok = after >= hb.len() || !is_word_byte(hb[after]);
+        if left_ok && right_ok {
+            return true;
+        }
+        // Advance past this occurrence's first CHARACTER, not past the whole
+        // needle: overlapping occurrences must still be considered, but a
+        // one-BYTE step would land inside a multibyte char whenever `needle`
+        // starts with one and the next `haystack[start..]` slice would panic.
+        start = idx + haystack[idx..].chars().next().map_or(1, char::len_utf8);
+        if start >= haystack.len() {
+            break;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
