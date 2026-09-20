@@ -26,9 +26,10 @@ export interface WorkerRpcFailureSummary {
   readonly failedTestCount: number
   /**
    * Errors vitest raised outside any suite. They also fail the run, and a run
-   * that failed only on one of these has no failed suite to retry — so an
-   * unhandled error that is not itself an RPC timeout vetoes, exactly as an
-   * unexplained suite failure does.
+   * that failed ONLY on these yields a verdict naming no suite at all — which
+   * the runner reads as "re-run the original invocation", not as "nothing to
+   * do". An unhandled error that is not itself an RPC timeout still vetoes,
+   * exactly as an unexplained suite failure does.
    */
   readonly unhandledErrorMessages?: readonly string[]
   /**
@@ -62,25 +63,36 @@ const timedOutMethod = (message: string): string | null =>
 
 /**
  * Returns a verdict when the run is UNAMBIGUOUSLY a host-starvation event, and
- * null otherwise. Two rules make that "unambiguously" true, and both are
+ * null otherwise. Each rule below makes that "unambiguously" true, and each is
  * load-bearing for the bounded retry this feeds:
  *
+ *  - Something actually FAILED: at least one failed suite, or one unhandled
+ *    error. An all-green run is not a flake and has nothing to retry.
  *  - Zero failed tests. A genuine code defect produces failed tests, so a
  *    non-zero count can never be classified as starvation.
- *  - Every failed suite carries an RPC timeout. One suite failing for any
- *    other reason vetoes the whole run, so a real defect coinciding with a
- *    starvation event is never absorbed.
+ *  - Every failed suite carries an RPC timeout, and so does every unhandled
+ *    error. One failure of either kind arising any other way vetoes the whole
+ *    run, so a real defect coinciding with a starvation event is never
+ *    absorbed.
  *  - Every suite reached a terminal state and the run was not interrupted.
- *    The two rules above reason only about suites that FAILED; this one closes
- *    the same hole for suites that never RAN, which a dying forks pool leaves
- *    behind. Without it a retry of the two failures could green a gate that
- *    silently skipped twenty more.
+ *    The rules above reason only about failures that were REPORTED; this one
+ *    closes the same hole for suites that never RAN, which a dying forks pool
+ *    leaves behind. Without it a retry of the two failures could green a gate
+ *    that silently skipped twenty more.
+ *
+ * The event can arrive with ZERO failed suites: the `snapshotSaved` RPC is
+ * issued after a file's tests have already passed, so a timeout on it surfaces
+ * at RUN level with no module to attribute it to (task 7724, esc-7600-1). The
+ * verdict then names no suite — the complete statement that there is nothing
+ * to narrow the retry to.
  */
 export function classifyWorkerRpcFlake(
   summary: WorkerRpcFailureSummary,
 ): WorkerRpcFlakeVerdict | null {
+  const unhandled = summary.unhandledErrorMessages ?? []
+
   if (summary.failedTestCount !== 0) return null
-  if (summary.failedSuites.length === 0) return null
+  if (summary.failedSuites.length === 0 && unhandled.length === 0) return null
   if (summary.runEndReason === 'interrupted') return null
   if ((summary.unfinishedSuites?.length ?? 0) !== 0) return null
 
@@ -90,7 +102,7 @@ export function classifyWorkerRpcFlake(
     if (found.length === 0) return null
     for (const method of found) methods.add(method)
   }
-  for (const message of summary.unhandledErrorMessages ?? []) {
+  for (const message of unhandled) {
     const method = timedOutMethod(message)
     if (method === null) return null
     methods.add(method)
