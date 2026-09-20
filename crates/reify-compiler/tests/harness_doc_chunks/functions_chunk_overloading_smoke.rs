@@ -120,18 +120,33 @@ struct DocSignature {
 ///
 /// # Scan shape — deliberately narrow, so this can never drift into a wording pin
 ///
-/// - only lines whose TRIMMED form starts with `"fn "` are considered, so a
-///   signature quoted inside prose contributes nothing and no heading, bullet or
-///   sentence is ever read;
+/// - only lines whose TRIMMED form starts with `"fn "`, optionally preceded by
+///   `"pub "`, are considered — the chunk's own Properties list documents
+///   `pub` as a legal declaration form, so a `pub fn` example must be scanned
+///   like any other. A signature quoted inside prose contributes nothing and no
+///   heading, bullet or sentence is ever read;
 /// - the name is the run of `[A-Za-z0-9_]` immediately after `fn `;
 /// - an optional generic list on the NAME is skipped by walking a balanced
-///   `<…>` run from the end of the name;
+///   `<…>` run from the end of the name, within which `->` is read as an arrow
+///   and not as a closing bracket, so a function-typed bound (`F: Fn(A) -> B`)
+///   does not truncate the run — see [`is_arrow`];
 /// - the parameter list is the balanced `(…)` run that follows; its interior is
 ///   split on DEPTH-0 commas only, tracking `<>`, `()` and `[]`, so
 ///   `Tensor<2, 3, Pressure>` counts as ONE parameter;
 /// - an empty or whitespace-only interior is arity 0;
 /// - a line whose brackets do not balance contributes nothing rather than
 ///   panicking.
+///
+/// # Known limitation: the scan is LINE-scoped
+///
+/// A declaration whose parameter list WRAPS across lines is dropped, silently
+/// and by construction: the opening `(` is found but its `)` sits on a later
+/// line. The caller's `!is_empty()` anti-vacuity check cannot see such a PARTIAL
+/// drop, so the shape is pinned as a negative row in
+/// `declared_signatures_extracts_name_and_arity` and disclosed in this module's
+/// header — deliberate and visible rather than incidental. Every declaration in
+/// the chunk fits one line today; widening the scan is worth it only once one
+/// does not.
 ///
 /// # Why fence-agnostic and tag-agnostic
 ///
@@ -155,7 +170,11 @@ fn declared_signatures(markdown: &str) -> Vec<DocSignature> {
     let mut signatures: Vec<DocSignature> = markdown
         .lines()
         .filter_map(|line| {
-            let rest = line.trim_start().strip_prefix("fn ")?;
+            let rest = line.trim_start();
+            let rest = rest
+                .strip_prefix("pub ")
+                .unwrap_or(rest)
+                .strip_prefix("fn ")?;
             let name_len = rest
                 .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                 .unwrap_or(rest.len());
@@ -177,6 +196,19 @@ fn declared_signatures(markdown: &str) -> Vec<DocSignature> {
     signatures
 }
 
+/// Whether `c`, preceded by `prev`, is the `>` of an `->` arrow rather than a
+/// closing angle bracket.
+///
+/// A generic bound may carry a function type — `F: Fn(A) -> B` — whose arrow
+/// would otherwise close the bound early, leaving `B>(…)` where the parameter
+/// list is expected, and DROPPING a well-formed declaration that balances
+/// perfectly well. The same rule stops a comma nested in `Map<Fn(X) -> Y, Z>`
+/// from being counted at depth 0. Stated once here so both bracket walks below
+/// read the arrow identically.
+fn is_arrow(prev: char, c: char) -> bool {
+    c == '>' && prev == '-'
+}
+
 /// `s` with a leading balanced `open`…`close` run removed, or `s` unchanged when
 /// it does not start with `open`. `None` if such a run starts but never closes.
 fn skip_balanced(s: &str, open: char, close: char) -> Option<&str> {
@@ -184,15 +216,17 @@ fn skip_balanced(s: &str, open: char, close: char) -> Option<&str> {
         return Some(s);
     }
     let mut depth = 0usize;
+    let mut prev = ' ';
     for (i, c) in s.char_indices() {
         if c == open {
             depth += 1;
-        } else if c == close {
+        } else if c == close && !is_arrow(prev, c) {
             depth -= 1;
             if depth == 0 {
                 return Some(&s[i + c.len_utf8()..]);
             }
         }
+        prev = c;
     }
     None
 }
@@ -211,20 +245,24 @@ fn balanced_run(s: &str, open: char, close: char) -> Option<&str> {
 
 /// The number of DEPTH-0 comma-separated parameters in a parameter-list
 /// interior, tracking `<>`, `()` and `[]` so a nested argument list contributes
-/// no separators. A whitespace-only interior is 0 parameters.
+/// no separators, and reading `->` as an arrow rather than a bracket (see
+/// [`is_arrow`]). A whitespace-only interior is 0 parameters.
 fn count_parameters(inner: &str) -> usize {
     if inner.trim().is_empty() {
         return 0;
     }
     let mut depth = 0usize;
     let mut parameters = 1usize;
+    let mut prev = ' ';
     for c in inner.chars() {
         match c {
             '<' | '(' | '[' => depth += 1,
+            _ if is_arrow(prev, c) => {}
             '>' | ')' | ']' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => parameters += 1,
             _ => {}
         }
+        prev = c;
     }
     parameters
 }
@@ -285,11 +323,13 @@ fn arg_count_rejection_is_detected_for_the_builtin_rotate_arity_gate() {
 /// Pins the extraction rule directly, on inline markdown with no chunk
 /// involved, before anything consumes it.
 ///
-/// The genuine hazards are the two bracket cases: a comma nested inside a
-/// generic argument list must not split a parameter, and a generic list on the
-/// NAME must not be mistaken for the parameter list. Both are pinned here, as
-/// is the negative case that keeps this a declaration scan rather than a prose
-/// scan.
+/// The genuine hazards are the bracket cases: a comma nested inside a generic
+/// argument list must not split a parameter, a generic list on the NAME must not
+/// be mistaken for the parameter list, and an `->` inside a function-typed bound
+/// must not close that list early. All are pinned here, as are the two negative
+/// cases — the prose signature that keeps this a declaration scan rather than a
+/// wording pin, and the line-WRAPPED signature the scan drops by construction,
+/// pinned so the limitation is deliberate rather than incidental.
 #[test]
 fn declared_signatures_extracts_name_and_arity() {
     let markdown = r#"
@@ -311,6 +351,12 @@ fn von_mises(t : Tensor<2, 3, Pressure>) -> Scalar<Pressure> {
 fn mover<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
 fn mover<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... }
 fn clamp(x : Real, lo : Real, hi : Real) -> Real { ... }
+pub fn extrude_to(profile : Surface, height : Length) -> Solid { ... }
+fn apply<F: Fn(A) -> B>(f : F, a : A) -> B { ... }
+fn wrapped(
+    a : Length,
+    b : Length,
+) -> Length { ... }
 ```
 "#;
 
@@ -318,8 +364,16 @@ fn clamp(x : Real, lo : Real, hi : Real) -> Real { ... }
         declared_signatures(markdown),
         vec![
             DocSignature {
+                name: "apply".to_string(),
+                arity: 2
+            },
+            DocSignature {
                 name: "clamp".to_string(),
                 arity: 3
+            },
+            DocSignature {
+                name: "extrude_to".to_string(),
+                arity: 2
             },
             DocSignature {
                 name: "mover".to_string(),
@@ -337,10 +391,15 @@ fn clamp(x : Real, lo : Real, hi : Real) -> Real { ... }
         "the scan must: count a plain parameter list (clamp/3); NOT split on commas nested in \
          generic brackets (von_mises/1, not /3); skip a generic list on the NAME and tolerate a \
          `{{ ... }}` elision body (mover/3 and mover/2 — two DISTINCT arities under one name, \
-         which is the overloading this module exists to guard); ignore a signature that merely \
-         appears inside PROSE rather than starting its line (`distance` must be absent, so this \
-         stays a declaration scan and never a wording pin); and collapse a duplicate declaration \
-         to one sorted entry"
+         which is the overloading this module exists to guard); scan a `pub fn` declaration like \
+         any other (extrude_to/2), since the chunk itself documents `pub` as a legal form; read \
+         an `->` inside a function-typed bound as an arrow rather than the close of the NAME's \
+         generic list (apply/2, not dropped); ignore a signature that merely appears inside \
+         PROSE rather than starting its line (`distance` must be absent, so this stays a \
+         declaration scan and never a wording pin); DROP a line-WRAPPED declaration whose \
+         parameter list never closes on its own line (`wrapped` must be absent — a known, \
+         disclosed limitation of the line-scoped scan, pinned here so it cannot drift into an \
+         accident); and collapse a duplicate declaration to one sorted entry"
     );
 }
 
