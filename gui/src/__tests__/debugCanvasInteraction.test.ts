@@ -124,6 +124,19 @@ async function dispatchAndGetResult(
   return JSON.parse(payload.result);
 }
 
+/** The 800×600 canvas every describe in this file stubs getBoundingClientRect with. */
+const CANVAS_RECT = {
+  left: 0,
+  top: 0,
+  width: 800,
+  height: 600,
+  x: 0,
+  y: 0,
+  right: 800,
+  bottom: 600,
+  toJSON: () => ({}),
+} as DOMRect;
+
 // ─── pick_entity_at ───────────────────────────────────────────────────────────
 
 describe('pick_entity_at: bridge handler (real three)', () => {
@@ -137,18 +150,6 @@ describe('pick_entity_at: bridge handler (real three)', () => {
   const HALF_EDGE = 0.5;
   /** Z the camera keeps while moving over the far cube (matches the beforeEach pose). */
   const CAM_Z = 5;
-
-  const CANVAS_RECT = {
-    left: 0,
-    top: 0,
-    width: 800,
-    height: 600,
-    x: 0,
-    y: 0,
-    right: 800,
-    bottom: 600,
-    toJSON: () => ({}),
-  } as DOMRect;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -515,5 +516,98 @@ describe('orbit_camera / pan_camera / zoom_camera: bridge handlers (real OrbitCo
     }) as any;
 
     expect(typeof result.error).toBe('string');
+  });
+});
+
+// ─── set_camera up-axis coherence ────────────────────────────────────────────
+//
+// The #6497 half of the camera desync, driven entirely through the bridge dispatcher
+// so the shipped command path is what is under test.  Real three and a real
+// OrbitControls: the subject is the library's constructor-time orbit frame, which a
+// hand-rolled stub cannot exhibit.
+describe('set_camera up-axis coherence (real three + real OrbitControls)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let camera: import('three').PerspectiveCamera;
+
+  // Off-axis, so an orbit about either candidate axis produces a definite and
+  // distinguishable motion — on-axis would be the orbit pole and a no-op for the
+  // wrong reason.
+  const START = { x: 5, y: 0, z: 3 };
+  const AZIMUTH = 0.4;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    await initDebugBridge(makeStores());
+    expect(capturedHandler).toBeDefined();
+
+    const { Scene, PerspectiveCamera } = await import('three');
+    const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+
+    const scene = new Scene();
+    // up is the three default (0,1,0) at construction, matching createScene's camera
+    // before it sets Z-up — which is the moment OrbitControls captures its frame.
+    camera = new PerspectiveCamera(60, 800 / 600, 0.1, 1000);
+    camera.position.set(0, 0, 10);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+
+    const domElement = document.createElement('canvas');
+    Object.defineProperty(domElement, 'clientHeight', { value: 600 });
+    Object.defineProperty(domElement, 'clientWidth', { value: 800 });
+    vi.spyOn(domElement, 'getBoundingClientRect').mockReturnValue(CANVAS_RECT);
+
+    const controls = new OrbitControls(camera, domElement);
+    controls.enableDamping = false;
+    controls.update();
+
+    window.__REIFY_DEBUG__!.viewport = {
+      scene,
+      camera,
+      renderer: { domElement, render: vi.fn() } as any,
+      getMeshes: () => new Map(),
+      getGhostMeshes: () => new Map(),
+      fitToView: vi.fn(),
+      flyToEntity: vi.fn(),
+      controls: controls as any,
+    };
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('orbit_camera after set_camera{up} rotates about the NEW up axis', async () => {
+    await dispatchAndGetResult(capturedHandler!, 40, 'set_camera', {
+      position: [START.x, START.y, START.z],
+      target: [0, 0, 0],
+      up: [0, 0, 1],
+    });
+
+    const result = (await dispatchAndGetResult(capturedHandler!, 41, 'orbit_camera', {
+      dazimuth: AZIMUTH,
+    })) as any;
+
+    // LIVE state.  An azimuthal orbit about +Z conserves the component along +Z and
+    // the radius in the plane normal to it.  Today the camera orbits the stale +Y
+    // frame instead, so z moves and y stays ~0.
+    expect(camera.position.z).toBeCloseTo(START.z, 6);
+    expect(Math.hypot(camera.position.x, camera.position.y)).toBeCloseTo(
+      Math.hypot(START.x, START.y),
+      6,
+    );
+    // Not vacuous: the rotation really happened.
+    expect(camera.position.x).not.toBeCloseTo(START.x, 3);
+
+    // …and the response agrees with live state rather than describing a different pose.
+    expect(result.camera.position).toEqual({
+      x: camera.position.x,
+      y: camera.position.y,
+      z: camera.position.z,
+    });
   });
 });
