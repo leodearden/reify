@@ -941,6 +941,13 @@ Concretely:
    framing distance, and the subsequent `zoom_camera` reported `distanceDelta: 0` — a
    saturated request indistinguishable from a satisfied one.
 
+   Only the NEAR limit is model-derived. The far limit is deliberately still a fixed
+   absolute (500 m), so zoom-*out* does not track the model — it binds only on a model
+   whose bounding sphere exceeds ~227 m in radius, where `_clampDistance` would pull the
+   framing itself inward and `fit_to_view` would under-frame. Reify parts are four orders
+   of magnitude below that, so the cliff is out of reach rather than absent; a caller
+   working at that scale should expect the same saturation signature at the far end.
+
 Per §0's rule, this section deliberately does **not** enumerate per-tool return shapes;
 `tool_defs()` stays authoritative for those, and each tool's own `description` carries them.
 

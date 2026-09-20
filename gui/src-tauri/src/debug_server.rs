@@ -192,11 +192,12 @@ fn tool_defs() -> Vec<ToolDef> {
         ToolDef {
             name: "fit_to_view",
             description: "Frame all geometry in the viewport, AND establish the orbit \
-                          distance limits from the resulting model bounds. \
-                          The minimum is a fixed fraction of the fitted distance, so it tracks \
+                          distance FLOOR from the resulting model bounds. \
+                          The floor is a fixed fraction of the fitted distance, so it tracks \
                           the model at any scale — which is what makes a subsequent close-in \
                           zoom_camera or set_camera request applicable rather than silently \
-                          clamped back out.",
+                          clamped back out. Only the near limit is derived; the far limit \
+                          stays a fixed absolute, so zoom-out does not track the model.",
             input_schema: json!({
                 "type": "object",
                 "properties": {

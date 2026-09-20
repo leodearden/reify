@@ -189,7 +189,7 @@ when omitted, the first populated viewport is targeted.
 | `pan_camera` | `{dx, dy}` | `{ok, target:{x,y,z}, camera:{position}}` |
 | `zoom_camera` | `{scale}` | `{ok, distance, distanceDelta, camera:{position}}` — `scale` is **multiplicative** and must be `> 0`: `<1` closer, `>1` farther |
 | `set_camera` | `{position, target, up?, zoom?}` | `{ok, applied:{position, target, up, zoom}}` — `applied` is read back from the **live** camera after OrbitControls applies its constraints |
-| `fit_to_view` | `{}` | `{ok}` — frames all geometry **and** establishes the orbit distance limits from the resulting bounds |
+| `fit_to_view` | `{}` | `{ok}` — frames all geometry **and** establishes the orbit distance **floor** from the resulting bounds (near limit only; the far limit is a fixed absolute) |
 
 ### C1 — Chrome & menus
 
@@ -295,7 +295,7 @@ to go from a pixel in a capture to the entity behind it:
 
 ```
 1. fit_to_view                → frame all geometry; ALSO sets the orbit distance
-                                limits from the model bounds
+                                FLOOR from the model bounds (near limit only)
 2. screenshot                 → locate the region of interest
 3. set_camera({position, target})  → close in on that region
 4. screenshot                 → re-capture; THIS is the frame whose pixels you may
