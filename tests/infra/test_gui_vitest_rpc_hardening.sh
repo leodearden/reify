@@ -260,6 +260,21 @@ hostile_case "an empty-string entry beside a real one" '["src/__tests__/a.test.t
 assert "B14: an empty-string entry is rejected LOUDLY, never promoted to a full retry" \
     bash -c "grep -qi 'WARNING' '$FIX_OUT'"
 
+# ...and EMPTINESS is not the only way into that collapse. Measured against the
+# parser as it stood: `["\n"]` survives a length check, joins to "\n", and loses
+# it to command substitution -- leaving the same empty string `[]` produces, so a
+# REJECTED artifact was promoted to a full re-run of the caller's invocation. An
+# EMBEDDED newline collapses the other way: `["a.ts\nb.ts"]` is ONE malformed
+# token that mapfile silently splits into two specs. Both are closed by rejecting
+# WHITESPACE in the parser -- not a new rule, only is_safe_spec's existing
+# character class moved upstream to the one place these are still distinguishable
+# from a genuinely empty array.
+hostile_case "a whitespace-only suite entry (newline)" '["\n"]'
+hostile_case "a whitespace-only suite entry (space)"   '[" "]'
+hostile_case "an entry with an EMBEDDED newline"       '["src/__tests__/a.test.ts\nsrc/__tests__/b.test.ts"]'
+assert "B14: a whitespace-only entry is rejected LOUDLY too, never read as an empty array" \
+    bash -c "grep -qi 'WARNING' '$FIX_OUT'"
+
 fixture_run 'not json at all' 1 0 --
 assert "B6: malformed JSON artifact -- no retry, original exit propagated" \
     bash -c "[ \"\$(npm_invocations)\" -eq 1 ] && [ \"$FIX_RC\" -eq 1 ]"

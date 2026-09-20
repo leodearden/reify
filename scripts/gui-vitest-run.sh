@@ -98,19 +98,22 @@ partition_args() {
 # Read the classified suite list, one per line, or fail. Parsed with node —
 # a real JSON parser, not a grep — so the seam stays structured data.
 #
-# An EMPTY ARRAY is a legitimate verdict ("nothing to narrow to"), but an empty
-# STRING entry is not, and this is the only place the two can still be told
-# apart: the output is newline-joined, and `[""].join("\n")` is byte-identical
-# to `[].join("\n")`, so downstream an empty entry would be read as "retry
-# everything" and `["a.ts",""]` would silently lose its tail to command
-# substitution. Reject it here, where the array is still structured data.
+# An EMPTY ARRAY is a legitimate verdict ("nothing to narrow to"). An entry that
+# is empty or WHITESPACE is not, and this is the only place the two can still be
+# told apart: the output is newline-joined, so `[""]` and `["\n"]` both reduce to
+# the very string `[]` produces, and downstream would be read as "retry
+# everything" -- promoting a rejected artifact into a full re-run. The joining
+# cuts the other way too: `["a.ts",""]` loses its tail to command substitution,
+# and one entry carrying an EMBEDDED newline is silently split into two specs.
+# Rejecting whitespace here is not a new rule, only is_safe_spec's character
+# class applied upstream, where the array is still structured data.
 read_classified_suites() {
     node -e '
         const fs = require("node:fs");
         const artifact = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
         const suites = artifact.suites;
         if (!Array.isArray(suites)) process.exit(1);
-        if (!suites.every((s) => typeof s === "string" && s.length > 0)) process.exit(1);
+        if (!suites.every((s) => typeof s === "string" && s.length > 0 && !/\s/.test(s))) process.exit(1);
         process.stdout.write(suites.join("\n"));
     ' "$ARTIFACT"
 }
