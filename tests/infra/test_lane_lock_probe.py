@@ -14,7 +14,7 @@ This file therefore asserts the MEASUREMENT and the two invariants both callers
 share — A1 non-mutating, A2 shared/non-blocking/released-at-once — plus the
 tri-state discrimination itself. The per-caller fail directions are asserted in
 the callers' own suites (test_warm_lane_lock_guard.sh Block D,
-test_warm_lane_audit.sh Block R).
+test_warm_lane_audit.sh Block T).
 
 WHAT RUNS THIS: not the gate directly. run_all.sh discovers `test_*.sh` only,
 so the discovered member is the thin wrapper tests/infra/test_lane_lock_probe.sh,
@@ -66,7 +66,6 @@ class LaneLockProbeTestCase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmpdir = Path(tmp.name)
-        self._held = []
 
     # ── fixture helpers ──────────────────────────────────────────────────
     def probe(self, lock_path, flock_bin="flock"):
@@ -98,7 +97,6 @@ class LaneLockProbeTestCase(unittest.TestCase):
         fd = os.open(str(lock), os.O_RDONLY)
         self.addCleanup(os.close, fd)
         fcntl.flock(fd, mode | fcntl.LOCK_NB)
-        self._held.append(fd)
         return fd
 
     def exclusive_lock_is_takeable(self, lock: Path) -> bool:

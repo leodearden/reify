@@ -12,7 +12,7 @@
 # scripts/warm-lane-lock-guard.sh. The lib owns the measurement and the two
 # invariants both callers share; each caller's own fail direction on
 # UNMEASURABLE is asserted in ITS suite (the guard's Block D, the audit's
-# Block R). Reasoning: docs/design/merge-verify-lane-dispatch-seam.md §3.
+# Block T). Reasoning: docs/design/merge-verify-lane-dispatch-seam.md §3.
 #
 # Verifies that:
 #   1. python3 is on PATH

@@ -235,15 +235,17 @@ _hold_lane_lock() {
 # _hold_lane_lock_shared <mount> <lane>
 # Block Q's SHARED counterpart to _hold_lane_lock above (§9.1 Invariant A2):
 # marks <lane> "held by a shared reader" instead of "held by an exclusive
-# consumer" -- the case scripts/warm-lane-audit.sh's own probe (_probe_live,
-# line 330-331) must read as IDLE, not LIVE.
+# consumer" -- the case the production probe (lane_lock_probe in
+# scripts/lib_lane_lock.sh, reached from _probe_live) must read as IDLE, not
+# LIVE.
 #
 # Two deliberate differences from _hold_lane_lock, both load-bearing:
 #   - `flock -s 9`, not `-x` -- this is the entire point of the helper.
 #   - the fd is opened READ-only (`9<"$lock"`, after the `touch`), not `9>` as
 #     the exclusive helper uses. This mirrors the production probe's own
-#     read-only open (`exec 7<"$lock"`, scripts/warm-lane-audit.sh:330), so
-#     the fixture models a real shared READER rather than an artificial
+#     read-only open -- lane_lock_probe takes a scoped `{ ... } 7<"$lock"`
+#     block redirect, never a write-open -- so the fixture models a real
+#     shared READER rather than an artificial
 #     write-opened shared lock, and it avoids relying on Linux's (correct but
 #     non-obvious, and not POSIX-fcntl-portable) acceptance of LOCK_SH on an
 #     O_WRONLY fd.
@@ -2011,8 +2013,9 @@ _BGPIDS=()  # clear so cleanup doesn't double-kill
 # ──────────────────────────────────────────────────────────────────────────────
 # Block K (above) pins live=LIVE|IDLE, but its only lock-holding fixture is
 # _hold_lane_lock, which takes an EXCLUSIVE flock -- and an EXCLUSIVE holder
-# blocks both a `-x` and a `-s` probe identically. So Block K cannot tell
-# _probe_live's real `flock -n -s 7` (scripts/warm-lane-audit.sh:331) apart
+# blocks both a `-x` and a `-s` probe identically. So Block K cannot tell the
+# production probe's real `flock -n -s 7` (lane_lock_probe in
+# scripts/lib_lane_lock.sh) apart
 # from a regressed `flock -n -x 7`: the exact regression this block exists to
 # catch. Block Q closes that gap with a SHARED-lock lane (must read IDLE --
 # the A2 pin) alongside an EXCLUSIVE-lock lane in the SAME run (must stay
@@ -3086,10 +3089,8 @@ assert "S7: an empty mount reports stash_entries=0" \
 #
 # The direction is CLOSED, and deliberately opposite to
 # scripts/warm-lane-lock-guard.sh's, which fails OPEN on the identical state
-# from the identical shared probe: this script's output is advisory prose, where
-# over-reporting occupancy is merely conservative, whereas the guard's exit 3
-# gates merge dispatch, where a false BUSY wedges the serial merge queue.
-# Reasoning: docs/design/merge-verify-lane-dispatch-seam.md §3.
+# from the identical shared probe. Why each is right for its own consumer:
+# seam doc §3 — docs/design/merge-verify-lane-dispatch-seam.md.
 #
 # EVERY lock file below is touched UNHELD, so no LIVE verdict in this block can
 # come from real contention — only from the degraded measurement. T7 is the
