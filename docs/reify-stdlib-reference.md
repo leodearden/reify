@@ -652,6 +652,23 @@ fn loft(profiles: List<Surface>) -> Solid
 fn loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid
 ```
 
+`sweep` transports the profile **exactly as posed**. It never re-orients the
+profile onto the path's start frame, so the body encloses
+`(profile area) x (spine displacement . profile normal)` — pose the profile
+yourself, and a profile lying in the spine's own plane sweeps edge-on and
+encloses nothing. `pipe` (§3.3) is the contrasting member: it *does* build its
+circle on the path's start frame, which is why it needs no posing.
+
+A profile posed so the path's start tangent sits less than **4 degrees** out of
+the profile's plane is rejected with a typed error rather than silently
+realizing a degenerate body. The corrective pose must be bound with `let`
+before being swept — an inline transform is not accepted as a sweep profile:
+
+```
+let p = rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg)
+sweep(p, path)
+```
+
 ### 3.7 `std.geometry.transform`
 
 ```
