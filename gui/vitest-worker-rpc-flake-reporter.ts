@@ -243,9 +243,14 @@ export default class WorkerRpcFlakeReporter {
       return
     }
 
+    // `suites=0` alone would read as "retrying zero suites"; scope= says which
+    // question the runner will re-ask. Derived from the verdict, so the two
+    // keys cannot disagree.
     this.out.emit(
-      `@@REIFY_GUI_FLAKE@@ kind=${verdict.kind} suites=${verdict.suites.length}` +
-        ` methods=${verdict.methods.join(',')} lineage=${LINEAGE}`,
+      `@@REIFY_GUI_FLAKE@@ kind=${verdict.kind}` +
+        ` scope=${verdict.suites.length === 0 ? 'run' : 'suites'}` +
+        ` suites=${verdict.suites.length} methods=${verdict.methods.join(',')}` +
+        ` lineage=${LINEAGE}`,
     )
     this.tryIo('write the flake artifact', () =>
       this.out.writeArtifact(this.out.artifactPath, `${JSON.stringify(verdict, null, 2)}\n`),
