@@ -27,6 +27,7 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).
 
+use crate::scan_util::{contains_word, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
@@ -40,14 +41,10 @@ use std::path::{Path, PathBuf};
 // §8.1 marker recognition (pure, hand-rolled — no `regex` dep per design §12)
 // -----------------------------------------------------------------------
 
-/// `true` when `b` is an ASCII word byte (`[A-Za-z0-9_]`) — the alphabet for
-/// the hand-rolled `\b` word-boundary checks in [`find_comment_marker`].
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// `char`-level analogue of [`is_word_byte`] for the `\b` left-boundary check
-/// in [`has_malformed_cite`] (which scans `char`s to recognise Greek cites).
+/// `char`-level analogue of [`crate::scan_util::is_word_byte`] for the `\b`
+/// left-boundary check in [`has_malformed_cite`] (which scans `char`s to
+/// recognise Greek cites). Not a duplicate of the byte predicate — a Greek
+/// cite is multibyte, so that scan cannot be expressed over bytes.
 fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
@@ -293,8 +290,9 @@ fn prd_relative_cite_family(bytes: &[u8], cite_start: usize, id: u32) -> Option<
         return None;
     }
 
-    /// The token alphabet for the spaced-noun families: [`is_word_byte`] plus
-    /// `-`, so a hyphenated PRD noun (`open-question`) is read as ONE token.
+    /// The token alphabet for the spaced-noun families:
+    /// [`crate::scan_util::is_word_byte`] plus `-`, so a hyphenated PRD noun
+    /// (`open-question`) is read as ONE token.
     fn is_token_byte(b: u8) -> bool {
         is_word_byte(b) || b == b'-'
     }
@@ -676,39 +674,6 @@ pub fn extract_g_allow_owner_cites(body: &str) -> Vec<u32> {
     owners
 }
 
-/// Return `true` if `token` (a lowercase ASCII string, e.g. `"done"` or
-/// `"cancelled"`) appears as a **whole word** in `s_lower` (a pre-lowercased
-/// string slice). Word boundaries are the `[A-Za-z0-9_]` alphabet of
-/// [`is_word_byte`]; a token at the start/end of the slice has an implicit
-/// boundary there.
-///
-/// Used by [`is_g_allow_cite_exempt`] rule (a) to test for `done` /
-/// `cancelled` inside a parenthetical group without false-matching subwords:
-/// `"abandoned"` contains `"done"` but not as a whole word (left boundary
-/// fails), and `"undone"` similarly fails the left-boundary check.
-fn contains_word_token(s_lower: &str, token: &str) -> bool {
-    let bytes = s_lower.as_bytes();
-    let n = bytes.len();
-    let tlen = token.len();
-    let mut start = 0;
-    while start + tlen <= n {
-        match s_lower[start..].find(token) {
-            None => break,
-            Some(rel) => {
-                let idx = start + rel;
-                let after = idx + tlen;
-                let left_ok = idx == 0 || !is_word_byte(bytes[idx - 1]);
-                let right_ok = after >= n || !is_word_byte(bytes[after]);
-                if left_ok && right_ok {
-                    return true;
-                }
-                start = idx + 1;
-            }
-        }
-    }
-    false
-}
-
 /// Depth-match the parenthetical group whose opening `(` is at `open_paren_idx`
 /// in `bytes`, returning the byte index of the matching `)`.  Returns `None`
 /// when the group is unclosed (EOF before depth returns to 0).
@@ -738,12 +703,22 @@ fn find_group_close(bytes: &[u8], open_paren_idx: usize) -> Option<usize> {
 
 /// Return `true` if `group_lower` (a pre-lowercased slice of a paren group body
 /// — the characters between `(` and `)`, exclusive, or a `;`-bounded sub-window
-/// thereof) contains a whole-word `done` or `cancelled` token.  Word boundaries
-/// are defined by [`is_word_byte`].
+/// thereof) contains a whole-word `done` or `cancelled` token, so subwords like
+/// `"abandoned"` and `"undone"` do NOT match.
 ///
 /// Called by [`is_g_allow_cite_exempt`] rule (a) via [`find_group_close`].
+///
+/// [`crate::scan_util::contains_word`] is case-SENSITIVE while this lane's
+/// contract is case-insensitive, and the two agree here for a reason worth
+/// stating: the needles are the hardcoded lowercase ASCII literals below, and
+/// every caller has already lowercased the slice it passes. So a pre-lowercased
+/// haystack plus a case-sensitive whole-word match reproduce the prior
+/// semantics exactly. The private byte-stepped matcher this replaces was
+/// UTF-8-safe only by the same accident of ASCII needles; the shared
+/// char-stepped one is safe by construction, which matters because a panic
+/// here would take a hard-gated detector down.
 fn group_has_terminal_token(group_lower: &str) -> bool {
-    contains_word_token(group_lower, "done") || contains_word_token(group_lower, "cancelled")
+    contains_word(group_lower, "done") || contains_word(group_lower, "cancelled")
 }
 
 /// Internal helper — classify one `#NNNN` cite (hash at `cite_start`, digit
@@ -985,10 +960,12 @@ fn has_deferral_prose(text: &str) -> bool {
     /// — a hyphenated compound such as `pending-queue` NAMES a thing rather than
     /// deferring work).
     ///
-    /// The word-byte half delegates to the module-shared [`is_word_byte`], the
+    /// The word-byte half delegates to [`crate::scan_util::is_word_byte`], the
     /// documented alphabet for the hand-rolled `\b` checks, rather than
-    /// re-spelling `is_ascii_alphanumeric() || b == b'_'` — so a future change to
-    /// the module's notion of a word byte cannot silently skip this guard.
+    /// re-spelling `is_ascii_alphanumeric() || b == b'_'` — so a future change
+    /// to what counts as a word byte cannot silently skip this guard. That
+    /// guarantee now spans the whole crate rather than this module, which is
+    /// the point of keeping the alphabet in one place.
     fn disqualifies_either_side(b: u8) -> bool {
         b == b'"' || b == b'`' || b == b'-' || is_word_byte(b)
     }
@@ -1900,7 +1877,7 @@ fn g_allow_finding_line(f: &Finding) -> usize {
 /// Counting boundary (pinned by `tests/ptodo.rs`):
 /// * `files_scanned` — tracked paths that survived `is_swept_ext(path) &&
 ///   !is_allowlisted(path)` AND were read successfully. Paths skipped fail-safe
-///   because `read_to_string` errored are excluded by construction; a swept file
+///   because the read yielded `None` are excluded by construction; a swept file
 ///   carrying zero markers is INCLUDED.
 /// * `markers_examined` — [`scan_file`]-classified marker lines
 ///   ([`LineClass::Structural`] and [`LineClass::Cited`] alike) across exactly
@@ -1935,8 +1912,9 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 /// G-allow advisory (γ-advisory) lanes. Enumerates tracked files via the git
 /// seam ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept
 /// extensions that are not allowlisted (§6.8), reads each file's
-/// **working-tree** content directly (`std::fs::read_to_string` — only
-/// enumeration is a git dependency; the lane "runs everywhere, including
+/// **working-tree** content directly
+/// ([`AuditContext::read_relative`](crate::AuditContext::read_relative) —
+/// only enumeration is a git dependency; the lane "runs everywhere, including
 /// worktrees"), and classifies each line via the single [`scan_file`] pass.
 ///
 /// That one pass feeds the structural (α) and liveness (β) lanes:
@@ -1983,9 +1961,8 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
         }
         // Read the working tree directly (only enumeration is a git seam). Skip
         // unreadable paths fail-safe.
-        let content = match std::fs::read_to_string(ctx.project_root.join(path)) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Some(content) = ctx.read_relative(path) else {
+            continue;
         };
         // Counted only after a successful read, so fail-safe skips above are
         // excluded from the §6.6 scan evidence by construction.
