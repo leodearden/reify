@@ -666,10 +666,11 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
 // large stack. It cannot be exercised headlessly — it takes `tauri::AppHandle`
 // and `tauri::State`, and `main.rs` is a `required-features = ["gui"]` `[[bin]]`
 // — so the lib-side entry point it delegates to is what carries the guards,
-// following the convention task 5772 used for its fourteen wrappers.
+// following the convention task 5772 used for its own wrappers.
 //
-// This section owns the RESULT-PRESERVATION half only. Where the dispatch RUNS
-// is pinned once, in
+// This section owns what the dispatch COMPUTES: that relocating it preserves a
+// read's result, and that a WRITE still lands in the caller's engine. Where it
+// RUNS is pinned once, in
 // `large_stack_tests::the_mcp_dispatch_shares_the_one_engine_lane`, by `ThreadId`
 // equality against `run_on_worker` — a strictly stronger check than the thread
 // NAME this file could assert (a second lane built with the same `&'static str`
@@ -742,5 +743,85 @@ fn mcp_tool_call_on_large_stack_is_result_preserving() {
         sorted_cell_ids(&direct),
         "relocating the dispatch onto a large stack must not change the set of \
          parameters it reports"
+    );
+}
+
+/// The `value` string a `reify_get_parameters` result reports for `cell_id`.
+///
+/// Panics rather than returning an error, for the reason [`sorted_cell_ids`]
+/// gives: a missing or malformed entry means the dispatch under test is broken.
+fn parameter_value(result: &serde_json::Value, cell_id: &str) -> String {
+    let entries = result.as_array().unwrap_or_else(|| {
+        panic!("a reify_get_parameters result must be a JSON array; got: {result}")
+    });
+    let entry = entries
+        .iter()
+        .find(|entry| entry["cell_id"] == cell_id)
+        .unwrap_or_else(|| panic!("no parameter entry for {cell_id}; got: {result}"));
+    entry["value"]
+        .as_str()
+        .unwrap_or_else(|| panic!("every parameter entry must carry a string value; got: {entry}"))
+        .to_owned()
+}
+
+/// A WRITE dispatched through `mcp_tool_call_on_large_stack` mutates the
+/// CALLER's engine — the contract the by-value signature rests on.
+///
+/// A persistent lane needs a `'static` closure, so the `TauriToolContext` is
+/// moved whole into the job. What must survive that move is the `Arc` inside it:
+/// an implementation that satisfied the `'static` bound by rebuilding a context
+/// over a FRESH `EngineSession` inside the closure would return a
+/// correctly-shaped result for every read-only tool — passing the guard above
+/// and the lane-identity one alike — while silently discarding every MCP write.
+/// That is why the probe is a write, and why the mutating tools are the ones
+/// this routing exists for: `open_file`, `update_source` and `set_parameter`
+/// drive the full recursive compiles the 256 MiB stack is there to hold.
+///
+/// The read-back deliberately goes through a SECOND context over the SAME `Arc`,
+/// via the DIRECT dispatcher. Sharing nothing with the first context but the
+/// engine handle is what makes the assertion about the handle rather than about
+/// one context object, and keeping the read on the un-relocated path means a
+/// failure points at the write.
+#[test]
+fn a_write_dispatched_on_the_lane_lands_in_the_callers_engine() {
+    let engine = make_engine();
+
+    // Non-vacuity: pin what the fixture starts at, so "100" below cannot pass by
+    // having been there all along.
+    let before = mcp_tool_call_impl(
+        "reify_get_parameters",
+        serde_json::json!({}),
+        &TauriToolContext::builder(Arc::clone(&engine)).build(),
+    )
+    .expect("baseline dispatch should succeed");
+    assert_eq!(
+        parameter_value(&before, "Bracket.width"),
+        "80",
+        "the bracket fixture must start at its declared default"
+    );
+
+    let written = crate::mcp_context::mcp_tool_call_on_large_stack(
+        TauriToolContext::builder(Arc::clone(&engine)).build(),
+        "reify_set_parameter".to_string(),
+        serde_json::json!({"cell_id": "Bracket.width", "value": "100mm"}),
+    )
+    .expect("a write through the large-stack entry point should succeed");
+    assert_eq!(
+        written["success"], true,
+        "the tool must report the write as applied; got: {written}"
+    );
+
+    let after = mcp_tool_call_impl(
+        "reify_get_parameters",
+        serde_json::json!({}),
+        &TauriToolContext::builder(Arc::clone(&engine)).build(),
+    )
+    .expect("read-back dispatch should succeed");
+    assert_eq!(
+        parameter_value(&after, "Bracket.width"),
+        "100",
+        "a write performed ON THE LANE must be visible through the engine handle \
+         the caller still holds — otherwise the lane mutated a copy and the GUI's \
+         model silently diverges from the one MCP tools edit"
     );
 }
