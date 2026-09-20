@@ -511,6 +511,7 @@ fn extract_initial_point(
     let intervals = derive_param_intervals(
         &problem.auto_params,
         &problem.constraints,
+        &problem.dependent_cells,
         &problem.current_values,
         &problem.functions,
         dispatch,
@@ -1174,6 +1175,12 @@ struct DerivationCtx<'a> {
     /// `DerivedInterval` buffer in the family is addressed by, and the family's
     /// test for "is this ref an auto?".
     auto_index: HashMap<ValueCellId, usize>,
+    /// Per dependent cell, the autos it reads TRANSITIVELY —
+    /// [`crate::decompose::dependent_cell_auto_reads`] verbatim, reused rather
+    /// than reimplemented. A constant-only cell is present with an EMPTY set, a
+    /// cycle-tainted one is ABSENT; [`DerivationCtx::varies_with_solve`] is the
+    /// only reader and owns what each of those means here.
+    auto_reads: HashMap<ValueCellId, HashSet<ValueCellId>>,
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
@@ -1182,6 +1189,7 @@ struct DerivationCtx<'a> {
 impl<'a> DerivationCtx<'a> {
     fn new(
         auto_params: &[AutoParam],
+        dependent_cells: &[(ValueCellId, CompiledExpr)],
         values: &'a ValueMap,
         functions: &'a [CompiledFunction],
         dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
@@ -1192,10 +1200,23 @@ impl<'a> DerivationCtx<'a> {
                 .enumerate()
                 .map(|(i, p)| (p.id.clone(), i))
                 .collect(),
+            auto_reads: crate::decompose::dependent_cell_auto_reads(dependent_cells, auto_params),
             values,
             functions,
             dispatch,
         }
+    }
+
+    /// Does a ref to `id` MOVE when the solver moves?
+    ///
+    /// True for an auto param itself, and for a dependent cell that
+    /// transitively reads one. Both are finite numbers in the map the family
+    /// evaluates against — `build_trial_values` binds the autos and folds every
+    /// cell — so evaluating is no evidence of constancy, and this is the only
+    /// question that separates a bound from a snapshot.
+    fn varies_with_solve(&self, id: &ValueCellId) -> bool {
+        self.auto_index.contains_key(id)
+            || self.auto_reads.get(id).is_some_and(|reads| !reads.is_empty())
     }
 
     /// The expression-evaluation context for a far operand. Assembled per
@@ -1220,16 +1241,28 @@ impl<'a> DerivationCtx<'a> {
 /// scaled can still take its absolute floor.  A bound that cannot be evaluated
 /// must never become a clamp, so here the whole constraint is skipped.
 ///
-/// The auto-param test uses `CompiledExpr::collect_value_refs()`
-/// (`reify-ir/src/expr.rs`), which is exactly the query needed.  It is load-bearing
-/// for the CLAMP box: that box is derived against `trial_values`, in which the auto
-/// params ARE bound, so an expression naming one would evaluate to a perfectly
-/// finite number that is nonetheless not a constant.
+/// The operand's refs come from `CompiledExpr::collect_value_refs()`
+/// (`reify-ir/src/expr.rs`), and each is put to [`DerivationCtx::varies_with_solve`].
+/// This test is load-bearing for the CLAMP box: that box is derived against
+/// `trial_values`, in which the auto params ARE bound and every dependent cell
+/// has been FOLDED to a number, so evaluating successfully proves nothing about
+/// constancy — an operand that moves with the solve evaluates to a perfectly
+/// finite value that is nonetheless not a bound.
+///
+/// `collect_value_refs` alone was not that test (task #6146). It is a purely
+/// SYNTACTIC walk: it recurses into sub-expressions, so an inline
+/// `if up then 3.0 else 5.0` is caught, but it never expands
+/// `dependent_cells`. A derived cell that reads an auto names no auto itself,
+/// so `a >= side` with `side = 3*c` mined this trial's `side` as a HARD lower
+/// bound on `a` — then held `a` to it while `c`, and with it the real value of
+/// `side`, moved away. `varies_with_solve` closes that by following the cell's
+/// transitive auto reads. A cell that reads NO auto (a named alias for a
+/// constant, `let yield_limit = 310MPa`) stays minable: nothing about it moves.
 fn constant_operand_value(expr: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Option<f64> {
     if expr
         .collect_value_refs()
         .iter()
-        .any(|id| ctx.auto_index.contains_key(id))
+        .any(|id| ctx.varies_with_solve(id))
     {
         return None;
     }
@@ -1277,6 +1310,7 @@ fn for_each_leaf_conjunct(expr: &CompiledExpr, f: &mut impl FnMut(&CompiledExpr)
 fn derive_param_intervals(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -1285,7 +1319,7 @@ fn derive_param_intervals(
     if auto_params.is_empty() {
         return out;
     }
-    let ctx = DerivationCtx::new(auto_params, values, functions, dispatch);
+    let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     for (_, expr) in constraints {
         for_each_leaf_conjunct(expr, &mut |leaf| {
             derive_from_expr(leaf, &ctx, &mut out);
@@ -1470,6 +1504,7 @@ fn derived_seed_box(
         &derive_param_intervals(
             &problem.auto_params,
             &problem.constraints,
+            &problem.dependent_cells,
             &problem.current_values,
             &problem.functions,
             dispatch,
@@ -1559,6 +1594,7 @@ fn seed_box_from_intervals(
 fn params_in_underivable_constraints(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -1567,7 +1603,7 @@ fn params_in_underivable_constraints(
     if auto_params.is_empty() {
         return out;
     }
-    let ctx = DerivationCtx::new(auto_params, values, functions, dispatch);
+    let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     // One scratch buffer for the whole walk, reset per leaf conjunct rather than
     // reallocated (review suggestion 1): `collect_underivable` scores EVERY leaf,
     // so a per-leaf `vec![DerivedInterval::default(); n]` allocated a fresh Vec
@@ -2339,6 +2375,7 @@ fn solve_core_with_sd_tolerance(
             &derive_param_intervals(
                 &problem.auto_params,
                 &effective_constraints,
+                &problem.dependent_cells,
                 &trial_values,
                 &problem.functions,
                 dispatch,
@@ -3492,6 +3529,7 @@ fn verify_uniqueness(
     let intervals = derive_param_intervals(
         &problem.auto_params,
         &problem.constraints,
+        &problem.dependent_cells,
         &problem.current_values,
         &problem.functions,
         dispatch,
@@ -3560,6 +3598,7 @@ fn verify_uniqueness(
             &params_in_underivable_constraints(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 dispatch,
@@ -5639,6 +5678,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5663,6 +5703,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5698,6 +5739,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5732,6 +5774,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5810,6 +5853,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![both_readable]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5830,6 +5874,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![mixed]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5865,6 +5910,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![disjunction]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5897,6 +5943,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 Some(&mock),
@@ -8926,6 +8973,7 @@ mod tests {
             &derive_param_intervals(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 None,
@@ -9102,7 +9150,7 @@ mod tests {
         let params = vec![real_auto_param(id.clone())];
         let constraints = as_constraints(exprs);
         let values = ValueMap::new();
-        super::derive_param_intervals(&params, &constraints, &values, &[], None)
+        super::derive_param_intervals(&params, &constraints, &[], &values, &[], None)
             .into_iter()
             .next()
             .expect("one interval per auto param")
@@ -9131,7 +9179,7 @@ mod tests {
             .collect();
         let trial: Vec<f64> = autos.iter().map(|&(_, v)| v).collect();
         let values = super::build_trial_values(&ValueMap::new(), &params, &trial, cells, &[], None);
-        super::derive_param_intervals(&params, &as_constraints(exprs), &values, &[], None)
+        super::derive_param_intervals(&params, &as_constraints(exprs), cells, &values, &[], None)
     }
 
     /// `<a> OP <b>` between two cell refs — the derived-cell far-operand shape
@@ -9384,7 +9432,7 @@ mod tests {
         let params = vec![real_auto_param(q.clone())];
         let constraints = as_constraints(vec![cmp_ref_lit(BinOp::Gt, &q, 1.0)]);
         let values = ValueMap::new();
-        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[], None);
+        let intervals = super::derive_param_intervals(&params, &constraints, &[], &values, &[], None);
         assert_eq!(
             intervals[0].lo,
             Some((1.0, true)),
@@ -9468,7 +9516,7 @@ mod tests {
         let q_le_inf = cmp_ref_lit(BinOp::Le, &q, f64::INFINITY);
 
         let constraints = as_constraints(vec![q_ge_p, sum_ge, q_eq, q_ne, q_ge_undef, q_le_inf]);
-        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[], None);
+        let intervals = super::derive_param_intervals(&params, &constraints, &[], &values, &[], None);
 
         assert_eq!(
             intervals[0],
@@ -9520,7 +9568,7 @@ mod tests {
 
         // Lower only.
         let lower_only = as_constraints(vec![cmp_ref_lit(BinOp::Ge, &q, 1.0)]);
-        let iv = super::derive_param_intervals(&params, &lower_only, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &lower_only, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (1.0, default_hi),
@@ -9529,7 +9577,7 @@ mod tests {
 
         // Upper only.
         let upper_only = as_constraints(vec![cmp_ref_lit(BinOp::Le, &q, 100.0)]);
-        let iv = super::derive_param_intervals(&params, &upper_only, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &upper_only, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, 100.0),
@@ -9537,7 +9585,7 @@ mod tests {
         );
 
         // Neither.
-        let iv = super::derive_param_intervals(&params, &[], &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &[], &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -9563,7 +9611,7 @@ mod tests {
             cmp_ref_lit(BinOp::Ge, &q, 50.0),
             cmp_ref_lit(BinOp::Le, &q, 10.0),
         ]);
-        let iv = super::derive_param_intervals(&params, &inverted, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &inverted, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -9575,7 +9623,7 @@ mod tests {
             cmp_ref_lit(BinOp::Ge, &q, 5.0),
             cmp_ref_lit(BinOp::Le, &q, 5.0),
         ]);
-        let iv = super::derive_param_intervals(&params, &degenerate, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &degenerate, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
