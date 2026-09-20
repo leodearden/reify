@@ -20,7 +20,11 @@ use reify_ir::{
     ElementOrderTag, GeometryError, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment,
 };
 use reify_ir::geometry::MeshInvariant;
-use reify_kernel_gmsh::GmshKernel;
+use reify_kernel_gmsh::mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS;
+use reify_kernel_gmsh::{
+    EntityAttribution, GmshKernel, MeshingOptions, ffi, init,
+    mesh_surface_to_volume_with_attribution,
+};
 
 fn h(n: u64) -> GeometryHandleId {
     GeometryHandleId(n)
@@ -446,6 +450,79 @@ fn attributed_producer_output_is_reproducible_across_repeated_calls() {
              (rep {rep} pair, rep 0 pair): {divergence:?}. The morph projects each \
              boundary node through this map, so a reshuffle flips the morph-or-remesh \
              verdict `decide_morph_or_remesh` reaches"
+        );
+    }
+}
+
+/// The attributed producer leaves every mesh-size process-global at gmsh's
+/// default.
+///
+/// One of the four per-entry-point outbound guards task #6968 added, all of the
+/// same shape and all iterating [`GMSH_SIZE_OPTION_DEFAULTS`] rather than
+/// naming options, so a sixth process-global added to the production list is
+/// asserted against every writer on the day it lands.
+///
+/// RED before the fix: `run_meshing_with_entity_queries` (`mesh_boundary.rs`)
+/// writes `Mesh.MeshSizeMin`/`MeshSizeMax` behind
+/// `if let Some(s) = options.mesh_size && s > 0.0` and restores neither, so
+/// both read back as the requested size. gmsh's option table survives
+/// `gmshClear()`, so that size then decided the density of every later
+/// defaults-relying call in the process.
+///
+/// Goes through the free producer rather than the `GeometryKernel` trait
+/// method: `mesh_surface_to_volume_attributed` builds its own
+/// `MeshingOptions { deterministic: true, ..Default::default() }`, whose
+/// `mesh_size` is `None`, which is exactly the path that writes NO clamp — so
+/// the trait method could not make this guard fire at all.
+///
+/// Needs no whole-body serialising mutex, for the reason
+/// `mesh_to_volume_tests.rs::mesh_to_volume_leaves_the_gmsh_logger_stopped`
+/// gives: the asserted property is one every sibling in this binary also
+/// leaves behind once the fix is in, so a sibling interleaving between the
+/// call and the read cannot flip the result. Before the fix a sibling leaves
+/// its OWN size in the table, which is still not a default — so the guard is
+/// order-independent in both states.
+#[test]
+fn mesh_surface_to_volume_with_attribution_leaves_every_size_option_at_gmsh_defaults() {
+    /// Unequal to every gmsh size default, so the read cannot pass by accident
+    /// on a table nobody wrote.
+    const REQUESTED: f64 = 0.375;
+
+    let surface = subdivided_unit_cube_surface();
+    let attribution = EntityAttribution {
+        faces: six_face_anchors(),
+        edges: Vec::new(),
+        vertices: Vec::new(),
+        match_tolerance: 0.3,
+    };
+    mesh_surface_to_volume_with_attribution(
+        &surface,
+        &MeshingOptions {
+            mesh_size: Some(REQUESTED),
+            deterministic: true,
+            ..Default::default()
+        },
+        ElementOrderTag::P1,
+        None,
+        None,
+        None,
+        &attribution,
+    )
+    .expect("mesh_surface_to_volume_with_attribution must succeed on a watertight unit cube");
+
+    // Re-acquire GMSH_LOCK for the read so it is serialised against any
+    // concurrent mesher rather than racing one mid-flight.
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
+        let observed = ffi::option_get_number(option)
+            .unwrap_or_else(|e| panic!("ffi::option_get_number({option}) failed: {e:?}"));
+        assert_eq!(
+            observed, default,
+            "mesh_surface_to_volume_with_attribution(mesh_size: Some({REQUESTED})) must leave \
+             every mesh-size process-global at gmsh's default on exit: {option} reads \
+             {observed}, expected {default}. gmsh's option table survives gmshClear(), so a \
+             deviation here pins every later defaults-relying call in this process to a size \
+             nobody requested — task #6968, enforced by `MeshSizeScope` in mesh_boundary.rs",
         );
     }
 }
