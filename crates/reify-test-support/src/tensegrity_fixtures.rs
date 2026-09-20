@@ -2,57 +2,33 @@
 //!
 //! The "triplex" is the canonical symmetric triangular T-prism used across the
 //! form-finding suites: 6 nodes on a unit circumradius, 3 crossing struts and 9
-//! cables. Before this module it existed as three hand-maintained copies inside
-//! `crates/reify-eval/tests/harness_fea_solver_e2e/` (the force-density gauge,
-//! the T1b free-standing form-find, and the combined membrane δ suite), so a
-//! topology or node-order change had to be mirrored by hand across all three or
-//! they silently drifted apart.
+//! cables. Before this module it existed as hand-maintained copies inside
+//! `crates/reify-eval/tests/harness_fea_solver_e2e/`, so a topology or node-order
+//! change had to be mirrored across all of them or they silently drifted apart.
 //!
 //! ANTI-DRIFT PROPERTY: changing the topology or node order *here* changes every
 //! consuming suite at once. That is the whole point — resist re-inlining a
 //! "just this once" local variant in a call site.
 //!
-//! REMAINING DRIFT SURFACE — the kernel side, deliberately NOT collapsed here.
-//! `crates/reify-solver-elastic` carries five further copies of this prism's
-//! topology and geometry as raw `Vec<[f64; 3]>` / `Vec<(usize, usize)>` rather
-//! than `Value`, so they are outside the "single definition" this module can
-//! claim: `src/form_find_free.rs` (`triplex_topology` + `canonical_prism`),
-//! `src/prestress_stability.rs` (`canonical_prism`),
-//! `tests/tensegrity_t1b_form_find_free.rs`,
-//! `tests/tensegrity_delta_combined_form_find.rs` and
-//! `tests/tensegrity_t2_stability.rs`. The two `src/` ones sit inside a
-//! `#[cfg(test)] mod tests` and are unreachable from another crate; the three
-//! `tests/` ones ARE reachable — reify-solver-elastic already dev-deps
-//! reify-test-support — and `triplex_node_coords` below exists as the
-//! raw-coordinate seam they can collapse onto without any dependency change.
+//! Copies elsewhere in the workspace are still being collapsed onto this module.
+//! Each remaining one is inventoried by exact path in the task that closes it —
+//! #7286 for the `harness_fea_solver_e2e` siblings, #7292 for
+//! reify-solver-elastic’s `tests/`, and a third #6152 follow-up for the
+//! `#[cfg(test)]`-internal ones — rather than listed here, where nothing would
+//! keep the list true. `triplex_node_coords` below is the raw-coordinate seam
+//! those collapses are meant to land on.
 //!
-//! Harness-side, three `harness_fea_solver_e2e` siblings still carry their own
-//! byte-identical private `node`/`length` pair — `tensegrity_membrane_load.rs`,
-//! `tensegrity_pavilion_e2e.rs` and `tensegrity_t1a_form_find.rs` — as does the
-//! `#[cfg(test)] mod tests` of `crates/reify-stdlib/src/tensegrity.rs`, which
-//! already dev-deps this crate. Each pair is [`crate::values::point3`] /
-//! [`crate::values::meters`] re-spelled, so every one of those collapses is
-//! mechanical; they are unfinished only because those files lie outside the
-//! locked scope of the change that created this module, which collapsed the
-//! gauge, T1b, δ and T3b copies. The three harness ones are tracked as #7286.
+//! Two axes on which the superseded copies genuinely differed are preserved
+//! rather than normalised away, because both are load-bearing inputs to a solve:
 //!
-//! Recording both surfaces here replaces the note the force-density gauge used
-//! to carry, which tracked that harness-side `node`/`length` family alongside
-//! the fixture itself.
-//!
-//! The two axes on which the three harness copies genuinely differed are
-//! preserved rather than normalised away, because both are load-bearing:
-//!
-//!   * bottom-triangle height — the gauge and T1b prisms have their bottom
-//!     triangle at `z = 0.0`; δ's sits at `z = -1.0`, a taller prism that feeds
-//!     a different solve. The two live behind the named constructors
-//!     [`canonical_triplex_tensegrity`] and [`tall_triplex_tensegrity`] so the
-//!     geometry choice stays legible at the call site instead of becoming a
-//!     positional float.
-//!   * `surfaces` — see [`tensegrity`]: T1b's structure OMITS the `surfaces`
-//!     field entirely, where the gauge and δ carry it. Absent and present-but-
-//!     empty are different inputs, and at least one test turns on the
-//!     distinction.
+//!   * bottom-triangle height — [`canonical_triplex_tensegrity`] puts it at
+//!     `z = 0.0` (the gauge and T1b prism), [`tall_triplex_tensegrity`] at
+//!     `z = -1.0` (δ’s taller prism, which feeds a different solve). Named
+//!     constructors, so the geometry choice stays legible at the call site
+//!     instead of becoming a positional float.
+//!   * `surfaces` presence — see [`tensegrity`]: T1b’s structure OMITS the
+//!     field where the gauge and δ carry it. Absent and present-but-empty are
+//!     different inputs, and at least one test turns on the distinction.
 
 use crate::values::point3;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
@@ -100,13 +76,13 @@ const TRIPLEX_TOP_Z: f64 = 1.0;
 /// top triangle (nodes 0, 1, 2) at [`TRIPLEX_TOP_Z`] and azimuth 120°·i, bottom
 /// triangle (nodes 3, 4, 5) at `bottom_z` and azimuth 120°·i + 30°.
 ///
-/// SEAM for reify-solver-elastic's five `canonical_prism()` copies, which are
-/// exactly this value in exactly this `Vec<[f64; 3]>` shape (see the module
-/// header); its three `tests/` copies can collapse onto this function without a
-/// dependency change. PRIVATE until that lands: widening it costs nothing in the
-/// diff that brings the first caller, and until then a `pub` with no consumer
-/// only enlarges the interface this crate carries into reify-audit's build
-/// graph. `triplex_nodes` is the `Value`-form counterpart.
+/// SEAM for the raw-coordinate copies still to be collapsed (module header):
+/// each is exactly this value in exactly this `Vec<[f64; 3]>` shape, and every
+/// crate holding one already dev-deps this one, so none needs a dependency
+/// change. PRIVATE until the first lands: widening it costs nothing in that
+/// diff, and until then a `pub` with no consumer only enlarges the interface
+/// this crate carries into reify-audit's build graph. `triplex_nodes` is the
+/// `Value`-form counterpart.
 ///
 /// `bottom_z` is a parameter, not a constant, because the pre-existing fixtures
 /// genuinely disagreed on it — gauge and T1b use `0.0`, δ uses `-1.0`. Silently
