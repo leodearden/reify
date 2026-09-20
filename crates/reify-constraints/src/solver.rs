@@ -511,6 +511,7 @@ fn extract_initial_point(
     let intervals = derive_param_intervals(
         &problem.auto_params,
         &problem.constraints,
+        &problem.dependent_cells,
         &problem.current_values,
         &problem.functions,
         dispatch,
@@ -1155,6 +1156,111 @@ impl DerivedInterval {
     }
 }
 
+/// Everything the bound-derivation family reads and nothing it mutates:
+/// [`derive_param_intervals`], [`params_in_underivable_constraints`] and the
+/// per-leaf workers they drive ([`derive_from_expr`], [`derive_from_side`],
+/// [`collect_underivable_in_leaf`], [`constant_operand_value`]).
+///
+/// One context rather than a positional quartet repeated at every hop: the
+/// family is six functions deep and each signature used to re-list
+/// `(auto_index, values, functions, dispatch)` verbatim, which is what pushed
+/// [`derive_from_side`] past clippy's argument-count threshold. A lookup the
+/// whole family needs is then a new MEMBER here, not a seventh parameter on six
+/// signatures.
+///
+/// Built once per derivation walk by the two entry points, which are the only
+/// members holding `auto_params`; every inner member takes `&DerivationCtx`.
+///
+/// COST: `auto_reads` and `cell_ids` are pure functions of
+/// `(dependent_cells, auto_params)`, neither of which changes across a
+/// resolution — yet both are rebuilt at every entry-point call, which over one
+/// resolution is `extract_initial_point` + [`derived_seed_box`] + one per
+/// `solve_core_with_sd_tolerance` across the multistart points + two in
+/// `verify_uniqueness`. A model with NO dependent cells pays nothing
+/// (`dependent_cell_auto_reads` early-returns an empty map and the `cell_ids`
+/// collect is over an empty slice), and otherwise the reachability DFS is
+/// dwarfed by the Nelder-Mead fold it precedes — so this is priced, not
+/// overlooked. Hoisting the pair to once per resolution means threading a
+/// prebuilt context through all four consumers, which is task #7728 rather
+/// than part of the fix this context exists to carry.
+struct DerivationCtx<'a> {
+    /// Position of each auto param within `auto_params` — the index every
+    /// `DerivedInterval` buffer in the family is addressed by, and the family's
+    /// test for "is this ref an auto?".
+    auto_index: HashMap<ValueCellId, usize>,
+    /// Per dependent cell, the autos it reads TRANSITIVELY —
+    /// [`crate::decompose::dependent_cell_auto_reads`] verbatim, reused rather
+    /// than reimplemented. A constant-only cell is present with an EMPTY set, a
+    /// cycle-tainted one is ABSENT; [`DerivationCtx::varies_with_solve`] is the
+    /// only reader and owns what each of those means here.
+    auto_reads: HashMap<ValueCellId, HashSet<ValueCellId>>,
+    /// Every dependent-cell id, including the cycle-tainted ones `auto_reads`
+    /// omits. This is what tells an omission apart from an ordinary value:
+    /// both are absent from the map, and only one of them varies.
+    cell_ids: HashSet<ValueCellId>,
+    values: &'a ValueMap,
+    functions: &'a [CompiledFunction],
+    dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+}
+
+impl<'a> DerivationCtx<'a> {
+    fn new(
+        auto_params: &[AutoParam],
+        dependent_cells: &[(ValueCellId, CompiledExpr)],
+        values: &'a ValueMap,
+        functions: &'a [CompiledFunction],
+        dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+    ) -> Self {
+        Self {
+            auto_index: auto_params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.id.clone(), i))
+                .collect(),
+            auto_reads: crate::decompose::dependent_cell_auto_reads(dependent_cells, auto_params),
+            cell_ids: dependent_cells.iter().map(|(id, _)| id.clone()).collect(),
+            values,
+            functions,
+            dispatch,
+        }
+    }
+
+    /// Does a ref to `id` MOVE when the solver moves?
+    ///
+    /// True for an auto param itself, and for a dependent cell that either
+    /// transitively reads one or has UNKNOWN auto dependence. All of them are
+    /// finite numbers in the map the family evaluates against —
+    /// `build_trial_values` binds the autos and folds every cell — so
+    /// evaluating is no evidence of constancy, and this is the only question
+    /// that separates a bound from a snapshot.
+    ///
+    /// Unknown resolves to "varies" because the caller is a GUARD, where the
+    /// cost of the two errors is not symmetric: treating a constant as varying
+    /// only widens a box, while treating a varying cell as constant returns a
+    /// wrong answer silently.
+    fn varies_with_solve(&self, id: &ValueCellId) -> bool {
+        if self.auto_index.contains_key(id) {
+            return true;
+        }
+        match self.auto_reads.get(id) {
+            Some(reads) => !reads.is_empty(),
+            // Absent from the map and a known cell id ⇒ cycle-tainted, auto
+            // dependence UNKNOWN. Absent and not a cell id at all ⇒ an ordinary
+            // value or param, which nothing makes vary. Both are absences, so
+            // membership in `cell_ids` is what tells them apart.
+            None => self.cell_ids.contains(id),
+        }
+    }
+
+    /// The expression-evaluation context for a far operand. Assembled per
+    /// operand, exactly as the family did before these three borrows moved into
+    /// the context — [`ctx_with`] is the single place that knows how a
+    /// `dispatch` is attached.
+    fn eval_ctx(&self) -> reify_expr::EvalContext<'a> {
+        ctx_with(self.values, self.functions, self.dispatch)
+    }
+}
+
 /// Evaluate a constraint operand that must be CONSTANT with respect to the auto
 /// params, returning its finite SI value.
 ///
@@ -1168,26 +1274,71 @@ impl DerivedInterval {
 /// scaled can still take its absolute floor.  A bound that cannot be evaluated
 /// must never become a clamp, so here the whole constraint is skipped.
 ///
-/// The auto-param test uses `CompiledExpr::collect_value_refs()`
-/// (`reify-ir/src/expr.rs`), which is exactly the query needed.  It is load-bearing
-/// for the CLAMP box: that box is derived against `trial_values`, in which the auto
-/// params ARE bound, so an expression naming one would evaluate to a perfectly
-/// finite number that is nonetheless not a constant.
-fn constant_operand_value(
-    expr: &CompiledExpr,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> Option<f64> {
+/// The operand's refs come from `CompiledExpr::collect_value_refs()`
+/// (`reify-ir/src/expr.rs`), and each is put to [`DerivationCtx::varies_with_solve`].
+/// This test is load-bearing for the CLAMP box: that box is derived against
+/// `trial_values`, in which the auto params ARE bound and every dependent cell
+/// has been FOLDED to a number, so evaluating successfully proves nothing about
+/// constancy — an operand that moves with the solve evaluates to a perfectly
+/// finite value that is nonetheless not a bound.
+///
+/// `collect_value_refs` alone was not that test (task #6146). It is a purely
+/// SYNTACTIC walk: it recurses into sub-expressions, so an inline
+/// `if up then 3.0 else 5.0` is caught, but it never expands
+/// `dependent_cells`. A derived cell that reads an auto names no auto itself,
+/// so `a >= side` with `side = 3*c` mined this trial's `side` as a HARD lower
+/// bound on `a` — then held `a` to it while `c`, and with it the real value of
+/// `side`, moved away. `varies_with_solve` closes that by following the cell's
+/// transitive auto reads. A cell that reads NO auto (a named alias for a
+/// constant, `let yield_limit = 310MPa`) stays minable: nothing about it moves.
+///
+/// A CYCLE-TAINTED cell is treated as varying too, which resolves — for THIS
+/// consumer, locally — the residual `decompose_into_components_with_reads`
+/// flags ("Closing it properly means returning the omitted-id set alongside the
+/// map … larger than a doc correction and outside task #5467's lock set"). Such
+/// a cell is omitted from the map rather than published with a partial set,
+/// which is the fail-safe direction for that map's drop-side filter and the
+/// UNSAFE one here; `DerivationCtx::cell_ids` recovers the distinction without
+/// widening `dependent_cell_auto_reads`' interface or changing its semantics.
+/// The CONNECTIVITY consumer's copy of the same residual is untouched and
+/// stays open.
+///
+/// The `floor_applied` gate that decides whether a CLAMP box is built at all is
+/// a separate question, settled by task #5711 — not re-litigated here.
+///
+/// # One policy for all four consumers, and what that costs
+///
+/// This rejection is applied UNIFORMLY, though the four consumers do not all
+/// need it. Only the CLAMP box and `verify_uniqueness`' bracketing predicate
+/// require a genuine INVARIANT bound; `extract_initial_point`,
+/// [`derived_seed_box`]/[`multistart_points`] and the perturbation anchors need
+/// only a plausible SEED, for which a trial snapshot of a derived cell would be
+/// harmless — and better than the fallback.
+///
+/// The cost is therefore real and priced, not overlooked: for an auto floored
+/// ONLY by a derived cell, `extract_initial_point` falls through to the fixed
+/// `0.01` and the seed boxes fall back to `default_bounds_for`, giving up
+/// exactly the #5618 improvement those paths exist for. Pinned by
+/// `extract_initial_point_derived_cell_floor_falls_through_to_fixed_default`.
+///
+/// One rule is still preferred over a per-consumer split, on three grounds:
+/// the corpus survey (`docs/notes/derived-cell-bound-derivation-survey.md`)
+/// found ZERO models of that shape, so the loss is latent; the fallback is the
+/// documented pre-#5618 behaviour rather than a new defect; and a second
+/// seed/clamp axis here would cross the one [`resolve_bounds`] already carries
+/// (`include_strict`), leaving two independent switches for a future reader to
+/// keep aligned. If a real model ever pays this cost, the split is a
+/// `snapshot_operands_ok` flag on [`DerivationCtx`] and the test above is the
+/// assertion that should flip.
+fn constant_operand_value(expr: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Option<f64> {
     if expr
         .collect_value_refs()
         .iter()
-        .any(|id| auto_index.contains_key(id))
+        .any(|id| ctx.varies_with_solve(id))
     {
         return None;
     }
-    reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch))
+    reify_expr::eval_expr(expr, &ctx.eval_ctx())
         .as_f64()
         .filter(|v| v.is_finite())
 }
@@ -1231,6 +1382,7 @@ fn for_each_leaf_conjunct(expr: &CompiledExpr, f: &mut impl FnMut(&CompiledExpr)
 fn derive_param_intervals(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -1239,14 +1391,10 @@ fn derive_param_intervals(
     if auto_params.is_empty() {
         return out;
     }
-    let auto_index: HashMap<ValueCellId, usize> = auto_params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (p.id.clone(), i))
-        .collect();
+    let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     for (_, expr) in constraints {
         for_each_leaf_conjunct(expr, &mut |leaf| {
-            derive_from_expr(leaf, &auto_index, values, functions, &mut out, dispatch);
+            derive_from_expr(leaf, &ctx, &mut out);
         });
     }
     out
@@ -1264,14 +1412,7 @@ fn derive_param_intervals(
 /// suggestion 3 — [`collect_underivable_in_leaf`] used to carry a second copy
 /// of that recursion). Calling this directly on an `A AND B` node therefore
 /// derives NOTHING, by design; go through [`for_each_leaf_conjunct`].
-fn derive_from_expr(
-    expr: &CompiledExpr,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    out: &mut [DerivedInterval],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) {
+fn derive_from_expr(expr: &CompiledExpr, ctx: &DerivationCtx<'_>, out: &mut [DerivedInterval]) {
     let CompiledExprKind::BinOp { op, left, right } = &expr.kind else {
         return;
     };
@@ -1279,22 +1420,14 @@ fn derive_from_expr(
         BinOp::Ge | BinOp::Gt => {
             // left ≥ right → `left` bounded BELOW by right, `right` bounded ABOVE by left.
             let strict = matches!(op, BinOp::Gt);
-            derive_from_side(
-                left, right, true, strict, auto_index, values, functions, out, dispatch,
-            );
-            derive_from_side(
-                right, left, false, strict, auto_index, values, functions, out, dispatch,
-            );
+            derive_from_side(left, right, true, strict, ctx, out);
+            derive_from_side(right, left, false, strict, ctx, out);
         }
         BinOp::Le | BinOp::Lt => {
             // left ≤ right → `left` bounded ABOVE by right, `right` bounded BELOW by left.
             let strict = matches!(op, BinOp::Lt);
-            derive_from_side(
-                left, right, false, strict, auto_index, values, functions, out, dispatch,
-            );
-            derive_from_side(
-                right, left, true, strict, auto_index, values, functions, out, dispatch,
-            );
+            derive_from_side(left, right, false, strict, ctx, out);
+            derive_from_side(right, left, true, strict, ctx, out);
         }
         // And (split upstream by `for_each_leaf_conjunct`, so it cannot appear
         // here on the intended call path), Eq, Ne, Or and every arithmetic op:
@@ -1316,25 +1449,20 @@ fn derive_from_expr(
 ///
 /// (the "`far OP p`" shape is covered by the caller invoking this function once per
 /// operand side).  Anything else is skipped.
-#[allow(clippy::too_many_arguments)]
 fn derive_from_side(
     near: &CompiledExpr,
     far: &CompiledExpr,
     lower: bool,
     strict: bool,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
+    ctx: &DerivationCtx<'_>,
     out: &mut [DerivedInterval],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
-    let Some(far_value) = constant_operand_value(far, auto_index, values, functions, dispatch)
-    else {
+    let Some(far_value) = constant_operand_value(far, ctx) else {
         return;
     };
     match &near.kind {
         CompiledExprKind::ValueRef(id) => {
-            if let Some(&i) = auto_index.get(id) {
+            if let Some(&i) = ctx.auto_index.get(id) {
                 record_bound(&mut out[i], far_value, lower, strict);
             }
         }
@@ -1345,18 +1473,16 @@ fn derive_from_side(
         } => {
             // `p − k OP far` → `p OP far + k`
             if let CompiledExprKind::ValueRef(id) = &left.kind
-                && let Some(&i) = auto_index.get(id)
-                && let Some(k) =
-                    constant_operand_value(right, auto_index, values, functions, dispatch)
+                && let Some(&i) = ctx.auto_index.get(id)
+                && let Some(k) = constant_operand_value(right, ctx)
             {
                 record_bound(&mut out[i], far_value + k, lower, strict);
                 return;
             }
             // `k − p OP far` → `p OP′ k − far`  (multiplying by −1 flips the direction)
             if let CompiledExprKind::ValueRef(id) = &right.kind
-                && let Some(&i) = auto_index.get(id)
-                && let Some(k) =
-                    constant_operand_value(left, auto_index, values, functions, dispatch)
+                && let Some(&i) = ctx.auto_index.get(id)
+                && let Some(k) = constant_operand_value(left, ctx)
             {
                 record_bound(&mut out[i], k - far_value, !lower, strict);
             }
@@ -1450,6 +1576,7 @@ fn derived_seed_box(
         &derive_param_intervals(
             &problem.auto_params,
             &problem.constraints,
+            &problem.dependent_cells,
             &problem.current_values,
             &problem.functions,
             dispatch,
@@ -1536,9 +1663,31 @@ fn seed_box_from_intervals(
 /// mentions it is opaque.
 ///
 /// Pure function of its inputs — no solve, no I/O, no mutation.
+///
+/// # The MENTIONS test stays syntactic, by design and not by oversight
+///
+/// [`collect_underivable_in_leaf`] asks which autos a leaf MENTIONS using the
+/// raw `leaf.collect_value_refs()`, so an auto a constraint reaches only
+/// THROUGH a derived cell is invisible to it. Since task #6146 the far-operand
+/// test on the other side of this family IS transitive
+/// ([`DerivationCtx::varies_with_solve`]), so the two halves are deliberately
+/// asymmetric.
+///
+/// The asymmetry has a cost, pre-dating #6146 and unchanged by it:
+/// `constraint side >= 5` with `side = 3*c` bounds nothing for strict auto `c`
+/// AND never adds `c` to this set, so `c` is neither bracketed nor abstaining
+/// and the γ path reports `ConstraintNonUnique` — the same class of §11.6 false
+/// negative #6146 removed, in the mirror direction.
+///
+/// Widening it is NOT a doc-sized change: `decompose::expand_refs_through_dependent_cells`
+/// exists and would supply the reach, but it needs the cycle-tainted treatment
+/// [`DerivationCtx::varies_with_solve`] encodes, and growing this set moves
+/// models from erroring to `Solved` — a §11.6 verdict change that wants its own
+/// regression sweep rather than a ride-along. Tracked as task #7727.
 fn params_in_underivable_constraints(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -1547,11 +1696,7 @@ fn params_in_underivable_constraints(
     if auto_params.is_empty() {
         return out;
     }
-    let auto_index: HashMap<ValueCellId, usize> = auto_params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (p.id.clone(), i))
-        .collect();
+    let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     // One scratch buffer for the whole walk, reset per leaf conjunct rather than
     // reallocated (review suggestion 1): `collect_underivable` scores EVERY leaf,
     // so a per-leaf `vec![DerivedInterval::default(); n]` allocated a fresh Vec
@@ -1559,15 +1704,7 @@ fn params_in_underivable_constraints(
     let mut scratch = vec![DerivedInterval::default(); auto_params.len()];
     for (_, expr) in constraints {
         for_each_leaf_conjunct(expr, &mut |leaf| {
-            collect_underivable_in_leaf(
-                leaf,
-                &auto_index,
-                values,
-                functions,
-                &mut scratch,
-                &mut out,
-                dispatch,
-            );
+            collect_underivable_in_leaf(leaf, &ctx, &mut scratch, &mut out);
         });
     }
     out
@@ -1588,17 +1725,14 @@ fn params_in_underivable_constraints(
 /// documented on [`params_in_underivable_constraints`] depends on the reset.
 fn collect_underivable_in_leaf(
     leaf: &CompiledExpr,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
+    ctx: &DerivationCtx<'_>,
     scratch: &mut [DerivedInterval],
     out: &mut HashSet<usize>,
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
     scratch.fill(DerivedInterval::default());
-    derive_from_expr(leaf, auto_index, values, functions, scratch, dispatch);
+    derive_from_expr(leaf, ctx, scratch);
     for id in leaf.collect_value_refs() {
-        if let Some(&i) = auto_index.get(&id)
+        if let Some(&i) = ctx.auto_index.get(&id)
             && scratch
                 .get(i)
                 .is_some_and(|iv| iv.lo.is_none() && iv.hi.is_none())
@@ -2334,6 +2468,7 @@ fn solve_core_with_sd_tolerance(
             &derive_param_intervals(
                 &problem.auto_params,
                 &effective_constraints,
+                &problem.dependent_cells,
                 &trial_values,
                 &problem.functions,
                 dispatch,
@@ -3487,6 +3622,7 @@ fn verify_uniqueness(
     let intervals = derive_param_intervals(
         &problem.auto_params,
         &problem.constraints,
+        &problem.dependent_cells,
         &problem.current_values,
         &problem.functions,
         dispatch,
@@ -3555,6 +3691,7 @@ fn verify_uniqueness(
             &params_in_underivable_constraints(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 dispatch,
@@ -5634,6 +5771,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5658,6 +5796,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5693,6 +5832,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5727,6 +5867,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5805,6 +5946,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![both_readable]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5825,6 +5967,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![mixed]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5860,6 +6003,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![disjunction]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5892,6 +6036,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 Some(&mock),
@@ -5952,6 +6097,142 @@ mod tests {
                 &HashSet::from([0]),
             ),
             "param 1 has no unreadable-constraint evidence, so the verdict must stay false"
+        );
+    }
+
+    /// CHARACTERISATION (task #6146): the one user-visible verdict this task
+    /// moves, pinned so the next "optimisation" of the derivation guard cannot
+    /// revert it silently.
+    ///
+    /// A STRICT auto whose only constraint is `a >= side`, with `side = 3*c` a
+    /// derived cell varying with auto `c` — the shape #6146's corpus survey
+    /// found ZERO instances of in 715 tracked `.ri` files, which is why this is
+    /// characterisation rather than a regression fixture.
+    ///
+    /// Unlike its neighbours above this routes through the REAL
+    /// `derive_param_intervals` / `params_in_underivable_constraints` rather
+    /// than hand-built `DerivedInterval`s: what changed is which intervals and
+    /// which abstention set those two produce for this model, and a hand-built
+    /// pair would pin the prediction instead of the behaviour.
+    ///
+    /// MEASURED on this branch, same fixture, by flipping only
+    /// `DerivationCtx::varies_with_solve` back to its pre-#6146 body
+    /// (`auto_index.contains_key(id)`) and re-running:
+    ///
+    /// | | `a`'s interval | abstention set | γ verdict |
+    /// |---|---|---|---|
+    /// | BEFORE | `lo = Some((0.0075, false))`, `hi = None` | `{}` | `ConstraintNonUnique` |
+    /// | AFTER  | `lo = None`, `hi = None` | `{0}` | `Solved` |
+    ///
+    /// BEFORE, the bogus bound populated `lo`, so `collect_underivable_in_leaf`
+    /// saw a readable side and withheld the abstention — and the model errored
+    /// on the strength of a bound the user never wrote. AFTER, `a` derives
+    /// neither side, lands in the abstention set, and the esc-5711-3 abstention
+    /// counts it as bracketed.
+    ///
+    /// The direction is MONOTONE, which is the test's actual point: the fix can
+    /// only GROW the abstention set, and `strict_autos_constraint_bracketed` is
+    /// documented monotone in it ("growing that set can only move a param from
+    /// 'not bracketed' to 'abstain', never the reverse"). So no previously-
+    /// `Solved` γ model can newly fail — the verdict moves `false → true` or
+    /// not at all.
+    ///
+    /// SCOPE: that argument covers the γ branch ONLY. The non-γ path reuses the
+    /// same `intervals` through `seed_box_from_intervals` to build its
+    /// PERTURBATION ANCHORS, and a widened box there re-anchors the confirming
+    /// re-solve, which can land on a different local optimum and so move a
+    /// verdict in EITHER direction. Nothing here pins that; it is latent for
+    /// the same reason the rest of this task is (the corpus survey found no
+    /// model of this shape), and it is a property of the anchor box, not of the
+    /// abstention monotonicity this test asserts.
+    #[test]
+    fn gamma_strict_auto_floored_only_by_a_derived_cell_abstains_not_errors() {
+        use std::collections::HashSet;
+
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let a = ValueCellId::new("Part", "a");
+        let c = ValueCellId::new("Part", "c");
+        let side = ValueCellId::new("Part", "side");
+        let length_ref = |id: &ValueCellId| CompiledExpr::value_ref(id.clone(), Type::length());
+
+        // `a` is the strict auto under test; `c` is free, so it carries no
+        // §11.6 obligation and the verdict turns on `a` alone.
+        let params = vec![
+            AutoParam {
+                id: a.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
+            AutoParam {
+                id: c.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: true,
+            },
+        ];
+        // `side = 3 * c`.
+        let cells = vec![(
+            side.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::literal(
+                    Value::Scalar {
+                        si_value: 3.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Type::dimensionless_scalar(),
+                ),
+                length_ref(&c),
+                Type::length(),
+            ),
+        )];
+        // The model's ONLY constraint on `a`.
+        let constraints = vec![(
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(BinOp::Ge, length_ref(&a), length_ref(&side), Type::Bool),
+        )];
+        let values =
+            super::build_trial_values(&ValueMap::new(), &params, &[0.0, 0.0025], &cells, &[], None);
+
+        let intervals =
+            super::derive_param_intervals(&params, &constraints, &cells, &values, &[], None);
+        let underivable = super::params_in_underivable_constraints(
+            &params,
+            &constraints,
+            &cells,
+            &values,
+            &[],
+            None,
+        );
+
+        assert_eq!(
+            (intervals[0].lo, intervals[0].hi),
+            (None, None),
+            "`a >= side` with `side = 3*c` must leave BOTH sides of `a` underived; \
+             before #6146 the lower side held this trial's 0.0075"
+        );
+        assert!(
+            underivable.contains(&0),
+            "a constraint that now derives nothing for `a` is exactly the \
+             unreadable-constraint evidence the abstention keys on, so `a` must \
+             enter the abstention set — before #6146 the bogus `lo` looked like \
+             a readable side and withheld it"
+        );
+        assert!(
+            super::strict_autos_constraint_bracketed(&params, &intervals, &underivable),
+            "`a` abstains, so the γ path reports the model determined rather than \
+             erroring on the strength of a bound the user never wrote"
+        );
+        assert!(
+            !super::strict_autos_constraint_bracketed(&params, &intervals, &HashSet::new()),
+            "MONOTONICITY, the point of this fixture: the empty-evidence call \
+             `verify_uniqueness` makes FIRST still reports not-bracketed, so the \
+             new verdict comes only from GROWING the abstention set. A larger set \
+             can move a param `not bracketed` → `abstain` and never the reverse, \
+             so no previously-`Solved` γ model can newly fail"
         );
     }
 
@@ -8921,6 +9202,7 @@ mod tests {
             &derive_param_intervals(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 None,
@@ -9097,10 +9379,262 @@ mod tests {
         let params = vec![real_auto_param(id.clone())];
         let constraints = as_constraints(exprs);
         let values = ValueMap::new();
-        super::derive_param_intervals(&params, &constraints, &values, &[], None)
+        super::derive_param_intervals(&params, &constraints, &[], &values, &[], None)
             .into_iter()
             .next()
             .expect("one interval per auto param")
+    }
+
+    /// Derive intervals for a problem with SEVERAL autos and DEPENDENT CELLS,
+    /// against the ValueMap the CLAMP box is really derived against.
+    ///
+    /// [`derive_one`] cannot express these cases: it is single-param and
+    /// derives against an EMPTY map, in which no dependent cell resolves at
+    /// all. Here the map comes from `build_trial_values` itself — the
+    /// production fold — so every cell id holds the NUMBER this trial's auto
+    /// assignment materialises it to, which is the precondition that makes a
+    /// varying cell look like a constant to the derivation guard.
+    ///
+    /// `base` is what the model's map already holds before this trial
+    /// (`problem.current_values`' role); `autos` pairs each auto id with its
+    /// value in this trial; `cells` are folded in order over both, so a later
+    /// cell may read an earlier one.
+    fn derive_with_dependent_cells(
+        base: &[(&reify_core::ValueCellId, f64)],
+        autos: &[(&reify_core::ValueCellId, f64)],
+        cells: &[(reify_core::ValueCellId, reify_ir::CompiledExpr)],
+        exprs: Vec<reify_ir::CompiledExpr>,
+    ) -> Vec<super::DerivedInterval> {
+        use reify_core::DimensionVector;
+        let params: Vec<reify_ir::AutoParam> = autos
+            .iter()
+            .map(|(id, _)| real_auto_param((*id).clone()))
+            .collect();
+        let trial: Vec<f64> = autos.iter().map(|&(_, v)| v).collect();
+        let mut prior = ValueMap::new();
+        for &(id, v) in base {
+            prior.insert(
+                id.clone(),
+                reify_ir::Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+        }
+        let values = super::build_trial_values(&prior, &params, &trial, cells, &[], None);
+        super::derive_param_intervals(&params, &as_constraints(exprs), cells, &values, &[], None)
+    }
+
+    /// `<a> OP <b>` between two cell refs — the derived-cell far-operand shape
+    /// `cmp_ref_lit` cannot build.
+    fn cmp_ref_ref(
+        op: reify_ir::BinOp,
+        a: &reify_core::ValueCellId,
+        b: &reify_core::ValueCellId,
+    ) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        reify_ir::CompiledExpr::binop(op, real_ref(a), real_ref(b), Type::Bool)
+    }
+
+    /// `<k> * <id>` — a dependent cell body that VARIES with `id`.
+    fn scaled_ref(k: f64, id: &reify_core::ValueCellId) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        reify_ir::CompiledExpr::binop(
+            reify_ir::BinOp::Mul,
+            real_lit(k),
+            real_ref(id),
+            Type::dimensionless_scalar(),
+        )
+    }
+
+    // ── The dependent-cell indirection hole (task #6146) ────────────────────
+    //
+    // `constant_operand_value` rejects a far operand that SYNTACTICALLY names
+    // an auto, via `collect_value_refs`. That walk is purely syntactic: it
+    // never expands `dependent_cells`. A derived cell that transitively reads
+    // an auto is therefore invisible to it, while `build_trial_values` has
+    // already folded that cell into the map as a finite number — so a
+    // quantity that MOVES with the solve is mined as a fixed bound.
+
+    /// ONE HOP: `a >= side` where `side = 3*c` and `c` is an auto.
+    #[test]
+    fn derive_intervals_rejects_far_operand_that_is_an_auto_reading_dependent_cell() {
+        use reify_core::ValueCellId;
+        use reify_ir::BinOp;
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let side = ValueCellId::new("Derive", "side");
+        let cells = vec![(side.clone(), scaled_ref(3.0, &c))];
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= side` with `side = 3*c` must derive NO lower bound for `a`: \
+             `side` is a VARYING quantity (it moves with auto `c`), and this \
+             trial's materialised 7.5 is a snapshot of it, not a constant. \
+             Deriving from it turns a moving quantity into a fixed clamp on \
+             `a`, held while `c` walks away from the value that produced it"
+        );
+    }
+
+    /// TWO HOPS: `side = 3*mid`, `mid = 2*c`. Pins that the rejection follows
+    /// the chain TRANSITIVELY rather than stopping at the cell's own refs —
+    /// `side`'s body never names an auto at all.
+    #[test]
+    fn derive_intervals_rejects_far_operand_reading_an_auto_two_cells_away() {
+        use reify_core::ValueCellId;
+        use reify_ir::BinOp;
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let mid = ValueCellId::new("Derive", "mid");
+        let side = ValueCellId::new("Derive", "side");
+        let cells = vec![
+            (mid.clone(), scaled_ref(2.0, &c)),
+            (side.clone(), scaled_ref(3.0, &mid)),
+        ];
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&c, 1.25)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= side` with `side = 3*mid` and `mid = 2*c` must derive NO \
+             lower bound: `side` names no auto DIRECTLY, so a one-hop check \
+             would pass it and still clamp `a` against a quantity varying with \
+             auto `c`. Auto dependence has to be followed transitively"
+        );
+    }
+
+    /// ANTI-VACUITY CONTROL — green today and must STAY green. A derived cell
+    /// reading NO auto is a named alias for a constant
+    /// (`examples/fea_bracket_minimize_mass.ri`'s `let yield_limit = 310MPa`),
+    /// and mining a bound from it is CORRECT. Without this case the fix above
+    /// could pass by rejecting every dependent cell outright.
+    #[test]
+    fn derive_intervals_still_mines_a_dependent_cell_that_reads_no_auto() {
+        use reify_core::ValueCellId;
+        use reify_ir::BinOp;
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let yield_limit = ValueCellId::new("Derive", "yield_limit");
+        let cells = vec![(yield_limit.clone(), real_lit(310.0))];
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &yield_limit)],
+        );
+        assert_eq!(
+            ivs[0].lo,
+            Some((310.0, false)),
+            "`a >= yield_limit` with `yield_limit` a constant-only derived cell \
+             must STILL derive 310.0: nothing about it varies with the solve, \
+             so it is a genuine bound. Rejecting every dependent cell would \
+             silently widen the box of every model that names its limits"
+        );
+    }
+
+    /// CONTROL — green today and must STAY green. An INLINE far operand naming
+    /// an auto (`docs/prds/v0_6/fixtures/discrete_mixed.ri`'s
+    /// `constraint t >= (if up then 3.0 else 5.0)`) is already rejected,
+    /// because `collect_value_refs` recurses into `Conditional`. The hole is
+    /// the dependent-cell INDIRECTION specifically, not inline expressions.
+    #[test]
+    fn derive_intervals_still_rejects_an_inline_far_operand_naming_an_auto() {
+        use reify_core::{Type, ValueCellId, hash::ContentHash};
+        use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
+        let a = ValueCellId::new("Derive", "a");
+        let up = ValueCellId::new("Derive", "up");
+        let condition = real_ref(&up);
+        let then_branch = real_lit(3.0);
+        let else_branch = real_lit(5.0);
+        let content_hash = ContentHash::of(&[TAG_CONDITIONAL])
+            .combine(condition.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash);
+        let far = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::dimensionless_scalar(),
+            content_hash,
+        };
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&up, 1.0)],
+            &[],
+            vec![CompiledExpr::binop(BinOp::Ge, real_ref(&a), far, Type::Bool)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= (if up then 3.0 else 5.0)` must derive NO lower bound: the \
+             branch taken varies with auto `up`, and `collect_value_refs` \
+             already sees `up` through the `Conditional`. A fix for the \
+             dependent-cell hole must not regress this syntactic arm"
+        );
+    }
+
+    /// RESIDUAL HOLE: a CYCLE-TAINTED cell is OMITTED from
+    /// `dependent_cell_auto_reads` rather than published with the partial set
+    /// its DFS accumulated (`if incomplete[i] { continue; }`, decompose.rs).
+    /// Omission is the FAIL-SAFE direction for that map's primary consumer, the
+    /// registry's drop-side subset filter — but it is the UNSAFE direction for a
+    /// guard deciding "does this operand vary?", because an absent entry reads
+    /// as "no autos" and the bogus bound is mined anyway.
+    ///
+    /// `p = q + c` and `q = p` are both cycle-tainted AND transitively read auto
+    /// `c`. Reaching `derive_param_intervals` directly is what makes this
+    /// testable: reify-eval's `build_dependent_cells` pre-drops cycles, which is
+    /// the only reason the hole is unreachable in production — and decompose.rs
+    /// says so itself, that the masking "is a property of the CALLER, though,
+    /// not of anything enforced here, so a future producer that stops
+    /// pre-dropping cycles re-opens it with no compile error and no test
+    /// failure". This test is that missing failure.
+    #[test]
+    fn derive_intervals_rejects_a_cycle_tainted_dependent_cell_far_operand() {
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr};
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let p = ValueCellId::new("Derive", "p");
+        let q = ValueCellId::new("Derive", "q");
+        let cells = vec![
+            (
+                p.clone(),
+                CompiledExpr::binop(
+                    BinOp::Add,
+                    real_ref(&q),
+                    real_ref(&c),
+                    Type::dimensionless_scalar(),
+                ),
+            ),
+            (q.clone(), real_ref(&p)),
+        ];
+        // `q` carries a value from the model's last evaluation, so the fold
+        // still resolves the cycle to finite numbers (p = q + c = 3.5) — the
+        // guard cannot lean on an `Undef` to save it.
+        let ivs = derive_with_dependent_cells(
+            &[(&q, 1.0)],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &p)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= p` with `p = q + c` and `q = p` must derive NO lower bound: \
+             `p` is cycle-tainted, so `dependent_cell_auto_reads` OMITS it — and \
+             a non-empty-set test reads that absence as `no autos` and mines the \
+             bound. For this consumer an unknown auto dependence must be treated \
+             as a varying one; absence is the UNSAFE direction here"
+        );
     }
 
     /// (a) A plain `q >= 1.0` / `q <= 100.0` pair derives the raw constraint box,
@@ -9200,7 +9734,7 @@ mod tests {
         let params = vec![real_auto_param(q.clone())];
         let constraints = as_constraints(vec![cmp_ref_lit(BinOp::Gt, &q, 1.0)]);
         let values = ValueMap::new();
-        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[], None);
+        let intervals = super::derive_param_intervals(&params, &constraints, &[], &values, &[], None);
         assert_eq!(
             intervals[0].lo,
             Some((1.0, true)),
@@ -9284,7 +9818,7 @@ mod tests {
         let q_le_inf = cmp_ref_lit(BinOp::Le, &q, f64::INFINITY);
 
         let constraints = as_constraints(vec![q_ge_p, sum_ge, q_eq, q_ne, q_ge_undef, q_le_inf]);
-        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[], None);
+        let intervals = super::derive_param_intervals(&params, &constraints, &[], &values, &[], None);
 
         assert_eq!(
             intervals[0],
@@ -9336,7 +9870,7 @@ mod tests {
 
         // Lower only.
         let lower_only = as_constraints(vec![cmp_ref_lit(BinOp::Ge, &q, 1.0)]);
-        let iv = super::derive_param_intervals(&params, &lower_only, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &lower_only, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (1.0, default_hi),
@@ -9345,7 +9879,7 @@ mod tests {
 
         // Upper only.
         let upper_only = as_constraints(vec![cmp_ref_lit(BinOp::Le, &q, 100.0)]);
-        let iv = super::derive_param_intervals(&params, &upper_only, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &upper_only, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, 100.0),
@@ -9353,7 +9887,7 @@ mod tests {
         );
 
         // Neither.
-        let iv = super::derive_param_intervals(&params, &[], &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &[], &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -9379,7 +9913,7 @@ mod tests {
             cmp_ref_lit(BinOp::Ge, &q, 50.0),
             cmp_ref_lit(BinOp::Le, &q, 10.0),
         ]);
-        let iv = super::derive_param_intervals(&params, &inverted, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &inverted, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -9391,7 +9925,7 @@ mod tests {
             cmp_ref_lit(BinOp::Ge, &q, 5.0),
             cmp_ref_lit(BinOp::Le, &q, 5.0),
         ]);
-        let iv = super::derive_param_intervals(&params, &degenerate, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &degenerate, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -9447,6 +9981,73 @@ mod tests {
             objective: None,
             functions: vec![].into(),
         }
+    }
+
+    /// [`seed_problem`] with dependent cells, for the #6146 seed-path fixtures.
+    fn seed_problem_with_cells(
+        auto_params: Vec<reify_ir::AutoParam>,
+        exprs: Vec<reify_ir::CompiledExpr>,
+        current_values: ValueMap,
+        dependent_cells: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)>,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            dependent_cells,
+            ..seed_problem(auto_params, exprs, current_values)
+        }
+    }
+
+    /// (f) SEED-PATH CONSEQUENCE of the #6146 derivation guard — pinned here
+    /// rather than left to be inferred from the interval assertions.
+    ///
+    /// `extract_initial_point` is one of the three SEED consumers of
+    /// `derive_param_intervals`, and unlike the CLAMP box it does not need an
+    /// invariant bound — any plausible start point will do. The guard is
+    /// nevertheless applied UNIFORMLY, so for an auto floored ONLY by a derived
+    /// cell the derivation now yields `(None, None)` and the seed falls all the
+    /// way through to the fixed `0.01`, rather than starting from this trial's
+    /// snapshot of `side`.
+    ///
+    /// That is a deliberate, priced trade — see `constant_operand_value`'s doc
+    /// for why one rule beats a per-consumer split — and this test is what makes
+    /// it visible. If a future change gives the seed paths their own policy,
+    /// THIS is the assertion that should flip, consciously.
+    #[test]
+    fn extract_initial_point_derived_cell_floor_falls_through_to_fixed_default() {
+        use reify_core::{DimensionVector, ValueCellId};
+        use reify_ir::{BinOp, Value};
+
+        let a = ValueCellId::new("Seed", "a");
+        let c = ValueCellId::new("Seed", "c");
+        let side = ValueCellId::new("Seed", "side");
+
+        // The model's evaluated state: `c` and the derived `side = 3*c` both
+        // resolve, `a` does not — so the current-value arm cannot short-circuit
+        // and the derived-box arm is the one under test.
+        let mut values = ValueMap::new();
+        for (id, v) in [(&c, 2.5), (&side, 7.5)] {
+            values.insert(
+                id.clone(),
+                Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+        }
+        let problem = seed_problem_with_cells(
+            vec![real_auto_param(a.clone()), real_auto_param(c.clone())],
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+            values,
+            vec![(side.clone(), scaled_ref(3.0, &c))],
+        );
+
+        assert_eq!(
+            super::extract_initial_point(&problem, None)[0],
+            0.01,
+            "`a >= side` with `side = 3*c` derives neither side for `a`, so the \
+             seed falls through to the fixed default — the guard is applied to \
+             the SEED paths too, giving up #5618's derived start point for this \
+             shape rather than starting from a snapshot that moves with `c`"
+        );
     }
 
     /// (a) Two derived sides → the seed is the derived box's MIDPOINT, not the
