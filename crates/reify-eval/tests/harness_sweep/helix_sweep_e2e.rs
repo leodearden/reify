@@ -12,28 +12,43 @@
 //! additionally covers the compile → eval geometry-error diagnostic channel
 //! and the mesh / STEP output path.
 //!
-//! Profile choice — why a bare `circle(3mm)` rather than a posed
-//! `translate(rotate(circle(3mm), …), …)`: the compiler's profile-precondition
-//! check (`GeometryProfileRequired`, crates/reify-compiler/src/geometry.rs)
-//! requires a `sweep` profile operand that is a statically-known Surface
-//! producer to be Closed ∧ Planar. An *inline* `translate(rotate(circle(…)))`
-//! operand is a known-combinator `FunctionCall` whose nested profile is opaque
-//! to the static inference, so it is rejected at compile time — that guard is
-//! independent of this task. A bare `circle(3mm)` is a direct Surface producer
-//! that passes the check and still sweeps cleanly along the helix (OCCT
-//! `MakePipe` transports the section along the spine frame), producing exactly
-//! one non-empty solid. The posed, volume-accurate case (π·r²·L within 5%) is
-//! covered by the kernel integration test; here we only need the full-pipeline
-//! no-error + non-empty-geometry acceptance.
+//! Profile choice — why the profile is posed through a NAMED BINDING
+//! (`aux let prof = translate(rotate(circle(3mm), …), …)`) rather than either a
+//! bare `circle(3mm)` or an *inline* `translate(rotate(circle(…)))`. Two
+//! independent constraints leave exactly one legal spelling:
+//!
+//! 1. A bare `circle(3mm)` carries its own +Z normal, which for the
+//!    `helix(24mm, 7mm, 63mm)` spine sits only ~2.66° off the spine's start
+//!    tangent (|t̂·n̂| = 0.046370259, measured). `sweep` transports the profile
+//!    AS POSED, so that near-coplanar section sweeps edge-on: the body was
+//!    always degenerate here — its volume came back negative and `volume()`
+//!    downgraded it to Undef — and this test passed only because it asserts
+//!    non-emptiness, never a value. Task #7248 made that pose an Error-severity
+//!    geometry diagnostic, so a bare circle is now rejected outright.
+//! 2. An inline `translate(rotate(circle(…)))` operand is rejected at COMPILE
+//!    time, independently of this task: the compiler's profile-precondition
+//!    check (`GeometryProfileRequired`, crates/reify-compiler/src/geometry.rs)
+//!    requires a statically-known Surface producer to be Closed ∧ Planar, and a
+//!    known-combinator `FunctionCall` hides its nested profile from that
+//!    inference.
+//!
+//! The named binding satisfies both: the `let` operand is opaque to the profile
+//! precondition (which admits it), and the pose puts the section normal to the
+//! helix start tangent, which the pose guard admits and which sweeps to a real
+//! tube — 3.836681796674759e-5 m³, matching π·r²·L. Here we still assert only
+//! the full-pipeline no-error + non-empty-geometry acceptance; the
+//! volume-accurate case (π·r²·L within 5%) stays covered by the kernel
+//! integration test.
 //!
 //! Modeled on the full-pipeline section of `tube_pipe_e2e.rs`.
 
 use reify_core::{ModulePath, Severity};
 use reify_ir::ExportFormat;
 
-/// Full-pipeline e2e: `sweep(circle(3mm), helix(24mm, 7mm, 63mm))` must flow
-/// through parse → compile → tessellate → STEP export with no Error
-/// diagnostics and non-empty mesh / STEP output.
+/// Full-pipeline e2e: a circle posed normal to the helix start tangent, swept
+/// along `helix(24mm, 7mm, 63mm)`, must flow through parse → compile →
+/// tessellate → STEP export with no Error diagnostics and non-empty mesh /
+/// STEP output.
 #[test]
 fn helix_sweep_through_full_pipeline_succeeds() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -42,7 +57,8 @@ fn helix_sweep_through_full_pipeline_succeeds() {
     }
 
     let source = r#"structure S {
-    let groove = sweep(circle(3mm), helix(24mm, 7mm, 63mm))
+    aux let prof = translate(rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg), 24mm, 0mm, 0mm)
+    let groove = sweep(prof, helix(24mm, 7mm, 63mm))
 }"#;
 
     // ---- Parse ----
@@ -83,21 +99,27 @@ fn helix_sweep_through_full_pipeline_succeeds() {
         "unexpected geometry errors sweeping circle along helix: {:?}",
         geom_errors
     );
+    // Posing through a named binding costs a second realization: the section
+    // `prof` realizes alongside the swept body `groove`. Asserting over ALL
+    // surfaces covers the swept body without pinning it to a realization index.
     assert_eq!(
         tess_result.meshes.len(),
-        1,
-        "expected 1 mesh (single realization), got {}",
+        2,
+        "expected 2 meshes (posed section + helix-swept body), got {}",
         tess_result.meshes.len()
     );
-    let mesh = &tess_result.meshes[0].mesh;
-    assert!(
-        !mesh.vertices.is_empty(),
-        "helix-swept mesh should have vertices"
-    );
-    assert!(
-        !mesh.indices.is_empty(),
-        "helix-swept mesh should have triangles"
-    );
+    for surface in &tess_result.meshes {
+        assert!(
+            !surface.mesh.vertices.is_empty(),
+            "{} should have vertices",
+            surface.entity_path
+        );
+        assert!(
+            !surface.mesh.indices.is_empty(),
+            "{} should have triangles",
+            surface.entity_path
+        );
+    }
 
     // ---- STEP export through the same pipeline (fresh engine/planner;
     // tessellate and build each consume the single registered kernel
