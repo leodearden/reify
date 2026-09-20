@@ -86,13 +86,15 @@ Policy source: `feedback_task_chain_user_observable`. **Reject** "a unit test pa
 
 ## G3 — substrate verifier (grammar AND semantic/behavioral)
 
-Reify's substrate verifier has three probe vectors, all empirically grounded in `docs/prds/prd-gate-executable-substrate-verification.md §3`:
+Reify's substrate verifier has four probe vectors, all empirically grounded in `docs/prds/prd-gate-executable-substrate-verification.md §3`:
 
 1. **Grammar premises — `tree-sitter parse --quiet <fixture.ri>`** (the grammar gate). Full mechanics, fixture-extraction heuristics, the exact command, "what counts as novel syntax", and the documented C-06 grammar-fiction precedents are in **`references/grammar-gate.md`** (`feedback_prd_grammar_gate`). Run at author Stage 2 (fail-fast); re-run at decompose Step 1.
 
 2. **Semantic/behavioral premises — `reify check <fixture.ri>`**. Observes arg-vs-param rejection, type-name resolution, and member-access lowering. **Negative-assertion sentinel:** `reify check` exits 0 + `All constraints satisfied.` + no diagnostic where a rejection was asserted = silent-accept = FAIL (example: `revolute("not-an-axis", …)` — task 4575).
 
-3. **Eval/IR probe (eval-error-signature)** — where `check` is insufficient. `CompiledExprKind::CrossSubGeometryRef` emission in `crates/reify-compiler/src/expr.rs` panics in `eval_expr`; authoring the scenario and running `reify eval` reveals the real IR shape via the panic signature (example: task 4358 — assumed IndexAccess, real shape betrayed by CrossSubGeometryRef panic).
+3. **Eval/IR probe (eval-error-signature)** — where `check` is insufficient. `CompiledExprKind::CrossSubGeometryRef` emission in `crates/reify-compiler/src/expr.rs` panics in `eval_expr`; authoring the scenario and running `reify eval` reveals the real IR shape via the panic signature (example: task 4358 — assumed IndexAccess, real shape betrayed by CrossSubGeometryRef panic). **This vector proves only "eval exits 0, clean" on its clean branch** — it answers ABSENT on exit 0 *before consulting the match predicate*, so it cannot see what was printed.
+
+4. **Value probe — `reify eval <fixture.ri>` plus a numeric predicate on the printed value.** Same command as vector 3; what differs is what is read off the result. A premise asserting the printed value is **finite / nonzero / in range / equals X** must use this vector, **not** vector 3: bound as `ir` such a premise verifies only that eval did not crash, and passes on a fixture that printed `0` or `undef` (task #6876). The premise's `match` must be `{"stdout_value": {"pattern": "<regex with a capture group>", "min"/"max"/"finite": …}}` with at least one constraint — a pattern alone is rejected at bind time. Aim the pattern at what `reify eval` actually prints: a pattern that locates nothing yields UNPROVABLE, not FAIL, because a mis-aimed probe is indistinguishable from an absent capability. Worked example and standing evidence: `tests/prd-gate/fixtures/value_clean_eval_cells.ri`.
 
 **Four semantic-substrate worked examples (PRD §3/§10):**
 - **4575 — arg-vs-param rejection (silent-accept):** `reify check` on `revolute("not-an-axis", …)` exits 0 + `All constraints satisfied.` + no rejection diagnostic. The negative-assertion sentinel fires — the compiler does **no** nominal arg-vs-param rejection for concrete params.
