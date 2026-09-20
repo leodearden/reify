@@ -590,3 +590,148 @@ describe('debug contract — pick↔raycast agreement (step-7, real three)', () 
     geometry.dispose();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Camera-framing coherence for sub-150 mm parts (task 6965)
+//
+// The defect this pins: createControls seeds an ABSOLUTE minDistance of 0.5 m in a
+// workspace whose parts span four orders of magnitude, and OrbitControls.update()
+// clamps the orbit radius unconditionally (_clampDistance, OrbitControls.js:1072,
+// invoked from :771/:776/:814).  So a 75 mm probe fits to ~86 mm, gets silently
+// relocated back out to 0.5 m, and a follow-up zoom_camera saturates the same floor
+// and reports distanceDelta: 0 — a no-op the MCP surface reports as success.
+//
+// Real three AND a real OrbitControls, because _clampDistance is the library
+// behaviour under test; a hand-rolled stub would pass in both the broken and the
+// fixed state.  Every assertion reads LIVE state (controls.getDistance(),
+// camera.position) rather than a command's echoed response.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('debug contract — small-part camera framing (real three + real OrbitControls)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let controls: import('three/addons/controls/OrbitControls.js').OrbitControls;
+
+  // A 75 mm-long probe, matching the dogfood part in #6496.  Dimensions in metres.
+  const PROBE = { x: 0.075, y: 0.02, z: 0.01 };
+  // fitCameraToBox frames the sphere circumscribing the box: radius = ½·diagonal.
+  const RADIUS = 0.5 * Math.hypot(PROBE.x, PROBE.y, PROBE.z);
+  // With aspect > 1 the vertical FOV binds, so distance = padding · radius / sin(fov/2).
+  // At CAMERA_FOV_DEG = 60 and padding 1.1 that is 2.2 · radius ≈ 86 mm — well inside
+  // the old 0.5 m floor, which is exactly why the floor swallowed it.
+  const FIT_PADDING = 1.1;
+  const ZOOM_SCALE = 0.3;
+
+  let FIT_DISTANCE: number;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    await initDebugBridge(makeStores());
+    expect(capturedHandler).toBeDefined();
+
+    const { Scene, PerspectiveCamera, Mesh, BoxGeometry, Box3 } = await import('three');
+    const { fitCameraToBox } = await import('../viewport/fitCamera');
+    const { CAMERA_FOV_DEG } = await import('../viewport/scene');
+    const { createControls } = await import('../viewport/controls');
+
+    FIT_DISTANCE = (FIT_PADDING * RADIUS) / Math.sin((CAMERA_FOV_DEG * Math.PI) / 180 / 2);
+
+    const scene = new Scene();
+    // Same fov/aspect/near/far as createScene, so the framing arithmetic under test is
+    // the shipped arithmetic.  up stays the three default (0,1,0) rather than
+    // createScene's Z-up: the camera here looks straight down -Z, which would be the
+    // orbit pole under Z-up and make the spherical maths degenerate for an unrelated reason.
+    const camera = new PerspectiveCamera(CAMERA_FOV_DEG, 800 / 600, 0.1, 10000);
+    camera.position.set(0, 0, 1);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+
+    const mesh = new Mesh(new BoxGeometry(PROBE.x, PROBE.y, PROBE.z));
+    mesh.name = 'entity/probe';
+    mesh.updateMatrixWorld();
+    scene.add(mesh);
+
+    const domElement = document.createElement('canvas');
+    Object.defineProperty(domElement, 'clientHeight', { value: 600 });
+    Object.defineProperty(domElement, 'clientWidth', { value: 800 });
+    vi.spyOn(domElement, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, width: 800, height: 600,
+      x: 0, y: 0, right: 800, bottom: 600, toJSON: () => ({}),
+    } as DOMRect);
+
+    // createControls, not `new OrbitControls`, so the startup minDistance under test is
+    // the one the app actually seeds.
+    controls = createControls(camera, domElement).controls;
+    controls.enableDamping = false;
+    controls.update();
+
+    const box = new Box3().expandByObject(mesh);
+
+    window.__REIFY_DEBUG__!.viewport = {
+      scene,
+      camera,
+      renderer: { domElement, render: vi.fn() } as any,
+      getMeshes: () => new Map([['entity/probe', mesh]]),
+      getGhostMeshes: () => new Map(),
+      // Mirrors selection.ts's fitToView (fitCameraToBox over the mesh bounds), plus the
+      // controls.update() that Viewport.tsx's RAF loop runs on the very next frame — which
+      // is where _clampDistance actually bites.
+      fitToView: () => {
+        fitCameraToBox(camera, box, { controls });
+        controls.update();
+      },
+      flyToEntity: vi.fn(),
+      controls: controls as any,
+    };
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  it('fit_to_view frames a 75 mm part at its computed distance, not a fixed floor', async () => {
+    const result = (await dispatchCmd(capturedHandler!, 6001, 'fit_to_view', {})) as any;
+    expect(result.ok).toBe(true);
+
+    // LIVE state, not the echoed response.  Today this is exactly 0.5 — _clampDistance
+    // relocated the camera and nothing reported it.
+    expect(controls.getDistance()).toBeCloseTo(FIT_DISTANCE, 5);
+    expect(controls.getDistance()).toBeLessThan(0.5);
+  });
+
+  it('zoom_camera actually dollies in from a fitted small part', async () => {
+    await dispatchCmd(capturedHandler!, 6002, 'fit_to_view', {});
+    const fitted = controls.getDistance();
+
+    const result = (await dispatchCmd(capturedHandler!, 6003, 'zoom_camera', {
+      scale: ZOOM_SCALE,
+    })) as any;
+
+    // _dollyIn multiplies the scale into the orbit radius (OrbitControls.js:1034), so
+    // scale 0.3 means "30% of the current distance".
+    expect(result.ok).toBe(true);
+    expect(result.distanceDelta).toBeGreaterThan(0);
+    expect(controls.getDistance()).toBeCloseTo(fitted * ZOOM_SCALE, 5);
+  });
+
+  it('pick_entity_at still resolves the part from the close-in pose', async () => {
+    await dispatchCmd(capturedHandler!, 6004, 'fit_to_view', {});
+    await dispatchCmd(capturedHandler!, 6005, 'zoom_camera', { scale: ZOOM_SCALE });
+
+    const result = (await dispatchCmd(capturedHandler!, 6006, 'pick_entity_at', {
+      x: 400,
+      y: 300,
+    })) as any;
+
+    // The screenshot → set_camera → pick → identify loop has to work at the close-in
+    // pose, not just at the fitted one.
+    expect(result.hit).toBe(true);
+    expect(result.entityPath).toBe('entity/probe');
+    // Canvas centre looks straight down -Z at the box centre, so the hit is the +Z face.
+    expect(result.point.z).toBeCloseTo(PROBE.z / 2, 5);
+  });
+});
