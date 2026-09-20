@@ -580,3 +580,9 @@ scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_lock_guard.sh
 # omitted this row would leave those assertions unrun on the very edit that can
 # move them.
 scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_sizing_lifecycle.sh
+# The lib's assertions live in a .py, and this map is keyed on EXACT changed-path
+# equality with no auto-run-a-changed-infra-test fallback. The thin .sh wrapper
+# closes run_all.sh's `test_*.sh` DISCOVERY hole; it does not close this SELECTION
+# one. Without this row a --scope branch diff touching only the assertions selects
+# no infra test at all.
+tests/infra/test_lane_lock_probe.py    tests/infra/test_lane_lock_probe.sh

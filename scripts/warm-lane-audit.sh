@@ -153,13 +153,12 @@
 #        "leaks could not be evaluated". The liveness probe degrades the
 #        same way and UNIFORMLY: any cause that makes it unmeasurable — a
 #        broken or missing flock, an unreadable lock file — counts that lane
-#        LIVE with a stderr warning, fail-CLOSED, because over-reporting
-#        occupancy in advisory prose is merely conservative. (Until task
-#        5738 this was inconsistent: a broken flock read LIVE, but an
-#        unreadable lock file fell through to IDLE, silently fail-OPEN on
-#        the same axis.) scripts/warm-lane-lock-guard.sh takes the OPPOSITE
-#        direction on the identical state, deliberately — its exit 3 gates
-#        merge dispatch, where a false BUSY wedges the serial merge queue.
+#        LIVE with a stderr warning, fail-CLOSED. (Until task 5738 this was
+#        inconsistent: a broken flock read LIVE, but an unreadable lock file
+#        fell through to IDLE, silently fail-OPEN on the same axis.)
+#        scripts/warm-lane-lock-guard.sh takes the OPPOSITE direction on the
+#        identical state, deliberately; why each is right for its own
+#        consumer is stated once, in seam doc §3.
 #   A4 — `stale` is always the relation age_min >= stale_age_min against the
 #        declared knob — never an inline/undeclared literal.
 #   A5 — the assignment-state read is fail-safe: a missing state dir, a
@@ -404,12 +403,10 @@ _lane_role() {
 # The MEASUREMENT is `lane_lock_probe` in scripts/lib_lane_lock.sh, shared
 # with scripts/warm-lane-lock-guard.sh: it answers IDLE / BUSY /
 # UNMEASURABLE and carries no fail direction of its own. This script's
-# contribution is the mapping, and it fails CLOSED — an unmeasurable probe
-# counts LIVE, where the guard sends the same state to IDLE. Both are right
-# for their own consumer: this output is advisory prose, where over-reporting
-# occupancy is merely conservative, whereas the guard's exit 3 gates merge
-# dispatch, where a false BUSY wedges the serial merge queue. Reasoning:
-# docs/design/merge-verify-lane-dispatch-seam.md §3.
+# contribution is the mapping below, and it fails CLOSED — an unmeasurable
+# probe counts LIVE, where the guard sends the same state to IDLE. Why each
+# direction is right for its own consumer: seam doc §3 —
+# docs/design/merge-verify-lane-dispatch-seam.md.
 #
 # The warning reaches stderr even though the sole call site is a `$( )`:
 # command substitution captures stdout only. It is the A3 ethos applied to
@@ -424,6 +421,12 @@ _probe_live() {
             warn "lock probe unmeasurable for $lock ($LANE_LOCK_PROBE_DETAIL); counted LIVE (fail-CLOSED)."
             printf 'LIVE' ;;
         IDLE) printf 'IDLE' ;;
+        # Total by construction, so the mapping cannot go silently partial under
+        # a later edit to the lib's state set: an unrecognised state is itself
+        # an unmeasurable probe, and takes this script's fail direction.
+        *)
+            warn "lock probe returned an unrecognised state '$LANE_LOCK_PROBE_STATE' for $lock; counted LIVE (fail-CLOSED)."
+            printf 'LIVE' ;;
     esac
     return 0
 }

@@ -36,12 +36,10 @@
 #        point-in-time sample by nature.
 #
 # A3 — THE FAIL DIRECTION — IS DELIBERATELY *NOT* HERE. It belongs to the
-# CONSUMER, and the two consumers are genuinely opposite: the guard fails OPEN
-# (its exit 3 gates merge dispatch, where a false BUSY wedges the serial merge
-# queue), the audit fails CLOSED (its output is advisory prose, where
-# over-reporting occupancy is merely conservative). UNMEASURABLE exists
-# precisely so ONE measurement can serve two opposite calculi — each caller
-# maps it in a single `case` arm.
+# CONSUMER, and the two consumers are genuinely opposite (guard OPEN, audit
+# CLOSED), which is why UNMEASURABLE exists at all: ONE measurement, mapped by
+# each caller in a single `case` arm. WHY each direction is right for its own
+# consumer is seam doc §3's to say, and is stated only there.
 #
 # THE -E 124 RATIONALE: `flock -n` returns a bare 1 on contention, which is
 # indistinguishable from "flock itself failed" — and reading a tool fault as
@@ -69,8 +67,14 @@ _REIFY_LIB_LANE_LOCK_SH_SOURCED=1
 # The would-block exit status asked of flock via -E (see the header).
 LANE_LOCK_PROBE_CONFLICT_RC=124
 
-LANE_LOCK_PROBE_STATE='IDLE'
-LANE_LOCK_PROBE_DETAIL=''
+# The source-time defaults are the LOUD value, never the permissive one. A
+# caller that sources this lib but never reaches lane_lock_probe must not read
+# a valid-looking IDLE: that would be silently harmless for the guard (IDLE is
+# already its fail direction) and the exact INVERSE of the audit's fail-CLOSED
+# contract. UNMEASURABLE routes either caller to its own declared direction
+# instead. lane_lock_probe resets both on entry, so no real call observes these.
+LANE_LOCK_PROBE_STATE='UNMEASURABLE'
+LANE_LOCK_PROBE_DETAIL='lane_lock_probe has not been called'
 
 lane_lock_probe() {
     local lock="$1"

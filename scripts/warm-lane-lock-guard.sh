@@ -58,12 +58,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The probe itself — shared with scripts/warm-lane-audit.sh, which applies the
-# OPPOSITE fail direction to the same measurement. Guarded existence check so a
-# mislocated lib surfaces a directed error, not a cryptic `source: No such file`.
-if [ ! -f "$SCRIPT_DIR/lib_lane_lock.sh" ]; then
-    echo "warm-lane-lock-guard.sh: required lib not found next to script: $SCRIPT_DIR/lib_lane_lock.sh" >&2
-    exit 1
-fi
+# OPPOSITE fail direction to the same measurement.
 # shellcheck source=scripts/lib_lane_lock.sh
 source "$SCRIPT_DIR/lib_lane_lock.sh"
 
@@ -216,9 +211,8 @@ fi
 # scripts/warm-lane-audit.sh: it answers IDLE / BUSY / UNMEASURABLE and carries
 # no fail direction at all. This script's contribution is the mapping — it fails
 # OPEN, sending UNMEASURABLE to IDLE with a warning and no sentinel, where the
-# audit sends the same state to LIVE. Both are right for their own consumer, and
-# the third state exists precisely so one measurement can serve both calculi.
-# Reasoning: docs/design/merge-verify-lane-dispatch-seam.md §3.
+# audit sends the same state to LIVE. Why each direction is right for its own
+# consumer: seam doc §3, per the A3 pointer in this file's header.
 #
 # FAIL-OPEN (see `--help`): BUSY is reachable from exactly ONE place below — a
 # probe that positively observed an exclusive holder. Every other outcome warns
@@ -258,6 +252,10 @@ _probe() {
         BUSY)         PROBE_RESULT='BUSY' ;;
         UNMEASURABLE) _fail_open "$LANE_LOCK_PROBE_DETAIL." ;;
         IDLE)         ;;
+        # Total by construction (see the audit's mirror image): an unrecognised
+        # state is itself an unmeasurable probe, and takes this script's OWN
+        # fail direction rather than falling through to a silent IDLE.
+        *)            _fail_open "lock probe returned an unrecognised state: $LANE_LOCK_PROBE_STATE." ;;
     esac
     return 0
 }
