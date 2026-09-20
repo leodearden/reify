@@ -1439,39 +1439,12 @@ impl GitOps for MockGitOps {
 // JCodemunchOps seam (P1)
 // -----------------------------------------------------------------------
 
-/// A public symbol introduced (or changed) by a `done` task, as reported by
-/// `mcp__jcodemunch__get_changed_symbols`. Carries pre-extracted suppression
-/// metadata so the detector stays pure-logic (it never reads source files —
-/// symmetric with how [`GitOps::diff_added_lines`] pre-extracts strings).
-/// Per `f-infra-design.md` §3 and §5 P1.
-///
-/// KNOWN LIMITATION — the three suppression fields carry no "unknown".
-/// `false` / `None` means EITHER "the declaration was read and carries no
-/// opt-out" OR "the declaration could not be located and nothing was read".
-/// A consumer that treats them as an opt-out having been DECLINED will,
-/// on the second reading, report a symbol its author did suppress. Today
-/// `line == 0` is the only in-band signal, and it covers just one of the
-/// two ways a declaration goes unlocatable (the wire reported no line);
-/// the other — a line past the declaring file's current end, i.e. a stale
-/// index — is known only to the enrichment pass, which reports it to the
-/// operator on stderr and does not record it per symbol. Distinguishing
-/// the states at the type is tracked as a follow-up rather than fixed
-/// here, since it reaches beyond this seam into `p1_producer_orphan`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChangedSymbol {
-    /// The symbol's name, used as the key for [`JCodemunchOps::find_references`].
-    pub name: String,
-    /// Workspace-relative path of the file declaring the symbol.
-    pub file: String,
-    /// 1-based line of the declaration (forensic evidence locator) WHEN
-    /// the wire reports one. `0` is the sentinel for "not reported",
-    /// mirroring [`SymbolReference::line`]: a `get_changed_symbols` payload
-    /// that omits the `line` column still yields the symbol, located at
-    /// `0`, rather than dropping it. Suppression enrichment treats `0` as
-    /// unlocatable and leaves the flags below at their neutral defaults —
-    /// which is why a consumer reading those flags must check this field
-    /// first; see the KNOWN LIMITATION on the struct.
-    pub line: usize,
+/// The opt-outs a declaration carries, as READ by the suppression-enrichment
+/// pass (`jcodemunch_client`'s `extract_suppression`). Reaches a detector only
+/// inside [`ChangedSymbol::suppression`], whose `Option` carries the separate
+/// question of whether the declaration was located at all.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclSuppression {
     /// `true` when the declaration carries `#[allow(dead_code)]` — an
     /// intentional-orphan opt-out (suppresses the finding). Per
     /// `f-infra-design.md` §5 P1.
@@ -1484,6 +1457,91 @@ pub struct ChangedSymbol {
     /// whitespace does NOT (mirrors `scripts/audit-orphan-producers.sh:150`
     /// `G_ALLOW_RE = //\s*G-allow:\s*(.+)` where `(.+)` requires content).
     pub g_allow_marker: Option<String>,
+}
+
+impl DeclSuppression {
+    /// `true` when the declaration carries ANY of the opt-outs above — the
+    /// single home of the rule P1 and P5 H2 both apply, so the two cannot
+    /// drift. Per `f-infra-design.md` §5 P1/P5.
+    // G-allow: single home of the opt-out rule; callers are intra-crate (is_symbol_suppressed) — orphan-audit script counts only inter-crate call sites
+    pub fn opts_out(&self) -> bool {
+        self.has_allow_dead_code
+            || self.has_cfg_test
+            || self
+                .g_allow_marker
+                .as_deref()
+                .is_some_and(|r| !r.trim().is_empty())
+    }
+}
+
+/// A public symbol introduced (or changed) by a `done` task, as reported by
+/// `mcp__jcodemunch__get_changed_symbols`. Carries pre-extracted suppression
+/// metadata so the detector stays pure-logic (it never reads source files —
+/// symmetric with how [`GitOps::diff_added_lines`] pre-extracts strings).
+/// Per `f-infra-design.md` §3 and §5 P1.
+///
+/// Suppression is THREE-state, and [`decl_located`](Self::decl_located) is the
+/// state a consumer branches on FIRST: `None` means the declaration was never
+/// located, so no opt-out judgement was possible; a default
+/// [`DeclSuppression`] means it was read and carries none; one with a flag set
+/// means it was read and opted out. All three causes of `None` — the wire
+/// reported no `line`, the line is past the declaring file's current end
+/// (a stale index), or the declaring file could not be read — are carried
+/// here per symbol, not merely summarised to the operator on stderr by the
+/// enrichment pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangedSymbol {
+    /// The symbol's name, used as the key for [`JCodemunchOps::find_references`].
+    pub name: String,
+    /// Workspace-relative path of the file declaring the symbol.
+    pub file: String,
+    /// 1-based line of the declaration (forensic evidence locator) WHEN
+    /// the wire reports one. `0` is the sentinel for "not reported",
+    /// mirroring [`SymbolReference::line`]: a `get_changed_symbols` payload
+    /// that omits the `line` column still yields the symbol, located at
+    /// `0`, rather than dropping it. The sentinel is for forensic display
+    /// only — it covers just one of the three ways a declaration goes
+    /// unlocatable, so a consumer asks
+    /// [`decl_located`](Self::decl_located), never `line == 0`.
+    pub line: usize,
+    /// The opt-outs this symbol's declaration carries, or `None` when the
+    /// declaration was never located — see the three-state note on the struct.
+    pub suppression: Option<DeclSuppression>,
+}
+
+impl ChangedSymbol {
+    /// `true` when the suppression-enrichment pass actually read this symbol's
+    /// declaration, so [`suppression`](Self::suppression) is a judgement about
+    /// the source rather than an absence of one.
+    ///
+    /// `false` reports a degradation of the jcodemunch substrate, never a
+    /// statement about the code: the wire reported no `line` (the grammar
+    /// drift release 1.108.54 already shipped for `find_references`), the
+    /// reported line is past the declaring file's current end (a stale index),
+    /// or the declaring file could not be read. A consumer that skips this
+    /// question and reads `None` as "the author declined every opt-out" turns
+    /// any of the three into a false positive over every intentionally
+    /// suppressed symbol.
+    // G-allow: accessor on the public ChangedSymbol API; every caller is intra-crate or a test — orphan-audit script counts only inter-crate call sites
+    pub fn decl_located(&self) -> bool {
+        self.suppression.is_some()
+    }
+
+    /// `true` when this symbol's declaration was located AND carries one of
+    /// [`DeclSuppression`]'s opt-outs — the `Option`-lifting of
+    /// [`DeclSuppression::opts_out`] onto a symbol, so no detector rewrites
+    /// it inline.
+    ///
+    /// An unlocatable declaration answers `false`: it made no opt-out claim
+    /// either way. That is NOT permission to report the symbol — ask
+    /// [`decl_located`](Self::decl_located) first; this answers only "did
+    /// the author opt out".
+    // G-allow: accessor on the public ChangedSymbol API; every caller is intra-crate or a test — orphan-audit script counts only inter-crate call sites
+    pub fn opts_out(&self) -> bool {
+        self.suppression
+            .as_ref()
+            .is_some_and(DeclSuppression::opts_out)
+    }
 }
 
 /// A non-declaration reference (caller site) of a symbol, as reported by
@@ -1787,32 +1845,42 @@ fn is_test_path(p: &str) -> bool {
         || p.contains(".spec.")  // JS/TS: foo.spec.ts
 }
 
-/// Combined suppression predicate for detector passes that check changed symbols.
+/// Combined OPT-OUT predicate for P5 H2 (`check_live_path_stranded`): the
+/// author's own opt-out, plus the `crates/reify-stdlib/` scope-exclude (every
+/// `.ri` structure def is technically orphan until something calls it).
 ///
-/// Returns `true` when the symbol should be silently skipped — it is a stdlib
-/// def, an intentional orphan, or carries a G-allow marker:
+/// Answers "did the author opt out", NOT "should this be reported". A symbol
+/// whose declaration was never located answers `false`, because no opt-out
+/// was ever observed; whether it is reportable is the SEPARATE question
+/// [`ChangedSymbol::decl_located`] asks, and folding the two into one
+/// predicate is what made an unlocatable declaration indistinguishable from a
+/// clean one.
 ///
-/// - File starts with `crates/reify-stdlib/` (scope-exclude: every
-///   `.ri` structure def is technically orphan until something calls it).
-/// - `has_allow_dead_code` or `has_cfg_test` (intentional-orphan opt-outs).
-/// - Non-blank `// G-allow:` marker (mirrors
-///   `scripts/audit-orphan-producers.sh:150` `G_ALLOW_RE =
-///   //\s*G-allow:\s*(.+)` where `(.+)` requires at least one non-whitespace
-///   character; a blank/whitespace-only marker does NOT suppress).
-///
-/// Used by both P1 (`p1_producer_orphan`) and P5 H2 (`check_live_path_stranded`)
-/// so the opt-out semantics stay in lockstep. `p1_producer_orphan` still holds
-/// its own private `is_g_allow_suppressed` copy; this crate-level helper is the
-/// canonical reference for future callers. Per `f-infra-design.md` §5 P1/P5.
+/// P1 (`p1_producer_orphan`) calls [`ChangedSymbol::opts_out`] on its own, so
+/// the stdlib clause below is the whole of the difference between the two
+/// detectors. Per `f-infra-design.md` §5 P1/P5.
 // G-allow: shared suppression predicate; callers are intra-crate (p5_phantom_done::check_live_path_stranded) — orphan-audit script counts only inter-crate call sites
 pub(crate) fn is_symbol_suppressed(symbol: &ChangedSymbol) -> bool {
-    symbol.file.starts_with("crates/reify-stdlib/")
-        || symbol.has_allow_dead_code
-        || symbol.has_cfg_test
-        || symbol
-            .g_allow_marker
-            .as_deref()
-            .is_some_and(|r| !r.trim().is_empty())
+    symbol.file.starts_with("crates/reify-stdlib/") || symbol.opts_out()
+}
+
+/// `Some(n)` when `symbols` carries `n >= 1` entries and NOT ONE of their
+/// declarations could be located, so a detector's per-symbol pass examined
+/// nothing it was handed; `None` when at least one was examinable.
+///
+/// Such a sweep reports zero findings for the same reason an empty one does —
+/// it looked at nothing — but it is invisible to an `is_empty()` check, so
+/// the two states need separate detection. The cause is a degraded jcodemunch
+/// substrate (see [`ChangedSymbol::decl_located`]); before unlocatable symbols
+/// were skipped, that degradation announced itself as a false-positive storm,
+/// and without this it would announce itself as nothing at all.
+///
+/// An EMPTY sweep is deliberately not folded in: "received nothing" and
+/// "examined nothing of what was received" have different remedies, so each
+/// detector words them as separate clauses.
+// G-allow: shared vacuity rule; callers are intra-crate (p1_producer_orphan, p5_phantom_done) — orphan-audit script counts only inter-crate call sites
+pub(crate) fn wholly_unlocatable_count(symbols: &[ChangedSymbol]) -> Option<usize> {
+    (!symbols.is_empty() && symbols.iter().all(|s| !s.decl_located())).then_some(symbols.len())
 }
 
 // -----------------------------------------------------------------------
