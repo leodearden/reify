@@ -58,3 +58,5 @@ mod trait_assoc_fn_cylinder;
 mod trait_assoc_fn_static_e2e;
 #[path = "harness_geometry/trait_merge_eval.rs"]
 mod trait_merge_eval;
+#[path = "harness_geometry/units_length_closure_guard.rs"]
+mod units_length_closure_guard;

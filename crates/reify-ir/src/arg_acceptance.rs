@@ -29,7 +29,7 @@
 //!
 //! # WHICH POSITIONS CONTRACT C GOVERNS — the machine check, not this comment
 //!
-//! `crates/reify-eval/tests/units_length_closure_guard.rs`.
+//! `crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs`.
 //!
 //! That guard sweeps EVERY builtin in `reify_compiler::GEOMETRY_FUNCTION_NAMES`
 //! across every arity, drives each numeric position through the eval-side op

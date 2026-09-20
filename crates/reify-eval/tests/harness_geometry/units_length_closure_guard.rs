@@ -67,23 +67,41 @@
 //!
 //! # C7 drift-guard registrations — answered here, not deferred
 //!
+//! **`tests/infra/harness-layout-baseline.manifest`: nothing owed, because this
+//! file is not standalone.** A NEW top-level `crates/reify-eval/tests/*.rs`
+//! binary is a C1 layout violation, not a baseline candidate: the manifest is a
+//! shrinking ratchet, so `scripts/check-harness-baseline-registration.sh` routes
+//! a new test into the consolidated harness for its subsystem instead. This
+//! guard therefore lives at `tests/harness_geometry/units_length_closure_guard.rs`,
+//! declared from `harness_geometry.rs` with the mandatory `#[path]`, alongside
+//! the Contract C length-units siblings (`geometry_length_args_units_e2e`,
+//! `primitive_profile_length_units_e2e`, `modify_sweep_length_units_e2e`,
+//! `transform_translation_length_units_e2e`) it generalizes. Consequences to
+//! know: its tests are named `units_length_closure_guard::<test>` in the
+//! `reify-eval::harness_geometry` binary, not bare in a binary of their own, and
+//! the whole `harness_geometry` compile unit measures ~11.8 kLOC against
+//! `test_harness_kloc_cap.sh`'s `CAP_LINES=20000` — well under the 90% advisory
+//! warn line, so no `_KLOC_WARN_KNOWN` row is owed either.
+//!
 //! **`.config/nextest.toml`: no override, deliberately.** That file is read by
 //! `cargo nextest`, so the measurement that decides the question is the nextest
-//! one: on this tree the slowest test in this binary measured 5.0s, 7.1s and
+//! one: on this tree the slowest test of this module measured 5.0s, 7.1s and
 //! 8.4s across three runs — the sweep is IR-build-only and never constructs a
 //! kernel — against `[profile.default]`'s `120s x 10` = 1200s ceiling. That is
 //! over two orders of magnitude of headroom, so the run-to-run variance that
 //! makes the figure a range rather than a number cannot threaten the
-//! conclusion. (Plain `cargo test` reports 5.3s for the whole binary, at the
-//! bottom of that range, because it runs the tests as threads of ONE process
+//! conclusion. (Plain `cargo test` reports 5.3s for these tests as a group, at
+//! the bottom of that range, because it runs them as threads of ONE process
 //! so they share the sweep cache, whereas nextest gives each test its own
 //! process and every Step-3 test pays the sweep itself. Quoting nextest is
-//! what keeps the basis matched to the runner the config governs.) An
-//! override block would
-//! be dead config AND would owe a paired row in `GATE_RESIDENT_FILTERS`
-//! (`tests/infra/test_nextest_slow_priority.sh`), whose Assertion K reds on an
-//! override classifying as neither heavy nor gate-resident. A block that does
-//! not exist cannot red.
+//! what keeps the basis matched to the runner the config governs.) Those
+//! figures were measured before the C1 move, on the tests themselves rather
+//! than on the enclosing binary, which is the quantity a per-test nextest
+//! `slow-timeout` governs either way. `harness_geometry` carries no override
+//! block today, and adding one would be dead config AND would owe a paired row
+//! in `GATE_RESIDENT_FILTERS` (`tests/infra/test_nextest_slow_priority.sh`),
+//! whose Assertion K reds on an override classifying as neither heavy nor
+//! gate-resident. A block that does not exist cannot red.
 //!
 //! **`tests/infra/run-all-classification.manifest`: nothing owed.** No
 //! `tests/infra/test_*.sh` is added — this is a Rust integration test, reached
@@ -612,7 +630,7 @@ impl std::fmt::Display for Residual {
 /// directory, mirroring `version_id_discipline_gate.rs`.
 fn this_file() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/units_length_closure_guard.rs");
+        .join("tests/harness_geometry/units_length_closure_guard.rs");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
