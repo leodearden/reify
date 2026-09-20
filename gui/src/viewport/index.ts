@@ -8,6 +8,12 @@ export { createScene } from './scene';
 export type { SceneContext } from './scene';
 export { createControls } from './controls';
 export type { ControlsContext } from './controls';
+export {
+  orbitMinDistanceFor,
+  ORBIT_MIN_DISTANCE_FRACTION,
+  ORBIT_MIN_DISTANCE_FLOOR,
+  ORBIT_MAX_DISTANCE,
+} from './orbitDistance';
 export { createMeshManager } from './meshManager';
 export type { MeshManagerContext } from './meshManager';
 export { createSelection } from './selection';

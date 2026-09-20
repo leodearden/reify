@@ -36,16 +36,30 @@
  *    The camera is repositioned along its existing view direction vector, so
  *    the orientation the user last set (pan/orbit) is retained.  Only the
  *    distance changes.
+ *
+ * 5. Framing also sets the orbit distance floor (task 6965)
+ *    This is the only place that computes the model's bounding-sphere radius,
+ *    so it is the only place that can derive a scale-appropriate minimum orbit
+ *    distance without duplicating that formula (SPOT).  Framing a model and
+ *    deciding how close the user may then get to it are the same question asked
+ *    twice, and answering them from one radius keeps them consistent by
+ *    construction.  The write sits AFTER the degenerate-box early return, so the
+ *    documented "a degenerate box mutates no controls state" contract covers
+ *    minDistance exactly as it already covers target.
  */
 
 import { Vector3 } from 'three';
 import type { Box3, PerspectiveCamera } from 'three';
+import { orbitMinDistanceFor } from './orbitDistance';
 
 const DEFAULT_FIT_PADDING = 1.1;
 
 export interface FitCameraOptions {
-  /** OrbitControls (or any object with a copyable Vector3 `target`). */
-  controls?: { target: { copy: (v: Vector3) => void } };
+  /**
+   * OrbitControls (or any object with a copyable Vector3 `target`).  `minDistance`
+   * is written, not read, so a caller may omit it.
+   */
+  controls?: { target: { copy: (v: Vector3) => void }; minDistance?: number };
   /** Multiplicative padding around the bounding sphere (default 1.1). */
   padding?: number;
 }
@@ -109,6 +123,10 @@ export function fitCameraToBox(
   camera.lookAt(center);
   camera.updateProjectionMatrix();
 
-  // Sync OrbitControls target so it orbits around the framed assembly.
-  options?.controls?.target.copy(center);
+  // Sync OrbitControls state to the framed assembly: the target it orbits around,
+  // and the floor on how close the user may then get to it (design decision 5).
+  if (options?.controls) {
+    options.controls.target.copy(center);
+    options.controls.minDistance = orbitMinDistanceFor(radius);
+  }
 }
