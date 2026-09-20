@@ -1966,4 +1966,52 @@ mod tests {
             "empty stdout (e.g. a merge commit) must not resolve a rename target",
         );
     }
+
+    /// All three arms of the crate's single tracked-file read, which PTODO,
+    /// PDSSENTINEL and PDOCCOVER each used to inline separately and none of
+    /// them tested directly: the path resolves against `project_root` rather
+    /// than the process cwd, and anything unreadable — absent, or a directory
+    /// — yields `None` rather than a finding or a panic.
+    #[test]
+    fn read_relative_resolves_against_project_root_and_skips_unreadable() {
+        use super::{AuditContext, MockGitOps, MockJCodemunchOps};
+        use rusqlite::Connection;
+        use std::collections::HashMap;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("crates/x/src")).expect("mkdir src");
+        std::fs::write(root.path().join("crates/x/src/a.rs"), "fn a() {}\n").expect("write");
+        std::fs::create_dir_all(root.path().join("crates/x/tests")).expect("mkdir tests");
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.path().to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        assert_eq!(
+            ctx.read_relative("crates/x/src/a.rs").as_deref(),
+            Some("fn a() {}\n"),
+            "the path is resolved against project_root, not the process cwd",
+        );
+        assert_eq!(
+            ctx.read_relative("crates/x/src/absent.rs"),
+            None,
+            "an absent file is skipped fail-safe",
+        );
+        assert_eq!(
+            ctx.read_relative("crates/x/tests"),
+            None,
+            "a directory is unreadable — `None`, never a panic",
+        );
+    }
 }
