@@ -614,10 +614,11 @@ describe('debug contract — small-part camera framing (real three + real OrbitC
   const PROBE = { x: 0.075, y: 0.02, z: 0.01 };
   // fitCameraToBox frames the sphere circumscribing the box: radius = ½·diagonal.
   const RADIUS = 0.5 * Math.hypot(PROBE.x, PROBE.y, PROBE.z);
-  // With aspect > 1 the vertical FOV binds, so distance = padding · radius / sin(fov/2).
-  // At CAMERA_FOV_DEG = 60 and padding 1.1 that is 2.2 · radius ≈ 86 mm — well inside
-  // the old 0.5 m floor, which is exactly why the floor swallowed it.
-  const FIT_PADDING = 1.1;
+  // The expected framing distance comes from fitCameraToBox's own formula
+  // (`fittedDistanceFor`) at the app's real FOV, never a hand-derived multiple — at
+  // CAMERA_FOV_DEG = 60 and the default padding that lands at ≈ 86 mm, well inside the
+  // old 0.5 m floor, which is exactly why the floor swallowed it.
+  const ASPECT = 800 / 600;
   const ZOOM_SCALE = 0.3;
 
   let FIT_DISTANCE: number;
@@ -636,15 +637,16 @@ describe('debug contract — small-part camera framing (real three + real OrbitC
     const { fitCameraToBox } = await import('../viewport/fitCamera');
     const { CAMERA_FOV_DEG } = await import('../viewport/scene');
     const { createControls } = await import('../viewport/controls');
+    const { fittedDistanceFor } = await import('../viewport/orbitDistance');
 
-    FIT_DISTANCE = (FIT_PADDING * RADIUS) / Math.sin((CAMERA_FOV_DEG * Math.PI) / 180 / 2);
+    FIT_DISTANCE = fittedDistanceFor(RADIUS, CAMERA_FOV_DEG, ASPECT);
 
     const scene = new Scene();
     // Same fov/aspect/near/far as createScene, so the framing arithmetic under test is
     // the shipped arithmetic.  up stays the three default (0,1,0) rather than
     // createScene's Z-up: the camera here looks straight down -Z, which would be the
     // orbit pole under Z-up and make the spherical maths degenerate for an unrelated reason.
-    const camera = new PerspectiveCamera(CAMERA_FOV_DEG, 800 / 600, 0.1, 10000);
+    const camera = new PerspectiveCamera(CAMERA_FOV_DEG, ASPECT, 0.1, 10000);
     camera.position.set(0, 0, 1);
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
@@ -697,8 +699,8 @@ describe('debug contract — small-part camera framing (real three + real OrbitC
     const result = (await dispatchCmd(capturedHandler!, 6001, 'fit_to_view', {})) as any;
     expect(result.ok).toBe(true);
 
-    // LIVE state, not the echoed response.  Today this is exactly 0.5 — _clampDistance
-    // relocated the camera and nothing reported it.
+    // LIVE state, not the echoed response.  Before the fix this read exactly 0.5 —
+    // _clampDistance relocated the camera and nothing reported it.
     expect(controls.getDistance()).toBeCloseTo(FIT_DISTANCE, 5);
     expect(controls.getDistance()).toBeLessThan(0.5);
   });

@@ -1,7 +1,7 @@
 import { Vector3 } from 'three';
 import type { PerspectiveCamera } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { ORBIT_MIN_DISTANCE_FLOOR, ORBIT_MAX_DISTANCE } from './orbitDistance';
+import { orbitFloorFor, ORBIT_MAX_DISTANCE } from './orbitDistance';
 
 export interface ControlsContext {
   controls: OrbitControls;
@@ -12,13 +12,17 @@ export interface ControlsContext {
 /**
  * Creates an OrbitControls wrapper with sensible defaults.
  *
- * `minDistance` is seeded to the absolute policy FLOOR rather than to a guessed
- * absolute distance, because this runs in `Viewport.tsx`'s `onMount` BEFORE any
- * geometry exists — there are no bounds here to derive a model-appropriate floor
- * from.  Seeding the floor means the pre-geometry state blocks no commanded pose;
- * `fitCameraToBox` then tightens it to the model scale as soon as anything is
- * framed.  The previous guess of 0.5 m did block poses: a fitted 75 mm part sits
- * at ~86 mm, so the clamp silently relocated the camera ~6× too far out (#6496).
+ * `minDistance` is seeded by applying the SAME policy to the camera's initial orbit
+ * distance, because this runs in `Viewport.tsx`'s `onMount` BEFORE any geometry
+ * exists and there are no model bounds to derive a floor from.  The startup pose is
+ * the best available stand-in for a framed one, and `Viewport.tsx` auto-fits as soon
+ * as the first mesh arrives, so this provisional value governs the empty scene only.
+ *
+ * Neither degenerate alternative is used.  A guessed absolute (the previous 0.5 m)
+ * blocks commanded poses: a fitted 75 mm part sits at ~86 mm, so the clamp silently
+ * relocated the camera ~6× too far out (#6496).  Seeding `ORBIT_MIN_DISTANCE_FLOOR`
+ * instead blocks nothing at all — including the wheel, which can then dolly an empty
+ * scene to a 1e-6 orbit radius that takes ~160 multiplicative ticks to climb out of.
  *
  * `maxDistance` is unchanged in value — it is not implicated by that defect and is
  * only re-homed into `orbitDistance.ts` so both limits are stated in one place.
@@ -33,7 +37,7 @@ export function createControls(
   const controls = new OrbitControls(camera, domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.1;
-  controls.minDistance = ORBIT_MIN_DISTANCE_FLOOR;
+  controls.minDistance = orbitFloorFor(camera.position.distanceTo(controls.target));
   controls.maxDistance = ORBIT_MAX_DISTANCE;
 
   return {
