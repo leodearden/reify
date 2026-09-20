@@ -14499,6 +14499,55 @@ mod tests {
         });
     }
 
+    /// Positive precondition backing `occt_non_length_fields_stay_ungated`:
+    /// asserts that each of `op`'s deliberately-ungated numeric fields
+    /// (`HalfSpace.nx`/`ny`/`nz`, `CircularPattern.angle`, `Draft.angle`) is
+    /// a bare, undimensioned `Value::Real`/`Value::Int` — never a
+    /// `Value::Scalar` of any dimension.
+    ///
+    /// `occt_non_length_fields_stay_ungated` proves a field stayed on the
+    /// context-free `extract_f64` by observing that no LENGTH-tripwire WARN
+    /// names it. That silence is evidence only while the fixture itself is
+    /// bare: `reify_ir::check_length_field`
+    /// (`crates/reify-ir/src/kernel_validation.rs:163`) early-returns on the
+    /// `Value::Scalar` variant, so a *dimensioned* fixture emits no WARN
+    /// either — a migration that retypes one of these fields would leave
+    /// the control fully green while its premise silently disappears. This
+    /// guard reads the value out of the SAME `op` the control executes, so
+    /// there is no second copy to drift out of sync. See
+    /// `docs/notes/angle-literal-migration-ledger.md` §1.2.1; task 5780 (δ)
+    /// owns migrating `Draft.angle`, task 5781 (ε) owns migrating
+    /// `CircularPattern.angle`.
+    ///
+    /// Panics naming `{op.kind_name()}.{field}` if a field is dimensioned,
+    /// or naming the op kind if it carries no deliberately-ungated field at
+    /// all — an unrecognised variant must fail loudly rather than silently
+    /// check nothing.
+    fn assert_ungated_fixtures_are_bare(op: &GeometryOp) {
+        let fields: Vec<(&str, &Value)> = match op {
+            GeometryOp::HalfSpace { nx, ny, nz, .. } => vec![("nx", nx), ("ny", ny), ("nz", nz)],
+            GeometryOp::CircularPattern { angle, .. } => vec![("angle", angle)],
+            GeometryOp::Draft { angle, .. } => vec![("angle", angle)],
+            other => panic!(
+                "{} carries no deliberately-ungated field — teach \
+                 assert_ungated_fixtures_are_bare this variant or stop \
+                 calling it on this op kind",
+                other.kind_name()
+            ),
+        };
+        for (field, value) in fields {
+            assert!(
+                matches!(value, Value::Real(_) | Value::Int(_)),
+                "{}.{field} is {value:?}, not a bare Value::Real/Int — a \
+                 dimensioned Value emits no length-tripwire WARN either, so \
+                 retyping this fixture would silently delete \
+                 occt_non_length_fields_stay_ungated's premise while the run \
+                 stays fully green",
+                op.kind_name(),
+            );
+        }
+    }
+
     /// Regression teeth: a migration that retypes `CircularPattern.angle` to
     /// a dimensioned `Value` (task 5781's exact shape) must red here instead
     /// of leaving `occt_non_length_fields_stay_ungated` green with its
