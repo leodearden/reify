@@ -49,6 +49,26 @@ construct that compiles but never realizes produces (loft, degenerate cone — �
 the true Hausdorff chord error (4 interior points per facet), and per PRD §2.1 only the
 **global max** is trustworthy. Nothing downstream may key on per-triangle values.
 
+**Caveat 4 — the spline class's subject changed after its numbers were taken (task
+#7248).** `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` swept a bare `circle(100mm)`
+along a bezier whose every pole has `z = 0`. `sweep` transports the profile **as posed**,
+and the circle's own +Z normal lay exactly in that plane (`|t̂·n̂|` = 0, measured), so the
+subject was a **flat ribbon** of 1.775123576545368e-21 m³ — not the tube the fixture's own
+header claimed. #7248 posed the circle normal to the bezier start tangent, and the subject
+now realizes 4.189969160084972e-2 m³.
+
+Every **spline** row in this note therefore predates its own subject. Each is tagged
+*stale, Caveat 4* in place. Nothing else here is affected: no other class's fixture was
+touched. One rung was re-run under #7248 — enough to size the change, not to replace the
+ladder. At the fixture's committed `#precision(20mm)` the deviation goes
+2.627e-4 m → 1.237e-2 m, i.e. `a/d` **0.0131 → 0.6185**, a 47× rise. The *before* value
+reproduces the committed 20 mm rung exactly, which is what establishes that these rows
+describe the ribbon rather than merely predating the repose. 0.6185 also breaks the
+`sweep / pipe / spline ≤ 0.598` row in §3.1, so that bound needs re-deriving, not just the
+spline ladder. Re-walking is deliberately **not** done inline — this note records 90 s
+walls and a timed-out 10 mm rung (Caveat 1) — and is tracked as ticket
+`tkt_0RTWAJ9RN4PSDTA2RSKPGEHJVD`.
+
 ---
 
 ## 1. Achieved / requested, per class
@@ -67,7 +87,7 @@ Notation: `d` = requested `#precision`, `a` = achieved sampled facet deviation,
 | nurbs surface | `d/span` † | **1.0010** | `d/span` = 1.4386e-4 | **lower bound**, `K` > 1 |
 | pipe | pipe_r / path curvature | 0.598 | `d/R` = 5e-2 | **lower bound** |
 | sweep | profile / path curvature | 0.534 | `d/R` = 1e-2 | **lower bound** |
-| spline | profile / path curvature | 0.013 | `d/R` = 2e-2 | **lower bound** |
+| spline | profile / path curvature | 0.013 | `d/R` = 2e-2 | **lower bound**; **stale — Caveat 4** |
 | loft | — | **no datum** | — | blocked at realization |
 
 † Two caveats, distinct from the other lower-bound rows. First, `d/span` reflects the
@@ -179,7 +199,7 @@ comfortable envelope. This is the trap the non-analytic classes could not escape
 |---|---|---|---|
 | sweep | `sweep(circle(100mm), interp(…))` | 10 mm | 0.534 |
 | pipe | `pipe(helix(100mm,80mm,300mm), 20mm)` | 5 mm | 0.598 |
-| spline | `sweep(circle(100mm), bezier(…))` | 20 mm | 0.013 |
+| spline | `sweep(circle(100mm), bezier(…))` — **stale, Caveat 4** | 20 mm | 0.013 |
 | nurbs surface | `nurbs_surface(3x3 point3 net, …)` | 0.1 mm ‡ | 1.0010 @ 0.14386 mm ‡ |
 
 ‡ Unlike the other three rows, 0.1 mm is not where the 90 s budget stopped this class —
@@ -193,11 +213,13 @@ sweep: 100 mm 0.148 (floor) · 50 mm 0.296 (floor) · 20 mm 0.379 · **10 mm 0.5
 pipe (shape-shrunk): 20 mm 0.135 · 10 mm 0.258 · **5 mm 0.598**; 2 mm timed out.
 pipe (full size `pipe(helix(300mm,200mm,900mm), 60mm)`): 100 mm 0.123, 20 mm 0.580.
 spline: 100 mm 0.003 · 50 mm 0.007 · **20 mm 0.013**; 10 mm timed out.
+**Stale — Caveat 4:** the 20 mm rung re-reads 0.6185 against the reposed subject.
 
 Sweep, pipe and spline were each still **rising** at their finest affordable rung —
 every attempt to go finer timed out at 90 s (§0 Caveat 1), so the rung set each stops at
 is a property of the **budget**, not of these three classes. Their entries in §1.1 are
-lower bounds, not suprema — see §2.4.
+lower bounds, not suprema — see §2.4. The spline third of that reading is additionally
+**stale** (Caveat 4): it describes a subject this note no longer has.
 
 nurbs_surface is different again: nothing in its ladder timed out even down to 0.1 mm
 (see Not-budget-limited below), so unlike the three classes above, its rung set is not a
@@ -878,7 +900,7 @@ the natural authoring case `B ≈ d0`, `n ≥ log2(K)`. **Derived** from the §1
 | cone | 0.970 | 0 |
 | fillet blend | 0.925 | 0 |
 | nurbs surface | ≥ 1.0010 † | 1 † |
-| sweep / pipe / spline | ≤ 0.598 * | 0 * |
+| sweep / pipe / spline | ≤ 0.598 * — **spline third stale, Caveat 4** | 0 * |
 | loft | no datum | — |
 
 **No measured class exceeds K ≈ 16.** The worst is the sphere at 2.079, needing `n = 2`.
@@ -933,7 +955,8 @@ ratio is unchanged by task #7128: nurbs_surface rose from 0.9975 to 1.0010, but 
 measured class is still the sphere at 2.079, so 16/2.079 = 7.7× stands as derived.
 
 The *argument* around it does move, and is re-derived rather than left standing. Four
-classes are still known only as lower bounds (sweep, pipe, spline and nurbs_surface) and
+classes are still known only as lower bounds (sweep, pipe, spline — whose datum is
+additionally **stale**, Caveat 4 — and nurbs_surface) and
 one (loft) still has no datum at all, so the extra doubling is still cheap insurance
 against classes this session could not fully pin down — but the reasons now differ: three
 by the 90 s budget wall, and nurbs_surface because a dense search cannot prove a supremum
@@ -980,7 +1003,7 @@ expected values are continuous measurements that drift with OCCT and machine):
 | `tests/prd-gate/fixtures/pnrg_envelope_fillet_blend.ri` | fillet blend |
 | `tests/prd-gate/fixtures/pnrg_envelope_sweep.ri` | sweep |
 | `tests/prd-gate/fixtures/pnrg_envelope_pipe.ri` | pipe |
-| `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline |
+| `tests/prd-gate/fixtures/pnrg_envelope_spline.ri` | spline — **reposed under #7248; every spline row above is stale, Caveat 4** |
 | `tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri` | nurbs surface |
 | `tests/prd-gate/fixtures/pnrg_envelope_loft.ri` | loft — **evidence only**, does not realize |
 | `tests/prd-gate/fixtures/pnrg_cost_split_sphere.ri` | cost split |
