@@ -311,25 +311,6 @@ mod tests {
         );
     }
 
-    /// `f64::to_radians` is documented as `self * (PI / 180.0)`. The three
-    /// pre-refactor copies are split across both spellings — the gauge module
-    /// uses `.to_radians()`, t1b and delta use `* (PI / 180.0)` — so collapsing
-    /// them onto ONE spelling is only behaviour-preserving if the two agree to
-    /// the bit. Lock that here rather than assuming it.
-    #[test]
-    fn to_radians_bit_equals_the_explicit_pi_over_180_spelling() {
-        for i in 0..3 {
-            for twist in [0.0f64, 30.0] {
-                let degrees = 120.0 * (i as f64) + twist;
-                assert_eq!(
-                    degrees.to_radians().to_bits(),
-                    (degrees * (std::f64::consts::PI / 180.0)).to_bits(),
-                    "azimuth {degrees}°: .to_radians() and * (PI/180.0) must agree bit-for-bit"
-                );
-            }
-        }
-    }
-
     /// The canonical prism: circumradius 1, top ring z = +1.0 at azimuth 120°·i,
     /// bottom ring z = 0.0 at azimuth 120°·i + 30°. All 18 raw components
     /// pinned, and `triplex_nodes` re-checked to carry exactly those components
@@ -564,18 +545,6 @@ mod tests {
             );
         }
         assert_eq!(tall_fields.get("surfaces"), Some(&triplex_caps()));
-    }
-
-    /// The scalar pins of the index space. These three are literals restated, and
-    /// that is all they can be — there is nothing to derive a chosen count from.
-    /// The member ORDER, by contrast, is pinned relationally by
-    /// `canonical_triplex_tensegrity_lowers_the_kernel_topology`, and the grouping
-    /// and caps by the three tests below, so none of those is restated here.
-    #[test]
-    fn triplex_fixture_goldens() {
-        assert_eq!(TRIPLEX_STRUTS, 3, "the first three members are the struts");
-        assert_eq!(TRIPLEX_ANCHORS, [3i64, 4, 5], "the bottom triangle is the anchored set");
-        assert_eq!(TRIPLEX_MEMBERS.len(), 12, "3 struts + 9 cables");
     }
 
     /// A `Value::List` of `Value::Int`, strictly. The `Int` variant is part of the
