@@ -310,9 +310,18 @@ mod tests {
     /// un-reviewable escape hatch.
     #[test]
     fn allow_marker_body_rejects_blank_body_and_absent_token() {
-        assert_eq!(allow_marker_body("// pdoccover:allow", "pdoccover:allow"), None);
-        assert_eq!(allow_marker_body("// pdoccover:allow ", "pdoccover:allow"), None);
-        assert_eq!(allow_marker_body("// an ordinary comment", "pdoccover:allow"), None);
+        assert_eq!(
+            allow_marker_body("// pdoccover:allow", "pdoccover:allow"),
+            None
+        );
+        assert_eq!(
+            allow_marker_body("// pdoccover:allow ", "pdoccover:allow"),
+            None
+        );
+        assert_eq!(
+            allow_marker_body("// an ordinary comment", "pdoccover:allow"),
+            None
+        );
     }
 
     /// DIVERGENCE PIN — `ptodo::g_allow_marker_body` is deliberately NOT this
@@ -351,7 +360,10 @@ mod tests {
         // The second flip, in the other direction: the shared grammar strips
         // one leading separator, so a body that is only a separator collapses
         // to blank — where PTODO keeps it and suppresses on it.
-        assert_eq!(crate::ptodo::g_allow_marker_body("// G-allow: -"), Some("-"));
+        assert_eq!(
+            crate::ptodo::g_allow_marker_body("// G-allow: -"),
+            Some("-")
+        );
         assert_eq!(allow_marker_body("// G-allow: -", "G-allow:"), None);
     }
 
