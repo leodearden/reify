@@ -1280,8 +1280,8 @@ false.
 **`thermal_conductivity` is deliberately absent from that table.** The name is
 declared at two independent sites, and they differ:
 
-- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:148`) is
-  **not** declared-only — `structural_physical.ri:150` carries
+- `ThermallyConductive.thermal_conductivity` (`structural_physical.ri:157`) is
+  **not** declared-only — `structural_physical.ri:159` carries
   `constraint thermal_conductivity > 0W/(m*K)`, a live DSL reader. For this site
   the zero-reader claim holds only when scoped to **Rust/host** readers.
 - `ThermallyCharacterized.thermal_conductivity` (`materials_thermal.ri:39`) is a

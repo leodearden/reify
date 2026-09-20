@@ -68,9 +68,9 @@ trait ThermallyCharacterized : MaterialSpec {
 // ThermallyCharacterized is — a datasheet characterization surface — not from any
 // one param, so no per-param owner is needed. The §6.3 register lists only
 // thermal_expansion under #5801. ThermallyConductive.thermal_conductivity
-// (structural_physical.ri:148) merely shares the name, has a live DSL reader at
-// :150, and is out of scope. Registered under
-// INV-SF-3 declared-intent-consumed-or-diagnosed.
+// (structural_physical.ri) merely shares the name, carries its own
+// `constraint thermal_conductivity > 0W/(m*K)` — a live DSL reader — and is out
+// of scope. Registered under INV-SF-3 declared-intent-consumed-or-diagnosed.
 
 // ── Refractory ───────────────────────────────────────────────────────────────
 
