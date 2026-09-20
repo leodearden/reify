@@ -1181,6 +1181,10 @@ struct DerivationCtx<'a> {
     /// cycle-tainted one is ABSENT; [`DerivationCtx::varies_with_solve`] is the
     /// only reader and owns what each of those means here.
     auto_reads: HashMap<ValueCellId, HashSet<ValueCellId>>,
+    /// Every dependent-cell id, including the cycle-tainted ones `auto_reads`
+    /// omits. This is what tells an omission apart from an ordinary value:
+    /// both are absent from the map, and only one of them varies.
+    cell_ids: HashSet<ValueCellId>,
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
@@ -1201,6 +1205,7 @@ impl<'a> DerivationCtx<'a> {
                 .map(|(i, p)| (p.id.clone(), i))
                 .collect(),
             auto_reads: crate::decompose::dependent_cell_auto_reads(dependent_cells, auto_params),
+            cell_ids: dependent_cells.iter().map(|(id, _)| id.clone()).collect(),
             values,
             functions,
             dispatch,
@@ -1209,14 +1214,29 @@ impl<'a> DerivationCtx<'a> {
 
     /// Does a ref to `id` MOVE when the solver moves?
     ///
-    /// True for an auto param itself, and for a dependent cell that
-    /// transitively reads one. Both are finite numbers in the map the family
-    /// evaluates against — `build_trial_values` binds the autos and folds every
-    /// cell — so evaluating is no evidence of constancy, and this is the only
-    /// question that separates a bound from a snapshot.
+    /// True for an auto param itself, and for a dependent cell that either
+    /// transitively reads one or has UNKNOWN auto dependence. All of them are
+    /// finite numbers in the map the family evaluates against —
+    /// `build_trial_values` binds the autos and folds every cell — so
+    /// evaluating is no evidence of constancy, and this is the only question
+    /// that separates a bound from a snapshot.
+    ///
+    /// Unknown resolves to "varies" because the caller is a GUARD, where the
+    /// cost of the two errors is not symmetric: treating a constant as varying
+    /// only widens a box, while treating a varying cell as constant returns a
+    /// wrong answer silently.
     fn varies_with_solve(&self, id: &ValueCellId) -> bool {
-        self.auto_index.contains_key(id)
-            || self.auto_reads.get(id).is_some_and(|reads| !reads.is_empty())
+        if self.auto_index.contains_key(id) {
+            return true;
+        }
+        match self.auto_reads.get(id) {
+            Some(reads) => !reads.is_empty(),
+            // Absent from the map and a known cell id ⇒ cycle-tainted, auto
+            // dependence UNKNOWN. Absent and not a cell id at all ⇒ an ordinary
+            // value or param, which nothing makes vary. Both are absences, so
+            // membership in `cell_ids` is what tells them apart.
+            None => self.cell_ids.contains(id),
+        }
     }
 
     /// The expression-evaluation context for a far operand. Assembled per
@@ -1258,6 +1278,20 @@ impl<'a> DerivationCtx<'a> {
 /// `side`, moved away. `varies_with_solve` closes that by following the cell's
 /// transitive auto reads. A cell that reads NO auto (a named alias for a
 /// constant, `let yield_limit = 310MPa`) stays minable: nothing about it moves.
+///
+/// A CYCLE-TAINTED cell is treated as varying too, which resolves — for THIS
+/// consumer, locally — the residual `decompose_into_components_with_reads`
+/// flags ("Closing it properly means returning the omitted-id set alongside the
+/// map … larger than a doc correction and outside task #5467's lock set"). Such
+/// a cell is omitted from the map rather than published with a partial set,
+/// which is the fail-safe direction for that map's drop-side filter and the
+/// UNSAFE one here; `DerivationCtx::cell_ids` recovers the distinction without
+/// widening `dependent_cell_auto_reads`' interface or changing its semantics.
+/// The CONNECTIVITY consumer's copy of the same residual is untouched and
+/// stays open.
+///
+/// The `floor_applied` gate that decides whether a CLAMP box is built at all is
+/// a separate question, settled by task #5711 — not re-litigated here.
 fn constant_operand_value(expr: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Option<f64> {
     if expr
         .collect_value_refs()
