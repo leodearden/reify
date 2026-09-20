@@ -6,12 +6,14 @@
 //! grid from opposite sides, and each crate knows only its own:
 //!
 //! - **Below**, `reify-kernel-openvdb` refuses a request coarser than
-//!   `MIN_FEATURE_VOXELS_ACROSS` voxels across the thinnest extent — below
-//!   that the grid is non-null but its interior never signs negative.
-//! - **Above**, `reify-shell-extract` discards any voxel with `|φ| >
-//!   narrow_band_half_width_voxels × spacing`. A wall's medial plane sits at
-//!   `|φ| = half-thickness`, so it survives only while
-//!   `voxels-per-thickness ≤ 2 × narrow_band_half_width_voxels`.
+//!   `MIN_FEATURE_VOXELS_ACROSS` voxels across the thinnest extent.
+//! - **Above**, `reify-shell-extract` stops measuring past
+//!   `2 × narrow_band_half_width_voxels` voxels across the thickness.
+//!
+//! Each edge's derivation and measured basis is owned by the 2026-09-18
+//! update in `docs/prds/v0_4/structural-analysis-shells.md`, and each is
+//! pinned in its own crate. What this file adds is the one thing neither
+//! crate can say: that the two edges have not crossed.
 //!
 //! Nothing connects the two. They live in crates that do not depend on each
 //! other — deliberately: `reify-kernel-openvdb` has no dependency on

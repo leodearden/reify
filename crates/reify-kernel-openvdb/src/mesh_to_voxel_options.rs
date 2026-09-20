@@ -103,23 +103,12 @@ pub const BAND_MARGIN_VOXELS: f64 = 2.0;
 ///
 /// # The upper edge, which this constant does not set
 ///
-/// Refining past a point destroys the measurement rather than improving it.
-/// `reify-shell-extract`'s medial extractor admits a voxel only while
-/// `|φ| ≤ narrow_band_half_width_voxels × spacing` (default `3.0`), and a
-/// wall's medial plane sits at `|φ| = half-thickness` — so once the request is
-/// finer than `t/6` the medial plane falls outside the band, the mask comes
-/// back EMPTY, and every measurement built on it degrades to `NoMeasurement`
-/// at EVERY sub-voxel alignment (measured, task 6566). The usable window is
-/// therefore
+/// The window is bounded above as well, by a constant in another crate:
+/// `reify-shell-extract`'s `MedialOptions::narrow_band_half_width_voxels`
+/// stops the medial extractor measuring past `2 × nb` voxels across the
+/// thickness (6 at its default, i.e. `t/6`).
 ///
-/// ```text
-/// 4 ≤ voxels-per-thickness ≤ 2 × narrow_band_half_width_voxels = 6
-/// ```
-///
-/// with this constant setting the lower edge and the extractor's band
-/// half-width the upper.
-///
-/// **The upper edge is not enforced here.** `for_resolution` checks only the
+/// **That edge is not enforced here.** `for_resolution` checks only the
 /// coarse side: `TargetVoxelSize(t/8)` returns `Ok` with a perfectly
 /// well-formed grid, which then measures as `NoMeasurement` downstream with
 /// nothing naming over-refinement as the cause. Closing that gap needs a new
@@ -127,9 +116,12 @@ pub const BAND_MARGIN_VOXELS: f64 = 2.0;
 /// consumer's band at all (today it deliberately does not — there is no
 /// dependency on `reify-shell-extract`, and adding one would invert the
 /// layering), so it is filed as separate follow-up work rather than done here.
-/// `crates/reify-eval/tests/harness_kernel_realization/shell_voxel_resolution_window.rs`
-/// brackets the two constants so the gap stays visible and the window cannot
-/// silently close.
+///
+/// Derivation and measured basis for both edges are owned by the 2026-09-18
+/// update in `docs/prds/v0_4/structural-analysis-shells.md`; do not restate
+/// them here. The two constants are bracketed against each other by
+/// `crates/reify-eval/tests/harness_kernel_realization/shell_voxel_resolution_window.rs`,
+/// so the gap stays visible and the window cannot silently close.
 ///
 /// Tunable on the same "measure first, then tune" footing as
 /// [`VOXELS_PER_LONGEST_AXIS`] (PRD §6 D7), but constrained in BOTH directions:
