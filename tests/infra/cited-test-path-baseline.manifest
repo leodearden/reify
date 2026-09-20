@@ -162,6 +162,7 @@ docs/design/rigid-moment-of-inertia-shape-2026-06-10.md :: crates/reify-compiler
 docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/examples_smoke.rs
 docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/harness_compilation_surface/registry_seed_result_types.rs
 docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/modal_options_validation_tests.rs
+docs/legibility/confusion-codebook.yaml :: crates/reify-kernel-occt/tests/harness_occt/reflection_det_negative_integration.rs
 docs/notes/angle-crossing-discoverability-2026-08-10.md :: crates/reify-eval/tests/best_practices_constraint_gate.rs
 docs/notes/angle-literal-migration-ledger.md :: crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
 docs/notes/dimensioned-construction-blast-radius-2026-07-29.md :: crates/reify-compiler/tests/collection_sub_tests.rs
@@ -331,7 +332,6 @@ gui/src-tauri/src/tests/engine_tests.rs :: crates/reify-compiler/tests/examples_
 gui/src-tauri/src/tests/engine_tests.rs :: crates/reify-compiler/tests/port_compile_tests.rs
 gui/src-tauri/tests/rpath_smoke.rs :: crates/reify-cli/tests/harness_cli/rpath_smoke.rs
 gui/src/editor/reify.grammar :: crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs
-tests/infra/test_no_new_wallclock_rust_deadlines.sh :: crates/reify-cli/tests/harness_cli/cli_lsp_protocol.rs
 tests/prd-gate/README.md :: crates/reify-compiler/tests/examples_smoke.rs
 tests/prd-gate/fixtures/indexed_sub_spec_arm_baseline.ri :: crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs
 tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri :: crates/reify-compiler/tests/buckling_stdlib_compile.rs

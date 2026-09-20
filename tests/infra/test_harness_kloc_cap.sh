@@ -46,7 +46,9 @@
 # `tests/` SIBLING because it was deliberately NOT moved — the shared `common`
 # helper at `crates/<c>/tests/common/mod.rs`. There a bare `mod common;` is
 # correct precisely BECAUSE crate-root-relative resolution lands on it
-# (harness_cli, harness_occt, harness_fea_solver_e2e do this; harness_langcore
+# (harness_cli, harness_fea_solver_e2e, harness_occt_measurement do this —
+# harness_occt itself dropped its bare `mod common;` in the #7466 split, which
+# moved the include to the new sibling along with its consumers; harness_langcore
 # and harness_patterns spell the equivalent `#[path = "common/mod.rs"]`, and
 # harness_selective_demand does the same for `common/differential.rs`). The
 # rule is therefore scoped: `#[path]` is mandatory for every former-standalone
@@ -376,25 +378,18 @@ WARN_PCT=90
 # needed. Enforced as a SUBSET in Section 5d, which also reports the prune
 # direction the subset check is blind to: an advisory `PRUNE:` note for a row
 # that stopped WARNing, and a RED for a row whose file is no longer on disk.
-# harness_occt.rs measured 19020/20000 = 95% at task #6619 (root 154 + 17707
-# across 55 module files + 1159 external via the bare `mod common;`). Listed
-# for the same reason as harness_syntax above and NOT because it is acceptable:
-# the remedy is still rule (a)'s split, and that split is #7466. On bare
-# main the unit already measured 17737, 263 lines under the warn line, so the
-# crate was crossing on its next test-bearing commit regardless of #6619.
 # harness_engine.rs measured 18002/20000 = 90% at task #5417 (root 157 + 15655
 # across 28 module files + 2190 external via `#[path = "common/differential.rs"]`).
-# Listed for the same reason as the two above and NOT because it is acceptable:
-# the remedy is still rule (a)'s split, and that split is #7654. On bare main the
-# unit measured 17240, 760 lines under the warn line, so it was crossing on its
-# next test-bearing leaf regardless of #5417 — which adds one 758-line module and
-# clears the line by 2. This is the unit's SECOND crossing: #6760 filed the first
-# at 18414 and 132a45e8d2 split the auto-resolution cluster out, after which it
-# re-accreted over ~2 weeks. So #7654 should draw a boundary with real headroom,
-# not the minimum that clears the line.
+# Listed for the same reason as harness_syntax above and NOT because it is
+# acceptable: the remedy is still rule (a)'s split, and that split is #7654. On
+# bare main the unit measured 17240, 760 lines under the warn line, so it was
+# crossing on its next test-bearing leaf regardless of #5417 — which adds one
+# 758-line module and clears the line by 2. This is the unit's SECOND crossing:
+# #6760 filed the first at 18414 and 132a45e8d2 split the auto-resolution cluster
+# out, after which it re-accreted over ~2 weeks. So #7654 should draw a boundary
+# with real headroom, not the minimum that clears the line.
 _KLOC_WARN_KNOWN=(
     "crates/reify-syntax/tests/harness_syntax.rs"
-    "crates/reify-kernel-occt/tests/harness_occt.rs"
     "crates/reify-eval/tests/harness_engine.rs"
 )
 
