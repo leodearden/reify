@@ -775,6 +775,12 @@ pub struct OcctKernel {
 /// - `GeometryOp::SweepGuided` / `GeometryOp::LoftGuided` — `make_pipe_shell` /
 ///   `loft_guided_profiles` solidify only when the section(s) were faces and
 ///   otherwise leave an un-capped `SHELL` (see cpp/occt_wrapper.cpp).
+/// - `GeometryOp::Sweep` / [`OcctKernel::sweep_with_history`] — the two plain-
+///   sweep entry points. `make_pipe` caps into a `SOLID` only when the profile
+///   was a face; a wire profile sweeps to an un-capped `SHELL` — the same
+///   un-capped result `make_pipe_shell` leaves, and for the same reason: no
+///   end cap can close a swept wire. Both classify here rather than each
+///   stamping its own default, which is how they came to disagree under #5713.
 #[cfg(has_occt)]
 fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
     let name = ffi::ffi::shape_type_name(shape)
@@ -2558,11 +2564,12 @@ impl OcctKernel {
     ///
     /// Mirrors the call convention of the `GeometryOp::Sweep` arm of
     /// [`OcctKernel::execute`]: same handle resolution, the same
-    /// [`validate_sweep_pose`] degenerate-pose refusal, and the same result
-    /// registration with `BRepKind::Solid`. The shared guard is deliberate —
+    /// [`validate_sweep_pose`] degenerate-pose refusal, and the same
+    /// input-dependent `brep_kind_of_shape` stamp. Sharing both is deliberate —
     /// this method is the entry point `OcctKernelHandle`'s worker routes
     /// `GeometryOp::Sweep` to, so the two sites must not disagree about which
-    /// poses are legal the way they once disagreed about the `BRepKind` stamp.
+    /// poses are legal, nor about what the result IS, the way they did while
+    /// each stamped its own unconditional `BRepKind::Solid` (#5713).
     /// Sweep is single-parent
     /// (the profile is the operand; the path is the spine along which
     /// the profile is swept), so `parent_index` is always `0` and the
@@ -2633,7 +2640,10 @@ impl OcctKernel {
             };
             (result_shape, records)
         };
-        let handle = self.store_with_repr(result_shape, BRepKind::Solid);
+        // Same input-dependent kind as the `GeometryOp::Sweep` arm — the one
+        // classifier, so the two entry points cannot drift apart again (#5713).
+        let repr = brep_kind_of_shape(&result_shape)?;
+        let handle = self.store_with_repr(result_shape, repr);
         Ok((handle, records))
     }
 
@@ -3479,8 +3489,13 @@ impl OcctKernel {
                 let profile_shape = self.get_shape(*profile)?;
                 let path_shape = self.get_shape(*path)?;
                 validate_sweep_pose(profile_shape, path_shape)?;
-                ffi::ffi::make_pipe(profile_shape, path_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let shape = ffi::ffi::make_pipe(profile_shape, path_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // Input-dependent result kind, as for SweepGuided below: a wire
+                // profile sweeps to an un-capped SHELL, so the shared `store`
+                // tail's default Solid would be a lie. See `brep_kind_of_shape`.
+                let repr = brep_kind_of_shape(&shape)?;
+                return Ok(self.store_with_repr(shape, repr));
             }
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_length_f64(radius, op, "radius")?;
@@ -11501,16 +11516,18 @@ mod tests {
     // --- the honest BRepKind stamp on both plain-sweep entry points (#5713) ---
     //
     // A plain sweep does not always produce a Solid. Sweeping a WIRE profile
-    // yields a FACE — measured: a 20mm x 200mm one, area 0.004 m², volume 0 —
-    // yet both entry points stamped `BRepKind::Solid` unconditionally, one by
-    // falling through to `store`'s default and one by saying so outright. The
-    // stamp is not decorative: the local-feature gate admits ONLY Solid, and
-    // its own comment warns that a mislabelled input "would either crash
-    // inside OCCT or silently produce a misclassified result".
+    // yields an un-capped SHELL — measured via `shape_type_name`. Its single
+    // 20mm x 200mm face carries area 0.004 m² and volume 0, which is what an
+    // area-only measurement mistook for a bare FACE. Yet both entry points
+    // stamped `BRepKind::Solid` unconditionally, one by falling through to
+    // `store`'s default and one by saying so outright. The stamp is not
+    // decorative: the local-feature gate admits ONLY Solid, and its own comment
+    // warns that a mislabelled input "would either crash inside OCCT or
+    // silently produce a misclassified result".
 
     /// A wire-profile sweep through `execute` must be stamped for what it is.
     #[test]
-    fn sweep_of_a_wire_profile_is_stamped_face() {
+    fn sweep_of_a_wire_profile_is_stamped_shell() {
         if !crate::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");
             return;
@@ -11528,12 +11545,13 @@ mod tests {
 
         assert_eq!(
             result.repr,
-            Some(BRepKind::Face),
-            "a wire-profile sweep produces a FACE, and the handle must say so"
+            Some(BRepKind::Shell),
+            "a wire-profile sweep produces an un-capped SHELL, and the handle \
+             must say so"
         );
         assert_eq!(
             kernel.repr_of(result.id),
-            Some(BRepKind::Face),
+            Some(BRepKind::Shell),
             "the persisted repr must agree with the returned handle"
         );
     }
@@ -11542,7 +11560,7 @@ mod tests {
     /// separate site, and separate sites are exactly how the two came to
     /// disagree in the first place.
     #[test]
-    fn sweep_with_history_of_a_wire_profile_is_stamped_face() {
+    fn sweep_with_history_of_a_wire_profile_is_stamped_shell() {
         if !crate::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");
             return;
@@ -11557,24 +11575,32 @@ mod tests {
 
         assert_eq!(
             result.repr,
-            Some(BRepKind::Face),
-            "a wire-profile sweep produces a FACE, and the handle must say so"
+            Some(BRepKind::Shell),
+            "a wire-profile sweep produces an un-capped SHELL, and the handle \
+             must say so"
         );
         assert_eq!(
             kernel.repr_of(result.id),
-            Some(BRepKind::Face),
+            Some(BRepKind::Shell),
             "the persisted repr must agree with the returned handle"
         );
     }
 
     /// The point of an honest stamp: the local-feature gate can act on it.
     ///
-    /// A fillet over a Face walked straight through that gate on the strength
-    /// of the false Solid stamp. With the stamp corrected the gate refuses it
-    /// with its existing message, which is the whole reason the gate reads the
-    /// repr rather than trusting the caller.
+    /// A fillet over the swept shell walked straight through that gate on the
+    /// strength of the false Solid stamp. With the stamp corrected the gate
+    /// refuses it with its existing message, which is the whole reason the gate
+    /// reads the repr rather than trusting the caller.
+    ///
+    /// Spelled with a CURATED edge selection — the designer-facing
+    /// `fillet(body, edges_at_height(..), r)` idiom the gate's own REACH note
+    /// names. The 2-arg back-compat spelling (`edges: vec![]`) is deliberately
+    /// NOT used here: that arm calls `ffi::fillet_all_edges` directly and
+    /// reaches no gate at all, which is a pre-existing gap of its own (#7248
+    /// follow-up) rather than anything the `BRepKind` stamp can fix.
     #[test]
-    fn filleting_a_face_swept_result_is_rejected_by_the_local_feature_gate() {
+    fn filleting_a_shell_swept_result_is_rejected_by_the_local_feature_gate() {
         if !crate::OCCT_AVAILABLE {
             eprintln!("skipping: OCCT not available");
             return;
@@ -11588,10 +11614,14 @@ mod tests {
                 path: path_id,
             })
             .expect("wire-profile sweep should realize");
+        let edges = kernel
+            .extract_edges(swept.id)
+            .expect("the swept shell enumerates edges");
+        let first_edge = *edges.first().expect("the swept shell has edges");
 
         match kernel.execute(&GeometryOp::Fillet {
             target: swept.id,
-            edges: vec![],
+            edges: vec![first_edge],
             radius: Value::Real(0.002),
         }) {
             Err(GeometryError::OperationFailed(msg)) => assert!(
@@ -11599,7 +11629,7 @@ mod tests {
                 "expected the local-feature gate's non-Solid refusal, got: {msg}"
             ),
             Ok(_) => panic!(
-                "filleting a FACE walked through the local-feature gate — the \
+                "filleting a SHELL walked through the local-feature gate — the \
                  gate admits only Solid, so the swept result is still carrying \
                  a false Solid stamp"
             ),
