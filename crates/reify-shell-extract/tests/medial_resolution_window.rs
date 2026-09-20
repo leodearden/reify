@@ -13,21 +13,28 @@
 //! voxels_per_thickness ≤ 2 × narrow_band_half_width_voxels
 //! ```
 //!
-//! Crucially that filter runs BEFORE `medial_walk_direction`, so an
-//! out-of-band mid-plane voxel is discarded before #7527's ridge-axis
-//! fallback ever sees it. The fallback cannot rescue what was never
-//! enumerated, which is why the failure past the edge is total (an EMPTY mask
-//! at every alignment) rather than degraded.
+//! Past that edge the mask comes back EMPTY at every alignment, and it takes
+//! BOTH of the mask's stages to make it so — a distinction that matters to
+//! whoever debugs a regression here. The near-mid voxels are the only ones
+//! whose bidirectional walk distances are close enough to clear the
+//! distance-equality test, and they are precisely the ones the band filter
+//! drops; the off-mid voxels the filter still admits reach that test and fail
+//! it. What makes the first group unrescuable is ORDER: the band filter runs
+//! BEFORE `medial_walk_direction`, so an out-of-band mid-plane voxel is
+//! discarded before #7527's ridge-axis fallback ever sees it. The failure past
+//! the edge is therefore total rather than degraded.
 //!
 //! This is the counter-intuitive half of the shell-voxel working window:
 //! a FINER grid is not a safer one. Past the edge the extractor returns
 //! `NoMeasurement` with no diagnostic naming over-refinement as the cause —
 //! the producer (`reify-kernel-openvdb`'s `MeshToVoxelOptions::for_resolution`)
 //! happily serves such a grid, since it enforces only the opposite, COARSE
-//! bound.
+//! bound. The window as a whole — both edges, the measured basis and that
+//! unclosed producer-side gap — is owned by the 2026-09-18 update in
+//! `docs/prds/v0_4/structural-analysis-shells.md`, and
 //! `crates/reify-eval/tests/harness_kernel_realization/shell_voxel_resolution_window.rs`
-//! brackets the two constants against each other; this file owns the upper
-//! edge itself.
+//! brackets the two constants against each other. This file owns the upper
+//! edge itself, and reproduces the measurement behind it (below).
 //!
 //! # Why the edges, and only the edges
 //!
@@ -154,6 +161,15 @@ fn two_voxels_past_the_band_edge_declines_to_measure_at_every_alignment() {
     let voxels_per_thickness = 2.0 * options.narrow_band_half_width_voxels + 2.0;
     let thickness = voxels_per_thickness * WINDOW_H;
 
+    // Figures the emptiness message quotes, all derived from this sweep's own
+    // parameters rather than measured. They are loop-invariant, so they are
+    // bound once here.
+    let band_width = options.narrow_band_half_width_voxels * WINDOW_H;
+    let near_mid_phi = 0.5 * thickness - 0.5 * WINDOW_H;
+    let in_band_off_mid = 0.5 * thickness - band_width;
+    let in_band_walk_gap = 2.0 * in_band_off_mid;
+    let equality_threshold_ceiling = options.distance_tolerance * thickness + WINDOW_H;
+
     for offset in SUB_VOXEL_OFFSETS {
         let mid = offset * WINDOW_H;
         let sdf = slab_field(mid, thickness, WINDOW_H, WINDOW_N, WINDOW_BOUNDS_MIN);
@@ -164,10 +180,14 @@ fn two_voxels_past_the_band_edge_declines_to_measure_at_every_alignment() {
             mask.voxels.is_empty(),
             "medial mask is non-empty two voxels past the band edge \
              (voxels-per-thickness {voxels_per_thickness}, offset {offset}); \
-             the nearest-to-mid voxel sits at |φ| ≥ {} > nb·h = {}, so the band \
-             filter must have dropped every candidate — got {} voxels",
-            0.5 * thickness - 0.5 * WINDOW_H,
-            options.narrow_band_half_width_voxels * WINDOW_H,
+             no voxel should clear BOTH of the mask's rejecting stages. \
+             Band filter: the nearest-to-mid voxel — the only kind whose ±walk \
+             distances are close enough to pass the equality test — sits at \
+             |φ| ≥ {near_mid_phi} > nb·h = {band_width}, so it is dropped \
+             before the walk. Distance equality: the in-band voxels that \
+             remain are off-mid by ≥ {in_band_off_mid} (= half-thickness − \
+             nb·h), giving |d⁺ − d⁻| ≥ {in_band_walk_gap} against a threshold \
+             of at most {equality_threshold_ceiling}. Got {} voxels",
             mask.voxels.len()
         );
 

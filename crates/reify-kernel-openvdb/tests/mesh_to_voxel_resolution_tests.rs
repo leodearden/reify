@@ -312,11 +312,11 @@ fn too_coarse_request_is_rejected_with_a_named_diagnostic() {
 /// would actually type. A guard that rejects the absurd case says nothing
 /// about the plausible one. Do not delete this as a duplicate.
 ///
-/// The contrasting arm pins the other half of the statement — that `t/4` is
-/// the COARSEST request this seam will serve, and that it is exactly where
-/// `MinFeature(t)` lands. The two arms agreeing is what makes the lower edge
-/// of the shell-voxel window a single number rather than two that happen to
-/// coincide.
+/// The contrasting arm pins the other half of the statement — that
+/// `t / MIN_FEATURE_VOXELS_ACROSS` is the COARSEST request this seam will
+/// serve, and that it is exactly where `MinFeature(t)` lands. The two arms
+/// agreeing is what makes the lower edge of the shell-voxel window a single
+/// number rather than two that happen to coincide.
 ///
 /// Pure Rust throughout: `for_resolution`'s guard is arithmetic over the
 /// bounding box, so this needs no `cfg(has_openvdb)` gate and fires in stub
@@ -348,11 +348,17 @@ fn the_prd_thickness_over_three_voxel_size_is_refused_on_a_plate() {
         other => panic!("expected Err(RequestTooCoarse) for the PRD's t/3; got {other:?}"),
     }
 
+    // Both the request and the expectation are derived from the constant, so
+    // the arm tracks MIN_FEATURE_VOXELS_ACROSS instead of merely coinciding
+    // with it: were it to move to 5, this would ask for t/5 and still be
+    // asserting "the coarsest servable request", not reporting a t/4 request
+    // it no longer makes.
     let expected_voxel_size = thickness / MIN_FEATURE_VOXELS_ACROSS;
+    let coarsest_label = format!("TargetVoxelSize(t/{MIN_FEATURE_VOXELS_ACROSS})");
     for (label, request) in [
         (
-            "TargetVoxelSize(t/4)",
-            VoxelResolution::TargetVoxelSize(0.25),
+            coarsest_label.as_str(),
+            VoxelResolution::TargetVoxelSize(expected_voxel_size),
         ),
         ("MinFeature(t)", VoxelResolution::MinFeature(thickness)),
     ] {
