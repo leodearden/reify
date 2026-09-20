@@ -171,7 +171,9 @@ describe('fitCameraToBox', () => {
   it('no-ops on a zero-volume (degenerate) box', () => {
     const camera = new PerspectiveCamera(60, 1, 0.1, 1e5);
     const initialPos = camera.position.clone();
-    const controls = { target: new Vector3(99, 99, 99) };
+    // A sentinel minDistance no policy value would coincide with, so "left alone" and
+    // "happened to be rewritten to the same number" stay distinguishable.
+    const controls = { target: new Vector3(99, 99, 99), minDistance: 0.5 };
 
     // Box with zero extent (min === max → radius = 0 → guard should fire)
     const degenBox = new Box3(new Vector3(5, 5, 5), new Vector3(5, 5, 5));
@@ -186,6 +188,24 @@ describe('fitCameraToBox', () => {
     expect(controls.target.x).toBe(99);
     expect(controls.target.y).toBe(99);
     expect(controls.target.z).toBe(99);
+    // …and so must minDistance: the no-mutation contract covers every controls field,
+    // not just target.  A floor derived from a degenerate radius would be meaningless.
+    expect(controls.minDistance).toBe(0.5);
+  });
+
+  // (6b) The framing pass must leave the camera able to approach what it just framed:
+  //      a floor at or above the fitted distance would pin the camera where it landed.
+  it('sets a minDistance strictly between zero and the distance it just fitted to', () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 1e5);
+    const controls = { target: new Vector3(), minDistance: 0.5 };
+    const center = new Vector3();
+    PRINTER_BOX.getCenter(center);
+
+    fitCameraToBox(camera, PRINTER_BOX, { controls });
+
+    const fittedDistance = camera.position.distanceTo(center);
+    expect(controls.minDistance).toBeGreaterThan(0);
+    expect(controls.minDistance).toBeLessThan(fittedDistance);
   });
 
   // (7) CUSTOM PADDING: caller-supplied `padding` must scale camera distance
