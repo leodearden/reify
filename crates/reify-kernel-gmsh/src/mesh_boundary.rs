@@ -39,6 +39,7 @@ use std::borrow::Cow;
 use crate::{
     CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE,
     auto_size::AutoSizeConfig,
+    mesh_size_scope::MeshSizeScope,
     mesh_volume::{compute_thickness_warnings, resolve_mesh_size},
     options::MeshingOptions,
     repair::{RepairConfig, repair_surface_mesh_with_correspondence},
@@ -605,10 +606,16 @@ fn run_meshing_with_entity_queries(
 
     let _guard = init::lock()?;
     init::ensure_initialized();
+    // Declared after `_guard` so it drops first (Rust drops locals in reverse
+    // declaration order): its restore writes land while GMSH_LOCK is still
+    // held. Placed above the first `?` so every early return is covered, not
+    // only the success path. See `mesh_size_scope` for both directions.
+    let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
 
-    // Mesh-size options
+    // Mesh-size options: this function's own deviation from the size defaults
+    // the scope just established, and dying with it.
     if let Some(s) = options.mesh_size
         && s > 0.0
     {
