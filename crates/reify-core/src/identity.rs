@@ -746,4 +746,109 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn value_cell_id_display_is_not_injective_so_dotted_members_are_refused() {
+        // THE load-bearing property. Three live id families all render into the
+        // same `<entity>.<member>` string shape, and they disagree about where
+        // the split belongs:
+        //
+        //   1. INSTANCE PATHS put the dots in the ENTITY half
+        //      (`Rig.bolts` + `line_cost`) — reify-eval/src/structural_query.rs:686
+        //      mints `ValueCellId::new(path, "line_cost")` over composed
+        //      descendant prefixes. Splitting these needs the LAST dot.
+        //   2. PORT COMPOSITE MEMBERS put a dot in the MEMBER half
+        //      (`Bracket` + `mount.width`) — reify-compiler/src/entity.rs:2263
+        //      mints `ValueCellId::new(entity, format!("{port}.{param}"))`.
+        //      Splitting these needs the FIRST dot.
+        //   3. KEYED MEMBERS also put the member's structure in the MEMBER half
+        //      (`Widget` + `vents["intake"]`) — reify-ir/src/value.rs:4665
+        //      `keyed_member_cell`. A key containing a dot needs the FIRST dot
+        //      too, and a last-dot split would cut INSIDE the quoted key.
+        //
+        // So `rsplit_once('.')` is not "the correct inverse" of Display: it
+        // would fix family 1 and break families 2 and 3. No positional split
+        // can be right, because Display is NOT INJECTIVE — two distinct cells
+        // render to one identical string, and the information needed to choose
+        // between them is simply not present in that string:
+        let instance_path = ValueCellId::new("Rig.bolts", "line_cost");
+        let dotted_member = ValueCellId::new("Rig", "bolts.line_cost");
+        assert_ne!(
+            instance_path, dotted_member,
+            "these are two DIFFERENT cells"
+        );
+        assert_eq!(
+            instance_path.to_string(),
+            dotted_member.to_string(),
+            "… yet they render to ONE string, so no parser can tell them apart"
+        );
+
+        // The only correct answer is therefore to refuse, naming ambiguity as
+        // the reason rather than silently picking a side.
+        assert_eq!(
+            instance_path.to_string().parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::Ambiguous)
+        );
+        assert_eq!(
+            dotted_member.to_string().parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_instance_path() {
+        assert_eq!(
+            "Rig.bolts.line_cost".parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_port_composite_member() {
+        // A port param really is minted with a dotted member name
+        // (reify-compiler/src/entity.rs:2263), so this is not a synthetic case.
+        assert_eq!(
+            ValueCellId::new("Bracket", "mount.width")
+                .to_string()
+                .parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_keyed_member_with_dotted_key() {
+        // A key carrying a dot pushes a second dot into the member half, so the
+        // keyed-member form stops being addressable as a string …
+        let dotted_key = ValueCellId::new("Widget", r#"vents["a.b"]"#);
+        assert_eq!(
+            dotted_key.to_string().parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::Ambiguous),
+            "a dot inside the key makes the id ambiguous"
+        );
+        // … while its undotted sibling still round-trips. Without this contrast
+        // the test above would also pass a parser that refused every keyed
+        // member outright.
+        let plain_key = ValueCellId::new("Widget", r#"vents["intake"]"#);
+        assert_eq!(
+            plain_key.to_string().parse::<ValueCellId>(),
+            Ok(plain_key.clone()),
+            "an undotted key must still round-trip"
+        );
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_empty_entity() {
+        assert_eq!(
+            ".width".parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::EmptyEntity)
+        );
+    }
+
+    #[test]
+    fn value_cell_id_from_str_rejects_empty_member() {
+        assert_eq!(
+            "Bracket.".parse::<ValueCellId>(),
+            Err(ValueCellIdParseError::EmptyMember)
+        );
+    }
 }
