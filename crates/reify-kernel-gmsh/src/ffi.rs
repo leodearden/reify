@@ -107,6 +107,9 @@ unsafe extern "C" {
     /// `void gmshOptionSetNumber(const char* name, double value, int* ierr)`
     pub fn gmshOptionSetNumber(name: *const c_char, value: f64, ierr: *mut c_int);
 
+    /// `void gmshOptionGetNumber(const char* name, double* value, int* ierr)`
+    pub fn gmshOptionGetNumber(name: *const c_char, value: *mut f64, ierr: *mut c_int);
+
     /// `void gmshModelAdd(const char* name, int* ierr)`
     pub fn gmshModelAdd(name: *const c_char, ierr: *mut c_int);
 
@@ -464,6 +467,37 @@ pub fn option_set_number(name: &str, value: f64) -> Result<(), GeometryError> {
         ierr,
         gmshOptionSetNumber(cname.as_ptr(), value, &mut ierr)
     )
+}
+
+/// Read a numerical option back out of gmsh's process-global option table.
+///
+/// The reader whose absence forced every pre-#6968 mesh-size guard in this
+/// crate to infer an option leak from mesh DENSITY rather than read the table:
+/// each of their docstrings states the constraint, and it was incidental
+/// rather than fundamental — `gmshOptionGetNumber` has been in the shipped
+/// `libgmsh.so` all along. A direct read is decisive where a density probe is
+/// vacuous, because `Mesh.MeshSizeExtendFromBoundary` has no measurable effect
+/// while `Mesh.MeshSizeMin == Mesh.MeshSizeMax`.
+///
+/// For OBSERVATION only. The restore discipline in
+/// [`crate::mesh_size_clamp`] targets gmsh's DEFAULTS, never the values found
+/// on entry, so nothing in `src/` needs to read an option back — see that
+/// module for why "as found" is the wrong target even when it is observable.
+///
+/// An unknown option name is an `Err`, not a plausible-looking number: gmsh
+/// sets `ierr` non-zero and leaves the out-param untouched, so a guard built
+/// on this cannot assert successfully against a value gmsh never supplied.
+pub fn option_get_number(name: &str) -> Result<f64, GeometryError> {
+    let cname = CString::new(name).map_err(|e| {
+        GeometryError::OperationFailed(format!("option_get_number: invalid CString: {e}"))
+    })?;
+    let mut value: f64 = 0.0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshOptionGetNumber(cname.as_ptr(), &mut value, &mut ierr);
+    }
+    check_ierr("gmshOptionGetNumber", ierr)?;
+    Ok(value)
 }
 
 /// Add a new model with the given name and make it the current model.
