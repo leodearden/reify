@@ -33,15 +33,30 @@
 //! merely disclosed: follow-up ticket `tkt_0RTJNNBDJAP0F0WVG8NGGR42MZ` (filed against
 //! #5695) relocates all five to `harness_diagnostics_robustness` — the destination leaf
 //! CMP-6 has since created, named here so the ticket is actionable without archaeology —
-//! and deletes this paragraph with them. Its sibling `tkt_0RT273RG27CPVNCQXPBHHJEQCA`
-//! (filed against #5694) is already DISCHARGED: #5696 routed `harness_physical_modeling`'s
-//! `m9_error_cases` and `m11_annotations_solver_hint_tests` out of that root. The two were
-//! expected to land as one change and did NOT: #5696 deliberately left these five alone,
-//! because they are not top-level and so fall outside leaf CMP-6's sweep-up clause, and
+//! and deletes this paragraph and its sizing note with them. Its sibling
+//! `tkt_0RT273RG27CPVNCQXPBHHJEQCA` (filed against #5694) is already DISCHARGED: #5696
+//! routed `harness_physical_modeling`'s `m9_error_cases` and
+//! `m11_annotations_solver_hint_tests` out of that root. The two were expected to land as
+//! one change and did NOT: #5696 deliberately left these five alone, because they are not
+//! top-level and so fall outside leaf CMP-6's sweep-up clause, and
 //! because folding them would force a `#[path = "common/mod.rs"] mod common;` onto the
-//! destination root (`analysis_stress_fn_compile` consumes it), charging that unit 391
-//! external lines it currently does not carry. This ticket therefore lands on its own.
-//! Landing it is a correction, not a regression.
+//! destination root (`analysis_stress_fn_compile` consumes it), charging that unit
+//! `tests/common/mod.rs` as external lines it currently does not carry — a NEW charge
+//! rather than a transfer, since `hoist_nested_selector_ctors` keeps that same include
+//! here. This ticket therefore lands on its own. Landing it is a correction, not a
+//! regression.
+//!
+//! SIZE THE MOVE BEFORE MAKING IT, and re-measure with `harness_layout_unit_lines`
+//! (tests/infra/harness-layout-lib.sh) rather than trusting these figures — they are a
+//! snapshot, in the stamped style of the `_KLOC_WARN_KNOWN` rows, not a maintained
+//! number. Measured at #5696: the destination is 16063 lines across 23 members with
+//! external_lines=0, i.e. 80% of C2's CAP_LINES=20000. These five add 1163 and `common`
+//! adds 391, landing it near 17620 — clear of the cap, but under 400 lines short of the
+//! WARN_PCT=90 advisory line at 18000, before any of those 23 members grow. A unit
+//! ARRIVING at that line is RED until a `_KLOC_WARN_KNOWN` row is added in the same
+//! diff, and that set is a ratchet meant to empty, so the row is a cost not a formality.
+//! This ticket may therefore need to be paired with a split of the destination rather
+//! than taken alone.
 //!
 //! Routing vs. the two sibling roots added by this same leaf — the line is subsystem, not
 //! filename. `harness_type_checking` asks whether an EXPRESSION type-checks and

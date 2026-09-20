@@ -12,9 +12,13 @@
 //! `tests/infra/test_harness_kloc_cap.sh` C1.
 //!
 //! Crate-local: this harness deliberately does NOT declare the shared `common` helper — no
-//! member consumes it, and declaring it would charge this unit 363 external lines, which
-//! rule (a) counts against the C2 cap, for a module nothing references. (Of the three CMP-2
-//! roots only `harness_units_materials` includes it, for its seven real consumers.)
+//! member consumes it, and declaring it would charge this unit the whole of
+//! `tests/common/mod.rs` as external lines, which rule (a) counts against the C2 cap, for
+//! a module nothing references. That line count is computed by `harness_layout_unit_lines`
+//! (tests/infra/harness-layout-lib.sh) and deliberately NOT pinned here: the figure this
+//! note used to carry (363) had drifted, because nothing recomputes a number in prose.
+//! (Of the three CMP-2 roots only `harness_units_materials` includes it, for its seven
+//! real consumers.)
 //!
 //! It also holds the `@solver_hint` collection-payload pin
 //! (`m11_annotations_solver_hint_tests`), routed here from `harness_physical_modeling`

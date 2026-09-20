@@ -17,9 +17,12 @@
 //! `tests/infra/test_harness_kloc_cap.sh`'s C1/C2 header, kept there, not restated here.
 //!
 //! Crate-local: this harness deliberately does NOT declare the shared `common` helper — no
-//! member consumes it, and declaring it would charge this unit the 391 external lines of
-//! `tests/common/mod.rs`, which rule (a) counts against the C2 cap, for a module nothing
-//! references. `harness_result_annotation` makes the same call for the same reason.
+//! member consumes it, and declaring it would charge this unit the whole of
+//! `tests/common/mod.rs` as external lines, which rule (a) counts against the C2 cap, for
+//! a module nothing references. That line count is computed by `harness_layout_unit_lines`
+//! (tests/infra/harness-layout-lib.sh) and deliberately NOT pinned here, where nothing
+//! would recompute it — `harness_result_annotation` carried such a figure and it drifted.
+//! That root makes the same no-`common` call for the same reason.
 #[path = "harness_diagnostics_robustness/ambient_default_injection_tests.rs"]
 mod ambient_default_injection_tests;
 #[path = "harness_diagnostics_robustness/ambient_default_material_integration_gate.rs"]
