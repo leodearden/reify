@@ -2548,8 +2548,13 @@ impl OcctKernel {
     /// FirstShape/LastShape cap-face indices.
     ///
     /// Mirrors the call convention of the `GeometryOp::Sweep` arm of
-    /// [`OcctKernel::execute`]: same handle resolution and result
-    /// registration with `BRepKind::Solid`. Sweep is single-parent
+    /// [`OcctKernel::execute`]: same handle resolution, the same
+    /// [`validate_sweep_pose`] degenerate-pose refusal, and the same result
+    /// registration with `BRepKind::Solid`. The shared guard is deliberate —
+    /// this method is the entry point `OcctKernelHandle`'s worker routes
+    /// `GeometryOp::Sweep` to, so the two sites must not disagree about which
+    /// poses are legal the way they once disagreed about the `BRepKind` stamp.
+    /// Sweep is single-parent
     /// (the profile is the operand; the path is the spine along which
     /// the profile is swept), so `parent_index` is always `0` and the
     /// existing `SweepOpHistoryRecords` struct fits verbatim.
@@ -2574,6 +2579,7 @@ impl OcctKernel {
         let (result_shape, records) = {
             let profile_shape = self.get_shape(profile_id)?;
             let path_shape = self.get_shape(path_id)?;
+            validate_sweep_pose(profile_shape, path_shape)?;
             let mut history = ffi::ffi::make_pipe_with_history(profile_shape, path_shape)
                 .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
             let face_modified =
