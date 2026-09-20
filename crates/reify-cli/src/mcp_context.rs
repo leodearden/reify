@@ -528,14 +528,14 @@ impl ReifyToolContext for CliToolContext {
             return Err(ToolError::EngineError("no engine initialized".to_string()));
         }
 
-        // Parse cell_id: "Entity.member"
-        let (entity, member) = cell_id.split_once('.').ok_or_else(|| {
-            ToolError::InvalidParams(format!(
-                "cell_id must be 'Entity.member' format, got: {cell_id}"
-            ))
+        // Parse cell_id through the SHARED grammar (reify-core's `FromStr for
+        // ValueCellId`, sited next to the `Display` it inverts) rather than a
+        // second hand-rolled split. This boundary and the GUI's must agree
+        // about what a cell id denotes, and two copies of the rule is exactly
+        // how they came to disagree.
+        let cell_id_obj: reify_core::ValueCellId = cell_id.parse().map_err(|e| {
+            ToolError::InvalidParams(format!("invalid cell_id '{cell_id}': {e}"))
         })?;
-
-        let cell_id_obj = reify_core::ValueCellId::new(entity, member);
 
         // Parse the value as f64
         let numeric_val: f64 = value
