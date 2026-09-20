@@ -21,6 +21,7 @@ import {
   DEFAULT_PROPERTY_HEIGHT,
   DEFAULT_CONSTRAINT_HEIGHT,
 } from '../stores/layoutStore';
+import { syncOrbitUpAxis } from '../viewport/controls';
 
 // Reject oversize payloads before they hit the Tauri IPC channel.
 // 16 MB ceiling is empirical: html-to-image silently truncates output above the
@@ -1458,14 +1459,27 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       const { camera, scene, renderer, controls } = vp;
 
-      // Apply pose — set up before lookAt/controls.update so orientation is correct
+      // Apply pose — set up before lookAt/controls.update so orientation is correct.
+      //
+      // Setting camera.up alone changes the camera's OWN orientation basis but NOT the
+      // OrbitControls orbit frame: three 0.183.2 derives that frame once, in the
+      // constructor (OrbitControls.js:406), and never again.  Without syncOrbitUpAxis
+      // the very next orbit_camera/zoom_camera would swing the camera about the
+      // PREVIOUS axis (#6497).  It must run before controls.update() below, because
+      // update() reads the frame at OrbitControls.js:695/784 to rotate into and out of
+      // it — a sync afterwards would take effect only on the following command.
       camera.position.set(...position);
-      if (up !== undefined) camera.up.set(...up);
+      if (up !== undefined) {
+        camera.up.set(...up);
+        if (controls) syncOrbitUpAxis(controls);
+      }
       if (controls) {
         controls.target.set(...target);
       } else {
         // No OrbitControls — orient camera directly toward target so the contract
         // "same input → same camera frame" holds even without controls attached.
+        // No up-axis sync needed on this branch: Object3D.lookAt reads this.up
+        // directly, so it already honours the value set above.
         camera.lookAt(target[0], target[1], target[2]);
       }
       if (zoom !== undefined) camera.zoom = zoom;
