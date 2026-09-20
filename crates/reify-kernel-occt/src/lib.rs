@@ -14499,6 +14499,95 @@ mod tests {
         });
     }
 
+    /// Regression teeth: a migration that retypes `CircularPattern.angle` to
+    /// a dimensioned `Value` (task 5781's exact shape) must red here instead
+    /// of leaving `occt_non_length_fields_stay_ungated` green with its
+    /// premise silently gone.
+    #[test]
+    #[should_panic(expected = "CircularPattern.angle")]
+    fn ungated_fixture_guard_reds_on_a_dimensioned_circular_pattern_angle() {
+        assert_ungated_fixtures_are_bare(&GeometryOp::CircularPattern {
+            target: GeometryHandleId(1),
+            axis_origin: [0.0; 3],
+            axis_dir: [0.0, 0.0, 1.0],
+            count: 2,
+            angle: Value::angle(std::f64::consts::PI),
+        });
+    }
+
+    /// Regression teeth: a migration that retypes `Draft.angle` to a
+    /// dimensioned `Value` (task 5780's exact shape) must red here instead
+    /// of leaving `occt_non_length_fields_stay_ungated` green with its
+    /// premise silently gone.
+    #[test]
+    #[should_panic(expected = "Draft.angle")]
+    fn ungated_fixture_guard_reds_on_a_dimensioned_draft_angle() {
+        assert_ungated_fixtures_are_bare(&GeometryOp::Draft {
+            target: GeometryHandleId(1),
+            faces: vec![],
+            angle: Value::angle(0.05),
+            plane: GeometryHandleId(1),
+        });
+    }
+
+    /// Pins that the guard keys on the `Scalar` VARIANT, not on the
+    /// dimension being non-dimensionless: a DIMENSIONLESS `Scalar` must
+    /// still red, because a bare `Value::Real` is the one shape
+    /// `check_length_field` can never wave through.
+    #[test]
+    #[should_panic(expected = "HalfSpace.ny")]
+    fn ungated_fixture_guard_reds_on_a_dimensioned_half_space_normal() {
+        assert_ungated_fixtures_are_bare(&GeometryOp::HalfSpace {
+            px: Value::length(0.0),
+            py: Value::length(0.0),
+            pz: Value::length(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
+            },
+            nz: Value::Real(1.0),
+        });
+    }
+
+    /// Closes the guard's own vacuity hole: an op kind it does not
+    /// recognise must fail loudly rather than silently assert nothing.
+    #[test]
+    #[should_panic(expected = "no deliberately-ungated field")]
+    fn ungated_fixture_guard_reds_on_an_op_with_no_ungated_field() {
+        assert_ungated_fixtures_are_bare(&GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        });
+    }
+
+    /// The guard must accept exactly the bare shapes
+    /// `occt_non_length_fields_stay_ungated` uses today, so hardening the
+    /// control never turns into a false alarm on its own fixtures.
+    #[test]
+    fn ungated_fixture_guard_accepts_the_bare_control_fixtures() {
+        assert_ungated_fixtures_are_bare(&GeometryOp::HalfSpace {
+            px: Value::length(0.0),
+            py: Value::length(0.0),
+            pz: Value::length(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Real(0.0),
+            nz: Value::Real(1.0),
+        });
+        assert_ungated_fixtures_are_bare(&GeometryOp::CircularPattern {
+            target: GeometryHandleId(1),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            count: 2,
+            angle: Value::Real(std::f64::consts::PI),
+        });
+        assert_ungated_fixtures_are_bare(&GeometryOp::Draft {
+            target: GeometryHandleId(1),
+            faces: vec![],
+            angle: Value::Real(0.05),
+            plane: GeometryHandleId(1),
+        });
+    }
+
     /// The anti-over-reach control: the FIVE deliberately ungated OCCT fields.
     ///
     /// The PRD's split is 47 = 42 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
