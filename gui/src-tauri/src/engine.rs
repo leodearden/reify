@@ -2791,8 +2791,11 @@ impl EngineSession {
     /// opposite responses from the caller. The categories, in the order they
     /// are checked:
     ///
-    /// 1. **Malformed cell id** — no `.` at all, so it never denoted a cell.
-    ///    Propagated verbatim from `parse_cell_id`.
+    /// 1. **Malformed OR ambiguous cell id** — it never denoted exactly one
+    ///    cell: either no `.` at all, or a member half that still contains a
+    ///    `.` and so admits more than one reading (an instance path, a port
+    ///    composite member, a dotted key). Propagated verbatim from
+    ///    `parse_cell_id`.
     /// 2. **Unknown parameter** — the cell id is well-formed but names no cell
     ///    in `compiled.templates[].value_cells`. Checked through the SHARED
     ///    [`Self::require_known_cell`] rather than a second copy of the
@@ -4924,10 +4927,13 @@ impl EngineSession {
     /// * the cell id names an INSTANCE path (`Parent.childinst.member`),
     /// * the member names a param inside a PORT body.
     ///
-    /// The instance-path case is worth stating outright: `parse_cell_id` splits
-    /// on the FIRST `.`, so `"Parent.childinst.height"` yields the member
-    /// `"childinst.height"`, which matches no `ParamDecl.name` because a member
-    /// name never contains a `.`. That `None` is correct rather than a gap — a
+    /// The instance-path case is worth stating outright, and its MECHANISM
+    /// changed under task #6405 while its outcome did not. `"Parent.childinst.height"`
+    /// is now refused by `parse_cell_id` itself — its member half still holds a
+    /// `.`, so the id names no single cell — and the walk is never reached. It
+    /// previously got the same `None` a step later, by splitting on the first
+    /// `.` and then matching no `ParamDecl.name`. Callers see no change; only
+    /// the reason is now accurate. That `None` is correct rather than a gap — a
     /// shared structure's default literal is not one instance's value, and
     /// rewriting it would change every instance.
     ///
@@ -7529,16 +7535,23 @@ impl EngineSession {
     }
 }
 
-/// Parse a "Entity.member" string into a ValueCellId.
+/// Parse a `"Entity.member"` string into a [`ValueCellId`], rendering any
+/// refusal in this boundary's vocabulary.
+///
+/// The GRAMMAR is not defined here — it is owned by `ValueCellId`'s `FromStr`
+/// in reify-core, which is sited next to the `Display` it inverts so the two
+/// cannot drift. This function only supplies the wording, and every gui entry
+/// point funnels through it, so the reason a cell id is refused is decided in
+/// exactly one place for the whole GUI.
+///
+/// Note that the accepted language is NARROWER than "anything Display can
+/// emit": Display is not injective, so an id whose member half still contains a
+/// `'.'` (an instance path, a port composite member, a dotted key) names no
+/// single cell and is refused as ambiguous. See the `FromStr` docs for why no
+/// positional split could do better.
 fn parse_cell_id(s: &str) -> Result<ValueCellId, String> {
-    let parts: Vec<&str> = s.splitn(2, '.').collect();
-    if parts.len() != 2 {
-        return Err(format!(
-            "Invalid cell ID '{}': expected 'Entity.member' format",
-            s
-        ));
-    }
-    Ok(ValueCellId::new(parts[0], parts[1]))
+    s.parse::<ValueCellId>()
+        .map_err(|e| format!("Invalid cell ID '{s}': {e}"))
 }
 
 /// Parse a realization mesh key of the form `Entity#realization[N]` — the
