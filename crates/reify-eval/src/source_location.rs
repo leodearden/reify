@@ -210,8 +210,17 @@ pub fn resolve_entity_at_source_position(
 /// - **Template name** (no `.`) — returns the first value cell's span as a
 ///   proxy for the entity location.
 /// - **`Entity.member`** (splits on the first `.`) — returns that cell's span.
-///   If the member part itself contains a `.` the input will not match any
-///   value cell (members never contain dots), so `None` is returned.
+///   If the member part itself contains a `.` the input is AMBIGUOUS — it
+///   admits more than one `(entity, member)` reading and so names no single
+///   cell — and `None` is returned.
+///
+/// That refusal is not "members never contain dots": they do. A port body
+/// member is minted as `ValueCellId(entity, "<port>.<param>")`
+/// (reify-compiler/src/entity.rs:2263) and a keyed member carries its key in
+/// the same slot (reify-ir/src/value.rs:4665). The point is that an
+/// instance-path id renders into the identical string, so the input cannot say
+/// which was meant. `ValueCellId`'s `FromStr` in reify-core is the canonical
+/// statement of this grammar and refuses the same inputs for the same reason.
 ///
 /// Returns `None` when the entity or member is not found, or when the input
 /// does not match either accepted form (e.g., bare member name, empty string).
@@ -232,8 +241,10 @@ pub fn resolve_entity_source_location(
 
     let span = if let Some((entity, member)) = entity_path.split_once('.') {
         // "Entity.member" form — split on first dot only.
-        // Reject malformed inputs: empty entity, empty member, or a member
-        // that itself contains a dot (no value cell has a dotted member name).
+        // Reject empty entity, empty member, or a member that itself contains
+        // a dot: such an input admits more than one (entity, member) reading,
+        // so it names no single cell. Same predicate as reify-core's
+        // `FromStr for ValueCellId`.
         if entity.is_empty() || member.is_empty() || member.contains('.') {
             return None;
         }
