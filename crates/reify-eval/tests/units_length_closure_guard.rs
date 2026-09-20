@@ -65,6 +65,37 @@
 //! joins by adding a second `probe_universe`-shaped source. Neither touches the
 //! classifier, and both inherit the anti-vacuity tests for free.
 //!
+//! # C7 drift-guard registrations — answered here, not deferred
+//!
+//! **`.config/nextest.toml`: no override, deliberately.** That file is read by
+//! `cargo nextest`, so the measurement that decides the question is the nextest
+//! one: on this tree the slowest test in this binary measured 5.0s, 7.1s and
+//! 8.4s across three runs — the sweep is IR-build-only and never constructs a
+//! kernel — against `[profile.default]`'s `120s x 10` = 1200s ceiling. That is
+//! over two orders of magnitude of headroom, so the run-to-run variance that
+//! makes the figure a range rather than a number cannot threaten the
+//! conclusion. (Plain `cargo test` reports 5.3s for the whole binary, at the
+//! bottom of that range, because it runs the tests as threads of ONE process
+//! so they share the sweep cache, whereas nextest gives each test its own
+//! process and every Step-3 test pays the sweep itself. Quoting nextest is
+//! what keeps the basis matched to the runner the config governs.) An
+//! override block would
+//! be dead config AND would owe a paired row in `GATE_RESIDENT_FILTERS`
+//! (`tests/infra/test_nextest_slow_priority.sh`), whose Assertion K reds on an
+//! override classifying as neither heavy nor gate-resident. A block that does
+//! not exist cannot red.
+//!
+//! **`tests/infra/run-all-classification.manifest`: nothing owed.** No
+//! `tests/infra/test_*.sh` is added — this is a Rust integration test, reached
+//! by `cargo test -p reify-eval` (the `test-instrumentation` self-dev-dep
+//! activates the probe seam, so no `--features` flag is needed).
+//!
+//! **`tests/infra/test_no_new_wallclock_upper_bounds.sh`: nothing owed.** This
+//! file asserts no elapsed-time bound at all, which is what C7 prefers and what
+//! `version_id_discipline_gate.rs` set the precedent for. The counts it DOES
+//! bound — observations, rejections, universe size — are FLOORS on evidence,
+//! not deadlines, so they cannot flake with machine load.
+//!
 //! # ACCEPTED LIMITATIONS — read these before trusting a green run
 //!
 //! **This guard is IR-BUILD ONLY.** It compiles `.ri` source to
@@ -520,8 +551,9 @@ mod seeded_classifier {
 ///
 /// Liveness is the half this guard cannot check: a test cannot query
 /// Taskmaster. It is delegated deliberately. Each shipped [`Residual`] also
-/// carries a `// TODO(#NNNN)` comment on its entry, so the PTODO detector — which
-/// DOES resolve task state — performs the liveness check, and a residual whose
+/// carries a marker comment on its entry in the canonical PTODO form, so the
+/// PTODO detector — which DOES resolve task state — performs the liveness
+/// check, and a residual whose
 /// owner closes orphans its cite and reds the fingerprint ratchet in
 /// `tests/infra/test_reify_audit_ptodo.sh`. That is INV-SF-5
 /// (`placeholders-owned-and-loud`) working, not a defect.
@@ -573,7 +605,7 @@ impl std::fmt::Display for Residual {
 }
 
 /// This file, read from disk, so the shipped residual cites can be cross-checked
-/// against the `// TODO(#NNNN)` comments that make them visible to the PTODO
+/// against the owner-cite marker comments that make them visible to the PTODO
 /// detector.
 ///
 /// Located from `CARGO_MANIFEST_DIR` rather than from the process's working
@@ -1070,7 +1102,7 @@ mod seeded_cites {
         );
     }
 
-    /// (iii) Every shipped residual's cite is ALSO written as a `// TODO(#NNNN)`
+    /// (iii) Every shipped residual's cite is ALSO written as a PTODO marker
     /// comment in this file, so the PTODO detector performs the liveness check
     /// this test cannot.
     ///
@@ -1098,7 +1130,7 @@ mod seeded_cites {
         cites.dedup();
 
         for cite in cites {
-            let marker = format!("// TODO({cite}):");
+            let marker = format!("// TODO({cite}):"); // ptodo:allow — the matcher, not a marker
             assert!(
                 source.contains(&marker),
                 "residual cite {cite} has no `{marker}` comment in this file. \
@@ -1394,7 +1426,14 @@ fn sweep_universe() -> Vec<Observation> {
     observations
 }
 
-/// The sweep, run once and shared by every Step-3 test.
+/// The sweep, run once per PROCESS and shared by every Step-3 test in it.
+///
+/// Per process, not per binary: `cargo test` runs this binary's tests as
+/// threads of one process, so one sweep serves all four Step-3 tests, while
+/// `cargo nextest` — the gate's runner — gives each test its own process and
+/// each pays its own sweep. That is why the binary costs 5.3s under the former
+/// and 7-8s under the latter, both far inside the ceiling that keeps
+/// `.config/nextest.toml` free of an override for it.
 fn observe_universe() -> &'static [Observation] {
     static SWEEP: std::sync::OnceLock<Vec<Observation>> = std::sync::OnceLock::new();
     SWEEP.get_or_init(sweep_universe)
@@ -1541,7 +1580,7 @@ mod real_tree {
              legitimately dimensionless, add a row to ALLOWLIST with the D14 \
              `Justification` that licenses it. If it is neither settled nor \
              justified, add a `Residual` row with a LIVE task cite and its \
-             matching `// TODO(#NNNN)` comment. Do not add a row whose \
+             matching PTODO marker comment. Do not add a row whose \
              justification you cannot defend: that is the prose completeness \
              claim this guard replaced.",
             violations.len(),
