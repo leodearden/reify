@@ -412,6 +412,25 @@ pub struct AuditContext<'a> {
     pub producer_branch: Option<String>,
 }
 
+impl AuditContext<'_> {
+    /// Contents of tracked file `path` (root-relative), or `None` when it
+    /// cannot be read.
+    ///
+    /// The crate's single tracked-file read. Only ENUMERATION is a git seam —
+    /// every detector takes path membership from `git.ls_files()` and then
+    /// reads the working tree directly through here, so a path that is
+    /// tracked but absent, unreadable or a directory is SKIPPED fail-safe: no
+    /// finding, no panic. That matters because the callers are scanners run
+    /// over the whole repo, where one unreadable file must not be able to
+    /// take the detector — or the verify gate it runs in — down.
+    ///
+    /// `pub(crate)` because all three callers are in-crate; a refactor is no
+    /// reason to widen the crate's public API.
+    pub(crate) fn read_relative(&self, path: &str) -> Option<String> {
+        std::fs::read_to_string(self.project_root.join(path)).ok()
+    }
+}
+
 // -----------------------------------------------------------------------
 // GitOps seam
 // -----------------------------------------------------------------------
