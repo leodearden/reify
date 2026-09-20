@@ -640,13 +640,11 @@ fn mcp_tool_call(
     let _idle = IdleGuard(app.clone());
 
     // Task 5466: the last engine-bearing Tauri command onto the PERSISTENT
-    // large-stack worker. One relocated call covers this command's whole engine
-    // surface: an MCP tool never touches the engine directly — every touch is a
-    // `ReifyToolContext` method on the context, and those include `open_file`,
-    // `update_source` and `set_parameter`, which drive full recursive compiles.
-    // The builder chain, `emit_status`, the `IdleGuard`, `compute_delta` and
-    // `emit_delta` all STAY on the command thread, exactly as the fourteen
-    // task-5772 wrappers split them.
+    // large-stack worker. Why relocating this ONE call covers the command's
+    // whole engine surface is on `mcp_context::mcp_tool_call_on_large_stack`.
+    // Everything else — the builder chain, `emit_status`, the `IdleGuard`,
+    // `compute_delta` and `emit_delta` — STAYS on the command thread, exactly
+    // as the task-5772 wrappers split them.
     let result = reify_gui::mcp_context::mcp_tool_call_on_large_stack(ctx, name, params);
 
     // Sync state and emit delta events (conservative: runs even after read-only tools,
@@ -658,30 +656,31 @@ fn mcp_tool_call(
     // the evaluated model, making it recursion-bearing and lane-worthy in its
     // own right.
     //
-    // TWO deliberate behavioural deltas, both from `with_engine_lock`, which the
-    // hand-rolled `state.engine.lock()` did not go through:
-    //
-    // 1. POISON RECOVERY, a strict gain. A poisoned engine mutex now still emits
-    //    the delta, where the previous `if let Ok(..) = state.engine.lock()`
-    //    silently skipped it.
-    // 2. PANIC CONTAINMENT, a real loss. `with_engine_lock` wraps the closure in
-    //    `catch_unwind`, so a panic inside `build_gui_state` becomes an `Err`
-    //    that the `if let Ok(..)` below DISCARDS. Previously it unwound out of
-    //    `mcp_tool_call` and reached the frontend as an IPC error. The cost: the
-    //    tool call is still reported `Ok`, the delta is silently skipped, and the
-    //    frontend holds a stale model with no signal that it did.
-    //
-    // Accepted because it makes this command consistent with the other fourteen
-    // rather than uniquely panic-transparent, and because the panic text is not
-    // lost — `with_engine_lock` formats it into the `Err` — but a future change
-    // wanting the frontend told should surface that `Err`, not re-hand-roll the
-    // lock.
+    // The one behavioural delta this ACCEPTS, from routing through
+    // `with_engine_lock` rather than the hand-rolled `state.engine.lock()`:
+    // `with_engine_lock` also `catch_unwind`s the closure, so a panic inside
+    // `build_gui_state` arrives here as an `Err` where it previously unwound out
+    // of `mcp_tool_call` and reached the frontend as an IPC error. The frontend
+    // is no longer told. Accepted because raising it would fail a tool call that
+    // SUCCEEDED, which is the worse report — and it is a delta rather than a
+    // silence: the `Err` arm logs, so a skipped sync is diagnosable. Poison
+    // recovery is a strict GAIN from the same move — a poisoned engine mutex
+    // still emits the delta, where `if let Ok(..) = state.engine.lock()`
+    // silently skipped it.
     let engine = Arc::clone(&state.engine);
-    if let Ok(gui_state) = reify_gui::large_stack::run_on_worker(move || {
+    match reify_gui::large_stack::run_on_worker(move || {
         reify_gui::commands::get_initial_state_impl(&engine)
     }) {
-        let delta = compute_delta(&state.last_state, &gui_state);
-        emit_delta(&app, &delta);
+        Ok(gui_state) => {
+            let delta = compute_delta(&state.last_state, &gui_state);
+            emit_delta(&app, &delta);
+        }
+        // Also the arm a genuine `build_gui_state` error takes, which is the
+        // likelier of the two in practice.
+        Err(e) => warn!(
+            "mcp_tool_call: delta sync failed, frontend model may be stale: {}",
+            e
+        ),
     }
 
     result
