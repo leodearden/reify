@@ -73,6 +73,81 @@ pub(crate) fn contains_word(haystack: &str, needle: &str) -> bool {
     false
 }
 
+/// Byte offset of a word-boundary-delimited `token` in `line`, or `None` when
+/// the line carries no such occurrence.
+///
+/// Left-boundary only — the caller decides what, if anything, may follow, so
+/// this is a hand-rolled `\b<token>` rather than a whole-word match. That is
+/// what keeps a token from being matched as the tail of a longer word
+/// (`xxpdoccover:allow`), and what makes a legacy unprefixed spelling that is
+/// a SUFFIX of the current one (`doccover:allow`) simply never match.
+///
+/// A rejected occurrence advances by the token's whole length. Unlike
+/// [`contains_word`]'s haystack-driven retry, that step is safe as a byte
+/// step: `token` is caller-supplied ASCII marker syntax, so its length is its
+/// char count and `idx + token.len()` is always a char boundary.
+pub(crate) fn find_word_boundary_token(line: &str, token: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut start = 0;
+    loop {
+        let rel = line[start..].find(token)?;
+        let idx = start + rel;
+        if idx == 0 || !is_word_byte(bytes[idx - 1]) {
+            return Some(idx);
+        }
+        start = idx + token.len();
+    }
+}
+
+/// Reason body of an inline `token` marker on `line`, or `None` when the line
+/// carries no marker or the body is blank after trimming.
+///
+/// Grammar, in the order it is applied — the order is load-bearing:
+/// locate `token`, take the rest of the line, `trim_end`, strip a trailing
+/// comment terminator (`-->`, else `*/`), trim, strip ONE optional separator
+/// (em dash `—`, ASCII hyphen `-`, or colon `:`), trim, reject blank.
+/// Terminator before separator, because `-->` BEGINS with the ASCII-hyphen
+/// separator: the other order reads `<!-- pdoccover:allow -->` as a
+/// well-formed marker whose reason is `->`, silently suppressing a real
+/// claim. `*/` is the same hazard inside a Rust block comment.
+///
+/// A `None` return on a line that DOES carry the token is what a caller turns
+/// into an `allow-missing-reason`-style finding; a reasonless escape hatch is
+/// never silently honoured.
+///
+/// Deliberately NOT the home for the crate's two other marker readers, each
+/// for a measured reason (both pinned by tests below, so a later convergence
+/// pass reds instead of changing a detector):
+/// - `ptodo::g_allow_marker_body` requires the marker to own the whole line
+///   after a literal `//`, and strips neither separator nor terminator. This
+///   grammar is free-floating, so it also finds the TRAILING markers PTODO
+///   does not — which would newly admit them into the hard-gated G-allow
+///   owner-cite lane and the arm-(7) delta-B guard.
+/// - `pdssentinel::has_allow_marker` is a bare presence check with no reason
+///   requirement, and this function rejects a blank body — so routing it here
+///   would flip every reasonless `// ds-sentinel:allow` from suppressing to
+///   not suppressing.
+///
+/// The explicit `'a` is required: with two `&str` parameters and no `&self`,
+/// elision cannot choose the return lifetime. The body borrows from `line`.
+pub(crate) fn allow_marker_body<'a>(line: &'a str, token: &str) -> Option<&'a str> {
+    let idx = find_word_boundary_token(line, token)?;
+    let body = &line[idx + token.len()..];
+    let body = body.trim_end();
+    let body = body
+        .strip_suffix("-->")
+        .or_else(|| body.strip_suffix("*/"))
+        .unwrap_or(body);
+    let body = body.trim();
+    let body = body
+        .strip_prefix('—')
+        .or_else(|| body.strip_prefix('-'))
+        .or_else(|| body.strip_prefix(':'))
+        .unwrap_or(body);
+    let body = body.trim();
+    if body.is_empty() { None } else { Some(body) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
