@@ -367,6 +367,104 @@ fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError>
 }
 
 #[cfg(has_occt)]
+/// Minimum angle, in degrees, between a `sweep` path's start tangent and its
+/// profile's normal. Below this the profile is posed in (or effectively in) the
+/// spine's own plane and the sweep is refused.
+///
+/// This is the ONE place the band is written. The predicate takes its sine and
+/// the error text quotes the degrees, so the number a designer is told and the
+/// number they are measured against cannot drift apart.
+///
+/// # Why 4 degrees, and why a band at all
+///
+/// The degeneracy is continuous, not a special case: OCCT reports `IsDone()`
+/// and returns a valid sliver solid down to 0.001 degrees off-plane, so an
+/// exact-coplanarity predicate is evadable by float noise and misses the
+/// realistic authoring mistake — a profile posed ALMOST in the spine's plane.
+///
+/// 4.0 is the arithmetic midpoint of the gap between the worst real victim and
+/// the nearest real keeper. Every in-tree `sweep` subject was measured (task
+/// #7248); `abs(t̂·n̂)` for each, against a floor of sin(4°) = 0.0697564737441253:
+///
+/// | subject | `abs(t̂·n̂)` | |
+/// |---|---|---|
+/// | `circle(100mm)` along a z=0 bezier (`pnrg_envelope_spline.ri`) | 0.000000000 | REJECT |
+/// | `circle(3mm)` along `helix(24mm, 7mm, 63mm)` (`helix_sweep_e2e.rs`) | 0.046370259 | REJECT |
+/// | `circle(0.4mm)` along `helix(2.15mm, 0.8mm, 10mm)` (`helix_sweep_dep_5342.ri`) | 0.059116871 | REJECT |
+/// | `circle(100mm)` along an `interp` spine (`pnrg_envelope_sweep.ri`) | 0.080458525 | admit |
+/// | the posed groove profile of `prj/printer_v01/dev_capstan.ri` | 0.998940251 | admit |
+///
+/// The three rejected subjects all produced a degenerate body — a flat ribbon,
+/// or a negative volume that `volume()` downgrades to Undef — and were reposed
+/// under the same task. The floor clears the worst of them by 18% and sits 15%
+/// below the nearest deliberately-posed keeper.
+const SWEEP_DEGENERATE_POSE_DEG: f64 = 4.0;
+
+#[cfg(has_occt)]
+/// Normalise a vector, or `None` when it carries no usable direction.
+///
+/// `None` covers every non-finite component — a NaN or infinite component makes
+/// the length non-finite — as well as a vector too short to normalise.
+fn unit_vector(v: ffi::ffi::Point3) -> Option<(f64, f64, f64)> {
+    let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+    if !len.is_finite() || len < 1e-12 {
+        return None;
+    }
+    Some((v.x / len, v.y / len, v.z / len))
+}
+
+#[cfg(has_occt)]
+/// Reject a `sweep` whose profile is posed within [`SWEEP_DEGENERATE_POSE_DEG`]
+/// of the path's own plane.
+///
+/// `sweep` transports the profile AS POSED — deliberately, since designs pose
+/// their sections themselves — so a section lying in the spine's plane sweeps
+/// edge-on. The swept volume is exactly `(profile area) · (displacement · n̂)`,
+/// so at 0 degrees it is 0 and just off 0 it is a sliver; OCCT builds both
+/// without complaint. This guard is what turns that silence into a diagnostic.
+///
+/// # Fails OPEN
+///
+/// Returns `Ok(())` whenever the pose predicate is UNDEFINED rather than
+/// satisfied: the profile is not a `Face` (a Wire has no normal to compare
+/// against), either FFI query errors, or either vector carries no direction.
+/// Failing closed would newly reject sweeps that realize today — a let-bound
+/// `line_segment` profile swept along a +Z spine produces a real 20mm × 200mm
+/// face. That case IS a defect, but its remedy is the honest `BRepKind` stamp,
+/// which makes the result legibly a Face, not a pose error naming a tolerance
+/// the shape has no normal to be measured against. Keeping the scope to
+/// "the profile has a normal, and it lies in the spine's plane" leaves the
+/// question of what counts as a valid profile with the compiler, which already
+/// owns it.
+fn validate_sweep_pose(
+    profile_shape: &ffi::ffi::OcctShape,
+    path_shape: &ffi::ffi::OcctShape,
+) -> Result<(), GeometryError> {
+    match ffi::ffi::shape_type_name(profile_shape) {
+        Ok(name) if name == "Face" => {}
+        _ => return Ok(()),
+    }
+
+    let (Ok(normal), Ok(tangent)) = (
+        ffi::ffi::query_face_normal(profile_shape),
+        ffi::ffi::wire_start_tangent(path_shape),
+    ) else {
+        return Ok(());
+    };
+    let (Some(n), Some(t)) = (unit_vector(normal), unit_vector(tangent)) else {
+        return Ok(());
+    };
+
+    let abs_dot = (t.0 * n.0 + t.1 * n.1 + t.2 * n.2).abs();
+    if abs_dot < SWEEP_DEGENERATE_POSE_DEG.to_radians().sin() {
+        return Err(GeometryError::OperationFailed(format!(
+            "sweep profile is posed in the path's plane: the angle between the path's start tangent and the profile normal is below the {SWEEP_DEGENERATE_POSE_DEG} degree minimum (abs(t-hat . n-hat) = {abs_dot:.9})"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(has_occt)]
 /// Encode a `Point3` as the JSON string `{"x":_,"y":_,"z":_}` used by centroid-style queries.
 ///
 /// Both the `Centroid` and `CenterOfMass` query arms return their result in this format.
@@ -3365,6 +3463,7 @@ impl OcctKernel {
             GeometryOp::Sweep { profile, path } => {
                 let profile_shape = self.get_shape(*profile)?;
                 let path_shape = self.get_shape(*path)?;
+                validate_sweep_pose(profile_shape, path_shape)?;
                 ffi::ffi::make_pipe(profile_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
