@@ -154,6 +154,21 @@ The direction is MONOTONE — the fix can only GROW the abstention set, and
 can newly fail. Pinned by
 `gamma_strict_auto_floored_only_by_a_derived_cell_abstains_not_errors`.
 
+**That monotonicity argument is scoped to γ.** Three other things move for this shape and
+are NOT covered by it, all latent for the same reason (no corpus model has the shape):
+
+- the SEED paths (`extract_initial_point`, `derived_seed_box`/`multistart_points`) give up
+  their #5618 derived start point and fall back to `0.01` / `default_bounds_for`. This is a
+  priced trade, not an oversight — the reasoning is on `constant_operand_value`'s doc, and
+  `extract_initial_point_derived_cell_floor_falls_through_to_fixed_default` pins it;
+- the NON-γ path reuses the same intervals for its PERTURBATION ANCHORS, so a widened box
+  re-anchors the confirming re-solve and can move that verdict in either direction;
+- the ABSTENTION side's MENTIONS test stays syntactic, so an auto a constraint reaches only
+  through a derived cell (`constraint side >= 5` with `side = 3*c`) is still neither
+  bracketed nor abstaining — the same §11.6 false negative in the mirror direction.
+  Pre-dating this task and unchanged by it; recorded on
+  `params_in_underivable_constraints`' doc and tracked as follow-up work.
+
 ---
 
 ## Cross-references

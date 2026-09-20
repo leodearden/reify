@@ -1170,6 +1170,19 @@ impl DerivedInterval {
 ///
 /// Built once per derivation walk by the two entry points, which are the only
 /// members holding `auto_params`; every inner member takes `&DerivationCtx`.
+///
+/// COST: `auto_reads` and `cell_ids` are pure functions of
+/// `(dependent_cells, auto_params)`, neither of which changes across a
+/// resolution — yet both are rebuilt at every entry-point call, which over one
+/// resolution is `extract_initial_point` + [`derived_seed_box`] + one per
+/// `solve_core_with_sd_tolerance` across the multistart points + two in
+/// `verify_uniqueness`. A model with NO dependent cells pays nothing
+/// (`dependent_cell_auto_reads` early-returns an empty map and the `cell_ids`
+/// collect is over an empty slice), and otherwise the reachability DFS is
+/// dwarfed by the Nelder-Mead fold it precedes — so this is priced, not
+/// overlooked. Hoisting the pair to once per resolution means threading a
+/// prebuilt context through all four consumers, which is follow-up work rather
+/// than part of the fix this context exists to carry.
 struct DerivationCtx<'a> {
     /// Position of each auto param within `auto_params` — the index every
     /// `DerivedInterval` buffer in the family is addressed by, and the family's
@@ -1292,6 +1305,31 @@ impl<'a> DerivationCtx<'a> {
 ///
 /// The `floor_applied` gate that decides whether a CLAMP box is built at all is
 /// a separate question, settled by task #5711 — not re-litigated here.
+///
+/// # One policy for all four consumers, and what that costs
+///
+/// This rejection is applied UNIFORMLY, though the four consumers do not all
+/// need it. Only the CLAMP box and `verify_uniqueness`' bracketing predicate
+/// require a genuine INVARIANT bound; `extract_initial_point`,
+/// [`derived_seed_box`]/[`multistart_points`] and the perturbation anchors need
+/// only a plausible SEED, for which a trial snapshot of a derived cell would be
+/// harmless — and better than the fallback.
+///
+/// The cost is therefore real and priced, not overlooked: for an auto floored
+/// ONLY by a derived cell, `extract_initial_point` falls through to the fixed
+/// `0.01` and the seed boxes fall back to `default_bounds_for`, giving up
+/// exactly the #5618 improvement those paths exist for. Pinned by
+/// `extract_initial_point_derived_cell_floor_falls_through_to_fixed_default`.
+///
+/// One rule is still preferred over a per-consumer split, on three grounds:
+/// the corpus survey (`docs/notes/derived-cell-bound-derivation-survey.md`)
+/// found ZERO models of that shape, so the loss is latent; the fallback is the
+/// documented pre-#5618 behaviour rather than a new defect; and a second
+/// seed/clamp axis here would cross the one [`resolve_bounds`] already carries
+/// (`include_strict`), leaving two independent switches for a future reader to
+/// keep aligned. If a real model ever pays this cost, the split is a
+/// `snapshot_operands_ok` flag on [`DerivationCtx`] and the test above is the
+/// assertion that should flip.
 fn constant_operand_value(expr: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Option<f64> {
     if expr
         .collect_value_refs()
@@ -1625,6 +1663,27 @@ fn seed_box_from_intervals(
 /// mentions it is opaque.
 ///
 /// Pure function of its inputs — no solve, no I/O, no mutation.
+///
+/// # The MENTIONS test stays syntactic, by design and not by oversight
+///
+/// [`collect_underivable_in_leaf`] asks which autos a leaf MENTIONS using the
+/// raw `leaf.collect_value_refs()`, so an auto a constraint reaches only
+/// THROUGH a derived cell is invisible to it. Since task #6146 the far-operand
+/// test on the other side of this family IS transitive
+/// ([`DerivationCtx::varies_with_solve`]), so the two halves are deliberately
+/// asymmetric.
+///
+/// The asymmetry has a cost, pre-dating #6146 and unchanged by it:
+/// `constraint side >= 5` with `side = 3*c` bounds nothing for strict auto `c`
+/// AND never adds `c` to this set, so `c` is neither bracketed nor abstaining
+/// and the γ path reports `ConstraintNonUnique` — the same class of §11.6 false
+/// negative #6146 removed, in the mirror direction.
+///
+/// Widening it is NOT a doc-sized change: `decompose::expand_refs_through_dependent_cells`
+/// exists and would supply the reach, but it needs the cycle-tainted treatment
+/// [`DerivationCtx::varies_with_solve`] encodes, and growing this set moves
+/// models from erroring to `Solved` — a §11.6 verdict change that wants its own
+/// regression sweep rather than a ride-along. Tracked as follow-up work.
 fn params_in_underivable_constraints(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
@@ -6077,6 +6136,15 @@ mod tests {
     /// 'not bracketed' to 'abstain', never the reverse"). So no previously-
     /// `Solved` γ model can newly fail — the verdict moves `false → true` or
     /// not at all.
+    ///
+    /// SCOPE: that argument covers the γ branch ONLY. The non-γ path reuses the
+    /// same `intervals` through `seed_box_from_intervals` to build its
+    /// PERTURBATION ANCHORS, and a widened box there re-anchors the confirming
+    /// re-solve, which can land on a different local optimum and so move a
+    /// verdict in EITHER direction. Nothing here pins that; it is latent for
+    /// the same reason the rest of this task is (the corpus survey found no
+    /// model of this shape), and it is a property of the anchor box, not of the
+    /// abstention monotonicity this test asserts.
     #[test]
     fn gamma_strict_auto_floored_only_by_a_derived_cell_abstains_not_errors() {
         use std::collections::HashSet;
@@ -9913,6 +9981,73 @@ mod tests {
             objective: None,
             functions: vec![].into(),
         }
+    }
+
+    /// [`seed_problem`] with dependent cells, for the #6146 seed-path fixtures.
+    fn seed_problem_with_cells(
+        auto_params: Vec<reify_ir::AutoParam>,
+        exprs: Vec<reify_ir::CompiledExpr>,
+        current_values: ValueMap,
+        dependent_cells: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)>,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            dependent_cells,
+            ..seed_problem(auto_params, exprs, current_values)
+        }
+    }
+
+    /// (f) SEED-PATH CONSEQUENCE of the #6146 derivation guard — pinned here
+    /// rather than left to be inferred from the interval assertions.
+    ///
+    /// `extract_initial_point` is one of the three SEED consumers of
+    /// `derive_param_intervals`, and unlike the CLAMP box it does not need an
+    /// invariant bound — any plausible start point will do. The guard is
+    /// nevertheless applied UNIFORMLY, so for an auto floored ONLY by a derived
+    /// cell the derivation now yields `(None, None)` and the seed falls all the
+    /// way through to the fixed `0.01`, rather than starting from this trial's
+    /// snapshot of `side`.
+    ///
+    /// That is a deliberate, priced trade — see `constant_operand_value`'s doc
+    /// for why one rule beats a per-consumer split — and this test is what makes
+    /// it visible. If a future change gives the seed paths their own policy,
+    /// THIS is the assertion that should flip, consciously.
+    #[test]
+    fn extract_initial_point_derived_cell_floor_falls_through_to_fixed_default() {
+        use reify_core::{DimensionVector, ValueCellId};
+        use reify_ir::{BinOp, Value};
+
+        let a = ValueCellId::new("Seed", "a");
+        let c = ValueCellId::new("Seed", "c");
+        let side = ValueCellId::new("Seed", "side");
+
+        // The model's evaluated state: `c` and the derived `side = 3*c` both
+        // resolve, `a` does not — so the current-value arm cannot short-circuit
+        // and the derived-box arm is the one under test.
+        let mut values = ValueMap::new();
+        for (id, v) in [(&c, 2.5), (&side, 7.5)] {
+            values.insert(
+                id.clone(),
+                Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+        }
+        let problem = seed_problem_with_cells(
+            vec![real_auto_param(a.clone()), real_auto_param(c.clone())],
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+            values,
+            vec![(side.clone(), scaled_ref(3.0, &c))],
+        );
+
+        assert_eq!(
+            super::extract_initial_point(&problem, None)[0],
+            0.01,
+            "`a >= side` with `side = 3*c` derives neither side for `a`, so the \
+             seed falls through to the fixed default — the guard is applied to \
+             the SEED paths too, giving up #5618's derived start point for this \
+             shape rather than starting from a snapshot that moves with `c`"
+        );
     }
 
     /// (a) Two derived sides → the seed is the derived box's MIDPOINT, not the
