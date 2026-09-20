@@ -141,7 +141,10 @@ fn triplex_nodes(bottom_z: f64) -> Vec<Value> {
 /// Lower a list of index tuples (`[[j, k], …]` for struts and cables,
 /// `[[i, j, k], …]` for surfaces) the way the DSL lowers them: a `Value::List`
 /// of `Value::List`s of `Value::Int`.
-pub fn index_lists<const N: usize>(rows: &[[i64; N]]) -> Value {
+///
+/// Private: [`tensegrity`] takes the raw index rows and does this itself, so no
+/// consumer has to know the lowering — or can get it wrong.
+fn index_lists<const N: usize>(rows: &[[i64; N]]) -> Value {
     let row = |r: &[i64; N]| Value::List(r.iter().map(|&i| Value::Int(i)).collect());
     Value::List(rows.iter().map(row).collect())
 }
@@ -149,26 +152,33 @@ pub fn index_lists<const N: usize>(rows: &[[i64; N]]) -> Value {
 /// Assemble a `Tensegrity` structure `Value` from raw node / strut / cable
 /// fields.
 ///
+/// The three member fields are RAW INDEX ROWS, not pre-lowered `Value`s, and
+/// this function lowers them via [`index_lists`]. That is what makes a
+/// structurally invalid Tensegrity — a `struts` that is not a list of index
+/// pairs — unrepresentable at the call site rather than a failure surfacing
+/// from deep inside the solve, and it means no consumer has to remember which
+/// arguments get wrapped.
+///
 /// `surfaces` is an [`Option`] and the distinction is LOAD-BEARING: `None`
-/// OMITS the `surfaces` key from the field map entirely, where `Some(v)`
-/// inserts it. A structure with no `surfaces` key is the line-only input; one
-/// carrying a PRESENT-but-empty `surfaces` list is a different input. `None`
-/// must never be lowered to `Value::Undef` or to an empty list — the combined
-/// membrane δ suite asserts the no-surfaces path returns an empty
-/// `surface_stresses` echo and never an absent one, so both shapes have to stay
-/// reachable and distinguishable.
+/// OMITS the `surfaces` key from the field map entirely, where `Some(rows)`
+/// inserts it — including for `Some(&[])`. A structure with no `surfaces` key
+/// is the line-only input; one carrying a PRESENT-but-empty `surfaces` list is
+/// a different input. `None` must never be lowered to `Value::Undef` or to an
+/// empty list — the combined membrane δ suite asserts the no-surfaces path
+/// returns an empty `surface_stresses` echo and never an absent one, so both
+/// shapes have to stay reachable and distinguishable.
 pub fn tensegrity(
     nodes: Vec<Value>,
-    struts: Value,
-    cables: Value,
-    surfaces: Option<Value>,
+    struts: &[[i64; 2]],
+    cables: &[[i64; 2]],
+    surfaces: Option<&[[i64; 3]]>,
 ) -> Value {
     let mut fields: PersistentMap<String, Value> = PersistentMap::default();
     fields.insert("nodes".to_string(), Value::List(nodes));
-    fields.insert("struts".to_string(), struts);
-    fields.insert("cables".to_string(), cables);
+    fields.insert("struts".to_string(), index_lists(struts));
+    fields.insert("cables".to_string(), index_lists(cables));
     if let Some(surfaces) = surfaces {
-        fields.insert("surfaces".to_string(), surfaces);
+        fields.insert("surfaces".to_string(), index_lists(surfaces));
     }
     Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: StructureTypeId(0),
@@ -187,16 +197,11 @@ pub fn tensegrity(
 /// [`tall_triplex_tensegrity`]); routing every call site through those keeps the
 /// geometry choice readable and keeps a third variant from being introduced at a
 /// call site instead of here, where the anti-drift property lives.
-fn triplex_tensegrity_at(bottom_z: f64, surfaces: Option<Value>) -> Value {
+fn triplex_tensegrity_at(bottom_z: f64, surfaces: Option<&[[i64; 3]]>) -> Value {
     let pair = |&(j, k): &(usize, usize)| [j as i64, k as i64];
     let struts: Vec<[i64; 2]> = TRIPLEX_MEMBERS[..TRIPLEX_STRUTS].iter().map(pair).collect();
     let cables: Vec<[i64; 2]> = TRIPLEX_MEMBERS[TRIPLEX_STRUTS..].iter().map(pair).collect();
-    tensegrity(
-        triplex_nodes(bottom_z),
-        index_lists(&struts),
-        index_lists(&cables),
-        surfaces,
-    )
+    tensegrity(triplex_nodes(bottom_z), &struts, &cables, surfaces)
 }
 
 /// The canonical triplex: circumradius 1, **unit height** (top `z = +1.0`,
@@ -204,7 +209,7 @@ fn triplex_tensegrity_at(bottom_z: f64, surfaces: Option<Value>) -> Value {
 ///
 /// See [`tensegrity`] for what `surfaces: None` means — it is not the same input
 /// as `Some(Value::List(vec![]))`.
-pub fn canonical_triplex_tensegrity(surfaces: Option<Value>) -> Value {
+pub fn canonical_triplex_tensegrity(surfaces: Option<&[[i64; 3]]>) -> Value {
     triplex_tensegrity_at(0.0, surfaces)
 }
 
@@ -214,7 +219,7 @@ pub fn canonical_triplex_tensegrity(surfaces: Option<Value>) -> Value {
 /// converges from, so it is named rather than left as a positional float.
 ///
 /// See [`tensegrity`] for what `surfaces: None` means.
-pub fn tall_triplex_tensegrity(surfaces: Option<Value>) -> Value {
+pub fn tall_triplex_tensegrity(surfaces: Option<&[[i64; 3]]>) -> Value {
     triplex_tensegrity_at(-1.0, surfaces)
 }
 
@@ -223,17 +228,12 @@ pub fn tall_triplex_tensegrity(surfaces: Option<Value>) -> Value {
 /// The top cap spans the three FREE nodes of the anchored solve, so it genuinely
 /// enters `D_ff` rather than sitting inertly on the anchored side.
 ///
-/// A const, not just the lowered [`triplex_caps`] `Value`, so that a consumer's
-/// per-surface array can be sized `[_; TRIPLEX_CAPS.len()]` — then adding a cap
-/// here is a compile error at that call site rather than a length mismatch
-/// surfacing from inside the solver at runtime.
+/// A const, and the only spelling: it is handed straight to
+/// [`canonical_triplex_tensegrity`] / [`tall_triplex_tensegrity`] as
+/// `Some(&TRIPLEX_CAPS)`, and a consumer’s per-surface array is sized
+/// `[_; TRIPLEX_CAPS.len()]` — so adding a cap here is a compile error at that
+/// call site rather than a length mismatch surfacing from inside the solver.
 pub const TRIPLEX_CAPS: [[i64; 3]; 2] = [[0, 1, 2], [3, 4, 5]];
-
-/// [`TRIPLEX_CAPS`] lowered to the nested-`Int`-list form the `surfaces` field
-/// takes.
-pub fn triplex_caps() -> Value {
-    index_lists(&TRIPLEX_CAPS)
-}
 
 /// Group ids in [`TRIPLEX_MEMBERS`] order: the three struts to group 0, the six
 /// horizontals (top and bottom rings) to group 1, the three verticals to group 2.
@@ -430,16 +430,15 @@ mod tests {
 
     /// A minimal non-triplex member set, so the `tensegrity` assembler contract
     /// is pinned independently of the triplex topology.
-    fn stub_members() -> (Value, Value) {
-        (index_lists(&[[0, 4]]), index_lists(&[[0, 1]]))
-    }
+    const STUB_STRUTS: [[i64; 2]; 1] = [[0, 4]];
+    const STUB_CABLES: [[i64; 2]; 1] = [[0, 1]];
 
     /// The `Tensegrity` header every consumer matches on, plus the 3-key field
     /// map T1b's superseded copy built. `None` must OMIT `surfaces`.
     #[test]
     fn tensegrity_with_none_surfaces_omits_the_key_entirely() {
-        let (struts, cables) = stub_members();
-        let v = tensegrity(triplex_nodes(CANONICAL_BOTTOM_Z), struts, cables, None);
+        let v =
+            tensegrity(triplex_nodes(CANONICAL_BOTTOM_Z), &STUB_STRUTS, &STUB_CABLES, None);
 
         let d = match &v {
             Value::StructureInstance(d) => d,
@@ -460,18 +459,24 @@ mod tests {
         );
     }
 
-    /// `Some(v)` inserts the key, giving the 4-key map the gauge and δ copies
-    /// built.
+    /// `Some(rows)` inserts the key, giving the 4-key map the gauge and δ copies
+    /// built, with the rows lowered the way the DSL lowers them.
     #[test]
     fn tensegrity_with_some_surfaces_inserts_the_key() {
-        let (struts, cables) = stub_members();
-        let caps = triplex_caps();
-        let v =
-            tensegrity(triplex_nodes(CANONICAL_BOTTOM_Z), struts, cables, Some(caps.clone()));
+        let v = tensegrity(
+            triplex_nodes(CANONICAL_BOTTOM_Z),
+            &STUB_STRUTS,
+            &STUB_CABLES,
+            Some(&TRIPLEX_CAPS),
+        );
 
         let fields = structure_fields(&v);
         assert_eq!(fields.len(), 4, "nodes/struts/cables/surfaces");
-        assert_eq!(fields.get("surfaces"), Some(&caps), "`surfaces` is carried through verbatim");
+        assert_eq!(
+            fields.get("surfaces"),
+            Some(&index_lists(&TRIPLEX_CAPS)),
+            "`surfaces` carries the caps, lowered to nested Int lists"
+        );
     }
 
     /// THE distinction that makes a naive one-fixture collapse unsafe: a
@@ -481,7 +486,7 @@ mod tests {
     /// reachable and distinguishable.
     #[test]
     fn present_but_empty_surfaces_is_distinct_from_absent_surfaces() {
-        let empty = canonical_triplex_tensegrity(Some(Value::List(vec![])));
+        let empty = canonical_triplex_tensegrity(Some(&[]));
         let absent = canonical_triplex_tensegrity(None);
 
         assert_eq!(
@@ -546,7 +551,7 @@ mod tests {
     /// is asserted rather than assumed.
     #[test]
     fn tall_and_canonical_constructors_differ_only_in_bottom_height() {
-        let tall = tall_triplex_tensegrity(Some(triplex_caps()));
+        let tall = tall_triplex_tensegrity(Some(&TRIPLEX_CAPS));
         let canonical = canonical_triplex_tensegrity(None);
         let tall_fields = structure_fields(&tall);
         let canonical_fields = structure_fields(&canonical);
@@ -568,7 +573,7 @@ mod tests {
                 "`{key}` topology is shared — only the bottom height differs"
             );
         }
-        assert_eq!(tall_fields.get("surfaces"), Some(&triplex_caps()));
+        assert_eq!(tall_fields.get("surfaces"), Some(&index_lists(&TRIPLEX_CAPS)));
     }
 
     /// A `Value::List` of `Value::Int`, strictly. The `Int` variant is part of the

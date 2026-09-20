@@ -25,7 +25,12 @@
 
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, Value};
+// The `Tensegrity` assembly — the type-id-0 / "Tensegrity" / version-1
+// `StructureInstance` header and the nodes/struts/cables field map — has ONE
+// definition, in `reify_test_support::tensegrity_fixtures`. The two fixtures
+// below are not the triplex, but they are that same structure shape.
+use reify_test_support::tensegrity_fixtures::tensegrity;
 use reify_test_support::{make_simple_engine, meters, point3};
 
 // ── Value crafting helpers ───────────────────────────────────────────────────
@@ -59,33 +64,22 @@ fn area(a: f64) -> Value {
     }
 }
 
+/// The T3b golden topology’s members: no struts, and the two cables of the
+/// collinear string `anchor(0) — free(1) — anchor(2)`. Shared by both string
+/// fixtures below, which differ only in whether a fourth ORPHAN node is
+/// appended — that node is touched by no member, so the cables are identical.
+const STRING_CABLES: [[i64; 2]; 2] = [[0, 1], [1, 2]];
+
 /// Collinear two-cable string `anchor(0) — free(1) — anchor(2)` with the free
-/// node at `(L,0,0)` and anchors at the origin and `(2L,0,0)`. `struts: []`,
-/// cables `[[0,1],[1,2]]` — the T3b golden topology.
+/// node at `(L,0,0)` and anchors at the origin and `(2L,0,0)`. No `surfaces`
+/// key — `tensegrity_load` is a line-only solve.
 fn two_cable_string(l: f64) -> Value {
-    let nodes = Value::List(vec![
+    let nodes = vec![
         point3(0.0, 0.0, 0.0),     // node 0 — anchor
         point3(l, 0.0, 0.0),       // node 1 — free
         point3(2.0 * l, 0.0, 0.0), // node 2 — anchor
-    ]);
-    let struts = Value::List(vec![]);
-    let cables = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(1)]),
-        Value::List(vec![Value::Int(1), Value::Int(2)]),
-    ]);
-    let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(), nodes),
-        ("struts".to_string(), struts),
-        ("cables".to_string(), cables),
-    ]
-    .into_iter()
-    .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Tensegrity".to_string(),
-        version: 1,
-        fields,
-    }))
+    ];
+    tensegrity(nodes, &[], &STRING_CABLES, None)
 }
 
 /// Invoke the trampoline with the standard no-realization / no-warm-state args.
@@ -576,33 +570,16 @@ fn solver_tensegrity_load_target_is_registered() {
 // end-to-end.
 
 /// Collinear two-cable string with a FREE ORPHAN node 3 at `(5L, 5L, 0)` that is
-/// touched by no member and absent from the supports: `anchor(0) — free(1) —
-/// anchor(2)` plus the isolated node 3. `struts: []`, cables `[[0,1],[1,2]]`.
+/// touched by no member and absent from the supports: [`two_cable_string`]’s
+/// three nodes over the same [`STRING_CABLES`], plus the isolated node 3.
 fn two_cable_string_with_orphan(l: f64) -> Value {
-    let nodes = Value::List(vec![
+    let nodes = vec![
         point3(0.0, 0.0, 0.0),         // 0 — anchor
         point3(l, 0.0, 0.0),           // 1 — free + cabled
         point3(2.0 * l, 0.0, 0.0),     // 2 — anchor
         point3(5.0 * l, 5.0 * l, 0.0), // 3 — FREE ORPHAN: no member, not a support
-    ]);
-    let struts = Value::List(vec![]);
-    let cables = Value::List(vec![
-        Value::List(vec![Value::Int(0), Value::Int(1)]),
-        Value::List(vec![Value::Int(1), Value::Int(2)]),
-    ]);
-    let fields: PersistentMap<String, Value> = [
-        ("nodes".to_string(), nodes),
-        ("struts".to_string(), struts),
-        ("cables".to_string(), cables),
-    ]
-    .into_iter()
-    .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "Tensegrity".to_string(),
-        version: 1,
-        fields,
-    }))
+    ];
+    tensegrity(nodes, &[], &STRING_CABLES, None)
 }
 
 /// A free orphan node (referenced by no member, not a support) must surface as

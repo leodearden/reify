@@ -32,7 +32,7 @@ use reify_core::{Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, Value};
 use reify_test_support::tensegrity_fixtures::{
-    tall_triplex_tensegrity, triplex_caps, triplex_group_ids, triplex_seeds,
+    TRIPLEX_CAPS, tall_triplex_tensegrity, triplex_group_ids, triplex_seeds,
 };
 use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
 
@@ -106,7 +106,7 @@ fn surface_stress_echoes(fields: &PersistentMap<String, Value>) -> Vec<f64> {
 fn trampoline_combined_prism_membrane_has_nonempty_surface_stresses() {
     const SIGMA: f64 = 0.2;
     let value_inputs = vec![
-        tall_triplex_tensegrity(Some(triplex_caps())),
+        tall_triplex_tensegrity(Some(&TRIPLEX_CAPS)),
         triplex_group_ids(),
         triplex_seeds(),
         Value::Int(1), // reference_group = horizontals

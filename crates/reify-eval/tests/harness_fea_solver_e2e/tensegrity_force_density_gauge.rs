@@ -32,7 +32,7 @@ use reify_test_support::point3;
 // unit-height variant, `canonical_triplex_tensegrity`.
 use reify_test_support::tensegrity_fixtures::{
     TRIPLEX_ANCHORS, TRIPLEX_CAPS, TRIPLEX_MEMBERS, TRIPLEX_SEEDS, TRIPLEX_STRUTS,
-    canonical_triplex_tensegrity, index_lists, tensegrity, triplex_caps, triplex_group_ids,
+    canonical_triplex_tensegrity, tensegrity, triplex_group_ids,
 };
 
 /// Base force densities in `TRIPLEX_MEMBERS` order — one per member, which is why
@@ -47,7 +47,7 @@ const BASE_Q: [f64; TRIPLEX_MEMBERS.len()] =
 /// EMPTY `surfaces` field, which is what this suite has always handed the
 /// anchored line-only solve.
 fn prism_tensegrity() -> Value {
-    canonical_triplex_tensegrity(Some(Value::List(vec![])))
+    canonical_triplex_tensegrity(Some(&[]))
 }
 
 /// The tent's triangle fan: one triangle per anchored corner, each hinged on the
@@ -68,8 +68,7 @@ fn membrane_tensegrity() -> Value {
         point3(-1.0, 0.0, 0.0), // 3: anchor
         point3(0.0, -1.0, 0.0), // 4: anchor
     ];
-    let tris = index_lists(&TENT_TRIS);
-    tensegrity(nodes, Value::List(vec![]), Value::List(vec![]), Some(tris))
+    tensegrity(nodes, &[], &[], Some(&TENT_TRIS))
 }
 
 type Trampoline = fn(
@@ -123,7 +122,7 @@ fn solve_membrane(sigma: f64) -> PersistentMap<String, Value> {
 /// fixture of `harness_fea_solver_e2e/tensegrity_delta_combined_form_find_e2e.rs`.
 fn solve_combined(q: &[f64], sigma: f64) -> PersistentMap<String, Value> {
     let inputs = [
-        canonical_triplex_tensegrity(Some(triplex_caps())),
+        canonical_triplex_tensegrity(Some(&TRIPLEX_CAPS)),
         reals(q),
         ints(TRIPLEX_ANCHORS),
         reals(&[sigma; TRIPLEX_CAPS.len()]),
