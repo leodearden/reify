@@ -11444,6 +11444,51 @@ mod tests {
         );
     }
 
+    /// The four facts an author needs, plus the reason. A degenerate-pose error
+    /// that names only the failure leaves them nowhere to go, and one that says
+    /// only "pose the profile normal to the tangent" sends them straight into a
+    /// SECOND, unrelated compile error — measured: an inline
+    /// `sweep(translate(rotate(circle(3mm), 1,0,0, -90deg), 24mm,0mm,0mm),
+    /// helix(24mm, 7mm, 63mm))` is rejected by the compiler's profile
+    /// precondition, while the identical NAMED-BINDING spelling realizes at
+    /// 3.836681796674759e-5. So the named binding is a required part of the
+    /// advice, not a stylistic aside.
+    ///
+    /// Asserted as a word SET, never as an exact string: the facts are pinned
+    /// while the wording stays editable.
+    #[test]
+    fn degenerate_pose_error_carries_every_fact_the_author_needs() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_id = pose_test_rect_profile(&mut kernel);
+        let spine_id = pose_test_spine(&mut kernel, 0.200, 0.0);
+
+        let Err(GeometryError::OperationFailed(msg)) =
+            kernel.sweep_with_history(profile_id, spine_id)
+        else {
+            panic!("an in-plane pose must fail with OperationFailed");
+        };
+
+        for (fact, needle) in [
+            ("the band", "4 degrees"),
+            ("this call's measured dot", "0.000000000"),
+            ("this call's measured angle", "0.000 degrees off-plane"),
+            ("the reason", "encloses nothing"),
+            ("the corrective action", "pose the profile normal"),
+            ("what to pose it against", "start tangent"),
+            ("the named-binding requirement", "bind the posed profile"),
+        ] {
+            assert!(
+                msg.contains(needle),
+                "the degenerate-pose error must state {fact} (expected to find \
+                 {needle:?}); got: {msg}"
+            );
+        }
+    }
+
     // --- wire_start_tangent FFI tests ---
 
     #[test]

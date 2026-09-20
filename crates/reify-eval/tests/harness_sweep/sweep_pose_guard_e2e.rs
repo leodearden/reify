@@ -226,6 +226,38 @@ fn in_plane_spine_is_refused() {
     assert_refused_by_the_kernel(&rung, "in-plane (+X) spine");
 }
 
+/// The refusal's four facts must survive the trip to the user, not just exist
+/// inside the kernel. The eval layer composes the kernel's payload into
+/// `geometry error: geometry operation failed: <msg>`, which is verbatim the
+/// stderr line `reify eval` prints, so asserting on `Diagnostic.message` here
+/// covers the CLI surface without shelling out.
+///
+/// The same fact set is pinned kernel-side
+/// (`degenerate_pose_error_carries_every_fact_the_author_needs`). That is not
+/// accidental duplication: the kernel test pins what the validator PRODUCES,
+/// this one pins what SURVIVES two layers of wrapping. Either could go green
+/// while the other reds.
+#[test]
+fn the_refusal_reaches_the_user_with_every_fact_intact() {
+    let Some(rung) = rung(&swept_box_along_spine("200", "0")) else {
+        return;
+    };
+    assert_mentions(
+        &rung.realize_errors,
+        &[
+            "geometry error",
+            "4 degrees",
+            "0.000000000",
+            "0.000 degrees off-plane",
+            "encloses nothing",
+            "pose the profile normal",
+            "start tangent",
+            "bind the posed profile",
+        ],
+        "in-plane spine, as the author sees it",
+    );
+}
+
 /// Rung 2 — 3.8°, `|t̂·n̂|` = 0.066273900, 5.0% BELOW the floor. The lower half
 /// of the straddle that pins the constant. Before the guard it realized at
 /// 5.30191204e-6 m³ — a valid-looking sliver, which is why an exact predicate
