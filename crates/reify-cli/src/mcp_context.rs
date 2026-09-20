@@ -913,6 +913,72 @@ structure AnglePin {
     /// This documents the "reuse" benefit of the long-lived Engine: the user's
     /// value survives a save/edit cycle.
     #[test]
+    fn set_parameter_refuses_an_ambiguous_instance_path_cell_id() {
+        // The GUI and this MCP boundary must agree about what a cell id
+        // denotes; they had drifted into two hand-rolled splits. Both now route
+        // through `ValueCellId`'s `FromStr`, whose Display is not injective, so
+        // an id whose member half still holds a `.` names no single cell.
+        //
+        // Today `split_once` yields entity "Bracket", member "sub.width", which
+        // falls through to the `cell not found` arm — a rejection that
+        // MISATTRIBUTES the cause. The id is not unknown, it is unanswerable.
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
+
+        // Positive control on the same context, so a failure below cannot be
+        // blamed on the fixture or the load.
+        ctx.set_parameter("Bracket.width", "0.12")
+            .expect("Bracket.width is a real settable cell");
+
+        let err = ctx
+            .set_parameter("Bracket.sub.width", "0.12")
+            .expect_err("an ambiguous cell id must be refused");
+
+        // Category plus substrings — the taxonomy is the contract, the wording
+        // is not.
+        match err {
+            ToolError::InvalidParams(msg) => {
+                for needle in ["Bracket.sub.width", "ambiguous"] {
+                    assert!(
+                        msg.contains(needle),
+                        "refusal should mention {needle:?}, got: {msg}"
+                    );
+                }
+                assert!(
+                    !msg.contains("cell not found"),
+                    "the id is refused for AMBIGUITY, not for naming a cell that \
+                     happens to be absent: {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_parameter_still_refuses_a_cell_id_with_no_separator() {
+        // The pre-existing contract: an id with no '.' at all was always
+        // InvalidParams, and stays so.
+        let ctx = fresh_ctx();
+        ctx.load_file(BRACKET_PATH)
+            .expect("load_file should succeed");
+
+        let err = ctx
+            .set_parameter("width", "0.12")
+            .expect_err("a cell id with no separator must be refused");
+
+        match err {
+            ToolError::InvalidParams(msg) => {
+                assert!(
+                    msg.contains("width"),
+                    "refusal should name the offending id, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn set_parameter_persists_across_topology_preserving_update_source() {
         let ctx = fresh_ctx();
 
