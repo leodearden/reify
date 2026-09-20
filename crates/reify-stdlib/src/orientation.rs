@@ -54,11 +54,17 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             // convention is now rejected here and, before eval is ever reached,
             // diagnosed statically as an ArgTypeMismatch.
             //
-            // Enum variants are uppercase in source; we lowercase them to feed
-            // the twelve-entry dispatch table below, which is keyed lowercase.
+            // The dispatch table below is keyed on the variant spelling
+            // EXACTLY as declared in `stdlib/geometry_traits.ri` — uppercase —
+            // so the variant is matched directly. It used to be lowercased
+            // first, which was residue of the removed raw-string path: once
+            // that path was gone the conversion existed only to bridge two
+            // spellings of one concept, at the cost of a heap allocation on
+            // every call (this constructor runs per iteration inside the
+            // kinematic loop-closure solver).
             let convention = match &args[0] {
                 Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
-                    variant.to_lowercase()
+                    variant.as_str()
                 }
                 _ => return Some(Value::Undef),
             };
@@ -74,19 +80,19 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            let axes: [usize; 3] = match convention.as_str() {
-                "xyz" => [0, 1, 2],
-                "xzy" => [0, 2, 1],
-                "yxz" => [1, 0, 2],
-                "yzx" => [1, 2, 0],
-                "zxy" => [2, 0, 1],
-                "zyx" => [2, 1, 0],
-                "xyx" => [0, 1, 0],
-                "xzx" => [0, 2, 0],
-                "yxy" => [1, 0, 1],
-                "yzy" => [1, 2, 1],
-                "zxz" => [2, 0, 2],
-                "zyz" => [2, 1, 2],
+            let axes: [usize; 3] = match convention {
+                "XYZ" => [0, 1, 2],
+                "XZY" => [0, 2, 1],
+                "YXZ" => [1, 0, 2],
+                "YZX" => [1, 2, 0],
+                "ZXY" => [2, 0, 1],
+                "ZYX" => [2, 1, 0],
+                "XYX" => [0, 1, 0],
+                "XZX" => [0, 2, 0],
+                "YXY" => [1, 0, 1],
+                "YZY" => [1, 2, 1],
+                "ZXZ" => [2, 0, 2],
+                "ZYZ" => [2, 1, 2],
                 _ => return Some(Value::Undef),
             };
             // Compose q = q_a * q_b * q_c (intrinsic: multiply left-to-right)
@@ -292,12 +298,11 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             };
             // A qualified `EulerConvention` enum value is the SOLE accepted
             // convention form (task #6082, item-4 ruling) — see the matching
-            // note on `orient_euler` above. Enum variants are uppercase in
-            // source; we lowercase them to feed the twelve-entry arm table
-            // below, which is keyed lowercase.
+            // note on `orient_euler` above, including why the arm table below
+            // is keyed on the uppercase variant spelling directly.
             let convention = match &args[1] {
                 Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
-                    variant.to_lowercase()
+                    variant.as_str()
                 }
                 _ => return Some(Value::Undef),
             };
@@ -319,9 +324,9 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             // if the clamped value is within EPS_SING of ±1.
             const EPS_SING: f64 = 1.0e-7;
             let clamp = |v: f64| v.clamp(-1.0, 1.0);
-            let (a, b, c) = match convention.as_str() {
+            let (a, b, c) = match convention {
                 // ── Tait-Bryan ───────────────────────────────────────────────
-                "xyz" => {
+                "XYZ" => {
                     let s = clamp(r02);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -331,7 +336,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         ((-r12).atan2(r22), bb, (-r01).atan2(r00))
                     }
                 }
-                "xzy" => {
+                "XZY" => {
                     let s = clamp(-r01);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -340,7 +345,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r21.atan2(r11), bb, r02.atan2(r00))
                     }
                 }
-                "yxz" => {
+                "YXZ" => {
                     let s = clamp(-r12);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -349,7 +354,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r02.atan2(r22), bb, r10.atan2(r11))
                     }
                 }
-                "yzx" => {
+                "YZX" => {
                     let s = clamp(r10);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -358,7 +363,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         ((-r20).atan2(r00), bb, (-r12).atan2(r11))
                     }
                 }
-                "zxy" => {
+                "ZXY" => {
                     let s = clamp(r21);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -367,7 +372,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         ((-r01).atan2(r11), bb, (-r20).atan2(r22))
                     }
                 }
-                "zyx" => {
+                "ZYX" => {
                     let s = clamp(-r20);
                     let bb = s.asin();
                     if (s.abs() - 1.0).abs() < EPS_SING {
@@ -377,7 +382,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                     }
                 }
                 // ── Proper Euler ─────────────────────────────────────────────
-                "xyx" => {
+                "XYX" => {
                     let bb = clamp(r00).acos();
                     if bb.sin().abs() < EPS_SING {
                         // β ≈ 0 or π → singularity. Set α = 0.
@@ -390,7 +395,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r10.atan2(-r20), bb, r01.atan2(r02))
                     }
                 }
-                "xzx" => {
+                "XZX" => {
                     let bb = clamp(r00).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r00 > 0.0 {
@@ -402,7 +407,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r20.atan2(r10), bb, r02.atan2(-r01))
                     }
                 }
-                "yxy" => {
+                "YXY" => {
                     let bb = clamp(r11).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r11 > 0.0 {
@@ -414,7 +419,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r01.atan2(r21), bb, r10.atan2(-r12))
                     }
                 }
-                "yzy" => {
+                "YZY" => {
                     let bb = clamp(r11).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r11 > 0.0 {
@@ -426,7 +431,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r21.atan2(-r01), bb, r12.atan2(r10))
                     }
                 }
-                "zxz" => {
+                "ZXZ" => {
                     let bb = clamp(r22).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r22 > 0.0 {
@@ -438,7 +443,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         (r02.atan2(-r12), bb, r20.atan2(r21))
                     }
                 }
-                "zyz" => {
+                "ZYZ" => {
                     let bb = clamp(r22).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r22 > 0.0 {

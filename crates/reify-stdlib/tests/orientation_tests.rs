@@ -357,11 +357,17 @@ const ALL_CONVENTIONS: [&str; 12] = [
     "XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX", "XYX", "XZX", "YXY", "YZY", "ZXZ", "ZYZ",
 ];
 
+/// A rotation whose middle angle is away from EVERY convention's singular
+/// locus — 0.5 rad is far from the Tait-Bryan ±π/2 and from the
+/// proper/classic 0 and π. One triple therefore serves all twelve.
+const REGULAR_ANGLES: [f64; 3] = [0.3, 0.5, -0.2];
+
 /// Build a reference quaternion via the enum path, for feeding the decomposer.
 fn reference_quat(variant: &str) -> Value {
+    let [a, b, c] = REGULAR_ANGLES;
     eval_builtin(
         "orient_euler",
-        &[convention(variant), Value::Real(0.3), Value::Real(0.5), Value::Real(-0.2)],
+        &[convention(variant), Value::Real(a), Value::Real(b), Value::Real(c)],
     )
 }
 
@@ -430,19 +436,24 @@ fn integration_no_string_convention_is_accepted_on_either_builtin() {
 
 /// Control: removing the String arm must not disturb the enum arm. Every one of
 /// the twelve conventions still round-trips through the qualified enum value.
+///
+/// Checks the returned ANGLES, not merely that three of them came back. The
+/// shape-only form this replaced was green throughout the period when four of
+/// the six proper/classic arms returned angles that were flatly wrong at their
+/// gimbal-lock singularity — a test named "all twelve conventions still work"
+/// that cannot tell a working convention from a broken one reads as coverage
+/// while providing none.
+///
+/// `REGULAR_ANGLES`'s middle angle is safe for BOTH families at once: 0.5 rad
+/// is far from the Tait-Bryan locus at ±π/2 and from the proper/classic loci at
+/// 0 and π. The loci themselves are covered by
+/// `integration_every_convention_recomposes_at_its_singular_locus`, which has to
+/// assert recomposition rather than angle equality because the decomposition is
+/// genuinely non-unique there.
 #[test]
 fn integration_all_twelve_conventions_still_work_via_the_enum() {
+    let [a, b, c] = REGULAR_ANGLES;
     for variant in ALL_CONVENTIONS {
-        let q = reference_quat(variant);
-        assert!(
-            matches!(q, Value::Orientation { .. }),
-            "orient_euler(EulerConvention.{variant}, …) should build an Orientation, got {q:?}"
-        );
-        let back = eval_builtin("orient_to_euler", &[q, convention(variant)]);
-        assert!(
-            euler_extract(&back).is_some(),
-            "orient_to_euler(q, EulerConvention.{variant}) should return a 3-element \
-             Angle list, got {back:?}"
-        );
+        assert_subject_first_roundtrip(variant, a, b, c);
     }
 }

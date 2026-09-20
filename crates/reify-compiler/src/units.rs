@@ -5597,9 +5597,24 @@ mod tests {
     ///
     /// Checks against every sibling slice that exists today, starting with the
     /// one that matters most — `ORIENTATION_TYPED_FN_NAMES`, the constructor
-    /// family in the SAME module. Each sibling family's own test carries the
-    /// reciprocal clause, so a collision introduced from either direction is
-    /// caught.
+    /// family in the SAME module.
+    ///
+    /// This FORWARD direction is what actually guards every family. Reciprocal
+    /// clauses (a sibling's own test asserting it holds no Euler name) exist in
+    /// 12 sibling tests but NOT in all of them — `GEOMETRY_FUNCTION_NAMES`,
+    /// `GEOMETRY_QUERY_HELPER_NAMES`, `GEOMETRY_KINEMATIC_QUERY_NAMES`,
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, `AFFINE_MAP_CONSTRUCTOR_NAMES`,
+    /// `AFFINE_ALGEBRA_NAMES` and `LIST_HELPER_NAMES` have none. Nothing is
+    /// unguarded, because the loop below covers all of them; what those seven
+    /// lack is only the redundant second failure site. Stated plainly because
+    /// the earlier claim that "every sibling test carries the reciprocal" was
+    /// not true of the tree it described.
+    ///
+    /// The `orient_euler` / `orient_to_euler` pair is the exception that does
+    /// have a hard reciprocal, and a stronger one than a slice check:
+    /// `orientation_signatures`'s own
+    /// `is_orientation_typed_fn_rejects_the_four_decomposers` names
+    /// `orient_to_euler` literally.
     ///
     /// GREEN on arrival — a regression lock that fails if a colliding name is
     /// later added to either `ORIENTATION_EULER_FN_NAMES` or a sibling slice.
