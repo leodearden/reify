@@ -17,12 +17,12 @@
 
 use reify_kernel_gmsh::ffi;
 use reify_kernel_gmsh::init;
-use reify_kernel_gmsh::mesh_size_clamp::{GMSH_MESH_SIZE_MAX_DEFAULT, MeshSizeClampReset};
+use reify_kernel_gmsh::mesh_size_scope::{GMSH_MESH_SIZE_MAX_DEFAULT, MeshSizeScope};
 
 /// RAII reset of the process-global gmsh diagnostics state this file's
 /// logger and census tests perturb: `Mesh.ElementOrder`, `General.Terminal`,
 /// and the logger-capture buffer. Mirrors
-/// `reify_kernel_gmsh::mesh_size_clamp::MeshSizeClampReset`'s shape —
+/// `reify_kernel_gmsh::mesh_size_scope::MeshSizeScope`'s shape —
 /// [`Self::armed`] borrows the live `GMSH_LOCK` guard so `drop`'s restore
 /// FFI writes land on every exit path (assertion failure or panic included)
 /// while the lock is still held, not just the success path a trailing
@@ -537,7 +537,8 @@ fn option_get_number_round_trips_a_written_value_and_errors_on_an_unknown_name()
     // the write below and the explicit restore. Reuses the production guard
     // rather than a test-local copy, so the default this test leaves behind
     // cannot drift from the one production writes.
-    let _clamp_reset = MeshSizeClampReset::armed(&_guard);
+    let _size_scope = MeshSizeScope::entered(&_guard)
+        .expect("MeshSizeScope::entered must establish gmsh's size defaults");
 
     init::ensure_initialized();
 

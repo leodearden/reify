@@ -480,7 +480,7 @@ pub fn option_set_number(name: &str, value: f64) -> Result<(), GeometryError> {
 /// while `Mesh.MeshSizeMin == Mesh.MeshSizeMax`.
 ///
 /// For OBSERVATION only. The restore discipline in
-/// [`crate::mesh_size_clamp`] targets gmsh's DEFAULTS, never the values found
+/// [`crate::mesh_size_scope`] targets gmsh's DEFAULTS, never the values found
 /// on entry, so nothing in `src/` needs to read an option back — see that
 /// module for why "as found" is the wrong target even when it is observable.
 ///

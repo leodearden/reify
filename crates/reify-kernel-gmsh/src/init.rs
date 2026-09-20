@@ -64,20 +64,20 @@ const GMSH_DEAD_MESSAGE: &str = "libgmsh is finalized and could not be \
 /// that: it finalizes libgmsh, which no thread inside the library survives. A
 /// `&MutexGuard<'_, ()>` parameter would have been satisfied by a guard
 /// borrowed from any `Mutex<()>` the caller cared to declare.
-/// [`crate::mesh_size_clamp::MeshSizeClampReset::armed`] is that same idiom
-/// one notch weaker — proportionate there, where a violation restores two
+/// [`crate::mesh_size_scope::MeshSizeScope::entered`] is that same idiom
+/// one notch weaker — proportionate there, where a violation writes the size
 /// options at the wrong moment, and not here, where it tears the library down.
 pub struct GmshGuard(MutexGuard<'static, ()>);
 
 impl GmshGuard {
-    /// The weaker witness [`crate::mesh_size_clamp::MeshSizeClampReset::armed`]
+    /// The weaker witness [`crate::mesh_size_scope::MeshSizeScope::entered`]
     /// still asks for, and the only way to obtain one from a [`GmshGuard`].
     ///
     /// A named `pub(crate)` accessor rather than an `impl Deref`: a
     /// `&MutexGuard<'_, ()>` is exactly the witness this type was introduced to
     /// stop handing out, so the one site that still needs it names it, and no
     /// caller outside this crate can reach one at all.
-    pub(crate) fn clamp_reset_witness(&self) -> &MutexGuard<'static, ()> {
+    pub(crate) fn size_scope_witness(&self) -> &MutexGuard<'static, ()> {
         &self.0
     }
 }
@@ -155,7 +155,7 @@ pub fn ensure_initialized() {
 /// hold the same property the flag already buys, at the cost of killing a
 /// `reify-gui` session — this crate is linked into one — over a library fault
 /// the user could otherwise have saved their model through. The
-/// [`crate::mesh_size_clamp::MeshSizeClampReset`] drop that runs on the way
+/// [`crate::mesh_size_scope::MeshSizeScope`] drop that runs on the way
 /// out is harmless either way: measured on libgmsh 4.15.2, an FFI call after
 /// `gmshFinalize` returns `ierr=1` ("Gmsh has not been initialized") and does
 /// nothing.
@@ -233,7 +233,7 @@ pub(crate) fn mesh_generate_with_recovery(
     // this the next caller's leading `ffi::clear()` prints "Info: Clearing
     // all models and views..." to stdout before it re-silences the library.
     // Restoring the silence gmsh had on entry is the same "leave nothing
-    // behind" discipline `mesh_size_clamp` applies to the size clamp.
+    // behind" discipline `mesh_size_scope` applies to the size options.
     // Best-effort: a failure here must not mask the real result.
     let _ = ffi::option_set_number("General.Terminal", 0.0);
 

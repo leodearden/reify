@@ -23,13 +23,13 @@
 //!   behind, so its output is a function of its own arguments alone and not of
 //!   call order within the process; and
 //! * **outbound**: restores that same option pair to gmsh's documented
-//!   defaults before returning (via [`crate::mesh_size_clamp::MeshSizeClampReset`]),
+//!   defaults before returning (via [`crate::mesh_size_scope::MeshSizeScope`]),
 //!   so a later *defaults-relying* call — e.g. `mesh_plane_2d` with no
 //!   requested size, which deliberately writes no clamp — is not silently
 //!   pinned to a fine `MeshSizeMax` left over from an adaptive-refinement
 //!   iteration.
 //!
-//! That guard now lives in [`crate::mesh_size_clamp`] rather than in this
+//! That guard now lives in [`crate::mesh_size_scope`] rather than in this
 //! file: since task #6298 it is shared infrastructure with a second consumer,
 //! `kernel_real::GmshKernel::mesh_to_volume`, and one implementation cannot
 //! drift from itself the way two hand-written resets could.
@@ -46,7 +46,7 @@
 //! only. The `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
 //! `MeshSizeExtendFromBoundary` writes below are still left behind for a later
 //! caller to inherit — the same defect class in the same direction, tracked as
-//! task #6212 because closing it means extending the `mesh_size_clamp` seam to
+//! task #6212 because closing it means extending the `mesh_size_scope` seam to
 //! those three across every entry point that writes them (and an
 //! `option_get_number` FFI getter to restore *as found* rather than to
 //! defaults), not a change local to this file. See the inline rationale at the
@@ -71,8 +71,8 @@ use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeM
 use crate::options::MeshingOptions;
 
 #[cfg(has_gmsh)]
-use crate::mesh_size_clamp::{
-    GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeClampReset,
+use crate::mesh_size_scope::{
+    GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope,
 };
 
 /// Remesh the volume enclosed by `surface` using per-vertex size hints.
@@ -151,6 +151,11 @@ pub fn refine_volume_with_size_field(
     // --- Acquire lock + initialise ---
     let _guard = init::lock()?;
     init::ensure_initialized();
+    // Declared after `_guard` so it drops first (Rust drops locals in reverse
+    // declaration order): its restore writes land while GMSH_LOCK is still
+    // held. Hoisted above the first `?` below so every early return is
+    // covered, not only the success path — see `mesh_size_scope`.
+    let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
 
@@ -262,7 +267,7 @@ pub fn refine_volume_with_size_field(
     //
     // `kernel_real::GmshKernel::mesh_to_volume` used to belong on that list and
     // no longer does — since task #6298 it arms the same
-    // `mesh_size_clamp::MeshSizeClampReset` on entry. These two writes stay
+    // `mesh_size_scope::MeshSizeScope` on entry. These two writes stay
     // load-bearing regardless: the other two entry points are still open, and
     // an inbound clamp that depends on no sibling's outbound discipline is the
     // only form that makes this function's output a pure function of its own
@@ -290,7 +295,7 @@ pub fn refine_volume_with_size_field(
     // `vertex_sizes` is the caller's job and is already done at
     // `reify_solver_elastic::volume_refine`'s entry point.
     //
-    // `MeshSizeClampReset` closes the outbound direction: this pair is returned
+    // `MeshSizeScope` closes the outbound direction: this pair is returned
     // to gmsh's defaults on every exit path, so the same leak does not run from
     // here into a later defaults-relying call.
     let max_hint = vertex_sizes
@@ -303,7 +308,6 @@ pub fn refine_volume_with_size_field(
     } else {
         GMSH_MESH_SIZE_MAX_DEFAULT
     };
-    let _clamp_reset = MeshSizeClampReset::armed(_guard.clamp_reset_witness());
     ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT)?;
     ffi::option_set_number("Mesh.MeshSizeMax", max_hint)?;
 

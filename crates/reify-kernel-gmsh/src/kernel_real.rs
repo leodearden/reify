@@ -289,7 +289,7 @@ impl GmshKernel {
     /// Since task #6298 this function **leaves the
     /// `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` pair at gmsh's documented
     /// defaults on every exit path**, early `?`-returns included, via
-    /// [`crate::mesh_size_clamp::MeshSizeClampReset`]. Gmsh's option table is
+    /// [`crate::mesh_size_scope::MeshSizeScope`]. Gmsh's option table is
     /// process-global and `gmshClear()` does not reset it, so without that
     /// restore the resolved size written below would outlive the call and pin
     /// every later *defaults-relying* gmsh call in the process to a size
@@ -401,11 +401,11 @@ impl GmshKernel {
         // Armed HERE, not next to the two writes further down, so it covers
         // every `?` early-return in the body as well as the success path.
         //
-        // Drop order is what makes it correct: `_clamp_reset` is declared
-        // AFTER `_guard`, so it drops FIRST and its two FFI writes land while
+        // Drop order is what makes it correct: `_size_scope` is declared
+        // AFTER `_guard`, so it drops FIRST and its FFI writes land while
         // `GMSH_LOCK` is still held. The `PhantomData<&'g MutexGuard>` borrow
         // makes that structural rather than a comment a refactor can violate —
-        // see `mesh_size_clamp`'s "Why it borrows the lock guard".
+        // see `mesh_size_scope`'s "Why it borrows the lock guard".
         //
         // The pair is restored to gmsh's DEFAULTS, not to the values found on
         // entry: this crate's FFI surface has no `option_get_number`, so "as
@@ -418,8 +418,8 @@ impl GmshKernel {
         // deliberately out of #6298's scope and owned by name by task #6212,
         // which also owns the still-unshared `Mesh.MeshSizeFromPoints` /
         // `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` trio.
-        let _clamp_reset =
-            crate::mesh_size_clamp::MeshSizeClampReset::armed(_guard.clamp_reset_witness());
+        let _size_scope =
+            crate::mesh_size_scope::MeshSizeScope::entered(_guard.size_scope_witness())?;
 
         ffi::clear()?;
         // Silence gmsh's stdout chatter — keeps test output readable.

@@ -13,7 +13,7 @@
 //! probe outline or a defaults pair corrected in one copy and not the other
 //! leaves one of the two guards measuring something weaker than it claims
 //! instead of failing. That is the same argument the production side uses for
-//! sharing `mesh_size_clamp::MeshSizeClampReset` between its two consumers.
+//! sharing `mesh_size_scope::MeshSizeScope` between its consumers.
 //!
 //! Declared by `#[path]` from each binary rather than as a submodule of
 //! `common/mod.rs`, whose stated scope is the #6200 box/cylinder geometry
@@ -30,7 +30,7 @@
 
 use std::sync::Mutex;
 
-use reify_kernel_gmsh::mesh_size_clamp::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
+use reify_kernel_gmsh::mesh_size_scope::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
 use reify_kernel_gmsh::{ffi, init, mesh_plane_2d};
 
 /// Whole-test-body serialisation, layered *above* `init::GMSH_LOCK`.
