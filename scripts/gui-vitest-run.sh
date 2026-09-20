@@ -24,10 +24,19 @@
 # defect cannot satisfy. The classification arrives as a JSON artifact, the one
 # seam between the two halves; no vitest output is ever parsed. The artifact's
 # ABSENCE is what vetoes a retry, so an unclassified failure propagates
-# verbatim. The retry is bounded to one, narrows the SPEC FILTERS to the named
-# suites while carrying the caller's own options through unchanged (see
-# partition_args), and is announced on stdout whether or not it rescues the
-# run, so recurrences stay counted instead of being absorbed.
+# verbatim. The retry is bounded to one and is announced on stdout whether or
+# not it rescues the run, so recurrences stay counted instead of being absorbed.
+#
+# WHAT GETS RE-RUN depends on what the verdict NAMES. When it names suites, the
+# retry narrows the spec filters to them and carries the caller's own options
+# through unchanged (see partition_args). When it names NONE, the retry re-runs
+# the caller's original invocation verbatim -- on the merge gate that is the
+# bare full suite, and on a REIFY_GUI_RETRY_SPECS-narrowed block it is that same
+# narrowing, so the retry never answers a wider question than the one asked. A
+# run whose only failures are run-level RPC timeouts has no suite to narrow to:
+# `snapshotSaved` is issued after a file's tests have already passed, so its
+# timeout has no module to attribute it to (task 7724). Widening the retry can
+# never mask a failure -- the same argument partition_args already makes.
 #
 # Knob: REIFY_GUI_RPC_FLAKE_RETRY=0 disables the retry (default 1).
 
@@ -88,13 +97,20 @@ partition_args() {
 
 # Read the classified suite list, one per line, or fail. Parsed with node —
 # a real JSON parser, not a grep — so the seam stays structured data.
+#
+# An EMPTY ARRAY is a legitimate verdict ("nothing to narrow to"), but an empty
+# STRING entry is not, and this is the only place the two can still be told
+# apart: the output is newline-joined, and `[""].join("\n")` is byte-identical
+# to `[].join("\n")`, so downstream an empty entry would be read as "retry
+# everything" and `["a.ts",""]` would silently lose its tail to command
+# substitution. Reject it here, where the array is still structured data.
 read_classified_suites() {
     node -e '
         const fs = require("node:fs");
         const artifact = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
         const suites = artifact.suites;
-        if (!Array.isArray(suites) || suites.length === 0) process.exit(1);
-        if (!suites.every((s) => typeof s === "string")) process.exit(1);
+        if (!Array.isArray(suites)) process.exit(1);
+        if (!suites.every((s) => typeof s === "string" && s.length > 0)) process.exit(1);
         process.stdout.write(suites.join("\n"));
     ' "$ARTIFACT"
 }
@@ -136,12 +152,15 @@ if [ "${REIFY_GUI_RPC_FLAKE_RETRY:-1}" = "0" ] || [ ! -f "$ARTIFACT" ]; then exi
 # would otherwise be indistinguishable from an empty suite list.
 classified=""
 if ! classified="$(read_classified_suites)"; then
-    reject "the flake artifact at $ARTIFACT is unreadable or names no suites"
+    reject "the flake artifact at $ARTIFACT is unreadable or names an invalid suite"
     exit "$rc"
 fi
-mapfile -t suites <<<"$classified"
+# `mapfile <<<""` yields a ONE-element array holding the empty string, which is
+# exactly the confusion the parser above exists to prevent. Guard the read.
+suites=()
+if [ -n "$classified" ]; then mapfile -t suites <<<"$classified"; fi
 
-for spec in "${suites[@]}"; do
+for spec in ${suites[@]+"${suites[@]}"}; do
     if ! is_safe_spec "$spec"; then
         reject "the flake artifact names '$spec', which is not a plain relative path"
         exit "$rc"
@@ -152,15 +171,29 @@ done
 # writes a fresh verdict and a stale list can never be read twice.
 rm -f "$ARTIFACT"
 
-echo "@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout outcome=retrying suites=${#suites[@]} lineage=${MARKER_LINEAGE}"
-echo "gui-vitest-run.sh: re-running ${#suites[@]} suite(s) classified as worker->host RPC starvation: ${RETRY_OPTS[*]+${RETRY_OPTS[*]} }${suites[*]}" >&2
+# The retry invocation has ONE definition. `"$@"` is still the caller's
+# original argv — this script never shifts — so the run-scope retry reproduces
+# the request exactly, and RETRY_OPTS stays needed only on the one path where
+# the positional filters are actually REPLACED.
+if [ "${#suites[@]}" -eq 0 ]; then
+    scope=run
+    retry_argv=("$@")
+    retry_what="the original invocation (the classifier named no suite to narrow to)"
+else
+    scope=suites
+    retry_argv=(${RETRY_OPTS[@]+"${RETRY_OPTS[@]}"} "${suites[@]}")
+    retry_what="${#suites[@]} classified suite(s)"
+fi
+
+echo "@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout outcome=retrying scope=${scope} suites=${#suites[@]} lineage=${MARKER_LINEAGE}"
+echo "gui-vitest-run.sh: classified as worker->host RPC starvation; re-running ${retry_what}: npm test ${retry_argv[*]+${retry_argv[*]}}" >&2
 
 retry_rc=0
-run_vitest ${RETRY_OPTS[@]+"${RETRY_OPTS[@]}"} "${suites[@]}" || retry_rc=$?
+run_vitest ${retry_argv[@]+"${retry_argv[@]}"} || retry_rc=$?
 
 if [ "$retry_rc" -eq 0 ]; then
-    echo "@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout outcome=retried suites=${#suites[@]} lineage=${MARKER_LINEAGE}"
+    echo "@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout outcome=retried scope=${scope} suites=${#suites[@]} lineage=${MARKER_LINEAGE}"
 else
-    echo "@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout outcome=escalated suites=${#suites[@]} exit=${retry_rc} lineage=${MARKER_LINEAGE}"
+    echo "@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout outcome=escalated scope=${scope} suites=${#suites[@]} exit=${retry_rc} lineage=${MARKER_LINEAGE}"
 fi
 exit "$retry_rc"
