@@ -49,6 +49,16 @@ describe("getByPath", () => {
   });
 });
 
+/**
+ * Every op `evaluateAssertion` is required to handle, and therefore every op a
+ * VALUE_SCENARIOS entry may name. Single source for both the VALUE_SCENARIOS
+ * validator below and the exhaustiveness pin in `describe("evaluateAssertion")`
+ * — adding an op to the `Assertion` union without a matching `case` arm must
+ * fail loudly here rather than degrade to the `default:` "unknown op" branch at
+ * runtime, where a live e2e scenario would report a vacuous failure.
+ */
+const ASSERTION_OPS: readonly Assertion["op"][] = ["equals", "atLeast", "atMost", "exists"];
+
 describe("evaluateAssertion", () => {
   it("'equals' passes when actual === expected (meshCount 1===1)", () => {
     const a: Assertion = { path: "engine.meshCount", op: "equals", expected: 1 };
@@ -77,6 +87,34 @@ describe("evaluateAssertion", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.message).toContain("count");
+    }
+  });
+
+  // 'atMost' is the mirror of 'atLeast' and exists because neither of the other
+  // three ops can express an UPPER bound. Task 6965 needs exactly that: "the live
+  // orbit distance is BELOW the old 0.5 m floor" (the #6496 regression) is not
+  // expressible as atLeast, and equals cannot tolerate float drift in a distance
+  // computed through a projection.
+  it("'atMost' passes when actual <= expected (3 <= 50)", () => {
+    const a: Assertion = { path: "count", op: "atMost", expected: 50 };
+    const result = evaluateAssertion({ count: 3 }, a);
+    expect(result.ok).toBe(true);
+  });
+
+  it("'atMost' passes when actual === expected (inclusive, matching atLeast's >=)", () => {
+    const a: Assertion = { path: "count", op: "atMost", expected: 50 };
+    const result = evaluateAssertion({ count: 50 }, a);
+    expect(result.ok).toBe(true);
+  });
+
+  it("'atMost' fails with message carrying path, expected and actual (54 > 50)", () => {
+    const a: Assertion = { path: "count", op: "atMost", expected: 50 };
+    const result = evaluateAssertion({ count: 54 }, a);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("count");
+      expect(result.message).toContain("50");
+      expect(result.message).toContain("54");
     }
   });
 
@@ -148,6 +186,35 @@ describe("evaluateAssertion", () => {
     const result = evaluateAssertion({ v: "hello" }, a);
     expect(result.ok).toBe(false);
   });
+
+  // A missing path must FAIL, not pass vacuously: an absent `distanceDelta` is
+  // exactly what a saturated zoom_camera would produce, and "<= bound" read off
+  // undefined would silently green the regression this op was added to catch.
+  it("'atMost' fails when actual is undefined (missing path)", () => {
+    const a: Assertion = { path: "missing", op: "atMost", expected: 1 };
+    const result = evaluateAssertion({ x: 5 }, a);
+    expect(result.ok).toBe(false);
+  });
+
+  it("'atMost' fails when actual is a non-numeric string", () => {
+    const a: Assertion = { path: "v", op: "atMost", expected: 1 };
+    const result = evaluateAssertion({ v: "hello" }, a);
+    expect(result.ok).toBe(false);
+  });
+
+  // Exhaustiveness: every op the VALUE_SCENARIOS validator accepts must have a
+  // real `case` arm. Without this, adding an op to the union and to ASSERTION_OPS
+  // but not to the switch falls through to `default:` and every scenario using it
+  // fails with "unknown op" only when a live GUI is attached.
+  it("every op in ASSERTION_OPS is handled — none falls through to 'unknown op'", () => {
+    for (const op of ASSERTION_OPS) {
+      const a = { path: "v", op, expected: 1 } as Assertion;
+      const result = evaluateAssertion({ v: 1 }, a);
+      if (!result.ok) {
+        expect(result.message, `op '${op}' fell through to the default arm`).not.toContain("unknown op");
+      }
+    }
+  });
 });
 
 describe("FIXTURES catalogue", () => {
@@ -184,7 +251,7 @@ describe("VALUE_SCENARIOS", () => {
   });
 
   it("every scenario has a valid tool name and non-empty assertions array", () => {
-    const VALID_OPS = ["equals", "atLeast", "exists"];
+    const VALID_OPS = ASSERTION_OPS;
     for (const scenario of VALUE_SCENARIOS) {
       expect(typeof scenario.name, `scenario name must be string`).toBe("string");
       expect(scenario.name.length, `scenario name must be non-empty`).toBeGreaterThan(0);
