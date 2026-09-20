@@ -1181,7 +1181,7 @@ impl DerivedInterval {
 /// collect is over an empty slice), and otherwise the reachability DFS is
 /// dwarfed by the Nelder-Mead fold it precedes — so this is priced, not
 /// overlooked. Hoisting the pair to once per resolution means threading a
-/// prebuilt context through all four consumers, which is follow-up work rather
+/// prebuilt context through all four consumers, which is task #7728 rather
 /// than part of the fix this context exists to carry.
 struct DerivationCtx<'a> {
     /// Position of each auto param within `auto_params` — the index every
@@ -1683,7 +1683,7 @@ fn seed_box_from_intervals(
 /// exists and would supply the reach, but it needs the cycle-tainted treatment
 /// [`DerivationCtx::varies_with_solve`] encodes, and growing this set moves
 /// models from erroring to `Solved` — a §11.6 verdict change that wants its own
-/// regression sweep rather than a ride-along. Tracked as follow-up work.
+/// regression sweep rather than a ride-along. Tracked as task #7727.
 fn params_in_underivable_constraints(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],

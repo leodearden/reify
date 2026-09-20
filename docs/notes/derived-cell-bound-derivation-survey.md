@@ -167,7 +167,7 @@ are NOT covered by it, all latent for the same reason (no corpus model has the s
   through a derived cell (`constraint side >= 5` with `side = 3*c`) is still neither
   bracketed nor abstaining — the same §11.6 false negative in the mirror direction.
   Pre-dating this task and unchanged by it; recorded on
-  `params_in_underivable_constraints`' doc and tracked as follow-up work.
+  `params_in_underivable_constraints`' doc and tracked as task #7727.
 
 ---
 
@@ -181,3 +181,7 @@ are NOT covered by it, all latent for the same reason (no corpus model has the s
 - **#6465** — the separate, accepted γ gap (a blend FLAT over its bracket). Untouched.
 - `constant_operand_value` in `crates/reify-constraints/src/solver.rs` — the normative
   statement of the rule and of the residual it resolves.
+- **#7727** (filed by #6146) — widen the ABSTENTION side's MENTIONS test through dependent
+  cells, closing the mirror-direction §11.6 false negative described above.
+- **#7728** (filed by #6146) — hoist `DerivationCtx`' `auto_reads`/`cell_ids` pair to once
+  per resolution instead of once per entry-point call.
