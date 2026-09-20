@@ -396,7 +396,7 @@ impl GmshKernel {
         let _guard = init::lock()?;
         init::ensure_initialized();
 
-        // --- Mesh-size clamp: leave nothing behind (task #6298) ---
+        // --- Mesh-size options: inherit nothing, leave nothing (tasks #6298, #6968) ---
         //
         // Gmsh's option table is process-global and `ffi::clear()` clears
         // MODELS, not OPTIONS, so the `Mesh.MeshSizeMin`/`MeshSizeMax` pair
@@ -437,7 +437,7 @@ impl GmshKernel {
         // Armed HERE, immediately after the line above silences gmsh, because
         // that silencing is exactly what makes the capture the only route by
         // which a caller can see WHY a mesh failed. Declared AFTER `_guard`
-        // and `_clamp_reset` so it drops FIRST: the `logger_stop` in its drop
+        // and `_size_scope` so it drops FIRST: the `logger_stop` in its drop
         // is an FFI call and must land while `GMSH_LOCK` is still held, and
         // the `PhantomData<&GmshGuard>` borrow makes that structural rather
         // than a comment a refactor can violate — see `log_capture`'s "Why it

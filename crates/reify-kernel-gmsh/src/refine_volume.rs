@@ -259,26 +259,25 @@ pub fn refine_volume_with_size_field(
     // --- Mesh-size clamp: set explicitly, never inherited (task #6211) ---
     //
     // INVARIANT: `vertex_sizes` alone decides element size here. Gmsh's option
-    // table is process-global and is NOT reset by `gmshClear()`, and the
-    // sibling entry points `mesh_profile_2d::mesh_plane_2d` and
-    // `mesh_boundary`'s surface remesh still write
-    // `Mesh.MeshSizeMin`/`MeshSizeMax` without restoring them. Without the two
-    // writes below, either of those running earlier in the process pins every
-    // element of THIS remesh to ITS size and the per-vertex field becomes
-    // inert (task #6211: one identical tet count for every hint).
+    // table is process-global and is NOT reset by `gmshClear()`, so a sibling
+    // entry point that wrote `Mesh.MeshSizeMin`/`MeshSizeMax` and never
+    // restored them used to pin every element of THIS remesh to ITS size,
+    // leaving the per-vertex field inert (task #6211: one identical tet count
+    // for every hint). Since task #6968 every entry point in this crate enters
+    // a `mesh_size_scope::MeshSizeScope`, so the table these writes land on
+    // holds gmsh's defaults whatever ran earlier in the process.
     //
-    // `kernel_real::GmshKernel::mesh_to_volume` used to belong on that list and
-    // no longer does — since task #6298 it arms the same
-    // `mesh_size_scope::MeshSizeScope` on entry. These two writes stay
-    // load-bearing regardless: the other two entry points are still open, and
-    // an inbound clamp that depends on no sibling's outbound discipline is the
-    // only form that makes this function's output a pure function of its own
-    // arguments.
-    //
-    // Both writes are load-bearing, not belt-and-braces: with a leaked
-    // Min == Max, lowering only Max leaves Min > Max (gmsh still floors at the
-    // leaked value) and lowering only Min leaves the leaked Max capping
-    // everything.
+    // They stay load-bearing regardless. `MeshSizeMax` is a genuine deviation
+    // from the default (derived below), and an inbound clamp that depends on
+    // no sibling's outbound discipline — nor on this function's own scope — is
+    // the only form that makes the output a pure function of its own
+    // arguments. `MeshSizeMin` restates the default the scope just wrote, so
+    // that the pair reads as one clamp rather than half of one: against a
+    // leaked Min == Max, lowering only Max leaves Min > Max (gmsh still floors
+    // at the leaked value) and lowering only Min leaves the leaked Max capping
+    // everything. `tests/refine_volume_tests.rs::
+    // uniform_size_field_refines_monotonically_under_leaked_global_clamp`
+    // poisons the table before the call and pins exactly that.
     //
     // Min = gmsh's default: no floor, so the finest hint is honoured.
     // Deliberately not `min(vertex_sizes)`, which would forbid gmsh from going
@@ -297,9 +296,10 @@ pub fn refine_volume_with_size_field(
     // `vertex_sizes` is the caller's job and is already done at
     // `reify_solver_elastic::volume_refine`'s entry point.
     //
-    // `MeshSizeScope` closes the outbound direction: this pair is returned
-    // to gmsh's defaults on every exit path, so the same leak does not run from
-    // here into a later defaults-relying call.
+    // `MeshSizeScope` closes the outbound direction: every size option — this
+    // pair and the three set above — is returned to gmsh's defaults on every
+    // exit path, so the same leak does not run from here into a later
+    // defaults-relying call.
     let max_hint = vertex_sizes
         .iter()
         .copied()
