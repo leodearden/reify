@@ -9344,7 +9344,7 @@ mod tests {
         // where BOTH forms produced geometry, and requiring at least one.
         let mut compared = 0usize;
         for face in [faces[0], *faces.last().unwrap()] {
-            let bare = kernel.execute(&GeometryOp::Draft {
+            let draft_bare = GeometryOp::Draft {
                 target: target.id,
                 faces: vec![face],
                 // Stays bare deliberately — task 5777. This is the CONTROL arm of
@@ -9353,7 +9353,9 @@ mod tests {
                 // `draft`, but not this site.
                 angle: Value::Real(angle_rad),
                 plane: plane.id,
-            });
+            };
+            assert_ungated_fields_are_bare(&draft_bare);
+            let bare = kernel.execute(&draft_bare);
             let dimensioned = kernel.execute(&GeometryOp::Draft {
                 target: target.id,
                 faces: vec![face],
@@ -14499,6 +14501,120 @@ mod tests {
         });
     }
 
+    /// Positive precondition backing `occt_non_length_fields_stay_ungated`:
+    /// asserts that each of `op`'s deliberately-ungated numeric fields
+    /// (`HalfSpace.nx`/`ny`/`nz`, `CircularPattern.angle`, `Draft.angle`) is
+    /// a bare, undimensioned `Value::Real`/`Value::Int` — never a
+    /// `Value::Scalar` of any dimension.
+    ///
+    /// `occt_non_length_fields_stay_ungated` proves a field stayed on the
+    /// context-free `extract_f64` by observing that no LENGTH-tripwire WARN
+    /// names it, which is informative only because a bare `Value::Real`/
+    /// `Int` is the one shape `reify_ir::check_length_field`
+    /// (`crates/reify-ir/src/kernel_validation.rs:163`) can never wave
+    /// through: its early return is gated on `Value::Scalar { dimension,
+    /// .. } if dimension == LENGTH`, not on the `Scalar` variant alone, so
+    /// an ANGLE-dimensioned fixture would still warn on a rewire to
+    /// `extract_length_f64` *today* — ANGLE is not LENGTH. Keeping the
+    /// fixture bare is what preserves that reach even if the predicate is
+    /// later loosened to wave through any dimensioned `Scalar`, not just
+    /// `LENGTH`. This guard reads the value out of the SAME `op` the
+    /// control executes, so there is no second copy to drift out of sync.
+    /// See `docs/notes/angle-literal-migration-ledger.md` §1.2.1; task 5780
+    /// (δ) owns migrating `Draft.angle`, task 5781 (ε) owns migrating
+    /// `CircularPattern.angle`.
+    ///
+    /// Panics naming `{op.kind_name()}.{field}` if a field is dimensioned,
+    /// or naming the op kind if it carries no deliberately-ungated field at
+    /// all — an unrecognised variant must fail loudly rather than silently
+    /// check nothing.
+    fn assert_ungated_fields_are_bare(op: &GeometryOp) {
+        let fields: Vec<(&str, &Value)> = match op {
+            GeometryOp::HalfSpace { nx, ny, nz, .. } => vec![("nx", nx), ("ny", ny), ("nz", nz)],
+            GeometryOp::CircularPattern { angle, .. } => vec![("angle", angle)],
+            GeometryOp::Draft { angle, .. } => vec![("angle", angle)],
+            other => panic!(
+                "{} carries no deliberately-ungated field — teach \
+                 assert_ungated_fields_are_bare this variant or stop \
+                 calling it on this op kind",
+                other.kind_name()
+            ),
+        };
+        for (field, value) in fields {
+            assert!(
+                matches!(value, Value::Real(_) | Value::Int(_)),
+                "{}.{field} is {value:?}, not a bare Value::Real/Int — a \
+                 bare value is the one shape check_length_field can never \
+                 wave through, so only it stays reachable if \
+                 check_length_field's Scalar+LENGTH predicate is ever \
+                 loosened to accept other dimensioned Scalars; retyping \
+                 this fixture gives that reach up for nothing",
+                op.kind_name(),
+            );
+        }
+    }
+
+    /// Regression teeth: a migration that retypes `CircularPattern.angle` to
+    /// a dimensioned `Value` (task 5781's exact shape) must red here instead
+    /// of leaving `occt_non_length_fields_stay_ungated` green with its
+    /// premise silently gone.
+    #[test]
+    #[should_panic(expected = "CircularPattern.angle")]
+    fn ungated_fixture_guard_reds_on_a_dimensioned_circular_pattern_angle() {
+        assert_ungated_fields_are_bare(&GeometryOp::CircularPattern {
+            target: GeometryHandleId(1),
+            axis_origin: [0.0; 3],
+            axis_dir: [0.0, 0.0, 1.0],
+            count: 2,
+            angle: Value::angle(std::f64::consts::PI),
+        });
+    }
+
+    /// Regression teeth: a migration that retypes `Draft.angle` to a
+    /// dimensioned `Value` (task 5780's exact shape) must red here instead
+    /// of leaving `occt_non_length_fields_stay_ungated` green with its
+    /// premise silently gone.
+    #[test]
+    #[should_panic(expected = "Draft.angle")]
+    fn ungated_fixture_guard_reds_on_a_dimensioned_draft_angle() {
+        assert_ungated_fields_are_bare(&GeometryOp::Draft {
+            target: GeometryHandleId(1),
+            faces: vec![],
+            angle: Value::angle(0.05),
+            plane: GeometryHandleId(1),
+        });
+    }
+
+    /// Pins that the guard keys on the `Scalar` VARIANT, not on the
+    /// dimension being non-dimensionless: a DIMENSIONLESS `Scalar` must
+    /// still red, because a bare `Value::Real` is the one shape
+    /// `check_length_field` can never wave through.
+    #[test]
+    #[should_panic(expected = "HalfSpace.ny")]
+    fn ungated_fixture_guard_reds_on_a_dimensioned_half_space_normal() {
+        assert_ungated_fields_are_bare(&GeometryOp::HalfSpace {
+            px: Value::length(0.0),
+            py: Value::length(0.0),
+            pz: Value::length(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_core::DimensionVector::DIMENSIONLESS,
+            },
+            nz: Value::Real(1.0),
+        });
+    }
+
+    /// Closes the guard's own vacuity hole: an op kind it does not
+    /// recognise must fail loudly rather than silently assert nothing.
+    #[test]
+    #[should_panic(expected = "no deliberately-ungated field")]
+    fn ungated_fixture_guard_reds_on_an_op_with_no_ungated_field() {
+        assert_ungated_fields_are_bare(&GeometryOp::Sphere {
+            radius: Value::Real(1.0),
+        });
+    }
+
     /// The anti-over-reach control: the FIVE deliberately ungated OCCT fields.
     ///
     /// The PRD's split is 47 = 42 + 3 + 2. The 3 are `HalfSpace`'s `nx`/`ny`/`nz`
@@ -14509,6 +14625,10 @@ mod tests {
     ///
     /// Without this control a blanket conversion of all 46 sites would pass
     /// every other test in this module.
+    ///
+    /// Bareness of the five fixtures below is now ENFORCED by
+    /// `assert_ungated_fields_are_bare`, not merely asserted in a comment:
+    /// the control cannot pass vacuously if a fixture is later dimensioned.
     #[test]
     fn occt_non_length_fields_stay_ungated() {
         reify_test_support::prime_tracing_callsite_cache();
@@ -14529,16 +14649,18 @@ mod tests {
         // 3 dimensionless unit-normal components. Point coords are properly
         // dimensioned, so a correct build emits nothing at all here.
         let mut kernel = OcctKernel::new();
+        let half_space = GeometryOp::HalfSpace {
+            px: Value::length(0.0),
+            py: Value::length(0.0),
+            pz: Value::length(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Real(0.0),
+            nz: Value::Real(1.0),
+        };
+        assert_ungated_fields_are_bare(&half_space);
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
-            let _ = kernel.execute(&GeometryOp::HalfSpace {
-                px: Value::length(0.0),
-                py: Value::length(0.0),
-                pz: Value::length(0.0),
-                nx: Value::Real(0.0),
-                ny: Value::Real(0.0),
-                nz: Value::Real(1.0),
-            });
+            let _ = kernel.execute(&half_space);
         });
         for n in ["nx", "ny", "nz"] {
             assert_no_warn_for_field(&capture, n);
@@ -14549,36 +14671,34 @@ mod tests {
         // converted, a `field = "angle"` warn would appear.
         let mut kernel = OcctKernel::new();
         let target = make_box_20_10_5(&mut kernel);
+        let circular_pattern = GeometryOp::CircularPattern {
+            target,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            count: 2,
+            // Stays bare deliberately — task 5777. ε (5781) migrates
+            // `circular_pattern` angles, but NOT this one: it is a control
+            // for the 46 = 41 + 3 + 2 ungated-field split, not a corpus
+            // fixture, and bareness is enforced below by
+            // `assert_ungated_fields_are_bare`. See
+            // docs/notes/angle-literal-migration-ledger.md §1.2.1.
+            angle: Value::Real(std::f64::consts::PI),
+        };
+        let draft = GeometryOp::Draft {
+            target,
+            faces: vec![],
+            // Stays bare deliberately — task 5777, same control contract as
+            // the arm above, but δ's (5780): `draft` is δ's migration
+            // target.
+            angle: Value::Real(0.05),
+            plane: target,
+        };
+        assert_ungated_fields_are_bare(&circular_pattern);
+        assert_ungated_fields_are_bare(&draft);
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
-            let _ = kernel.execute(&GeometryOp::CircularPattern {
-                target,
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                count: 2,
-                // Stays bare deliberately — task 5777. ε (5781) migrates
-                // `circular_pattern` angles, but NOT this one: it is a control
-                // for the 46 = 41 + 3 + 2 ungated-field split, not a corpus
-                // fixture. A bare `Value::Real` is the one shape
-                // `check_length_field` can never wave through — its early
-                // return is gated on the `Value::Scalar` variant — so the arm
-                // still catches a rewire to `extract_length_f64` even if that
-                // predicate is later loosened to accept any dimensioned
-                // `Scalar`. A retyped arm would still warn on a rewire today
-                // (an ANGLE `Scalar` is not LENGTH), but it gives that extra
-                // reach up for nothing. See
-                // docs/notes/angle-literal-migration-ledger.md §1.2.1.
-                angle: Value::Real(std::f64::consts::PI),
-            });
-            let _ = kernel.execute(&GeometryOp::Draft {
-                target,
-                faces: vec![],
-                // Stays bare deliberately — task 5777, same control contract as
-                // the arm above, but δ's (5780): `draft` is δ's migration
-                // target.
-                angle: Value::Real(0.05),
-                plane: target,
-            });
+            let _ = kernel.execute(&circular_pattern);
+            let _ = kernel.execute(&draft);
         });
         assert_no_warn_for_field(&capture, "angle");
     }
