@@ -6041,6 +6041,133 @@ mod tests {
         );
     }
 
+    /// CHARACTERISATION (task #6146): the one user-visible verdict this task
+    /// moves, pinned so the next "optimisation" of the derivation guard cannot
+    /// revert it silently.
+    ///
+    /// A STRICT auto whose only constraint is `a >= side`, with `side = 3*c` a
+    /// derived cell varying with auto `c` — the shape #6146's corpus survey
+    /// found ZERO instances of in 715 tracked `.ri` files, which is why this is
+    /// characterisation rather than a regression fixture.
+    ///
+    /// Unlike its neighbours above this routes through the REAL
+    /// `derive_param_intervals` / `params_in_underivable_constraints` rather
+    /// than hand-built `DerivedInterval`s: what changed is which intervals and
+    /// which abstention set those two produce for this model, and a hand-built
+    /// pair would pin the prediction instead of the behaviour.
+    ///
+    /// MEASURED on this branch, same fixture, by flipping only
+    /// `DerivationCtx::varies_with_solve` back to its pre-#6146 body
+    /// (`auto_index.contains_key(id)`) and re-running:
+    ///
+    /// | | `a`'s interval | abstention set | γ verdict |
+    /// |---|---|---|---|
+    /// | BEFORE | `lo = Some((0.0075, false))`, `hi = None` | `{}` | `ConstraintNonUnique` |
+    /// | AFTER  | `lo = None`, `hi = None` | `{0}` | `Solved` |
+    ///
+    /// BEFORE, the bogus bound populated `lo`, so `collect_underivable_in_leaf`
+    /// saw a readable side and withheld the abstention — and the model errored
+    /// on the strength of a bound the user never wrote. AFTER, `a` derives
+    /// neither side, lands in the abstention set, and the esc-5711-3 abstention
+    /// counts it as bracketed.
+    ///
+    /// The direction is MONOTONE, which is the test's actual point: the fix can
+    /// only GROW the abstention set, and `strict_autos_constraint_bracketed` is
+    /// documented monotone in it ("growing that set can only move a param from
+    /// 'not bracketed' to 'abstain', never the reverse"). So no previously-
+    /// `Solved` γ model can newly fail — the verdict moves `false → true` or
+    /// not at all.
+    #[test]
+    fn gamma_strict_auto_floored_only_by_a_derived_cell_abstains_not_errors() {
+        use std::collections::HashSet;
+
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let a = ValueCellId::new("Part", "a");
+        let c = ValueCellId::new("Part", "c");
+        let side = ValueCellId::new("Part", "side");
+        let length_ref = |id: &ValueCellId| CompiledExpr::value_ref(id.clone(), Type::length());
+
+        // `a` is the strict auto under test; `c` is free, so it carries no
+        // §11.6 obligation and the verdict turns on `a` alone.
+        let params = vec![
+            AutoParam {
+                id: a.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
+            AutoParam {
+                id: c.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: true,
+            },
+        ];
+        // `side = 3 * c`.
+        let cells = vec![(
+            side.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::literal(
+                    Value::Scalar {
+                        si_value: 3.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Type::dimensionless_scalar(),
+                ),
+                length_ref(&c),
+                Type::length(),
+            ),
+        )];
+        // The model's ONLY constraint on `a`.
+        let constraints = vec![(
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(BinOp::Ge, length_ref(&a), length_ref(&side), Type::Bool),
+        )];
+        let values =
+            super::build_trial_values(&ValueMap::new(), &params, &[0.0, 0.0025], &cells, &[], None);
+
+        let intervals =
+            super::derive_param_intervals(&params, &constraints, &cells, &values, &[], None);
+        let underivable = super::params_in_underivable_constraints(
+            &params,
+            &constraints,
+            &cells,
+            &values,
+            &[],
+            None,
+        );
+
+        assert_eq!(
+            (intervals[0].lo, intervals[0].hi),
+            (None, None),
+            "`a >= side` with `side = 3*c` must leave BOTH sides of `a` underived; \
+             before #6146 the lower side held this trial's 0.0075"
+        );
+        assert!(
+            underivable.contains(&0),
+            "a constraint that now derives nothing for `a` is exactly the \
+             unreadable-constraint evidence the abstention keys on, so `a` must \
+             enter the abstention set — before #6146 the bogus `lo` looked like \
+             a readable side and withheld it"
+        );
+        assert!(
+            super::strict_autos_constraint_bracketed(&params, &intervals, &underivable),
+            "`a` abstains, so the γ path reports the model determined rather than \
+             erroring on the strength of a bound the user never wrote"
+        );
+        assert!(
+            !super::strict_autos_constraint_bracketed(&params, &intervals, &HashSet::new()),
+            "MONOTONICITY, the point of this fixture: the empty-evidence call \
+             `verify_uniqueness` makes FIRST still reports not-bracketed, so the \
+             new verdict comes only from GROWING the abstention set. A larger set \
+             can move a param `not bracketed` → `abstain` and never the reverse, \
+             so no previously-`Solved` γ model can newly fail"
+        );
+    }
+
     // ---- end strict_autos_constraint_bracketed tests ----
 
     #[test]
