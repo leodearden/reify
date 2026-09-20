@@ -145,6 +145,76 @@ describe('classifyWorkerRpcFlake', () => {
     expect(classifyWorkerRpcFlake(summary([]))).toBeNull()
   })
 
+  // THE RUN-SCOPE SHAPE (task 7724; recorded as esc-7600-1). `snapshotSaved` is
+  // issued after a file's tests have already passed, so its timeout surfaces at
+  // RUN level with no module to attribute it to: the run reports zero failed
+  // suites, zero failed tests, and unhandled errors that are themselves RPC
+  // timeouts. It must be told apart from the all-green run below — conflating
+  // the two is exactly what left this event unclassified.
+  it('classifies a run whose ONLY failures are run-level RPC timeouts', () => {
+    const verdict = classifyWorkerRpcFlake(
+      summary([], 0, {
+        unhandledErrorMessages: [rpcTimeout('snapshotSaved'), rpcTimeout('snapshotSaved')],
+        runEndReason: 'failed',
+      }),
+    )
+
+    expect(verdict).not.toBeNull()
+    expect(verdict!.kind).toBe('worker_rpc_timeout')
+    // No suite to narrow to; the runner reads this as "re-run what was asked".
+    expect(verdict!.suites).toEqual([])
+    expect(verdict!.methods).toEqual(['snapshotSaved'])
+  })
+
+  it('returns null for an all-green run: nothing failed, so there is nothing to retry', () => {
+    expect(classifyWorkerRpcFlake(summary([], 0, { unhandledErrorMessages: [] }))).toBeNull()
+  })
+
+  // The all-or-nothing veto still holds when a run-level error is the only
+  // evidence there is.
+  it('returns null when the only run-level error is not an RPC timeout', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([], 0, {
+          unhandledErrorMessages: ['Error: unhandled rejection in a passing suite'],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it('returns null when the run-level errors are a MIX of RPC and non-RPC', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([], 0, {
+          unhandledErrorMessages: [rpcTimeout('snapshotSaved'), 'SyntaxError: boom'],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  // A dying forks pool is not absorbed just because no suite was marked failed.
+  it('returns null for the run-scope shape when a suite never reached a terminal state', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([], 0, {
+          unhandledErrorMessages: [rpcTimeout('snapshotSaved')],
+          unfinishedSuites: ['src/__tests__/never-ran.test.ts'],
+        }),
+      ),
+    ).toBeNull()
+  })
+
+  it('returns null for the run-scope shape when the run was interrupted', () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary([], 0, {
+          unhandledErrorMessages: [rpcTimeout('snapshotSaved')],
+          runEndReason: 'interrupted',
+        }),
+      ),
+    ).toBeNull()
+  })
+
   it('returns null for a failed suite carrying no error messages', () => {
     expect(
       classifyWorkerRpcFlake(summary([{ filepath: 'src/__tests__/x.test.ts', errorMessages: [] }])),
@@ -342,6 +412,25 @@ describe('WorkerRpcFlakeReporter — JSON artifact', () => {
     const artifact = JSON.parse(writes[0].contents)
     expect(artifact.kind).toBe('worker_rpc_timeout')
     expect(artifact.methods).toEqual(['fetch', 'snapshotSaved'])
+  })
+
+  // The run-scope shape driven through the REPORTER, not just the classifier:
+  // every module passed and the only failure is one run-level RPC timeout. Two
+  // outputs, exactly one of each, and a suite list that is EMPTY rather than
+  // absent — that emptiness is what tells the runner it has nothing to narrow to.
+  it('writes one artifact naming NO suite when the only failure is a run-level RPC timeout', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [testModule(`${ROOT}/a.test.ts`), testModule(`${ROOT}/b.test.ts`)],
+      [{ message: TIMEOUT_SNAPSHOT }],
+      'failed',
+    )
+
+    expect(lines).toHaveLength(1)
+    expect(writes).toHaveLength(1)
+    const artifact = JSON.parse(writes[0].contents)
+    expect(artifact.suites).toEqual([])
+    expect(artifact.methods).toEqual(['snapshotSaved'])
   })
 
   // The constructor's default is the real seam with scripts/gui-vitest-run.sh's
