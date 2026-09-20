@@ -15,6 +15,8 @@
 | §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention |
 | §4 Synthetic-event fidelity gaps | [step-7] `debugContract.test.ts` — pick↔raycast |
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
+| §5 The pick camera is the render camera | `debugCanvasInteraction.test.ts` — live-pose raycast (#6496) |
+| §6 Camera-state coherence | `debugCanvasInteraction.test.ts` (set\_camera{up} → orbit\_camera), `viewport/orbitUpAxis.test.ts`, `debugContract.test.ts` (small-part framing + zoom) |
 
 The Rust transport seam (query\_frontend ↔ resolve round-trip) is validated
 separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
@@ -832,8 +834,49 @@ transparently — no caller change is needed.
 ### Query-only guarantee
 
 `pick_entity_at` is **query-only**: it does NOT mutate selection state, fire
-`onSelect`, or trigger any side-effects.  Its return value is the entity path string
-(or `null`) that the raycaster would resolve for the given screen coordinate.
+`onSelect`, or trigger any side-effects.  (`select_entity` covers the mutate case.)
+
+Its **return shape** is a structured envelope, not a bare string:
+
+| Outcome | Shape |
+|---------|-------|
+| Hit | `{hit: true, entityPath, point: {x, y, z}, distance}` |
+| Miss | `{hit: false}` |
+| Unknown viewport, or non-finite coords | `{error}` |
+
+`entityPath` carries what the pipeline above resolves as `intersections[0].object.name`;
+`point` and `distance` describe *where* along the ray the hit landed, which is what lets a
+caller tell a near face from a far one without a second round-trip.
+
+### The pick camera is the render camera
+
+The ray is cast through the **live** camera pose — the one a `set_camera` /
+`orbit_camera` / `zoom_camera` issued a moment earlier has already produced — not
+through whatever pose was last *rendered*.  That is an invariant the handler has to
+establish for itself, because three gives it away by default (#6496):
+
+- `Raycaster.setFromCamera` consumes **only** `camera.matrixWorld` and
+  `camera.projectionMatrixInverse`.  It never recomputes either.
+- `OrbitControls.update()` writes `camera.position` and calls `object.lookAt()` (so
+  `quaternion` moves), but **never refreshes `matrixWorld`**.
+- The usual refresher is `renderer.render()` — and `Viewport.tsx`'s loop is
+  **render-on-demand**: `controls.update()` runs every RAF frame, `renderer.render()`
+  only when `needsRender`.  So a render is *not* a reliable refresher, and
+  `camera.matrixWorld` can describe a pose several camera moves stale.
+
+Left alone, the pick therefore casts through the last-rendered pose and silently
+resolves the wrong entity — the ray's origin and rotation belong to a camera the
+caller has already moved away from.  `pick_entity_at` closes this by calling
+`camera.updateMatrixWorld()` itself, immediately before `setFromCamera`.  The call is
+idempotent and cheap, and it keeps the tool query-only: it does **not** call
+`controls.update()`.
+
+**Consequence for callers:** the screenshot → `set_camera` → `pick_entity_at` →
+`select_entity` loop is sound with no intervening render and no settle step. Pixel
+coordinates remain valid against the most recent screenshot only.
+
+*Provenance: `found_during:dogfood:printer_v01` (2026-08-23) and the litter-tray
+round-3 probe (2026-09-03).*
 
 ### Validation
 
@@ -847,3 +890,59 @@ real `PerspectiveCamera` at `(0, 0, 5)` looking toward the origin, places a
   `onSelect(null)`
 
 This pins the screen→NDC→raycast convention that `pick_entity_at` is built on top of.
+
+The live-pose invariant above is guarded separately by `debugCanvasInteraction.test.ts`,
+which moves the camera exactly as `OrbitControls.update()` plus the render-on-demand loop
+leave it — mutating `position`/`quaternion` with **no** `updateMatrixWorld()` and no render
+— and asserts the pick resolves the entity under the *new* pose. Because it asserts on the
+resolved entity rather than on the presence of a call, it still fails if a future refactor
+drops the sync.
+
+---
+
+## §6 Camera-state coherence
+
+Three camera defects repaired under #6496/#6497 shared a single signature: **the command
+reported what was requested while the live OrbitControls-governed state disagreed.** The
+contract that replaces it is one rule, stated once:
+
+> **Every camera command reports LIVE state.** A caller can trust the response without a
+> follow-up `viewport_state`.
+
+Concretely:
+
+1. **`set_camera`'s `applied` is a read-back, not an echo.** It is taken from
+   `camera.position`, `controls.target`, `camera.up` and `camera.zoom` *after*
+   `controls.update()` has run, so a pose OrbitControls relocated — by distance clamping,
+   by target clamping — is reported as relocated. Comparing a request against `applied` is
+   how a caller detects a clamp at all. These are the same four field reads, from the same
+   sources, as `Viewport.tsx`'s `snapshotCamera()`, so the reported pose and the persisted
+   viewport-store pose agree by construction. One caveat: `applied.position` round-trips
+   through spherical coordinates inside `update()`, so it can differ from an unclamped
+   request by ~1 ulp — compare with a tolerance, not for equality. `applied.target` does
+   not round-trip and is exact.
+
+2. **`set_camera {up}` re-derives the orbit frame.** three 0.183.2 computes OrbitControls'
+   orbit-frame quaternion pair **once, in the constructor** (`OrbitControls.js:406`), from
+   `object.up`; neither `update()` nor `reset()` re-derives it and no public API does. So
+   setting `camera.up` alone changes the camera's own orientation basis while leaving
+   orbiting about the *previous* axis — `camera.up` reads the new value and the next
+   `orbit_camera` contradicts it. `set_camera` therefore re-derives the pair from the
+   current `camera.up` before calling `update()` (after would take effect only on the
+   following command).
+
+3. **The orbit distance floor is model-derived, not a fixed absolute.** It is a fixed
+   fraction of the framed bounding-sphere radius, established by `fit_to_view` (which is
+   the only place that radius is computed). Since the fitted distance is itself a multiple
+   of that radius, the floor is a constant fraction of the fitted distance at *every*
+   scale — so any model can be dollied in by the same factor from its fitted pose. The
+   previous fixed 0.5 m floor was an absolute distance in a workspace whose parts span
+   four orders of magnitude: it silently snapped a fitted 75 mm part back out to ~6× its
+   framing distance, and the subsequent `zoom_camera` reported `distanceDelta: 0` — a
+   saturated request indistinguishable from a satisfied one.
+
+Per §0's rule, this section deliberately does **not** enumerate per-tool return shapes;
+`tool_defs()` stays authoritative for those, and each tool's own `description` carries them.
+
+*Provenance: `found_during:dogfood:printer_v01` (2026-08-23) and the litter-tray round-3
+probe (2026-09-03).*

@@ -179,12 +179,17 @@ back-compat contract) is tracked by #6564.
 
 ### I2 — Canvas interaction
 
+All of these accept an optional `viewportId` (e.g. `'design-main'`, `'def-preview'`);
+when omitted, the first populated viewport is targeted.
+
 | Tool | Args | Returns |
 |------|------|---------|
-| `pick_entity_at` | `{x?, y?}` | `{hit, entityPath?}` — ray-cast into 3-D viewport |
-| `orbit_camera` | `{dazimuth?, delevation?}` | `{ok, azimuthDelta, elevationDelta}` |
-| `pan_camera` | `{dx, dy}` | `{ok}` |
-| `zoom_camera` | `{delta}` | `{ok}` |
+| `pick_entity_at` | `{x?, y?}` | `{hit, entityPath?, point?:{x,y,z}, distance?}` — ray-cast into 3-D viewport; omitted `x`/`y` default to canvas centre |
+| `orbit_camera` | `{dazimuth?, delevation?}` | `{ok, azimuth, polar, azimuthDelta, polarDelta, camera:{position}}` — radians |
+| `pan_camera` | `{dx, dy}` | `{ok, target:{x,y,z}, camera:{position}}` |
+| `zoom_camera` | `{scale}` | `{ok, distance, distanceDelta, camera:{position}}` — `scale` is **multiplicative** and must be `> 0`: `<1` closer, `>1` farther |
+| `set_camera` | `{position, target, up?, zoom?}` | `{ok, applied:{position, target, up, zoom}}` — `applied` is read back from the **live** camera after OrbitControls applies its constraints |
+| `fit_to_view` | `{}` | `{ok}` — frames all geometry **and** establishes the orbit distance limits from the resulting bounds |
 
 ### C1 — Chrome & menus
 
@@ -282,7 +287,48 @@ element_screenshot({testId: 'diagnostics-dialog'})
 
 ---
 
-## 6. In-band error handling
+## 6. screenshot → set_camera → pick → identify recipe
+
+`/verify` and `/review` above both terminate at `screenshot` and never frame the
+camera, so neither can answer *"what is that feature I can see?"*. Use this sequence
+to go from a pixel in a capture to the entity behind it:
+
+```
+1. fit_to_view                → frame all geometry; ALSO sets the orbit distance
+                                limits from the model bounds
+2. screenshot                 → locate the region of interest
+3. set_camera({position, target})  → close in on that region
+4. screenshot                 → re-capture; THIS is the frame whose pixels you may
+                                address in step 5
+5. pick_entity_at({x, y})     → CSS-px from the step-4 capture → {hit, entityPath, …}
+6. select_entity({entityPath}) → commit the selection (pick_entity_at is query-only)
+```
+
+**Two traps this sequence is built to avoid:**
+
+- **Pixel coordinates are only valid against the MOST RECENT screenshot.** Any camera
+  move invalidates the previous capture's coordinates. Always re-`screenshot` after
+  `set_camera` and read `x`/`y` off that frame. No settle step or intervening render is
+  needed between `set_camera` and `pick_entity_at` — the raycast uses the live camera
+  pose (`docs/debug-mcp-contract.md` §5, #6496).
+- **`distanceDelta: 0` from `zoom_camera` means the request SATURATED a distance
+  limit** — the dolly did nothing. It is not an error and `ok` is still `true`. Reach
+  for `fit_to_view` first if you have not framed the model, since that is what derives
+  the limits from its bounds; before those limits tracked the model, a fitted 75 mm
+  part was held at a fixed 0.5 m floor and every dolly into it reported exactly
+  `{distance: 0.5, distanceDelta: 0}`.
+
+Compare your `set_camera` request against the returned `applied` to see whether the
+controls relocated the pose. Allow a small tolerance on `applied.position` (it
+round-trips through spherical coordinates and can differ by ~1 ulp); `applied.target`
+is exact.
+
+*Provenance: `found_during:dogfood:printer_v01` (2026-08-23) and the litter-tray
+round-3 probe (2026-09-03).*
+
+---
+
+## 7. In-band error handling
 
 Debug handlers return failures as `Ok({error: "<msg>", …})` — no MCP `isError`
 flag is set. `parseRpcResponse` in `gui/test/visual/rpc.ts` detects this via the
