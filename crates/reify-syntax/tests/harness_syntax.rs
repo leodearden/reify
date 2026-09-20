@@ -92,6 +92,8 @@ mod match_decl_block_parser_tests;
 mod match_decl_block_tests;
 #[path = "harness_syntax/match_tests.rs"]
 mod match_tests;
+#[path = "harness_syntax/member_continuation_ambiguity_tests.rs"]
+mod member_continuation_ambiguity_tests;
 #[path = "harness_syntax/member_span_tests.rs"]
 mod member_span_tests;
 #[path = "harness_syntax/module_decl_tests.rs"]
