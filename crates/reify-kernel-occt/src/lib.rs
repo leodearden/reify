@@ -457,8 +457,17 @@ fn validate_sweep_pose(
 
     let abs_dot = (t.0 * n.0 + t.1 * n.1 + t.2 * n.2).abs();
     if abs_dot < SWEEP_DEGENERATE_POSE_DEG.to_radians().sin() {
+        let off_plane_deg = abs_dot.asin().to_degrees();
         return Err(GeometryError::OperationFailed(format!(
-            "sweep profile is posed in the path's plane: the angle between the path's start tangent and the profile normal is below the {SWEEP_DEGENERATE_POSE_DEG} degree minimum (abs(t-hat . n-hat) = {abs_dot:.9})"
+            "sweep profile is posed in the path's plane: the path's start \
+             tangent lies in the profile's plane, so the swept body encloses \
+             nothing. Measured |tangent . normal| = {abs_dot:.9}, i.e. \
+             {off_plane_deg:.3} degrees off-plane, where at least \
+             {SWEEP_DEGENERATE_POSE_DEG} degrees is required. Fix: pose the \
+             profile normal to the path's start tangent, and bind the posed \
+             profile with `let` before sweeping it — an inline transform is \
+             rejected as a sweep profile — e.g. `let p = rotate(circle(r), \
+             1.0, 0.0, 0.0, -90deg)` then `sweep(p, path)`."
         )));
     }
     Ok(())
