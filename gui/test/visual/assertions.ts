@@ -79,6 +79,51 @@ export type ValueScenario = {
  * Primary scenario: open small_cube → call store_state → assert engine.meshCount === 1.
  * Additional scenarios for other fixtures will be added by downstream tool-leaf tasks.
  */
+// ─── small_cube camera geometry (task 6965) ──────────────────────────────────
+//
+// Every camera threshold below is DERIVED from the fixture and the framing
+// formula, never an observed output, so each assertion states the physics
+// rather than pinning whatever the GUI happened to print.
+//
+//   small_cube.ri declares `param size: Length = 10mm` and `box(size,size,size)`,
+//   so the framed box is a 10 mm cube — 0.01 in scene units (metres).
+//   fitCameraToBox frames the circumscribing SPHERE, radius = ½·box diagonal.
+const SMALL_CUBE_EDGE_M = 0.01;
+const SMALL_CUBE_RADIUS = 0.5 * Math.sqrt(3) * SMALL_CUBE_EDGE_M; // ≈ 8.660e-3
+
+// fitCameraToBox: distance = padding · max(r/sin(vFov/2), r/sin(hFov/2)), with
+// padding 1.1 and CAMERA_FOV_DEG 60. The VERTICAL term is 1.1·r/sin(30°) = 2.2·r.
+// The horizontal term binds only on a pane TALLER than wide (fitCamera.ts design
+// decision 2, esc-4280), and binds UPWARDS — so 2.2·r is a lower bound on the
+// fitted distance, which is what makes the atLeast/atMost pair below sound for
+// any pane shape.
+const SMALL_CUBE_FIT_DISTANCE = 2.2 * SMALL_CUBE_RADIUS; // ≈ 1.905e-2
+
+// zoom_camera dollies MULTIPLICATIVELY: dollyIn(scale) ⇒ distance *= scale.
+const SMALL_CUBE_ZOOM_SCALE = 0.3;
+const SMALL_CUBE_ZOOMED_DISTANCE = SMALL_CUBE_ZOOM_SCALE * SMALL_CUBE_FIT_DISTANCE; // 0.66·r
+const SMALL_CUBE_ZOOM_DELTA = SMALL_CUBE_FIT_DISTANCE - SMALL_CUBE_ZOOMED_DISTANCE; // 1.54·r
+
+// Headroom on the upper bound, because a tall/narrow pane fits FARTHER back (above)
+// and so also lands farther back after the dolly. 8× covers aspect ratios down to
+// ≈0.2, while the resulting bound (≈4.6e-2) is still an order of magnitude BELOW the
+// 0.5 m floor this task retired — so the scenario keeps its discriminating power
+// against the regression without being hostage to the pane's shape.
+const SMALL_CUBE_PANE_ASPECT_HEADROOM = 8;
+
+// An iso-ish close-in pose at the fitted distance, used to prove a pick still
+// resolves after the camera has been re-framed (#6496).
+const SMALL_CUBE_FRAMED_POSE = SMALL_CUBE_FIT_DISTANCE / Math.sqrt(3); // ≈ 1.100e-2
+
+// controls.update() round-trips camera.position through spherical coordinates, so
+// the read-back differs from the request by ~1 ulp — MEASURED against real three
+// 0.183.2: requesting [0.03,0.03,0.03] reads back [0.03,0.03,0.030000000000000002],
+// and no pose tried survived exactly. `equals` is therefore the wrong op for
+// applied.position; this absolute tolerance is ~7 orders above that drift and ~7
+// orders below any clamp worth detecting. controls.target, by contrast, is NOT
+// round-tripped and does survive update() exactly, so it is asserted with `equals`.
+const CAMERA_READBACK_TOL = 1e-9;
+
 export const VALUE_SCENARIOS: ValueScenario[] = [
   {
     name: "store_state_meshcount_small_cube",
@@ -212,6 +257,82 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
       { path: "azimuthDelta", op: "atLeast", expected: 0.001 },
     ],
   },
+  // task-6965: the three camera commands this task repaired. Live signal via
+  // `npm run test:e2e` only — NOT verify-gated, same caveat as the I2 entries above.
+  // Each asserts LIVE state through the command's own response fields (set_camera's
+  // `applied` and zoom_camera's `distance` are read back from the camera/controls
+  // after OrbitControls has applied its constraints), never a restatement of inputs.
+  //
+  // zoom_camera_small_cube IS the dogfood no-op turned into a standing assertion:
+  // before this task the hardcoded 0.5 m minDistance floor snapped the fitted 10 mm
+  // cube out to 0.5 m, and the subsequent dolly reported `distance: 0.5,
+  // distanceDelta: 0` — a silent saturation reported as success.
+  {
+    name: "zoom_camera_small_cube",
+    fixture: "small_cube",
+    setup: [{ tool: "fit_to_view", args: {} }],
+    tool: "zoom_camera",
+    args: { scale: SMALL_CUBE_ZOOM_SCALE },
+    assertions: [
+      { path: "ok", op: "equals", expected: true },
+      // The dolly actually moved the camera. Half the computed delta leaves room
+      // for pane shape while staying far above the 0 the regression produced.
+      { path: "distanceDelta", op: "atLeast", expected: SMALL_CUBE_ZOOM_DELTA / 2 },
+      // ...and landed genuinely close to a 10 mm part, i.e. the floor now tracks
+      // the model bounds instead of sitting at a fixed 0.5 m.
+      {
+        path: "distance",
+        op: "atMost",
+        expected: SMALL_CUBE_ZOOMED_DISTANCE * SMALL_CUBE_PANE_ASPECT_HEADROOM,
+      },
+    ],
+  },
+  // Pins step-12's read-back contract end to end: `applied` is the LIVE pose after
+  // controls.update(), not the request echoed back. The pose is well inside both
+  // distance limits, so the ordinary unclamped path is what is exercised here.
+  {
+    name: "set_camera_reports_live_pose",
+    fixture: "small_cube",
+    tool: "set_camera",
+    args: { position: [0.03, 0.03, 0.03], target: [0, 0, 0] },
+    assertions: [
+      { path: "ok", op: "equals", expected: true },
+      // target survives update() exactly (measured), so it pins the read-back source.
+      { path: "applied.target", op: "equals", expected: [0, 0, 0] },
+      // position is bracketed rather than equated — see CAMERA_READBACK_TOL.
+      { path: "applied.position.0", op: "atLeast", expected: 0.03 - CAMERA_READBACK_TOL },
+      { path: "applied.position.0", op: "atMost", expected: 0.03 + CAMERA_READBACK_TOL },
+      { path: "applied.position.1", op: "atLeast", expected: 0.03 - CAMERA_READBACK_TOL },
+      { path: "applied.position.1", op: "atMost", expected: 0.03 + CAMERA_READBACK_TOL },
+      { path: "applied.position.2", op: "atLeast", expected: 0.03 - CAMERA_READBACK_TOL },
+      { path: "applied.position.2", op: "atMost", expected: 0.03 + CAMERA_READBACK_TOL },
+    ],
+  },
+  // The #6496 screenshot → set_camera → pick → identify loop as a regression
+  // scenario: a pick immediately after a camera move must resolve against the pose
+  // set_camera just reported, with no intervening render. pick_entity_at_small_cube
+  // above deliberately exercises the DEFAULT camera and never moves it, so it cannot
+  // observe the stale-matrixWorld bug at all — this is its framed counterpart, not a
+  // duplicate of it.
+  {
+    name: "pick_after_set_camera_small_cube",
+    fixture: "small_cube",
+    setup: [
+      {
+        tool: "set_camera",
+        args: {
+          position: [SMALL_CUBE_FRAMED_POSE, SMALL_CUBE_FRAMED_POSE, SMALL_CUBE_FRAMED_POSE],
+          target: [0, 0, 0],
+        },
+      },
+    ],
+    tool: "pick_entity_at",
+    args: {},
+    assertions: [
+      { path: "hit", op: "equals", expected: true },
+      { path: "entityPath", op: "exists" },
+    ],
+  },
   // task-4303 F1 e2e signal scenarios (live-only via `npm run test:e2e`, NOT CI-gated
   // per PRD §4.10).  Structure validated in assertions.test.ts; live values asserted
   // only during a real reify-gui session.
@@ -339,7 +460,7 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
 
 export type Assertion = {
   path: string;
-  op: "equals" | "atLeast" | "exists";
+  op: "equals" | "atLeast" | "atMost" | "exists";
   expected?: unknown;
 };
 
@@ -370,6 +491,9 @@ function deepEqual(a: unknown, b: unknown): boolean {
  * - 'equals': recursive deep equality (key-order insensitive); a missing path
  *   always fails — undefined is never considered equal to any expected value.
  * - 'atLeast': actual must be a number >= Number(expected)
+ * - 'atMost': actual must be a number <= Number(expected) — the mirror of
+ *   'atLeast', for stating an UPPER bound on a value computed through floating
+ *   point (an orbit distance, a delta) where 'equals' cannot tolerate the drift.
  * - 'exists': actual must not be undefined
  *
  * Failure message always includes the path plus expected vs actual.
@@ -400,6 +524,15 @@ export function evaluateAssertion(value: unknown, a: Assertion): AssertionResult
       return {
         ok: false,
         message: `${a.path}: expected atLeast ${String(a.expected)}, got ${JSON.stringify(actual)}`,
+      };
+    }
+    case "atMost": {
+      if (typeof actual === "number" && actual <= Number(a.expected)) {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        message: `${a.path}: expected atMost ${String(a.expected)}, got ${JSON.stringify(actual)}`,
       };
     }
     case "exists": {
