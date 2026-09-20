@@ -163,4 +163,156 @@ mod tests {
     fn contains_word_empty_needle_never_matches() {
         assert!(!contains_word("anything", ""));
     }
+
+    /// Left-boundary-checked, and a rejected occurrence does not end the
+    /// search: the token is never matched as the tail of a longer word, but a
+    /// glued occurrence must not mask a clean one later on the same line.
+    #[test]
+    fn find_word_boundary_token_skips_glued_occurrences() {
+        assert_eq!(
+            find_word_boundary_token("// pdoccover:allow — x", "pdoccover:allow"),
+            Some(3),
+            "a boundary-clean occurrence is located at its byte offset",
+        );
+        assert_eq!(
+            find_word_boundary_token("// xxpdoccover:allow — x", "pdoccover:allow"),
+            None,
+            "an occurrence glued to a preceding word byte is not the token",
+        );
+        assert_eq!(
+            find_word_boundary_token("xxpdoccover:allow and pdoccover:allow", "pdoccover:allow"),
+            Some(22),
+            "the glued occurrence is skipped, not treated as the answer",
+        );
+    }
+
+    /// One optional separator, in any of the three spellings a marker is
+    /// written with in the wild — plus the no-separator form.
+    #[test]
+    fn allow_marker_body_accepts_each_separator_form() {
+        for line in [
+            "// pdoccover:allow — reason",
+            "// pdoccover:allow - reason",
+            "// pdoccover:allow: reason",
+            "// pdoccover:allow reason",
+        ] {
+            assert_eq!(
+                allow_marker_body(line, "pdoccover:allow"),
+                Some("reason"),
+                "`{line}` must yield the trimmed body",
+            );
+        }
+    }
+
+    /// The comment terminator is stripped BEFORE the separator, and the order
+    /// is load-bearing: `-->` begins with the ASCII-hyphen separator, so the
+    /// other order reads `<!-- pdoccover:allow -->` as a well-formed marker
+    /// whose reason is `->` and silently suppresses a real claim.
+    #[test]
+    fn allow_marker_body_strips_terminator_before_separator() {
+        assert_eq!(
+            allow_marker_body(
+                "<!-- pdoccover:allow — planned, see #5434 -->",
+                "pdoccover:allow"
+            ),
+            Some("planned, see #5434"),
+            "an HTML-comment marker's reason excludes the `-->` terminator",
+        );
+        assert_eq!(
+            allow_marker_body("/* pdoccover:allow — reason */", "pdoccover:allow"),
+            Some("reason"),
+            "a Rust block-comment marker's reason excludes the `*/` terminator",
+        );
+        assert_eq!(
+            allow_marker_body("<!-- pdoccover:allow -->", "pdoccover:allow"),
+            None,
+            "a reasonless HTML-comment marker must not parse a reason of `->`",
+        );
+    }
+
+    /// A reasonless marker is not a marker with a reason: the caller turns
+    /// `None`-with-token into its own finding rather than honouring an
+    /// un-reviewable escape hatch.
+    #[test]
+    fn allow_marker_body_rejects_blank_body_and_absent_token() {
+        assert_eq!(allow_marker_body("// pdoccover:allow", "pdoccover:allow"), None);
+        assert_eq!(allow_marker_body("// pdoccover:allow ", "pdoccover:allow"), None);
+        assert_eq!(allow_marker_body("// an ordinary comment", "pdoccover:allow"), None);
+    }
+
+    /// DIVERGENCE PIN — `ptodo::g_allow_marker_body` is deliberately NOT this
+    /// grammar, and this is the measurement that says so.
+    ///
+    /// The line below is real: `crates/reify-stdlib/src/dynamics/mass_props.rs`
+    /// carries it verbatim, as a TRAILING comment after an attribute.
+    /// `g_allow_marker_body` requires the marker to own the whole line (it
+    /// strips leading whitespace and then demands a literal `//`), so today it
+    /// reads this line as carrying no marker at all. The free-floating shared
+    /// grammar finds one. Converging the two would therefore newly admit this
+    /// line — and every other trailing-comment G-allow marker on the real
+    /// tree — into PTODO's G-allow owner-cite lane and into the arm-(7)
+    /// delta-B guard. That lane is hard-gated repo-wide, so this is a
+    /// behaviour change on a gating detector, not a mechanical relocation.
+    #[test]
+    fn g_allow_grammar_deliberately_diverges_from_shared_marker_body() {
+        let corpus_line = "#[allow(dead_code)] // G-allow: test-only analytic \
+                           ground-truth closed form; KGQ wiring into \
+                           body_mass_props landed via #3829 (done) + #4237 \
+                           dynamics_ops seam (done); fn is permanent test-only \
+                           helper, zero production callers by design";
+        assert_eq!(
+            crate::ptodo::g_allow_marker_body(corpus_line),
+            None,
+            "PTODO's grammar requires a whole-line `//` comment, so a trailing \
+             marker carries no G-allow body for it",
+        );
+        let shared = allow_marker_body(corpus_line, "G-allow:");
+        assert!(
+            shared.is_some_and(|b| b.starts_with("test-only analytic")),
+            "the shared grammar is free-floating and DOES find a body here — \
+             routing g_allow_marker_body through it would change what the \
+             hard-gated G-allow lane sees; got {shared:?}",
+        );
+        // The second flip, in the other direction: the shared grammar strips
+        // one leading separator, so a body that is only a separator collapses
+        // to blank — where PTODO keeps it and suppresses on it.
+        assert_eq!(crate::ptodo::g_allow_marker_body("// G-allow: -"), Some("-"));
+        assert_eq!(allow_marker_body("// G-allow: -", "G-allow:"), None);
+    }
+
+    /// DIVERGENCE PIN — `pdssentinel::has_allow_marker` is deliberately NOT
+    /// this grammar either: it is a bare PRESENCE check with no reason
+    /// requirement, so a reasonless marker suppresses.
+    ///
+    /// `allow_marker_body` rejects a blank body, so routing the sentinel
+    /// through it would flip a bare `// ds-sentinel:allow` from suppressing to
+    /// NOT suppressing — silently turning every reasonless marker on the
+    /// scoped compiler files into a finding.
+    #[test]
+    fn ds_sentinel_presence_check_deliberately_diverges_from_shared_marker_body() {
+        assert_eq!(
+            allow_marker_body("    let x = y; // ds-sentinel:allow", "ds-sentinel:allow"),
+            None,
+            "the shared grammar rejects a reasonless marker",
+        );
+
+        let suppressed = "\
+fn resolve(name: &str) -> Type {
+    diagnostics.push(
+        Diagnostic::error(format!(\"unresolved type: {}\", name))
+            .with_code(DiagnosticCode::UnresolvedType)
+    );
+    Type::dimensionless_scalar() // ds-sentinel:allow
+}
+";
+        assert!(
+            crate::pdssentinel::scan_content(suppressed).is_empty(),
+            "a REASONLESS ds-sentinel:allow still suppresses — which is why \
+             the sentinel does not route through allow_marker_body",
+        );
+        // Non-vacuity: the same shape without the marker is a live hit, so the
+        // emptiness above is the marker's doing and not the fixture's shape.
+        let unsuppressed = suppressed.replace(" // ds-sentinel:allow", "");
+        assert_eq!(crate::pdssentinel::scan_content(&unsuppressed).len(), 1);
+    }
 }
