@@ -137,6 +137,40 @@ impl fmt::Display for ValueCellId {
     }
 }
 
+/// Error returned by [`ValueCellId`]'s [`FromStr`](std::str::FromStr) impl when
+/// the input does not name exactly one `(entity, member)` pair under the
+/// `"<entity>.<member>"` Display grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueCellIdParseError {
+    /// The input contained no `'.'` separator at all.
+    MissingSeparator,
+}
+
+impl fmt::Display for ValueCellIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValueCellIdParseError::MissingSeparator => {
+                write!(f, "expected '<entity>.<member>'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValueCellIdParseError {}
+
+impl std::str::FromStr for ValueCellId {
+    type Err = ValueCellIdParseError;
+
+    /// Parse the `"<entity>.<member>"` Display grammar back into a
+    /// [`ValueCellId`], splitting on the FIRST `'.'`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (entity, member) = s
+            .split_once('.')
+            .ok_or(ValueCellIdParseError::MissingSeparator)?;
+        Ok(ValueCellId::new(entity, member))
+    }
+}
+
 /// Identifies a constraint node in the topology graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConstraintNodeId {
