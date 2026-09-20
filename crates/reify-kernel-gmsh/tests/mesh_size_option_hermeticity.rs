@@ -428,9 +428,13 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
 fn every_entry_point_measures_the_same_whatever_ran_before_it() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
 
+    /// An entry point's display name, paired with a measurement of the mesh it
+    /// produces, in elements.
+    type EntryPoint = (&'static str, fn() -> usize);
+
     /// Named so a failure message says which pair diverged rather than which
     /// index did.
-    const ENTRY_POINTS: [(&str, fn() -> usize); 3] = [
+    const ENTRY_POINTS: [EntryPoint; 3] = [
         ("mesh_plane_2d(mesh_size: None)", probe_triangle_count),
         ("refine_volume_with_size_field", refine_tet_count),
         ("mesh_to_volume", mesh_to_volume_default_tet_count),
