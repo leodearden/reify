@@ -1859,6 +1859,16 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
      * Omitted x/y → canvas centre (rect.left+rect.width/2, rect.top+rect.height/2).
      * Lazy import of Raycaster/Vector2 avoids polluting the top-level three import
      * (sibling tests vi.mock('three') with only {Box3,Vector3}).
+     *
+     * INVARIANT: the pick camera is the LIVE camera.  Raycaster.setFromCamera consumes
+     * camera.matrixWorld and projectionMatrixInverse only, and nothing on the camera-move
+     * path leaves matrixWorld consistent: OrbitControls.update() ends with
+     * object.lookAt(target), and Object3D.lookAt() refreshes matrixWorld BEFORE writing
+     * the new quaternion — so matrixWorld keeps the current position with the previous
+     * rotation.  A render would resynchronise it, but Viewport.tsx's loop is
+     * render-on-demand (controls.update() every frame, renderer.render() only when
+     * needsRender), so a render is not guaranteed to have happened.  Hence the explicit
+     * updateMatrixWorld() below (#6496).
      */
     pick_entity_at: async (params) => {
       const picked = pickViewport(ctx, params);
@@ -1889,6 +1899,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       );
       const rc = new Raycaster();
       (rc as any).firstHitOnly = true;
+      // Resynchronise matrixWorld with the live position/quaternion before casting —
+      // see the INVARIANT note above.  Query-only: updateMatrixWorld() derives the
+      // matrix from state the camera already holds, so it changes no pose.
+      vp.camera.updateMatrixWorld();
       rc.setFromCamera(ndc, vp.camera);
 
       const meshes = Array.from(vp.getMeshes().values()) as import('three').Object3D[];
