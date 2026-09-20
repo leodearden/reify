@@ -14647,6 +14647,10 @@ mod tests {
     ///
     /// Without this control a blanket conversion of all 46 sites would pass
     /// every other test in this module.
+    ///
+    /// Bareness of the five fixtures below is now ENFORCED by
+    /// `assert_ungated_fixtures_are_bare`, not merely asserted in a comment:
+    /// the control cannot pass vacuously if a fixture is later dimensioned.
     #[test]
     fn occt_non_length_fields_stay_ungated() {
         reify_test_support::prime_tracing_callsite_cache();
@@ -14667,16 +14671,18 @@ mod tests {
         // 3 dimensionless unit-normal components. Point coords are properly
         // dimensioned, so a correct build emits nothing at all here.
         let mut kernel = OcctKernel::new();
+        let half_space = GeometryOp::HalfSpace {
+            px: Value::length(0.0),
+            py: Value::length(0.0),
+            pz: Value::length(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Real(0.0),
+            nz: Value::Real(1.0),
+        };
+        assert_ungated_fixtures_are_bare(&half_space);
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
-            let _ = kernel.execute(&GeometryOp::HalfSpace {
-                px: Value::length(0.0),
-                py: Value::length(0.0),
-                pz: Value::length(0.0),
-                nx: Value::Real(0.0),
-                ny: Value::Real(0.0),
-                nz: Value::Real(1.0),
-            });
+            let _ = kernel.execute(&half_space);
         });
         for n in ["nx", "ny", "nz"] {
             assert_no_warn_for_field(&capture, n);
@@ -14687,36 +14693,34 @@ mod tests {
         // converted, a `field = "angle"` warn would appear.
         let mut kernel = OcctKernel::new();
         let target = make_box_20_10_5(&mut kernel);
+        let circular_pattern = GeometryOp::CircularPattern {
+            target,
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            count: 2,
+            // Stays bare deliberately — task 5777. ε (5781) migrates
+            // `circular_pattern` angles, but NOT this one: it is a control
+            // for the 46 = 41 + 3 + 2 ungated-field split, not a corpus
+            // fixture, and bareness is enforced below by
+            // `assert_ungated_fixtures_are_bare`. See
+            // docs/notes/angle-literal-migration-ledger.md §1.2.1.
+            angle: Value::Real(std::f64::consts::PI),
+        };
+        let draft = GeometryOp::Draft {
+            target,
+            faces: vec![],
+            // Stays bare deliberately — task 5777, same control contract as
+            // the arm above, but δ's (5780): `draft` is δ's migration
+            // target.
+            angle: Value::Real(0.05),
+            plane: target,
+        };
+        assert_ungated_fixtures_are_bare(&circular_pattern);
+        assert_ungated_fixtures_are_bare(&draft);
         let (subscriber, capture) = reify_test_support::warn_capturing_subscriber();
         tracing::subscriber::with_default(subscriber, || {
-            let _ = kernel.execute(&GeometryOp::CircularPattern {
-                target,
-                axis_origin: [0.0, 0.0, 0.0],
-                axis_dir: [0.0, 0.0, 1.0],
-                count: 2,
-                // Stays bare deliberately — task 5777. ε (5781) migrates
-                // `circular_pattern` angles, but NOT this one: it is a control
-                // for the 46 = 41 + 3 + 2 ungated-field split, not a corpus
-                // fixture. A bare `Value::Real` is the one shape
-                // `check_length_field` can never wave through — its early
-                // return is gated on the `Value::Scalar` variant — so the arm
-                // still catches a rewire to `extract_length_f64` even if that
-                // predicate is later loosened to accept any dimensioned
-                // `Scalar`. A retyped arm would still warn on a rewire today
-                // (an ANGLE `Scalar` is not LENGTH), but it gives that extra
-                // reach up for nothing. See
-                // docs/notes/angle-literal-migration-ledger.md §1.2.1.
-                angle: Value::Real(std::f64::consts::PI),
-            });
-            let _ = kernel.execute(&GeometryOp::Draft {
-                target,
-                faces: vec![],
-                // Stays bare deliberately — task 5777, same control contract as
-                // the arm above, but δ's (5780): `draft` is δ's migration
-                // target.
-                angle: Value::Real(0.05),
-                plane: target,
-            });
+            let _ = kernel.execute(&circular_pattern);
+            let _ = kernel.execute(&draft);
         });
         assert_no_warn_for_field(&capture, "angle");
     }
