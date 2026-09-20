@@ -33,10 +33,10 @@
 # the caller's original invocation verbatim -- on the merge gate that is the
 # bare full suite, and on a REIFY_GUI_RETRY_SPECS-narrowed block it is that same
 # narrowing, so the retry never answers a wider question than the one asked. A
-# run whose only failures are run-level RPC timeouts has no suite to narrow to:
-# `snapshotSaved` is issued after a file's tests have already passed, so its
-# timeout has no module to attribute it to (task 7724). Widening the retry can
-# never mask a failure -- the same argument partition_args already makes.
+# RUN-LEVEL RPC timeout is what leaves nothing to narrow to -- it has no module
+# to attribute it to, whether or not suites failed alongside it (task 7724). The
+# classifier owns that rule and this script only reads its verdict; widening the
+# retry can never mask a failure -- the same argument partition_args makes.
 #
 # Knob: REIFY_GUI_RPC_FLAKE_RETRY=0 disables the retry (default 1).
 
