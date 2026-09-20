@@ -21,8 +21,8 @@
 //!
 //! A single precedence-correct `scan_file` pass feeds both lanes so they
 //! never drift. Only file enumeration (`GitOps::ls_files`), content reads
-//! (`std::fs::read_to_string`), and the read-only task-DB open touch IO, inside
-//! [`check`].
+//! (`AuditContext::read_relative`, which owns the fail-safe contract), and
+//! the read-only task-DB open touch IO, inside [`check`].
 //!
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).

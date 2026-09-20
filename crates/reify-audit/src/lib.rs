@@ -416,16 +416,28 @@ impl AuditContext<'_> {
     /// Contents of tracked file `path` (root-relative), or `None` when it
     /// cannot be read.
     ///
-    /// The crate's single tracked-file read. Only ENUMERATION is a git seam —
-    /// every detector takes path membership from `git.ls_files()` and then
-    /// reads the working tree directly through here, so a path that is
-    /// tracked but absent, unreadable or a directory is SKIPPED fail-safe: no
-    /// finding, no panic. That matters because the callers are scanners run
-    /// over the whole repo, where one unreadable file must not be able to
-    /// take the detector — or the verify gate it runs in — down.
+    /// The tracked-file read for PTODO, PDSSENTINEL and PDOCCOVER, which each
+    /// inlined it separately before task #6036. Only ENUMERATION is a git
+    /// seam — those detectors take path membership from `git.ls_files()` and
+    /// then read the working tree directly through here, so a path that is
+    /// tracked but absent, unreadable, a directory, or not valid UTF-8 is
+    /// SKIPPED fail-safe: no finding, no panic. That matters because the
+    /// callers are scanners run over the whole repo, where one unreadable
+    /// file must not be able to take the detector — or the verify gate it
+    /// runs in — down.
     ///
-    /// `pub(crate)` because all three callers are in-crate; a refactor is no
-    /// reason to widen the crate's public API.
+    /// Three of the crate's five such reads, not all five: `pdiag.rs` still
+    /// hand-rolls this same `read_to_string(project_root.join(..))` twice, in
+    /// its census sweep and in its baseline read. Both are behaviour-identical
+    /// to this method and belong here; they sit outside the lock set of the
+    /// hoist that created it, so converging them (and refreshing the two
+    /// comments there that still cross-reference `ptodo.rs::check`'s
+    /// since-removed `read_to_string` arm) is follow-up work rather than a
+    /// second contract. A reader auditing fail-safe posture must look there
+    /// too until then.
+    ///
+    /// `pub(crate)` because every caller is in-crate; a refactor is no reason
+    /// to widen the crate's public API.
     pub(crate) fn read_relative(&self, path: &str) -> Option<String> {
         std::fs::read_to_string(self.project_root.join(path)).ok()
     }
@@ -1986,11 +1998,17 @@ mod tests {
         );
     }
 
-    /// All three arms of the crate's single tracked-file read, which PTODO,
-    /// PDSSENTINEL and PDOCCOVER each used to inline separately and none of
-    /// them tested directly: the path resolves against `project_root` rather
-    /// than the process cwd, and anything unreadable — absent, or a directory
-    /// — yields `None` rather than a finding or a panic.
+    /// Every arm of the tracked-file read that PTODO, PDSSENTINEL and
+    /// PDOCCOVER each used to inline separately and none of them tested
+    /// directly: the path resolves against `project_root` rather than the
+    /// process cwd, and anything unreadable — absent, a directory, or not
+    /// valid UTF-8 — yields `None` rather than a finding or a panic.
+    ///
+    /// The encoding arm is the one a real corpus reaches: `read_to_string`
+    /// fails on invalid UTF-8, so any tracked file with a swept extension and
+    /// binary-ish content exercises it, and it is what the detectors'
+    /// `files_scanned` accounting means when it excludes paths whose read
+    /// yielded `None`.
     #[test]
     fn read_relative_resolves_against_project_root_and_skips_unreadable() {
         use super::{AuditContext, MockGitOps, MockJCodemunchOps};
@@ -2031,6 +2049,14 @@ mod tests {
             ctx.read_relative("crates/x/tests"),
             None,
             "a directory is unreadable — `None`, never a panic",
+        );
+
+        std::fs::write(root.path().join("crates/x/src/bad.rs"), [0xFF, 0xFE, 0x00])
+            .expect("write non-UTF-8");
+        assert_eq!(
+            ctx.read_relative("crates/x/src/bad.rs"),
+            None,
+            "a non-UTF-8 file is skipped fail-safe, not a panic",
         );
     }
 }

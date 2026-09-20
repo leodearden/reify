@@ -1,18 +1,21 @@
-//! Shared primitives for this crate's structural text scanners — PTODO,
-//! PDSSENTINEL and PDOCCOVER.
+//! Shared primitives for this crate's structural text scanners — PTODO and
+//! PDOCCOVER, the two that scan raw source lines for word-delimited tokens.
 //!
-//! Each of those detectors hand-rolls the same two things over raw source
-//! lines: a `\b` word-boundary match (the crate takes no `regex` dep, per
-//! `f-infra-design.md` §12) and an inline `<token> — <reason>` marker
-//! grammar. Before task #6036 each had its own copy, so a boundary-semantics
-//! fix — such as the char-stepped retry that stopped a multibyte registry
-//! entry from panicking PDOCCOVER on ~8MB of chunk prose — reached exactly
-//! one detector and had to be rediscovered in the next. They share one
-//! implementation here so such a fix reaches all of them at once.
+//! Both hand-rolled the same two things: a `\b` word-boundary match (the crate
+//! takes no `regex` dep, per `f-infra-design.md` §12) and an inline
+//! `<token> — <reason>` marker grammar. Before task #6036 each had its own
+//! copy, so a boundary-semantics fix — such as the char-stepped retry that
+//! stopped a multibyte registry entry from panicking PDOCCOVER on ~8MB of
+//! chunk prose — reached exactly one detector and had to be rediscovered in
+//! the next. They share one implementation here so such a fix reaches both at
+//! once.
 //!
 //! What this module deliberately does NOT own is argued on
-//! [`allow_marker_body`]: two sibling marker grammars resemble this one and
-//! are measurably not it.
+//! [`allow_marker_body`]: two sibling marker readers resemble this one and are
+//! measurably not it. One of them is PDSSENTINEL's, which is why that detector
+//! imports nothing from here — its only share in the same cleanup was
+//! [`crate::AuditContext::read_relative`], which lives in `lib.rs` because it
+//! is an IO seam rather than a text primitive.
 
 /// `true` when `b` is an ASCII word byte (`[A-Za-z0-9_]`) — the single
 /// alphabet for every hand-rolled `\b` word-boundary check in this crate's
@@ -82,10 +85,15 @@ pub(crate) fn contains_word(haystack: &str, needle: &str) -> bool {
 /// (`xxpdoccover:allow`), and what makes a legacy unprefixed spelling that is
 /// a SUFFIX of the current one (`doccover:allow`) simply never match.
 ///
-/// A rejected occurrence advances by the token's whole length. Unlike
-/// [`contains_word`]'s haystack-driven retry, that step is safe as a byte
-/// step: `token` is caller-supplied ASCII marker syntax, so its length is its
-/// char count and `idx + token.len()` is always a char boundary.
+/// A rejected occurrence advances by the token's whole length, and that step
+/// is safe as a BYTE step for any `token`, whatever its alphabet: `idx` is the
+/// start of a matched occurrence, so `idx + token.len()` is the byte just PAST
+/// that occurrence's last byte — a char boundary by construction. The
+/// difference from [`contains_word`], which must step by a whole char, is
+/// where each retry resumes and not what the token is made of: this one
+/// resumes past the end of the rejected occurrence, `contains_word` resumes
+/// from INSIDE it (one char in) so that overlapping occurrences are still
+/// considered, and only a step landing mid-occurrence can land mid-char.
 pub(crate) fn find_word_boundary_token(line: &str, token: &str) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut start = 0;
@@ -204,6 +212,32 @@ mod tests {
         );
         assert!(contains_word("task is done", "done"));
         assert!(contains_word("(k — tots sqp, cancelled)", "cancelled"));
+    }
+
+    /// Case-SENSITIVE, and both consumers rest on it, in opposite directions.
+    ///
+    /// PDOCCOVER wants it: Reify builtin names are snake_case, so a prose
+    /// `Union` must not vouch for the builtin `union` — a case-insensitive
+    /// matcher would silently widen the documented-name census and
+    /// under-report undocumented names. PTODO survives it only because its
+    /// lane pre-lowercases the haystack and passes lowercase ASCII literals
+    /// (`ptodo.rs`'s `group_has_terminal_token`); making this matcher
+    /// case-insensitive to "help" that lane is what would break the other,
+    /// with every other test in the crate still green.
+    #[test]
+    fn contains_word_is_case_sensitive() {
+        assert!(
+            !contains_word("a prose Union of shapes", "union"),
+            "case-SENSITIVE — a prose `Union` is not the builtin `union`",
+        );
+        assert!(
+            !contains_word("task is DONE", "done"),
+            "a caller needing case-insensitivity pre-lowercases the haystack",
+        );
+        assert!(
+            contains_word("task is done", "done"),
+            "non-vacuity: the same haystack matches once lowercased",
+        );
     }
 
     /// The boundary-rejected retry must step by a whole CHARACTER.
