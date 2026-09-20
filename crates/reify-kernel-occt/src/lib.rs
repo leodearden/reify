@@ -11498,6 +11498,150 @@ mod tests {
         }
     }
 
+    // --- the honest BRepKind stamp on both plain-sweep entry points (#5713) ---
+    //
+    // A plain sweep does not always produce a Solid. Sweeping a WIRE profile
+    // yields a FACE — measured: a 20mm x 200mm one, area 0.004 m², volume 0 —
+    // yet both entry points stamped `BRepKind::Solid` unconditionally, one by
+    // falling through to `store`'s default and one by saying so outright. The
+    // stamp is not decorative: the local-feature gate admits ONLY Solid, and
+    // its own comment warns that a mislabelled input "would either crash
+    // inside OCCT or silently produce a misclassified result".
+
+    /// A wire-profile sweep through `execute` must be stamped for what it is.
+    #[test]
+    fn sweep_of_a_wire_profile_is_stamped_face() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_id = pose_test_spine(&mut kernel, 0.020, 0.0);
+        let path_id = pose_test_spine(&mut kernel, 0.0, 0.200);
+
+        let result = kernel
+            .execute(&GeometryOp::Sweep {
+                profile: profile_id,
+                path: path_id,
+            })
+            .expect("a wire-profile sweep realizes; the pose guard fails open on it");
+
+        assert_eq!(
+            result.repr,
+            Some(BRepKind::Face),
+            "a wire-profile sweep produces a FACE, and the handle must say so"
+        );
+        assert_eq!(
+            kernel.repr_of(result.id),
+            Some(BRepKind::Face),
+            "the persisted repr must agree with the returned handle"
+        );
+    }
+
+    /// The history-tracked entry point must stamp it honestly too. It is a
+    /// separate site, and separate sites are exactly how the two came to
+    /// disagree in the first place.
+    #[test]
+    fn sweep_with_history_of_a_wire_profile_is_stamped_face() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_id = pose_test_spine(&mut kernel, 0.020, 0.0);
+        let path_id = pose_test_spine(&mut kernel, 0.0, 0.200);
+
+        let (result, _history) = kernel
+            .sweep_with_history(profile_id, path_id)
+            .expect("a wire-profile sweep realizes; the pose guard fails open on it");
+
+        assert_eq!(
+            result.repr,
+            Some(BRepKind::Face),
+            "a wire-profile sweep produces a FACE, and the handle must say so"
+        );
+        assert_eq!(
+            kernel.repr_of(result.id),
+            Some(BRepKind::Face),
+            "the persisted repr must agree with the returned handle"
+        );
+    }
+
+    /// The point of an honest stamp: the local-feature gate can act on it.
+    ///
+    /// A fillet over a Face walked straight through that gate on the strength
+    /// of the false Solid stamp. With the stamp corrected the gate refuses it
+    /// with its existing message, which is the whole reason the gate reads the
+    /// repr rather than trusting the caller.
+    #[test]
+    fn filleting_a_face_swept_result_is_rejected_by_the_local_feature_gate() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_id = pose_test_spine(&mut kernel, 0.020, 0.0);
+        let path_id = pose_test_spine(&mut kernel, 0.0, 0.200);
+        let swept = kernel
+            .execute(&GeometryOp::Sweep {
+                profile: profile_id,
+                path: path_id,
+            })
+            .expect("wire-profile sweep should realize");
+
+        match kernel.execute(&GeometryOp::Fillet {
+            target: swept.id,
+            edges: vec![],
+            radius: Value::Real(0.002),
+        }) {
+            Err(GeometryError::OperationFailed(msg)) => assert!(
+                msg.contains("requires a BRepKind::Solid input shape"),
+                "expected the local-feature gate's non-Solid refusal, got: {msg}"
+            ),
+            Ok(_) => panic!(
+                "filleting a FACE walked through the local-feature gate — the \
+                 gate admits only Solid, so the swept result is still carrying \
+                 a false Solid stamp"
+            ),
+            Err(other) => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    /// Green-on-arrival fence: honest classification must not regress the
+    /// ordinary case. A correctly-posed face profile still sweeps to a Solid
+    /// and still fillets.
+    #[test]
+    fn a_correctly_posed_sweep_is_still_a_solid_and_still_fillets() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_id = pose_test_rect_profile(&mut kernel);
+        let path_id = pose_test_spine(&mut kernel, 0.0, 0.200);
+
+        let swept = kernel
+            .execute(&GeometryOp::Sweep {
+                profile: profile_id,
+                path: path_id,
+            })
+            .expect("a +Z spine is normal to the profile and must sweep");
+        assert_eq!(
+            swept.repr,
+            Some(BRepKind::Solid),
+            "a face profile swept normal to the spine really is a Solid"
+        );
+        assert_eq!(kernel.repr_of(swept.id), Some(BRepKind::Solid));
+
+        kernel
+            .execute(&GeometryOp::Fillet {
+                target: swept.id,
+                edges: vec![],
+                radius: Value::Real(0.002),
+            })
+            .expect("a genuine Solid must still pass the local-feature gate");
+    }
+
     // --- wire_start_tangent FFI tests ---
 
     #[test]
