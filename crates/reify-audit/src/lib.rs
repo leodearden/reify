@@ -52,6 +52,9 @@ pub mod pdcheck;
 /// Crate-internal: shared scaffolding for the lanes that read the task DB.
 /// Not part of the detector API surface — the lanes are.
 pub(crate) mod task_rows;
+/// Crate-internal: shared text-scanning primitives for the structural
+/// detectors. Not part of the detector API surface — the detectors are.
+pub(crate) mod scan_util;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 pub mod jcodemunch_index;
