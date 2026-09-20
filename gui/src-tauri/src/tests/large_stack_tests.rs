@@ -814,12 +814,10 @@ fn the_two_lanes_are_separate_threads_each_amortised() {
 /// submitter like any other job panic. A guard placed on the submitting side, or
 /// one raised outside the job body, would kill the shared lane for everybody.
 ///
-/// Not reachable from the fifteen migrated call sites; the guard exists because
-/// the lane is SHARED and grows new callers. `main.rs::mcp_tool_call` (task
-/// 5466) is now a LIVE one, and does not reach the guard either: it is invoked
-/// from Tauri's blocking command thread, which is never a lane thread, and the
-/// MCP tools it dispatches reach the engine via `ctx.engine.lock()` rather than
-/// by submitting to a lane.
+/// No call site reaches the guard today, `main.rs::mcp_tool_call` (task 5466)
+/// included; the guard exists because the lane is SHARED and grows new callers.
+/// Why each existing caller is exempt is argued once, in `run_on_worker`'s
+/// non-reentrancy section, and not restated here.
 ///
 /// UNLIKE the deep-recursion tests, this one cannot honour the module's "no
 /// violent RED" doctrine: the failure it guards against is a wedge of a
@@ -888,9 +886,9 @@ fn a_job_on_one_lane_may_submit_to_the_other_lane() {
     );
 }
 
-/// (r5) ONE lane serves BOTH the fourteen projection commands and the MCP
-/// dispatch — task 5466's headline invariant, that the MCP path JOINS the
-/// existing mechanism rather than adding a second one.
+/// (r5) ONE lane serves BOTH the projection commands and the MCP dispatch —
+/// task 5466's headline invariant, that the MCP path JOINS the existing
+/// mechanism rather than adding a second one.
 ///
 /// `ThreadId` equality, not thread NAME, is what pins that. A name is a label:
 /// a second lane built with the same `&'static str` would satisfy a name check
@@ -1022,7 +1020,7 @@ fn lsp_lane_is_panic_isolated_and_survives() {
 
 // ── ASYNC lane submission (task 5772) ────────────────────────────────────────
 //
-// `run_on_worker` parks its caller in `mpsc::recv()`. For the fourteen migrated
+// `run_on_worker` parks its caller in `mpsc::recv()`. For the migrated engine
 // commands that is free: they are sync `#[tauri::command] fn`s, which Tauri runs
 // as `ExecutionContext::Blocking` on their own thread. `lsp_request` is an
 // `async fn` on the tauri tokio runtime, so the same call would pin a runtime

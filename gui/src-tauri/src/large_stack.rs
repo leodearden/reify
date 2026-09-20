@@ -62,20 +62,20 @@
 //! runtime". Taking the future and letting the lane decide how to drive it is
 //! what keeps the degraded arm legal.
 //!
-//! * ENGINE lane — fifteen Tauri commands. FOURTEEN are projection /
-//!   incremental-re-eval: `set_parameter` (per slider-drag frame),
-//!   `get_initial_state`, `sync_observed_demand`, `sync_demand`, `export`,
-//!   `get_source_location`, `get_entity_tree`, `get_entity_identity_map`,
-//!   `get_mechanism_descriptors`, `get_def_preview`,
-//!   `get_containing_definition`, `get_entity_at_source_location`,
-//!   `get_active_fea_case`, `set_active_fea_case`. The FIFTEENTH is
-//!   `main.rs::mcp_tool_call` (task 5466) →
+//! * ENGINE lane — this roster of `main.rs` Tauri commands, and no others. It
+//!   is the SINGLE definition of lane membership; anything else naming the set
+//!   (`tests::commands_tests`'s composition guards, for one) cites this list
+//!   rather than restating it. The projection / incremental-re-eval commands:
+//!   `set_parameter` (per slider-drag frame), `get_initial_state`,
+//!   `sync_observed_demand`, `sync_demand`, `export`, `get_source_location`,
+//!   `get_entity_tree`, `get_entity_identity_map`, `get_mechanism_descriptors`,
+//!   `get_def_preview`, `get_containing_definition`,
+//!   `get_entity_at_source_location`, `get_active_fea_case`,
+//!   `set_active_fea_case`. And `mcp_tool_call` (task 5466) →
 //!   [`crate::mcp_context::mcp_tool_call_on_large_stack`], which relocates BOTH
-//!   its engine-bearing halves: the tool dispatch — one call covering
-//!   `TauriToolContext`'s whole engine surface, because every MCP engine touch
-//!   is a `ReifyToolContext` method on the context, `open_file`,
-//!   `update_source` and `set_parameter` among them — and its post-dispatch
-//!   `commands::get_initial_state_impl` delta sync.
+//!   its engine-bearing halves — the tool dispatch, whose one call covers
+//!   `TauriToolContext`'s whole engine surface for the reason that helper's docs
+//!   give, and its post-dispatch `commands::get_initial_state_impl` delta sync.
 //! * LSP lane — `main.rs::lsp_request` → `lsp_bridge::lsp_request_on_worker`,
 //!   which fires on effectively every keystroke and cursor move.
 //!
@@ -108,9 +108,9 @@
 //!
 //! So the invariant this module establishes is now: EVERY engine-bearing Tauri
 //! command runs on a large stack. That is a JOINT property of all three tiers
-//! rather than of any one mechanism — the fifteen shared-lane commands on tier
-//! 3, `open_file_engine` and `update_source` on tier 1 — and the tiers between
-//! them also cover the two engine-bearing paths that are NOT Tauri commands: the
+//! rather than of any one mechanism — the shared-lane commands on tier 3,
+//! `open_file_engine` and `update_source` on tier 1 — and the tiers between them
+//! also cover the two engine-bearing paths that are NOT Tauri commands: the
 //! watch-reload callback (tier 1) and `debug_server::run_on_engine` (tier 2, by
 //! design, because its async caller must not block on a join). It is still NOT
 //! "all of LSP": the four `spawn_blocking` arms above stay on tokio's blocking
@@ -641,13 +641,14 @@ pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
 /// is caught by that job's `catch_unwind` and re-raised on ITS submitter: one
 /// loud error, and the lane survives. The check is per-lane, so an ENGINE job
 /// submitting to the LSP lane (or the reverse) is unaffected — a different
-/// thread with its own consumer. None of this is reachable from the fifteen
-/// migrated call sites (`commands::*_impl` are leaves); the guard is there
-/// because the lane is SHARED and grows new callers. `main.rs::mcp_tool_call`
-/// (task 5466) is now a LIVE one, and does not reach the guard either: it is
-/// invoked from Tauri's blocking command thread, which is never a lane thread,
-/// and the MCP tools it dispatches reach the engine via `ctx.engine.lock()`
-/// rather than by submitting to a lane.
+/// thread with its own consumer. None of this is reachable from the migrated
+/// call sites (`commands::*_impl` are leaves); the guard is there because the
+/// lane is SHARED and grows new callers. `main.rs::mcp_tool_call` (task 5466) is
+/// now a LIVE one, and does not reach the guard either: it is invoked from
+/// Tauri's blocking command thread, which is never a lane thread, and the MCP
+/// tools it dispatches reach the engine via `ctx.engine.lock()` rather than by
+/// submitting to a lane. This paragraph is where that unreachability argument
+/// lives; the test guarding the check cites it rather than repeating it.
 ///
 /// The COROLLARY is not checkable and stays a documented precondition: a caller
 /// must not already hold the engine mutex, or the job would block acquiring it
@@ -707,8 +708,8 @@ where
 /// called in, which may or may not be inside a tokio runtime. So `f` must be
 /// legal on either: no [`tokio::runtime::Handle::block_on`], no `Runtime::new`,
 /// nothing that panics when a runtime is already entered. That holds for the
-/// fourteen engine-lane call sites — plain sync `commands::*_impl` calls made
-/// from a non-async `#[tauri::command] fn`, which Tauri runs as
+/// engine-lane call sites — plain sync `commands::*_impl` calls made from a
+/// non-async `#[tauri::command] fn`, which Tauri runs as
 /// `ExecutionContext::Blocking` on its own thread — and it is stated here as a
 /// precondition rather than left as an accident of who happens to call it.
 ///
