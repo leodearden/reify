@@ -1491,13 +1491,38 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       camera.updateMatrixWorld();
       renderer.render(scene, camera);
 
-      // Build the full applied pose — snapshot camera state for omitted params
-      const appliedUp = up ?? ([camera.up.x, camera.up.y, camera.up.z] as [number, number, number]);
-      const appliedZoom = zoom ?? (camera.zoom ?? 1);
+      // `applied` is ALWAYS the LIVE pose after OrbitControls has applied its
+      // constraints — never the request.  OrbitControls can legitimately relocate a
+      // commanded pose (_clampDistance on the orbit radius, minTargetRadius /
+      // maxTargetRadius on the target), and echoing the request back would report every
+      // such relocation as a faithful success: the #6496 signature, where a fitted
+      // 75 mm part was reported at the distance asked for while sitting at the floor.
+      //
+      // These are the same four field reads, from the same sources, as Viewport.tsx's
+      // snapshotCamera() (line 209) — so the pose set_camera reports, the pose persisted
+      // to the viewport store, and viewport_state agree by construction rather than by
+      // coincidence.  `target` is the one exception: the no-controls branch oriented via
+      // camera.lookAt, which leaves no target state to read, so there the request is the
+      // only truthful answer available.
+      const appliedPosition: [number, number, number] = [
+        camera.position.x,
+        camera.position.y,
+        camera.position.z,
+      ];
+      const appliedTarget: [number, number, number] = controls
+        ? [controls.target.x, controls.target.y, controls.target.z]
+        : target;
+      const appliedUp: [number, number, number] = [camera.up.x, camera.up.y, camera.up.z];
+      const appliedZoom = camera.zoom ?? 1;
 
       return {
         ok: true,
-        applied: { position, target, up: appliedUp, zoom: appliedZoom },
+        applied: {
+          position: appliedPosition,
+          target: appliedTarget,
+          up: appliedUp,
+          zoom: appliedZoom,
+        },
       };
     },
 
