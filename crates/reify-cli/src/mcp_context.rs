@@ -908,10 +908,6 @@ structure AnglePin {
         );
     }
 
-    /// Verify that a parameter override set via `set_parameter` persists across
-    /// a topology-preserving `update_source` (e.g. adding trailing whitespace).
-    /// This documents the "reuse" benefit of the long-lived Engine: the user's
-    /// value survives a save/edit cycle.
     #[test]
     fn set_parameter_refuses_an_ambiguous_instance_path_cell_id() {
         // The GUI and this MCP boundary must agree about what a cell id
@@ -919,9 +915,11 @@ structure AnglePin {
         // through `ValueCellId`'s `FromStr`, whose Display is not injective, so
         // an id whose member half still holds a `.` names no single cell.
         //
-        // Today `split_once` yields entity "Bracket", member "sub.width", which
-        // falls through to the `cell not found` arm — a rejection that
-        // MISATTRIBUTES the cause. The id is not unknown, it is unanswerable.
+        // The hand-rolled `split_once` here used to yield entity "Bracket",
+        // member "sub.width", falling through to the `cell not found` arm — a
+        // rejection that MISATTRIBUTED the cause. The id is not unknown, it is
+        // unanswerable, and the negative assertion below is what holds those
+        // two categories apart.
         let ctx = fresh_ctx();
         ctx.load_file(BRACKET_PATH)
             .expect("load_file should succeed");
@@ -978,6 +976,10 @@ structure AnglePin {
         }
     }
 
+    /// Verify that a parameter override set via `set_parameter` persists across
+    /// a topology-preserving `update_source` (e.g. adding trailing whitespace).
+    /// This documents the "reuse" benefit of the long-lived Engine: the user's
+    /// value survives a save/edit cycle.
     #[test]
     fn set_parameter_persists_across_topology_preserving_update_source() {
         let ctx = fresh_ctx();

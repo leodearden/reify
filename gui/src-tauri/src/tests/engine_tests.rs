@@ -20236,50 +20236,12 @@ fn resolve_param_default_span_returns_none_for_malformed_cell_id() {
     assert_eq!(session.resolve_param_default_span("width"), None);
 }
 
-#[test]
-fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
-    // The source below declares a REAL `sub` with a specialization override, so
-    // "Holder.child.width" is an instance path that actually exists rather than a
-    // name nothing could ever match. That distinction is what gives this test
-    // teeth: `Holder` ALSO declares its own `param width = 10mm`, so a plausible
-    // wrong implementation — one that split the cell_id on the LAST '.', or that
-    // otherwise took `width` as the member and `Holder` as the entity — would
-    // return Some(span-of-"10mm") here and let a caller rewrite the SHARED
-    // structure default when the user only asked to change one instance's value.
-    // That is precisely the silent-wrong-edit INV-GUI-3 exists to prevent.
-    //
-    // `parse_cell_id` splits on the FIRST '.', so the member is "child.width",
-    // which matches no ParamDecl.name (member names never contain a '.') — hence
-    // None, which γ surfaces as a structured error.
-    const SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
-                       structure def Holder {\n\
-                           param width : Length = 10mm\n\
-                           sub child : Leaf { width = 90mm }\n\
-                       }";
-
-    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
-    session
-        .load_from_source(SRC, "holder")
-        .expect("load should succeed");
-
-    // Sanity: the bare-member cell_id on the same entity DOES resolve, so a None
-    // below cannot be blamed on the entity or the source failing to load.
-    let own = session
-        .resolve_param_default_span("Holder.width")
-        .expect("Holder.width is a plain param with a default");
-    assert_eq!(&SRC[own.start as usize..own.end as usize], "10mm");
-
-    assert_eq!(
-        session.resolve_param_default_span("Holder.child.width"),
-        None,
-        "an instance path must not resolve to the shared structure's own default"
-    );
-}
-
-/// The instance-path source used by the `set_parameter` / write-back refusal
-/// tests below. `Holder` declares its OWN `width` as well as a `child` whose
-/// `width` it overrides, so "Holder.child.width" is an instance path that
-/// really exists and collides with a real bare-member cell on the same entity.
+/// The instance-path source shared by the tests below. `Holder` declares its
+/// OWN `width` as well as a `child` whose `width` it overrides, so
+/// "Holder.child.width" is an instance path that really exists AND collides
+/// with a real bare-member cell on the same entity. That collision is what
+/// gives each of those tests teeth, so they must reason about one fixture —
+/// two copies would let the collision be edited out of one and not the other.
 const INSTANCE_PATH_SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
                                  structure def Holder {\n\
                                      param width : Length = 10mm\n\
@@ -20295,14 +20257,49 @@ fn instance_path_session() -> EngineSession {
 }
 
 #[test]
+fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
+    // `INSTANCE_PATH_SRC` declares a REAL `sub` with a specialization override, so
+    // "Holder.child.width" is an instance path that actually exists rather than a
+    // name nothing could ever match. That distinction is what gives this test
+    // teeth: `Holder` ALSO declares its own `param width = 10mm`, so a plausible
+    // wrong implementation — one that split the cell_id on the LAST '.', or that
+    // otherwise took `width` as the member and `Holder` as the entity — would
+    // return Some(span-of-"10mm") here and let a caller rewrite the SHARED
+    // structure default when the user only asked to change one instance's value.
+    // That is precisely the silent-wrong-edit INV-GUI-3 exists to prevent.
+    //
+    // `parse_cell_id` refuses the id outright — "Holder.child.width" renders
+    // identically to (entity "Holder", member "child.width"), so it names no
+    // single cell — and this method maps that Err to None, which γ surfaces as
+    // a structured error. The outcome predates the refusal: the id used to be
+    // split on the FIRST '.' and then miss the ParamDecl lookup, reaching the
+    // same None by accident rather than on purpose.
+    let mut session = instance_path_session();
+
+    // Sanity: the bare-member cell_id on the same entity DOES resolve, so a None
+    // below cannot be blamed on the entity or the source failing to load.
+    let own = session
+        .resolve_param_default_span("Holder.width")
+        .expect("Holder.width is a plain param with a default");
+    assert_eq!(&INSTANCE_PATH_SRC[own.start as usize..own.end as usize], "10mm");
+
+    assert_eq!(
+        session.resolve_param_default_span("Holder.child.width"),
+        None,
+        "an instance path must not resolve to the shared structure's own default"
+    );
+}
+
+#[test]
 fn set_parameter_refuses_an_instance_path_cell_id_naming_the_ambiguity() {
     // "Holder.child.width" renders identically to a hypothetical cell
     // (entity "Holder", member "child.width"), so the string cannot say which
-    // is meant. Today it is rejected only by ACCIDENT: the first-dot split
-    // yields member "child.width", which matches no cell, so the existence gate
-    // says "Unknown parameter" — a true outcome reached for a false reason,
-    // and one that would silently become a WRONG WRITE if anyone ever "fixed"
-    // the split to rsplit_once. Pin the accurate refusal instead.
+    // is meant. It USED to be rejected only by ACCIDENT: the first-dot split
+    // yielded member "child.width", which matched no cell, so the existence
+    // gate said "Unknown parameter" — a true outcome reached for a false
+    // reason, and one that would silently have become a WRONG WRITE if anyone
+    // ever "fixed" the split to rsplit_once. This pins the accurate refusal,
+    // so that repair can no longer be mistaken for a safe one.
     let mut session = instance_path_session();
 
     // Positive control first: the bare-member cell on the same entity is
