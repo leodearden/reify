@@ -1,18 +1,26 @@
 //! Bare-`Scalar` detection predicate — SINGLE SOURCE OF TRUTH.
 //!
-//! Pulled in with `#[path]` — source inclusion, never a Cargo dependency edge —
-//! by exactly two test targets: `corpus_no_bare_scalar.rs` (the corpus guard
-//! that owns this predicate and carries its unit tests) and
-//! `crates/reify-spec-conformance/tests/fixture_tree.rs`. Why an edge is
-//! forbidden, and why the unit tests live over there rather than here:
-//! `crates/reify-spec-conformance/fixtures/README.md`. The one cost is that
-//! `scripts/affected-crates-lib.sh` maps an edit here to `reify-cli` alone —
-//! a staleness in incremental scoping only, since the merge gate is `--scope all`.
+//! Pulled in by `#[path]` — source inclusion, never a Cargo dependency edge
+//! (why: `crates/reify-spec-conformance/src/lib.rs`, Obligation 1) — from
+//! `../harness_cli/corpus_no_bare_scalar.rs`, which owns this predicate and
+//! carries its unit tests, and from
+//! `crates/reify-spec-conformance/tests/fixture_tree.rs`, whose include is a
+//! RELATIVE PATH ACROSS A CRATE BOUNDARY.
 //!
-//! This file is itself walked by the guard's `crates/**/*.rs` sweep and is
-//! deliberately NOT on its self-exclusion list: it carries no bare annotation
-//! on a non-comment line. Write violating examples in `predicate_tests` (whose
-//! file IS self-excluded), never here.
+//! That out-of-crate includer is why this file sits in `tests/common/` — the
+//! retained sibling the harness-layout contract
+//! (`tests/infra/test_harness_kloc_cap.sh`) deliberately never moves — rather
+//! than under `tests/harness_cli/`, which that same contract moves files into
+//! and splits back out of (`harness_cli_surface` is one such split). A move
+//! there would break the other crate's include with a bare "couldn't read".
+//! It is deliberately NOT declared from `common/mod.rs`: both consumers
+//! `#[path]`-include it directly, and a `pub mod` there would compile it into
+//! every harness that uses `common`.
+//!
+//! Walked by the guard's own `crates/**/*.rs` sweep and deliberately NOT on
+//! its self-exclusion list: it carries no bare annotation on a non-comment
+//! line. Write violating examples in `predicate_tests` (whose file IS
+//! self-excluded), never here.
 //!
 //! Signal: `: *Scalar([^<a-zA-Z]|$)` (annotation) or `-> Scalar([^<a-zA-Z]|$)`
 //! (codomain), with pure-comment lines and `::Scalar` excluded. Rationale for

@@ -17,10 +17,9 @@
 //!   * `crates/reify-spec-conformance/fixtures/` — see the exclusion arm below.
 //!
 //! The predicate and every carve-out's rationale live on the items in
-//! `bare_scalar_predicate.rs`, single-sourced there and included both here and
-//! by `crates/reify-spec-conformance/tests/fixture_tree.rs`. Its unit tests
-//! (`predicate_tests`) sit at the bottom of THIS file, the one self-excluded
-//! from the scan and so free to spell violating examples out literally.
+//! `../common/bare_scalar_predicate.rs`. Its unit tests (`predicate_tests`)
+//! sit at the bottom of THIS file, the one self-excluded from the scan and so
+//! free to spell violating examples out literally.
 //!
 //! This test is GREEN (δ migration complete). It becomes compiler-redundant
 //! once γ adds `E_BARE_SCALAR`, but protects the δ→γ window as a regression
@@ -28,9 +27,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// The detection predicate, single-sourced. Shared by `#[path]` inclusion and
-/// never by a Cargo dependency edge — see that file's header for why.
-#[path = "bare_scalar_predicate.rs"]
+/// The detection predicate, single-sourced — see that file's header.
+#[path = "../common/bare_scalar_predicate.rs"]
 mod bare_scalar_predicate;
 
 use bare_scalar_predicate::line_has_bare_scalar;
@@ -111,22 +109,13 @@ fn corpus_has_zero_bare_scalar() {
     let ast_tests = root.join("crates").join("reify-ast").join("tests");
     files.retain(|p| !p.starts_with(&syntax_tests) && !p.starts_with(&ast_tests));
 
-    // MARKER: spec-conformance-fixtures-exclusion-arm
-    //
-    // That token is a machine-read contract, not decoration:
-    // `corpus_guard_still_registers_this_tree` in
-    // `crates/reify-spec-conformance/tests/fixture_tree.rs` greps THIS FILE for
-    // it. Keep it adjacent to the `retain` below; if the arm is ever retired,
-    // delete the token in the SAME change.
-    //
-    // The arm itself: the Ring-1 conformance fixture tree holds CHARTERED
-    // must-reject fixtures (PRD `docs/prds/v0_6/spec-conformance-suite.md` D2,
-    // leaf beta #6759) — bare-`Scalar` rejection is ITSELF a spec clause the
-    // suite must be free to test with a violating fixture. Same directory-level
-    // blind spot as the arm above, and intentional for the same reason: the
-    // invariant holds for every future resident of the tree, not just today's
-    // files. The charter, the token's rename-proof rationale and the sentinel
-    // arrangement that keeps this arm from going vacuous are all in
+    // The Ring-1 conformance fixture tree holds CHARTERED must-reject fixtures
+    // (PRD `docs/prds/v0_6/spec-conformance-suite.md` D2, leaf beta #6759) —
+    // bare-`Scalar` rejection is ITSELF a spec clause the suite must be free to
+    // test with a violating fixture. Same directory-level blind spot as the arm
+    // above, and intentional for the same reason: the invariant holds for every
+    // future resident of the tree, not just today's files. Charter and the
+    // sentinel arrangement that keeps this arm non-vacuous:
     // `crates/reify-spec-conformance/fixtures/README.md`; the sentinel's
     // guard-side half is the test below.
     let spec_conformance_fixtures = root
@@ -202,7 +191,7 @@ fn spec_conformance_placement_probe_is_a_live_violator() {
 
 // ── Unit tests for the detection predicate ─────────────────────────────────
 //
-// The ONLY unit tests for `bare_scalar_predicate.rs` — here because this file
+// The ONLY unit tests for `../common/bare_scalar_predicate.rs` — here because this file
 // is the one self-excluded from the scan above, so its literals may spell
 // `: Scalar` / `-> Scalar` out in full.
 

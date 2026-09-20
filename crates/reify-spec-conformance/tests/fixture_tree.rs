@@ -14,7 +14,7 @@
 //!   * at least one `*.ri` exists somewhere beneath (non-vacuity);
 //!   * the placement-probe sentinel is present and is still a live violator of
 //!     the corpus-cleanliness guard it exists to keep honest;
-//!   * that guard still carries its registered exclusion arm for this tree.
+//!   * that guard still exists and still names this tree.
 //!
 //! These tests glob and deliberately never name a *conformance fixture's*
 //! basename, so adding, renaming or removing a fixture stays inert to every
@@ -37,12 +37,9 @@ use std::path::{Path, PathBuf};
 /// The corpus guard's detection predicate, included from its single source so
 /// this crate re-runs the REAL predicate rather than a mirror of it.
 ///
-/// By `#[path]` and never by a Cargo dependency edge: a `reify-cli` dependency
-/// would make this crate occt-touching (see `src/lib.rs`). Source inclusion adds
-/// no edge, so `cargo tree -p reify-spec-conformance -e normal,dev` is unchanged
-/// — while still leaving the sentinel below able to fire under a `.ri`-only
-/// scope narrowing that never builds `reify-cli`.
-#[path = "../../reify-cli/tests/harness_cli/bare_scalar_predicate.rs"]
+/// By `#[path]` and never by a Cargo dependency edge — see `src/lib.rs`,
+/// Obligation 1.
+#[path = "../../reify-cli/tests/common/bare_scalar_predicate.rs"]
 mod bare_scalar_predicate;
 
 use bare_scalar_predicate::line_has_bare_scalar;
@@ -51,15 +48,17 @@ use bare_scalar_predicate::line_has_bare_scalar;
 /// with. Spelled once; used by the sentinel and registration tests.
 const CORPUS_GUARD_REL: &str = "crates/reify-cli/tests/harness_cli/corpus_no_bare_scalar.rs";
 
-/// The token the guard carries beside its exclusion arm for this tree, as an
-/// explicit machine-read contract between the two files.
+/// The path segment the guard's exclusion arm must spell for this tree to be
+/// excluded at all — an executable spelling, not a comment token placed to be
+/// grepped.
 ///
-/// Pinning the token rather than the arm's local binding or the predicate's name
-/// is deliberate: both of those are private implementation detail of another
-/// crate's test, and a pure rename there would red this test with a message
-/// claiming the arm was lost. The token exists to be grepped and is documented
-/// as such on the guard side.
-const CORPUS_GUARD_MARKER: &str = "MARKER: spec-conformance-fixtures-exclusion-arm";
+/// NECESSARY but not sufficient, deliberately: the guard-side sentinel names
+/// this crate too, so deleting the `retain` alone leaves the pin green. That
+/// case needs no help — it reds `corpus_has_zero_bare_scalar` on the probe
+/// immediately. What this catches is the case nothing else would: the guard
+/// kept, but this tree unregistered from it entirely, leaving the sentinel
+/// below standing watch over nothing.
+const CORPUS_GUARD_TREE_REF: &str = "reify-spec-conformance";
 
 /// Resolve the workspace root from `CARGO_MANIFEST_DIR`.
 ///
@@ -286,17 +285,16 @@ fn corpus_guard_still_registers_this_tree() {
     });
 
     assert!(
-        source.contains(CORPUS_GUARD_MARKER),
-        "The corpus-cleanliness guard {} no longer carries the token \
-         `{CORPUS_GUARD_MARKER}`, which it documents as the machine-read \
-         contract marking its registered exclusion arm for this tree.\n\n\
-         Either the arm was removed — in which case that guard should now be \
-         RED on `_placement-probe/placement_probe.ri`; fix that, do not silence \
-         this — or the token was renamed without updating this pin. The token \
-         is deliberately not a source identifier precisely so that a refactor \
-         of the guard cannot red this test by accident: if you moved it, keep \
-         the token adjacent to the arm and update `CORPUS_GUARD_MARKER` here \
-         and `crates/reify-spec-conformance/fixtures/README.md` to match. \
+        source.contains(CORPUS_GUARD_TREE_REF),
+        "The corpus-cleanliness guard {} no longer mentions \
+         `{CORPUS_GUARD_TREE_REF}` anywhere, so it neither excludes this tree \
+         nor watches its probe: this crate is fully unregistered from the one \
+         repo-wide walker that reaches `crates/**/*.ri`.\n\n\
+         If that was deliberate — the guard's header anticipates becoming \
+         compiler-redundant once gamma adds `E_BARE_SCALAR` — retire the probe \
+         and this file's two sentinel tests in the SAME change. Otherwise the \
+         exclusion arm was lost: restore it, and expect that guard to be RED on \
+         `_placement-probe/placement_probe.ri` until you do. \
          See docs/prds/v0_6/spec-conformance-suite.md D2.",
         guard.display()
     );
