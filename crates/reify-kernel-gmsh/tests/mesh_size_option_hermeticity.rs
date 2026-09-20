@@ -161,7 +161,7 @@ fn refine_tet_count() -> usize {
 ///    extent.
 /// 4. **Re-measure.** Must equal the baseline exactly.
 ///
-/// # Measured, with `MeshSizeClampReset::armed` commented out of `mesh_to_volume`
+/// # Measured, with `MeshSizeScope::entered` commented out of `mesh_to_volume`
 ///
 /// baseline = **162** triangles, after `mesh_to_volume(FINE = 0.1)` = **242**
 /// triangles — a +49% jump. That 162 → 242 difference IS the defect. It is
@@ -171,32 +171,34 @@ fn refine_tet_count() -> usize {
 /// a threshold, so the margin only has to be non-zero and repeatable, and 80
 /// triangles is far outside any rounding.
 ///
-/// Both numbers are reproducible rather than incidental to one test ordering,
-/// which is what [`probe_triangle_count`]'s trio pinning buys. The same
-/// `162 / 242` came back from three different process states: this test alone
-/// via `--exact`; this whole binary; and this binary under `--test-threads=1`.
-/// The same `162` baseline also came back from
+/// Both numbers are reproducible rather than incidental to one test ordering.
+/// The same `162 / 242` came back from three different process states: this
+/// test alone via `--exact`; this whole binary; and this binary under
+/// `--test-threads=1`. The same `162` baseline also came back from
 /// `refine_volume_tests.rs::refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`
-/// — a different binary, whose probe runs after a refine has written the trio
-/// to `1 / 0 / 0` (that run measured `162 → 944` with `refine_volume.rs`'s own
-/// guard commented out). Before the pinning, the reviewer of #6298 measured
-/// `48 / 246` from one interleaving of this binary against `162 / 242` from
-/// another.
+/// — a different binary, whose probe runs after a refine (that run measured
+/// `162 → 944` with `refine_volume.rs`'s own guard commented out).
+///
+/// That reproducibility used to depend on [`probe_triangle_count`] pinning the
+/// size-SOURCE trio itself, because a refine leaked it: the reviewer of #6298
+/// measured `48 / 246` from one interleaving of this binary against
+/// `162 / 242` from another. Task #6968 closed the leak at its source, so every
+/// entry point now restores the trio and the probe pins nothing — which is what
+/// lets it detect a leak by any route instead of masking one.
 ///
 /// The 3D meshes in between are ~4.5k P1 tets at `FINE` and ~200 at the 0.5
 /// warm-up, so the test stays fast. Those two counts are a cost note, not an
-/// assertion, and unlike the probe they ARE order-sensitive: `mesh_to_volume`
-/// inherits the size-source trio rather than pinning it (#6212).
+/// assertion.
 ///
 /// Why the probe observes the leak's EFFECT rather than reading the option
-/// table back: this crate's FFI surface exposes `option_set_number` but no
-/// `option_get_number` (the same reason `MeshSizeClampReset` restores defaults
-/// rather than as-found). Adding a getter purely for one assertion would widen
-/// the FFI surface, and the effect-based probe is the stronger guard anyway —
-/// it fails if the clamp leaks by ANY route, not only via the one option name
-/// the test thought to read. This is the exact structure already validated by
-/// the green `refine_volume_tests.rs::refine_leaves_the_default_clamp_behind_
-/// for_a_later_defaults_relying_call`.
+/// table back: the effect-based probe is the stronger of the two, because it
+/// fails if a size option leaks by ANY route, not only via the one option name
+/// a test thought to read. It is no longer the only option — `#6968` added
+/// `ffi::option_get_number`, and the direct table read now runs beside this one
+/// as `mesh_to_volume_tests.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`.
+/// The two are complementary: a table read is decisive where this probe is
+/// blind (`Mesh.MeshSizeExtendFromBoundary` has no effect under a shut clamp),
+/// and this probe catches what a table read cannot name.
 #[test]
 fn mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
@@ -231,7 +233,7 @@ fn mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_c
          before a mesh_to_volume at size {FINE} and {after} after it. A larger count means \
          mesh_to_volume left its clamp behind and pinned an unrelated downstream mesh to a \
          size nobody requested — the producer half of task #6298, guarded by \
-         `mesh_size_clamp::MeshSizeClampReset` armed in kernel_real.rs::mesh_to_volume",
+         `mesh_size_scope::MeshSizeScope` entered in kernel_real.rs::mesh_to_volume",
     );
 }
 
@@ -267,8 +269,8 @@ fn mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_c
 /// combinations of the two halves were actually run against this test. The
 /// probed halves are the two `ffi::option_set_number("Mesh.MeshSizeMin"` /
 /// `"Mesh.MeshSizeMax", …)` calls in `refine_volume.rs` (INBOUND, #6211) and
-/// the `MeshSizeClampReset::armed(&_guard)` binding in
-/// `kernel_real.rs::mesh_to_volume` (OUTBOUND, #6298):
+/// the `MeshSizeScope::entered(…)` binding in `kernel_real.rs::mesh_to_volume`
+/// (OUTBOUND, #6298 and #6968):
 ///
 /// | inbound (#6211) | outbound (#6298) | coarse | fine | this test |
 /// |-----------------|------------------|--------|------|-----------|
@@ -343,7 +345,7 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
          i.e. the leak of tasks #6298 / #6211 is back. Check both halves of the clamp \
          discipline: refine_volume.rs's inbound writes at the \"Mesh-size clamp: set \
          explicitly, never inherited\" block, and \
-         mesh_size_clamp::MeshSizeClampReset armed in kernel_real.rs::mesh_to_volume",
+         mesh_size_scope::MeshSizeScope entered in kernel_real.rs::mesh_to_volume",
     );
 }
 

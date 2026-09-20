@@ -1,10 +1,12 @@
-//! Shared machinery for this crate's two process-global mesh-size-clamp
-//! guards: `tests/refine_volume_tests.rs` (the CONSUMER end, task #6211) and
-//! `tests/mesh_to_volume_clamp_hermeticity.rs` (the PRODUCER end, task #6298).
+//! Shared machinery for this crate's process-global mesh-size guards:
+//! `tests/refine_volume_tests.rs` (the CONSUMER end, task #6211),
+//! `tests/mesh_size_option_hermeticity.rs` (the PRODUCER end and, since task
+//! #6968, the both-orders acceptance surface), `tests/mesh_plane_2d_tests.rs`
+//! and `tests/mesher_poison_recovery.rs`.
 //!
 //! # Why it is shared
 //!
-//! The two guards must stay in separate binaries — each needs a clamp
+//! The guards must stay in separate binaries — each needs a size-table
 //! measurement no sibling suite can perturb, and a `tests/*.rs` file is its own
 //! process — but they need the SAME instrument to measure with. Written
 //! independently they carried near-verbatim copies of the serialising mutex,
@@ -147,6 +149,14 @@ pub fn poison_global_mesh_size_clamp(size: f64) {
 /// reads that `ffi::option_get_number` (#6968) now makes possible: a density
 /// probe fails on a leak by any route, not only via an option name a test
 /// thought to read.
+///
+/// Measured sensitivity on this unit square, against a baseline of 162
+/// triangles from a defaults table: `Mesh.MeshSizeMax = 0.05` -> 944,
+/// `MeshSizeFromPoints = 0` -> 4, `MeshSizeExtendFromBoundary = 0` -> 48. A
+/// `MeshSizeMin` below the natural element size and any `MeshSizeFromCurvature`
+/// are INERT here — a floor nothing reaches, and a flat straight-edged square
+/// has no curvature to sample — so this instrument does not detect those two.
+/// The per-entry-point table reads do.
 pub fn probe_triangle_count() -> usize {
     mesh_plane_2d(&PROBE_OUTER, &[], None, false, true)
         .expect("mesh_plane_2d must succeed for a unit square")

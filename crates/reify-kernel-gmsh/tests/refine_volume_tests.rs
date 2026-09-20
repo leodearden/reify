@@ -8,7 +8,7 @@
 #![cfg(has_gmsh)]
 
 // The clamp probe and its serialising mutex are shared verbatim with
-// `tests/mesh_to_volume_clamp_hermeticity.rs`, the other half of this
+// `tests/mesh_size_option_hermeticity.rs`, the other half of this
 // discipline. Declared by path rather than through `common/mod.rs`, which
 // #6387 reduced to a re-export shim over `reify_test_support::fixtures` and
 // which is scheduled for deletion; see `common/clamp_probe.rs` for why one
@@ -145,9 +145,11 @@ fn split_by_centroid_x(vm: &reify_ir::VolumeMesh, split_x: f64) -> SplitStats {
 /// it cannot be left to chance: [`CLAMP_TEST_ORDER`] serialises the whole test
 /// body against its siblings, making poison → refine atomic. (Asserting the
 /// written value is still in place immediately before the call would instead
-/// need an `option_get_number` FFI getter, which does not exist and lives
-/// outside task #6211's locked files — it is part of task #6212's save/restore
-/// discipline.)
+/// need an `option_get_number` FFI getter. That getter exists since task #6968
+/// — see [`refine_volume_leaves_every_size_option_at_gmsh_defaults`] below,
+/// which uses it — but it would not remove the need for the mutex here: it
+/// reports the table at the moment it is called, not across the gap a sibling
+/// can land in.)
 #[test]
 fn uniform_size_field_refines_monotonically_under_leaked_global_clamp() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
@@ -365,11 +367,11 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
 /// refine had never happened.
 ///
 /// The inbound half — the `Mesh.MeshSizeMin`/`MeshSizeMax` writes on entry — is
-/// pinned by the two tests above. The outbound half is `MeshSizeClampReset`,
-/// the RAII restore that runs on every exit path. Without a test at this end,
-/// deleting that struct and its `let _clamp_reset = …` binding leaves the whole
-/// workspace green: the module doc's "leaves nothing" guarantee would be
-/// unenforced and free to rot.
+/// pinned by the two tests above. The outbound half is `MeshSizeScope`, the
+/// RAII scope that restores every size option on every exit path. Without a
+/// test at this end, deleting that type and its `let _size_scope = …` binding
+/// leaves the whole workspace green: the module doc's "leaves nothing"
+/// guarantee would be unenforced and free to rot.
 ///
 /// The downstream victim is real, not hypothetical. `mesh_plane_2d(_, _, None,
 /// …)` deliberately writes no clamp of its own (`mesh_profile_2d.rs`: the
@@ -394,25 +396,27 @@ fn non_uniform_size_field_refines_marked_region_and_caps_the_rest() {
 ///
 ///    It used to carry a second job — normalising the
 ///    `Mesh.MeshSizeFromPoints` / `FromCurvature` / `ExtendFromBoundary` trio
-///    a refine leaks (task #6212, still open) — which the probe now does for
-///    itself, unconditionally, so the measurement no longer depends on this
-///    warm-up having run.
+///    a refine leaked. Task #6968 closed that leak at the source, so a refine
+///    now restores the trio itself and neither this warm-up nor the probe has
+///    to compensate for it.
 /// 2. **Baseline**, from an explicitly-defaulted clamp.
 /// 3. **A fine refine** — `FINE_HINT` is 20x finer than the plane's own
 ///    extent, so a leak is loud rather than marginal.
 /// 4. **Re-measure.** Must equal the baseline exactly.
 ///
-/// If `MeshSizeClampReset` is removed, step 4 runs under `MeshSizeMax =
+/// If `MeshSizeScope` is removed, step 4 runs under `MeshSizeMax =
 /// FINE_HINT` and returns a far denser 2D mesh than step 2, and the equality
-/// fails. Needs no `option_get_number` getter: it observes the leak's effect,
-/// not the option table.
+/// Observes the leak's EFFECT rather than the option table, which is the
+/// stronger half of the pair: it fails on a leak by any route, not only via an
+/// option name a test thought to read. The complementary direct table read is
+/// [`refine_volume_leaves_every_size_option_at_gmsh_defaults`].
 ///
-/// # Measured, with `MeshSizeClampReset::armed` commented out of `refine_volume`
+/// # Measured, with `MeshSizeScope::entered` commented out of `refine_volume`
 ///
 /// baseline = **162** triangles, after `refine_at(FINE_HINT = 0.05)` = **944** —
 /// a 5.8x jump on an assertion that is an exact equality, so the margin is far
 /// outside any rounding. The 162 is the same baseline
-/// `mesh_to_volume_clamp_hermeticity.rs` measures in its own process, which is
+/// `mesh_size_option_hermeticity.rs` measures in its own process, which is
 /// the point of sharing [`probe_triangle_count`]: one instrument, one reading,
 /// whatever the process has been through.
 #[test]
@@ -441,7 +445,8 @@ fn refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call() {
         .unwrap_or_else(|e| panic!("refine_volume_with_size_field({hint}) must succeed: {e:?}"));
     };
 
-    // 1. Warm-up: normalise the #6212-leaked options for both measurements.
+    // 1. Warm-up: put Mesh.ElementOrder in its post-refine state for both
+    //    measurements. See the doc comment above.
     refine_at(0.5);
 
     // 2. Baseline, from a known-default clamp.
@@ -464,7 +469,7 @@ fn refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call() {
          before a refine at hint {FINE_HINT} and {after_refine} after it. A larger count \
          means the refine's cap leaked outward and pinned an unrelated downstream mesh to \
          a size nobody requested — the outbound direction of task #6211, guarded by \
-         `MeshSizeClampReset` in refine_volume.rs",
+         `MeshSizeScope` in refine_volume.rs",
     );
 }
 

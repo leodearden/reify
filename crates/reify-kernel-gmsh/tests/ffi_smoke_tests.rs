@@ -515,7 +515,7 @@ fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
 ///
 /// This is the reader whose absence forced every pre-#6968 mesh-size guard in
 /// this crate to infer an option leak from mesh DENSITY — see
-/// `tests/refine_volume_tests.rs` and `tests/mesh_to_volume_clamp_hermeticity.rs`,
+/// `tests/refine_volume_tests.rs` and `tests/mesh_size_option_hermeticity.rs`,
 /// whose docstrings each state the constraint. Those guards remain (a density
 /// probe fails on a leak by any route, not only via an option name a test
 /// thought to read), but a direct table read is decisive where a density probe

@@ -22,8 +22,8 @@
 //!   call rather than inheriting whatever a sibling entry point last left
 //!   behind, so its output is a function of its own arguments alone and not of
 //!   call order within the process; and
-//! * **outbound**: restores that same option pair to gmsh's documented
-//!   defaults before returning (via [`crate::mesh_size_scope::MeshSizeScope`]),
+//! * **outbound**: restores every size option to gmsh's documented defaults
+//!   before returning (via [`crate::mesh_size_scope::MeshSizeScope`]),
 //!   so a later *defaults-relying* call — e.g. `mesh_plane_2d` with no
 //!   requested size, which deliberately writes no clamp — is not silently
 //!   pinned to a fine `MeshSizeMax` left over from an adaptive-refinement
@@ -42,15 +42,17 @@
 //! `refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`,
 //! which straddles a refine with exactly the `mesh_plane_2d` call named above.
 //!
-//! Scope of that guarantee: it covers the `MeshSizeMin`/`MeshSizeMax` pair
-//! only. The `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
-//! `MeshSizeExtendFromBoundary` writes below are still left behind for a later
-//! caller to inherit — the same defect class in the same direction, tracked as
-//! task #6212 because closing it means extending the `mesh_size_scope` seam to
-//! those three across every entry point that writes them (and an
-//! `option_get_number` FFI getter to restore *as found* rather than to
-//! defaults), not a change local to this file. See the inline rationale at the
-//! option writes below.
+//! Scope of that guarantee: since task #6968 it covers all five size options,
+//! not just the `MeshSizeMin`/`MeshSizeMax` pair. The
+//! `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+//! `MeshSizeExtendFromBoundary` writes below used to be left behind for a later
+//! caller to inherit; `MeshSizeScope` now restores them too, and the whole-set
+//! guard is
+//! `tests/refine_volume_tests.rs::refine_volume_leaves_every_size_option_at_gmsh_defaults`.
+//! Of the three, only `MeshSizeExtendFromBoundary` ever actually deviated — it
+//! is written `0` here against a gmsh default of `1`, and the other two restate
+//! their defaults — which is why the leak was invisible for so long. See the
+//! inline rationale at the option writes below.
 //!
 //! # Cost basis: full remesh from surface
 //!
