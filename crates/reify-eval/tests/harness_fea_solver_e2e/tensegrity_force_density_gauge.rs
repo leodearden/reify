@@ -31,8 +31,8 @@ use reify_test_support::point3;
 // ONE definition, in `reify_test_support::tensegrity_fixtures`. This suite uses the
 // unit-height variant, `canonical_triplex_tensegrity`.
 use reify_test_support::tensegrity_fixtures::{
-    TRIPLEX_ANCHORS, TRIPLEX_CAPS, TRIPLEX_MEMBERS, TRIPLEX_STRUTS, canonical_triplex_tensegrity,
-    index_lists, tensegrity, triplex_caps,
+    TRIPLEX_ANCHORS, TRIPLEX_CAPS, TRIPLEX_MEMBERS, TRIPLEX_SEEDS, TRIPLEX_STRUTS,
+    canonical_triplex_tensegrity, index_lists, tensegrity, triplex_caps, triplex_group_ids,
 };
 
 /// Base force densities in `TRIPLEX_MEMBERS` order — one per member, which is why
@@ -131,27 +131,27 @@ fn solve_combined(q: &[f64], sigma: f64) -> PersistentMap<String, Value> {
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_trampoline, &inputs)
 }
 
-/// Seed ratios for `solve_free`, indexed by group: struts (compression) / horizontal
-/// cables / vertical cables. Group 1 is the `reference_group`, so ITS magnitude is what
-/// fixes the free path's gauge — the covariance test below rescales all three together.
-const BASE_SEED: [f64; 3] = [-1.0, 1.0, 1.0];
-
-/// FREE-STANDING solve of the same prism at the given per-group seed ratios (GroupRatios:
-/// struts→0, the six horizontals→1, verticals→2; reference group 1) — the
+/// FREE-STANDING solve of the same prism at the given per-group seed ratios — the
 /// `build_result_free` emission site, which the anchored solves above never reach.
+///
+/// The GroupRatios partition (struts→0, the six horizontals→1, verticals→2) is the
+/// shared `triplex_group_ids()`, not a literal beside `TRIPLEX_MEMBERS`: one id per
+/// member in that same index space, so the two cannot drift. `reference_group` is 1,
+/// so the horizontals’ magnitude is what fixes this path’s gauge — which is why the
+/// covariance test below rescales all three seed ratios together rather than one.
 fn solve_free_at(seed: &[f64]) -> PersistentMap<String, Value> {
     let inputs = [
         prism_tensegrity(),
-        ints([0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2]),
+        triplex_group_ids(),
         reals(seed),
         Value::Int(1), // reference_group
     ];
     solve_with(reify_eval::compute_targets::form_find::solve_form_find_free_trampoline, &inputs)
 }
 
-/// The free-standing solve at the base gauge.
+/// The free-standing solve at the base gauge, [`TRIPLEX_SEEDS`].
 fn solve_free() -> PersistentMap<String, Value> {
-    solve_free_at(&BASE_SEED)
+    solve_free_at(&TRIPLEX_SEEDS)
 }
 
 fn list_field<'a>(fields: &'a PersistentMap<String, Value>, name: &str) -> &'a Vec<Value> {
@@ -537,8 +537,8 @@ fn rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_p
 /// this path cannot meet by construction.
 #[test]
 fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
-    let base = solve_free_at(&BASE_SEED);
-    let scaled_seed: Vec<f64> = BASE_SEED.iter().map(|&r| r * GAUGE_LAMBDA).collect();
+    let base = solve_free_at(&TRIPLEX_SEEDS);
+    let scaled_seed: Vec<f64> = TRIPLEX_SEEDS.iter().map(|&r| r * GAUGE_LAMBDA).collect();
     let scaled = solve_free_at(&scaled_seed);
     // The scaled FREE solve is the one result nothing else pins: the base free gauge is
     // covered by `free_standing_member_forces_are_strictly_force_dimensioned`, but a

@@ -237,14 +237,38 @@ pub fn triplex_caps() -> Value {
 
 /// Group ids in [`TRIPLEX_MEMBERS`] order: the three struts to group 0, the six
 /// horizontals (top and bottom rings) to group 1, the three verticals to group 2.
+///
+/// Sized from [`TRIPLEX_MEMBERS`] for the same reason [`TRIPLEX_CAPS`] is a
+/// const: a member added there is then a compile error HERE, rather than a
+/// length mismatch surfacing from inside the solve. Private because every
+/// consumer hands the lowered [`triplex_group_ids`] straight to a trampoline;
+/// widen it in the diff that brings the first array consumer.
+const TRIPLEX_GROUP_IDS: [i64; TRIPLEX_MEMBERS.len()] = [0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2];
+
+/// [`TRIPLEX_GROUP_IDS`] lowered to the `List<Int>` the free-standing solve
+/// takes. `Value::Int` is part of the contract: the kernel reads group ids as
+/// integers and indexes the seed list BY them.
 pub fn triplex_group_ids() -> Value {
-    Value::List([0i64, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2].into_iter().map(Value::Int).collect())
+    Value::List(TRIPLEX_GROUP_IDS.into_iter().map(Value::Int).collect())
 }
 
 /// One seed ratio per group, in group-id order: struts compressive (−1),
 /// horizontals and verticals tensile (+1).
+///
+/// A const as well as the lowered [`triplex_seeds`] because the force-density
+/// gauge rescales the whole seed vector by λ to test the free path’s gauge
+/// covariance, and needs `f64`s to multiply. Both spellings therefore have one
+/// source. The length is not tied to anything syntactically — a group count is
+/// not derivable from the member list — so it is pinned relationally instead, by
+/// `triplex_group_ids_index_the_seeds_and_honour_the_sign_contract`, which
+/// requires the distinct group ids to be exactly `0..TRIPLEX_SEEDS.len()`.
+pub const TRIPLEX_SEEDS: [f64; 3] = [-1.0, 1.0, 1.0];
+
+/// [`TRIPLEX_SEEDS`] lowered to the `List<Real>` the free-standing solve takes.
+/// `Value::Real` rather than a dimensioned `Value::Scalar`: seed ratios are
+/// DIMENSIONLESS relative ratios, and a dimensioned one is a different input.
 pub fn triplex_seeds() -> Value {
-    Value::List(vec![Value::Real(-1.0), Value::Real(1.0), Value::Real(1.0)])
+    Value::List(TRIPLEX_SEEDS.into_iter().map(Value::Real).collect())
 }
 
 #[cfg(test)]
