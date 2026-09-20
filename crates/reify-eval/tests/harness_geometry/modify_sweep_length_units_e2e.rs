@@ -49,9 +49,8 @@
 //! runs.
 //!
 //! What replaces it is NOT a loosening.
-//! `reify_test_support::compile_expecting_only_arg_type_mismatch` (task
-//! #6636) swaps in the lenient `compile_source` and then re-asserts both
-//! halves the strict helper
+//! `reify_test_support::compile_expecting_only_arg_type_mismatch` swaps in the
+//! lenient `compile_source` and then re-asserts both halves the strict helper
 //! used to give: that the compile-layer `ArgTypeMismatch` really IS emitted,
 //! and that it is the ONLY Error-severity compile diagnostic — which is what
 //! keeps every "no op reached the kernel" assertion below from passing
@@ -68,13 +67,14 @@
 use reify_core::{DiagnosticCode, Severity};
 use reify_ir::GeometryOp;
 use reify_test_support::{
-    build_compiled, compile_expecting_only_arg_type_mismatch, parse_and_compile,
+    build_against_mock_kernel, compile_expecting_only_arg_type_mismatch, parse_and_compile,
 };
 
 /// Build `source` against a mock kernel, returning the build diagnostics and
 /// every `GeometryOp` that reached the kernel.
+#[track_caller]
 fn build_capturing_ops(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    build_compiled(parse_and_compile(source))
+    build_against_mock_kernel(parse_and_compile(source))
 }
 
 /// The BARE-source counterpart of [`build_capturing_ops`] (task 5750).
@@ -83,11 +83,12 @@ fn build_capturing_ops(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<Geomet
 /// the bare sources in this file no longer compile clean and the strict
 /// `parse_and_compile` — which hard-asserts zero Error diagnostics — would panic
 /// before eval ever ran. Uses the shared
-/// `reify_test_support::compile_expecting_only_arg_type_mismatch` (task
-/// #6636), which swaps in the lenient `compile_source` and re-asserts both
-/// halves of what the strict helper used to guarantee.
+/// `reify_test_support::compile_expecting_only_arg_type_mismatch`, which swaps
+/// in the lenient `compile_source` and re-asserts both halves of what the
+/// strict helper used to guarantee.
+#[track_caller]
 fn build_capturing_ops_bare(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    build_compiled(compile_expecting_only_arg_type_mismatch(
+    build_against_mock_kernel(compile_expecting_only_arg_type_mismatch(
         source,
         "modify/sweep magnitude",
     ))
@@ -466,7 +467,7 @@ fn bare_chamfer_asymmetric_reports_both_distances_in_one_build() {
 ///
 /// `chamfer_asymmetric`'s `edges` argument is MANDATORY, and this harness
 /// drives a bare `MockGeometryKernel` (`build_capturing_ops` →
-/// `build_compiled`) that answers no topology query — so the inline
+/// `build_against_mock_kernel`) that answers no topology query — so the inline
 /// `edges(body)` selector cannot resolve to a concrete edge list here. The
 /// DIMENSIONED form is therefore also dropped, but for a wholly unrelated
 /// reason that carries its own distinct wording ("the edge selector did not
@@ -486,7 +487,8 @@ fn bare_chamfer_asymmetric_reports_both_distances_in_one_build() {
 /// available on the current build pipeline … tasks 4360/4358") into the
 /// actionable message pinned below. What still blocks this row from the
 /// ordinary "builds one op" form is purely the bare mock kernel, not a missing
-/// capability; upgrading it needs a real-OCCT rewrite of `build_compiled`.
+/// capability; upgrading it needs a real-OCCT build helper rather than
+/// `reify_test_support::build_against_mock_kernel`.
 #[test]
 fn dimensioned_chamfer_asymmetric_raises_no_units_rejection() {
     let (diagnostics, _ops) = build_capturing_ops(

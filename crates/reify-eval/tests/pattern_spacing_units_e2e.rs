@@ -39,9 +39,9 @@ use reify_test_support::{
 /// spacing, so these sources no longer compile clean and `parse_and_compile`
 /// (which hard-asserts zero Error diagnostics) would panic before eval ever
 /// runs. Delegates to the shared
-/// `reify_test_support::compile_expecting_only_arg_type_mismatch` (task
-/// #6636), whose lenient `compile_source` keeps this file testing what it
-/// exists to test: task 5214's EVAL-layer gate.
+/// `reify_test_support::compile_expecting_only_arg_type_mismatch`, whose
+/// lenient `compile_source` keeps this file testing what it exists to test:
+/// task 5214's EVAL-layer gate.
 ///
 /// That shared helper's two assertions are what make the switch a TIGHTENING
 /// rather than a loosening — they keep BOTH halves of what `parse_and_compile`
@@ -59,6 +59,7 @@ use reify_test_support::{
 /// Each caller's eval-layer assertions still run, because
 /// `check_builtin_arg_types` is anti-cascade: lowering is untouched, so the op
 /// is still emitted and must still be DROPPED at eval.
+#[track_caller]
 fn compile_bare_spacing(source: &str) -> reify_compiler::CompiledModule {
     compile_expecting_only_arg_type_mismatch(source, "pattern spacing")
 }

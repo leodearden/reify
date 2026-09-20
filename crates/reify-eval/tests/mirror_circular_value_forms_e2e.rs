@@ -462,12 +462,8 @@ fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
 /// sources in this file no longer compile clean and the strict
 /// `parse_and_compile` — which hard-asserts zero Error diagnostics — would panic
 /// before eval ever ran. Delegates to the shared
-/// `reify_test_support::compile_expecting_only_arg_type_mismatch` (task #6636),
-/// the canonical home for an idiom that three preceding leaves had each had to
-/// introduce independently (`compile_bare_spacing` in
-/// `crates/reify-eval/tests/pattern_spacing_units_e2e.rs`, `compile_bare_length`
-/// in `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs`
-/// and its `modify_sweep_length_units_e2e.rs` sibling).
+/// `reify_test_support::compile_expecting_only_arg_type_mismatch`, which is
+/// where that idiom now lives for every bare-argument e2e suite.
 ///
 /// That shared helper's two assertions are what make swapping the lenient
 /// `compile_source` in for the strict `parse_and_compile` a TIGHTENING rather
@@ -484,6 +480,7 @@ fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
 /// `check_builtin_arg_types` is anti-cascade: it touches only `diagnostics` and
 /// never lowering, so the op is still emitted and must still be DROPPED at build
 /// by the eval gate — which is the thing these rows actually test.
+#[track_caller]
 fn compile_bare_origin(source: &str) -> reify_compiler::CompiledModule {
     compile_expecting_only_arg_type_mismatch(source, "scalar mirror/circular_pattern origin")
 }

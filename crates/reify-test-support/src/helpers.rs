@@ -837,11 +837,9 @@ pub fn run_modify_pipeline(
 ///    wrong reason — compilation having broken, rather than a later eval gate
 ///    having dropped the op.
 ///
-/// Canonical home for the idiom that used to be duplicated (byte-for-byte,
-/// modulo this `what` wording) as `compile_bare_length` in
-/// `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs`
-/// and `modify_sweep_length_units_e2e.rs`, and as `compile_bare_spacing` in
-/// `crates/reify-eval/tests/pattern_spacing_units_e2e.rs` (task #6636).
+/// Shared by the bare-argument e2e suites; each supplies its `what` noun
+/// through a thin per-file wrapper (`build_capturing_ops_bare`,
+/// `compile_bare_spacing`, `compile_bare_origin`).
 ///
 /// # Panics
 /// Panics if no compile-layer Error diagnostic is produced, or if any
@@ -868,8 +866,8 @@ pub fn compile_expecting_only_arg_type_mismatch(
         errors
             .iter()
             .all(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch)),
-        "ArgTypeMismatch must be the ONLY compile Error in this fixture, else a \
-         caller's \"no op reached the kernel\" assertion could pass because \
+        "ArgTypeMismatch must be the ONLY compile Error for a bare {what}, else \
+         this caller's \"no op reached the kernel\" assertion could pass because \
          compilation broke rather than because the eval gate dropped the op; \
          unexpected errors: {:?}",
         errors
@@ -880,19 +878,21 @@ pub fn compile_expecting_only_arg_type_mismatch(
     compiled
 }
 
-/// Build `compiled` against a fresh [`MockGeometryKernel`], returning the
-/// build diagnostics and every [`reify_ir::GeometryOp`] that reached the
-/// kernel.
+/// Build `compiled` against a fresh [`MockGeometryKernel`] as
+/// `ExportFormat::Step`, returning the EVAL-layer `BuildResult.diagnostics`
+/// — never the incoming compile-layer ones — and every
+/// [`reify_ir::GeometryOp`] that reached the kernel.
 ///
 /// `operations_ref()` is captured BEFORE the kernel moves into the `Engine`
 /// — the only ordering that lets the emitted ops be inspected afterwards.
 ///
-/// Canonical home for the idiom that used to be duplicated byte-for-byte as a
-/// private `build_compiled` in both
-/// `crates/reify-eval/tests/harness_geometry/primitive_profile_length_units_e2e.rs`
-/// and `modify_sweep_length_units_e2e.rs` (task #6636).
+/// Those two slots are deliberately NARROWER than [`run_modify_pipeline`]'s
+/// `(BuildResult, Vec<GeometryOpRecord>)`: every caller here wants exactly
+/// this pair, and neither `geometry_output` nor a record's result handle
+/// answers a question a units-gate e2e asks.
 #[cfg(feature = "eval-helpers")]
-pub fn build_compiled(
+#[track_caller]
+pub fn build_against_mock_kernel(
     compiled: reify_compiler::CompiledModule,
 ) -> (Vec<Diagnostic>, Vec<reify_ir::GeometryOp>) {
     let kernel = MockGeometryKernel::new();
@@ -2078,7 +2078,7 @@ mod tests {
 
     /// compile_expecting_only_arg_type_mismatch: PANIC ARM 2 — an
     /// `ArgTypeMismatch` accompanied by a SECOND, unrelated compile Error
-    /// panics, and the panic names the intruder.
+    /// panics, and the panic names both the intruder and the family.
     ///
     /// Driven by the MIXED source deliberately. Weaken the helper's second
     /// assertion from `all` to `any` and it would ACCEPT this module, at which
@@ -2105,12 +2105,18 @@ mod tests {
             "the panic must NAME the unexpected error rather than merely report that one \
              exists, or the reader cannot tell what broke compilation; got: {message}"
         );
+        assert!(
+            message.contains("a bare pattern spacing"),
+            "BOTH arms must interpolate the caller's `what` noun — with six call sites \
+             funnelling through one helper, a family-agnostic arm reports only that \
+             SOMETHING has a second compile Error; got: {message}"
+        );
     }
 
-    // ── build_compiled ────────────────────────────────────────────────────
+    // ── build_against_mock_kernel ─────────────────────────────────────────
 
-    /// build_compiled: a clean single-op source yields NO Error diagnostics in
-    /// slot 1 and the emitted `Box` op in slot 2.
+    /// build_against_mock_kernel: a clean single-op source yields NO Error
+    /// diagnostics in slot 1 and the emitted `Box` op in slot 2.
     ///
     /// Non-empty ops PAIRED with empty errors is what discriminates here: two
     /// slots sourced from the same place, or returned the wrong way round,
@@ -2119,8 +2125,8 @@ mod tests {
     /// kernel moves into the `Engine`; capture it after and slot 2 is empty.
     #[cfg(feature = "eval-helpers")]
     #[test]
-    fn test_build_compiled_returns_build_diagnostics_and_the_ops_that_reached_the_kernel() {
-        let (diagnostics, ops) = super::build_compiled(super::parse_and_compile(
+    fn test_build_against_mock_kernel_returns_build_diagnostics_and_the_emitted_ops() {
+        let (diagnostics, ops) = super::build_against_mock_kernel(super::parse_and_compile(
             r#"structure def OneBox { let body = box(10mm, 10mm, 10mm) }"#,
         ));
 
@@ -2140,7 +2146,7 @@ mod tests {
         );
     }
 
-    /// build_compiled: composed with
+    /// build_against_mock_kernel: composed with
     /// [`super::compile_expecting_only_arg_type_mismatch`] — the way all call
     /// sites use it — slot 1 carries the EVAL layer's `DimensionedArgRejected`
     /// and NOT the COMPILE layer's `ArgTypeMismatch`.
@@ -2154,9 +2160,9 @@ mod tests {
     /// and PRD decision D2's two-layer observability unobservable from here.
     #[cfg(feature = "eval-helpers")]
     #[test]
-    fn test_build_compiled_returns_the_eval_layer_diagnostics_not_the_compile_layer_ones() {
+    fn test_build_against_mock_kernel_returns_eval_layer_diagnostics_not_compile_layer_ones() {
         let (diagnostics, _ops) =
-            super::build_compiled(super::compile_expecting_only_arg_type_mismatch(
+            super::build_against_mock_kernel(super::compile_expecting_only_arg_type_mismatch(
                 BARE_FILLET_SRC,
                 "modify/sweep magnitude",
             ));

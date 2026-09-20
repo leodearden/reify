@@ -29,10 +29,9 @@
 //! fixture below before eval ever ran.
 //!
 //! What replaces it is NOT a loosening.
-//! `reify_test_support::compile_expecting_only_arg_type_mismatch` (task
-//! #6636) swaps in the lenient `compile_source` and then re-asserts both
-//! halves the strict helper used to give: that the compile-layer
-//! `ArgTypeMismatch` really IS emitted,
+//! `reify_test_support::compile_expecting_only_arg_type_mismatch` swaps in the
+//! lenient `compile_source` and then re-asserts both halves the strict helper
+//! used to give: that the compile-layer `ArgTypeMismatch` really IS emitted,
 //! and that it is the ONLY Error-severity compile diagnostic. The second half
 //! is what keeps every "no op reached the kernel" assertion below from passing
 //! VACUOUSLY — op absent because compilation broke rather than because the eval
@@ -48,13 +47,14 @@
 use reify_core::{DiagnosticCode, Severity};
 use reify_ir::GeometryOp;
 use reify_test_support::{
-    build_compiled, compile_expecting_only_arg_type_mismatch, parse_and_compile,
+    build_against_mock_kernel, compile_expecting_only_arg_type_mismatch, parse_and_compile,
 };
 
 /// Build `source` against a mock kernel, returning the build diagnostics and
 /// every `GeometryOp` that reached the kernel.
+#[track_caller]
 fn build_capturing_ops(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    build_compiled(parse_and_compile(source))
+    build_against_mock_kernel(parse_and_compile(source))
 }
 
 /// The BARE-source counterpart of [`build_capturing_ops`] (task 5750).
@@ -63,12 +63,13 @@ fn build_capturing_ops(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<Geomet
 /// slot, so the bare sources in this file no longer compile clean and the
 /// strict `parse_and_compile` — which hard-asserts zero Error diagnostics —
 /// would panic before eval ever ran. Uses the shared
-/// `reify_test_support::compile_expecting_only_arg_type_mismatch` (task
-/// #6636), which swaps in the lenient `compile_source` and re-asserts both
-/// halves of what the strict helper used to guarantee — see the module doc
-/// for why that is a TIGHTENING rather than a loosening.
+/// `reify_test_support::compile_expecting_only_arg_type_mismatch`, which swaps
+/// in the lenient `compile_source` and re-asserts both halves of what the
+/// strict helper used to guarantee — see the module doc for why that is a
+/// TIGHTENING rather than a loosening.
+#[track_caller]
 fn build_capturing_ops_bare(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    build_compiled(compile_expecting_only_arg_type_mismatch(
+    build_against_mock_kernel(compile_expecting_only_arg_type_mismatch(
         source,
         "primitive/profile dimension",
     ))
