@@ -30,7 +30,9 @@
 
 use std::sync::Mutex;
 
-use reify_kernel_gmsh::mesh_size_scope::{GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT};
+use reify_kernel_gmsh::mesh_size_scope::{
+    GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT, GMSH_SIZE_OPTION_DEFAULTS,
+};
 use reify_kernel_gmsh::{ffi, init, mesh_plane_2d};
 
 /// Whole-test-body serialisation, layered *above* `init::GMSH_LOCK`.
@@ -76,25 +78,6 @@ const PROBE_OUTER: [[f64; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.
 pub const GMSH_CLAMP_DEFAULTS: (f64, f64) =
     (GMSH_MESH_SIZE_MIN_DEFAULT, GMSH_MESH_SIZE_MAX_DEFAULT);
 
-/// Gmsh's documented defaults for the three size-SOURCE options — the
-/// `MeshSizeFromPoints` / `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary`
-/// trio that decides *where* element sizes come from, as distinct from the
-/// `MeshSizeMin`/`MeshSizeMax` pair that clamps them.
-///
-/// Measured, not assumed: `gmsh 4.15.2 -parse_and_exit` on a `.geo` of
-/// `Printf("%g", Mesh.MeshSizeFromPoints)` and friends prints `1`, `0`, `1`.
-///
-/// Local to this module on purpose. It exists only to make
-/// [`probe_triangle_count`] hermetic; it is NOT a production restore list and
-/// does not close task #6212, which owns extending the real
-/// `mesh_size_clamp` seam to these three across every entry point that writes
-/// them.
-const GMSH_SIZE_SOURCE_DEFAULTS: [(&str, f64); 3] = [
-    ("Mesh.MeshSizeFromPoints", 1.0),
-    ("Mesh.MeshSizeFromCurvature", 0.0),
-    ("Mesh.MeshSizeExtendFromBoundary", 1.0),
-];
-
 /// Write the process-global gmsh mesh-size clamp.
 ///
 /// gmsh's option table is process-global and is **not** reset by `gmshClear()`,
@@ -109,6 +92,25 @@ pub fn set_global_mesh_size_clamp((min, max): (f64, f64)) {
     ffi::option_set_number("Mesh.MeshSizeMax", max).expect("set MeshSizeMax");
 }
 
+/// Put every process-global gmsh size option at its documented default.
+///
+/// Driven by the production [`GMSH_SIZE_OPTION_DEFAULTS`] rather than by a
+/// local list, so a sixth option added to the seam is established here too with
+/// no test edit — and so this helper cannot drift into establishing a table the
+/// production code no longer considers "default".
+///
+/// This is the explicit form of what [`probe_triangle_count`] used to do
+/// implicitly, for the callers that genuinely need a known starting table
+/// rather than a measurement of whatever the process is carrying.
+pub fn set_all_size_options_to_defaults() {
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init::ensure_initialized();
+    for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
+        ffi::option_set_number(option, default)
+            .unwrap_or_else(|e| panic!("set {option} to its gmsh default: {e:?}"));
+    }
+}
+
 /// Pin the clamp shut at `size`, reproducing the state a sibling entry point
 /// leaves behind (`Min == Max == its own requested size`).
 pub fn poison_global_mesh_size_clamp(size: f64) {
@@ -121,40 +123,31 @@ pub fn poison_global_mesh_size_clamp(size: f64) {
 /// `mesh_size: None` is the whole point: `mesh_plane_2d` puts its
 /// `Mesh.MeshSizeMin/Max` writes behind `if let Some(s) = mesh_size && s > 0.0`
 /// (`mesh_profile_2d.rs`), and `geo_add_point` passes meshSize `0.0` — "no
-/// prescribed size here" — so this call writes no clamp and reports whatever
-/// `Mesh.MeshSizeMax` the process happens to be carrying. Observing the leak's
-/// EFFECT rather than reading the option table back is forced: this crate's FFI
-/// surface exposes `option_set_number` but no `option_get_number`. It is also
-/// the stronger guard — it fails if the clamp leaks by ANY route, not only via
-/// the one option name a test thought to read.
+/// prescribed size here" — so this call writes no size option and reports
+/// whatever the process-global table is carrying.
 ///
-/// # Why it pins the size-SOURCE trio first
+/// # Why it pins nothing itself
 ///
-/// `refine_volume_with_size_field` writes `Mesh.MeshSizeFromPoints = 1`,
-/// `MeshSizeFromCurvature = 0` and `MeshSizeExtendFromBoundary = 0`
-/// (`refine_volume.rs`) and deliberately does NOT restore them — task #6212's
-/// still-open leak. Any binary that runs a refine in one test and this probe in
-/// another therefore measures under a different option table depending on which
-/// test won cargo's thread race, and `CLAMP_TEST_ORDER` does not help: it
-/// serialises the bodies but restores nothing. Observed, not theoretical — with
-/// #6298's fix reverted, `mesh_to_volume_clamp_hermeticity.rs` measured
-/// baseline 48 / after 246 in one interleaving and 162 / 242 in another.
+/// It used to write the `MeshSizeFromPoints` / `FromCurvature` /
+/// `ExtendFromBoundary` trio to gmsh's defaults before every measurement, so
+/// its reading was "a function of the mesh-size CLAMP alone". That was right
+/// while #6212's trio leak was live and unowned, and it is wrong now: task
+/// #6968 closed that leak, and the pinning would MASK it — a leaked
+/// `ExtendFromBoundary = 0` was overwritten before the probe ever measured it,
+/// so an unfixed build read 162 and passed. Measured: with the pinning in
+/// place, `mesh_size_option_hermeticity.rs`'s both-orders test is green against
+/// a `refine_volume` whose `MeshSizeScope` is commented out.
 ///
-/// Writing the trio to gmsh's own defaults here makes this probe's reading a
-/// function of the mesh-size CLAMP alone, which is the one thing both guards
-/// assert about — so their recorded numbers are reproducible and their
-/// sensitivity stops being an order-dependent property of a leak another task
-/// owns. This changes nothing outside the probe: #6212's leak is still live for
-/// every real caller, and closing it is still #6212's job.
+/// Removing it makes this probe a detector of a size-option leak by ANY route,
+/// which is what a hermeticity instrument should be. Callers that need a known
+/// starting table now say so explicitly, via
+/// [`set_all_size_options_to_defaults`].
+///
+/// Observing the leak's EFFECT is still worth having alongside the direct table
+/// reads that `ffi::option_get_number` (#6968) now makes possible: a density
+/// probe fails on a leak by any route, not only via an option name a test
+/// thought to read.
 pub fn probe_triangle_count() -> usize {
-    {
-        let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        init::ensure_initialized();
-        for (option, default) in GMSH_SIZE_SOURCE_DEFAULTS {
-            ffi::option_set_number(option, default)
-                .unwrap_or_else(|e| panic!("set {option} to its gmsh default: {e:?}"));
-        }
-    }
     mesh_plane_2d(&PROBE_OUTER, &[], None, false, true)
         .expect("mesh_plane_2d must succeed for a unit square")
         .triangle_indices

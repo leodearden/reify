@@ -1,36 +1,48 @@
-//! Hermeticity guards for the process-global mesh-size clamp around
-//! [`reify_kernel_gmsh::GmshKernel::mesh_to_volume`] — the PRODUCER half of
-//! task #6298.
+//! Hermeticity guards for gmsh's process-global mesh-size OPTION TABLE, across
+//! every entry point in this crate that writes one — the acceptance surface of
+//! task #6968.
 //!
-//! Task #6211 closed the CONSUMER half in `refine_volume_with_size_field`
-//! (inbound: write the clamp yourself; outbound: restore gmsh's defaults on
-//! every exit path) and pinned it in `tests/refine_volume_tests.rs`. This
-//! binary pins the same discipline at the other end: `mesh_to_volume` writes
-//! `Mesh.MeshSizeMin`/`MeshSizeMax` to its resolved size and — before #6298 —
-//! never restored them, so `[size, size]` survived `gmshClear()` and the whole
-//! process for any later caller that deliberately writes no clamp of its own.
+//! Its remit widened twice. It began as the PRODUCER half of task #6298, about
+//! the `Mesh.MeshSizeMin`/`MeshSizeMax` pair leaving
+//! [`reify_kernel_gmsh::GmshKernel::mesh_to_volume`]; #6968 widened it from
+//! that pair to all five size options, and from one entry point to four.
+//! Hence the rename from `mesh_to_volume_clamp_hermeticity.rs`.
+//!
+//! # What this binary is for that the per-entry-point guards are not
+//!
+//! Each of the four entry points carries its own guard in its own suite, and
+//! each reads the option table back directly through `ffi::option_get_number`.
+//! Those pin what ONE function leaves behind. This binary pins what the
+//! functions do TO EACH OTHER: `every_entry_point_measures_the_same_whatever_ran_before_it`
+//! runs every ORDERED PAIR of entry points in one process and requires the
+//! second one's output to equal the output it produces alone.
+//!
+//! That is the property the task is actually about, and it is not implied by
+//! the four table reads. A table read cannot see a leak through an option
+//! nobody thought to name, and the pair sweep does not care which option
+//! carried it — it fails if the answer changes at all.
 //!
 //! # Why a separate test binary
 //!
 //! `tests/mesh_to_volume_tests.rs` holds 13 unserialised `mesh_to_volume`
 //! calls; cargo runs one binary's tests in a single process across parallel
-//! threads with no ordering guarantee, so a clamp measurement there would race
-//! siblings writing the same process-global pair — the false-pass mode
+//! threads with no ordering guarantee, so an option-table measurement there
+//! would race siblings writing the same process-globals — the false-pass mode
 //! `clamp_probe::CLAMP_TEST_ORDER` documents — and adding that mutex there
 //! would serialise thirteen unrelated tests as a side effect.
-//! `refine_volume_tests.rs` is topically the wrong home: its subject is the
-//! consumer. A separate `tests/*.rs` is its own compiled binary and therefore
-//! its own process, so no OTHER suite can perturb the option table between a
-//! baseline and its re-measure.
+//! `refine_volume_tests.rs` is topically the wrong home: its subject is one
+//! entry point. A test about call ORDER needs to own its process, and a
+//! separate `tests/*.rs` is its own compiled binary and therefore its own
+//! process, so no OTHER suite can perturb the option table between a baseline
+//! and its re-measure.
 //!
-//! Isolation *within* this binary is a separate mechanism and is not free
-//! either: `CLAMP_TEST_ORDER` serialises the two test bodies but restores
-//! nothing, and the second test calls `refine_volume_with_size_field`, which
-//! leaves `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
-//! `MeshSizeExtendFromBoundary` behind (task #6212's open leak). That is why
-//! `clamp_probe::probe_triangle_count` pins those three to gmsh's defaults
-//! itself — see its docstring — so the numbers recorded below are a function
-//! of the clamp alone rather than of which test won cargo's thread race.
+//! Isolation *within* this binary is a separate mechanism: `CLAMP_TEST_ORDER`
+//! serialises the test bodies. It restores nothing — that is now the entry
+//! points' own job, which is the whole point of #6968, and it is why
+//! `clamp_probe::probe_triangle_count` no longer pins the size-SOURCE trio
+//! itself. It used to, so that its numbers were a function of the clamp alone
+//! while #6212's trio leak was live; keeping that would have MASKED the very
+//! leak this binary now tests for.
 //!
 //! Only compiled and run when `cfg(has_gmsh)` is set by `build.rs` (i.e. when
 //! libgmsh was found at build time). On stub builds this file is empty and the
@@ -49,7 +61,8 @@ mod common;
 mod clamp_probe;
 
 use clamp_probe::{
-    CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, probe_triangle_count, set_global_mesh_size_clamp,
+    CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, probe_triangle_count, set_all_size_options_to_defaults,
+    set_global_mesh_size_clamp,
 };
 use reify_ir::ElementOrderTag;
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
@@ -69,6 +82,45 @@ fn mesh_to_volume_tet_count(size: f64) -> usize {
         .tet_indices()
         .expect("P1 tet mesh")
         .len()
+        / 4
+}
+
+/// `mesh_to_volume` on the unit cube at gmsh's auto-derived size — the shape
+/// the pair sweep measures, with no explicit `mesh_size` so the call is
+/// sensitive to the size table it inherits.
+fn mesh_to_volume_default_tet_count() -> usize {
+    let cube = common::unit_cube_mesh();
+    let opts = MeshingOptions {
+        deterministic: true,
+        ..Default::default()
+    };
+    GmshKernel::new()
+        .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
+        .unwrap_or_else(|e| panic!("mesh_to_volume must succeed: {e:?}"))
+        .tet_indices()
+        .expect("P1 tet mesh")
+        .len()
+        / 4
+}
+
+/// `refine_volume_with_size_field` on the unit cube with a uniform field.
+fn refine_tet_count() -> usize {
+    let cube = common::unit_cube_mesh();
+    let n_surface_verts = cube.vertices.len() / 3;
+    let opts = MeshingOptions {
+        deterministic: true,
+        ..Default::default()
+    };
+    refine_volume_with_size_field(
+        &cube,
+        &vec![0.5_f64; n_surface_verts],
+        &opts,
+        ElementOrderTag::P1,
+    )
+    .unwrap_or_else(|e| panic!("refine_volume_with_size_field must succeed: {e:?}"))
+    .tet_indices()
+    .expect("P1 tet mesh")
+    .len()
         / 4
 }
 
@@ -293,4 +345,125 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
          explicitly, never inherited\" block, and \
          mesh_size_clamp::MeshSizeClampReset armed in kernel_real.rs::mesh_to_volume",
     );
+}
+
+/// Every entry point that writes a gmsh size option produces the same output
+/// whatever ran before it in the process.
+///
+/// The acceptance test for task #6968, covering BOTH call-order directions the
+/// task names — `refine -> mesh_to_volume` / `mesh_plane_2d` (#6212's) and
+/// `mesh_to_volume -> refine` (#6262's) — in one process, because they are two
+/// halves of one defect and fixing either alone yields a guard that is green
+/// for the wrong reason.
+///
+/// Measures each entry point ALONE from a defaults table, then runs every
+/// ordered pair (self-pairs included, which pins idempotence) and requires the
+/// second one's output to equal its alone-value exactly. The pair sweep does
+/// not care WHICH option carried a leak, so unlike the four per-entry-point
+/// table reads it cannot be defeated by a leak through an option no test
+/// thought to name.
+///
+/// `ElementOrderTag::P1` and `deterministic: true` throughout. Both are
+/// load-bearing rather than stylistic: all three entry points write
+/// `General.NumThreads` under `deterministic`, so pinning it removes the only
+/// non-size process-global that would otherwise differ between the alone-run
+/// and the paired run; and `Mesh.ElementOrder` — which `mesh_plane_2d` never
+/// writes and the other two write unconditionally — stays at `1` for every
+/// call, so the known element-order inheritance cannot confound the counts. (It
+/// is a real leak of the same class, filed as follow-up work rather than folded
+/// in: it is not a mesh-SIZE option and fixing it changes `mesh_plane_2d`'s
+/// element-order behaviour.)
+///
+/// # Falsifiability, measured rather than assumed
+///
+/// A green-on-arrival guard that cannot fail is worthless, so the scope was
+/// actually removed and the test re-run. The probed bindings are the
+/// `MeshSizeScope::entered` lines in `refine_volume.rs` (the leaking PRODUCER)
+/// and in `mesh_profile_2d.rs` (the defaults-relying CONSUMER), and the pair
+/// that moves is `refine -> mesh_plane_2d(mesh_size: None)`:
+///
+/// ```text
+/// refine scope | mesh_plane_2d scope | alone | after | verdict
+/// armed        | armed  (today)      |   162 |   162 | PASS
+/// disarmed     | armed               |   162 |   162 | PASS
+/// armed        | disarmed            |   162 |   162 | PASS
+/// disarmed     | disarmed (pre-#6968)|   162 |    60 | FAIL  2.7x
+/// ```
+///
+/// So the test is genuinely falsifiable, and precisely at the point that
+/// matters: it reds exactly when the discipline is absent from BOTH ends,
+/// which is the state the codebase was in when #6968 was filed. Either half
+/// alone suffices for this pair — outbound, refine restores what it wrote;
+/// inbound, `mesh_plane_2d` establishes the defaults regardless — and that
+/// redundancy is the fix working, not the test failing to measure. It is the
+/// same shape [`refine_after_mesh_to_volume_honours_its_own_size_field`] below
+/// records for its own four combinations, and the deliberate consequence of
+/// taking both directions in one type.
+///
+/// The failing 60 is `mesh_plane_2d(None)` running under BOTH halves of what a
+/// disarmed refine leaves: `Mesh.MeshSizeExtendFromBoundary = 0` and
+/// `Mesh.MeshSizeMax = 0.5` (its uniform field's maximum). The trio option
+/// alone, against a defaults clamp, is worth 48 rather than 60 — measured
+/// separately in `mesh_plane_2d_tests.rs`, and the same anomalous number this
+/// file's own history records from an unlucky thread interleaving. The leak
+/// was seen in the wild before it was explained.
+///
+/// # Which legs are detectors and which are lock-ins
+///
+/// Not every one of the nine pairs can move, and a guard should not imply a
+/// sensitivity it lacks. `refine -> refine` cannot: refine writes all five size
+/// options itself on entry, so it has nothing to inherit. `refine ->
+/// mesh_to_volume` cannot either: `mesh_to_volume` writes
+/// `Mesh.MeshSizeMin == Mesh.MeshSizeMax`, and a shut clamp masks
+/// `Mesh.MeshSizeExtendFromBoundary` entirely. Those are lock-in legs.
+///
+/// That masking is precisely why the trio leak survived #6298. The damage is
+/// invisible in the leaking function's own output, and invisible in any
+/// successor that writes a shut clamp of its own — it shows up only in a
+/// successor that relies on the defaults, which is the one row that fails.
+///
+#[test]
+fn every_entry_point_measures_the_same_whatever_ran_before_it() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    /// Named so a failure message says which pair diverged rather than which
+    /// index did.
+    const ENTRY_POINTS: [(&str, fn() -> usize); 3] = [
+        ("mesh_plane_2d(mesh_size: None)", probe_triangle_count),
+        ("refine_volume_with_size_field", refine_tet_count),
+        ("mesh_to_volume", mesh_to_volume_default_tet_count),
+    ];
+
+    let alone: Vec<usize> = ENTRY_POINTS
+        .iter()
+        .map(|(name, measure)| {
+            set_all_size_options_to_defaults();
+            let n = measure();
+            assert!(
+                n > 0,
+                "{name} must produce elements when run alone; got an empty mesh"
+            );
+            n
+        })
+        .collect();
+
+    for (first_name, run_first) in ENTRY_POINTS {
+        for (index, (second_name, measure_second)) in ENTRY_POINTS.iter().enumerate() {
+            set_all_size_options_to_defaults();
+            run_first();
+            let after = measure_second();
+            assert_eq!(
+                after, alone[index],
+                "call order changed a mesh: {second_name} produced {after} elements after \
+                 {first_name} ran in the same process, against {} when it ran alone from a \
+                 defaults table. gmsh's option table is process-global and survives \
+                 gmshClear(), so this means one of the two entry points left a mesh-size \
+                 option behind — or failed to establish its own. Task #6968: every entry \
+                 point must both ENTER at gmsh's size defaults and LEAVE them there, via \
+                 `MeshSizeScope` (mesh_size_scope.rs). Check that the scope is still armed \
+                 in {first_name} and in {second_name}",
+                alone[index],
+            );
+        }
+    }
 }
