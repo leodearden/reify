@@ -11301,6 +11301,143 @@ mod tests {
         }
     }
 
+    // --- validate_sweep_pose: the second plain-sweep entry point ---
+    //
+    // `GeometryOp::Sweep` is NOT the entry point the eval layer reaches:
+    // `OcctKernelHandle`'s worker routes it to `OcctKernel::sweep_with_history`
+    // (handle.rs, "Task 5b (#2619)"), which is a separate `make_pipe_*` call
+    // site. Both must consult the one guard or they drift — which is exactly
+    // how they came to disagree about the `BRepKind` stamp.
+
+    /// 20×20mm rect profile, in SI metres, with its own normal along +Z.
+    fn pose_test_rect_profile(kernel: &mut OcctKernel) -> GeometryHandleId {
+        kernel
+            .execute(&GeometryOp::RectangleProfile {
+                width: Value::Real(0.020),
+                height: Value::Real(0.020),
+            })
+            .expect("RectangleProfile should build")
+            .id
+    }
+
+    /// A straight 200mm spine from the origin towards `(x, 0, z)`, in metres.
+    fn pose_test_spine(kernel: &mut OcctKernel, x: f64, z: f64) -> GeometryHandleId {
+        kernel
+            .execute(&GeometryOp::LineSegment {
+                x1: 0.0,
+                y1: 0.0,
+                z1: 0.0,
+                x2: x,
+                y2: 0.0,
+                z2: z,
+            })
+            .expect("LineSegment (spine) should build")
+            .id
+    }
+
+    /// The history-tracked entry point must refuse the degenerate pose too.
+    ///
+    /// A +Z-normal rect swept along a +X spine is exactly in-plane. Unguarded,
+    /// this entry point returned a zero-volume body and full history records
+    /// for it, so a history-tracked sweep bypassed the guard entirely.
+    #[test]
+    fn sweep_with_history_refuses_a_profile_posed_in_the_spine_plane() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_id = pose_test_rect_profile(&mut kernel);
+        let spine_id = pose_test_spine(&mut kernel, 0.200, 0.0);
+
+        match kernel.sweep_with_history(profile_id, spine_id) {
+            Err(GeometryError::OperationFailed(msg)) => assert!(
+                msg.contains("sweep") && msg.contains("tangent"),
+                "expected a degenerate-pose error naming the sweep and the \
+                 start tangent, got: {msg}"
+            ),
+            Ok(_) => panic!(
+                "sweep_with_history accepted a profile posed in the spine's \
+                 plane; the guard is wired into only one of the two plain-sweep \
+                 entry points"
+            ),
+            Err(other) => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    /// FAIL-OPEN fence. A WIRE profile has no surface normal, so the pose
+    /// predicate is undefined and the guard must skip rather than reject.
+    ///
+    /// Green on arrival, and it must STAY green: measured, this sweep realizes
+    /// a 20mm × 200mm face of area 0.004 m². That result being labelled a Solid
+    /// is a real defect, but it is the honest-`BRepKind` half of #7248 — not
+    /// something a pose error should claim, since the shape has no normal to be
+    /// measured against.
+    #[test]
+    fn sweep_with_history_fails_open_for_a_wire_profile() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_id = pose_test_spine(&mut kernel, 0.020, 0.0);
+        let spine_id = pose_test_spine(&mut kernel, 0.0, 0.200);
+
+        let (result, _history) = kernel
+            .sweep_with_history(profile_id, spine_id)
+            .expect("a Wire profile has no normal, so the pose guard must skip it");
+        let area = kernel
+            .query(&GeometryQuery::SurfaceArea(result.id))
+            .expect("area query should succeed")
+            .as_f64()
+            .expect("area should be numeric");
+        let expected = 0.020 * 0.200;
+        assert!(
+            (area - expected).abs() / expected < 1e-6,
+            "wire-profile sweep should still realize a {expected} m² face, got {area}"
+        );
+    }
+
+    /// The guard must not disturb a correctly-posed sweep, nor its persistent-
+    /// naming payload: same volume, and one cap face at each end as before.
+    #[test]
+    fn sweep_with_history_preserves_caps_for_a_correctly_posed_profile() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_id = pose_test_rect_profile(&mut kernel);
+        let spine_id = pose_test_spine(&mut kernel, 0.0, 0.200);
+
+        let (result, history) = kernel
+            .sweep_with_history(profile_id, spine_id)
+            .expect("a +Z spine is normal to the profile and must still sweep");
+
+        let vol = kernel
+            .query(&GeometryQuery::Volume(result.id))
+            .expect("volume query should succeed")
+            .as_f64()
+            .expect("volume should be numeric");
+        let expected = 0.020 * 0.020 * 0.200;
+        assert!(
+            (vol - expected).abs() / expected < 1e-9,
+            "correctly-posed sweep should still be {expected:.6e} m³, got {vol:.6e}"
+        );
+        assert_eq!(
+            history.start_cap_face_indices.len(),
+            1,
+            "expected 1 start cap face, got {:?}",
+            history.start_cap_face_indices
+        );
+        assert_eq!(
+            history.end_cap_face_indices.len(),
+            1,
+            "expected 1 end cap face, got {:?}",
+            history.end_cap_face_indices
+        );
+    }
+
     // --- wire_start_tangent FFI tests ---
 
     #[test]
