@@ -1258,10 +1258,24 @@ string), anything under `examples/**`, or anything inside a `tests/` tree or a
 rather than reading them. Re-running the sweep therefore yields many hits for both
 properties below; none of them is a reader.
 
-| Property | Declared at | Production readers | Owner |
+| Property | Declared at | Production readers | Ruling |
 |---|---|---|---|
-| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | #5801 |
-| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | #5801 |
+| `shear_modulus` | `materials_mechanical.ri:100` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
+| `thermal_expansion` | `materials_thermal.ri:41` | none repo-wide | **kept, deliberately inert** — ratified #5801; retirement rejected |
+
+Both rows record a CLOSED decision rather than an open tracking cite; the
+rationale for each — why no consumer is landed, and why retirement was rejected
+— lives at its declaration site, immediately below the owning trait.
+
+The rows also call these properties *data-carrying*. That is a runtime claim, so
+it is pinned in code rather than only here:
+`crates/reify-eval/tests/stdlib_prelude_tests.rs` asserts that `shear_modulus`
+reaches eval as 7.7e10 Pa (`eval_with_prelude_trait_conformance`) and that
+`thermal_expansion` reaches it as 8.1e-6 K⁻¹
+(`eval_carries_thermal_expansion_value_in_si`). Neither property has a reader
+that would otherwise notice a value going missing; if one stopped arriving that
+suite goes red, so the ruling has to be revisited rather than quietly becoming
+false.
 
 **`thermal_conductivity` is deliberately absent from that table.** The name is
 declared at two independent sites, and they differ:
@@ -1278,9 +1292,21 @@ declared at two independent sites, and they differ:
 The second site is nonetheless **not** registered above. The ratified ruling in
 **#5801** names both declaration sites and treats `thermal_conductivity` as one
 property that it explicitly does not own, so adding a row against #5801 would
-assign it an ownership it declines. Splitting the two sites — and deciding whether
-the trait-scoped one needs its own owner — is #5801's call, not this reference's;
-it is recorded here so the distinction is not silently lost.
+assign it an ownership it declines.
+
+#5801 has since answered the split question this reference left to it: **no
+separate owner is needed, because the ruling is trait-scoped.** Inertness at
+`ThermallyCharacterized` follows from what the trait *is* — a material-datasheet
+characterization surface with no thermal solver behind it — and not from any one
+param. The measurement behind that: the trait's **entire** required scalar triple
+is reader-free — `thermal_conductivity` (`:39`), `specific_heat` (`:40`) and
+`thermal_expansion` (`:41`) — where `specific_heat`'s only non-declaration hit
+repo-wide is a test fn name below the `#[cfg(test)]` boundary in
+`crates/reify-core/src/dimension.rs`. Registering one of the three while leaving
+two unmentioned is what made this table look arbitrary and invited re-filing; a
+trait-scoped ruling removes that without minting a speculative new owner, and
+without the ownership #5801 declines. The distinction between the two
+`thermal_conductivity` sites stays recorded above so it is not silently lost.
 
 This supersedes correction 2 of `docs/prds/v0_6/dimension-checked-readers.md` §2.4
 and the matching §10 out-of-scope entry, both of which listed `thermal_conductivity`
