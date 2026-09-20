@@ -823,9 +823,9 @@ pub fn run_modify_pipeline(
 /// what a bare length-semantic argument must produce: at least one Error, and
 /// every Error carrying `DiagnosticCode::ArgTypeMismatch`.
 ///
-/// `what` names the family under test for the first assertion's panic
-/// message — e.g. `"primitive/profile dimension"`, `"modify/sweep
-/// magnitude"`, `"pattern spacing"`.
+/// `what` names the family under test in BOTH assertions' panic messages —
+/// e.g. `"primitive/profile dimension"`, `"modify/sweep magnitude"`,
+/// `"pattern spacing"`.
 ///
 /// # Why both halves matter
 ///
