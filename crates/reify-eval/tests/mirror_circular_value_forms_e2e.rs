@@ -599,7 +599,7 @@ fn build_value_form_compiled(
     want: fn(&GeometryOp) -> bool,
 ) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
     let (diagnostics, ops) = build_against_mock_kernel(compiled);
-    let kept: Vec<GeometryOp> = ops.into_iter().filter(|op| want(op)).collect();
+    let kept: Vec<GeometryOp> = ops.into_iter().filter(want).collect();
     (diagnostics, kept)
 }
 
