@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { PerspectiveCamera, Box3, Vector3 } from 'three';
 import { fitCameraToBox, type FitCameraOptions } from '../../viewport/fitCamera';
+import { DEFAULT_FIT_PADDING } from '../../viewport/orbitDistance';
 
 // ---------------------------------------------------------------------------
 // Helper utilities
@@ -209,23 +210,27 @@ describe('fitCameraToBox', () => {
   });
 
   // (7) CUSTOM PADDING: caller-supplied `padding` must scale camera distance
-  //     linearly — ratio of padded distance to default-padded distance must
-  //     equal the ratio of the padding values (2.2 / 1.1 = 2.0).
+  //     linearly — the distance ratio must equal the padding ratio. Both the
+  //     explicit padding and the expected ratio are DERIVED from
+  //     DEFAULT_FIT_PADDING rather than restating it, so retuning the default
+  //     cannot leave this test asserting a stale relation (SPOT).
   it('scales camera distance proportionally with a custom padding option', () => {
     const center = new Vector3();
     PRINTER_BOX.getCenter(center);
     const aspect = 1.0;
+    const PADDING_MULTIPLE = 2;
 
-    // Default padding (1.1)
+    // Default padding, whatever it currently is.
     const cameraDefault = setupAndFit(60, aspect, PRINTER_BOX);
     const distDefault = cameraDefault.position.distanceTo(center);
 
-    // Explicit padding = 2.2 (exactly 2× the default)
-    const cameraPadded = setupAndFit(60, aspect, PRINTER_BOX, { padding: 2.2 });
+    // Explicit padding, PADDING_MULTIPLE× the default.
+    const cameraPadded = setupAndFit(60, aspect, PRINTER_BOX, {
+      padding: PADDING_MULTIPLE * DEFAULT_FIT_PADDING,
+    });
     const distPadded = cameraPadded.position.distanceTo(center);
 
-    // Distance must scale linearly: ratio ≈ 2.2 / 1.1 = 2.0
-    expect(distPadded / distDefault).toBeCloseTo(2.0, 3);
+    expect(distPadded / distDefault).toBeCloseTo(PADDING_MULTIPLE, 3);
     // Sanity-check: larger padding → strictly larger distance
     expect(distPadded).toBeGreaterThan(distDefault);
   });
