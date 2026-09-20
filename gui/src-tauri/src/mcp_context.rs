@@ -371,30 +371,42 @@ pub fn mcp_tool_call_impl(
 ///
 /// # What the WHOLE-dispatch granularity costs
 ///
-/// Four of the fifteen [`ReifyToolContext`] methods touch no engine at all:
-/// `focus_entity` and `navigate_to_source` only fire the emitter, `get_selection`
-/// reads the selection `RwLock`, and `get_eval_status` returns a constant. Their
-/// tools — `reify_focus_entity`, `reify_navigate_to_source`,
-/// `reify_get_selection`, `reify_get_eval_status` — therefore now QUEUE behind
-/// whatever engine job the single-consumer lane is running, where before this
-/// routing they answered immediately on a Tauri command thread. That is a new
-/// latency coupling for exactly the navigation tools an AI client uses while a
-/// drag is in flight, and it is not an instance of a cost already written down:
-/// `large_stack::Lane`'s "What the split does NOT buy" describes serialization
-/// among work that was ALREADY on the lane, not work newly enrolled into it.
+/// Four [`ReifyToolContext`] methods touch no engine at all: `focus_entity` and
+/// `navigate_to_source` only fire the emitter, `get_selection` reads the
+/// selection `RwLock`, and `get_eval_status` returns a constant. Their tools —
+/// `reify_focus_entity`, `reify_navigate_to_source`, `reify_get_selection`,
+/// `reify_get_eval_status` — therefore now QUEUE behind whatever engine job the
+/// single-consumer lane is running, where before this routing they answered
+/// immediately on a Tauri command thread. That is a new latency coupling for
+/// exactly the navigation tools an AI client uses while a drag is in flight, and
+/// it is not an instance of a cost already written down: `large_stack::Lane`'s
+/// "What the split does NOT buy" describes serialization among work that was
+/// ALREADY on the lane, not work newly enrolled into it. Worst on
+/// `reify_get_eval_status`, which is what a client polls to learn WHETHER an
+/// evaluation is in flight — the one call with the most reason to skip the
+/// queue.
 ///
-/// Accepted rather than bypassed. Keeping those four off the lane means a
-/// tool-name-keyed predicate here, which would duplicate the registry's own
-/// knowledge of which tool reaches which context method — a second copy that
-/// rots silently the first time a tool gains an engine touch, and rots in the
-/// dangerous direction (a tool wrongly classed non-engine gets the caller's
-/// ~2 MiB stack back, which is the overflow this module exists to remove). The
-/// safe granularity is the one the dispatch itself has.
+/// Not bypassed HERE, because the only bypass available here is a
+/// tool-name-keyed predicate: a second copy of the registry's own knowledge of
+/// which tool reaches which context method, rotting silently the first time a
+/// tool gains an engine touch, and rotting in the dangerous direction (a tool
+/// wrongly classed non-engine gets the caller's ~2 MiB stack back, which is the
+/// overflow this module exists to remove). The safe granularity is the one the
+/// dispatch itself has.
+///
+/// TRACKED, not merely narrated: task #7722 carries the bypass that does NOT
+/// need a second copy — `reify_mcp::ToolRegistry` owning the classification at
+/// registration time, beside the handler, so `is_engine_bearing(name)` can pick
+/// lane-vs-inline from a single source of truth that defaults new tools to the
+/// lane. Filed rather than done here because the registry is in
+/// `crates/reify-mcp`, outside this task's scope. Cited for the reason
+/// `large_stack::Lane` gives for #6195 and #6517: a disclosed limit with no
+/// ticket behind it is indistinguishable from a limit nobody intends to close.
 ///
 /// # Why here rather than in `commands.rs`
 ///
 /// This path needs an OWNED `TauriToolContext` — engine `Arc` + emitter +
-/// selection — not the `&Mutex<EngineSession>` the fourteen migrated sites pass.
+/// selection — not the `&Mutex<EngineSession>` the other migrated sites pass.
 /// And `mcp_context.rs` is ungated, so this helper is headlessly testable, where
 /// `main.rs` (a `required-features = ["gui"]` `[[bin]]`) is not.
 ///
