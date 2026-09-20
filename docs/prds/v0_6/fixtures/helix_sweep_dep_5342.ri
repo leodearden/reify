@@ -1,5 +1,19 @@
+// Fixture: task #5342 — a circle swept along a `helix()` spine.
+//
+// The profile is posed NORMAL to the helix start tangent, which is load-bearing
+// rather than decorative: `sweep` transports the section AS POSED, and a bare
+// `circle(0.4mm)` carries its own +Z normal, which sits only ~3.39 deg off this
+// spine's start tangent (|t.n| = 0.059116871, measured under #7248).  Swept
+// edge-on like that the body came back with a NEGATIVE volume, which `volume()`
+// downgrades to Undef — a flat ribbon, not the tube this fixture is for.  Posed,
+// it realizes 8.488830310745207e-8 m^3, matching pi*r^2*L within 0.2%.
+//
+// The pose must go through a NAMED BINDING: an inline `translate(rotate(...))`
+// sweep profile is rejected at compile time by the `GeometryProfileRequired`
+// precondition.  #7248's pose guard rejects the unposed spelling outright.
+
 structure def Test {
     let path = helix(2.15mm, 0.8mm, 10mm)
-    let profile = circle(0.4mm)
+    aux let profile = translate(rotate(circle(0.4mm), 1.0, 0.0, 0.0, -90deg), 2.15mm, 0mm, 0mm)
     let body = sweep(profile, path)
 }
