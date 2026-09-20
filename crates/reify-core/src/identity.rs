@@ -131,6 +131,27 @@ impl ValueCellId {
     }
 }
 
+/// Renders as `"<entity>.<member>"`.
+///
+/// This rendering is LOSSY whenever either half already contains a `'.'`,
+/// because the joined string no longer says where the boundary was. Three live
+/// families hit that case, and they disagree about which dot is the separator:
+///
+/// * INSTANCE PATHS carry the dots in the ENTITY half (`Rig.bolts` +
+///   `line_cost`), minted over composed descendant prefixes in
+///   reify-eval/src/structural_query.rs:686.
+/// * PORT COMPOSITE MEMBERS carry a dot in the MEMBER half (`Bracket` +
+///   `mount.width`), minted at reify-compiler/src/entity.rs:2263.
+/// * KEYED MEMBERS carry the key in the MEMBER half (`Widget` +
+///   `vents["intake"]`), minted by `keyed_member_cell` in
+///   reify-ir/src/value.rs:4665; a key containing a dot lands here too.
+///
+/// `ValueCellId::new("Rig.bolts", "line_cost")` and
+/// `ValueCellId::new("Rig", "bolts.line_cost")` are distinct cells that render
+/// to the identical string, so Display is not injective and NO positional split
+/// inverts it. [`FromStr`](std::str::FromStr) is therefore only a PARTIAL
+/// inverse: it round-trips the unambiguous single-dot case and refuses the rest
+/// rather than guessing. Do not hand-roll a fourth split — route through it.
 impl fmt::Display for ValueCellId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.entity, self.member)
@@ -144,6 +165,15 @@ impl fmt::Display for ValueCellId {
 pub enum ValueCellIdParseError {
     /// The input contained no `'.'` separator at all.
     MissingSeparator,
+    /// The entity segment (before the first `'.'`) was empty.
+    EmptyEntity,
+    /// The member segment (after the first `'.'`) was empty.
+    EmptyMember,
+    /// The member segment still contained a `'.'`, so the input admits more
+    /// than one `(entity, member)` reading and cannot say which cell is meant.
+    /// See [`ValueCellId`]'s [`Display`](fmt::Display) docs for the three
+    /// families that collide here.
+    Ambiguous,
 }
 
 impl fmt::Display for ValueCellIdParseError {
@@ -152,6 +182,18 @@ impl fmt::Display for ValueCellIdParseError {
             ValueCellIdParseError::MissingSeparator => {
                 write!(f, "expected '<entity>.<member>'")
             }
+            ValueCellIdParseError::EmptyEntity => {
+                write!(f, "value cell id has an empty entity segment")
+            }
+            ValueCellIdParseError::EmptyMember => {
+                write!(f, "value cell id has an empty member segment")
+            }
+            ValueCellIdParseError::Ambiguous => write!(
+                f,
+                "ambiguous value cell id: the remaining '.' admits more than \
+                 one (entity, member) reading, so the id cannot say which cell \
+                 is meant"
+            ),
         }
     }
 }
@@ -162,11 +204,28 @@ impl std::str::FromStr for ValueCellId {
     type Err = ValueCellIdParseError;
 
     /// Parse the `"<entity>.<member>"` Display grammar back into a
-    /// [`ValueCellId`], splitting on the FIRST `'.'`.
+    /// [`ValueCellId`].
+    ///
+    /// This is a PARTIAL inverse of [`fmt::Display`], not an exact one: that
+    /// rendering is not injective (see its docs), so only an id with EXACTLY
+    /// one `'.'` names a single cell. Anything with a second dot is refused as
+    /// [`Ambiguous`](ValueCellIdParseError::Ambiguous) rather than split on a
+    /// guessed boundary. No identifier charset is imposed otherwise — hyphens,
+    /// brackets and quotes all round-trip, so the keyed-member form
+    /// `Widget.vents["intake"]` parses.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (entity, member) = s
             .split_once('.')
             .ok_or(ValueCellIdParseError::MissingSeparator)?;
+        if entity.is_empty() {
+            return Err(ValueCellIdParseError::EmptyEntity);
+        }
+        if member.is_empty() {
+            return Err(ValueCellIdParseError::EmptyMember);
+        }
+        if member.contains('.') {
+            return Err(ValueCellIdParseError::Ambiguous);
+        }
         Ok(ValueCellId::new(entity, member))
     }
 }
