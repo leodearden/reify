@@ -18,7 +18,8 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as bridge from "../../src/debug/bridge.js";
 import { extractToolDefNames, readDebugServerSource } from "../../src/__tests__/toolDefNames.js";
-import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario, KNOWN_DEBUG_TOOL_NAMES } from "./assertions.js";
+import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario, KNOWN_DEBUG_TOOL_NAMES, SCENE_CAMERA_FOV_DEG, ASSERTION_OPS } from "./assertions.js";
+import { CAMERA_FOV_DEG } from "../../src/viewport/scene.js";
 import type { Assertion, ValueScenario, ScenarioDeps } from "./assertions.js";
 import type { RpcResult } from "./rpc.js";
 import { resolveRepoRoot } from "./paths.js";
@@ -48,16 +49,6 @@ describe("getByPath", () => {
     expect(getByPath({ a: null }, "a.b.c")).toBeUndefined();
   });
 });
-
-/**
- * Every op `evaluateAssertion` is required to handle, and therefore every op a
- * VALUE_SCENARIOS entry may name. Single source for both the VALUE_SCENARIOS
- * validator below and the exhaustiveness pin in `describe("evaluateAssertion")`
- * — adding an op to the `Assertion` union without a matching `case` arm must
- * fail loudly here rather than degrade to the `default:` "unknown op" branch at
- * runtime, where a live e2e scenario would report a vacuous failure.
- */
-const ASSERTION_OPS: readonly Assertion["op"][] = ["equals", "atLeast", "atMost", "exists"];
 
 describe("evaluateAssertion", () => {
   it("'equals' passes when actual === expected (meshCount 1===1)", () => {
@@ -206,14 +197,39 @@ describe("evaluateAssertion", () => {
   // real `case` arm. Without this, adding an op to the union and to ASSERTION_OPS
   // but not to the switch falls through to `default:` and every scenario using it
   // fails with "unknown op" only when a live GUI is attached.
+  //
+  // The probe is deliberately a value every op REJECTS — a missing path, which fails
+  // `exists` and is non-numeric for the comparisons and unequal for `equals`. Probing
+  // with a passing value would make the message check unreachable for any op that
+  // happens to pass, which is how an unhandled op could slip through unnoticed.
   it("every op in ASSERTION_OPS is handled — none falls through to 'unknown op'", () => {
     for (const op of ASSERTION_OPS) {
-      const a = { path: "v", op, expected: 1 } as Assertion;
+      const a = { path: "missing", op, expected: 1 } as Assertion;
       const result = evaluateAssertion({ v: 1 }, a);
+      expect(result.ok, `op '${op}' must reject the probe so its message is observable`).toBe(false);
       if (!result.ok) {
         expect(result.message, `op '${op}' fell through to the default arm`).not.toContain("unknown op");
       }
     }
+  });
+
+  it("the roster is exactly the four documented ops", () => {
+    // ASSERTION_OPS is imported from assertions.ts, where `AssertionOp` is DERIVED from
+    // it — so no op can exist in the type without appearing here, and the loop above
+    // therefore covers the union rather than an arbitrary subset of it. This pins the
+    // roster's contents so an addition is a deliberate, reviewed edit.
+    expect([...ASSERTION_OPS].sort()).toEqual(["atLeast", "atMost", "equals", "exists"]);
+  });
+});
+
+// The camera VALUE_SCENARIOS' thresholds are all derived from the app's field of view.
+// assertions.ts mirrors that constant rather than importing scene.ts (which would drag
+// three and the axis-label builders into the bare-node e2e runner); this is the pin that
+// makes the mirror safe. Under vitest the real module IS importable, so the two can be
+// compared directly here.
+describe("scene-constant mirrors", () => {
+  it("SCENE_CAMERA_FOV_DEG tracks scene.ts's CAMERA_FOV_DEG", () => {
+    expect(SCENE_CAMERA_FOV_DEG).toBe(CAMERA_FOV_DEG);
   });
 });
 

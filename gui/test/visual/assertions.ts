@@ -6,6 +6,11 @@
  */
 
 import type { RpcResult } from "./rpc.js";
+// The one app-runtime import this module allows itself.  orbitDistance.ts is deliberately
+// dependency-free (no three, no DOM), so it loads unchanged in the bare node process that
+// `tsx test/visual/run.ts` uses to drive a LIVE GUI over RPC.  Importing the real framing
+// formula is what stops the camera thresholds below from being a second, drifting copy of it.
+import { fittedDistanceFor } from "../../src/viewport/orbitDistance.js";
 
 // ─── getByPath ────────────────────────────────────────────────────────────────
 
@@ -91,13 +96,22 @@ export type ValueScenario = {
 const SMALL_CUBE_EDGE_M = 0.01;
 const SMALL_CUBE_RADIUS = 0.5 * Math.sqrt(3) * SMALL_CUBE_EDGE_M; // ≈ 8.660e-3
 
-// fitCameraToBox: distance = padding · max(r/sin(vFov/2), r/sin(hFov/2)), with
-// padding 1.1 and CAMERA_FOV_DEG 60. The VERTICAL term is 1.1·r/sin(30°) = 2.2·r.
-// The horizontal term binds only on a pane TALLER than wide (fitCamera.ts design
-// decision 2, esc-4280), and binds UPWARDS — so 2.2·r is a lower bound on the
-// fitted distance, which is what makes the atLeast/atMost pair below sound for
-// any pane shape.
-const SMALL_CUBE_FIT_DISTANCE = 2.2 * SMALL_CUBE_RADIUS; // ≈ 1.905e-2
+/**
+ * Mirror of `CAMERA_FOV_DEG` (gui/src/viewport/scene.ts).
+ *
+ * Mirrored rather than imported because scene.ts pulls in three and the axis-label
+ * builders, which this module must stay clear of (see the import note above).
+ * `assertions.test.ts` pins this against the real constant, so a retuned field of view
+ * reds in the gate instead of silently invalidating every camera threshold below.
+ */
+export const SCENE_CAMERA_FOV_DEG = 60;
+
+// The fitted distance comes from fitCameraToBox's own formula, at the square-pane
+// reference aspect. The horizontal term binds only on a pane TALLER than wide
+// (fitCamera.ts design decision 2, esc-4280) and binds UPWARDS — so this is a lower
+// bound on the real fitted distance, which is what makes the atLeast/atMost pair below
+// sound for any pane shape.
+const SMALL_CUBE_FIT_DISTANCE = fittedDistanceFor(SMALL_CUBE_RADIUS, SCENE_CAMERA_FOV_DEG); // ≈ 1.905e-2
 
 // zoom_camera dollies MULTIPLICATIVELY: dollyIn(scale) ⇒ distance *= scale.
 const SMALL_CUBE_ZOOM_SCALE = 0.3;
@@ -458,9 +472,26 @@ export const VALUE_SCENARIOS: ValueScenario[] = [
 
 // ─── Assertion type + evaluateAssertion ──────────────────────────────────────
 
+/**
+ * Every op `evaluateAssertion` handles, and therefore every op a VALUE_SCENARIOS entry
+ * may name.  This array is the SOURCE, and `AssertionOp` is derived from it — not the
+ * other way round — so an op cannot exist in the type while being absent from the
+ * roster.  A hand-written roster typed `readonly AssertionOp[]` would allow exactly
+ * that: an array type constrains what MAY appear, never what MUST, so an omission
+ * typechecks cleanly and leaves the op unguarded by every consumer that iterates it.
+ *
+ * Derivation rather than a `satisfies` cross-check is what makes this hold HERE:
+ * `gui/tsconfig.json` includes only `src`, so nothing in this directory is typechecked
+ * by the gate and a compile-time-only guard would be inert.  A derived union survives
+ * that because the roster it is derived from is a runtime value the tests iterate.
+ */
+export const ASSERTION_OPS = ["equals", "atLeast", "atMost", "exists"] as const;
+
+export type AssertionOp = (typeof ASSERTION_OPS)[number];
+
 export type Assertion = {
   path: string;
-  op: "equals" | "atLeast" | "atMost" | "exists";
+  op: AssertionOp;
   expected?: unknown;
 };
 
