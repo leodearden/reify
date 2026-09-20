@@ -430,9 +430,9 @@ fn unit_vector(v: ffi::ffi::Point3) -> Option<(f64, f64, f64)> {
 /// against), either FFI query errors, or either vector carries no direction.
 /// Failing closed would newly reject sweeps that realize today — a let-bound
 /// `line_segment` profile swept along a +Z spine produces a real 20mm × 200mm
-/// face. That case IS a defect, but its remedy is the honest `BRepKind` stamp,
-/// which makes the result legibly a Face, not a pose error naming a tolerance
-/// the shape has no normal to be measured against. Keeping the scope to
+/// un-capped shell. That case IS a defect, but its remedy is the honest
+/// `BRepKind` stamp, which makes the result legibly a Shell, not a pose error
+/// naming a tolerance the shape has no normal to be measured against. Keeping the scope to
 /// "the profile has a normal, and it lies in the spine's plane" leaves the
 /// question of what counts as a valid profile with the compiler, which already
 /// owns it.
