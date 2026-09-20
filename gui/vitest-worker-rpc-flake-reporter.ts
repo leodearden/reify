@@ -25,10 +25,12 @@ export interface WorkerRpcFailureSummary {
   readonly failedSuites: readonly FailedSuiteRecord[]
   readonly failedTestCount: number
   /**
-   * Errors vitest raised outside any suite. They also fail the run, and a run
-   * that failed only on one of these has no failed suite to retry — so an
-   * unhandled error that is not itself an RPC timeout vetoes, exactly as an
-   * unexplained suite failure does.
+   * Errors vitest raised outside any suite. They also fail the run, and no
+   * module is named by one — so ANY of them, alone or alongside failed suites,
+   * yields a verdict naming no suite at all, which the runner reads as "re-run
+   * the original invocation" rather than as "nothing to do". An unhandled error
+   * that is not itself an RPC timeout still vetoes, exactly as an unexplained
+   * suite failure does.
    */
   readonly unhandledErrorMessages?: readonly string[]
   /**
@@ -48,6 +50,12 @@ export interface WorkerRpcFailureSummary {
 
 export interface WorkerRpcFlakeVerdict {
   readonly kind: 'worker_rpc_timeout'
+  /**
+   * What the retry should NARROW to — not an inventory of what failed. EMPTY
+   * means "nothing to narrow to", which the runner reads as "re-run the
+   * caller's original invocation". `methods` is where the event itself is
+   * accounted for, and it covers run-level failures that no suite names.
+   */
   readonly suites: readonly string[]
   readonly methods: readonly string[]
 }
@@ -62,25 +70,40 @@ const timedOutMethod = (message: string): string | null =>
 
 /**
  * Returns a verdict when the run is UNAMBIGUOUSLY a host-starvation event, and
- * null otherwise. Two rules make that "unambiguously" true, and both are
+ * null otherwise. Each rule below makes that "unambiguously" true, and each is
  * load-bearing for the bounded retry this feeds:
  *
+ *  - Something actually FAILED: at least one failed suite, or one unhandled
+ *    error. An all-green run is not a flake and has nothing to retry.
  *  - Zero failed tests. A genuine code defect produces failed tests, so a
  *    non-zero count can never be classified as starvation.
- *  - Every failed suite carries an RPC timeout. One suite failing for any
- *    other reason vetoes the whole run, so a real defect coinciding with a
- *    starvation event is never absorbed.
+ *  - Every failed suite carries an RPC timeout, and so does every unhandled
+ *    error. One failure of either kind arising any other way vetoes the whole
+ *    run, so a real defect coinciding with a starvation event is never
+ *    absorbed.
  *  - Every suite reached a terminal state and the run was not interrupted.
- *    The two rules above reason only about suites that FAILED; this one closes
- *    the same hole for suites that never RAN, which a dying forks pool leaves
- *    behind. Without it a retry of the two failures could green a gate that
- *    silently skipped twenty more.
+ *    The rules above reason only about failures that were REPORTED; this one
+ *    closes the same hole for suites that never RAN, which a dying forks pool
+ *    leaves behind. Without it a retry of the two failures could green a gate
+ *    that silently skipped twenty more.
+ *
+ * SCOPE is decided separately, and by ATTRIBUTABILITY rather than by counting.
+ * A run-level failure has no module to attribute it to: the `snapshotSaved` RPC
+ * is issued after a file's tests have already passed (task 7724, esc-7600-1),
+ * and a timed-out `onUnhandledError` means a genuine unhandled error was lost
+ * in transit from a module that may well have passed. So ANY unhandled error
+ * makes the verdict name no suite at all — including when suites failed too,
+ * where narrowing to them would re-run everything except the thing that has no
+ * name. Widening a retry can never mask a failure; narrowing past the evidence
+ * can.
  */
 export function classifyWorkerRpcFlake(
   summary: WorkerRpcFailureSummary,
 ): WorkerRpcFlakeVerdict | null {
+  const unhandled = summary.unhandledErrorMessages ?? []
+
   if (summary.failedTestCount !== 0) return null
-  if (summary.failedSuites.length === 0) return null
+  if (summary.failedSuites.length === 0 && unhandled.length === 0) return null
   if (summary.runEndReason === 'interrupted') return null
   if ((summary.unfinishedSuites?.length ?? 0) !== 0) return null
 
@@ -90,7 +113,7 @@ export function classifyWorkerRpcFlake(
     if (found.length === 0) return null
     for (const method of found) methods.add(method)
   }
-  for (const message of summary.unhandledErrorMessages ?? []) {
+  for (const message of unhandled) {
     const method = timedOutMethod(message)
     if (method === null) return null
     methods.add(method)
@@ -98,7 +121,7 @@ export function classifyWorkerRpcFlake(
 
   return {
     kind: 'worker_rpc_timeout',
-    suites: summary.failedSuites.map((s) => s.filepath),
+    suites: unhandled.length === 0 ? summary.failedSuites.map((s) => s.filepath) : [],
     methods: [...methods].sort(),
   }
 }
@@ -231,9 +254,14 @@ export default class WorkerRpcFlakeReporter {
       return
     }
 
+    // `suites=0` alone would read as "retrying zero suites"; scope= says which
+    // question the runner will re-ask. Derived from the verdict, so the two
+    // keys cannot disagree.
     this.out.emit(
-      `@@REIFY_GUI_FLAKE@@ kind=${verdict.kind} suites=${verdict.suites.length}` +
-        ` methods=${verdict.methods.join(',')} lineage=${LINEAGE}`,
+      `@@REIFY_GUI_FLAKE@@ kind=${verdict.kind}` +
+        ` scope=${verdict.suites.length === 0 ? 'run' : 'suites'}` +
+        ` suites=${verdict.suites.length} methods=${verdict.methods.join(',')}` +
+        ` lineage=${LINEAGE}`,
     )
     this.tryIo('write the flake artifact', () =>
       this.out.writeArtifact(this.out.artifactPath, `${JSON.stringify(verdict, null, 2)}\n`),

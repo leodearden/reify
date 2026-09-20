@@ -172,6 +172,10 @@ export -f npm_invocations
 # outside the test include pattern, so vitest could not re-run it as a spec.)
 TWO_SUITES='{"kind":"worker_rpc_timeout","suites":["src/__tests__/engineStore.test.ts","src/__tests__/meshManager.attributeResize.test.ts"],"methods":["fetch"]}'
 
+# The RUN-SCOPE verdict (task 7724): a run whose only failures were run-level
+# RPC timeouts, so the classifier had no suite to narrow to and named none.
+RUN_SCOPE='{"kind":"worker_rpc_timeout","suites":[],"methods":["snapshotSaved"]}'
+
 # (1) A green run must not retry, and must not consult the artifact at all.
 fixture_run "" 0 0 --
 assert "B1: vitest exits 0 => runner exits 0" \
@@ -189,6 +193,8 @@ assert "B2: the retry passes ONLY the two suites named in the artifact" \
     bash -c "[ \"\$(sed -n 2p '$FIX_ARGV')\" = 'test -- src/__tests__/engineStore.test.ts src/__tests__/meshManager.attributeResize.test.ts' ]"
 assert "B2: the retry is announced with an @@REIFY_GUI_FLAKE@@ outcome marker" \
     bash -c "grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retried' '$FIX_OUT'"
+assert "B13: a narrowed retry announces scope=suites" \
+    bash -c "grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retried .*scope=suites' '$FIX_OUT'"
 
 # (3) THE CENTRAL SAFETY PROPERTY. No artifact means the reporter did not
 # classify this run -- a genuine test failure. Never retry it, never mask it.
@@ -210,6 +216,8 @@ assert "B4: failing retry => still exactly two npm invocations (never a loop)" \
     bash -c "[ \"\$(npm_invocations)\" -eq 2 ]"
 assert "B4: a failing retry is still announced (escalated, never silently absorbed)" \
     bash -c "grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=escalated' '$FIX_OUT'"
+assert "B13: a failing narrowed retry still names its scope=suites" \
+    bash -c "grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=escalated .*scope=suites' '$FIX_OUT'"
 
 # (5) The kill switch.
 REIFY_GUI_RPC_FLAKE_RETRY=0 fixture_run "$TWO_SUITES" 1 0 --
@@ -238,8 +246,34 @@ hostile_case "a command substitution"                '["$(id).ts"]'
 hostile_case "a shell metacharacter (;)"             '["a.ts;id"]'
 hostile_case "a glob"                                '["*.test.ts"]'
 hostile_case "an embedded space"                     '["a b.test.ts"]'
-hostile_case "an empty suite list"                   '[]'
 hostile_case "a non-string suite entry"              '[17]'
+
+# THE NEW VALIDATION HOLE (task 7724). An empty ARRAY is now a legitimate
+# verdict meaning "nothing to narrow to", and the reporter->runner seam is
+# newline-delimited -- so `[""].join("\n")` is byte-identical to `[].join("\n")`
+# and `["a.ts",""]` loses its tail to command substitution. An empty STRING must
+# therefore be rejected where the array is still STRUCTURED, in the node parser:
+# downstream it is indistinguishable from the thing that now means "retry
+# everything".
+hostile_case "an empty-string suite entry"             '[""]'
+hostile_case "an empty-string entry beside a real one" '["src/__tests__/a.test.ts",""]'
+assert "B14: an empty-string entry is rejected LOUDLY, never promoted to a full retry" \
+    bash -c "grep -qi 'WARNING' '$FIX_OUT'"
+
+# ...and EMPTINESS is not the only way into that collapse. Measured against the
+# parser as it stood: `["\n"]` survives a length check, joins to "\n", and loses
+# it to command substitution -- leaving the same empty string `[]` produces, so a
+# REJECTED artifact was promoted to a full re-run of the caller's invocation. An
+# EMBEDDED newline collapses the other way: `["a.ts\nb.ts"]` is ONE malformed
+# token that mapfile silently splits into two specs. Both are closed by rejecting
+# WHITESPACE in the parser -- not a new rule, only is_safe_spec's existing
+# character class moved upstream to the one place these are still distinguishable
+# from a genuinely empty array.
+hostile_case "a whitespace-only suite entry (newline)" '["\n"]'
+hostile_case "a whitespace-only suite entry (space)"   '[" "]'
+hostile_case "an entry with an EMBEDDED newline"       '["src/__tests__/a.test.ts\nsrc/__tests__/b.test.ts"]'
+assert "B14: a whitespace-only entry is rejected LOUDLY too, never read as an empty array" \
+    bash -c "grep -qi 'WARNING' '$FIX_OUT'"
 
 fixture_run 'not json at all' 1 0 --
 assert "B6: malformed JSON artifact -- no retry, original exit propagated" \
@@ -269,6 +303,41 @@ assert "B8: the retry carries the caller's options and their values through" \
 fixture_run "$TWO_SUITES" 1 0 -- src/__tests__/unitLadder.test.ts
 assert "B9: the retry replaces the caller's positional spec filters" \
     bash -c "[ \"\$(sed -n 2p '$FIX_ARGV')\" = 'test -- src/__tests__/engineStore.test.ts src/__tests__/meshManager.attributeResize.test.ts' ]"
+
+# (10) THE RUN-SCOPE VERDICT (task 7724). `snapshotSaved` is issued after a
+# file's tests have already passed, so a timeout on it surfaces at run level
+# with no module to attribute it to and the classifier names NO suite. That is
+# not "nothing to do": the runner re-runs the caller's ORIGINAL invocation,
+# which on the merge gate is the bare full suite. This is the hole esc-7600-1
+# fell through -- the same fixture was previously asserted to be REJECTED.
+fixture_run "$RUN_SCOPE" 1 0 --
+assert "B10: a verdict naming NO suite + a passing retry => runner exits 0" \
+    bash -c "[ \"$FIX_RC\" -eq 0 ]"
+assert "B10: the run-scope retry is still bounded to ONE (exactly two npm invocations)" \
+    bash -c "[ \"\$(npm_invocations)\" -eq 2 ]"
+assert "B10: the retry is the caller's bare full-suite invocation" \
+    bash -c "[ \"\$(sed -n 2p '$FIX_ARGV')\" = 'test' ]"
+assert "B12: the run-scope retry announces scope=run both before and after" \
+    bash -c "
+        grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retrying .*scope=run' '$FIX_OUT' &&
+        grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retried .*scope=run' '$FIX_OUT'
+    "
+
+# (11) ...and "the original invocation" means exactly that. Options, their
+# values AND the caller's own positional filters all survive, because with no
+# classified suites there is nothing to replace them with. A block narrowed by
+# REIFY_GUI_RETRY_SPECS therefore retries its own narrowing rather than
+# suddenly answering a wider question than the one that was asked.
+fixture_run "$RUN_SCOPE" 1 0 -- -t someName --coverage src/__tests__/unitLadder.test.ts
+assert "B11: the run-scope retry reproduces the caller's original argv verbatim" \
+    bash -c "[ \"\$(sed -n 2p '$FIX_ARGV')\" = 'test -- -t someName --coverage src/__tests__/unitLadder.test.ts' ]"
+
+# (12) A run-scope retry that also fails is announced and stopped, never looped.
+fixture_run "$RUN_SCOPE" 1 1 --
+assert "B12: a failing run-scope retry escalates at scope=run, never silently" \
+    bash -c "grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=escalated .*scope=run' '$FIX_OUT'"
+assert "B12: a failing run-scope retry is still bounded to two invocations" \
+    bash -c "[ \"\$(npm_invocations)\" -eq 2 ]"
 
 # -- Section C: the wiring — one definition of how vitest is invoked ---------
 # CLAUDE.md requires scripts/gui-test.sh and verify.sh's gui block to stay
@@ -326,13 +395,22 @@ assert "C2: scripts/gui-test.sh invokes the SAME runner" \
 assert "C2: scripts/gui-test.sh has NO bare 'npm test' invocation left" \
     bash -c "! grep -E '^[[:space:]]*(npm test|.*[^-]npm test )' '$GUI_TEST_SH' | grep -qv '^[[:space:]]*#'"
 
-# (3) The block's wall-clock budget. MEASURED on this branch before keeping 15:
-# a two-suite retry costs ~5-7 s idle, and the worst recorded starved gui run
-# was 473.90 s (task 7431) against a 51 s idle baseline -- a 9.3x dilation. Even
-# dilating the retry by the same factor (~65 s) and npm ci + typecheck with it
-# (~25 s idle -> ~230 s), the worst case lands near 770 s, inside 900 s. The
-# retry therefore does NOT demand a wider budget, and widening it speculatively
-# would only slow down the detection of a genuinely hung block.
+# (3) The block's wall-clock budget, kept at 15 minutes even though a retry is
+# no longer always a narrowed one: at scope=run it re-runs the WHOLE suite, so
+# the pair costs roughly TWICE the vitest phase rather than the few seconds a
+# two-suite retry cost. The typical pair still fits the 900 s; at the worst
+# RECORDED dilation it does not, and `timeout` kills the block.
+#
+# That overrun is ACCEPTED, not overlooked -- do not read this assertion as
+# proof the budget is safe. The outcome at that dilation is red either way, and
+# `outcome=retrying scope=run` is emitted BEFORE the retry starts, so such a
+# block still explains itself instead of ending in an unexplained SIGKILL.
+# Widening speculatively would only delay detection of a genuinely hung block,
+# and REIFY_GUI_RPC_FLAKE_RETRY=0 remains the escape hatch.
+#
+# The measured basis lives in ONE place, deliberately not restated here where it
+# would drift: docs/notes/verify-pipeline-knobs.md, the "bound this does NOT
+# change" bullet under "GUI worker-RPC starvation marker & bounded retry".
 assert "C3: the gui block keeps its 15-minute wrap_subshell budget" \
     grep -q 'wrap_subshell gui 15' "$VERIFY_SH"
 
@@ -471,6 +549,78 @@ SPEC
             ! grep -q '@@REIFY_GUI_FLAKE@@' '$E2E/phase3.log' &&
             [ ! -f '$E2E_ARTIFACT' ]
         "
+
+    # Phase 5 -- THE RUN-SCOPE SHAPE (task 7724), end to end. Every test PASSES
+    # and the only failure is an unhandled error raised from a timer, so it
+    # lands at RUN level with no module to attribute it to: the recorded
+    # esc-7600-1 signature. specs/healthy.test.ts is untouched from Phase 1.
+    #
+    # This is also the ONE assertion in the whole suite that drives vitest's
+    # REAL SerializedError through the classifier. Everywhere else the
+    # classifier is fed synthetic `{message}` objects, so only here can the
+    # printer's `Error: ` prefix be shown NOT to be part of `.message` -- the
+    # premise the anchored RPC_TIMEOUT_MESSAGE regex rests on.
+    cat > "$E2E/gui/specs/starved.test.ts" <<'SPEC'
+import { existsSync, writeFileSync } from 'node:fs'
+const seen = process.env.E2E_SEEN_FILE as string
+it('passes while the host stalls on a post-test RPC', async () => {
+  if (!existsSync(seen)) {
+    writeFileSync(seen, 'x')
+    // Thrown from a timer, so it is an UNHANDLED error at run level rather
+    // than this test's failure -- which is exactly how snapshotSaved behaves:
+    // it is issued after the file's tests have already passed.
+    setTimeout(() => {
+      throw new Error('[vitest-worker]: Timeout calling "snapshotSaved"')
+    }, 0)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  expect(1).toBe(1)
+})
+SPEC
+
+    E2E_SEEN="$E2E/state-phase5"
+    rm -f "$E2E_ARTIFACT"
+    p5_rc=0
+    ( cd "$E2E/gui" && E2E_SEEN_FILE="$E2E_SEEN" npm test ) >"$E2E/phase5.log" 2>&1 || p5_rc=$?
+
+    assert "D11: the run-scope event fails the run with ZERO failed suites" \
+        bash -c "
+            [ '$p5_rc' -ne 0 ] &&
+            grep -q 'Test Files.*2 passed (2)' '$E2E/phase5.log' &&
+            ! grep -q 'Test Files.*failed' '$E2E/phase5.log' &&
+            grep -q 'Errors' '$E2E/phase5.log'
+        "
+
+    assert "D12: the real reporter classifies it at RUN scope, at column 0" \
+        grep -qE '^@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout scope=run ' "$E2E/phase5.log"
+
+    assert "D12: the run-scope marker carries suites=0, the method and the lineage" \
+        grep -qE '^@@REIFY_GUI_FLAKE@@ .*suites=0 methods=snapshotSaved lineage=3185,4856,7630' "$E2E/phase5.log"
+
+    assert "D13: the real artifact names NO suite -- an EMPTY array, not an absent key" \
+        bash -c "[ \"\$(node -e 'const s = JSON.parse(require(\"node:fs\").readFileSync(process.argv[1], \"utf8\")).suites; process.stdout.write(Array.isArray(s) ? String(s.length) : \"not-an-array\")' '$E2E_ARTIFACT')\" = '0' ]"
+
+    # Phase 6 -- the runner over the same run-scope project from a clean slate.
+    rm -f "$E2E_ARTIFACT"
+    p6_rc=0
+    E2E_SEEN_FILE="$E2E/state-phase6" "$E2E/scripts/gui-vitest-run.sh" >"$E2E/phase6.log" 2>&1 || p6_rc=$?
+
+    assert "D14: the runner rescues the run-scope flake (final exit 0)" \
+        bash -c "[ '$p6_rc' -eq 0 ]"
+
+    assert "D14: the run-scope retry is announced before AND after" \
+        bash -c "
+            grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retrying .*scope=run' '$E2E/phase6.log' &&
+            grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retried .*scope=run' '$E2E/phase6.log'
+        "
+
+    # The log holds both runs; with no suite to narrow to, the retry must re-run
+    # the WHOLE project -- so the LAST summary still counts both files.
+    assert "D14: the retry re-ran the whole project, not a narrowed subset" \
+        bash -c "grep 'Test Files' '$E2E/phase6.log' | tail -n1 | grep -q '2 passed (2)'"
+
+    assert "D14: the rescued run-scope run leaves no artifact behind" \
+        bash -c "[ ! -f '$E2E_ARTIFACT' ]"
 
     rm -rf "$E2E"
 fi
