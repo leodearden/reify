@@ -395,13 +395,22 @@ assert "C2: scripts/gui-test.sh invokes the SAME runner" \
 assert "C2: scripts/gui-test.sh has NO bare 'npm test' invocation left" \
     bash -c "! grep -E '^[[:space:]]*(npm test|.*[^-]npm test )' '$GUI_TEST_SH' | grep -qv '^[[:space:]]*#'"
 
-# (3) The block's wall-clock budget. MEASURED on this branch before keeping 15:
-# a two-suite retry costs ~5-7 s idle, and the worst recorded starved gui run
-# was 473.90 s (task 7431) against a 51 s idle baseline -- a 9.3x dilation. Even
-# dilating the retry by the same factor (~65 s) and npm ci + typecheck with it
-# (~25 s idle -> ~230 s), the worst case lands near 770 s, inside 900 s. The
-# retry therefore does NOT demand a wider budget, and widening it speculatively
-# would only slow down the detection of a genuinely hung block.
+# (3) The block's wall-clock budget, kept at 15 minutes even though a retry is
+# no longer always a narrowed one: at scope=run it re-runs the WHOLE suite, so
+# the pair costs roughly TWICE the vitest phase rather than the few seconds a
+# two-suite retry cost. The typical pair still fits the 900 s; at the worst
+# RECORDED dilation it does not, and `timeout` kills the block.
+#
+# That overrun is ACCEPTED, not overlooked -- do not read this assertion as
+# proof the budget is safe. The outcome at that dilation is red either way, and
+# `outcome=retrying scope=run` is emitted BEFORE the retry starts, so such a
+# block still explains itself instead of ending in an unexplained SIGKILL.
+# Widening speculatively would only delay detection of a genuinely hung block,
+# and REIFY_GUI_RPC_FLAKE_RETRY=0 remains the escape hatch.
+#
+# The measured basis lives in ONE place, deliberately not restated here where it
+# would drift: docs/notes/verify-pipeline-knobs.md, the "bound this does NOT
+# change" bullet under "GUI worker-RPC starvation marker & bounded retry".
 assert "C3: the gui block keeps its 15-minute wrap_subshell budget" \
     grep -q 'wrap_subshell gui 15' "$VERIFY_SH"
 
