@@ -18,8 +18,12 @@
 //!
 //! Every `fn`-declaration signature written anywhere in the chunk, called BARE
 //! at the arity written, draws no argument-count diagnostic — plus the
-//! structural companion that the Overloading section still shows one name at two
-//! distinct arities, so "delete the offending line" cannot pass as a fix.
+//! structural companion that THE CHUNK still declares one name at two distinct
+//! arities, so "delete the offending line" cannot pass as a fix.
+//!
+//! Both scans are chunk-wide rather than scoped to the `## Overloading` section:
+//! selecting that section would pin heading text, which this module otherwise
+//! never does. What that costs is recorded below.
 //!
 //! # What is deliberately NOT established
 //!
@@ -38,6 +42,30 @@
 //!   is the complement of that sibling's name-existence guard: it asks whether a
 //!   name that DOES resolve accepts the documented arity, not whether it
 //!   resolves at all.
+//! - **That any scanned name is arity-gated AT ALL.** A name the compiler never
+//!   arity-checks contributes nothing to the gate — and none of the chunk's
+//!   current names is gated: probing `align`, `area`, `clamp` and `von_mises` at
+//!   arities 0–6 produced ZERO `"…() expects"` diagnostics (measured). So the
+//!   gate is green today because nothing it scans reaches an arity gate, which
+//!   it cannot itself distinguish from green-because-clean. The `rotate` CONTROL
+//!   test below — never the live gate — is what proves the matcher still
+//!   discriminates. (Mutation check: reverting the chunk's `align` to `rotate`
+//!   turns the gate RED with `rotate/3 — rotate() expects 2 or 5 arguments,
+//!   got 3`.)
+//! - **Overloading by parameter TYPE.** [`DocSignature`] carries a name and an
+//!   arity only, so the chunk's two `fn area(…) -> Scalar<Area>` declarations —
+//!   the by-TYPE illustration the Overloading section opens by promising — dedup
+//!   to one `area/1` entry and are guarded by nothing: deleting both lines leaves
+//!   every test here green (measured). Only overloading by ARITY has a
+//!   structural guard.
+//! - **That the surviving overload pair sits in the Overloading section.** The
+//!   structural companion scans the whole chunk, so an arity-overloaded pair
+//!   added anywhere — the `## Syntax` fence, say — would hold it green even if
+//!   the Overloading fence lost its own illustration entirely.
+//! - **A declaration whose parameter list WRAPS across lines.** The scan is
+//!   line-scoped, so such a signature is dropped and never gated; see
+//!   [`declared_signatures`]'s "Known limitation". Every declaration in the
+//!   chunk fits one line today.
 
 use reify_compiler::CompiledModule;
 use reify_core::{Diagnostic, Severity};
@@ -470,11 +498,15 @@ fn functions_chunk_example_signatures_are_never_rejected_on_arity_by_a_builtin()
     );
 }
 
-/// The structural companion to the gate above: the chunk must still show one
+/// The structural companion to the gate above: the chunk must still declare one
 /// name at two DISTINCT arities.
 ///
 /// Without this, deleting the offending line would also turn the gate green
 /// while destroying the `## Overloading` section's whole illustration.
+///
+/// The scan is chunk-wide, not section-scoped — see the module header's "NOT
+/// established" list for what that leaves unguarded (an overload pair added to
+/// any other section would hold this green) and for the separate by-TYPE gap.
 #[test]
 fn functions_chunk_still_illustrates_overloading_by_arity() {
     let signatures = declared_signatures(&read_chunk());
