@@ -4151,26 +4151,23 @@ fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
     // Identity material frame: global axes = material principal axes.
     const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
-    match data.type_name.as_str() {
-        "OrthotropicMaterial" | "TransverseIsotropicMaterial" => {
-            Ok(MaterialModel::Anisotropic(law_from_value(data, val, IDENTITY)?))
-        }
-        _ => {
-            // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
-            // from the pre-δ trampoline). `val` is already known to be
-            // Value::StructureInstance here — the `data` match above returns
-            // Err on any other variant before control reaches this arm — so
-            // extract_material's own ExpectedStructureInstance check is
-            // defensive/unreachable from this call site; it exists so the leaf
-            // is directly unit-testable on a non-StructureInstance input (see
-            // extract_material_rejects_non_structure_instance).
-            //
-            // Deliberately NOT routed through `law_from_value`/`from_law`:
-            // this arm returns the bare `IsotropicElastic` as
-            // `MaterialModel::Isotropic`, not an `AnisotropicMaterial`, so a
-            // homogeneous isotropic field keeps its own compute path.
-            Ok(MaterialModel::Isotropic(extract_material(val)?))
-        }
+    if is_named_anisotropic_law(&data.type_name) {
+        Ok(MaterialModel::Anisotropic(law_from_value(data, IDENTITY)?))
+    } else {
+        // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
+        // from the pre-δ trampoline). `val` is already known to be
+        // Value::StructureInstance here — the `data` match above returns
+        // Err on any other variant before control reaches this arm — so
+        // extract_material's own ExpectedStructureInstance check is
+        // defensive/unreachable from this call site; it exists so the leaf
+        // is directly unit-testable on a non-StructureInstance input (see
+        // extract_material_rejects_non_structure_instance).
+        //
+        // Deliberately NOT routed through `law_from_value`/`from_law`:
+        // this arm returns the bare `IsotropicElastic` as
+        // `MaterialModel::Isotropic`, not an `AnisotropicMaterial`, so a
+        // homogeneous isotropic field keeps its own compute path.
+        Ok(MaterialModel::Isotropic(extract_material(val)?))
     }
 }
 
@@ -4476,15 +4473,17 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
 /// `law`'s `type_name` dispatches three ways (the shared `law_from_value`) —
 /// `OrthotropicMaterial`, `TransverseIsotropicMaterial`, or (task #7210) an
 /// isotropic-structural fallback that reads `youngs_modulus`/`poisson_ratio`
-/// via `extract_material`. The prior "unsupported law type" panic (task
+/// via `isotropic_from_data`. The prior "unsupported law type" panic (task
 /// #5084) rested on the premise that the DSL only ever emits the two named
 /// laws here; that premise was false — `AnisotropicMaterial.law` is declared
 /// `ConstitutiveLaw` in `constitutive.ri`, and every isotropic preset in
 /// `materials_fea.ri` is a `DampedMaterial : ElasticMaterial + Damped`,
 /// hence a legal `law` — so the panic was live, not merely prospective. A
-/// law that fits none of the three SHAPES now surfaces `extract_material`'s
-/// own `MissingField`/`ExpectedScalar`/`ExpectedReal`, all within the
-/// existing fixed C3 taxonomy. This is the ONE place this history is
+/// law that fits none of the three SHAPES now surfaces
+/// `Err(FeaValueShapeError::ExpectedScalar)` naming both the unrecognised
+/// `type_name` and the underlying missing/malformed field (task #7210
+/// review round 2 — see `annotate_law_type`), still within the existing
+/// fixed C3 taxonomy. This is the ONE place this history is
 /// recorded — the isotropic-law tests below reference it rather than
 /// restate it.
 ///
@@ -4574,7 +4573,7 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
         }
     };
 
-    law_from_value(law_data, law_val, frame)
+    law_from_value(law_data, frame)
 }
 
 /// Resolve a law `Value::StructureInstance` to an `AnisotropicMaterial`
@@ -4583,16 +4582,15 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
 /// (structural, NOT name-based) an isotropic fallback — used by both
 /// `classify_material`'s two named-law arms (`frame = IDENTITY`) and
 /// `anisotropic_material_from_value` (the parsed `MaterialFrame`).
+/// `classify_material`'s own guard gates on `is_named_anisotropic_law`
+/// instead of repeating this `match`'s name list, so the two dispatches
+/// can't drift.
 ///
-/// Precondition: `val` must be the `Value` that `law_data` was destructured
-/// from, i.e. `val` is `&Value::StructureInstance(_)` and `law_data` is its
-/// payload. Every caller's own match on `val` already returns `Err` on any
-/// other variant before reaching this function, which is what makes
-/// `extract_material`'s own `ExpectedStructureInstance` check
-/// defensive/unreachable from here.
+/// Takes the already-destructured `&StructureInstanceData` only — no
+/// separate `&Value` — so there is no pair of arguments a future caller
+/// could mismatch (task #7210 review round 2 suggestion 1).
 fn law_from_value(
     law_data: &StructureInstanceData,
-    val: &Value,
     frame: [[f64; 3]; 3],
 ) -> Result<AnisotropicMaterial, FeaValueShapeError> {
     match law_data.type_name.as_str() {
@@ -4627,16 +4625,62 @@ fn law_from_value(
         // youngs_modulus/poisson_ratio pair — not a name list — is the only
         // sound discriminator (mirrors `classify_material`'s own isotropic
         // `_` arm, which calls `extract_material` directly rather than
-        // through this function — see its comment for why).
+        // through this function — see its comment for why). Reads straight
+        // off `law_data` via `isotropic_from_data`, so there is no second
+        // `&Value` that could describe a different StructureInstance.
+        //
+        // A failure here means `type_name` matched neither named arm above
+        // NOR the isotropic shape, so `annotate_law_type` folds the
+        // `type_name` into the diagnostic — otherwise the error would name
+        // only a missing/malformed field (e.g. "youngs_modulus") with no
+        // hint that the real defect is an unrecognised law type.
         //
         // Follow-on (#6879): when the resolved AnisotropicMaterial gains
         // {rho, eta}, this arm must also read law.density / law.loss_factor —
         // an isotropic DampedMaterial preset is exactly where a non-zero eta
         // matters for #6883 (eta, MSE).
         _ => {
-            let law = extract_material(val)?;
+            let law = isotropic_from_data(law_data)
+                .map_err(|e| annotate_law_type(e, &law_data.type_name))?;
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
+    }
+}
+
+/// Whether `type_name` names one of `law_from_value`'s two dispatch-BY-NAME
+/// arms, as opposed to its structural isotropic fallback. Shared with
+/// `classify_material`'s own guard so the named-law list lives in exactly
+/// one place outside `law_from_value`'s `match` itself (task #7210 review
+/// round 2 suggestion 2) — adding a third named law only touches that
+/// `match` and this predicate, side by side.
+fn is_named_anisotropic_law(type_name: &str) -> bool {
+    matches!(type_name, "OrthotropicMaterial" | "TransverseIsotropicMaterial")
+}
+
+/// Fold a law's `type_name` into an isotropic-field-read failure from
+/// `law_from_value`'s fallback arm, so the diagnostic names the actual
+/// defect — a `type_name` that matched neither named anisotropic law nor
+/// the isotropic shape — instead of just the field that happened to be
+/// missing or malformed, which alone gives no hint the `type_name` went
+/// unrecognised at all (task #7210 review round 2 suggestion 3). Stays
+/// inside the fixed 5-variant `FeaValueShapeError` taxonomy: `MissingField`
+/// has no `got: String` to carry the extra context, so this re-emits as
+/// `ExpectedScalar`, whose `got` is already a free-form diagnostic string
+/// elsewhere in this module (see `scalar_si_field`'s comment).
+fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeError {
+    let reason = match err {
+        FeaValueShapeError::MissingField { field, .. } => format!("missing field {field:?}"),
+        FeaValueShapeError::ExpectedScalar { got, .. }
+        | FeaValueShapeError::ExpectedReal { got, .. }
+        | FeaValueShapeError::ExpectedStructureInstance { got, .. }
+        | FeaValueShapeError::ExpectedList { got, .. } => got,
+    };
+    FeaValueShapeError::ExpectedScalar {
+        context: "law_from_value (isotropic fallback)",
+        got: format!(
+            "law type_name {type_name:?} is neither OrthotropicMaterial nor \
+             TransverseIsotropicMaterial, and is not isotropic-shaped ({reason})"
+        ),
     }
 }
 
@@ -4684,15 +4728,16 @@ fn real_field(
     }
 }
 
-/// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
-/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`.
-///
-/// PRD compute-fea-hardening D3: Result-ified leaf extractor. Returns
-/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
-/// the sole call site (`classify_material`'s isotropic fallback, D7) now
-/// propagates this `Result` directly via `?`; `classify_material`'s own sole
-/// production call site is the validate-all-inputs gate (D9/task 5087) in
-/// `solve_elastic_static_trampoline`.
+/// Read `youngs_modulus`/`poisson_ratio` off an already-destructured
+/// `StructureInstanceData` into `IsotropicElastic`. The data-taking core
+/// behind `extract_material` (below), and behind `law_from_value`'s
+/// isotropic fallback arm, which already holds the law's destructured
+/// `&StructureInstanceData` and calls straight in here — taking a second,
+/// independently-matched `&Value` there instead (as the pre-amendment
+/// `extract_material(law_val)` call did) would let a future caller pass a
+/// `law_data`/`val` pair describing two DIFFERENT `StructureInstance`s with
+/// no error, silently reading the wrong one's fields (task #7210 review
+/// round 2 suggestion 1).
 ///
 /// Note (task #5081 review round 3, suggestion 2): `scalar_si_field` accepts
 /// any `Value::Scalar` for `youngs_modulus` regardless of its `dimension`
@@ -4700,6 +4745,27 @@ fn real_field(
 /// pressure). This is pre-existing behavior, not a D3 regression — dimension
 /// checking is deferred to a later D-step, if/when the `FeaValueShapeError`
 /// taxonomy grows a variant for it.
+fn isotropic_from_data(
+    data: &StructureInstanceData,
+) -> Result<IsotropicElastic, FeaValueShapeError> {
+    let youngs_modulus = scalar_si_field(data, "youngs_modulus")?;
+    let poisson_ratio = real_field(data, "poisson_ratio")?;
+    Ok(IsotropicElastic {
+        youngs_modulus,
+        poisson_ratio,
+    })
+}
+
+/// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
+/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`. Thin
+/// `&Value`-destructuring wrapper around `isotropic_from_data`.
+///
+/// PRD compute-fea-hardening D3: Result-ified leaf extractor. Returns
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
+/// the sole call site (`classify_material`'s isotropic fallback, D7) now
+/// propagates this `Result` directly via `?`; `classify_material`'s own sole
+/// production call site is the validate-all-inputs gate (D9/task 5087) in
+/// `solve_elastic_static_trampoline`.
 fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError> {
     let data = match val {
         Value::StructureInstance(d) => d,
@@ -4710,12 +4776,7 @@ fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError>
             })
         }
     };
-    let youngs_modulus = scalar_si_field(data, "youngs_modulus")?;
-    let poisson_ratio = real_field(data, "poisson_ratio")?;
-    Ok(IsotropicElastic {
-        youngs_modulus,
-        poisson_ratio,
-    })
+    isotropic_from_data(data)
 }
 
 /// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
@@ -11617,20 +11678,34 @@ mod tests {
     /// `AnisotropicMaterial.law` input). A law that is neither of the two
     /// named anisotropic laws now falls through to the isotropic extractor;
     /// a law that ALSO fails to read as isotropic (as here — no fields at
-    /// all) surfaces as `Err(FeaValueShapeError::MissingField)`, not a
-    /// panic. Fixture kept verbatim from the superseded test.
+    /// all) surfaces as `Err(FeaValueShapeError)`, not a panic. Fixture kept
+    /// verbatim from the superseded test.
+    ///
+    /// Review round 2 suggestion 3: the diagnostic must name the
+    /// unrecognised `type_name` itself (via `annotate_law_type`), not just
+    /// the field that happened to be missing — a bare `MissingField {
+    /// field: "youngs_modulus" }` gives no hint the real defect is an
+    /// unmatched law type, and would misdirect an author who, say, typo'd
+    /// `OrthotropicMaterail` into thinking `youngs_modulus` is the fix.
     #[test]
     fn anisotropic_material_from_value_rejects_law_without_isotropic_fields() {
         let law = isotropic_law("BogusMaterial", PersistentMap::new());
 
         let res = anisotropic_material_from_value(&aniso_with_law(law));
         match res {
-            Err(FeaValueShapeError::MissingField { field, .. }) => {
-                assert_eq!(field, "youngs_modulus");
+            Err(FeaValueShapeError::ExpectedScalar { got, .. }) => {
+                assert!(
+                    got.contains("BogusMaterial"),
+                    "diagnostic must name the unrecognised type_name, got: {got:?}"
+                );
+                assert!(
+                    got.contains("youngs_modulus"),
+                    "diagnostic must still name the field that failed to read, got: {got:?}"
+                );
             }
             other => panic!(
-                "expected Err(MissingField {{ field: \"youngs_modulus\" }}) for a law \
-                 with neither a known anisotropic type_name nor isotropic fields, got: {:?}",
+                "expected Err(ExpectedScalar) naming both the unrecognised type_name \
+                 \"BogusMaterial\" and the missing \"youngs_modulus\" field, got: {:?}",
                 other
             ),
         }
@@ -11665,12 +11740,15 @@ mod tests {
     }
 
     /// `anisotropic_material_from_value` must reject an isotropic-shaped law
-    /// missing `poisson_ratio` with `Err(FeaValueShapeError::MissingField {
-    /// field: "poisson_ratio", .. })`. `youngs_modulus` is well-formed,
-    /// proving control reaches the SECOND field read of the isotropic
-    /// fallback rather than bailing out at the first (mirrors
-    /// `extract_material_rejects_missing_poisson_ratio`'s precedent for the
-    /// leaf this arm delegates to).
+    /// missing `poisson_ratio` with a diagnostic naming both the law's
+    /// `type_name` and the missing field (review round 2 suggestion 3 — see
+    /// `annotate_law_type`; the same annotation applies uniformly to every
+    /// isotropic-fallback failure, not only the wholly-unrecognised-type_name
+    /// case, since the two are structurally indistinguishable at this call
+    /// site). `youngs_modulus` is well-formed, proving control reaches the
+    /// SECOND field read of the isotropic fallback rather than bailing out
+    /// at the first (mirrors `extract_material_rejects_missing_poisson_ratio`'s
+    /// precedent for the leaf this arm delegates to).
     #[test]
     fn anisotropic_material_from_value_rejects_isotropic_law_missing_poisson_ratio() {
         let law_fields: PersistentMap<String, Value> = [(
@@ -11686,12 +11764,19 @@ mod tests {
 
         let res = anisotropic_material_from_value(&aniso_with_law(law));
         match res {
-            Err(FeaValueShapeError::MissingField { field, .. }) => {
-                assert_eq!(field, "poisson_ratio");
+            Err(FeaValueShapeError::ExpectedScalar { got, .. }) => {
+                assert!(
+                    got.contains("Titanium_Ti6Al4V"),
+                    "diagnostic must name the law's type_name, got: {got:?}"
+                );
+                assert!(
+                    got.contains("poisson_ratio"),
+                    "diagnostic must still name the missing field, got: {got:?}"
+                );
             }
             other => panic!(
-                "expected Err(MissingField {{ field: \"poisson_ratio\" }}) for an \
-                 isotropic-shaped law missing poisson_ratio, got: {:?}",
+                "expected Err(ExpectedScalar) naming both type_name \"Titanium_Ti6Al4V\" \
+                 and the missing \"poisson_ratio\" field, got: {:?}",
                 other
             ),
         }
