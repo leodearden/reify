@@ -268,12 +268,29 @@ describe('debug bridge set_camera', () => {
     expect(result).toEqual({ error: 'viewport not ready' });
   });
 
-  // Helper to build a viewport stub with spy functions
+  // Helper to build a viewport stub with spy functions.
+  //
+  // The coordinate setters both RECORD the call and WRITE the coordinates, because
+  // set_camera's `applied` is a read-back of live camera/controls state: a setter that
+  // only recorded would leave every coordinate at 0 and make the read-back untestable.
+  // They stay vi.fn spies so toHaveBeenCalledWith assertions still work.
   function makeViewportStub() {
-    const cameraPositionSet = vi.fn();
-    const cameraUpSet = vi.fn();
+    const cameraPositionSet = vi.fn((x: number, y: number, z: number) => {
+      camera.position.x = x;
+      camera.position.y = y;
+      camera.position.z = z;
+    });
+    const cameraUpSet = vi.fn((x: number, y: number, z: number) => {
+      camera.up.x = x;
+      camera.up.y = y;
+      camera.up.z = z;
+    });
     const cameraLookAt = vi.fn();
-    const controlsTargetSet = vi.fn();
+    const controlsTargetSet = vi.fn((x: number, y: number, z: number) => {
+      controls.target.x = x;
+      controls.target.y = y;
+      controls.target.z = z;
+    });
     const rendererRender = vi.fn();
     const camera = {
       position: { set: cameraPositionSet, x: 0, y: 0, z: 0 },
@@ -398,6 +415,117 @@ describe('debug bridge set_camera', () => {
     expect(stub.cameraLookAt).toHaveBeenCalledWith(0, 0, 0);
     expect(stub.camera.updateMatrixWorld).toHaveBeenCalled();
     expect(stub.rendererRender).toHaveBeenCalledWith(stub.scene, stub.camera);
+  });
+
+  // ── `applied` is LIVE state, never the request (task 6965) ─────────────────
+  //
+  // The through-line of all three camera defects is "commanded value reported, live
+  // state disagrees".  OrbitControls can legitimately relocate a commanded pose —
+  // _clampDistance on the orbit radius, minTargetRadius/maxTargetRadius on the target —
+  // and echoing the request back reports every such relocation as a faithful success.
+  // These pin `applied` as a read-back taken after controls.update().
+  describe('applied reports live state, not the request', () => {
+    function installViewport(stub: ReturnType<typeof makeViewportStub>, withControls = true) {
+      window.__REIFY_DEBUG__!.viewport = {
+        scene: stub.scene,
+        camera: stub.camera as any,
+        renderer: stub.renderer as any,
+        getMeshes: vi.fn().mockReturnValue(new Map()),
+        getGhostMeshes: vi.fn().mockReturnValue(new Map()),
+        fitToView: vi.fn(),
+        flyToEntity: vi.fn(),
+        controls: withControls ? (stub.controls as any) : undefined,
+      };
+    }
+
+    it('reports a distance-clamped position as clamped, not as requested', async () => {
+      await initDebugBridge(makeStores());
+      const stub = makeViewportStub();
+      // Stand-in for OrbitControls._clampDistance: push the camera back out to the
+      // floor along the same direction.  This is exactly what the real 0.5 m floor did
+      // to a fitted 75 mm part (#6496) while set_camera reported the request as applied.
+      const FLOOR = 0.5;
+      stub.controls.update.mockImplementation(() => {
+        const t = stub.controls.target;
+        const p = stub.camera.position;
+        const d = Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z);
+        if (d === 0 || d >= FLOOR) return;
+        const k = FLOOR / d;
+        p.x = t.x + (p.x - t.x) * k;
+        p.y = t.y + (p.y - t.y) * k;
+        p.z = t.z + (p.z - t.z) * k;
+      });
+      installViewport(stub);
+
+      const result = await dispatch(capturedHandler!, 360, {
+        position: [0, 0, 0.088],
+        target: [0, 0, 0],
+      });
+
+      expect(result.applied.position).toEqual([
+        stub.camera.position.x,
+        stub.camera.position.y,
+        stub.camera.position.z,
+      ]);
+      expect(result.applied.position).toEqual([0, 0, FLOOR]);
+      expect(result.applied.position).not.toEqual([0, 0, 0.088]);
+    });
+
+    it('reads applied.target back from controls.target when controls are present', async () => {
+      await initDebugBridge(makeStores());
+      const stub = makeViewportStub();
+      // Stand-in for minTargetRadius/maxTargetRadius: update() relocates the target.
+      const CLAMPED_TARGET = { x: 1, y: 0, z: 0 };
+      stub.controls.update.mockImplementation(() => {
+        stub.controls.target.x = CLAMPED_TARGET.x;
+        stub.controls.target.y = CLAMPED_TARGET.y;
+        stub.controls.target.z = CLAMPED_TARGET.z;
+      });
+      installViewport(stub);
+
+      const result = await dispatch(capturedHandler!, 361, {
+        position: [0, 0, 5],
+        target: [9, 9, 9],
+      });
+
+      expect(result.applied.target).toEqual([CLAMPED_TARGET.x, CLAMPED_TARGET.y, CLAMPED_TARGET.z]);
+      expect(result.applied.target).not.toEqual([9, 9, 9]);
+    });
+
+    it('falls back to the requested target when there are no controls to read', async () => {
+      await initDebugBridge(makeStores());
+      const stub = makeViewportStub();
+      installViewport(stub, false);
+
+      const result = await dispatch(capturedHandler!, 362, {
+        position: [0, 0, 5],
+        target: [1, 2, 3],
+      });
+
+      // The no-controls branch orients via camera.lookAt, which leaves no target state
+      // to read back — so the request is the only truthful answer available.
+      expect(result.applied.target).toEqual([1, 2, 3]);
+    });
+
+    it('still round-trips the request exactly when nothing relocates the pose', async () => {
+      await initDebugBridge(makeStores());
+      const stub = makeViewportStub();
+      installViewport(stub);
+
+      const result = await dispatch(capturedHandler!, 363, {
+        position: [10, 20, 30],
+        target: [1, 2, 3],
+        up: [0, 0, 1],
+        zoom: 2.5,
+      });
+
+      // The documented "same input → same camera frame" property must survive the
+      // switch to a read-back: on the ordinary path, live state IS the request.
+      expect(result).toEqual({
+        ok: true,
+        applied: { position: [10, 20, 30], target: [1, 2, 3], up: [0, 0, 1], zoom: 2.5 },
+      });
+    });
   });
 
   describe('input validation', () => {
