@@ -9166,19 +9166,33 @@ mod tests {
     /// assignment materialises it to, which is the precondition that makes a
     /// varying cell look like a constant to the derivation guard.
     ///
-    /// `autos` pairs each auto id with its value in this trial; `cells` are
-    /// folded in order, so a later cell may read an earlier one.
+    /// `base` is what the model's map already holds before this trial
+    /// (`problem.current_values`' role); `autos` pairs each auto id with its
+    /// value in this trial; `cells` are folded in order over both, so a later
+    /// cell may read an earlier one.
     fn derive_with_dependent_cells(
+        base: &[(&reify_core::ValueCellId, f64)],
         autos: &[(&reify_core::ValueCellId, f64)],
         cells: &[(reify_core::ValueCellId, reify_ir::CompiledExpr)],
         exprs: Vec<reify_ir::CompiledExpr>,
     ) -> Vec<super::DerivedInterval> {
+        use reify_core::DimensionVector;
         let params: Vec<reify_ir::AutoParam> = autos
             .iter()
             .map(|(id, _)| real_auto_param((*id).clone()))
             .collect();
         let trial: Vec<f64> = autos.iter().map(|&(_, v)| v).collect();
-        let values = super::build_trial_values(&ValueMap::new(), &params, &trial, cells, &[], None);
+        let mut prior = ValueMap::new();
+        for &(id, v) in base {
+            prior.insert(
+                id.clone(),
+                reify_ir::Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+        }
+        let values = super::build_trial_values(&prior, &params, &trial, cells, &[], None);
         super::derive_param_intervals(&params, &as_constraints(exprs), cells, &values, &[], None)
     }
 
@@ -9223,6 +9237,7 @@ mod tests {
         let side = ValueCellId::new("Derive", "side");
         let cells = vec![(side.clone(), scaled_ref(3.0, &c))];
         let ivs = derive_with_dependent_cells(
+            &[],
             &[(&a, 0.0), (&c, 2.5)],
             &cells,
             vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
@@ -9253,6 +9268,7 @@ mod tests {
             (side.clone(), scaled_ref(3.0, &mid)),
         ];
         let ivs = derive_with_dependent_cells(
+            &[],
             &[(&a, 0.0), (&c, 1.25)],
             &cells,
             vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
@@ -9280,6 +9296,7 @@ mod tests {
         let yield_limit = ValueCellId::new("Derive", "yield_limit");
         let cells = vec![(yield_limit.clone(), real_lit(310.0))];
         let ivs = derive_with_dependent_cells(
+            &[],
             &[(&a, 0.0), (&c, 2.5)],
             &cells,
             vec![cmp_ref_ref(BinOp::Ge, &a, &yield_limit)],
@@ -9322,6 +9339,7 @@ mod tests {
             content_hash,
         };
         let ivs = derive_with_dependent_cells(
+            &[],
             &[(&a, 0.0), (&up, 1.0)],
             &[],
             vec![CompiledExpr::binop(BinOp::Ge, real_ref(&a), far, Type::Bool)],
@@ -9332,6 +9350,61 @@ mod tests {
              branch taken varies with auto `up`, and `collect_value_refs` \
              already sees `up` through the `Conditional`. A fix for the \
              dependent-cell hole must not regress this syntactic arm"
+        );
+    }
+
+    /// RESIDUAL HOLE: a CYCLE-TAINTED cell is OMITTED from
+    /// `dependent_cell_auto_reads` rather than published with the partial set
+    /// its DFS accumulated (`if incomplete[i] { continue; }`, decompose.rs).
+    /// Omission is the FAIL-SAFE direction for that map's primary consumer, the
+    /// registry's drop-side subset filter — but it is the UNSAFE direction for a
+    /// guard deciding "does this operand vary?", because an absent entry reads
+    /// as "no autos" and the bogus bound is mined anyway.
+    ///
+    /// `p = q + c` and `q = p` are both cycle-tainted AND transitively read auto
+    /// `c`. Reaching `derive_param_intervals` directly is what makes this
+    /// testable: reify-eval's `build_dependent_cells` pre-drops cycles, which is
+    /// the only reason the hole is unreachable in production — and decompose.rs
+    /// says so itself, that the masking "is a property of the CALLER, though,
+    /// not of anything enforced here, so a future producer that stops
+    /// pre-dropping cycles re-opens it with no compile error and no test
+    /// failure". This test is that missing failure.
+    #[test]
+    fn derive_intervals_rejects_a_cycle_tainted_dependent_cell_far_operand() {
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr};
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let p = ValueCellId::new("Derive", "p");
+        let q = ValueCellId::new("Derive", "q");
+        let cells = vec![
+            (
+                p.clone(),
+                CompiledExpr::binop(
+                    BinOp::Add,
+                    real_ref(&q),
+                    real_ref(&c),
+                    Type::dimensionless_scalar(),
+                ),
+            ),
+            (q.clone(), real_ref(&p)),
+        ];
+        // `q` carries a value from the model's last evaluation, so the fold
+        // still resolves the cycle to finite numbers (p = q + c = 3.5) — the
+        // guard cannot lean on an `Undef` to save it.
+        let ivs = derive_with_dependent_cells(
+            &[(&q, 1.0)],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &p)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= p` with `p = q + c` and `q = p` must derive NO lower bound: \
+             `p` is cycle-tainted, so `dependent_cell_auto_reads` OMITS it — and \
+             a non-empty-set test reads that absence as `no autos` and mines the \
+             bound. For this consumer an unknown auto dependence must be treated \
+             as a varying one; absence is the UNSAFE direction here"
         );
     }
 
