@@ -54,8 +54,14 @@ pub struct MeshPlane2dResult {
 /// least 3 distinct points. Each entry in `holes` is a similar sequence;
 /// gmsh accepts either winding order for hole rings.
 ///
-/// `mesh_size = Some(s)` sets `Mesh.MeshSizeMin/Max` to `s`; `None` defers
-/// to gmsh's defaults. `recombine = true` enables blossom recombination
+/// `mesh_size = Some(s)` sets `Mesh.MeshSizeMin/Max` to `s`; `None` defers to
+/// gmsh's defaults — its ACTUAL defaults, established on entry by
+/// [`crate::mesh_size_scope::MeshSizeScope`], not whatever a sibling entry
+/// point last left in gmsh's process-global option table. That table survives
+/// `gmshClear()`, so before task #6968 a `None` call was cut to whatever size
+/// the previous caller in the process had asked for. The scope also restores
+/// the defaults on exit, so an `s` requested here cannot pin a later call.
+/// `recombine = true` enables blossom recombination
 /// (quad-dominated output); `false` produces triangles only.
 /// `deterministic = true` pins `General.NumThreads = 1` so the output is
 /// repeatable run-to-run.
@@ -78,12 +84,21 @@ pub fn mesh_plane_2d(
 
     use crate::ffi;
     use crate::init;
+    use crate::mesh_size_scope::MeshSizeScope;
 
     let _guard = init::lock()?;
     init::ensure_initialized();
+    // Declared after `_guard` so it drops first (Rust drops locals in reverse
+    // declaration order): its restore writes land while GMSH_LOCK is still
+    // held. Placed above the first `?` so every early return is covered, not
+    // only the success path. See `mesh_size_scope` for both directions.
+    let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
 
+    // This function's own deviation from the size defaults the scope just
+    // established. With `mesh_size: None` there is no deviation and the mesh
+    // is cut against gmsh's own defaults.
     if let Some(s) = mesh_size
         && s > 0.0
     {
