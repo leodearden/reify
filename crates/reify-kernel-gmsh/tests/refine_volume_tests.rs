@@ -21,7 +21,8 @@ use clamp_probe::{
     set_global_mesh_size_clamp,
 };
 use reify_ir::{ElementOrderTag, Mesh};
-use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
+use reify_kernel_gmsh::mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS;
+use reify_kernel_gmsh::{MeshingOptions, ffi, init, refine_volume_with_size_field};
 use reify_test_support::fixtures::unit_cube_mesh;
 
 /// A `unit_cube_mesh` scaled uniformly about the origin, i.e. the box
@@ -570,4 +571,79 @@ fn uniform_smaller_size_field_produces_more_tets() {
         "uniform 0.25 size field must produce strictly more tets than baseline 0.5: \
          baseline={n_base_tets}, refined={n_refined_tets}",
     );
+}
+
+/// `refine_volume_with_size_field` leaves EVERY mesh-size process-global at
+/// gmsh's default, not just the `Mesh.MeshSizeMin`/`MeshSizeMax` pair.
+///
+/// The sibling guard above
+/// ([`refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`])
+/// covers the pair by observing its effect on a defaults-relying probe. This
+/// one reads the option table directly, via the `ffi::option_get_number` added
+/// by #6968, and so covers the three size-SOURCE options a density probe
+/// cannot reach: their effect is invisible whenever `MeshSizeMin ==
+/// MeshSizeMax`, which is every reachable `mesh_to_volume` path.
+///
+/// Iterating [`GMSH_SIZE_OPTION_DEFAULTS`] rather than naming options here is
+/// what makes this a guard for the SEAM rather than for today's five options:
+/// a sixth process-global added to the production list is asserted by this test
+/// on the day it is added, with no test edit.
+///
+/// # Measured leak this closes
+///
+/// Run against the pre-#6968 tree, with the production code otherwise
+/// untouched, an in-process probe of the same shape read back, after one
+/// `refine_volume_with_size_field(unit_cube_mesh(), hint 0.5, P1)`:
+///
+/// ```text
+/// Mesh.MeshSizeMin                = 0      (default 0)      OK
+/// Mesh.MeshSizeMax                = 1e22   (default 1e22)   OK
+/// Mesh.MeshSizeFromPoints         = 1      (default 1)      OK
+/// Mesh.MeshSizeFromCurvature      = 0      (default 0)      OK
+/// Mesh.MeshSizeExtendFromBoundary = 0      (default 1)      *** LEAK ***
+/// ```
+///
+/// Exactly one of the three trio writes at `refine_volume.rs` actually deviates
+/// from a gmsh default: `MeshSizeFromPoints = 1` and `MeshSizeFromCurvature =
+/// 0` restate defaults and are no-ops, while `MeshSizeExtendFromBoundary = 0`
+/// against a default of `1` is the whole leak. The guard still covers all five,
+/// because "correct today, silently wrong the first time someone changes one of
+/// the other two" is precisely the failure mode #6968 exists to close.
+#[test]
+fn refine_volume_leaves_every_size_option_at_gmsh_defaults() {
+    let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
+
+    let cube = unit_cube_mesh();
+    let n_surface_verts = cube.vertices.len() / 3;
+    let opts = MeshingOptions {
+        mesh_size: Some(0.5),
+        deterministic: true,
+        ..Default::default()
+    };
+    refine_volume_with_size_field(
+        &cube,
+        &vec![0.5_f64; n_surface_verts],
+        &opts,
+        ElementOrderTag::P1,
+    )
+    .unwrap_or_else(|e| panic!("refine_volume_with_size_field must succeed: {e:?}"));
+
+    // Re-acquire GMSH_LOCK for the read, mirroring
+    // `mesh_to_volume_tests.rs::mesh_to_volume_leaves_the_gmsh_logger_stopped`:
+    // the read is then serialised against any concurrent mesher rather than
+    // racing one mid-flight.
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
+        let observed = ffi::option_get_number(option)
+            .unwrap_or_else(|e| panic!("ffi::option_get_number({option}) failed: {e:?}"));
+        assert_eq!(
+            observed, default,
+            "refine_volume_with_size_field must leave every mesh-size process-global at \
+             gmsh's default on exit: {option} reads {observed}, expected {default}. \
+             gmsh's option table is process-global and survives gmshClear(), so a deviation \
+             here is inherited by every later call in this process that does not write the \
+             option itself — the outbound direction of task #6968, enforced by \
+             `MeshSizeScope` in refine_volume.rs",
+        );
+    }
 }
