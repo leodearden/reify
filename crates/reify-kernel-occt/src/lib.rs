@@ -100,6 +100,11 @@ pub fn boolean_pass_count() -> u64 {
 #[cfg(has_occt)]
 pub use ffi::ffi::RevolveSynthesisPostSortResult;
 
+/// Re-exported so callers can name [`OcctKernel::volume_measurement`]'s return
+/// type without reaching into the private bridge module.
+#[cfg(has_occt)]
+pub use ffi::ffi::VolumeMeasurement;
+
 /// Fixture for integration tests: runs only the post-sort/dedup helper on
 /// a synthetic flat-records input, without requiring real OCCT geometry.
 ///
@@ -3895,6 +3900,35 @@ impl OcctKernel {
         Ok(self.store(shape))
     }
 
+    /// A shape's volume together with which arm produced it.
+    ///
+    /// `GeometryQuery::Volume` answers with the number alone, which leaves a
+    /// caller unable to tell an exact integral from the tessellation fallback.
+    /// This reports both, from the same single arm-selection site, so the two
+    /// agree bit-for-bit.
+    ///
+    /// `tessellation_fallback == true` reads NARROWLY today: on OCCT 7.8 every
+    /// shape measured to reach that arm is a face-less compound, whose exact
+    /// integral and tessellation arm both sum nothing, so the flag means "this
+    /// shape has no measurable volume" rather than "an approximation was
+    /// substituted for an exact number".
+    ///
+    /// It is correspondingly the caller's signal that the rest of the
+    /// mass-property family — `Centroid`, `CenterOfMass`, `MomentOfInertia`,
+    /// `InertiaTensor` — is returning its degenerate origin/zero default for
+    /// this shape rather than a measurement: those queries have no fallback arm
+    /// of their own.
+    pub fn volume_measurement(
+        &self,
+        id: GeometryHandleId,
+    ) -> Result<VolumeMeasurement, QueryError> {
+        let shape = self
+            .get_shape(id)
+            .map_err(|_| QueryError::InvalidHandle(id))?;
+        ffi::ffi::query_volume_measurement(shape)
+            .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+
     pub fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         match query {
             GeometryQuery::Volume(id) => {
@@ -5153,6 +5187,21 @@ mod tests {
             })
             .expect("Box creation must succeed")
             .id
+    }
+
+    /// Store the EMPTY `TopoDS_Compound` fixture and return its handle ID.
+    ///
+    /// The simplest member of the face-less-compound class that reaches
+    /// `compute_volume_arm`'s tessellation fallback; the class boundary and the
+    /// measured values live in the canonical note on the fixture's definition
+    /// in occt_wrapper.cpp. Reached through `store_raw` rather than the
+    /// `test-fixtures`-gated `store_*_for_test` helpers, which only
+    /// `tests/harness_occt/*.rs` can see.
+    fn store_empty_compound(kernel: &mut OcctKernel) -> GeometryHandleId {
+        kernel.store_raw(
+            ffi::ffi::make_empty_compound_for_test()
+                .expect("make_empty_compound_for_test should succeed"),
+        )
     }
 
     /// Assert that the volume of the shape at `handle_id` is within `tolerance`
@@ -6917,6 +6966,10 @@ mod tests {
             "Volume query on null-topology shape must return Err, not crash/Ok"
         );
         assert!(
+            kernel.volume_measurement(h).is_err(),
+            "volume_measurement on null-topology shape must return Err, not crash/Ok"
+        );
+        assert!(
             kernel.query(&GeometryQuery::Centroid(h)).is_err(),
             "Centroid query on null-topology shape must return Err"
         );
@@ -6940,8 +6993,9 @@ mod tests {
     /// even when called DIRECTLY, bypassing the `get_shape` boundary guard.
     /// This pins the C++ IsNull guards independently of the Rust chokepoint, so
     /// any future or direct-FFI path that skips `get_shape` still fails safely.
-    /// Covers the mass-property queries (volume/centroid/bbox/inertia) plus the
-    /// surface/linear-property queries (face_centroid/area/edge_length);
+    /// Covers the mass-property queries (volume/volume_measurement/centroid/
+    /// bbox/inertia) plus the surface/linear-property queries
+    /// (face_centroid/area/edge_length);
     /// `query_face_centroid` is the one reached from the production `Centroid`
     /// dispatch for Face-repr handles, so its direct-FFI guard closes the last
     /// gap the get_shape chokepoint already covers.
@@ -6964,6 +7018,12 @@ mod tests {
         assert!(
             ffi::ffi::query_volume(&null_shape).is_err(),
             "query_volume on null-topology shape must return Err, not crash"
+        );
+        // Same crash vector, second entry point: both delegate to
+        // compute_volume_arm, which is where the IsNull guard now lives.
+        assert!(
+            ffi::ffi::query_volume_measurement(&null_shape).is_err(),
+            "query_volume_measurement on null-topology shape must return Err, not crash"
         );
         assert!(
             ffi::ffi::query_centroid(&null_shape).is_err(),
@@ -12417,6 +12477,257 @@ mod tests {
         assert_eq!(
             entries[1][2], entries[2][1],
             "m23 vs m32 must be bit-equal after averaging fix"
+        );
+    }
+
+    // --- Volume-measurement provenance (task 6568) ---
+
+    /// Real solids report the exact integral, never the tessellation fallback.
+    ///
+    /// `query_volume`'s original in-code comment blamed "parametric surfaces
+    /// (e.g. revolution surfaces)" for integrating to 0 — the fallback's stated
+    /// reason to exist. On OCCT 7.8 that was stale, so this task deleted it and
+    /// this test is what keeps it deleted: the revolve case below is precisely
+    /// that shape class, it is the load-bearing one here, and it must report
+    /// `tessellation_fallback == false`.
+    ///
+    /// TOLERANCE BASES (do not retune): 1e-9 is what the gate-passing
+    /// `torus_execute_volume` uses for an analytic primitive, whose in-file
+    /// comment records a measured rel_err of ~1.8e-16; the box's 20·10·5
+    /// product is additionally exact in binary f64. 2e-2 is copied verbatim
+    /// from the gate-passing `revolve_circle_face_full_volume`, which builds
+    /// this identical revolved torus.
+    ///
+    /// The `m.volume == query(Volume)` assertion is EXACT f64 equality on
+    /// purpose: both entry points must come from the one arm-selection site,
+    /// and OCCT's integration is deterministic.
+    #[test]
+    fn volume_measurement_reports_exact_for_real_solids() {
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+
+        let box_id = make_box_20_10_5(&mut kernel);
+        let cylinder_id = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(10.0),
+                height: Value::Real(20.0),
+            })
+            .expect("Cylinder creation must succeed")
+            .id;
+        let profile_id = make_torus_profile(&mut kernel, 5.0, 20.0);
+        let revolved_id = kernel
+            .execute(&GeometryOp::Revolve {
+                profile: profile_id,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::TAU,
+            })
+            .expect("Revolve full should succeed")
+            .id;
+
+        for (label, id, expected, tolerance) in [
+            ("box 20×10×5", box_id, 1000.0f64, 1e-9f64),
+            (
+                "cylinder r10 h20",
+                cylinder_id,
+                std::f64::consts::PI * 100.0 * 20.0,
+                1e-9f64,
+            ),
+            (
+                "revolved circle face (revolution surface)",
+                revolved_id,
+                2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0,
+                2e-2f64,
+            ),
+        ] {
+            let m = kernel
+                .volume_measurement(id)
+                .unwrap_or_else(|e| panic!("{label}: volume_measurement must succeed: {e:?}"));
+
+            assert!(
+                !m.tessellation_fallback,
+                "{label}: OCCT's exact volume integral returns non-zero mass here, \
+                 so the tessellation fallback must not fire (got {m:?})"
+            );
+            let rel_err = (m.volume - expected).abs() / expected;
+            assert!(
+                rel_err < tolerance,
+                "{label}: volume expected ≈{expected}, got {} (relative error {rel_err:.3e})",
+                m.volume
+            );
+
+            let via_query = kernel
+                .query(&GeometryQuery::Volume(id))
+                .expect("Volume query must succeed")
+                .as_f64()
+                .expect("Volume must be numeric");
+            assert_eq!(
+                m.volume, via_query,
+                "{label}: volume_measurement().volume must equal GeometryQuery::Volume \
+                 exactly — both must come from the one arm-selection site"
+            );
+        }
+    }
+
+    /// The simplest shape that takes the fallback, and the parity contract for
+    /// the rest of the mass-property family.
+    ///
+    /// It is not the only one: any face-less compound reaches the same arm (see
+    /// the canonical note on `make_empty_compound_for_test` in
+    /// occt_wrapper.cpp). The empty compound is chosen because it is the
+    /// cheapest member to build, and every member answers identically — both
+    /// arms sum zero faces.
+    ///
+    /// CONTRACT: `tessellation_fallback == true` is the caller's signal that
+    /// every other mass-property answer for this shape is a default, not a
+    /// measurement.
+    ///
+    /// `query_centroid`, `query_moment_of_inertia` and `query_inertia_tensor`
+    /// have no fallback arm, so for a zero-mass shape they return the
+    /// degenerate origin / 0 / all-zero tensor rather than failing. This task
+    /// ACCEPTS that asymmetry and makes it discriminable instead of removing
+    /// it, so those degenerate values are pinned here: a future change must not
+    /// silently turn them into errors, nor into plausible-looking non-zero
+    /// noise.
+    ///
+    /// Every bound is exact f64 equality: an empty compound has no faces, so
+    /// the exact integral and `mesh_based_volume` both sum nothing, and OCCT's
+    /// centre-of-mass and inertia matrix for zero mass are exact zeros.
+    #[test]
+    fn volume_measurement_reports_fallback_and_family_degrades_for_empty_compound() {
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let id = store_empty_compound(&mut kernel);
+
+        let m = kernel
+            .volume_measurement(id)
+            .expect("volume_measurement must succeed for an empty compound");
+        assert!(
+            m.tessellation_fallback,
+            "an empty compound integrates to bitwise 0.0 with ShapeType COMPOUND (0) \
+             <= TopAbs_SOLID (2), so the tessellation fallback must fire (got {m:?})"
+        );
+        assert_eq!(
+            m.volume, 0.0,
+            "an empty compound has no faces, so the tessellation arm sums nothing"
+        );
+
+        let via_query = kernel
+            .query(&GeometryQuery::Volume(id))
+            .expect("Volume query must succeed")
+            .as_f64()
+            .expect("Volume must be numeric");
+        assert_eq!(
+            m.volume, via_query,
+            "volume_measurement().volume must equal GeometryQuery::Volume exactly — \
+             both must come from the one arm-selection site"
+        );
+
+        // The rest of the family still answers, degenerately rather than erroring.
+        for (label, query) in [
+            ("Centroid", GeometryQuery::Centroid(id)),
+            (
+                "CenterOfMass",
+                GeometryQuery::CenterOfMass {
+                    handle: id,
+                    density: 1000.0,
+                },
+            ),
+        ] {
+            let value = kernel
+                .query(&query)
+                .unwrap_or_else(|e| panic!("{label} query must succeed: {e:?}"));
+            let point = match &value {
+                Value::String(s) => parse_centroid_json(s),
+                other => panic!("{label} must return a centroid JSON string, got {other:?}"),
+            };
+            assert_eq!(
+                point,
+                (0.0, 0.0, 0.0),
+                "{label}: zero mass yields the origin default, not a measurement"
+            );
+        }
+
+        let tensor = kernel
+            .query(&GeometryQuery::InertiaTensor {
+                handle: id,
+                density: 1000.0,
+            })
+            .expect("InertiaTensor query must succeed");
+        let entries = extract_3x3_tensor_entries(&tensor);
+        for (i, row) in entries.iter().enumerate() {
+            for (j, entry) in row.iter().enumerate() {
+                assert_eq!(
+                    *entry, 0.0,
+                    "InertiaTensor[{i}][{j}]: zero mass yields the all-zero default, \
+                     not a measurement"
+                );
+            }
+        }
+
+        let moi = kernel
+            .query(&GeometryQuery::MomentOfInertia {
+                handle: id,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .expect("MomentOfInertia query must succeed")
+            .as_f64()
+            .expect("MomentOfInertia must be numeric");
+        assert_eq!(
+            moi, 0.0,
+            "MomentOfInertia: zero mass yields the 0 default, not a measurement"
+        );
+    }
+
+    /// The fallback guard is bitwise `vol == 0.0`, not a near-zero tolerance.
+    ///
+    /// `make_nonmanifold_compound_for_test` is a COMPOUND (ShapeType 0, so it
+    /// passes the `<= TopAbs_SOLID` half of the guard) whose three
+    /// coplanar-with-origin faces integrate to pure FP noise. It is therefore
+    /// exactly the input a tolerance-based guard (`std::abs(vol) < eps`) would
+    /// mis-classify as "no volume" and hand to the tessellation arm, and this
+    /// test is what stops that substitution passing.
+    ///
+    /// BOUND BASIS: b96716462a records this fixture measuring
+    /// -6.6174449004242214e-24, deterministic over three runs — twelve orders
+    /// of magnitude inside the 1e-12 bound asserted here. The magnitude is
+    /// deliberately NOT pinned: only the non-zero-and-tiny window is, so the
+    /// test tracks the guard's precision rather than one OCCT build's FP noise.
+    #[test]
+    fn volume_measurement_fallback_guard_is_bitwise_not_tolerance() {
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let id = kernel.store_raw(
+            ffi::ffi::make_nonmanifold_compound_for_test()
+                .expect("make_nonmanifold_compound_for_test should succeed"),
+        );
+
+        let m = kernel
+            .volume_measurement(id)
+            .expect("volume_measurement must succeed for a non-manifold compound");
+        assert!(
+            !m.tessellation_fallback,
+            "the exact integral produced a non-zero number, so the fallback must not \
+             fire — a tolerance-based guard would wrongly fire here (got {m:?})"
+        );
+        assert_ne!(
+            m.volume, 0.0,
+            "this fixture no longer discriminates bitwise-vs-tolerance on this OCCT \
+             build: its origin-coplanar faces summed to exact zero instead of FP \
+             noise, which is a property of OCCT's summation order, not of reify. \
+             REPAIR by finding a shape whose exact integral is tiny-but-nonzero; do \
+             NOT relax or delete this assertion — that silently unpins the guard."
+        );
+        assert!(
+            m.volume.abs() < 1e-12,
+            "that noise must stay negligible; got {}",
+            m.volume
         );
     }
 
