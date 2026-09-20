@@ -385,7 +385,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         if r00 > 0.0 {
                             (0.0, bb, (-r12).atan2(r11))
                         } else {
-                            (0.0, bb, r12.atan2(r11))
+                            (0.0, bb, r12.atan2(-r11))
                         }
                     } else {
                         (r20.atan2(r10), bb, r02.atan2(-r01))
@@ -407,9 +407,9 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                     let bb = clamp(r11).acos();
                     if bb.sin().abs() < EPS_SING {
                         if r11 > 0.0 {
-                            (0.0, bb, r20.atan2(r00))
-                        } else {
                             (0.0, bb, (-r20).atan2(r00))
+                        } else {
+                            (0.0, bb, (-r20).atan2(-r00))
                         }
                     } else {
                         (r21.atan2(-r01), bb, r12.atan2(r10))
@@ -421,7 +421,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         if r22 > 0.0 {
                             (0.0, bb, r10.atan2(r11))
                         } else {
-                            (0.0, bb, (-r10).atan2(r11))
+                            (0.0, bb, (-r10).atan2(-r11))
                         }
                     } else {
                         (r02.atan2(-r12), bb, r20.atan2(r21))
@@ -433,7 +433,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                         if r22 > 0.0 {
                             (0.0, bb, r10.atan2(r00))
                         } else {
-                            (0.0, bb, (-r10).atan2(r00))
+                            (0.0, bb, r10.atan2(-r00))
                         }
                     } else {
                         (r12.atan2(r02), bb, r21.atan2(-r20))

@@ -168,6 +168,11 @@ fn integration_orient_to_euler_enum_zyx_matches_closed_form() {
 /// ~1e-15; 1e-12 leaves headroom without hiding a real convention mismatch.
 const ROUNDTRIP_TOLERANCE: f64 = 1e-12;
 
+/// Looser than `ROUNDTRIP_TOLERANCE`: at a singular locus the decomposition
+/// routes through `acos` near ±1, where the derivative is unbounded and a
+/// double rounding in the input costs several digits.
+const SINGULAR_RECOMPOSE_TOLERANCE: f64 = 1e-9;
+
 /// Build a qualified `EulerConvention` enum value, as the compiler lowers
 /// `EulerConvention.<VARIANT>` (`Value::enum_unit` with an uppercase variant).
 fn convention(variant: &str) -> Value {
@@ -227,6 +232,87 @@ fn integration_orient_to_euler_subject_first_roundtrips_zyx() {
 #[test]
 fn integration_orient_to_euler_subject_first_roundtrips_zxz() {
     assert_subject_first_roundtrip("ZXZ", 0.3, 0.7, -0.2);
+}
+
+/// |dot(q1, q2)| — 1.0 exactly when the two quaternions describe the same
+/// rotation, sign flip included.
+fn quaternion_overlap(lhs: &Value, rhs: &Value) -> f64 {
+    match (lhs, rhs) {
+        (
+            Value::Orientation { w: w1, x: x1, y: y1, z: z1 },
+            Value::Orientation { w: w2, x: x2, y: y2, z: z2 },
+        ) => (w1 * w2 + x1 * x2 + y1 * y2 + z1 * z2).abs(),
+        other => panic!("expected two Orientations, got {other:?}"),
+    }
+}
+
+/// Compose → decompose → RECOMPOSE, the only round-trip assertion that means
+/// anything AT a singularity.
+///
+/// There the decomposition is not unique: the first angle is pinned to 0 and
+/// only a combination of the outer two survives, so the returned angles cannot
+/// be compared element-wise against the inputs the way
+/// `assert_subject_first_roundtrip` does. What must still hold is that they
+/// rebuild the SAME ROTATION.
+fn assert_singular_locus_recomposes(variant: &str, a: f64, b: f64, c: f64) {
+    let q = eval_builtin(
+        "orient_euler",
+        &[convention(variant), Value::Real(a), Value::Real(b), Value::Real(c)],
+    );
+    let back = eval_builtin("orient_to_euler", &[q.clone(), convention(variant)]);
+    let angles = euler_extract(&back).unwrap_or_else(|| {
+        panic!(
+            "orient_to_euler(q, EulerConvention.{variant}) should return a 3-element \
+             Angle list, got {back:?}"
+        )
+    });
+    let again = eval_builtin(
+        "orient_euler",
+        &[
+            convention(variant),
+            Value::Real(angles[0]),
+            Value::Real(angles[1]),
+            Value::Real(angles[2]),
+        ],
+    );
+
+    let overlap = quaternion_overlap(&q, &again);
+    assert!(
+        (overlap - 1.0).abs() < SINGULAR_RECOMPOSE_TOLERANCE,
+        "EulerConvention.{variant} at its singular locus (a={a}, b={b}, c={c}) decomposed to \
+         {angles:?}, which rebuilds a rotation |dot|={overlap} from the input (1.0 = identical)"
+    );
+}
+
+/// Every convention must survive its OWN singular locus.
+///
+/// The locus differs by family, and probing each convention at the other
+/// family's locus is what let a real defect through: four proper-Euler arms
+/// (XZX, YZY, ZXZ, ZYZ) returned a rotation up to 90° away from the input —
+/// silently, as three finite angles. The element-wise round-trip tests above
+/// deliberately stay well away from both loci, so nothing covered this.
+///
+/// Tait-Bryan (three distinct axes) is singular where the middle angle reaches
+/// ±π/2; proper Euler (first axis repeated as third) where it reaches 0 or π.
+#[test]
+fn integration_every_convention_recomposes_at_its_singular_locus() {
+    const OUTER: [(f64, f64); 4] = [(0.0, 0.0), (0.3, 0.5), (1.1, -1.3), (-2.0, 2.2)];
+
+    for variant in ALL_CONVENTIONS {
+        let bytes = variant.as_bytes();
+        let is_proper_euler = bytes[0] == bytes[2];
+        let loci = if is_proper_euler {
+            [0.0, std::f64::consts::PI]
+        } else {
+            [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2]
+        };
+
+        for b in loci {
+            for (a, c) in OUTER {
+                assert_singular_locus_recomposes(variant, a, b, c);
+            }
+        }
+    }
 }
 
 /// The returned list must carry the ANGLE dimension on all three elements, not

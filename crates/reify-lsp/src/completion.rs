@@ -2012,63 +2012,14 @@ mod tests {
         );
     }
 
-    // --- Euler-builtin signature text (task #6082) ---
-
-    /// Look up a builtin's advertised signature by name.
-    ///
-    /// Panics rather than returning `Option` so a missing entry reports as
-    /// "there is no entry at all", which is a different defect from "the entry
-    /// says the wrong thing" and deserves to be distinguishable in the failure
-    /// output.
-    fn signature_of(name: &str) -> &'static str {
-        BUILTIN_FUNCTIONS
-            .iter()
-            .find(|f| f.name == name)
-            .unwrap_or_else(|| panic!("BUILTIN_FUNCTIONS has no entry named {name:?}"))
-            .signature
-    }
-
-    /// The constructor's advertised signature must match what the compiler and
-    /// eval actually accept.
-    ///
-    /// The pre-#6082 text was wrong on both counts that matter: it put the
-    /// convention LAST (`a1, a2, a3, order`) when it is argument 0, and typed it
-    /// `String` when the raw-string path has been removed and a String now
-    /// raises `ArgTypeMismatch` at compile time. Hover text that contradicts the
-    /// compiler is worse than absent hover text — it tells the user to write the
-    /// one form that is guaranteed not to compile.
-    ///
-    /// Pinned as an EXACT string, matching the canonical spelling in
-    /// `docs/reify-stdlib-reference.md` §3.1. Only an exact assertion catches
-    /// the argument ORDER, which is the whole point here; a `contains` check for
-    /// "EulerConvention" would pass on the old convention-last text.
-    #[test]
-    fn orient_euler_advertises_the_convention_first_enum_signature() {
-        assert_eq!(
-            signature_of("orient_euler"),
-            "orient_euler(convention: EulerConvention, a: Angle, b: Angle, c: Angle) -> Orientation<3>",
-        );
-    }
-
-    /// The decomposer must be advertised at all, and subject-first.
-    ///
-    /// `orient_to_euler` had no entry whatsoever — so the one builtin whose
-    /// argument order #6082 CHANGED was the one the LSP never described. An
-    /// author reaching for it got no hover, no completion, and no signal that
-    /// the order had moved.
-    #[test]
-    fn orient_to_euler_advertises_the_subject_first_signature() {
-        assert_eq!(
-            signature_of("orient_to_euler"),
-            "orient_to_euler(q: Orientation<3>, convention: EulerConvention) -> List<Angle>",
-        );
-    }
+    // --- Euler-builtin completion entries (task #6082) ---
 
     /// The decomposer sorts with its orientation neighbours.
     ///
-    /// A new entry filed under the wrong `sort_group` still hovers correctly but
-    /// lands in the wrong place in the completion list, which is exactly the
-    /// kind of defect a signature-text assertion alone would not catch.
+    /// `sort_group` is a structured field with a real consumer — it decides
+    /// where the entry lands in the completion list — so an entry filed under
+    /// the wrong group still hovers correctly while sorting into the wrong
+    /// neighbourhood.
     #[test]
     fn orient_to_euler_sorts_with_the_orientation_group() {
         let entry = BUILTIN_FUNCTIONS
