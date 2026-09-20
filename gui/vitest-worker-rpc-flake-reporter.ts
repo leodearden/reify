@@ -25,11 +25,12 @@ export interface WorkerRpcFailureSummary {
   readonly failedSuites: readonly FailedSuiteRecord[]
   readonly failedTestCount: number
   /**
-   * Errors vitest raised outside any suite. They also fail the run, and a run
-   * that failed ONLY on these yields a verdict naming no suite at all — which
-   * the runner reads as "re-run the original invocation", not as "nothing to
-   * do". An unhandled error that is not itself an RPC timeout still vetoes,
-   * exactly as an unexplained suite failure does.
+   * Errors vitest raised outside any suite. They also fail the run, and no
+   * module is named by one — so ANY of them, alone or alongside failed suites,
+   * yields a verdict naming no suite at all, which the runner reads as "re-run
+   * the original invocation" rather than as "nothing to do". An unhandled error
+   * that is not itself an RPC timeout still vetoes, exactly as an unexplained
+   * suite failure does.
    */
   readonly unhandledErrorMessages?: readonly string[]
   /**
@@ -49,6 +50,12 @@ export interface WorkerRpcFailureSummary {
 
 export interface WorkerRpcFlakeVerdict {
   readonly kind: 'worker_rpc_timeout'
+  /**
+   * What the retry should NARROW to — not an inventory of what failed. EMPTY
+   * means "nothing to narrow to", which the runner reads as "re-run the
+   * caller's original invocation". `methods` is where the event itself is
+   * accounted for, and it covers run-level failures that no suite names.
+   */
   readonly suites: readonly string[]
   readonly methods: readonly string[]
 }
@@ -80,11 +87,15 @@ const timedOutMethod = (message: string): string | null =>
  *    leaves behind. Without it a retry of the two failures could green a gate
  *    that silently skipped twenty more.
  *
- * The event can arrive with ZERO failed suites: the `snapshotSaved` RPC is
- * issued after a file's tests have already passed, so a timeout on it surfaces
- * at RUN level with no module to attribute it to (task 7724, esc-7600-1). The
- * verdict then names no suite — the complete statement that there is nothing
- * to narrow the retry to.
+ * SCOPE is decided separately, and by ATTRIBUTABILITY rather than by counting.
+ * A run-level failure has no module to attribute it to: the `snapshotSaved` RPC
+ * is issued after a file's tests have already passed (task 7724, esc-7600-1),
+ * and a timed-out `onUnhandledError` means a genuine unhandled error was lost
+ * in transit from a module that may well have passed. So ANY unhandled error
+ * makes the verdict name no suite at all — including when suites failed too,
+ * where narrowing to them would re-run everything except the thing that has no
+ * name. Widening a retry can never mask a failure; narrowing past the evidence
+ * can.
  */
 export function classifyWorkerRpcFlake(
   summary: WorkerRpcFailureSummary,
@@ -110,7 +121,7 @@ export function classifyWorkerRpcFlake(
 
   return {
     kind: 'worker_rpc_timeout',
-    suites: summary.failedSuites.map((s) => s.filepath),
+    suites: unhandled.length === 0 ? summary.failedSuites.map((s) => s.filepath) : [],
     methods: [...methods].sort(),
   }
 }

@@ -215,6 +215,37 @@ describe('classifyWorkerRpcFlake', () => {
     ).toBeNull()
   })
 
+  // SCOPE, not classification. A run-level timeout has no module to attribute
+  // it to, so a retry narrowed to the suites that FAILED would never re-exercise
+  // whatever produced it. That bites hardest on `onUnhandledError`: a timeout on
+  // THAT RPC means a genuine unhandled error was lost in transit, raised by a
+  // module which — every suite here having passed — is not among the failures.
+  // Any run-level timeout therefore names NO suite, so the retry re-runs the
+  // whole original invocation. Widening a retry can never mask a failure, the
+  // same argument partition_args already makes.
+  it('names NO suite when a run-level RPC timeout rides alongside failed suites', () => {
+    const verdict = classifyWorkerRpcFlake(
+      summary(starvedSuites(), 0, {
+        unhandledErrorMessages: [rpcTimeout('onUnhandledError', 'boom')],
+        runEndReason: 'failed',
+      }),
+    )
+
+    expect(verdict).not.toBeNull()
+    expect(verdict!.suites).toEqual([])
+    // The failed suite is still ACCOUNTED for — in the method set, which is
+    // what says the two failures were the same event.
+    expect(verdict!.methods).toEqual(['fetch', 'onUnhandledError'])
+  })
+
+  // The converse, so the rule above cannot silently widen to every verdict:
+  // with no run-level error there IS a module to attribute every failure to,
+  // and the retry stays narrowed.
+  it('still names the failed suites when there is no run-level error at all', () => {
+    expect(classifyWorkerRpcFlake(summary(starvedSuites(), 0, { unhandledErrorMessages: [] }))!.suites)
+      .toEqual(['src/__tests__/engineStore.test.ts'])
+  })
+
   it('returns null for a failed suite carrying no error messages', () => {
     expect(
       classifyWorkerRpcFlake(summary([{ filepath: 'src/__tests__/x.test.ts', errorMessages: [] }])),
@@ -402,6 +433,18 @@ describe('WorkerRpcFlakeReporter — marker line', () => {
     expect(lines[0]).toContain('suites=2')
   })
 
+  // Two suites DID fail here, and the marker still says run scope: a run-level
+  // timeout leaves nothing to narrow to, so `suites=` is the retry's breadth,
+  // not a count of what failed. `methods=` carries both halves of the event.
+  it('says scope=run when a run-level timeout rides alongside failed suites', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), RUN_LEVEL_TIMEOUT, 'failed')
+
+    expect(lines[0]).toContain('scope=run')
+    expect(lines[0]).toContain('suites=0')
+    expect(lines[0]).toContain('methods=fetch,snapshotSaved')
+  })
+
   // Self-identifying: a recurrence must name its own lineage so the next
   // responder reads the history off the line instead of re-diagnosing it.
   it('carries the task lineage so a recurrence needs no re-diagnosis', () => {
@@ -583,7 +626,11 @@ describe('WorkerRpcFlakeReporter — the negatives write nothing', () => {
     )
 
     expect(writes).toHaveLength(1)
-    expect(JSON.parse(writes[0].contents).methods).toEqual(['fetch', 'onUnhandledError'])
+    const artifact = JSON.parse(writes[0].contents)
+    expect(artifact.methods).toEqual(['fetch', 'onUnhandledError'])
+    // ...and it names NO suite: the lost unhandled error came from a module the
+    // failures do not identify, so a narrowed retry would never re-run it.
+    expect(artifact.suites).toEqual([])
   })
 })
 
