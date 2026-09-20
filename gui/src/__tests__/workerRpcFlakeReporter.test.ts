@@ -351,6 +351,18 @@ const starvedRun = (): ReportedModule[] => [
   testModule(`${ROOT}/src/__tests__/diff.test.ts`),
 ]
 
+/**
+ * The recorded 7724 run-scope signature: every module PASSED, and the only
+ * failure is a run-level `snapshotSaved` timeout with no module to attribute
+ * it to. Paired with the run-level error below, since neither half is the
+ * signature on its own.
+ */
+const passedRun = (): ReportedModule[] => [
+  testModule(`${ROOT}/src/__tests__/a.test.ts`),
+  testModule(`${ROOT}/src/__tests__/b.test.ts`),
+]
+const RUN_LEVEL_TIMEOUT = [{ message: TIMEOUT_SNAPSHOT }]
+
 describe('WorkerRpcFlakeReporter — marker line', () => {
   it('emits exactly one column-0 @@REIFY_GUI_FLAKE@@ line on the positive signature', () => {
     const { reporter, lines } = recordingReporter()
@@ -360,13 +372,34 @@ describe('WorkerRpcFlakeReporter — marker line', () => {
     expect(lines[0].startsWith('@@REIFY_GUI_FLAKE@@ ')).toBe(true)
   })
 
-  it('carries kind, suite count and the method csv in the established key=value grammar', () => {
+  it('carries kind, scope, suite count and the method csv in the established key=value grammar', () => {
     const { reporter, lines } = recordingReporter()
     reporter.onTestRunEnd(starvedRun(), [])
 
     expect(lines[0]).toContain('kind=worker_rpc_timeout')
+    expect(lines[0]).toContain('scope=suites')
     expect(lines[0]).toContain('suites=2')
     expect(lines[0]).toContain('methods=fetch,snapshotSaved')
+  })
+
+  // `suites=0` alone reads to an operator as "retrying zero suites", which is
+  // the re-diagnosis cost esc-7600-1 paid. These two pin that the marker says
+  // WHAT WILL BE RE-RUN, and that it varies with the verdict rather than being
+  // a constant.
+  it('says scope=run when the verdict names no suite to narrow to', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(passedRun(), RUN_LEVEL_TIMEOUT, 'failed')
+
+    expect(lines[0]).toContain('scope=run')
+    expect(lines[0]).toContain('suites=0')
+  })
+
+  it('says scope=suites when the verdict names the suites that failed', () => {
+    const { reporter, lines } = recordingReporter()
+    reporter.onTestRunEnd(starvedRun(), [])
+
+    expect(lines[0]).toContain('scope=suites')
+    expect(lines[0]).toContain('suites=2')
   })
 
   // Self-identifying: a recurrence must name its own lineage so the next
@@ -420,11 +453,7 @@ describe('WorkerRpcFlakeReporter — JSON artifact', () => {
   // absent — that emptiness is what tells the runner it has nothing to narrow to.
   it('writes one artifact naming NO suite when the only failure is a run-level RPC timeout', () => {
     const { reporter, lines, writes } = recordingReporter()
-    reporter.onTestRunEnd(
-      [testModule(`${ROOT}/a.test.ts`), testModule(`${ROOT}/b.test.ts`)],
-      [{ message: TIMEOUT_SNAPSHOT }],
-      'failed',
-    )
+    reporter.onTestRunEnd(passedRun(), RUN_LEVEL_TIMEOUT, 'failed')
 
     expect(lines).toHaveLength(1)
     expect(writes).toHaveLength(1)
