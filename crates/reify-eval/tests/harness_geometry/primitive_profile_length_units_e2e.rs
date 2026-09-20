@@ -78,6 +78,7 @@ fn build_capturing_ops_bare(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<G
 /// The rejection half: assert `source` produces at least one `Severity::Error`
 /// carrying `DimensionedArgRejected`, whose message contains every needle, and
 /// that NO op matching `is_target` reached the kernel.
+#[track_caller]
 fn assert_rejected(
     label: &str,
     source: &str,
