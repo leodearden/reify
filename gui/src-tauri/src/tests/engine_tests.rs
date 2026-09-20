@@ -20276,6 +20276,105 @@ fn resolve_param_default_span_returns_none_for_instance_path_cell_id() {
     );
 }
 
+/// The instance-path source used by the `set_parameter` / write-back refusal
+/// tests below. `Holder` declares its OWN `width` as well as a `child` whose
+/// `width` it overrides, so "Holder.child.width" is an instance path that
+/// really exists and collides with a real bare-member cell on the same entity.
+const INSTANCE_PATH_SRC: &str = "structure def Leaf { param width : Length = 80mm }\n\
+                                 structure def Holder {\n\
+                                     param width : Length = 10mm\n\
+                                     sub child : Leaf { width = 90mm }\n\
+                                 }";
+
+fn instance_path_session() -> EngineSession {
+    let mut session = EngineSession::new(Box::new(SimpleConstraintChecker), None);
+    session
+        .load_from_source(INSTANCE_PATH_SRC, "holder")
+        .expect("load should succeed");
+    session
+}
+
+#[test]
+fn set_parameter_refuses_an_instance_path_cell_id_naming_the_ambiguity() {
+    // "Holder.child.width" renders identically to a hypothetical cell
+    // (entity "Holder", member "child.width"), so the string cannot say which
+    // is meant. Today it is rejected only by ACCIDENT: the first-dot split
+    // yields member "child.width", which matches no cell, so the existence gate
+    // says "Unknown parameter" — a true outcome reached for a false reason,
+    // and one that would silently become a WRONG WRITE if anyone ever "fixed"
+    // the split to rsplit_once. Pin the accurate refusal instead.
+    let mut session = instance_path_session();
+
+    // Positive control first: the bare-member cell on the same entity is
+    // settable, so a failure below cannot be blamed on the fixture.
+    session
+        .set_parameter("Holder.width", "50mm")
+        .expect("Holder.width is a plain settable param");
+
+    let err = session
+        .set_parameter("Holder.child.width", "50mm")
+        .expect_err("an instance path names no single cell, so it must be refused");
+
+    // Substrings, not exact prose — the taxonomy is the contract, the wording
+    // is not (see `apply_param_to_source_discriminates_its_resolve_phase_rejections`).
+    for needle in ["Holder.child.width", "ambiguous"] {
+        assert!(
+            err.contains(needle),
+            "refusal should mention {needle:?}, got: {err}"
+        );
+    }
+    assert!(
+        !err.contains("Unknown parameter"),
+        "the id is refused for AMBIGUITY, not for naming a cell that happens \
+         to be absent — misattributing the cause is the defect: {err}"
+    );
+}
+
+#[test]
+fn apply_param_to_source_str_refuses_an_instance_path_cell_id() {
+    // Same id through the WRITE-BACK entry point. This is the path where a
+    // mis-split would have been most dangerous: taking "Holder" + "width" would
+    // splice over the SHARED structure default, changing every instance when
+    // the user asked to change one.
+    let mut session = instance_path_session();
+
+    let err = session
+        .apply_param_to_source_str("Holder.child.width", "50mm")
+        .expect_err("an instance path must be refused before any splice");
+
+    for needle in ["Holder.child.width", "ambiguous"] {
+        assert!(
+            err.contains(needle),
+            "refusal should mention {needle:?}, got: {err}"
+        );
+    }
+    assert!(
+        !err.contains("Unknown parameter"),
+        "write-back must refuse for the same reason set_parameter does: {err}"
+    );
+}
+
+#[test]
+fn set_parameter_still_reports_unknown_parameter_for_a_well_formed_unknown_two_segment_id() {
+    // The new ambiguity refusal must not swallow the pre-existing, DISTINCT
+    // category. A two-segment id names exactly one cell; that the cell does not
+    // exist is a different complaint with a different remedy.
+    let mut session = instance_path_session();
+
+    let err = session
+        .set_parameter("Nope.width", "50mm")
+        .expect_err("Nope is not a declared entity");
+
+    assert!(
+        err.contains("Unknown parameter"),
+        "a well-formed id naming no cell is still an unknown-parameter error: {err}"
+    );
+    assert!(
+        !err.contains("ambiguous"),
+        "a two-segment id is unambiguous — it just names nothing: {err}"
+    );
+}
+
 #[test]
 fn resolve_param_default_span_returns_none_for_param_without_default() {
     // PRD §6.1's explicit "returns None if the param has no default literal to
