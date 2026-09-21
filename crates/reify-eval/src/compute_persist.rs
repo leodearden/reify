@@ -1304,91 +1304,123 @@ mod tests {
     // ── Diagnostics carried across the persist bridge (task 7245) ─────────────
     //
     // The bridge is the round trip that decides whether a warm serve can replay
-    // what the cold solve said. These two tests pin it as TARGET-AGNOSTIC —
-    // the `WithDiagnostics` envelope is generic, so the elastic and buckling
-    // arms must behave identically rather than one being special-cased.
+    // what the cold solve said. The table below pins it as TARGET-AGNOSTIC and
+    // SEVERITY-GENERIC at once: the `WithDiagnostics` envelope is generic over
+    // both, so neither a solver target nor a severity may be special-cased.
 
-    /// The canonical too-thick warning, shaped exactly as the elastic solver
-    /// emits it: `Diagnostic::warning(..).with_code(..)`, no labels, no
-    /// candidates.
-    fn shell_too_thick_warning() -> reify_core::Diagnostic {
-        reify_core::Diagnostic::warning(
-            "shell candidate too thick for shell elements; falling back to tet mesh",
-        )
-        .with_code(reify_core::DiagnosticCode::ShellTooThick)
+    /// A persistable solver diagnostic of `severity`, shaped the way a solver
+    /// emits one: a coded message, a machine-readable candidate list, no labels.
+    ///
+    /// Every severity carries `DiagnosticCode::ShellTooThick`, so the name-based
+    /// on-disk code encoding is exercised in each cell rather than only in the
+    /// Warning one.
+    fn solver_diagnostic(severity: reify_core::Severity) -> reify_core::Diagnostic {
+        let message = format!(
+            "shell candidate too thick for shell elements; falling back to tet mesh \
+             (severity {})",
+            severity.as_wire_str(),
+        );
+        let base = match severity {
+            reify_core::Severity::Info => reify_core::Diagnostic::info(message),
+            reify_core::Severity::Warning => reify_core::Diagnostic::warning(message),
+            reify_core::Severity::Error => reify_core::Diagnostic::error(message),
+        };
+        base.with_code(reify_core::DiagnosticCode::ShellTooThick)
+            .with_candidates(["tet", "hex"])
     }
 
-    /// Assert a single replayed diagnostic is the too-thick warning.
-    fn assert_is_shell_too_thick_warning(diags: &[reify_core::Diagnostic]) {
-        assert_eq!(
-            diags.len(),
-            1,
-            "exactly the one written diagnostic must be replayed, got {diags:?}"
-        );
-        assert_eq!(diags[0].severity, reify_core::Severity::Warning);
-        assert_eq!(
-            diags[0].code,
-            Some(reify_core::DiagnosticCode::ShellTooThick),
-            "the replayed diagnostic must keep its code — downstream consumers \
-             key off DiagnosticCode, not message substrings"
-        );
-        assert_eq!(diags[0].message, shell_too_thick_warning().message);
+    /// A `solver::elastic_static` result `Value` in the shape the bridge's
+    /// `elastic_result_from_value` reader expects.
+    fn elastic_static_cache_value() -> Value {
+        crate::compute_targets::elastic_static::value_from_elastic_result(&minimal_elastic_result(
+            42.0,
+        ))
     }
 
-    #[test]
-    fn persistent_write_then_lookup_replays_elastic_static_diagnostics() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cache_key = ContentHash(0x7245_0001_7245_0001_7245_0001_7245_0001_u128);
-        let value = crate::compute_targets::elastic_static::value_from_elastic_result(
-            &minimal_elastic_result(42.0),
-        );
-
-        super::persistent_write(
-            tmp.path(),
-            "solver::elastic_static",
-            cache_key,
-            &value,
-            &[shell_too_thick_warning()],
-        );
-
-        let (got_value, got_diags) =
-            super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
-                .expect("the entry just written must be a hit");
-
-        assert_eq!(
-            got_value.content_hash(),
-            value.content_hash(),
-            "carrying diagnostics must not perturb the reconstructed Value"
-        );
-        assert_is_shell_too_thick_warning(&got_diags);
-    }
-
-    #[test]
-    fn persistent_write_then_lookup_replays_buckling_diagnostics() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cache_key = ContentHash(0x7245_0002_7245_0002_7245_0002_7245_0002_u128);
-        let value = crate::compute_targets::buckling::value_from_buckling_result(
+    /// A `solver::buckling` result `Value` in the shape the bridge's
+    /// `buckling_result_from_value` reader expects.
+    fn buckling_cache_value() -> Value {
+        crate::compute_targets::buckling::value_from_buckling_result(
             &minimal_buckling_result_cache(),
-        );
+        )
+    }
 
-        super::persistent_write(
-            tmp.path(),
-            "solver::buckling",
-            cache_key,
-            &value,
-            &[shell_too_thick_warning()],
-        );
+    /// The persist bridge must replay a diagnostic of ANY severity on EVERY
+    /// solver target, verbatim in every field a consumer can key off.
+    ///
+    /// Why a table rather than one fixture per case: "regardless of severity" is
+    /// an invariant of the bridge, not a property of whichever diagnostic a test
+    /// author happened to pick. Pinning the whole cross product makes a
+    /// severity-conditional regression — a `.filter(|d| d.severity !=
+    /// Severity::Error)` slipped into `persistent_write`, say — impossible to
+    /// land green. The Warning-only coverage this test replaces permitted
+    /// exactly that.
+    #[test]
+    fn persist_bridge_replays_every_severity_on_every_solver_target() {
+        use reify_core::Severity;
 
-        let (got_value, got_diags) =
-            super::persistent_lookup(tmp.path(), "solver::buckling", cache_key)
-                .expect("the entry just written must be a hit");
+        let targets: [(&str, fn() -> Value); 2] = [
+            ("solver::elastic_static", elastic_static_cache_value),
+            ("solver::buckling", buckling_cache_value),
+        ];
+        let severities = [Severity::Info, Severity::Warning, Severity::Error];
 
-        assert_eq!(
-            got_value.content_hash(),
-            value.content_hash(),
-            "carrying diagnostics must not perturb the reconstructed Value"
-        );
-        assert_is_shell_too_thick_warning(&got_diags);
+        // ONE cache dir for every cell, so each cell's KEY is what selects its
+        // own entry and an aliasing bug cannot hide behind per-cell isolation.
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        for (severity_index, severity) in severities.into_iter().enumerate() {
+            for (target_index, (target, build_value)) in targets.into_iter().enumerate() {
+                let cell = format!("{target} / {}", severity.as_wire_str());
+                let cache_key = ContentHash(
+                    0x7245_0010_7245_0010_7245_0010_0000_0000_u128
+                        | ((severity_index as u128) << 8)
+                        | target_index as u128,
+                );
+                let written = solver_diagnostic(severity);
+                let value = build_value();
+
+                super::persistent_write(
+                    tmp.path(),
+                    target,
+                    cache_key,
+                    &value,
+                    std::slice::from_ref(&written),
+                );
+
+                let (got_value, got_diags) = super::persistent_lookup(tmp.path(), target, cache_key)
+                    .unwrap_or_else(|| panic!("{cell}: the entry just written must be a hit"));
+
+                assert_eq!(
+                    got_value.content_hash(),
+                    value.content_hash(),
+                    "{cell}: carrying diagnostics must not perturb the reconstructed Value",
+                );
+                assert_eq!(
+                    got_diags.len(),
+                    1,
+                    "{cell}: exactly the one written diagnostic must be replayed, \
+                     got {got_diags:?}",
+                );
+                let got = &got_diags[0];
+                assert_eq!(
+                    got.severity, severity,
+                    "{cell}: severity must survive the warm serve — the persist path \
+                     must neither drop nor downgrade a diagnostic by severity",
+                );
+                assert_eq!(got.message, written.message, "{cell}: message must survive");
+                assert_eq!(
+                    got.code,
+                    Some(reify_core::DiagnosticCode::ShellTooThick),
+                    "{cell}: downstream consumers key off DiagnosticCode, not message \
+                     substrings",
+                );
+                assert_eq!(
+                    got.candidates, written.candidates,
+                    "{cell}: the machine-readable candidate list must survive",
+                );
+            }
+        }
     }
 
     #[test]
