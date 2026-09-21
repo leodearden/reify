@@ -267,16 +267,9 @@ struct Args {
     /// When true, bind `NoopJCodemunchOps` even for P1 runs. Preserves
     /// hermetic test behaviour and provides an offline escape hatch.
     no_jcodemunch: bool,
-    /// `--print-repo-id`: print the derived (or `--jcodemunch-repo`-overridden)
-    /// jcodemunch repo identity for `--project-root` to stdout and exit,
-    /// touching none of the task/runs-db/git machinery below.
-    ///
-    /// This is the ONE identity derivation task #6459 collapses onto:
-    /// `scripts/jcodemunch-index-reify.sh` shells out to this mode instead of
-    /// re-implementing §4.2's `~`-expand/absolutize/readlink-f/sha1 pipeline a
-    /// second time in bash, so the two languages cannot independently drift
-    /// the way they did before `resolve_repo_id` was made to reproduce the
-    /// script's exact normalization.
+    /// `--print-repo-id`: print the jcodemunch repo identity for
+    /// `--project-root` to stdout and exit, touching none of the
+    /// task/runs-db/git machinery below.
     print_repo_id: bool,
 }
 
@@ -633,14 +626,9 @@ fn selected_detectors(pattern: Option<&str>) -> impl Iterator<Item = &'static De
 }
 
 /// The jcodemunch repo identity this invocation acts on: `--jcodemunch-repo`
-/// when given, otherwise derived from `--project-root` per §4.2.
-///
-/// One function rather than two expressions because the whole point of
-/// `--print-repo-id` (task #6459) is that the identity it PRINTS is the
-/// identity the gate INTERROGATES — `scripts/jcodemunch-index-reify.sh` asks
-/// this binary which index to write so the two can never disagree. Deriving
-/// them at two call sites would put the override precedence in two places and
-/// reopen that divergence in-process, one refactor later.
+/// when given, otherwise derived from `--project-root` per §4.2. One function,
+/// so the identity `--print-repo-id` PRINTS and the identity the gate
+/// INTERROGATES cannot apply that precedence differently.
 fn effective_repo_id(args: &Args) -> String {
     args.jcodemunch_repo
         .clone()
@@ -677,16 +665,10 @@ fn main() -> ExitCode {
         }
     };
 
-    // --print-repo-id: a standalone info mode, like --help/--version. It
-    // needs only --project-root (and an optional --jcodemunch-repo override),
-    // so it returns before any task loading, runs.db open, or git op — none
-    // of which this mode touches. This is the single derivation
-    // `scripts/jcodemunch-index-reify.sh` shells out to for the identity it
-    // writes, rather than maintaining a second bash copy of jcodemunch's
-    // repo-identity formula (task #6459). That script does retain an inline
-    // cold-checkout fallback for the case where nothing has been built yet;
-    // the two are pinned to agree by `index_script_repo_id_agrees_between_
-    // the_rust_and_bash_producers` in this crate's tests/cli.rs.
+    // A standalone info mode, like --help/--version: it needs only
+    // --project-root, so it returns before any task load, runs.db open or git
+    // op. Why the derivation lives here rather than in bash, and who consumes
+    // it: scripts/jcodemunch-index-reify.sh, "one derivation, not two".
     if args.print_repo_id {
         println!("{}", effective_repo_id(&args));
         return ExitCode::SUCCESS;

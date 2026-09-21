@@ -181,11 +181,23 @@ PROJECT_ROOT="$(readlink -f -- "$PROJECT_ROOT")" \
 # test-only, because an operator-visible variable that changes which index
 # identity gets asserted is an operational lever whether or not it is used.
 #
-# Which producer answered is reported in the summary (`repo-id-from`), and a
-# binary that was found but FAILED is named with its exit code and stderr
-# before the fallback runs. Silence there would collapse three different
-# situations into one indistinguishable outcome: a cold checkout, a broken
-# binary, and a STALE binary deriving a different identity than this tree's.
+# Which producer answered is reported in the summary (`repo-id-from`), with
+# the chosen binary's build time, and a binary that was found but FAILED is
+# named with its exit code before the fallback runs (its own stderr reaches the
+# operator directly). Silence there would collapse three different situations
+# into one indistinguishable outcome: a cold checkout, a broken binary, and a
+# STALE binary deriving a different identity than this tree's. The stale case is
+# the only one that can answer 0 with a WRONG identity, which is why the build
+# time is reported and why the newer of release/debug wins below.
+#
+# ACCEPTED RESIDUAL RISK — skew between two RUST builds. This script binds to
+# the checkout's `target/` build; /audit invokes the gate through its own
+# `REIFY_AUDIT_BIN` (often ~/.cargo/bin/reify-audit). So "one derivation" holds
+# at the SOURCE level, not the binary level: a `resolve_repo_id` change landed
+# in the tree but not installed reopens producer/gate divergence between two
+# Rust builds. Bounded, not closed: the formula is pinned to upstream's
+# `storage/git_root.py::_local_repo_name` and changes about never, and both
+# sides print the identity they used, so a skew is diagnosable after the fact.
 REIFY_JC_REPO_ID_BIN="${REIFY_JC_REPO_ID_BIN:-}"
 if [ -n "$REIFY_JC_REPO_ID_BIN" ]; then
     REPO_ID_BIN_ORIGIN="env REIFY_JC_REPO_ID_BIN"
@@ -193,31 +205,45 @@ else
     REPO_ID_BIN_ORIGIN="binary built in this checkout"
     _jc_own_repo_root="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null || true)"
     if [ -n "$_jc_own_repo_root" ]; then
-        if [ -x "$_jc_own_repo_root/target/release/reify-audit" ]; then
-            REIFY_JC_REPO_ID_BIN="$_jc_own_repo_root/target/release/reify-audit"
-        elif [ -x "$_jc_own_repo_root/target/debug/reify-audit" ]; then
-            REIFY_JC_REPO_ID_BIN="$_jc_own_repo_root/target/debug/reify-audit"
+        # NEWER WINS, not release-wins: reify's default dev/test flow builds
+        # debug, so a leftover older --release build would otherwise outrank
+        # the build this tree actually means — and outrank it SILENTLY, since a
+        # stale binary that still understands --print-repo-id exits 0.
+        _jc_rel="$_jc_own_repo_root/target/release/reify-audit"
+        _jc_dbg="$_jc_own_repo_root/target/debug/reify-audit"
+        if [ -x "$_jc_rel" ] && { [ ! -x "$_jc_dbg" ] || [ "$_jc_rel" -nt "$_jc_dbg" ]; }; then
+            REIFY_JC_REPO_ID_BIN="$_jc_rel"
+        elif [ -x "$_jc_dbg" ]; then
+            REIFY_JC_REPO_ID_BIN="$_jc_dbg"
         fi
     fi
+fi
+if [ -n "$REIFY_JC_REPO_ID_BIN" ] && [ -e "$REIFY_JC_REPO_ID_BIN" ]; then
+    # Build age, so `repo-id-from` shows an operator they are reading an
+    # hours-old binary rather than this tree's.
+    REPO_ID_BIN_ORIGIN="$REPO_ID_BIN_ORIGIN, built $(date -r "$REIFY_JC_REPO_ID_BIN" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || printf 'at an unreadable mtime')"
 fi
 
 REPO_ID=""
 REPO_ID_SOURCE="inline bash fallback (no reify-audit binary found)"
 if [ -n "$REIFY_JC_REPO_ID_BIN" ]; then
-    # Own temp file: $SCRATCH_ERR is not minted until the DB gates, far below.
-    _jc_id_err="$(mktemp "${TMPDIR:-/tmp}/jc-index-reify-repo-id-XXXXXX.err")"
+    # ONLY stdout is captured; the child's stderr stays attached to ours, so
+    # its diagnostics reach the operator verbatim and there is no temp file to
+    # leak. A temp file here could not be trapped without clobbering the EXIT
+    # trap armed far below for $SCRATCH_ERR, and an untrapped one leaks on
+    # every signal — the shape that accreted 1476 stray dirs in this script's
+    # own suite.
     _jc_id_rc=0
-    REPO_ID="$("$REIFY_JC_REPO_ID_BIN" --print-repo-id --project-root "$PROJECT_ROOT" 2>"$_jc_id_err")" \
+    REPO_ID="$("$REIFY_JC_REPO_ID_BIN" --print-repo-id --project-root "$PROJECT_ROOT")" \
         || _jc_id_rc=$?
     if [ "$_jc_id_rc" -eq 0 ] && [ -n "$REPO_ID" ]; then
         REPO_ID_SOURCE="$REIFY_JC_REPO_ID_BIN --print-repo-id ($REPO_ID_BIN_ORIGIN)"
     else
-        warn "$REPO_ID_BIN_ORIGIN '$REIFY_JC_REPO_ID_BIN' --print-repo-id exited $_jc_id_rc: $(tr '\n' ' ' <"$_jc_id_err" | sed 's/[[:space:]]*$//')"
+        warn "$REPO_ID_BIN_ORIGIN '$REIFY_JC_REPO_ID_BIN' --print-repo-id exited $_jc_id_rc (any diagnostics of its own are above)"
         warn "the single Rust derivation did NOT answer; the identity below comes from this script's inline fallback instead"
         REPO_ID=""
         REPO_ID_SOURCE="inline bash fallback ($REPO_ID_BIN_ORIGIN '$REIFY_JC_REPO_ID_BIN' exited $_jc_id_rc)"
     fi
-    rm -f "$_jc_id_err"
 fi
 if [ -z "$REPO_ID" ]; then
     # The one remaining bash copy of the derivation. jcodemunch_index.rs's
@@ -226,10 +252,25 @@ if [ -z "$REPO_ID" ]; then
     # Rust); the basename/sha1/cut half is pinned by
     # `index_script_repo_id_agrees_between_the_rust_and_bash_producers` in
     # crates/reify-audit/tests/cli.rs, which drives THIS script down both
-    # branches over one root and compares the two repo-id lines.
-    REPO_ID="local/$(basename -- "$PROJECT_ROOT")-$(sha1_hex "$PROJECT_ROOT" | cut -c1-8)"
+    # branches over a table of shaped roots and compares the repo-id lines.
+    #
+    # `basename -- /` prints `/`, but upstream's `pathlib.Path('/').name` — and
+    # so `Path::file_name()` on the Rust side — is EMPTY. Without this the two
+    # producers disagree for `--project-root /`: `local//-<sha8>` here against
+    # `local/-<sha8>` there. After `readlink -f` the root is the only path
+    # whose basename can be a slash, so one special case closes it.
+    _jc_basename="$(basename -- "$PROJECT_ROOT")"
+    if [ "$_jc_basename" = "/" ]; then
+        _jc_basename=""
+    fi
+    REPO_ID="local/${_jc_basename}-$(sha1_hex "$PROJECT_ROOT" | cut -c1-8)"
 fi
 case "$REPO_ID" in
+    # A slash in the NAME half cannot round-trip through `local-<name>.db`: it
+    # would name a file under a directory that does not exist. Refused
+    # explicitly because `local/?*` happily matches `/-abc` and would let it
+    # through.
+    local/*/*) die "resolved a jcodemunch repo id whose name contains a slash, '$REPO_ID', from $REPO_ID_SOURCE — it has no representable local-<name>.db path" ;;
     local/?*) ;;
     *) die "resolved a malformed jcodemunch repo id '$REPO_ID' (expected local/<name>) from $REPO_ID_SOURCE" ;;
 esac

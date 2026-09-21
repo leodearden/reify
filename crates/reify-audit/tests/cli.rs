@@ -302,28 +302,41 @@ mod cli {
         assert_eq!(printed, "leodearden/reify");
     }
 
-    /// One run of `scripts/jcodemunch-index-reify.sh --dry-run`, as the
-    /// `(repo-id, repo-id-from)` pair it prints in its summary.
+    /// One run of `scripts/jcodemunch-index-reify.sh --dry-run`.
     ///
     /// `--dry-run` is the hermetic mode: it prints the summary and the argv it
     /// WOULD run, then exits, so no uvx, sqlite3 or network is involved. A
     /// tempdir `CODE_INDEX_PATH` keeps the host store (and its config.jsonc)
     /// out of the run entirely.
-    fn index_script_repo_id(
+    fn run_index_script(
         project_root: &Path,
         code_index: &Path,
         repo_id_bin: &Path,
-    ) -> (String, String) {
+    ) -> std::process::Output {
         let script = repo_root().join("scripts/jcodemunch-index-reify.sh");
-        let out = Command::new("bash")
+        Command::new("bash")
             .arg(&script)
             .args(["--dry-run", "--project-root"])
             .arg(project_root)
             .env("REIFY_JC_REPO_ID_BIN", repo_id_bin)
             .env("CODE_INDEX_PATH", code_index)
             .output()
-            .unwrap_or_else(|e| panic!("failed to invoke {}: {e}", script.display()));
+            .unwrap_or_else(|e| panic!("failed to invoke {}: {e}", script.display()))
+    }
 
+    /// A successful `--dry-run`, as its `(repo-id, repo-id-from)` summary pair
+    /// plus the whole run's stderr.
+    ///
+    /// stderr is RETURNED rather than only quoted into panic messages because
+    /// the degradation warnings are themselves part of the contract: the
+    /// found-but-failed case is only distinguishable from a cold checkout
+    /// because the script says so out loud.
+    fn index_script_repo_id(
+        project_root: &Path,
+        code_index: &Path,
+        repo_id_bin: &Path,
+    ) -> (String, String, String) {
+        let out = run_index_script(project_root, code_index, repo_id_bin);
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         assert_eq!(
@@ -343,7 +356,23 @@ mod cli {
                     panic!("no `{name}` summary line in:\n{stdout}\nstderr:\n{stderr}")
                 })
         };
-        (field("repo-id"), field("repo-id-from"))
+        (field("repo-id"), field("repo-id-from"), stderr)
+    }
+
+    /// An executable stub standing in for `reify-audit --print-repo-id` that
+    /// exits 0 having printed `line`.
+    ///
+    /// Drives the script's malformed-identity refusals, which are otherwise
+    /// unreachable: the real binary can only ever print a well-formed id, so a
+    /// producer that answers 0 with something else has to be fabricated.
+    fn fake_repo_id_producer(dir: &Path, name: &str, line: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n"))
+            .expect("write fake repo-id producer");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake repo-id producer");
+        path
     }
 
     /// The two producers of jcodemunch's repo identity must agree.
@@ -353,9 +382,17 @@ mod cli {
     /// pipeline for a cold checkout. Which one answers is AMBIENT — it depends
     /// on whether `target/{release,debug}/reify-audit` happens to exist — so
     /// the script's own suite silently covers a different branch run to run and
-    /// never covers both. This drives BOTH branches over one throwaway root and
+    /// never covers both. This drives BOTH branches over each root below and
     /// asserts the printed identity is byte-identical, which is the
     /// cross-language contract task #6459 is actually about.
+    ///
+    /// SHAPED ROOTS, not one tempdir. `basename`/`Path::file_name()` and
+    /// `basename`/`sha1` agree trivially on an ordinary path, so a single
+    /// point proves almost nothing about the bash half of the formula. `/` is
+    /// the measured counter-example: `basename -- /` prints `/` while
+    /// `Path('/').name` is empty, which shipped as a real divergence
+    /// (`local//-<sha8>` against `local/-<sha8>`) until the script special-
+    /// cased it. A name containing a space covers the quoting half.
     ///
     /// Non-vacuous by construction: `repo-id-from` is asserted too, so a leg
     /// that silently fell back to bash when it was supposed to be exercising
@@ -363,31 +400,92 @@ mod cli {
     #[test]
     fn index_script_repo_id_agrees_between_the_rust_and_bash_producers() {
         let tmp = tempfile::tempdir().expect("create tempdir");
-        let project_root = tmp.path().join("some-project");
-        std::fs::create_dir(&project_root).expect("create project root");
         let code_index = tmp.path().join("code-index");
-
         let bin = Path::new(env!("CARGO_BIN_EXE_reify-audit"));
-        let (rust_id, rust_from) = index_script_repo_id(&project_root, &code_index, bin);
-        assert!(
-            rust_from.contains("--print-repo-id"),
-            "the binary leg must be answered by reify-audit; got repo-id-from `{rust_from}`"
-        );
-
         // A path that cannot exec forces the cold-checkout branch.
         let absent = tmp.path().join("no-such-reify-audit");
-        let (bash_id, bash_from) = index_script_repo_id(&project_root, &code_index, &absent);
-        assert!(
-            bash_from.contains("inline bash fallback"),
-            "the fallback leg must be answered by the inline pipeline; got repo-id-from `{bash_from}`"
-        );
 
-        assert_eq!(
-            rust_id, bash_id,
-            "the Rust and bash producers derived different identities for {} \
-             — the gate would then probe an identity the indexer never wrote",
-            project_root.display()
-        );
+        let ordinary = tmp.path().join("some-project");
+        let spaced = tmp.path().join("has space");
+        for dir in [&ordinary, &spaced] {
+            std::fs::create_dir(dir).expect("create project root");
+        }
+
+        for project_root in [ordinary.as_path(), spaced.as_path(), Path::new("/")] {
+            let (rust_id, rust_from, rust_err) =
+                index_script_repo_id(project_root, &code_index, bin);
+            assert!(
+                rust_from.contains("--print-repo-id"),
+                "the binary leg must be answered by reify-audit for {}; \
+                 got repo-id-from `{rust_from}`",
+                project_root.display()
+            );
+            assert!(
+                !rust_err.contains("WARNING"),
+                "the binary leg answered, so nothing should warn about degradation; \
+                 got stderr:\n{rust_err}"
+            );
+
+            let (bash_id, bash_from, bash_err) =
+                index_script_repo_id(project_root, &code_index, &absent);
+            assert!(
+                bash_from.contains("inline bash fallback"),
+                "the fallback leg must be answered by the inline pipeline for {}; \
+                 got repo-id-from `{bash_from}`",
+                project_root.display()
+            );
+            // The degradation must be SAID, not merely taken: a cold checkout
+            // and a broken binary both end up here, and only the warning tells
+            // them apart. 127 is the shell's status for an unexecutable path.
+            assert!(
+                bash_err.contains("WARNING") && bash_err.contains("exited 127"),
+                "the fallback leg must warn, naming the producer's exit status; \
+                 got stderr:\n{bash_err}"
+            );
+
+            assert_eq!(
+                rust_id, bash_id,
+                "the Rust and bash producers derived different identities for {} \
+                 — the gate would then probe an identity the indexer never wrote",
+                project_root.display()
+            );
+        }
+    }
+
+    /// A producer that exits 0 with an identity the DB path cannot express is
+    /// refused, not silently written to a nonexistent directory.
+    ///
+    /// Both shapes are reachable through `REIFY_JC_REPO_ID_BIN`, and the
+    /// slashed one was reachable through the bash fallback too, via
+    /// `--project-root /`. `local/?*` alone does not catch it: `?*` matches
+    /// `/-abc` happily, and `$CODE_INDEX_DIR/local-/-abc.db` then names a file
+    /// under a directory that does not exist.
+    #[test]
+    fn index_script_refuses_a_repo_id_it_cannot_turn_into_a_db_path() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let code_index = tmp.path().join("code-index");
+        let project_root = tmp.path().join("some-project");
+        std::fs::create_dir(&project_root).expect("create project root");
+
+        for (name, line, expected) in [
+            ("slashed", "local//-42099b4a", "contains a slash"),
+            ("not-local", "leodearden/reify", "malformed"),
+        ] {
+            let producer = fake_repo_id_producer(tmp.path(), name, line);
+            let out = run_index_script(&project_root, &code_index, &producer);
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+            assert_ne!(
+                out.status.code(),
+                Some(0),
+                "a producer printing `{line}` must be refused, not accepted\nstderr:\n{stderr}"
+            );
+            assert!(
+                stderr.contains(expected) && stderr.contains(line),
+                "the refusal must name the offending id `{line}` and say `{expected}`; \
+                 got stderr:\n{stderr}"
+            );
+        }
     }
 
     /// `--task <id> --pre-done` on a done/merged task with an empty `events`
