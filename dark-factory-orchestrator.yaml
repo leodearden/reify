@@ -910,6 +910,47 @@ sccache:
 orch_daily_cost_ceiling_usd: 10000.0
 watcher_daily_cost_ceiling_usd: 10000.0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# EWA dispatch breaker + its dominant false-numerator source.
+# Both set 2026-09-21 by Leo, after the scheduler sat auto-paused for ~15h on
+# ewa_trip_219.5123 (paused 2026-09-20T17:34Z; fleet fully drained to "no active
+# tasks"; 716 tasks tripped the starvation watchdog in a 90s window, esc-4194-5).
+# Both knobs are green-tier — `reload_config` applies them with no restart.
+#
+# WHY THE TRIP WAS MOSTLY ARTIFACT. The EWA statistic is escalation
+# submissions / tasks done. Its numerator was dominated by DERIVATIVE records:
+# at the time of the trip 26 of 63 pending L2s (41%) were
+# __recovery_veto_streak__ items, every one root-caused by the auto-watcher
+# itself as "recovery-veto-streak-noise-from-pending-l2-pin:<esc>" — i.e. a
+# restatement of an L2 that was ALREADY parked on the L2 queue. With
+# veto_streak_threshold=3 against a reconcile sweep running roughly every 600s
+# and veto_streak_min_span_secs=1500, any L2 a watcher deliberately parks mints
+# a veto-streak L1 within about half an hour. Parking is the prescribed
+# handling for items needing a human, so the queue manufactured its own storm
+# and then halted the fleet over it. Streaks of 129x/32.7h, 159x/40.3h and
+# 198x/50.1h were all live on parked records.
+recovery_emission:
+  # The narrow kill switch for the ONLY part of this detector that writes to
+  # the escalation queue (config.py's own words at _submodel_leaf_paths).
+  # `recovery_vetoed`/`recovery_left` events and the streak counter are
+  # UNAFFECTED — the observability stays, the blocking L1 goes away. This is
+  # the numerator fix; the threshold bump below is only the safety margin.
+  # REVISIT: if a genuine strand is ever missed because no L1 was filed, this
+  # is the line that suppressed it — the events are still in the journal.
+  streak_escalation_enabled: false
+
+# Held at the code default of 24.6 until now. Task 4559 DELIBERATELY DECLINED a
+# retune, on the grounds that 24.6's provenance (reify 23-day mean+2sigma) is not
+# reproducible and should stay a held-constant while the corrected
+# submissions-only series accumulates. This OVERRIDES that decision, knowingly:
+# 60.0 is the top of the observed DF-native range (13.0-62.3) and still ~3.6x
+# below the 219.5 that tripped, so the breaker keeps its teeth against a real
+# storm while surviving the cold-start window after a resume (EWA resets to 0.0
+# on resume_scheduler for an ewa_trip_ pause, and done=0 early on makes
+# subs/max(done,1) spike before the first completions land).
+digest_ewa_threshold: 60.0
+# ──────────────────────────────────────────────────────────────────────────────
+
 # Usage cap / multi-account failover
 # 7 automation accounts (B→C→D→E→F→G→H); A reserved for INTERACTIVE use only.
 # Evals have NO dedicated account — they draw on this same pool and must be
