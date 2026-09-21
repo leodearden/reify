@@ -14,8 +14,9 @@
 //! WHY UNRELATED BUILD FAILURES ARE TOLERATED: a `MockGeometryKernel` cannot realize
 //! everything the corpus describes, and this gate asserts only the ABSENCE of a units
 //! rejection — not that every example builds. That tolerance is exactly what would let a
-//! broken sweep read as green, so it is paid for by three companions in this file, all
-//! required: the swept-corpus floor, the seeded positive, and the op-reach floor.
+//! broken sweep read as green, so it is paid for by four companions in this file, all
+//! required: the exactly-pinned skip set, the swept-corpus floor, the seeded positive,
+//! and the op-reach floor.
 //!
 //! THE SKIP IS NARROW ON PURPOSE, and this is the file's one subtle decision. A corpus
 //! member that fails to COMPILE cannot be built, so it must be skipped — but "skip
@@ -36,14 +37,14 @@
 //! production CLI reaches it too in any build with debug assertions on. That assertion is
 //! a `debug_assert!` whose release fallback is documented as benign, which is why it has
 //! gone unnoticed. Catching it keeps one latent engine bug from blocking a units gate
-//! that has nothing to do with it; the skip is REPORTED and bounded by [`SWEPT_FLOOR`],
-//! so it can never grow into a silent hole.
+//! that has nothing to do with it; the skip is REPORTED, and pinned by name and cause in
+//! [`KNOWN_SKIPS`], so it can never grow into a silent hole.
 
 use crate::eval_gate_support;
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::Engine;
 use reify_ir::ExportFormat;
-use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
+use reify_test_support::{MockGeometryKernel, compile_source_with_stdlib};
 
 /// The `examples/` subtree whose contribution is asserted separately, so a reorg that
 /// moved it out from under the walk cannot silently shrink the corpus to zero of it.
@@ -55,15 +56,89 @@ const BEST_PRACTICES_PREFIX: &str = "best_practices/";
 /// every member skip — the one way this gate could go silently vacuous — reds here. A
 /// FLOOR, not an equality: adding examples must never break the gate, losing most of them
 /// must.
+///
+/// It is the cheap BACKSTOP, not the guard: [`KNOWN_SKIPS`] pins the skip set exactly, so
+/// a single new skip reds long before the count approaches this floor.
 const SWEPT_FLOOR: usize = 200;
 
 /// Geometry ops observed reaching the mock kernel across the whole sweep.
 ///
 /// Without this, "built nothing, found nothing" would read exactly like "built everything,
-/// found nothing". Measured at 401 over the 257 members built when this landed; the floor
-/// is half that, for the same reason as [`SWEPT_FLOOR`] — it must red when realization
-/// collapses, not when a single example changes shape.
+/// found nothing". Measured at 401 over the 257 members built, and unchanged at 401 across
+/// all four engine wirings [`realize`] tabulates. The floor is half that, for the same
+/// reason as [`SWEPT_FLOOR`] — it must red when realization collapses, not when a single
+/// example changes shape.
 const OPS_REACH_FLOOR: usize = 200;
+
+/// One corpus member the sweep is KNOWN not to build, and why.
+///
+/// `SWEPT_FLOOR` alone bounds the skips only in bulk: with 264 members walked and a floor
+/// of 200, some fifty more could quietly degrade from BUILT to SKIPPED — a new compile
+/// error, or a fresh `Engine::build` panic swallowed by `catch_unwind` — and row 20's
+/// claim would shrink with them while this gate stayed green. So the skip SET is pinned
+/// exactly, in the shape
+/// `eval_invariant_corpus_sweep::residual_exemptions_and_failure_policy_stay_per_invariant`
+/// already uses for its residual exemptions: a new skip reds naming the file and its
+/// cause, and a member that starts building again reds so its dead entry is deleted.
+///
+/// The CAUSE is pinned; the detail text is not. Both causes are pre-existing engine
+/// defects unrelated to units (see the module header), so a reworded engine diagnostic
+/// must not red a units gate.
+struct KnownSkip {
+    /// Workspace-relative path, exactly as the sweep reports it.
+    rel: &'static str,
+    cause: SkipCause,
+    /// One line on what is actually wrong, for the reader who hits this entry.
+    why: &'static str,
+}
+
+/// Every member this sweep is known not to build. Measured on this tree, not predicted.
+///
+/// Seven of 264. Every one is a pre-existing condition of the example itself — four are
+/// negative fixtures that are SUPPOSED to fail to compile — and not one is a units
+/// rejection, which is what makes tolerating them compatible with row 20's claim.
+const KNOWN_SKIPS: &[KnownSkip] = &[
+    KnownSkip {
+        rel: "examples/auto/bearing_computed_default_unevaluated.ri",
+        cause: SkipCause::UnrelatedCompileError,
+        why: "auto type parameter has two feasible candidates for bound 'Seal', so \
+              `TypeParam` stays unresolved",
+    },
+    KnownSkip {
+        rel: "examples/auto/bearing_constraint_select.ri",
+        cause: SkipCause::UnrelatedCompileError,
+        why: "same auto-type-parameter ambiguity on bound 'Seal'",
+    },
+    KnownSkip {
+        rel: "examples/auto/bearing_unsat.ri",
+        cause: SkipCause::UnrelatedCompileError,
+        why: "same auto-type-parameter ambiguity on bound 'Seal'",
+    },
+    KnownSkip {
+        rel: "examples/conditional_compilation/main.ri",
+        cause: SkipCause::UnrelatedCompileError,
+        why: "type `Platform` is supplied by the conditional-compilation selection this \
+              single-module compile does not perform",
+    },
+    KnownSkip {
+        rel: "examples/module_visibility/consumer.ri",
+        cause: SkipCause::UnrelatedCompileError,
+        why: "sub-component references structure `Motor` from a sibling module that a \
+              single-module compile does not load",
+    },
+    KnownSkip {
+        rel: "examples/multi_aspect_objective_mixed.ri",
+        cause: SkipCause::UnrelatedCompileError,
+        why: "a NEGATIVE fixture: its objective deliberately mixes Money with Mass \
+              (E_OBJECTIVE_MIXED_DIMENSION)",
+    },
+    KnownSkip {
+        rel: "examples/integration_corner_cases.ri",
+        cause: SkipCause::BuildPanic,
+        why: "the pre-existing `RecTree.child`/`depth` scoped-override debug_assert named \
+              in this module's header; `reify build` panics on it too",
+    },
+];
 
 /// One units rejection observed while sweeping, carrying enough to act on: which file,
 /// and what the user would have been told.
@@ -80,12 +155,31 @@ struct SweepOutcome {
     ops_reached: usize,
 }
 
+/// Why a corpus member could not be built. Structured rather than sniffed back out of
+/// the detail text, so [`KNOWN_SKIPS`] pins a cause without pinning any wording.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SkipCause {
+    /// Compilation reported an Error that is not the `ArgTypeMismatch` a bare length
+    /// draws, so there is nothing to build.
+    UnrelatedCompileError,
+    /// `Engine::build` panicked. Pre-existing engine defects, not units ones — see the
+    /// module header.
+    BuildPanic,
+}
+
+/// One member the sweep could not build: why, and the detail a reader needs to act on it.
+struct Skip {
+    cause: SkipCause,
+    /// The compile message or panic payload. REPORTED, never asserted on — pinning it
+    /// would turn a reworded engine diagnostic into a red units gate.
+    detail: String,
+}
+
 /// What became of one corpus member.
 enum FileOutcome {
     Swept(SweepOutcome),
-    /// Could not be built, for a reason that is not a units rejection. Carries the
-    /// unrelated compile error so a skip is readable rather than a silent hole.
-    Skipped(String),
+    /// Could not be built, for a reason that is not a units rejection.
+    Skipped(Skip),
 }
 
 /// THE checker. The corpus sweep and the seeded positive both go through this one
@@ -99,12 +193,18 @@ fn sweep_source(rel: &str, source: &str) -> FileOutcome {
         .iter()
         .find(|d| d.severity == Severity::Error && d.code != Some(DiagnosticCode::ArgTypeMismatch))
     {
-        return FileOutcome::Skipped(unrelated.message.clone());
+        return FileOutcome::Skipped(Skip {
+            cause: SkipCause::UnrelatedCompileError,
+            detail: unrelated.message.clone(),
+        });
     }
 
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| realize(rel, &compiled))) {
         Ok(outcome) => FileOutcome::Swept(outcome),
-        Err(payload) => FileOutcome::Skipped(format!("build panicked: {}", panic_text(&payload))),
+        Err(payload) => FileOutcome::Skipped(Skip {
+            cause: SkipCause::BuildPanic,
+            detail: panic_text(&payload),
+        }),
     }
 }
 
@@ -118,11 +218,42 @@ fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// Realize `compiled` against a mock kernel and collect what this gate reads off it.
+///
+/// WHY THIS IS NOT `eval_gate_support::gate_engine(true)`, the constructor whose own doc
+/// names it "the ONE engine-construction site every corpus-wide invariant gate routes
+/// through". Two reasons, one structural and one measured, and neither is an oversight.
+///
+/// Structural: this gate needs the kernel's `operations_ref()` handle for [`OPS_REACH_FLOOR`],
+/// and `gate_engine` hands back the `Engine` alone, having already boxed away the kernel
+/// it built. Calling it is not possible without widening its signature and migrating its
+/// three existing callers — the right end state, and filed as follow-up work, because it
+/// reaches outside this gate's own file.
+///
+/// Measured: the checker half of that wiring IS adopted here — `SimpleConstraintChecker`,
+/// what every other corpus-wide gate evaluates through, in place of a mock that answers
+/// nothing. `register_production_compute_fns` is NOT, and the reason is a four-way
+/// back-to-back measurement of this sweep over all 264 members:
+///
+/// | wiring | wall clock | geometry ops reaching the kernel |
+/// |---|---|---|
+/// | mock checker, no compute fns | 36.8s | 401 |
+/// | `SimpleConstraintChecker`, no compute fns (THIS) | 40.9s | 401 |
+/// | mock checker + `register_production_compute_fns` | 347.2s | 401 |
+/// | `gate_engine(true)`'s exact wiring | 416.4s | 401 |
+///
+/// Registering the production trampolines costs 9.4x wall clock and moves the op reach by
+/// ZERO. That equality is the load-bearing half of the evidence, not the timing: an op
+/// dropped before the LENGTH gate never reaches the kernel, so a degraded compute dispatch
+/// that hid one would show a LOWER count. It does not — no geometry op in this corpus sits
+/// behind an `@optimized` trampoline, and row 20 sees the same surface either way. If that
+/// ever changes the registration must come back, and the sweep must be sharded on the
+/// sibling's `CORPUS_SHARD_COUNT` idiom first so the merge gate is not handed a 400s
+/// straggler.
 fn realize(rel: &str, compiled: &reify_compiler::CompiledModule) -> SweepOutcome {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
     let mut engine = Engine::new(
-        Box::new(MockConstraintChecker::new()),
+        Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(kernel)),
     );
     let result = engine.build(compiled, ExportFormat::Step);
@@ -170,7 +301,7 @@ fn no_shipped_example_trips_a_length_gate() {
     let examples = root.join("examples");
 
     let mut violations = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
+    let mut skipped: Vec<(String, Skip)> = Vec::new();
     let mut ops_reached = 0usize;
     let mut swept = 0usize;
     let mut swept_best_practices = 0usize;
@@ -185,7 +316,7 @@ fn no_shipped_example_trips_a_length_gate() {
             .unwrap_or_else(|e| panic!("failed to read corpus member {rel}: {e}"));
 
         match sweep_source(&rel, &source) {
-            FileOutcome::Skipped(reason) => skipped.push(format!("{rel}: {reason}")),
+            FileOutcome::Skipped(skip) => skipped.push((rel, skip)),
             FileOutcome::Swept(outcome) => {
                 swept += 1;
                 if path
@@ -208,9 +339,11 @@ fn no_shipped_example_trips_a_length_gate() {
         skipped.len(),
         violations.len(),
     );
-    for skip in &skipped {
-        eprintln!("  SKIP (not built): {skip}");
+    for (rel, skip) in &skipped {
+        eprintln!("  SKIP (not built): {rel}: {:?}: {}", skip.cause, skip.detail);
     }
+
+    assert_skip_set_is_the_pinned_one(&skipped);
 
     assert!(
         swept >= SWEPT_FLOOR,
@@ -218,7 +351,7 @@ fn no_shipped_example_trips_a_length_gate() {
          {SWEPT_FLOOR} floor — a sweep that skips the corpus reports zero violations for \
          the wrong reason. Skips:\n  {}",
         files.len(),
-        skipped.join("\n  "),
+        describe_skips(&skipped).join("\n  "),
     );
     assert!(
         swept_best_practices >= 1,
@@ -241,6 +374,53 @@ fn no_shipped_example_trips_a_length_gate() {
             .map(|v| format!("  {}: {}", v.rel, v.message))
             .collect::<Vec<_>>()
             .join("\n"),
+    );
+}
+
+/// Skips as readable lines, for a failure message.
+fn describe_skips(skipped: &[(String, Skip)]) -> Vec<String> {
+    skipped
+        .iter()
+        .map(|(rel, skip)| format!("{rel}: {:?}: {}", skip.cause, skip.detail))
+        .collect()
+}
+
+/// The observed skip set must be exactly [`KNOWN_SKIPS`] — same files, same causes.
+///
+/// Both directions are failures. A file that newly stops building shrinks what row 20
+/// actually covers; a pinned file that starts building again leaves a dead entry that
+/// would mask the next real regression.
+fn assert_skip_set_is_the_pinned_one(skipped: &[(String, Skip)]) {
+    let observed: Vec<(&str, SkipCause)> = skipped
+        .iter()
+        .map(|(rel, skip)| (rel.as_str(), skip.cause))
+        .collect();
+
+    let unexpected: Vec<&String> = skipped
+        .iter()
+        .filter(|(rel, skip)| {
+            !KNOWN_SKIPS
+                .iter()
+                .any(|k| k.rel == rel && k.cause == skip.cause)
+        })
+        .map(|(rel, _)| rel)
+        .collect();
+    let stale: Vec<String> = KNOWN_SKIPS
+        .iter()
+        .filter(|k| !observed.iter().any(|(rel, cause)| *rel == k.rel && *cause == k.cause))
+        .map(|k| format!("{} ({:?}: {})", k.rel, k.cause, k.why))
+        .collect();
+
+    assert!(
+        unexpected.is_empty() && stale.is_empty(),
+        "the sweep's skip set must be exactly the {} pinned in KNOWN_SKIPS.\n\
+         NEW skip(s) — each shrinks what row 20 covers, so fix the cause or pin it with \
+         a reason: {unexpected:?}\n\
+         PINNED but now building — delete the dead entry, or the next real regression \
+         hides behind it: {stale:?}\n\
+         observed:\n  {}",
+        KNOWN_SKIPS.len(),
+        describe_skips(skipped).join("\n  "),
     );
 }
 
