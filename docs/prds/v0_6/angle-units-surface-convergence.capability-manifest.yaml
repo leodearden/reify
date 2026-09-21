@@ -80,8 +80,10 @@ tasks:
     binding: producer-absent (what β adds) AT DECOMPOSE — grep:crates/reify-eval/src/geometry_ops.rs:8755
       resolve_scalar_dim_arg, call site :8767-8771 passes migration_hint None; the
       probe stderr carries no `pass a dimensioned angle` clause. Since DELIVERED,
-      resolve_scalar_dim_arg is gone from the repo (zero hits) and the clause is
-      minted by angle_spec()'s migration_hint, now set to
+      resolve_scalar_dim_arg is zero-hit in crates/reify-eval/src/geometry_ops.rs
+      and has no definition left in tracked Rust — only backward-looking comments
+      at crates/reify-ir/src/arg_acceptance.rs:557,1033 still name it — and the
+      clause is minted by angle_spec()'s migration_hint, now set to
       Some(reify_core::units::ANGLE_MIGRATION_HINT) (crates/reify-core/src/units.rs:103),
       reached via resolve_angle_scalar_arg → the shared resolve_spec_arg
       (re-measured 2026-09-21, task 7698; landed by task 6924, merge
