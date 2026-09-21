@@ -15,8 +15,12 @@
 #
 # Provides:
 #   affected_crates <file>...  prints the affected workspace crate names
-#                              (sorted, one per line), or the literal ALL.
-#                              Always returns 0.
+#                              (sorted, one per line), the literal ALL, or
+#                              NOTHING — three outcomes, all load-bearing.
+#                              An empty print means "this file list provably
+#                              touches zero crates" and is a POSITIVE answer,
+#                              not a failure to answer; see the function's own
+#                              header. Always returns 0.
 #   reify_is_inert_path <path> true iff the path is documentation or
 #                              configuration (docs/**, *.md, *.yaml, *.yml).
 #                              The shared definition of that class; verify.sh's
@@ -226,8 +230,28 @@ _reverse_closure() {
 }
 
 # affected_crates <file>... — print the affected workspace crate set, one name
-# per line, sorted; or print the literal ALL if any C4/C5 condition fires.
+# per line, sorted; or print the literal ALL if any C4/C5 condition fires; or
+# print NOTHING if every path is crate-unmappable-but-known (the non-crate
+# classes: docs/**, *.md, *.yaml/yml, gui/src/**, tests/infra/**).
 # Always returns 0 so callers are safe under set -e and inside $() capture.
+#
+# THE EMPTY PRINT IS AN ANSWER, NOT A SHRUG (task 6268). It is produced at the
+# `${#direct[@]} -eq 0` early return below, which short-circuits BEFORE
+# _reverse_closure — so it never shells out to `cargo metadata` and is
+# reproducible in a workspace-less fixture. Its meaning is exact: every path was
+# classified, none mapped to a crate, and an unmappable path would have gone
+# wide via C5 instead. verify.sh's closure_reaches_reify_gui now narrows the
+# gui-feature nextest pass away on it rather than failing wide over it.
+#
+# THE BOUNDARY, stated because it is easy to site the fix wrong: this file's
+# BYTES are unchanged, and the three-valued distinction lives at the CONSUMPTION
+# site. An empty print here is already unambiguous; what is ambiguous is an
+# empty AFFECTED_CLOSURE in verify.sh, which is ALSO what that variable holds
+# when affected_crates was never called at all (scope=all, RUN_RUST=0, an empty
+# CHANGED_FILES_RAW). Only verify.sh can tell those apart, so only verify.sh
+# carries the extra bit — see AFFECTED_CLOSURE_FROM_DIFF there. Emitting a
+# distinct sentinel from here would have pushed the fix into the wrong module
+# and put a second magic token in a string that also holds crate names.
 affected_crates() {
     # C4: if any arg is a global file, immediately emit ALL.
     local arg
@@ -257,7 +281,8 @@ affected_crates() {
         fi
     done
 
-    # If no direct crates were accumulated, print nothing.
+    # No direct crates: print nothing. Load-bearing — "provably zero crates",
+    # not "could not tell". See this function's header.
     if [ "${#direct[@]}" -eq 0 ]; then
         return 0
     fi
