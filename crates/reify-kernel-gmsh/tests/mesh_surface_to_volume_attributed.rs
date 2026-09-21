@@ -14,16 +14,21 @@
 //! `Cargo.toml` activates `mesh-morph` for all integration test binaries.
 #![cfg(all(has_gmsh, feature = "mesh-morph"))]
 
+// The shared size-option read-back is declared by path rather than through
+// `common/mod.rs`, which #6387 reduced to a re-export shim over
+// `reify_test_support::fixtures` and which is scheduled for deletion; see
+// `common/clamp_probe.rs` for why one copy of the loop matters.
+#[path = "common/clamp_probe.rs"]
+mod clamp_probe;
+
 use std::collections::BTreeMap;
 
 use reify_ir::{
     ElementOrderTag, GeometryError, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment,
 };
 use reify_ir::geometry::MeshInvariant;
-use reify_kernel_gmsh::mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS;
 use reify_kernel_gmsh::{
-    EntityAttribution, GmshKernel, MeshingOptions, ffi, init,
-    mesh_surface_to_volume_with_attribution,
+    EntityAttribution, GmshKernel, MeshingOptions, mesh_surface_to_volume_with_attribution,
 };
 
 fn h(n: u64) -> GeometryHandleId {
@@ -457,10 +462,18 @@ fn attributed_producer_output_is_reproducible_across_repeated_calls() {
 /// The attributed producer leaves every mesh-size process-global at gmsh's
 /// default.
 ///
-/// One of the four per-entry-point outbound guards task #6968 added, all of the
-/// same shape and all iterating [`GMSH_SIZE_OPTION_DEFAULTS`] rather than
+/// One of the four per-entry-point outbound guards task #6968 added — all four
+/// now share one read-back loop,
+/// [`clamp_probe::assert_all_size_options_at_gmsh_defaults`], which iterates
+/// the production `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS` rather than
 /// naming options, so a sixth process-global added to the production list is
 /// asserted against every writer on the day it lands.
+///
+/// This guard is OUTBOUND only. The inbound direction for this producer is
+/// covered by `mesh_size_option_hermeticity.rs`'s pair sweep, which owns its
+/// process and serialises its test bodies — a poison-then-call sequence cannot
+/// live in THIS binary, whose many unserialised meshing siblings would erase
+/// the poison in the `GMSH_LOCK` gap and make it pass for the wrong reason.
 ///
 /// RED before the fix: `run_meshing_with_entity_queries` (`mesh_boundary.rs`)
 /// writes `Mesh.MeshSizeMin`/`MeshSizeMax` behind
@@ -510,19 +523,8 @@ fn mesh_surface_to_volume_with_attribution_leaves_every_size_option_at_gmsh_defa
     )
     .expect("mesh_surface_to_volume_with_attribution must succeed on a watertight unit cube");
 
-    // Re-acquire GMSH_LOCK for the read so it is serialised against any
-    // concurrent mesher rather than racing one mid-flight.
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
-        let observed = ffi::option_get_number(option)
-            .unwrap_or_else(|e| panic!("ffi::option_get_number({option}) failed: {e:?}"));
-        assert_eq!(
-            observed, default,
-            "mesh_surface_to_volume_with_attribution(mesh_size: Some({REQUESTED})) must leave \
-             every mesh-size process-global at gmsh's default on exit: {option} reads \
-             {observed}, expected {default}. gmsh's option table survives gmshClear(), so a \
-             deviation here pins every later defaults-relying call in this process to a size \
-             nobody requested — task #6968, enforced by `MeshSizeScope` in mesh_boundary.rs",
-        );
-    }
+    clamp_probe::assert_all_size_options_at_gmsh_defaults(
+        &format!("mesh_surface_to_volume_with_attribution(mesh_size: Some({REQUESTED}))"),
+        "`MeshSizeScope` in mesh_boundary.rs",
+    );
 }

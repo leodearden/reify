@@ -307,11 +307,12 @@ impl GmshKernel {
     /// damaging its successors while its own output stayed put.
     ///
     /// The claim is enforced, not asserted:
-    /// `tests/mesh_to_volume_tests.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`
-    /// reads all five options back after a call made from a poisoned table,
-    /// and
-    /// `tests/mesh_size_option_hermeticity.rs` pins both call-order directions
-    /// against the other entry points in one process.
+    /// `tests/mesh_size_option_hermeticity.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`
+    /// reads all five options back after a call made from a poisoned table, and
+    /// requires the tet count to match an unpoisoned run; the rest of that
+    /// binary pins both call-order directions against the other entry points in
+    /// one process. `tests/mesh_to_volume_tests.rs::mesh_to_volume_leaves_every_size_option_at_gmsh_defaults`
+    /// carries the unpoisoned read alongside this function's own suite.
     ///
     /// # Errors
     ///

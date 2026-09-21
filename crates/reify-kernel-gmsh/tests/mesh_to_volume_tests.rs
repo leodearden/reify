@@ -7,10 +7,16 @@
 
 #![cfg(has_gmsh)]
 
+// The shared size-option read-back is declared by path rather than through
+// `common/mod.rs`, which #6387 reduced to a re-export shim over
+// `reify_test_support::fixtures` and which is scheduled for deletion; see
+// `common/clamp_probe.rs` for why one copy of the loop matters.
+#[path = "common/clamp_probe.rs"]
+mod clamp_probe;
+
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
 use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, QueryError};
 use reify_test_support::fixtures::unit_cube_mesh;
-use reify_kernel_gmsh::mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS;
 use reify_kernel_gmsh::{ffi, init};
 
 /// Round-trip a unit cube (8 vertices, 12 outward-winding triangles)
@@ -543,139 +549,68 @@ fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
 // Deliberate mesher failures live in `tests/mesher_poison_recovery.rs`, whose
 // header carries the mechanism and why they are kept out of this binary.
 
-/// `mesh_to_volume` neither inherits nor leaks a mesh-size process-global,
-/// whatever the option table held when it was called.
+/// `mesh_to_volume` leaves every mesh-size process-global at gmsh's default.
 ///
-/// The outbound half was closed for the `Mesh.MeshSizeMin`/`MeshSizeMax` pair
-/// by task #6298. What #6968 adds here is the other three options and the
-/// inbound direction: before it, `mesh_to_volume` never wrote the size-SOURCE
-/// trio at all, so a poisoned `Mesh.MeshSizeExtendFromBoundary` was restored by
-/// nothing and passed straight through to the next caller in the process.
+/// One of the four per-entry-point outbound guards task #6968 added, all four
+/// sharing the read-back loop
+/// [`clamp_probe::assert_all_size_options_at_gmsh_defaults`], which iterates
+/// the production `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS` rather than
+/// naming options — so a sixth process-global added to the production list is
+/// asserted against every writer on the day it lands.
 ///
-/// Both halves in one test on purpose. A poisoned table that comes back clean
-/// proves the outbound direction; the SAME poisoned table producing the same
-/// tet count as an unpoisoned run proves the inbound one. Splitting them would
-/// let the inbound assertion run from a table the outbound assertion had
-/// already cleaned.
+/// # Outbound only, and where the rest of the guard lives
 ///
-/// # Measured RED, and what each leg is worth
+/// This function is the one writer whose outbound guard needs a POISONED table
+/// to be worth anything for the size-SOURCE trio: `mesh_to_volume` never writes
+/// `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+/// `MeshSizeExtendFromBoundary`, so from a defaults table it leaves them at
+/// defaults whether or not the scope is armed. Those three rows are therefore
+/// vacuous here, said plainly rather than left to imply a sensitivity they
+/// lack. What bites here is the clamp pair the function does write.
+///
+/// Poisoning cannot happen in this binary. It takes a second `GMSH_LOCK`
+/// acquisition before the call, and this binary holds 13 unserialised
+/// `mesh_to_volume` calls that can land in the gap and erase the poison —
+/// leaving the leg green for the wrong reason, which
+/// `clamp_probe::CLAMP_TEST_ORDER`'s own doc calls the worse direction for a
+/// regression guard. Taking that mutex here would serialise thirteen unrelated
+/// tests as a side effect. So the poisoned form — both the trio read-back and
+/// the inbound tet count — lives in `tests/mesh_size_option_hermeticity.rs`,
+/// which owns its process and serialises its bodies, as
+/// `mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`.
+///
+/// What remains here is order-independent and needs no mutex, for the reason
+/// [`mesh_to_volume_leaves_the_gmsh_logger_stopped`] gives: "the table is at
+/// defaults" is what every sibling in this binary also leaves behind, so an
+/// interleaving sibling cannot flip the result.
+///
+/// # Measured RED
 ///
 /// With `MeshSizeScope::entered` commented out of `kernel_real::mesh_to_volume`
-/// — unit cube, `deterministic: true`, P1, poison as below:
+/// — unit cube, `deterministic: true`, P1, exactly the call below:
 ///
 /// ```text
-/// leg                                 armed    disarmed
-/// tet count, from a defaults table      186         186
-/// tet count, from a poisoned table      186         141   <- RED
-/// table read, MeshSizeMin                 0           1   <- RED
-/// table read, MeshSizeMax              1e22           1   <- RED
-/// table read, FromPoints                  1           0   <- RED
-/// table read, FromCurvature               0          20   <- RED
-/// table read, ExtendFromBoundary          1           0   <- RED
+/// table read              armed    disarmed
+/// Mesh.MeshSizeMin            0           1   <- RED
+/// Mesh.MeshSizeMax         1e22           1   <- RED
 /// ```
 ///
-/// Both legs bite, and they bite for different reasons. The three trio rows
-/// read back EXACTLY the poison they were handed: `mesh_to_volume` never wrote
-/// those options, so it carried a sibling's leak through untouched — the
-/// specific hole #6298 left open and #6968 closes. The clamp rows read `1`
-/// rather than the poison because the function writes `Min == Max ==
-/// resolved_size` itself, and `resolved_size` is this cube's extent; pre-#6968
-/// those two rows were already clean, restored by #6298's guard, so the three
-/// trio rows are what this task actually adds.
-///
-/// The tet-count leg is a genuine detector, not a lock-in: 141 against 186 is
-/// a 24% drop, driven by the poisoned `MeshSizeFromPoints = 0` — which a shut
-/// `Min == Max` clamp does NOT mask, unlike `ExtendFromBoundary`.
-///
-/// Note the two 186s in the first row. This producer's output from a clean
-/// table is byte-identical armed and disarmed, which is the measurement behind
-/// the claim that closing the inbound hole moves nothing downstream and lets
-/// `reify-solver-elastic`'s calibrated constants stay untouched.
-///
-/// # Why `deterministic: true`
-///
-/// Not decoration. `MeshingOptions::default()` leaves `deterministic` false,
-/// which lets gmsh run HXT on `available_parallelism()` threads, and the tet
-/// count is then not reproducible: measured 185 / 184 / 184 across three
-/// consecutive calls on identical input, against a flat 186 / 186 / 186 with
-/// `deterministic: true`. An exact-equality tet assertion under the default
-/// options is a coin flip, and this test held one until the disarm measurement
-/// above exposed it.
-///
-/// Needs no whole-body serialising mutex, for the reason
-/// [`mesh_to_volume_leaves_the_gmsh_logger_stopped`] gives: the asserted
-/// property is one every sibling in this binary also leaves behind, so an
-/// interleaving sibling cannot flip the result. Adding `CLAMP_TEST_ORDER` here
-/// would serialise thirteen unrelated `mesh_to_volume` calls as a side effect.
+/// The `1` is this cube's extent: with no scope to restore them, the
+/// `Min == Max == resolved_size` pair the function writes itself outlives the
+/// call. `deterministic: true` and `ElementOrderTag::P1` match the
+/// measurement, and the `mesh_size: None` path is deliberate — it is the one
+/// that makes `resolved_size` gmsh's own derivation rather than a literal a
+/// reader would have to trace back.
 #[test]
-fn mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held() {
-    /// Distinctive, and far finer than the cube's extent, so a leak into the
-    /// mesher would be loud rather than marginal.
-    const POISON_SIZE: f64 = 0.05;
-
+fn mesh_to_volume_leaves_every_size_option_at_gmsh_defaults() {
     let cube = unit_cube_mesh();
-    let kernel = GmshKernel::new();
-    // `deterministic: true` is load-bearing here, not decoration — see the doc
-    // comment's "Why `deterministic: true`".
     let options = MeshingOptions { deterministic: true, ..Default::default() };
-    let tets = || {
-        kernel
-            .mesh_to_volume(&cube, &options, ElementOrderTag::P1)
-            .expect("mesh_to_volume must succeed for a closed unit-cube surface")
-            .tet_indices()
-            .expect("P1 tet mesh")
-            .len()
-            / 4
-    };
-    let write_size_options = |value_of: &dyn Fn(&str, f64) -> f64| {
-        let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        init::ensure_initialized();
-        for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
-            ffi::option_set_number(option, value_of(option, default))
-                .unwrap_or_else(|e| panic!("ffi::option_set_number({option}) failed: {e:?}"));
-        }
-    };
+    GmshKernel::new()
+        .mesh_to_volume(&cube, &options, ElementOrderTag::P1)
+        .expect("mesh_to_volume must succeed for a closed unit-cube surface");
 
-    write_size_options(&|_, default| default);
-    let from_defaults = tets();
-    assert!(from_defaults > 0, "mesh_to_volume must produce tets");
-
-    // Every size option away from its default: a fine shut clamp, plus the
-    // three size-SOURCE options flipped.
-    write_size_options(&|option, default| match option {
-        "Mesh.MeshSizeMin" | "Mesh.MeshSizeMax" => POISON_SIZE,
-        "Mesh.MeshSizeFromCurvature" => 20.0,
-        _ => 1.0 - default,
-    });
-    let from_poisoned = tets();
-
-    {
-        // `mesh_to_volume` released GMSH_LOCK on return, so this read is
-        // serialised against any concurrent mesher rather than racing one.
-        let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
-            let observed = ffi::option_get_number(option)
-                .unwrap_or_else(|e| panic!("ffi::option_get_number({option}) failed: {e:?}"));
-            assert_eq!(
-                observed, default,
-                "mesh_to_volume must leave every mesh-size process-global at gmsh's default \
-                 on exit, whatever it was handed: {option} reads {observed}, expected \
-                 {default}. gmsh's option table survives gmshClear(), so mesh_to_volume \
-                 passing a poisoned option straight through makes it a silent CARRIER of \
-                 another entry point's leak — task #6968, enforced by `MeshSizeScope` in \
-                 kernel_real.rs",
-            );
-        }
-    }
-
-    assert_eq!(
-        from_poisoned, from_defaults,
-        "mesh_to_volume must mesh against gmsh's size defaults, not against whatever a \
-         sibling entry point left in the process-global table: the same call gave \
-         {from_defaults} tets from a defaults table and {from_poisoned} from a fully \
-         poisoned one. This is the inbound direction of task #6968, closed by \
-         `MeshSizeScope::entered` in kernel_real.rs — which matters most on the \
-         resolved_size == 0.0 path, where mesh_to_volume writes no clamp of its own and \
-         used to inherit the table wholesale",
+    clamp_probe::assert_all_size_options_at_gmsh_defaults(
+        "mesh_to_volume(mesh_size: None)",
+        "`MeshSizeScope` in kernel_real.rs",
     );
 }

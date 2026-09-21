@@ -23,12 +23,11 @@
 mod clamp_probe;
 
 #[cfg(has_gmsh)]
-use clamp_probe::CLAMP_TEST_ORDER;
+use clamp_probe::{
+    CLAMP_TEST_ORDER, assert_all_size_options_at_gmsh_defaults, set_all_size_options_to_defaults,
+    write_size_options,
+};
 use reify_kernel_gmsh::mesh_profile_2d::mesh_plane_2d;
-#[cfg(has_gmsh)]
-use reify_kernel_gmsh::mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS;
-#[cfg(has_gmsh)]
-use reify_kernel_gmsh::{ffi, init};
 
 /// Triangle path: `recombine=false` on a unit square produces a triangle
 /// mesh with a non-empty, stride-3 index buffer, an even-length flat XY
@@ -290,9 +289,12 @@ fn mesh_plane_2d_returns_gmsh_not_available_in_stub_build() {
 /// Two legs, one per direction of task #6968, because either alone passes for
 /// the wrong reason:
 ///
-/// * **Outbound** — after a call with `mesh_size: Some(s)`, every entry of
-///   [`GMSH_SIZE_OPTION_DEFAULTS`] must read back as gmsh's default. Before the
-///   fix `Mesh.MeshSizeMin`/`MeshSizeMax` both read `s`: `mesh_profile_2d.rs`
+/// * **Outbound** — after a call with `mesh_size: Some(s)`, every entry of the
+///   production `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS` must read back as
+///   gmsh's default, via the loop
+///   [`clamp_probe::assert_all_size_options_at_gmsh_defaults`] shared with the
+///   other three per-entry-point guards. Before the fix
+///   `Mesh.MeshSizeMin`/`MeshSizeMax` both read `s`: `mesh_profile_2d.rs`
 ///   writes the pair behind `if let Some(s) = mesh_size && s > 0.0` and
 ///   restores neither.
 /// * **Inbound** — from a table poisoned in ONE size option, a
@@ -360,40 +362,15 @@ fn mesh_plane_2d_leaves_every_size_option_at_gmsh_defaults() {
             .len()
             / 3
     };
-    let write_all_size_options = |value_of: &dyn Fn(&str, f64) -> f64| {
-        let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        init::ensure_initialized();
-        for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
-            ffi::option_set_number(option, value_of(option, default))
-                .unwrap_or_else(|e| panic!("ffi::option_set_number({option}) failed: {e:?}"));
-        }
-    };
-
     // --- Outbound: a call that writes a clamp must not leave it behind. ---
     triangles(Some(REQUESTED));
-    {
-        // Re-acquire GMSH_LOCK for the read, mirroring
-        // `mesh_to_volume_tests.rs::mesh_to_volume_leaves_the_gmsh_logger_stopped`:
-        // the read is serialised against any concurrent mesher rather than
-        // racing one mid-flight.
-        let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
-            let observed = ffi::option_get_number(option)
-                .unwrap_or_else(|e| panic!("ffi::option_get_number({option}) failed: {e:?}"));
-            assert_eq!(
-                observed, default,
-                "mesh_plane_2d(mesh_size: Some({REQUESTED})) must leave every mesh-size \
-                 process-global at gmsh's default on exit: {option} reads {observed}, \
-                 expected {default}. gmsh's option table survives gmshClear(), so a \
-                 deviation here pins every later defaults-relying call in this process \
-                 to a size nobody requested — task #6968, enforced by `MeshSizeScope` in \
-                 mesh_profile_2d.rs",
-            );
-        }
-    }
+    assert_all_size_options_at_gmsh_defaults(
+        &format!("mesh_plane_2d(mesh_size: Some({REQUESTED}))"),
+        "`MeshSizeScope` in mesh_profile_2d.rs",
+    );
 
     // --- Inbound: a call that writes no clamp must not inherit one. ---
-    write_all_size_options(&|_, default| default);
+    set_all_size_options_to_defaults();
     let from_defaults = triangles(None);
     assert!(
         from_defaults > 0,
@@ -410,7 +387,7 @@ fn mesh_plane_2d_leaves_every_size_option_at_gmsh_defaults() {
         ("Mesh.MeshSizeExtendFromBoundary", 0.0),
     ];
     let poison_one = |poisoned: &str, value: f64| {
-        write_all_size_options(&|option, default| {
+        write_size_options(&|option, default| {
             if option == poisoned { value } else { default }
         });
     };
@@ -434,7 +411,7 @@ fn mesh_plane_2d_leaves_every_size_option_at_gmsh_defaults() {
     // combination happens to cancel back to the baseline for some poison
     // values — but it does pin the case a real leaking sibling produces, which
     // is several options at once rather than one.
-    write_all_size_options(&|option, _| {
+    write_size_options(&|option, _| {
         INBOUND_POISONS
             .iter()
             .find(|(name, _)| *name == option)

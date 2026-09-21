@@ -1,8 +1,11 @@
 //! Shared machinery for this crate's process-global mesh-size guards:
 //! `tests/refine_volume_tests.rs` (the CONSUMER end, task #6211),
 //! `tests/mesh_size_option_hermeticity.rs` (the PRODUCER end and, since task
-//! #6968, the both-orders acceptance surface), `tests/mesh_plane_2d_tests.rs`
-//! and `tests/mesher_poison_recovery.rs`.
+//! #6968, the both-orders acceptance surface), `tests/mesh_plane_2d_tests.rs`,
+//! `tests/mesh_to_volume_tests.rs`,
+//! `tests/mesh_surface_to_volume_attributed.rs` and
+//! `tests/mesher_poison_recovery.rs` — i.e. all four of the per-entry-point
+//! outbound guards plus the acceptance binary.
 //!
 //! # Why it is shared
 //!
@@ -94,22 +97,77 @@ pub fn set_global_mesh_size_clamp((min, max): (f64, f64)) {
     ffi::option_set_number("Mesh.MeshSizeMax", max).expect("set MeshSizeMax");
 }
 
-/// Put every process-global gmsh size option at its documented default.
+/// Write every process-global gmsh size option, each to `value_of(name,
+/// gmsh_default)`.
 ///
-/// Driven by the production [`GMSH_SIZE_OPTION_DEFAULTS`] rather than by a
-/// local list, so a sixth option added to the seam is established here too with
-/// no test edit — and so this helper cannot drift into establishing a table the
-/// production code no longer considers "default".
+/// The single writer behind every "establish a known table" and "poison the
+/// table" step in this crate's size-option guards. Driven by the production
+/// [`GMSH_SIZE_OPTION_DEFAULTS`] rather than by a local list, so a sixth option
+/// added to the seam is written here too with no test edit — and so no guard
+/// can drift into establishing a table the production code no longer considers
+/// "default".
+///
+/// Takes a function of the option NAME rather than a value per position, so a
+/// caller that means "defaults except this one" says exactly that
+/// (`mesh_plane_2d_tests.rs`'s per-option inbound sweep) and a caller that
+/// means "all of them, away from their defaults" says that
+/// (`mesh_size_option_hermeticity.rs`'s poison).
+///
+/// Acquires `GMSH_LOCK` for the duration of the writes and releases it before
+/// returning, so the measuring call that follows can take the lock itself.
+/// That gap is exactly why every caller of this function must also hold
+/// [`CLAMP_TEST_ORDER`] — see its doc for the false-pass mode.
+pub fn write_size_options(value_of: &dyn Fn(&str, f64) -> f64) {
+    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    init::ensure_initialized();
+    for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
+        ffi::option_set_number(option, value_of(option, default))
+            .unwrap_or_else(|e| panic!("ffi::option_set_number({option}) failed: {e:?}"));
+    }
+}
+
+/// Put every process-global gmsh size option at its documented default.
 ///
 /// This is the explicit form of what [`probe_triangle_count`] used to do
 /// implicitly, for the callers that genuinely need a known starting table
 /// rather than a measurement of whatever the process is carrying.
 pub fn set_all_size_options_to_defaults() {
+    write_size_options(&|_, default| default);
+}
+
+/// Assert that every process-global gmsh size option reads back its documented
+/// default — the OUTBOUND half of task #6968, as each of the four entry points
+/// that writes a size option must leave the table.
+///
+/// One shared loop rather than one per suite. The four guards were written
+/// independently and carried near-verbatim copies of it, which is the drift
+/// this module exists to prevent: a copy corrected in one suite and not the
+/// others leaves the rest asserting something weaker than they claim instead of
+/// failing. `entry_point` and `enforced_by` keep each guard's own diagnostic —
+/// which call was made, and which production site is supposed to make it hold.
+///
+/// Re-acquires `GMSH_LOCK` for the read, mirroring
+/// `mesh_to_volume_tests.rs::mesh_to_volume_leaves_the_gmsh_logger_stopped`:
+/// the read is then serialised against any concurrent mesher rather than racing
+/// one mid-flight. Callers need no `CLAMP_TEST_ORDER` for this on its own —
+/// once the fix is in, "the table is at defaults" is what every sibling also
+/// leaves behind, so an interleaving sibling cannot flip the result. A caller
+/// that POISONS the table first does need it, for the reason
+/// [`write_size_options`] gives.
+pub fn assert_all_size_options_at_gmsh_defaults(entry_point: &str, enforced_by: &str) {
     let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    init::ensure_initialized();
     for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
-        ffi::option_set_number(option, default)
-            .unwrap_or_else(|e| panic!("set {option} to its gmsh default: {e:?}"));
+        let observed = ffi::option_get_number(option)
+            .unwrap_or_else(|e| panic!("ffi::option_get_number({option}) failed: {e:?}"));
+        assert_eq!(
+            observed, default,
+            "{entry_point} must leave every mesh-size process-global at gmsh's default on \
+             exit: {option} reads {observed}, expected {default}. gmsh's option table \
+             survives gmshClear(), so a deviation here is inherited by every later call in \
+             this process that does not write the option itself, pinning it to a size \
+             nobody requested — the outbound direction of task #6968, enforced by \
+             {enforced_by}",
+        );
     }
 }
 

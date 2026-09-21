@@ -17,12 +17,11 @@
 mod clamp_probe;
 
 use clamp_probe::{
-    CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, poison_global_mesh_size_clamp, probe_triangle_count,
-    set_global_mesh_size_clamp,
+    CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, assert_all_size_options_at_gmsh_defaults,
+    poison_global_mesh_size_clamp, probe_triangle_count, set_global_mesh_size_clamp,
 };
 use reify_ir::{ElementOrderTag, Mesh};
-use reify_kernel_gmsh::mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS;
-use reify_kernel_gmsh::{MeshingOptions, ffi, init, refine_volume_with_size_field};
+use reify_kernel_gmsh::{MeshingOptions, refine_volume_with_size_field};
 use reify_test_support::fixtures::unit_cube_mesh;
 
 /// A `unit_cube_mesh` scaled uniformly about the origin, i.e. the box
@@ -589,10 +588,12 @@ fn uniform_smaller_size_field_produces_more_tets() {
 /// cannot reach: their effect is invisible whenever `MeshSizeMin ==
 /// MeshSizeMax`, which is every reachable `mesh_to_volume` path.
 ///
-/// Iterating [`GMSH_SIZE_OPTION_DEFAULTS`] rather than naming options here is
-/// what makes this a guard for the SEAM rather than for today's five options:
-/// a sixth process-global added to the production list is asserted by this test
-/// on the day it is added, with no test edit.
+/// The read-back itself is [`clamp_probe::assert_all_size_options_at_gmsh_defaults`],
+/// shared with the other three per-entry-point guards; it iterates the
+/// production `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS` rather than naming
+/// options, which is what makes this a guard for the SEAM rather than for
+/// today's five: a sixth process-global added to the production list is
+/// asserted by all four writers on the day it is added, with no test edit.
 ///
 /// # Measured leak this closes
 ///
@@ -633,22 +634,8 @@ fn refine_volume_leaves_every_size_option_at_gmsh_defaults() {
     )
     .unwrap_or_else(|e| panic!("refine_volume_with_size_field must succeed: {e:?}"));
 
-    // Re-acquire GMSH_LOCK for the read, mirroring
-    // `mesh_to_volume_tests.rs::mesh_to_volume_leaves_the_gmsh_logger_stopped`:
-    // the read is then serialised against any concurrent mesher rather than
-    // racing one mid-flight.
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
-        let observed = ffi::option_get_number(option)
-            .unwrap_or_else(|e| panic!("ffi::option_get_number({option}) failed: {e:?}"));
-        assert_eq!(
-            observed, default,
-            "refine_volume_with_size_field must leave every mesh-size process-global at \
-             gmsh's default on exit: {option} reads {observed}, expected {default}. \
-             gmsh's option table is process-global and survives gmshClear(), so a deviation \
-             here is inherited by every later call in this process that does not write the \
-             option itself — the outbound direction of task #6968, enforced by \
-             `MeshSizeScope` in refine_volume.rs",
-        );
-    }
+    assert_all_size_options_at_gmsh_defaults(
+        "refine_volume_with_size_field",
+        "`MeshSizeScope` in refine_volume.rs",
+    );
 }

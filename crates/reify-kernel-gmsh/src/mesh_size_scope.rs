@@ -63,7 +63,11 @@
 //! * [`crate::refine_volume::refine_volume_with_size_field`] — guarded by
 //!   `tests/refine_volume_tests.rs::refine_volume_leaves_every_size_option_at_gmsh_defaults`.
 //! * [`crate::kernel_real::GmshKernel::mesh_to_volume`] — guarded by
-//!   `tests/mesh_to_volume_tests.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`.
+//!   `tests/mesh_to_volume_tests.rs::mesh_to_volume_leaves_every_size_option_at_gmsh_defaults`,
+//!   with the poisoned-table form of the same read in
+//!   `tests/mesh_size_option_hermeticity.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`
+//!   (this producer never writes the size-SOURCE trio, so only a poisoned
+//!   table makes those three rows bite).
 //! * [`crate::mesh_profile_2d::mesh_plane_2d`] — guarded by
 //!   `tests/mesh_plane_2d_tests.rs::mesh_plane_2d_leaves_every_size_option_at_gmsh_defaults`.
 //! * `mesh_boundary::mesh_surface_to_volume_with_attribution`, via its

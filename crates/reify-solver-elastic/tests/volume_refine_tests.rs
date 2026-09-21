@@ -551,7 +551,7 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 ///   Pinned by
 ///   `tests/mesh_size_option_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`
 ///   and, for the whole option set, by
-///   `tests/mesh_to_volume_tests.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`.
+///   `tests/mesh_size_option_hermeticity.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`.
 ///
 /// The end-to-end sequence this note is about — seed via `mesh_to_volume`,
 /// then refine with a size field — is itself pinned, in that same crate, by
