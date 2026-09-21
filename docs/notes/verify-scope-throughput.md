@@ -199,6 +199,44 @@ closure-available sentinel to tell it apart from "the diff could not be read".
 The merge gate remains unconditional by contract, so a hook-tier skip is
 LATENCY, never a coverage hole._
 
+_Counts UNCHANGED 2026-09-21 (task 6268): this SUPERSEDES the closing claim of
+the 2026-08-13 (task 6030) paragraph above — "Reclaiming the `tests/infra`-only
+shape is NOT a one-line change … would first need a distinct closure-available
+sentinel to tell it apart from 'the diff could not be read'." That sentinel now
+exists (`AFFECTED_CLOSURE_FROM_DIFF` in `scripts/verify.sh`), so the shape is
+reclaimed and the prediction no longer holds. The 6030 paragraph stands as
+written — this log is append-only history, and it was correct when made._
+
+_What is reclaimed: a diff all of whose paths are non-crate (`docs/**`, `*.md`,
+`*.yaml`/`yml`, `gui/src/**`, `tests/infra/**`) but which still classifies
+`RUN_RUST=1` — in practice a `tests/infra`-only diff, an extremely common shape
+in this repo — no longer pays the `--features gui` tauri + webkit2gtk + OCCT
+feature-unification link (20m42s cold / ~137s warm, shareable with no other
+pass). That holds on BOTH the `--scope branch` and the `--scope staged`
+per-commit-hook tiers. The distinction is between a closure the run DERIVED from
+its own changed-file list and found empty (provably zero crates — narrow away)
+and one it never derived (fail wide); an operator override never carries the
+derivation, so every malformed-knob shape keeps failing wide by construction.
+The four arms and their fail-wide taxonomy are documented ONCE, on
+`closure_reaches_reify_gui` in `scripts/verify.sh`, and are deliberately not
+restated here._
+
+_Why the THROUGHPUT-COUNTS sentinel does NOT move, re-derived rather than
+asserted: none of the four shapes can reach the new arm. docs-only and gui-only
+are `RUN_RUST=0`, so the closure is never eligible (branch cells 0 and 3).
+reify-doc and reify-eval are driven by `plan_for_shape_narrowed` through
+`REIFY_AFFECTED_CRATES_OVERRIDE` with a literal single-crate list, which never
+sets the from-diff flag and yields non-empty words — both take the membership
+arm, unchanged. Every `scope=all` cell takes the merge-gate arm. No cell of the
+eight is touched, so neither the sentinel block nor the human-readable
+Plan-Step Counts table is edited and no fifth shape is added. Confirmed by
+running `tests/infra/test_verify_throughput.sh` green with the sentinel
+UNBUMPED rather than by asserting it. The narrower new coverage lives where it
+can be counted directly: `(b15)` in
+`tests/infra/test_compute_trampoline_registration_wired.sh` and scenario `GV-7`
+in `tests/infra/test_verify_scope.sh` count the gui-feature pass itself rather
+than whole-plan non-comment lines._
+
 _Counts bumped 2026-08-01 (task 5629): added
 `./scripts/tree-sitter-freshness.sh ensure` (the compiled-tree-sitter-parser
 freshness gate) to `build_plan` inside the `RUN_RUST=1` block in
