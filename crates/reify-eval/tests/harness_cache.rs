@@ -15,13 +15,15 @@
 //! # Shared `differential` module — the tests/common dedup
 //!
 //! `differential` (tests/common/differential.rs) is declared ONCE here rather than once
-//! per includer. Four submodules below reference it —
-//! `unified_dag_boundary_cases`, `unified_dag_differential_corpus`,
-//! `unified_dag_edit_path`, `unified_dag_warm_path` — and each previously carried its own
-//! `#[path = "common/differential.rs"] mod differential;`, so the same source was
-//! compiled four times. One shared copy removes 3 of those 4 duplicate compilations of
-//! `differential.rs` with no behavioral difference: differential.rs declares 0
-//! `#[test]` fns, so collapsing the copies cannot change the nextest test count.
+//! per includer. FIVE submodules below reference it — `unified_dag_boundary_cases`,
+//! `unified_dag_differential_corpus`, `unified_dag_edit_path`, `unified_dag_warm_path`
+//! and `flat_sort_kahn_core_delegation` — and the first four each previously carried
+//! their own `#[path = "common/differential.rs"] mod differential;`, so the same source
+//! was compiled four times. One shared copy removes 3 of those 4 duplicate compilations
+//! of `differential.rs` with no behavioral difference: differential.rs declares 0
+//! `#[test]` fns, so collapsing the copies cannot change the nextest test count. The
+//! fifth, `flat_sort_kahn_core_delegation`, arrived from `harness_engine` in task #7654
+//! and reaches the declaration below without adding a sixth compilation.
 //! Submodules reach it via `use crate::differential::{…}`. No extra `#![allow]` is needed
 //! at this root — differential.rs carries its own `#![allow(dead_code)]`.
 //!
@@ -36,15 +38,25 @@
 //! 4 copies collapsed to the 1 declaration below, which is where nearly all of the
 //! available duplicated-compilation payload lived.
 //!
-//! NOT DONE — `differential.rs` is still compiled separately into `harness_engine` and
-//! `harness_selective_demand` (one root-level declaration each). That is not an oversight
-//! and no further `#[path]` bookkeeping can fix it: each integration-test root is its own
-//! crate, so a module cannot be shared across binaries. Removing those two compilations
-//! means merging the three units into one, which the PRD §7 cap forbids outright — their
-//! combined size, even after the two duplicate `differential` copies are netted out, is
-//! well past the cap, and `harness_engine` is already the unit that cap forced a split
-//! out of (see `harness_auto_resolution`). Re-measure with
-//! `tests/infra/test_harness_kloc_cap.sh` rather than trusting a number pinned here.
+//! DONE SINCE, and NOT by the mechanism this section originally ruled out. The clause
+//! here used to say `differential.rs` was still compiled separately into BOTH
+//! `harness_engine` and `harness_selective_demand`, that no `#[path]` bookkeeping could
+//! fix it, and that removing either compilation meant merging whole units — which the
+//! PRD §7 cap forbids. The first half is now retired, and the reasoning was too narrow:
+//! task #7654 removed harness_engine's copy by relocating its sole CONSUMER,
+//! `flat_sort_kahn_core_delegation`, into this unit. No units were merged and no lines
+//! were duplicated, because this root already declared the include — which is also why
+//! `harness_engine` now attributes `0` external lines.
+//!
+//! NOT DONE — `harness_selective_demand` still compiles its own copy, and the relocation
+//! trick does not extend to it. Its copy serves SIX consumers (`selective_demand_alpha`,
+//! `_beta`, `_cone_structural_edit`, `_epsilon`, `_gamma`, `_redemand_staleness`) — a
+//! whole subsystem rather than one stray module — so moving them here would be merging
+//! two units by another name, which is exactly what the cap forbids. The underlying
+//! constraint is unchanged: each integration-test root is its own crate, so a module
+//! cannot be shared across binaries; only the set of modules assigned to a root can move.
+//! Re-measure with `tests/infra/test_harness_kloc_cap.sh` rather than trusting a number
+//! pinned here.
 //!
 //! NOT DONE — the `mod common;` half of the BONUS is untouched. Its includers are left
 //! standalone, each for a reason that consolidating would violate:

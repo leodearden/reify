@@ -2224,10 +2224,17 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # WARN tier now covers. Same remedy applied, again a split rather than a cap
 # raise: the `stress_*` group left for harness_stress_scenarios (task #6121),
 # leaving 16118 = 104 root + 15623 module (36 files) + 391 external (80.6%) and
-# a new 3378-line unit (70 root + 3308 module + 0 external, 16.9%). The tightest
-# live unit is now crates/reify-syntax/tests/harness_syntax.rs at 18957 = 148
-# root + 18739 module + 70 external (94.8%) — the sole member of
-# _KLOC_WARN_KNOWN, ratcheted by Section 5d.
+# a new 3378-line unit (70 root + 3308 module + 0 external, 16.9%).
+#
+# WHICH unit is currently tightest is deliberately NOT recorded here. Two earlier
+# drafts of this paragraph named one in the present tense and both were falsified
+# within weeks, so the standing ruling is to state the INVARIANT and not a count
+# that drifts: the tightest live unit is whatever `harness_layout_unit_lines`
+# reports the largest `total` for, every unit above WARN_PCT must be an
+# acknowledged member of _KLOC_WARN_KNOWN (Section 5d's subset ratchet), and the
+# remedy for a unit approaching the cap is always rule (a)'s SPLIT. Re-measure
+# rather than reading a number off this comment; the dated figures above are
+# labelled as readings at named commits and are history, not current state.
 #
 # Every figure in this paragraph is a LIVE `harness_layout_unit_lines` reading:
 # the pre-split one taken at this branch's base (bf5b91d9de), the rest at the
