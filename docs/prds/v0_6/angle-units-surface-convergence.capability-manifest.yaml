@@ -77,9 +77,18 @@ tasks:
       reason: the observable delta is the ADDED migration hint on an already-firing
         rejection; asserted by the leaf's own diagnostic test
   - name: hint-absent-today
-    binding: producer-absent (what β adds) — grep:crates/reify-eval/src/geometry_ops.rs:8755
+    binding: producer-absent (what β adds) AT DECOMPOSE — grep:crates/reify-eval/src/geometry_ops.rs:8755
       resolve_scalar_dim_arg, call site :8767-8771 passes migration_hint None; the
-      probe stderr carries no `pass a dimensioned angle` clause
+      probe stderr carries no `pass a dimensioned angle` clause. Since DELIVERED,
+      resolve_scalar_dim_arg is gone from the repo (zero hits) and the clause is
+      minted by angle_spec()'s migration_hint, now set to
+      Some(reify_core::units::ANGLE_MIGRATION_HINT) (crates/reify-core/src/units.rs:103),
+      reached via resolve_angle_scalar_arg → the shared resolve_spec_arg
+      (re-measured 2026-09-21, task 7698; landed by task 6924, merge
+      1a9cf2b51f301c8716eb545dc43ec8a565d765e9). Both this row's name and
+      angle-spec-absent-today's are decompose-time labels for what the leaf would
+      add, not assertions that the artefact is absent — both rows' delivered_check
+      already targets the post-state artefact and passes today.
     verdict: PASS
     delivered_check:
       kind: grep
