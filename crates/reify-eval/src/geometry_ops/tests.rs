@@ -34172,13 +34172,14 @@
     /// satisfied by the WRONG arm firing alone, so only checking for the
     /// self-intersection wording's absence actually pins which gate spoke.
     ///
-    /// Same shape as this module's `..._revolve_bare_origin_beats_degenerate_
-    /// axis`, and like that guard it is GREEN ON ARRIVAL — it was therefore
-    /// verified by mutation rather than trusted on a green run: swapping the
-    /// two checks in `profile_polygon` fails this test and this test only,
-    /// with `..._collinear_points_returns_err` still passing. That asymmetry
-    /// is the point — a mutation the rest of the suite cannot see is exactly
-    /// what this test exists to catch.
+    /// Same shape as this module's revolve precedence guard
+    /// `compile_geometry_op_revolve_bare_origin_beats_degenerate_axis`, and
+    /// like that guard it is GREEN ON ARRIVAL — it was therefore verified by
+    /// mutation rather than trusted on a green run: swapping the two checks in
+    /// `profile_polygon` fails this test and this test only, with
+    /// `..._collinear_points_returns_err` still passing. That asymmetry is the
+    /// point — a mutation the rest of the suite cannot see is exactly what
+    /// this test exists to catch.
     #[test]
     fn compile_geometry_op_polygon_profile_zero_area_bowtie_reports_degeneracy() {
         let (result, diagnostics) = compile_profile_op(
