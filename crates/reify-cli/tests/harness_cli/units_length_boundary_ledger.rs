@@ -234,6 +234,10 @@ const SECTION_6_ROWS: &[BoundaryRow] = &[
         row: "14",
         scenario: "release-build same injection — the kernel reports naming op kind and \
                    field, behaviour otherwise unchanged",
+        // Both are `#[cfg(not(debug_assertions))]`, so neither EXECUTES in a debug run —
+        // only under the merge gate's `--profile both`. The binding below is a
+        // source-text check and so holds in either profile, which is what keeps this row
+        // bound in the run where its tests cannot appear.
         discharged_by: &[
             Discharge {
                 file: OCCT_KERNEL,
