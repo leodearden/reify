@@ -32,11 +32,12 @@
 //!
 //! # Why DEFAULTS rather than "as found"
 //!
-//! Entering at defaults makes "as found" always "defaults", so the restore
-//! never needs to read the table — and this module needs no getter to do its
-//! job. [`crate::ffi::option_get_number`] exists (task #6968) purely so the
-//! per-entry-point guards in `tests/` can OBSERVE the invariant directly
-//! instead of inferring it from mesh density.
+//! Entering at defaults makes "as found" always "defaults", so neither half
+//! ever needs to read the table to know what to WRITE. The getter
+//! [`crate::ffi::option_get_number`] (task #6968) is used only to check that a
+//! write landed — see [`MeshSizeScope::entered`]'s "Why each write is read
+//! back" — and, in `tests/`, so the per-entry-point guards can OBSERVE the
+//! invariant directly instead of inferring it from mesh density.
 //!
 //! Defaults are the right target on their own merits anyway: they are what a
 //! caller that writes no size option of its own expects to get.
@@ -180,13 +181,47 @@ impl<'g> MeshSizeScope<'g> {
     /// Fallible, unlike `drop`'s best-effort restore, and deliberately so:
     /// failing to establish a known table means the caller's output is a
     /// function of call order, which is exactly the defect this type exists to
-    /// remove. That must be reported, not swallowed. A partial write before
-    /// the failure needs no unwinding — `Self` is not yet constructed, so the
-    /// caller propagates the error and the NEXT scope re-establishes the
-    /// defaults on entry.
+    /// remove. That must be reported, not swallowed.
+    ///
+    /// # Why each write is read back
+    ///
+    /// Because a WRITE alone does not report failure. MEASURED against the
+    /// shipped `libgmsh.so` 4.15.2: `gmshOptionSetNumber` called before
+    /// `gmshInitialize` logs `Error : Gmsh has not been initialized` to stderr,
+    /// changes nothing, and returns `ierr = 0`. A set-only `entered` therefore
+    /// returns `Ok` having established nothing — the silent hole its own
+    /// `Result` claims to close. And since every name in
+    /// [`GMSH_SIZE_OPTION_DEFAULTS`] is a compile-time constant today's gmsh
+    /// accepts, that `Result` would be unreachable on a live library and
+    /// vacuous on a dead one: a type whose whole claim is that its numbers are
+    /// measured cannot carry a failure path nothing can take.
+    ///
+    /// Verifying through [`crate::ffi::option_get_number`] catches both
+    /// failures that can actually happen. An UNINITIALISED library: pre-init
+    /// `gmshOptionGetNumber` leaves the out-param untouched and also returns
+    /// `ierr = 0`, so the wrapper reads its own `0.0` seed and every default
+    /// but `Mesh.MeshSizeMin`'s own `0.0` mismatches. A RENAMED OR REMOVED
+    /// option after a gmsh version bump: `ierr = 1`, so the getter itself
+    /// returns `Err`. The cost is five option-table lookups against a mesh
+    /// generation measured in milliseconds.
+    ///
+    /// A partial write before the failure needs no unwinding — `Self` is not
+    /// yet constructed, so the caller propagates the error and the NEXT scope
+    /// re-establishes the defaults on entry.
     pub fn entered(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Result<Self, GeometryError> {
         for (option, default) in GMSH_SIZE_OPTION_DEFAULTS {
             crate::ffi::option_set_number(option, default)?;
+            let observed = crate::ffi::option_get_number(option)?;
+            if observed != default {
+                return Err(GeometryError::OperationFailed(format!(
+                    "MeshSizeScope::entered: gmsh reported success writing {option} = \
+                     {default} but the table reads {observed}. The size-option table is \
+                     not at its defaults, so this call's output would be a function of \
+                     what ran before it rather than of its own arguments. The usual cause \
+                     is gmsh not being initialized — init::ensure_initialized() must run \
+                     before a scope is entered"
+                )));
+            }
         }
         Ok(Self(std::marker::PhantomData))
     }

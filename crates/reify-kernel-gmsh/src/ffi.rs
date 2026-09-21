@@ -484,9 +484,16 @@ pub fn option_set_number(name: &str, value: f64) -> Result<(), GeometryError> {
 /// on entry, so nothing in `src/` needs to read an option back — see that
 /// module for why "as found" is the wrong target even when it is observable.
 ///
-/// An unknown option name is an `Err`, not a plausible-looking number: gmsh
-/// sets `ierr` non-zero and leaves the out-param untouched, so a guard built
-/// on this cannot assert successfully against a value gmsh never supplied.
+/// An unknown option name is an `Err`, not a plausible-looking number — and
+/// that is this wrapper's doing rather than gmsh's out-param discipline.
+/// MEASURED against the shipped `libgmsh.so` 4.15.2, from a C probe that
+/// pre-seeded the out-param with `-999`:
+/// `gmshOptionGetNumber("Mesh.NoSuchOptionReify", &v, &ierr)` sets `ierr = 1`
+/// and OVERWRITES `v` with `0`. The `?` on `check_ierr` below is therefore the
+/// only thing standing between a guard and a `0.0` gmsh never supplied — a
+/// thoroughly plausible reading for `Mesh.MeshSizeMin`, which is why a wrapper
+/// that returned `value` regardless of `ierr` would make every guard built on
+/// it fail OPEN on a typo'd option name.
 pub fn option_get_number(name: &str) -> Result<f64, GeometryError> {
     let cname = CString::new(name).map_err(|e| {
         GeometryError::OperationFailed(format!("option_get_number: invalid CString: {e}"))

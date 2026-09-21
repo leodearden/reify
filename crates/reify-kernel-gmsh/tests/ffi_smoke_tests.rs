@@ -532,6 +532,15 @@ fn option_get_number_round_trips_a_written_value_and_errors_on_an_unknown_name()
     let _guard = init::GMSH_LOCK
         .lock()
         .expect("GMSH_LOCK poisoned — a prior test panicked while holding it");
+    // Initialise BEFORE arming the scope, matching every production call site.
+    // Not cosmetic: `gmshOptionSetNumber` on an uninitialised library logs
+    // `Error : Gmsh has not been initialized`, does nothing, and still returns
+    // `ierr = 0` (measured, gmsh 4.15.2), so a scope entered above this line
+    // used to be silently inert — five stderr error lines per gate run, and
+    // the one test that reuses the production guard as a fixture exercising
+    // only its `drop` half.
+    init::ensure_initialized();
+
     // Declared after `_guard` so it drops first: its restore lands while
     // GMSH_LOCK is still held, on every exit path including a panic between
     // the write below and the explicit restore. Reuses the production guard
@@ -539,8 +548,6 @@ fn option_get_number_round_trips_a_written_value_and_errors_on_an_unknown_name()
     // cannot drift from the one production writes.
     let _size_scope = MeshSizeScope::entered(&_guard)
         .expect("MeshSizeScope::entered must establish gmsh's size defaults");
-
-    init::ensure_initialized();
 
     // A value no production path writes, so a table left dirty by a sibling
     // cannot make the round-trip pass by accident.
