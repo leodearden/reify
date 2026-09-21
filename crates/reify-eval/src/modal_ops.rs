@@ -7595,19 +7595,20 @@ mod tests {
     /// Amendment (review suggestion 1): the count-dependent `PinnedSupport`
     /// realization must be VISIBLE, in both directions.
     ///
-    /// [`face_realization`] decides what a pinned beam end constrains from a
-    /// non-local count of distinct named faces, so adding or removing an
-    /// unrelated support elsewhere on the body re-realizes a face the author
-    /// never edited. The DOF sets asserted throughout this module pin that the
-    /// decision is CORRECT; this pins that it is REPORTED, so the author's only
-    /// observable is not a frequency that moved.
+    /// [`face_realization`] decides what a pinned beam end constrains from
+    /// whether the model's supports name another distinct recognized face, so
+    /// naming or un-naming an unrelated support elsewhere on the body
+    /// re-realizes a face the author never edited. The DOF sets asserted
+    /// throughout this module pin that the decision is CORRECT; this pins that
+    /// it is REPORTED, so the author's only observable is not a frequency that
+    /// moved.
     ///
     /// Three realizations, three messages, and the pairing is what matters: the
     /// same declaration `PinnedSupport("x_min")` reports "clamps all 3
     /// translational DOFs" alone and "transverse (Z) pin" once a second face is
     /// named. `FixedSupport` stays silent (its realization is unconditional).
     #[test]
-    fn build_dirichlet_bcs_reports_count_dependent_pinned_realization() {
+    fn build_dirichlet_bcs_reports_context_dependent_pinned_realization() {
         let f = BcFixture::new();
         let notes = |supports: Vec<Value>| f.realization_notes(supports);
 
@@ -7639,6 +7640,13 @@ mod tests {
         assert!(
             flipped[0].contains("x_min") && flipped[0].contains("transverse (Z) pin"),
             "adding an unrelated support must report x_min as a transverse pin: {:?}",
+            flipped[0],
+        );
+        assert!(
+            flipped[0].contains("another distinct recognized face"),
+            "the transverse-pin note must attribute the realization to another distinct \
+             recognized face — naming the face-local mechanism, not a face tally the author \
+             would then have to map back onto their own declaration: {:?}",
             flipped[0],
         );
         assert_ne!(
