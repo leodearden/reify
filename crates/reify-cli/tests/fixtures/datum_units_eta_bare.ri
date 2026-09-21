@@ -1,0 +1,68 @@
+// datum_units_eta_bare.ri — CLI eval fixture: every BARE construction-datum
+// POSITION operand is rejected.
+//
+// units-length η (task 6591). The five construction-datum constructors enforced
+// dimension AGREEMENT among their position operands, never LENGTH, so a wholly
+// bare call built a bare-origin datum and exited 0. Each `let` below MEASURED
+// exactly that against target/debug/reify before the gate landed:
+//
+//   axis_through(point3(0,0,0), point3(0,0,1)) -> axis(point(0, 0, 0), vec(0, 0, 1))
+//   plane_through(...)                         -> plane(point(0, 0, 0), vec(0, 0, 1))
+//   frame_at(point3(0,0,0), self.x, self.z)    -> frame(point(0, 0, 0), [1,0,0,0]q)
+//   midplane(bp, bp)                           -> plane(point(0, 0, 0), vec(0, 0, 1))
+//   offset(plane_xy(5mm), 2.0)                 -> undef, SILENTLY, at exit 0
+//
+// `offset` is the sharp one and is R12-class rather than merely ungated: with a
+// BARE plane it MEASURED as `plane(point(0, 0, 2), …)`, i.e. the dimensionless
+// `2` was silently reinterpreted as 2 METRES. The LENGTH-plane form written here
+// was already `undef` via the agreement compare — but silently, at exit 0, so
+// what this row pins is the DIAGNOSABLE rejection, not the rejection.
+//
+// Each now emits the shared coded units Error on stderr and `reify eval` exits
+// NONZERO: the diagnostic is Severity::Error (C1(iv)), which the CLI's pure
+// Severity::Error fold turns into a failing exit code. A `Value::Undef` on its
+// own prints `undef` and exits 0, so the Error is the whole user-observable
+// signal.
+//
+// `self.x` / `self.z` are the only `.ri` route to a `Value::Direction`; there is
+// no free-function Direction constructor. They are well-formed here on purpose —
+// `frame_at`'s x/z slots stay UNGATED (decision D3: a unit vector legitimately
+// has bare components), so the only thing its row can be rejecting is `o`.
+//
+// `bp` is `frame3(...).xy_plane`. Once this gate lands, `frame3` is the ONLY
+// remaining `.ri` route to a bare-origin Plane: it validates that its origin is
+// a 3-component `Value::Point` and never its dimension, and `Frame.xy_plane`
+// clones that origin verbatim. Closing it is task #7625 (Transform/Frame
+// CONSTRUCTOR arms), not this one.
+//
+// The `mirror` row is the δ-REACHABILITY CONTROL, and it is the reason `bp` is
+// built from `frame3` rather than hand-waved. Task ε recorded that these five
+// constructors are "exactly the producers that keep δ's consumer gate live and
+// reachable from real `.ri` source" — so gating them looks, on its face, like it
+// retires one of decision D4's two ends. It does not, and this row is the
+// RUNTIME PROOF rather than a prose claim: δ's consumer-side `decode_plane` gate
+// still fires, naming `ox`, through `frame3`'s ungated origin. The day #7625
+// gates `frame3`, this row fails loudly and D4's second end must be revisited
+// deliberately — which is exactly what a measurement recorded only in a doc
+// comment could not do for us.
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally fails.
+//
+// Declares its module explicitly: without it, `reify eval` also emits
+// W_MODULE_DECL_MISSING ("expected `module datum_units_eta_bare`"), which would
+// re-supply anchor substrings for free and weaken every assertion in
+// cli_eval_datum_units.rs (the trap task 6155 documented).
+
+module datum_units_eta_bare
+
+structure def DatumUnitsEtaBare {
+    let bp = frame3(point3(0, 0, 0), orient_identity()).xy_plane
+
+    let a = axis_through(point3(0, 0, 0), point3(0, 0, 1))
+    let p = plane_through(point3(0, 0, 0), point3(1, 0, 0), point3(0, 1, 0))
+    let f = frame_at(point3(0, 0, 0), self.x, self.z)
+    let o = offset(plane_xy(5mm), 2.0)
+    let m = midplane(bp, bp)
+
+    let d = mirror(box(10mm, 10mm, 10mm), bp)
+}
