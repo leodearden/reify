@@ -7,7 +7,9 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::cache::NodeId;
-use crate::deps::{extract_dependency_trace, extract_realization_dependencies};
+use crate::deps::{
+    extract_dependency_trace, extract_realization_dependencies, geometry_cell_realization_reads,
+};
 
 /// Tracks which nodes are demanded and maintains the demand cone.
 ///
@@ -91,6 +93,9 @@ impl DemandRegistry {
         self.demand_cone.clear();
 
         let mut queue: VecDeque<NodeId> = self.always_demanded.iter().cloned().collect();
+        // Precomputed ONCE: per-node lookup would make the BFS
+        // O(nodes x realizations), defeating the point of an inverted map.
+        let realizations_by_cell = geometry_cell_realization_reads(graph);
 
         while let Some(node) = queue.pop_front() {
             if !self.demand_cone.insert(node.clone()) {
@@ -101,6 +106,27 @@ impl DemandRegistry {
             // Extract dependencies for this node and add them to the cone
             let deps = match &node {
                 NodeId::Value(vcid) => {
+                    // The REVERSE of the γ arm below, and its matched pair:
+                    // γ is "a demanded realization pulls its paired cell in";
+                    // this is "a demanded cell pulls its producing
+                    // realizations in". Neither alone closes the cone — a
+                    // geometry-list cell is reachable from an ordinary
+                    // consumer with no element as a root, and
+                    // `GeometryListCellAccumulator::into_entries` drops the
+                    // whole list unless EVERY element resolved.
+                    //
+                    // The ACCUMULATING view, never `deps::realization_by_cell`:
+                    // that resolver deliberately drops cells backed by >1
+                    // realization, i.e. exactly the list cells this edge exists
+                    // to serve.
+                    if let Some(rids) = realizations_by_cell.get(vcid) {
+                        for rid in rids {
+                            let realization_node = NodeId::Realization(rid.clone());
+                            if !self.demand_cone.contains(&realization_node) {
+                                queue.push_back(realization_node);
+                            }
+                        }
+                    }
                     if let Some(cell_node) = graph.value_cells.get(vcid) {
                         cell_node
                             .default_expr
@@ -128,6 +154,10 @@ impl DemandRegistry {
                         // full scope (it drops the geometry-let cell), breaking the
                         // "all-visible selectivity is a no-op — schedule EXACTLY what
                         // full scope does" invariant (selective_demand_alpha).
+                        //
+                        // One matched pair with the reverse edge in the
+                        // `NodeId::Value` arm above: this is "a demanded
+                        // realization pulls its paired cell in".
                         if let Some(cell) = &rnode.geometry_cell {
                             let value_node = NodeId::Value(cell.clone());
                             if !self.demand_cone.contains(&value_node) {
