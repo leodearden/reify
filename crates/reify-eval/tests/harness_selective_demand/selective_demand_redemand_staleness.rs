@@ -738,6 +738,100 @@ fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
     }
 }
 
+/// A cone holding a STRICT SUBSET of one geometry list's elements must still
+/// resolve the WHOLE list (review esc-5385-4, blocking finding "correctness").
+///
+/// THE CHAIN this guards: `GeometryListCellAccumulator::into_entries` requires
+/// the resolved index set to be exactly `0..len`, and `declare` is deliberately
+/// called BEFORE the `named_steps` miss `continue` at all three hydration
+/// passes, so an UNREALIZED element counts against that check. `named_steps` is
+/// written only by `execute_realization_ops`, and `BuildStep::Realize` is gated
+/// on `demanded_rids` — derived from the demand cone. So a cone holding a strict
+/// subset makes the index set non-contiguous and drops the WHOLE cell: `holes`
+/// stays `List([Undef; 3])` and the elements that WERE realized become invisible
+/// to every consumer. That is a visible data regression on the majority of the
+/// list, not the conservative safety property the all-or-nothing rule is meant
+/// to be.
+///
+/// The fix is on the DEMAND side, never the accumulator: demand.rs's reverse
+/// edge ("a demanded cell pulls its producing realizations in") makes a strict
+/// subset UNREACHABLE — `holes#0` pulls `Value(holes)`, which pulls every
+/// sibling back in. `into_entries`' exact-index-set check therefore stays
+/// intact, and still defeats a compensating index set.
+///
+/// DISTINCT FROM #6460, which is a repeat no-op `tessellate_snapshot` under
+/// selective demand. Each arm below uses its OWN engine, so both assert on a
+/// FIRST tessellate after their own `set_demand_selective` and neither sits on
+/// that path.
+#[test]
+fn set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_resolves_the_whole_list()
+{
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
+    let e = "SelectiveGeomList";
+    let holes_id = ValueCellId::new(e, "holes");
+
+    let element = |k: usize| -> NodeId {
+        let want = format!("holes#{k}");
+        compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.realizations.iter())
+            .find(|r| r.name.as_deref() == Some(&want))
+            .map(|r| NodeId::Realization(r.id.clone()))
+            .unwrap_or_else(|| panic!("fixture must compile a realization named {want:?}"))
+    };
+
+    // The ALL-VISIBLE arm is the control: it establishes that this surface
+    // resolves the list under selective demand AT ALL, so a green SUBSET arm
+    // cannot be read as "selective demand happened to do nothing on this
+    // module".
+    for (label, roots) in [
+        (
+            "all three elements visible",
+            vec![element(0), element(1), element(2)],
+        ),
+        (
+            "the strict subset {holes#0, holes#2}",
+            vec![element(0), element(2)],
+        ),
+    ] {
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+        engine.eval(&compiled);
+
+        engine.set_demand_selective(roots);
+        assert!(
+            !engine.demand_is_full_scope(),
+            "{label}: precondition — full_scope must be OFF, or the cone is not \
+             actually selective and the subset case is untested"
+        );
+
+        let tess = engine
+            .tessellate_snapshot(&compiled)
+            .expect("tessellate_snapshot must return Some after set_demand_selective");
+        let refs = assert_live_handle_list(
+            &tess,
+            &holes_id,
+            3,
+            &format!("under selective demand with {label}, `holes` must hold three live handles"),
+        );
+
+        // The helper already rejects `Undef` PER ELEMENT and a short list. This
+        // adds that the three are SEPARATE realizations, so a regroup that
+        // broadcast one surviving element's handle into all three slots cannot
+        // pass as "the whole list resolved".
+        let distinct: std::collections::HashSet<_> = refs.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            3,
+            "{label}: the three elements must be separate realizations: {refs:?}",
+        );
+    }
+}
+
 /// Assert `result.values[cell]` is a `len`-element list in which NO element is
 /// `Undef`, and return the backing realization ids in order. `ctx` labels the
 /// call site in panic messages.
