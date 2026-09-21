@@ -27,7 +27,7 @@
 //! one half of those rows would leave the other half un-bound, which is the exact failure
 //! this file exists to prevent.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One test that discharges part or all of a §6 row.
 #[derive(Clone, Copy, Debug)]
@@ -48,6 +48,10 @@ struct BoundaryRow {
     scenario: &'static str,
     discharged_by: &'static [Discharge],
 }
+
+/// The document §6 lives in. Cited in doc comments throughout; READ by
+/// [`section_6_row_labels`], which is what keeps those citations from going stale.
+const SECTION_6_PRD: &str = "docs/prds/v0_6/units-length-gate-completion.md";
 
 const BOUNDARY_GATE: &str = "crates/reify-cli/tests/harness_cli/units_length_boundary_gate.rs";
 const CLOSURE_GUARD: &str =
@@ -332,16 +336,90 @@ fn workspace_root() -> PathBuf {
         .expect("workspace root must be accessible")
 }
 
-/// Whether `source` DEFINES `fn <test_fn>(`.
+/// What a cited discharge turned out to be, when the ledger went and looked.
 ///
-/// Anchored to the start of a line (after indentation) so that a mention of the name in a
-/// doc comment, a citation, or a call site does not satisfy the binding — only a
-/// definition does.
-fn defines_fn(source: &str, test_fn: &str) -> bool {
+/// The ledger's claim is that a row is still DISCHARGED, which is a stronger property
+/// than "an identifier by that name still exists". Three ways to un-cover a row cost
+/// nothing and leave the identifier in place: delete it, drop its `#[test]` so it becomes
+/// a helper, or add `#[ignore]`. All three are reported distinctly, because the fix
+/// differs for each.
+#[derive(PartialEq, Eq, Debug)]
+enum BindingState {
+    Discharged,
+    /// No `fn <name>(` definition at all — renamed, moved or deleted.
+    Undefined,
+    /// Defined, but carries no `#[test]`. A test demoted to a helper discharges nothing.
+    NotATest,
+    /// Defined and attributed, but ignored. `#[ignore = "blocked on #NNNN"]` is an honest
+    /// marker on a test that is not running, and a row bound to one is not covered.
+    Ignored,
+}
+
+/// How `source` DEFINES `fn <test_fn>(`, if at all.
+///
+/// The definition is anchored to the start of a line (after indentation), so a mention of
+/// the name in a doc comment, a citation or a call site does not satisfy the binding. The
+/// attributes are the contiguous run of attribute and comment lines directly above it —
+/// the shape every cited site uses, `#[cfg(debug_assertions)] / #[test] /
+/// #[should_panic(expected = "Box")]` included.
+fn binding_state(source: &str, test_fn: &str) -> BindingState {
     let opener = format!("fn {test_fn}(");
-    source
+    let lines: Vec<&str> = source.lines().collect();
+    let Some(at) = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with(&opener))
+    else {
+        return BindingState::Undefined;
+    };
+
+    let attributes: Vec<&str> = lines[..at]
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .take_while(|line| line.starts_with("#[") || line.starts_with("//"))
+        .filter(|line| line.starts_with("#["))
+        .collect();
+
+    if attributes.iter().any(|a| a.starts_with("#[ignore")) {
+        BindingState::Ignored
+    } else if attributes.iter().any(|a| a.starts_with("#[test]")) {
+        BindingState::Discharged
+    } else {
+        BindingState::NotATest
+    }
+}
+
+/// §6's own row labels, read out of the PRD's table rather than transcribed from it.
+///
+/// [`SECTION_6_ROWS`] is a binding between two things, and until this existed the ledger
+/// only ever checked one of them: adding a row 21 to §6, renaming a label, or moving the
+/// PRD left every test here green while the binding went stale or dangled. The table's
+/// first column is a single token per row, so the label set is readable without an ad-hoc
+/// parser for the rest of it (heuristic 12) — the header row and the `|---|` separator are
+/// the only non-label rows, and both are recognisable by their own first cell.
+fn section_6_row_labels(root: &Path) -> Vec<String> {
+    let prd = std::fs::read_to_string(root.join(SECTION_6_PRD)).unwrap_or_else(|e| {
+        panic!("this ledger binds §6 of {SECTION_6_PRD}, which must be readable ({e})")
+    });
+
+    let labels: Vec<String> = prd
         .lines()
-        .any(|line| line.trim_start().starts_with(&opener))
+        .skip_while(|line| !line.starts_with("## 6."))
+        .skip(1)
+        .take_while(|line| !line.starts_with("## "))
+        .filter_map(|line| line.trim().strip_prefix('|'))
+        .filter_map(|row| row.split('|').next())
+        .map(|cell| cell.trim().to_string())
+        .filter(|label| label != "#" && !label.starts_with('-'))
+        .collect();
+
+    assert!(
+        !labels.is_empty(),
+        "no table rows found under the `## 6.` heading of {SECTION_6_PRD} — the section \
+         was renumbered, renamed or restructured, so this ledger is binding a row set \
+         that no longer describes anything"
+    );
+    labels
 }
 
 /// Every (row, discharging test) pair in the ledger.
@@ -351,16 +429,15 @@ fn discharges() -> impl Iterator<Item = (&'static BoundaryRow, &'static Discharg
         .flat_map(|row| row.discharged_by.iter().map(move |d| (row, d)))
 }
 
-/// §6's row labels are exactly `1`..`20` plus `9b` — 21 of them, no gaps, no duplicates.
+/// The bound row set is exactly §6's — read from the PRD, not transcribed from it.
 ///
-/// The count is asserted as a literal as well as derived, so adding a 22nd row (or
-/// dropping one) cannot pass by moving the goalposts with it.
+/// Taking the expected set from [`section_6_row_labels`] rather than from a hand-written
+/// `1..=20` plus `9b` is what makes this a BINDING check rather than a second copy of the
+/// same list: a row added to, removed from or renamed in §6 reds here, naming the label,
+/// instead of leaving the ledger silently describing a table that has moved on.
 #[test]
 fn every_section_6_row_is_bound_exactly_once() {
-    const SECTION_6_ROW_COUNT: usize = 21;
-
-    let mut expected: Vec<String> = (1..=20).map(|n| n.to_string()).collect();
-    expected.push("9b".to_string());
+    let mut expected = section_6_row_labels(&workspace_root());
     expected.sort();
 
     let mut bound: Vec<String> = SECTION_6_ROWS.iter().map(|r| r.row.to_string()).collect();
@@ -386,8 +463,9 @@ fn every_section_6_row_is_bound_exactly_once() {
     );
     assert_eq!(
         SECTION_6_ROWS.len(),
-        SECTION_6_ROW_COUNT,
-        "§6 has {SECTION_6_ROW_COUNT} rows (1..20 plus 9b); the ledger binds {}",
+        expected.len(),
+        "{SECTION_6_PRD} §6 has {} rows; the ledger binds {}",
+        expected.len(),
         SECTION_6_ROWS.len()
     );
 
@@ -406,15 +484,20 @@ fn every_section_6_row_is_bound_exactly_once() {
     }
 }
 
-/// Every cited file exists on this tree.
+/// Every cited file exists on this tree — the PRD among them.
 ///
 /// A moved or deleted file is the cheapest way to un-cover a row, and it is invisible to
-/// the test inside it: that test moves with the file and stays green.
+/// the test inside it: that test moves with the file and stays green. [`SECTION_6_PRD`]
+/// is checked alongside the discharges because it is the other end of the binding, and a
+/// binding with one dangling end is not a binding.
 #[test]
 fn every_cited_file_resolves() {
     let root = workspace_root();
     let mut missing: Vec<String> = Vec::new();
 
+    if !root.join(SECTION_6_PRD).is_file() {
+        missing.push(format!("the PRD this ledger binds: {SECTION_6_PRD}"));
+    }
     for (row, discharge) in discharges() {
         if !root.join(discharge.file).is_file() {
             missing.push(format!("§6 row {}: {}", row.row, discharge.file));
@@ -429,11 +512,19 @@ fn every_cited_file_resolves() {
     );
 }
 
-/// Every cited `#[test] fn` is still defined in the file that cites it.
+/// Every cited `#[test] fn` is still defined in the file that cites it, still a `#[test]`,
+/// and still running.
 ///
 /// This is the load-bearing half. Renaming or deleting a test in another crate is
 /// otherwise silent: the suite it lived in stays green with one fewer test, and every
 /// prose citation of it goes stale without any gate noticing. Here it reds.
+///
+/// Definition alone is not enough, and the gap is not hypothetical: four of these rows
+/// (13 and 14) cite `fn`s living in the `src/lib.rs` and `src/kernel.rs` of two kernel
+/// crates, where a non-test `fn` is the norm. Dropping a `#[test]` there, or adding an
+/// `#[ignore = "blocked on #NNNN"]`, un-covers the row at zero cost while leaving the
+/// identifier exactly where the ledger expects it. Both are rejected, and reported
+/// distinctly, because the fix differs.
 #[test]
 fn every_cited_test_fn_is_defined_in_its_file() {
     let root = workspace_root();
@@ -449,10 +540,24 @@ fn every_cited_test_fn_is_defined_in_its_file() {
             )),
             Ok(source) => {
                 checked += 1;
-                if !defines_fn(&source, discharge.test_fn) {
+                let complaint = match binding_state(&source, discharge.test_fn) {
+                    BindingState::Discharged => None,
+                    BindingState::Undefined => Some(
+                        "is not defined there — it was renamed, moved or deleted, which \
+                         un-covers this row",
+                    ),
+                    BindingState::NotATest => Some(
+                        "is defined there but carries no `#[test]` — a test demoted to a \
+                         helper discharges nothing",
+                    ),
+                    BindingState::Ignored => Some(
+                        "is defined and attributed there but is `#[ignore]`d — an ignored \
+                         test discharges nothing",
+                    ),
+                };
+                if let Some(complaint) = complaint {
                     unresolved.push(format!(
-                        "§6 row {}: `fn {}(` is not defined in {} — it was renamed, moved \
-                         or deleted, which un-covers this row",
+                        "§6 row {}: `fn {}(` in {} {complaint}",
                         row.row, discharge.test_fn, discharge.file
                     ));
                 }
