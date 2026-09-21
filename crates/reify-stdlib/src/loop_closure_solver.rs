@@ -940,8 +940,13 @@ pub enum LoopClosureChain {
 /// `ancestor_parent_conflict_shape_classifies_as_cycle` and
 /// `snapshot_ancestor_parent_conflict_body_keeps_its_own_frame`.
 ///
-/// Accepts either the raw `path_b` or the sentinel-stripped `chain_b`: the
-/// sentinel is a `kind = "world"` Map and never compares equal to a joint.
+/// Both callers feed the SENTINEL-STRIPPED `chain_b`, never the raw `path_b`.
+/// The answer is the same either way (the sentinel is a `kind = "world"` Map
+/// and never compares equal to a joint), but sharing
+/// [`strip_world_sentinel`]'s precondition is what keeps the two agreeing on
+/// records this function is never asked about: a `path_b` shorter than two
+/// entries, or one not headed by the sentinel, is rejected by both before it
+/// gets here.
 pub(crate) fn closing_side_contains_closing_joint(
     closing_path: &[reify_ir::Value],
     closing_joint: &reify_ir::Value,
@@ -1080,7 +1085,7 @@ pub fn mechanism_loop_closure_chains(
 ///   would not terminate at a closing joint, which violates the caller's
 ///   downstream contract — an empty chain cannot be fed to
 ///   `chain_transform` / `solve_loop_closure`).
-fn strip_world_sentinel(path: &[reify_ir::Value]) -> Option<Vec<reify_ir::Value>> {
+pub(crate) fn strip_world_sentinel(path: &[reify_ir::Value]) -> Option<Vec<reify_ir::Value>> {
     use reify_ir::Value;
 
     // Reject `[world]` and shorter — the stripped tail would be empty,
