@@ -173,8 +173,20 @@ tasks:
   capabilities:
   - name: draft-angle-is-ungated-raw-value
     binding: 'capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:1979
-      `let angle = eval_arg("angle")?;`; IR crates/reify-ir/src/geometry.rs:944 `angle:
-      Value`'
+      `let angle = eval_arg("angle")?;` AT DECOMPOSE; IR crates/reify-ir/src/geometry.rs:944
+      `angle: Value` AT DECOMPOSE, unchanged today at :1096 (the Draft variant opens
+      at :1046). The name of this row is a decompose-time label for what the leaf
+      would add, not an assertion that the read is currently ungated — only the
+      "ungated" half is retired. Since DELIVERED (re-measured 2026-09-21, task 7748;
+      landed by task 6924, merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9),
+      modify_draft (geometry_ops.rs:3409) reads the angle through
+      required_angle_value("angle", ..) at :763, above the plane resolution,
+      carrying an in-situ δ BREADCRUMB; the IR field itself is deliberately
+      unchanged, since the gate sits at the eval read and not in the IR. This
+      delivered_check (angle_spec() present in geometry_ops.rs) is byte-identical
+      to the γ leaf five-ungated-angle-reads check and is satisfied by ANY
+      occurrence anywhere in that file — comment-satisfiable, not construct-bound,
+      proving nothing about the draft site specifically'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -183,19 +195,27 @@ tasks:
       - crates/reify-eval/src/geometry_ops.rs
       expect: present
   - name: one-read-site-not-two
-    binding: premise CORRECTION (PRD §11 Q4 refuted) — :1979 sits above the `match
-      faces_expr` split; :1991 and :2049 are mutually-exclusive arms consuming the
-      same binding
+    binding: premise CORRECTION (PRD §11 Q4 refuted) AT DECOMPOSE — :1979 sat above
+      the `match faces_expr` split; :1991 and :2049 were mutually-exclusive arms
+      consuming the same binding. STILL TRUE today — re-measured 2026-09-21 (task
+      7748), the read is now at geometry_ops.rs:3409 opening modify_draft, and the
+      claim is pinned in situ by the landed δ BREADCRUMB there, not only in this
+      manifest
     verdict: PASS
     delivered_check:
       kind: manual
       reason: a structural claim about one function's control flow; no stable pattern
   - name: draft-not-eval-reachable
-    binding: 'producer-absent → SIGNAL WEAKENED per G6(b) — probe: every draft(...)
-      form exits 1 with `no valid plane handle available for Draft` BEFORE the angle
-      matters (bare AND dimensioned alike); zero .ri corpus draft call sites; reify
-      check exits 0. Pre-existing defect, geometry-modify-sweep-completion territory
-      (task 2010 is done while the defect is live)'
+    binding: 'producer-absent → SIGNAL WEAKENED per G6(b) AT DECOMPOSE — probe: every
+      draft(...) form exits 1 with `no valid plane handle available for Draft`
+      BEFORE the angle matters (bare AND dimensioned alike); zero .ri corpus draft
+      call sites; reify check exits 0. Pre-existing defect,
+      geometry-modify-sweep-completion territory (task 2010 is done while the
+      defect is live). STILL LIVE today, not retired by task 6924: re-confirmed
+      2026-09-21 (task 7748), task 2010 plane-handle placeholder
+      (step_handles.last()) is untouched, and the landed δ BREADCRUMB at
+      modify_draft (geometry_ops.rs:3409) documents it in situ as a pre-existing,
+      out-of-scope approximation'
     verdict: PASS
     delivered_check:
       kind: manual

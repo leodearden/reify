@@ -322,12 +322,14 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 
 ### δ — 5780 · gate `draft.angle`
 
+*Every row below was measured at decompose time (2026-07-29, main @ `bd10b6d0e1`), **before** δ ran, and is retained verbatim as provenance. δ's work was absorbed by the coalesced task #6924 (`metadata.x_coalesced_from = [5778, 5779, 5780, 5781]`) and landed on main in merge commit `1a9cf2b51f301c8716eb545dc43ec8a565d765e9`, δ's own commit run inside it being `a7ba9f5db1` (RED — draft.angle, the R7 raw-Value passthrough) → `a02b6bce4c` (GREEN — gate draft.angle, the last raw-Value passthrough), with `cc35fd8eb1` amending the plane-error test to `expect_err`. Unlike β/γ, MOST rows below are still LIVE, not pre-state — re-probed 2026-09-21 at HEAD: `modify_draft` (`crates/reify-eval/src/geometry_ops.rs:3409`) opens with an in-situ δ BREADCRUMB recording the one-read-site choice and §11 Q4's refutation, then reads the angle through `required_angle_value("angle", …)` (`:763`) above the plane resolution that follows at `:3447-3451`. Only the first row's "ungated" half is retired: the IR field is UNCHANGED (`angle: Value` at `crates/reify-ir/src/geometry.rs:1096`, inside the `Draft {` variant at `:1046`), and the "not eval-reachable" row is unaffected — task #2010's plane-handle placeholder is untouched and the landed code documents it in situ as a pre-existing, out-of-scope approximation.*
+
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `draft.angle` is an R7 raw-`Value` read, ungated | `grep:geometry_ops.rs:1979`; IR `crates/reify-ir/src/geometry.rs:944` `angle: Value` | PASS |
-| ONE read site, not two | C7 | PASS (§11 Q4 refuted) |
-| the angle read precedes plane resolution → δ's diagnostic is observable | `grep:geometry_ops.rs:1979` (angle) vs `:1984-1989` (`plane_id … ok_or_else`) | PASS |
-| **draft is not eval-reachable today** | C6 probes | **signal weakened** per G6(b) |
+| `draft.angle` is an R7 raw-`Value` read, ungated **at decompose** | `grep:geometry_ops.rs:1979` **at decompose** (site since shifted — see section note); IR `crates/reify-ir/src/geometry.rs:944` `angle: Value` **at decompose**, unchanged today at `:1096` — only the "ungated" half is retired: since DELIVERED the read is gated by `required_angle_value` at `crates/reify-eval/src/geometry_ops.rs:763`, but the IR field itself stays raw `Value` by design (the gate sits at the eval read, not in the IR) | PASS *as of `bd10b6d0e1`* (pre-δ premise, half-retired; the read since gated by #6924, the IR field deliberately unchanged — see section note) |
+| ONE read site, not two | C7 **at decompose** (site then `:1979`, now the single read opening `modify_draft` at `:3409` — re-measured 2026-09-21) | PASS (§11 Q4 refuted; still true today, and now pinned in situ by the landed δ BREADCRUMB, not only in this manifest) |
+| the angle read precedes plane resolution → δ's diagnostic is observable | `grep:geometry_ops.rs:1979` (angle) vs `:1984-1989` (`plane_id … ok_or_else`) **at decompose** — re-measured 2026-09-21: same structure, now `required_angle_value("angle", …)` inside `modify_draft` (`:3409`) reads above the plane resolution that follows at `:3447-3451` | PASS — still true, since landed by #6924 |
+| **draft is not eval-reachable today** | C6 probes **at decompose** — re-confirmed 2026-09-21: task #2010's `step_handles.last()` plane-handle placeholder (`geometry_ops.rs:3447-3451`) is untouched by #6924, and the landed δ BREADCRUMB at `modify_draft` (`:3409`) documents it in situ as "a pre-existing approximation … out of scope"; this row is LIVE, not pre-state | **signal weakened** per G6(b) |
 
 ### ε — 5781 · retire `resolve_bare_angle`
 
