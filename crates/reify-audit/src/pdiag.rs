@@ -60,15 +60,20 @@
 //! the tail of the comment-mask bullet (a string-literal `/*` can mask a site's
 //! own `.with_code(` line, which [`code_in_window`] then never sees). All three
 //! are accepted rather than lexed away because none occurs in the swept corpus
-//! and one `pdiag:allow` clears any of them. (Two FURTHER false-RED routes were
-//! real defects and are closed rather than accepted: a nested `/* /* */ */`
-//! region reading as live code, by [`comment_mask`]'s depth counter; and a
-//! type whose name merely ENDS in `Diagnostic` — `FeaDiagnostic::error(` —
-//! anchoring as a site, by [`anchor_positions`]' left word boundary.)
+//! and one `pdiag:allow` clears any of them. (THREE FURTHER false-RED routes
+//! were real defects and are closed rather than accepted: a nested
+//! `/* /* */ */` region reading as live code, by [`comment_mask`]'s depth
+//! counter; a type whose name merely ENDS in `Diagnostic` —
+//! `FeaDiagnostic::error(` — anchoring as a site, by [`anchor_positions`]' left
+//! word boundary; and a `;` inside a diagnostic MESSAGE arming the probe's
+//! bound a statement early, by [`statement_end`]'s literal skip — that last
+//! ingredient is LIVE in the corpus, so it was closed rather than listed.)
 //!
 //! - An anchor token inside a string literal on a code line is counted as a
 //!   site (none observed in the corpus; `pdiag:allow` escapes it). This is the
-//!   first of the three entries here that err toward a false RED.
+//!   first of the three entries here that err toward a false RED. Only the
+//!   ANCHOR token is literal-blind: [`statement_end`] skips quoted `;`, and a
+//!   quoted `.with_code(` marks its site coded, which is permissive.
 //! - The probe's bound — the ordered pair `; … <anchor>`, [`probe_segment`] —
 //!   is coarser than the language in BOTH directions, and one of those
 //!   directions can manufacture a RED.
@@ -77,12 +82,20 @@
 //!   absorbs the arm above it. `,` cannot be promoted to a terminator — it
 //!   also separates constructor arguments, so a comma-bounded probe would
 //!   stop inside a wrapped `format!` and red the DOMINANT multi-line shape.
+//!   This is the remaining half of the hard-gate hole the `; … <anchor>` pair
+//!   closes, and unlike the false RED below it the arm shape is COMMON in the
+//!   swept corpus (`crates/reify-compiler/src/compile_builder/pre_pass.rs:111`
+//!   and `:116`, `crates/reify-compiler/src/units.rs:1830`), so the residual
+//!   is live rather than latent — it costs a verdict only where a code-less
+//!   arm sits directly above a coded one.
 //!   *False-RED:* an INTERLEAVED binding (`let a = ctor; let b =
 //!   ctor.with_code(c); a.with_code(c2);`) puts `b`'s anchor between `a` and
 //!   `a`'s own code, so `a` reads code-less. That is this list's second
-//!   false-RED route. Neither shape occurs in the swept corpus (appendix A);
-//!   `pdiag:allow` clears the false RED, and the remedy is written down for
-//!   authors in `docs/notes/diagnostic-severity-policy.md` §3.
+//!   false-RED route, and it does not occur in the swept corpus (appendix A);
+//!   `pdiag:allow` clears it, and the remedy is written down for authors in
+//!   `docs/notes/diagnostic-severity-policy.md` §3. Both halves are pinned by
+//!   `the_two_residuals_this_bound_owns_are_measured_not_asserted`, so a later
+//!   edit that moves either one fails a test rather than drifting this prose.
 //! - The comment mask is line-granular and keyed on each line's FIRST
 //!   non-whitespace token, so nothing mid-line is ever stripped. That is
 //!   deliberate: stripping `//`-to-end-of-line would let a `//` inside a string
@@ -557,28 +570,34 @@ enum Probe {
 ///
 /// `anchors_after` are the anchor offsets eligible to bound this probe — every
 /// anchor on the line when walking the window, only the anchors to the RIGHT
-/// of the site when probing its own line. `past_terminator` carries "a
-/// terminator has already been crossed" across segments, and is updated in
-/// place: it is what lets the pair span a line break.
+/// of the site when probing its own line; every one of them is at or after
+/// `from`, which the caller guarantees and the `debug_assert!` below enforces.
+/// `past_terminator` carries "a terminator has already been crossed" across
+/// segments, and is updated in place: it is what lets the pair span a line
+/// break.
 ///
 /// Residual imprecision is the module header's business; the two entries this
 /// bound owns are the `,`-separated match-arm tail (not a terminator, so
 /// absorption survives there) and the interleaved binding it can false-RED.
+/// Both are pinned by tests, so each is a measured fact rather than a claim.
 fn probe_segment(
     line: &str,
     anchors_after: &[usize],
     from: usize,
     past_terminator: &mut bool,
 ) -> Probe {
-    // Read the flag BEFORE the closure: `bound` only needs the value as it
-    // stood on ENTRY, and copying it out keeps the in-place update below from
-    // colliding with the borrow.
+    debug_assert!(
+        anchors_after.iter().all(|&at| at >= from),
+        "anchors_after holds only anchors at or after the probe's own offset"
+    );
+    // The bound uses the terminator state as it stood on ENTRY: this segment's
+    // own `;` must not bound this segment.
     let past = *past_terminator;
-    let semi = line[from..].find(';').map(|rel| from + rel);
+    let semi = statement_end(line, from);
     let bound = anchors_after
         .iter()
         .copied()
-        .find(|&at| at >= from && (past || semi.is_some_and(|semi| at > semi)));
+        .find(|&at| past || semi.is_some_and(|semi| at > semi));
     let code = line[from..].find(CODE_PROBE).map(|rel| from + rel);
     *past_terminator |= semi.is_some();
 
@@ -588,6 +607,51 @@ fn probe_segment(
         (_, Some(_)) => Probe::Bounded,
         (None, None) => Probe::Undecided,
     }
+}
+
+/// Byte offset of the first statement terminator in `line` at or after `from`,
+/// skipping any `;` that sits inside a string or char literal.
+///
+/// Literal awareness is load-bearing rather than fastidious: a `;` inside a
+/// diagnostic MESSAGE arms [`probe_segment`]'s bound one statement early, which
+/// false-REDs genuinely-coded code. The ingredient is live in the swept corpus
+/// — `crates/reify-compiler/src/compile_builder/pre_pass.rs:112` carries a `;`
+/// inside the message of a two-arm constructor shape — and flips no verdict
+/// there only because both of its arms happen to be code-less today.
+///
+/// Byte comparison rather than `&line[i..]` slicing, for [`comment_mask`]'s
+/// reason: every byte matched here is ASCII, so it can never be a UTF-8
+/// continuation byte, and the returned offset is always a char boundary.
+///
+/// The scan is per-segment and deliberately shallow, with two accepted costs.
+/// A string spanning a line break is re-read from scratch on its continuation
+/// lines, and a raw string's `r#"…"#` delimiters are read as plain quotes;
+/// both mis-read only INTO or OUT OF a literal that holds no terminator, so
+/// they cost at worst a missed `;` — the permissive direction, never a RED.
+fn statement_end(line: &str, from: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut in_string = false;
+    let mut i = from;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if in_string => i += 1,
+            b'"' => in_string = !in_string,
+            b';' if !in_string && !is_quoted_semicolon(bytes, i) => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `true` when the `;` at `at` is the body of a `';'` char literal.
+///
+/// Matching the two delimiters is exact, because `';'` is the ONLY char
+/// literal that can hold a `;` at all. A general char-literal scanner would
+/// have to tell `'a` the lifetime from `'a'` the char — an ambiguity this
+/// module has no need to take on.
+fn is_quoted_semicolon(bytes: &[u8], at: usize) -> bool {
+    at > 0 && bytes[at - 1] == b'\'' && bytes.get(at + 1) == Some(&b'\'')
 }
 
 /// `true` when a `.with_code(` reachable from `anchor_line` (a 0-based index
@@ -1918,6 +1982,99 @@ mod tests {
             "    };",
         ]);
         assert_eq!(sites(&src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn a_semicolon_inside_a_message_literal_does_not_bound_the_probe() {
+        // `statement_end`'s literal skip. A `;` in a diagnostic MESSAGE is not
+        // a statement end, and reading it as one arms the bound a statement
+        // early — so the first arm of a severity dispatch reads code-less even
+        // though the shared trailing `.with_code(` codes BOTH arms. That is a
+        // false RED on genuinely-coded code, and the ingredient is live:
+        // crates/reify-compiler/src/compile_builder/pre_pass.rs:112 carries a
+        // `;` inside exactly this two-arm shape.
+
+        // (i) A `;` inside a `"…"` message.
+        let src = file(&[
+            "    let d = if bad {",
+            "        Diagnostic::error(\"unterminated; expected `;`\".to_string())",
+            "    } else {",
+            "        Diagnostic::warning(m)",
+            "    }",
+            "    .with_code(c);",
+        ]);
+        assert_eq!(
+            sites(&src),
+            vec![(2, true), (4, true)],
+            "a quoted `;` must not bound the probe short of the shared code"
+        );
+
+        // (ii) The `';'` char literal — the only char literal that can hold a
+        //      `;`, and the reason `is_quoted_semicolon` matches delimiters
+        //      rather than running a char-literal scanner that would have to
+        //      tell `'a` the lifetime from `'a'` the char.
+        let src = file(&[
+            "    let d = if bad {",
+            "        Diagnostic::error(fmt(';'))",
+            "    } else {",
+            "        Diagnostic::warning(m)",
+            "    }",
+            "    .with_code(c);",
+        ]);
+        assert_eq!(sites(&src), vec![(2, true), (4, true)]);
+
+        // (iii) NEGATIVE CONTROL — a REAL terminator outside any literal still
+        //       bounds, quotes on the same line notwithstanding. Without this
+        //       the fix would trade a false RED for the hole it just closed.
+        let src = file(&[
+            "    out.push(Diagnostic::error(\"plain; message\".into()));",
+            "    out.push(Diagnostic::warning(m2).with_code(c));",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false), (2, true)]);
+    }
+
+    #[test]
+    fn the_two_residuals_this_bound_owns_are_measured_not_asserted() {
+        // The module header names two residuals the `; … <anchor>` pair owns.
+        // Both are deliberate, and both are pinned HERE so that a later edit
+        // moving either one fails a test instead of silently drifting past the
+        // prose that describes it.
+
+        // (i) The header's PERMISSIVE entry, and the remaining half of the
+        //     hard-gate hole this bound closes: a `,`-separated match arm is
+        //     not a statement end, so a brand-new code-less arm is still
+        //     absorbed by the coded arm below it. The arm shape is common in
+        //     the corpus (pre_pass.rs:111/116, units.rs:1830). Promoting `,`
+        //     to a terminator is not the fix — `,` also separates constructor
+        //     arguments, so it would stop inside a wrapped `format!` and red
+        //     the dominant multi-line shape.
+        let src = file(&[
+            "match x {",
+            "    A => Some(Diagnostic::error(m)),",
+            "    B => Some(Diagnostic::warning(m2).with_code(c)),",
+            "}",
+        ]);
+        assert_eq!(
+            sites(&src),
+            vec![(2, true), (3, true)],
+            "the code-less arm is absorbed — the open half of the hole, by design"
+        );
+
+        // (ii) The header's FALSE-RED entry, its second such route: an
+        //      INTERLEAVED binding. `b`'s anchor falls between `a` and `a`'s
+        //      own code, so the pair bounds `a` short of it and `a` reads
+        //      code-less. Absent from the swept corpus (appendix A), and
+        //      `pdiag:allow` clears it.
+        let src = file(&[
+            "let a = Diagnostic::error(m);",
+            "let b = Diagnostic::warning(m2).with_code(c);",
+            "let a = a.with_code(c2);",
+        ]);
+        assert_eq!(
+            sites(&src),
+            vec![(1, false), (2, true)],
+            "the interleaved binding false-REDs its upper site — accepted, escapable"
+        );
     }
 
     // -- comment exclusion -------------------------------------------------
