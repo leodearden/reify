@@ -3817,12 +3817,18 @@ fn build_dirichlet_bcs(
     // support, which is why every pinned end face also reports what it was
     // realized as: see [`pinned_end_face_realization_diagnostics`].
 
-    // Resolve every support to (what it constrains, which face) up front, so the
-    // two branches below share ONE realization policy.
+    // Resolve every support's `FaceCompany` up front — ONCE per target — so
+    // the per-face realization below and the diagnostics after it read the
+    // exact same fact instead of each deriving their own; see
+    // `pinned_end_face_realization_diagnostics`'s "One pass, two consumers".
+    let companies: Vec<FaceCompany> = targets
+        .iter()
+        .map(|(_, target)| face_company(target, &targets))
+        .collect();
     let faces: Vec<(FaceRealization, &str)> = targets
         .iter()
-        .map(|(kind, target)| {
-            let company = face_company(target, &targets);
+        .zip(companies.iter())
+        .map(|((kind, target), company)| {
             (face_realization(*kind, target, company), target.as_str())
         })
         .collect();
@@ -3838,7 +3844,8 @@ fn build_dirichlet_bcs(
         .all(|(kind, _)| *kind == DeclaredSupport::Pinned);
     let simply_supported =
         names_face("x_min") && names_face("x_max") && end_face_supports_all_pinned;
-    let diagnostics = pinned_end_face_realization_diagnostics(&targets, simply_supported);
+    let diagnostics =
+        pinned_end_face_realization_diagnostics(&targets, &companies, simply_supported);
 
     if simply_supported {
         // The special case re-interprets the TWO END FACES only. Every support
@@ -3868,9 +3875,11 @@ fn build_dirichlet_bcs(
 ///
 /// A struct rather than a bare `Vec<DirichletBc>` because the `PinnedSupport`
 /// realization is decided per-face via [`face_company`], so the two halves
-/// must be produced by calls to the SAME predicate — a sibling function
-/// recomputing the decision could still drift from the one that actually
-/// emitted the DOFs, which is precisely the silent-BC-reinterpretation class
+/// must be produced from the SAME per-target [`FaceCompany`] vector:
+/// [`build_dirichlet_bcs`] computes it once and shares it with
+/// [`pinned_end_face_realization_diagnostics`], so the note cannot drift from
+/// the DOFs that were actually emitted — a sibling function recomputing the
+/// decision from scratch is precisely the silent-BC-reinterpretation class
 /// task 6663 exists to close.
 struct DirichletRealization {
     /// The homogeneous Dirichlet set: sorted by `dof` and deduplicated.
@@ -3901,9 +3910,19 @@ struct DirichletRealization {
 ///
 /// The scoping argument in [`face_realization`] stands: no reachable
 /// `PinTransverse` configuration is a mechanism. This does not change any
-/// number; it puts the count-dependence in the same diagnostic stream the rest
-/// of the modal solve reports through, so the flip is legible in BOTH directions
-/// (pinned as a transverse pin, and pinned-therefore-clamped).
+/// number; it puts the face-company-dependence in the same diagnostic stream
+/// the rest of the modal solve reports through, so the flip is legible in
+/// BOTH directions (pinned as a transverse pin, and pinned-therefore-clamped).
+///
+/// # One pass, two consumers
+///
+/// `companies` is the SAME per-target [`FaceCompany`] vector
+/// [`build_dirichlet_bcs`] computed to decide the DOFs (`face_company` is
+/// called once per target, there, not here), so the message below is read
+/// off the exact fact that drove the realization rather than a second call
+/// to `face_company` that could in principle disagree. `WithAnotherFace`'s
+/// payload is also what lets the message name the specific other face
+/// (review suggestion 4), instead of merely asserting that one exists.
 ///
 /// # What is reported, and what is not
 ///
@@ -3917,11 +3936,12 @@ struct DirichletRealization {
 /// because it selects nothing at all.
 fn pinned_end_face_realization_diagnostics(
     targets: &[(DeclaredSupport, String)],
+    companies: &[FaceCompany],
     simply_supported: bool,
 ) -> Vec<Diagnostic> {
     let mut seen: BTreeSet<(usize, bool)> = BTreeSet::new();
     let mut out = Vec::new();
-    for (kind, target) in targets {
+    for ((kind, target), company) in targets.iter().zip(companies.iter()) {
         if *kind != DeclaredSupport::Pinned || !is_beam_axis_end_face(target) {
             continue;
         }
@@ -3939,15 +3959,13 @@ fn pinned_end_face_realization_diagnostics(
                  so K_free is not singular. The same declaration clamps all 3 translational \
                  DOFs when it is the only face the model's supports name."
             )
-        } else if face_realization(*kind, target, face_company(target, targets))
-            == FaceRealization::PinTransverse
-        {
+        } else if let FaceCompany::WithAnotherFace(other) = company {
             format!(
                 "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
                  transverse (Z) pin — the simply-supported beam idealization — because the \
-                 model's supports name another distinct recognized face. Were this the only \
-                 face named, the SAME declaration would clamp all 3 translational DOFs \
-                 instead and the fundamental would rise."
+                 model's supports also name \"{other}\". Were this the only face named, the \
+                 SAME declaration would clamp all 3 translational DOFs instead and the \
+                 fundamental would rise."
             )
         } else {
             format!(
@@ -4295,17 +4313,34 @@ fn face_bound(target: &str) -> Option<(usize, bool)> {
 /// Whether the model's supports name a recognized face OTHER than `target`'s
 /// own — the face-LOCAL fact [`face_realization`] decides a `PinnedSupport`
 /// beam end's transverse-pin eligibility from, in place of a model-wide count.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// Not `Copy` (review suggestion 4): `WithAnotherFace` carries the OTHER
+/// face's target name, so [`pinned_end_face_realization_diagnostics`] can
+/// name it in the note instead of only asserting that it exists.
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum FaceCompany {
     /// No support names a recognized face other than this one's own.
     Alone,
-    /// At least one support names a DISTINCT recognized face.
-    WithAnotherFace,
+    /// At least one support names a DISTINCT recognized face — this is its
+    /// target string, as declared (the first one found, when there are
+    /// several).
+    WithAnotherFace(String),
 }
 
 /// Decide `target`'s [`FaceCompany`]: whether `targets` names a recognized
 /// face other than `target`'s own, identified by [`face_bound`] rather than by
 /// spelling.
+///
+/// # Precondition
+///
+/// `target` is expected to be the target of one of the entries in `targets` —
+/// both call sites ask this only of a face that is itself one of the model's
+/// declared support targets ([`build_dirichlet_bcs`] maps over `targets`
+/// itself to build `companies`, and
+/// [`pinned_end_face_realization_diagnostics`] receives that same vector
+/// zipped with `targets`). The function still returns for a `target` outside
+/// that list, but nothing relies on that answer meaning anything — see
+/// `face_company_identifies_faces_by_bound` for the cases that matter.
 ///
 /// The KIND each support declared is deliberately not read here — company is
 /// about which faces are RECOGNIZED, not about what any of them constrain;
@@ -4317,13 +4352,12 @@ enum FaceCompany {
 /// which cannot equal anything).
 fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceCompany {
     let own = face_bound(target);
-    let has_other_face = targets
+    match targets
         .iter()
-        .any(|(_, t)| face_bound(t).is_some_and(|b| Some(b) != own));
-    if has_other_face {
-        FaceCompany::WithAnotherFace
-    } else {
-        FaceCompany::Alone
+        .find(|(_, t)| face_bound(t).is_some_and(|b| Some(b) != own))
+    {
+        Some((_, other)) => FaceCompany::WithAnotherFace(other.clone()),
+        None => FaceCompany::Alone,
     }
 }
 
@@ -4382,11 +4416,12 @@ fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceComp
 /// leaves NO reachable `PinTransverse` configuration that is a mechanism: a
 /// second distinct face is either the other beam end (pin-pin special case, or
 /// `Fixed` and therefore clamped) or a non-end face, which always clamps.
-fn face_realization(kind: DeclaredSupport, target: &str, company: FaceCompany) -> FaceRealization {
+fn face_realization(kind: DeclaredSupport, target: &str, company: &FaceCompany) -> FaceRealization {
     match kind {
         DeclaredSupport::Fixed => FaceRealization::ClampAllDofs,
         DeclaredSupport::Pinned
-            if is_beam_axis_end_face(target) && company == FaceCompany::WithAnotherFace =>
+            if is_beam_axis_end_face(target)
+                && matches!(company, FaceCompany::WithAnotherFace(_)) =>
         {
             FaceRealization::PinTransverse
         }
@@ -7690,16 +7725,28 @@ mod tests {
             flipped[0],
         );
         assert!(
-            flipped[0].contains("another distinct recognized face"),
-            "the transverse-pin note must attribute the realization to another distinct \
-             recognized face — naming the face-local mechanism, not a face tally the author \
-             would then have to map back onto their own declaration: {:?}",
+            flipped[0].contains("y_min"),
+            "the transverse-pin note must name the SPECIFIC other face that triggered the \
+             realization (review suggestion 4) — not merely assert one exists, leaving the \
+             author to map that back onto their own declaration: {:?}",
             flipped[0],
         );
         assert_ne!(
             lone[0], flipped[0],
             "the two realizations of the SAME declaration must not report identically — that \
              is the whole point of the note",
+        );
+
+        // Amendment (review suggestion 1, optional cross-check): the note and
+        // the DOFs it describes must agree, because both are now read off the
+        // SAME `FaceCompany` rather than two separate derivations.
+        let flipped_dofs = f.dof_set(vec![pinned_support("x_min"), fixed_support("y_min")]);
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| f.on_x_min(n) && !f.on_y_min(n))
+                .all(|n| z_only(&flipped_dofs, n)),
+            "the model whose note says 'transverse (Z) pin' must be the model whose x_min \
+             DOF set is actually Z-only",
         );
 
         // (c) The pin-pin special case names both ends, and says the anchors are
@@ -7888,57 +7935,61 @@ mod tests {
     /// Task 6980 (concern 1): the realization decision is face-LOCAL — it
     /// reads only whether THIS face has company, never a model-wide tally.
     /// This is invisible through `build_dirichlet_bcs` (see
-    /// `face_company_is_local_not_a_face_tally` for why), so it is pinned
+    /// `face_company_identifies_faces_by_bound` for why), so it is pinned
     /// directly against [`face_realization`]'s full decision table.
+    ///
+    /// The `WithAnotherFace` payload (review suggestion 4) is irrelevant to
+    /// this decision — `face_realization` only matches the variant, never the
+    /// face it names — so every case below reuses the same placeholder value.
     #[test]
     fn face_realization_decides_from_its_own_faces_company() {
+        let with_another = FaceCompany::WithAnotherFace("y_min".to_string());
         assert_eq!(
-            face_realization(DeclaredSupport::Pinned, "x_min", FaceCompany::Alone),
+            face_realization(DeclaredSupport::Pinned, "x_min", &FaceCompany::Alone),
             FaceRealization::ClampAllDofs,
             "a lone pinned beam end must clamp — a transverse-only pin alone is a mechanism",
         );
         assert_eq!(
-            face_realization(
-                DeclaredSupport::Pinned,
-                "x_min",
-                FaceCompany::WithAnotherFace
-            ),
+            face_realization(DeclaredSupport::Pinned, "x_min", &with_another),
             FaceRealization::PinTransverse,
             "a pinned beam end WITH another recognized face must pin transversely",
         );
         assert_eq!(
-            face_realization(
-                DeclaredSupport::Pinned,
-                "y_min",
-                FaceCompany::WithAnotherFace
-            ),
+            face_realization(DeclaredSupport::Pinned, "y_min", &with_another),
             FaceRealization::ClampAllDofs,
             "a non-beam-axis face clamps regardless of company — only a beam-axis end face \
              is ever eligible for a transverse pin",
         );
         assert_eq!(
-            face_realization(DeclaredSupport::Fixed, "x_min", FaceCompany::Alone),
+            face_realization(DeclaredSupport::Fixed, "x_min", &FaceCompany::Alone),
             FaceRealization::ClampAllDofs,
             "FixedSupport clamps unconditionally when alone",
         );
         assert_eq!(
-            face_realization(
-                DeclaredSupport::Fixed,
-                "x_min",
-                FaceCompany::WithAnotherFace
-            ),
+            face_realization(DeclaredSupport::Fixed, "x_min", &with_another),
             FaceRealization::ClampAllDofs,
             "FixedSupport clamps unconditionally WithAnotherFace too — the kind, not the \
              company, decides for Fixed",
         );
     }
 
-    /// Task 6980 (concern 1): `face_company` is a per-TARGET predicate, not a
-    /// model-wide tally — the discriminator is the last case below, where a
-    /// model naming exactly ONE recognized face still reports
-    /// `WithAnotherFace` for a target that is not that face.
+    /// Task 6980 (concern 1), narrowed by review suggestion 3: pins
+    /// `face_company` directly against every input shape its two call sites
+    /// can actually produce — `target` is always one of `targets` there (see
+    /// the precondition on [`face_company`]'s own doc).
+    ///
+    /// An earlier version of this test also asserted
+    /// `face_company("x_min", &[fixed_target("y_min")])` — i.e. asked about a
+    /// target that names no support of its own — as "the" proof that the
+    /// decision is face-local rather than a model-wide tally. Review
+    /// suggestion 3 pointed out that input violates the precondition above:
+    /// neither call site can construct it, so it discriminated between two
+    /// IMPLEMENTATIONS no caller can tell apart, not between two BEHAVIORS.
+    /// Dropped rather than kept as a documented precondition violation — the
+    /// cases below already cover everything a real `targets` list can put in
+    /// front of this function.
     #[test]
-    fn face_company_is_local_not_a_face_tally() {
+    fn face_company_identifies_faces_by_bound() {
         let pinned_target = |t: &str| (DeclaredSupport::Pinned, t.to_string());
         let fixed_target = |t: &str| (DeclaredSupport::Fixed, t.to_string());
 
@@ -7960,24 +8011,13 @@ mod tests {
         );
         assert_eq!(
             face_company("x_min", &[pinned_target("x_min"), fixed_target("y_min")]),
-            FaceCompany::WithAnotherFace,
-            "y_min is a distinct recognized face from x_min's own",
+            FaceCompany::WithAnotherFace("y_min".to_string()),
+            "y_min is a distinct recognized face from x_min's own, and the company names it",
         );
         assert_eq!(
             face_company("y_min", &[pinned_target("x_min"), fixed_target("y_min")]),
-            FaceCompany::WithAnotherFace,
+            FaceCompany::WithAnotherFace("x_min".to_string()),
             "the same list, decided for the OTHER target: x_min is company for y_min too",
-        );
-
-        // THE DISCRIMINATOR against a model-wide tally: the model names
-        // exactly ONE recognized face, yet x_min — which is not that face —
-        // still has company. A cardinality test (`n > 1`) would read this as
-        // "alone"; the decision is about faces OTHER than THIS one, never
-        // about how many the model has.
-        assert_eq!(
-            face_company("x_min", &[fixed_target("y_min")]),
-            FaceCompany::WithAnotherFace,
-            "one other face is company even though the model names exactly one face total",
         );
     }
 
