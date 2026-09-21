@@ -1243,18 +1243,18 @@ _RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_
 # fails on any pinned fixture missing here. Do not hand-edit without re-running
 # it; do not trust a copy of this list anywhere else.
 #
-# NOTE the two lists MOSTLY NEST: every _RUST_COUPLED_RI_FIXTURES member that is
-# also a grammar-ledger pin is listed below as well, and the rust arm already
-# sets gui=1, so it short-circuits them. They are retained here deliberately so
-# that dropping a fixture from the rust list can never silently drop its gui
-# coverage too. FOUR members are not EXPECTED_CLEAN pins and so have no gui
-# entry to retain: jacobian_column_members.ri (read by a compiled Rust target
-# but never pinned, task 6102), task 6877's
-# damped_material_{mixin,preset}_conformance.ri (deliberately not pinned — an
-# unpinned fixture is inert for that ledger, so pinning them would add the
-# PG-DRIFT-GUI obligation for no added signal), and adt_relation_verbs.ri
-# (task 6615's tree-sitter regression floor; its lezer twin pins only
-# adt_mirror_of_arm.ri).
+# NOTE the two lists now NEST EXACTLY (#6605): every _RUST_COUPLED_RI_FIXTURES
+# member is also a grammar-ledger pin, and the rust arm already sets gui=1 for
+# them, so listing them again below is a short-circuit, not new coverage. They
+# stay listed here anyway so that dropping a fixture from the rust list can
+# never silently drop its gui coverage too. The list below is now exactly the
+# EXPECTED_CLEAN prd-gate pin set, with no retained non-pin members — #6605
+# pinned the four fixtures that used to be the exception
+# (jacobian_column_members.ri, damped_material_mixin_conformance.ri,
+# damped_material_preset_conformance.ri, adt_relation_verbs.ri). Do not
+# re-apply the retired "pinning adds a PG-DRIFT-GUI obligation for no signal"
+# reasoning to a future gap without re-deriving the sets first — that policy is
+# what #6605 reversed.
 #
 # Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
 # MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
