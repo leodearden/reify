@@ -467,8 +467,8 @@ fn scan_file(content: &str) -> Vec<Site> {
             let escaped = escaped_anchors(line, &anchors[i], || {
                 escape_in_window(&lines, &mask, &anchors, i)
             });
-            for k in 0..anchors[i].len() {
-                if escaped[k] {
+            for (k, &is_escaped) in escaped.iter().enumerate() {
+                if is_escaped {
                     continue;
                 }
                 let coded = code_attached(&lines, &mask, &anchors, i, k);
