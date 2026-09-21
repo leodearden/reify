@@ -34155,6 +34155,50 @@
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
     }
 
+    /// PRECEDENCE GUARD — the area gate outranks the self-intersection sweep.
+    ///
+    /// The SYMMETRIC bow-tie trips both: its shoelace area is exactly 0.0, and
+    /// edges 1 and 3 cross. (The asymmetric variant above differs only in
+    /// stretching the first vertex pair to 0.02, which is what lifts its area
+    /// to 5e-5 and leaves the crossing intact — so the two fixtures isolate
+    /// the ordering question and nothing else.) It must be reported as
+    /// DEGENERATE, the more fundamental defect, rather than by the crossing
+    /// that is downstream of it. Ordering is also what keeps task 5664's
+    /// existing single-warning assertions passing unchanged, and it puts the
+    /// O(n) scalar test ahead of the O(n²) sweep.
+    ///
+    /// The absence assertion is not redundant with
+    /// `assert_exactly_one_warning`: that helper's `len() == 1` is equally
+    /// satisfied by the WRONG arm firing alone, so only checking for the
+    /// self-intersection wording's absence actually pins which gate spoke.
+    ///
+    /// Same shape as this module's `..._revolve_bare_origin_beats_degenerate_
+    /// axis`, and like that guard it is GREEN ON ARRIVAL — it was therefore
+    /// verified by mutation rather than trusted on a green run: swapping the
+    /// two checks in `profile_polygon` fails this test and this test only,
+    /// with `..._collinear_points_returns_err` still passing. That asymmetry
+    /// is the point — a mutation the rest of the suite cannot see is exactly
+    /// what this test exists to catch.
+    #[test]
+    fn compile_geometry_op_polygon_profile_zero_area_bowtie_reports_degeneracy() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.01, 0.0, 0.0, 0.01, 0.01, 0.01]),
+        );
+        assert!(
+            result.is_err(),
+            "a bow-tie that is ALSO zero-area must be rejected, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(&diagnostics, &["polygon", "degenerate", "area of 0"]);
+        assert!(
+            !diagnostics[0].message.contains("self-intersect"),
+            "the zero-area gate must report first: a ring that encloses no area at all is \
+             diagnosed by that, not by the crossing downstream of it. Got: {:?}",
+            diagnostics[0]
+        );
+    }
+
     // ── Non-finite dimensions: owned by the LENGTH gate, pinned from here ───
     //
     // A NaN dimension is a strictly WORSE instance of the same defect class as
