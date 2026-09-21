@@ -1821,6 +1821,13 @@ assert "b15: the computed-empty staged plan is a real full-workspace plan (carri
 assert "b15: the staged closure is COMPUTED and EMPTY (header carries closure= with the from-diff licence)" \
     bash -c 'printf "%s\n" "$1" | grep -qF -- "NARROW_ACTIVE=0 affected= closure= from_diff=1"' _ "$P_IN_STAGED"
 
+# The headline.  A closure the run derived from its own diff and which holds no
+# crate at all proves reify-gui is unaffected, so the feature-unification link
+# must not be paid — the mirror of b13's S_DOC, reached without an override.
+IN_STAGED="$(_gui_pass_count "$P_IN_STAGED")"
+assert "b15: a COMPUTED-EMPTY closure on --scope staged does NOT emit the gui-feature pass (got $IN_STAGED)" \
+    test "$IN_STAGED" -eq 0
+
 # -- (b12): --test-threads reaches the gui-feature pass ------------------------
 # `verify.sh --test-threads=N` caps test-execution parallelism.  The cargo-test
 # fallback arm always honoured it; the nextest arm did not, so an explicit

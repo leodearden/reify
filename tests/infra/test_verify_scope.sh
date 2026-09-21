@@ -2581,6 +2581,15 @@ assert "EX-1n: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (case glob * 
 _GUI_LANE_WITH_VITEST="cd gui && .*npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh'"
 _GUI_LANE_TSC_ONLY="cd gui && .*npm ci && npm run typecheck'"
 
+# The gui-FEATURE nextest pass — a different consumer of the SAME predicate, and
+# the discriminating one.  The vitest lane has three routes into it
+# (GUI_PATH_SIGNAL, the closure, an explicit spec request), so a RUN_GUI_VITEST
+# assertion cannot isolate the closure arm; this pass has exactly one route and
+# therefore can.  Used in BOTH directions across the suite — plan_lacks on GV-7's
+# computed-empty closure, plan_has on GV-FAILWIDE-1/2's unavailable one — so
+# neither reading can go vacuously green on a pattern that stopped matching.
+_GUI_FEATURE_PASS="cargo (test|nextest run) .*-p reify-gui --features gui"
+
 echo ""
 echo "--- Scenario GV-1: crate OUTSIDE reify-gui's cone -> tsc yes, vitest NO ---"
 plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-cli reify-doc reify-doc-build reify-eval" \
@@ -2675,17 +2684,31 @@ assert "GV-6: $_GV6_PIN -> RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (the ledger is 
 assert "GV-6: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
-# GV-7 — task 6268's arm 2, the OVERLOADED empty closure. A tests/infra-only
-# branch diff yields RUN_RUST=1 from decide_scope's conservative catch-all but
-# an EMPTY closure from affected-crates-lib's non-crate allowlist. Cited, not
-# restated: see closure_reaches_reify_gui's arm 2.
+# GV-7 — task 6268's COMPUTED-EMPTY closure, and the one scenario that pins
+# both halves of it at once. A tests/infra-only branch diff yields RUN_RUST=1
+# from decide_scope's conservative catch-all but an EMPTY closure from
+# affected-crates-lib's non-crate allowlist — and that emptiness was DERIVED
+# from this run's own changed-file list, so it proves reify-gui is unaffected
+# rather than merely failing to say. Cited, not restated: see
+# closure_reaches_reify_gui's computed-empty arm.
+#
+# The two assertions go opposite ways ON PURPOSE, and the difference is
+# derived, not incidental. The gui-FEATURE pass is narrowed AWAY: it has one
+# route in, this predicate. The VITEST lane is value-preserved: decide_scope's
+# `*)` catch-all sets `rust=1; gui=1; gate=1` together for tests/infra/*, so
+# GUI_PATH_SIGNAL=1 carries it regardless of what the closure says. That is
+# general, not a property of this fixture — a closure can only be
+# computed-empty when every changed path is non-crate, and of those classes
+# only tests/infra/* reaches RUN_RUST=1, via that same catch-all.
 echo ""
-echo "--- Scenario GV-7: tests/infra-only branch diff (empty closure) -> vitest runs ---"
+echo "--- Scenario GV-7: tests/infra-only branch diff (computed-empty closure) -> vitest runs, gui-feature pass narrowed away ---"
 plan_for_branch_env "" tests/infra/foo.sh
-assert "GV-7: RUN_GUI_VITEST=1 on an empty closure (task 6268 arm 2)" \
+assert "GV-7: RUN_GUI_VITEST=1 on a computed-empty closure (carried by GUI_PATH_SIGNAL, not the closure)" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-7: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
+assert "GV-7: the gui-feature nextest pass IS narrowed away (a diff touching zero crates cannot reach reify-gui)" \
+    plan_lacks "$_GUI_FEATURE_PASS"
 
 echo ""
 echo "--- Scenario GV-8: examples/*.ri branch diff -> vitest runs (grammar ledger reads examples/) ---"
