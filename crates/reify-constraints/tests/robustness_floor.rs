@@ -51,7 +51,10 @@
 //!
 //! The 2/3 discriminator is pinned by three tests, and the third is the one that
 //! matters most.  `2·x > 60mm ∧ 2·x < HI` has asymmetric synthesised margins, so
-//! its floored window closes at HI = 61.6mm:
+//! its floored window closes partway along the `HI` band — at the point
+//! `floored_window_emptiness_decides_the_class_across_the_band` derives from its
+//! `LOWER_MARGIN_M`/`UPPER_MARGIN_M` consts, which are this file's single
+//! EXECUTED copy of those measurements:
 //!   - `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` (class 3,
 //!     HI = 100mm) — pairs with the class-2 `61mm` test above, which differs
 //!     ONLY in that bound.
@@ -297,23 +300,28 @@ fn money_times_real_sum(q_ids: &[ValueCellId]) -> CompiledExpr {
 /// inequality pair, under a Money `Minimize` objective, with NO current value and
 /// NO explicit `AutoParam.bounds` (the production shape).
 ///
-/// `entity` names the constraints; pass the same entity the fixture's
-/// `ValueCellId`s carry, which is the invariant every caller here holds.  It is a
-/// parameter rather than a hardcoded string only so the underivable-bracket
-/// fixtures can reuse this instead of restating the whole literal.
+/// The constraint node ids take their entity from the first auto param, so they
+/// cannot name an entity the fixture's `ValueCellId`s do not carry.  That was
+/// previously a caller-side convention stated in prose; deriving it here makes it
+/// true by construction.
 fn bracketed_money_problem(
-    entity: &str,
     auto_params: Vec<AutoParam>,
     constraints: Vec<CompiledExpr>,
     objective: CompiledExpr,
 ) -> ResolutionProblem {
+    let entity = auto_params
+        .first()
+        .expect("bracketed_money_problem needs at least one auto param")
+        .id
+        .entity
+        .clone();
     ResolutionProblem {
         dependent_cells: Vec::new(),
         auto_params,
         constraints: constraints
             .into_iter()
             .enumerate()
-            .map(|(i, e)| (constraint_id(entity, i as u32), e))
+            .map(|(i, e)| (constraint_id(&entity, i as u32), e))
             .collect(),
         current_values: ValueMap::new(),
         objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, objective)),
@@ -655,7 +663,6 @@ fn bracketed_money_auto_solves_inside_floored_window() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
-        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 1.0),
@@ -689,7 +696,6 @@ fn bracketed_money_auto_from_zero_still_solves() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
-        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 0.0),
@@ -723,7 +729,6 @@ fn floor_empty_bracket_still_infeasible() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
-        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 99.0),
@@ -762,7 +767,6 @@ fn bracketed_money_length_auto_solves_inside_floored_window() {
     let x_id = ValueCellId::new("Bracketed", "x");
 
     let problem = bracketed_money_problem(
-        "Bracketed",
         vec![length_auto_param_free(x_id.clone())],
         vec![
             length_cmp(BinOp::Ge, &x_id, 0.050),
@@ -816,7 +820,6 @@ fn bracketed_money_auto_resolves_at_floored_argmin() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
-        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 1.0),
@@ -854,7 +857,6 @@ fn bracketed_money_strict_auto_survives_uniqueness_resolve() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
-        "Bracketed",
         vec![real_auto_param(q_id.clone(), false)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 1.0),
@@ -904,7 +906,6 @@ fn bracketed_money_multistart_cluster_ranks_a_feasible_candidate() {
     let q1_id = ValueCellId::new("Bracketed", "q1");
 
     let problem = bracketed_money_problem(
-        "Bracketed",
         vec![
             real_auto_param(q0_id.clone(), true),
             real_auto_param(q1_id.clone(), true),
@@ -1046,7 +1047,6 @@ fn margin_only_infeasibility_names_the_margin_not_an_empty_region() {
     let q_id = ValueCellId::new("Bracketed", "q");
 
     let problem = bracketed_money_problem(
-        "Bracketed",
         vec![real_auto_param(q_id.clone(), true)],
         vec![
             real_cmp(BinOp::Ge, &q_id, 99.0),
@@ -1181,7 +1181,6 @@ fn steep_objective_margin_only_infeasibility_names_the_margin() {
     let x_id = ValueCellId::new("FloorInfeasible", "x");
 
     let problem = bracketed_money_problem(
-        "FloorInfeasible",
         vec![length_auto_param(x_id.clone())],
         vec![gt_expr(&x_id, 0.010), lt_expr(&x_id, 0.0103)],
         money_expr_x_per_mm(&x_id),
@@ -1217,7 +1216,6 @@ fn underivable_empty_box_keeps_the_region_empty_wording() {
     let x_id = ValueCellId::new("UnderivableEmpty", "x");
 
     let problem = bracketed_money_problem(
-        "UnderivableEmpty",
         vec![length_auto_param(x_id.clone())],
         vec![
             scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
@@ -1269,7 +1267,6 @@ fn steep_objective_over_an_underivable_bracket_still_names_the_margin() {
     let x_id = ValueCellId::new("UnderivableTight", "x");
 
     let problem = bracketed_money_problem(
-        "UnderivableTight",
         vec![length_auto_param(x_id.clone())],
         vec![
             scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
@@ -1307,41 +1304,17 @@ fn steep_objective_over_an_underivable_bracket_still_names_the_margin() {
 /// searches the FLOORED set directly rather than re-checking an originals-witness
 /// against it.
 ///
-/// Two successive cuts got this wrong, and this test plus
-/// `asymmetric_margin_band_does_not_blame_a_satisfiable_margin` are the pair that
-/// pin them:
-///
-///   - inferring "the margin cannot be met" from an originals-witness ALONE was
-///     false whenever that witness also met the floor, which is common because
-///     dropping the objective hands the search `build_centrality_objective` and
-///     so lands on the Chebyshev centre — the point most likely to clear the
-///     floor too.  This fixture (HI = 100mm) is that case.
-///   - re-checking the witness and reading a MISS as class 2 was false across a
-///     whole band, because the centre maximises the RAW minimum slack while the
-///     floor demands asymmetric per-side margins.  That is the band fixture.
-///
-/// MEASURED SWEEP, `2·x > 60mm ∧ 2·x < HI` under `minimize 5 USD × (x / 1mm)`,
-/// against the current two-search emit site.  Synthesised margins are 1.200e-3
-/// on the `2·x > 60mm` side and 4.000e-4 on the upper side, so the floored
-/// window on `2·x` is `[61.2mm, HI − 0.4mm]` and closes at HI = 61.6mm:
-///
-/// | HI      | floored window on `2·x` | non-empty | class |
-/// |---------|-------------------------|-----------|-------|
-/// | 20mm    | — (originals empty too) | —         | 1     |
-/// | 61.0mm  | [61.2mm, 60.6mm]        | no        | 2     |
-/// | 61.4mm  | [61.2mm, 61.0mm]        | no        | 2     |
-/// | 61.6mm  | [61.2mm, 61.2mm]        | yes       | 3     |
-/// | 62.0mm  | [61.2mm, 61.6mm]        | yes       | 3     |
-/// | 62.4mm  | [61.2mm, 62.0mm]        | yes       | 3     |
-/// | 65mm    | [61.2mm, 64.6mm]        | yes       | 3     |
-/// | 100mm   | [61.2mm, 99.6mm]        | yes       | 3     |
-///
-/// The class boundary now coincides EXACTLY with floored-window emptiness — that
-/// is the property `floored_window_emptiness_decides_the_class_across_the_band`
-/// asserts in closed form, and it is what the old re-check could not deliver
-/// (its apparent boundary sat at 62.5mm, an artifact of where the un-floored
-/// centre happened to clear the asymmetric margins).  This fixture is HI = 100mm,
-/// whose floored region is plainly non-empty and contains the witness x = 40mm.
+/// This fixture is the WIDE end of the `2·x > 60mm ∧ 2·x < HI` family
+/// (HI = 100mm), whose floored region is plainly non-empty and contains the
+/// witness x = 40mm.  It pairs with
+/// `asymmetric_margin_band_does_not_blame_a_satisfiable_margin`, which sits just
+/// inside the class boundary; both are single points on the closed-form
+/// prediction swept by
+/// `floored_window_emptiness_decides_the_class_across_the_band`, which owns the
+/// measured margin consts and the transition they put the boundary at.  Those
+/// numbers are not restated here, and the two successive #5714 cuts that read one
+/// set's witness as a verdict on the other are recorded in that task's escalation
+/// history (esc-5714-4) rather than re-narrated at each fixture.
 ///
 /// So NONE of the class-2 remedies apply: nothing is over-constrained and there
 /// is no cost/robustness conflict to trade off, which is why "relax opposing
@@ -1353,7 +1326,6 @@ fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
     let x_id = ValueCellId::new("UnderivableWide", "x");
 
     let problem = bracketed_money_problem(
-        "UnderivableWide",
         vec![length_auto_param(x_id.clone())],
         vec![
             scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
@@ -1408,15 +1380,15 @@ fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
 ///
 /// `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` (HI = 100mm)
 /// and `steep_objective_over_an_underivable_bracket_still_names_the_margin`
-/// (HI = 61mm) jump straight over HI ∈ [61.6mm, 62.4mm), and the first cut of
-/// the re-check was wrong across that whole window: discriminating on whether
-/// the ORIGINALS-witness clears the floor asks the wrong question, because
-/// rung 2 lands on the Chebyshev centre of the UN-floored box while the floor
-/// demands ASYMMETRIC per-side margins.  `collect_floor_terms` reads each
-/// margin off the `Lt`/`Le` bound evaluated AT THE SEED, so here the lower
-/// margin is 1.200e-3 (from the `2·x > 60mm` literal) and the upper only
-/// 4.000e-4 — a 3x asymmetry that is region-independent.  The un-floored centre
-/// therefore sits BELOW a non-empty floored window for a whole band of shapes.
+/// (HI = 61mm) jump straight over the band in which the floored window first
+/// opens, and the first cut of the re-check was wrong across all of it:
+/// discriminating on whether the ORIGINALS-witness clears the floor asks the
+/// wrong question, because rung 2 lands on the Chebyshev centre of the
+/// UN-floored box while the floor demands ASYMMETRIC per-side margins, so that
+/// centre sits BELOW a non-empty floored window for a whole band of shapes.  The
+/// margins themselves are owned by
+/// `floored_window_emptiness_decides_the_class_across_the_band`; the arithmetic
+/// below is this fixture's own.
 ///
 /// MEASURED at HI = 62.0mm: the floored window is `2·x ∈ [61.2mm, 61.6mm]`,
 /// i.e. `x ∈ [30.6mm, 30.8mm]` — NON-EMPTY.  At x = 30.70mm, `2·x = 61.4mm`
@@ -1434,7 +1406,6 @@ fn asymmetric_margin_band_does_not_blame_a_satisfiable_margin() {
     let x_id = ValueCellId::new("UnderivableBand", "x");
 
     let problem = bracketed_money_problem(
-        "UnderivableBand",
         vec![length_auto_param(x_id.clone())],
         vec![
             scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
@@ -1484,10 +1455,11 @@ fn asymmetric_margin_band_does_not_blame_a_satisfiable_margin() {
 /// A non-empty window means some point meets every original AND every floor
 /// term, i.e. class 3 is the only honest verdict; an empty one leaves class 2.
 ///
-/// The band deliberately straddles the transition at HI = 61.6mm (where the
-/// window closes to exactly zero width) in 0.2mm steps, so the four shapes the
-/// review measured as falsely class-2 — HI = 61.6 / 61.8 / 62.0 / 62.2mm — are
-/// all inside it.
+/// The band deliberately straddles the transition — where the window closes to
+/// exactly zero width — in 0.2mm steps, so the four shapes the review measured
+/// as falsely class-2 are all inside it.  The sample that lands ON the
+/// transition is SKIPPED by the zero-width guard in the loop, which explains
+/// itself there.
 #[test]
 fn floored_window_emptiness_decides_the_class_across_the_band() {
     // Margins synthesised by `collect_floor_terms`, each 2% of that term's own
@@ -1501,14 +1473,32 @@ fn floored_window_emptiness_decides_the_class_across_the_band() {
 
     for hi_mm in [
         60.5, 61.0, 61.2, 61.4, // floored window empty  → class 2
-        61.6, 61.8, 62.0, 62.2, 62.4, // the review's false window → class 3
+        61.6, // lands ON the transition → skipped by the zero-width guard
+        61.8, 62.0, 62.2, 62.4, // the review's false window → class 3
         62.5, 63.0, 65.0, 100.0, // already-covered wide end → class 3
     ] {
         let hi_m = hi_mm / 1000.0;
+
+        // The floored window on `2·x` is `[60mm + LOWER_MARGIN_M,
+        // HI − UPPER_MARGIN_M]`, so its WIDTH decides the class in closed form.
+        // A sample whose width lands within float noise of zero has NO honest
+        // expected class: at HI = 61.6mm the two sides cancel to +6.94e-18, so
+        // the prediction is "satisfiable" by a 1-ulp accident and the window it
+        // predicts is a single point a Nelder-Mead centrality solve would have to
+        // hit to `FEASIBILITY_THRESHOLD`.  Two independent knife edges that agree
+        // only by coincidence, and either one flips if `REL_MARGIN`, the margin
+        // rounding, or solver convergence moves — a failure that would read as a
+        // classification regression while being pure float noise.  So skip it and
+        // let 61.4/61.8 pin the transition from ±2e-4 away, where the samples are
+        // robust.
+        let width = (hi_m - UPPER_MARGIN_M) - (0.060 + LOWER_MARGIN_M);
+        if width.abs() < 1e-9 {
+            continue;
+        }
+
         let x_id = ValueCellId::new("SweptBand", "x");
 
         let problem = bracketed_money_problem(
-            "SweptBand",
             vec![length_auto_param(x_id.clone())],
             vec![
                 scaled_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
@@ -1518,7 +1508,7 @@ fn floored_window_emptiness_decides_the_class_across_the_band() {
         );
 
         let message = floor_infeasible_message(&problem);
-        let expect_satisfiable = (hi_m - UPPER_MARGIN_M) >= (0.060 + LOWER_MARGIN_M);
+        let expect_satisfiable = width > 0.0;
 
         if expect_satisfiable {
             assert!(
