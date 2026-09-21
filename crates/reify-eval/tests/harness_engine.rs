@@ -51,22 +51,6 @@ mod edit_param_cell_commit_migration;
 mod engine_eval_commit_migration;
 #[path = "harness_engine/joint_drive_cluster_formation.rs"]
 mod joint_drive_cluster_formation;
-#[path = "harness_engine/m8_3_stdlib_integration.rs"]
-mod m8_3_stdlib_integration;
-#[path = "harness_engine/m8_4_stdlib_integration.rs"]
-mod m8_4_stdlib_integration;
-#[path = "harness_engine/m8_m11_regression_checkpoint.rs"]
-mod m8_m11_regression_checkpoint;
-#[path = "harness_engine/m8_stdlib_integration.rs"]
-mod m8_stdlib_integration;
-#[path = "harness_engine/m9_combined.rs"]
-mod m9_combined;
-#[path = "harness_engine/m9_constraint_def.rs"]
-mod m9_constraint_def;
-#[path = "harness_engine/m9_integration.rs"]
-mod m9_integration;
-#[path = "harness_engine/m9_trait_conformance.rs"]
-mod m9_trait_conformance;
 #[path = "harness_engine/reset_per_build_state_classification.rs"]
 mod reset_per_build_state_classification;
 // Task #5196's capstone acceptance e2e lands here for the same reason #5056's

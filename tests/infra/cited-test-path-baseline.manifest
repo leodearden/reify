@@ -92,14 +92,14 @@ crates/reify-eval/tests/harness_auto_resolution/auto_backtracking_e2e.rs :: crat
 crates/reify-eval/tests/harness_auto_resolution/auto_type_param_determinism_tests.rs :: crates/reify-compiler/tests/printer_print_envelope_example_tests.rs
 crates/reify-eval/tests/harness_auto_resolution/auto_type_param_determinism_tests.rs :: crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs
 crates/reify-eval/tests/harness_engine/fn_body_separator_value_faithfulness.rs :: crates/reify-compiler/tests/examples_smoke.rs
-crates/reify-eval/tests/harness_engine/m8_3_stdlib_integration.rs :: crates/reify-compiler/tests/examples_smoke.rs
-crates/reify-eval/tests/harness_engine/m8_3_stdlib_integration.rs :: crates/reify-compiler/tests/tolerancing_tests.rs
-crates/reify-eval/tests/harness_engine/m8_4_stdlib_integration.rs :: crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-eval/tests/harness_fea_solver_e2e/jacobian_column_member_access.rs :: crates/reify-compiler/tests/buckling_stdlib_compile.rs
 crates/reify-eval/tests/harness_fea_solver_e2e/multi_aspect_objective_example_e2e.rs :: crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_case_stdlib_smoke.rs :: crates/reify-eval/tests/tolerance_wiring_e2e.rs
 crates/reify-eval/tests/harness_fea_solver_e2e/tensegrity_force_density_gauge.rs :: crates/reify-compiler/tests/tensegrity_stdlib_tests.rs
 crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs :: crates/reify-compiler/tests/builtin_arg_signature_tests.rs
+crates/reify-eval/tests/harness_milestone_integration/m8_3_stdlib_integration.rs :: crates/reify-compiler/tests/examples_smoke.rs
+crates/reify-eval/tests/harness_milestone_integration/m8_3_stdlib_integration.rs :: crates/reify-compiler/tests/tolerancing_tests.rs
+crates/reify-eval/tests/harness_milestone_integration/m8_4_stdlib_integration.rs :: crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-eval/tests/harness_process_dfm/process_dfm_e2e.rs :: crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-eval/tests/harness_process_dfm/process_dfm_eval.rs :: crates/reify-compiler/tests/process_stdlib_compile.rs
 crates/reify-eval/tests/harness_process_dfm/process_dfm_metrology_example.rs :: crates/reify-compiler/tests/examples_smoke.rs
