@@ -256,7 +256,7 @@ pub fn refine_volume_with_size_field(
     // All three are written unconditionally and independently of
     // `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS`: each is a REQUIREMENT of
     // the per-vertex size field below, so this function states it rather than
-    // inherit it from a default that is gmsh's to change. See "no test can
+    // inheriting it from a default that is gmsh's to change. See "no test can
     // tell" below for what that costs.
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;

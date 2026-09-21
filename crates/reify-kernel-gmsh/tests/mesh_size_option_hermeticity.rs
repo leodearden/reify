@@ -470,10 +470,10 @@ fn mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held(
     let from_defaults = mesh_to_volume_default_tet_count();
     assert!(from_defaults > 0, "mesh_to_volume must produce tets");
 
-    // Every size option away from its default: a fine shut clamp (0.05, far
-    // finer than the cube's extent, so a leak into the mesher is loud rather
-    // than marginal) plus the three size-SOURCE options flipped. Values from
-    // the shared `clamp_probe::SIZE_OPTION_POISONS`, which panics on an option
+    // Every size option away from its default: a shut clamp far finer than
+    // the cube's extent, so a leak into the mesher is loud rather than
+    // marginal, plus the three size-SOURCE options flipped. Values from the
+    // shared `clamp_probe::SIZE_OPTION_POISONS`, which panics on an option
     // it has no poison for rather than deriving one — a derived poison stops
     // being a poison the moment the default it is derived from moves, and the
     // row then goes unpoisoned with the suite still green.
