@@ -37,10 +37,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/test_helpers.sh"
 
 # The SUT-AGNOSTIC half of the invocation-triple guard, shared with δ's suite
-# (tests/infra/test_with_jcodemunch_serve.sh): the lib-value extractors and the
-# per-consumer structural/refusal guards. It defines JC_PIN_LIB_FILE. Each suite
-# keeps its OWN argv harness, since reading a CONSTRUCTED --dry-run argv means
-# running that suite's own SUT.
+# (tests/infra/test_with_jcodemunch_serve.sh): the lib-value extractors, the
+# positional argv parse, the value comparator, the per-consumer
+# structural/refusal guards and the map-registration oracle. It defines
+# JC_PIN_LIB_FILE. Each suite keeps its OWN argv PRODUCTION, since constructing
+# a --dry-run argv means running that suite's own SUT; everything downstream of
+# that string has no such tie and lives in the shared lib.
 [ -f "$SCRIPT_DIR/jcodemunch_pin_guard_lib.sh" ] || { echo "ERROR: jcodemunch_pin_guard_lib.sh not found at $SCRIPT_DIR/jcodemunch_pin_guard_lib.sh"; exit 1; }
 # shellcheck source=tests/infra/jcodemunch_pin_guard_lib.sh
 source "$SCRIPT_DIR/jcodemunch_pin_guard_lib.sh"
@@ -572,15 +574,10 @@ argv_word_absent() {
 # a call between the sibling suites.
 #
 # β's interpreter comes out of the CONSTRUCTED argv POSITIONALLY — the token
-# FOLLOWING `--python` — the same extractor shape the sibling suite uses for δ
-# (tests/infra/test_with_jcodemunch_serve.sh's jc_python_delta). Read through a
-# herestring, never a pipeline: an awk with an `exit` on the read end of a pipe
-# is an early-closing consumer, which is what SIGPIPEs the producer under
-# `set -euo pipefail`.
-jc_python_beta_argv() {
-    local argv; argv="$(dry_run_argv "$1")"
-    awk '{ for (i = 1; i <= NF; i++) if ($i == "--python") { print $(i + 1); exit } }' <<< "$argv"
-}
+# FOLLOWING `--python`. The PARSE is jc_argv_python from the shared guard lib,
+# byte-identical to what δ's jc_python_delta wraps; only the argv PRODUCTION
+# stays here, because producing it means running THIS suite's own SUT.
+jc_python_beta_argv() { jc_argv_python "$(dry_run_argv "$1")"; }
 
 # b9_argv_agrees_with_lib <root> — β's CONSTRUCTED argv carries exactly the
 # requirement string the lib defines. Read out of the argv rather than out of
@@ -602,23 +599,23 @@ b9_argv_agrees_with_lib() {
 # bare `--python 3.12` literal passes the whole suite — measured, and exactly
 # the serve-vs-indexer interpreter divergence #6548 exists to close.
 #
-# Compared as WHOLE TOKENS, never as a substring: `argv_has` would report
-# agreement between a lib value of "3.1" and an argv carrying "3.13".
+# Compared as WHOLE TOKENS by jc_guard_value_agrees, never as a substring:
+# `argv_has` would report agreement between a lib value of "3.1" and an argv
+# carrying "3.13". That comparator is the shared one δ's suite also uses, and it
+# is what refuses an empty value on either side — so a reshaped literal fails
+# loudly here rather than comparing "" with "" and reporting agreement.
 b9_python_agrees_with_lib() {
     local root="$1" want got
     want="$(jc_lib_python)" || true
-    require_nonempty "JC_PYTHON defined by $JC_PIN_LIB_FILE" "$want" || return 1
     got="$(jc_python_beta_argv "$root")" || true
-    require_nonempty "the interpreter following --python in β's constructed argv" "$got" || return 1
-    [ "$want" = "$got" ] && return 0
-    printf '%s\n' \
-        "jcodemunch INTERPRETER DRIFT: the lib pins [$want] but β's argv spawns [$got]." \
-        "  $JC_INDEX" \
-        "  A serve and an indexer running the SAME pinned wheel under DIFFERENT interpreters is a" \
-        "  hand-maintained drift surface. scripts/lib_jcodemunch_pin.sh is the ONE definition site;" \
-        "  β must reach it through \$JC_PYTHON, never re-litigate the interpreter at the call site." \
-        "  argv: $(dry_run_argv "$root")" >&2
-    return 1
+    jc_guard_value_agrees "jcodemunch INTERPRETER" \
+        "the lib's JC_PYTHON ($JC_PIN_LIB_FILE)" "$want" \
+        "β's constructed argv" "$got" \
+        "$JC_INDEX" \
+        "A serve and an indexer running the SAME pinned wheel under DIFFERENT interpreters is a" \
+        "hand-maintained drift surface. scripts/lib_jcodemunch_pin.sh is the ONE definition site;" \
+        "β must reach it through \$JC_PYTHON, never re-litigate the interpreter at the call site." \
+        "argv: $(dry_run_argv "$root")"
 }
 
 # THE STRUCTURAL HALF, and the load-bearing one. Every copy of the triple
@@ -633,6 +630,15 @@ b9_python_agrees_with_lib() {
 # change whose whole subject is single-definition site, is the least it can be.
 b9_beta_defines_no_triple() { jc_guard_defines_no_triple "$JC_INDEX"; }
 b9_beta_sources_the_lib()   { jc_guard_sources_the_lib "$JC_INDEX"; }
+
+# The leg neither of the two above can reach: β may source the lib and then
+# ignore it, and b9_argv_agrees_with_lib / b9_python_agrees_with_lib only bite
+# when a re-inlined literal DIFFERS from today's lib value. MEASURED: rewriting
+# INDEXER_CMD to `uvx --python 3.13 --from jcodemunch-mcp==1.108.54
+# jcodemunch-mcp` — β reading the lib nowhere at all — left this suite at 54
+# passed, 0 failed. jc_guard_argv_uses_the_lib is the shared counterpart of δ's
+# suite's b2_alpha_consts_reach_the_argv, run here against β's own script.
+b9_beta_argv_uses_the_lib() { jc_guard_argv_uses_the_lib "$JC_INDEX"; }
 
 # The REFUSAL, executed rather than grepped: a lib-less copy of β must exit
 # non-zero, print nothing on stdout, and name the missing file on stderr. The
@@ -1255,6 +1261,8 @@ assert "β sources scripts/lib_jcodemunch_pin.sh" \
     b9_beta_sources_the_lib
 assert "β with no lib beside it refuses: non-zero, silent on stdout, names the file on stderr" \
     b9_beta_refuses_without_lib
+assert "β's argv splices \$JC_PIN/\$JC_PYTHON/\$JC_IDENTITY_ENV, never re-inlined literals" \
+    b9_beta_argv_uses_the_lib
 
 # -- Test 11: run summary and exit propagation -------------------------------
 # Driven by a stub indexer through the REIFY_JC_INDEXER_CMD seam, so the two

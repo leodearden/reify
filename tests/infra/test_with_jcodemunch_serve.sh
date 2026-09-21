@@ -26,9 +26,11 @@
 # `capstone-must-not-become-gate-resident` resolution applies to ε, and the same
 # split β's tests/infra/test_jcodemunch_index_reify.sh already makes.
 #
-# COST: 130 s wall MEASURED at 104 assertions (4.6 s user, 8.5 s sys — almost
-# all of it sleeping rather than burning CPU), against ~135 s quiet / ~185 s
-# under a loaded pool when this suite carried 87. The sleeping is the readiness
+# COST: 134 s wall MEASURED at 122 assertions (4.7 s user, 15.5 s sys — almost
+# all of it sleeping rather than burning CPU), against 130 s at 104 and ~135 s
+# quiet / ~185 s under a loaded pool when this suite carried 87. The wall clock
+# has not moved with the count because everything added since is a file read
+# costing milliseconds. The sleeping is the readiness
 # poll interval, the never-ready deadlines and the deliberate-leak runs'
 # teardown free-waits, which by construction always run to their cap.
 # Measured against siblings in the same bucket: test_warm_lane_audit.sh 143 s,
@@ -59,10 +61,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/test_helpers.sh"
 
 # The SUT-AGNOSTIC half of the invocation-triple guard, shared with β's suite
-# (tests/infra/test_jcodemunch_index_reify.sh): the lib-value extractors and the
-# per-consumer structural/refusal guards. It defines JC_PIN_LIB_FILE. Each suite
-# keeps its OWN argv harness, since reading a CONSTRUCTED --dry-run argv means
-# running that suite's own SUT.
+# (tests/infra/test_jcodemunch_index_reify.sh): the lib-value extractors, the
+# positional argv parse, the value comparator, the per-consumer
+# structural/refusal guards and the map-registration oracle. It defines
+# JC_PIN_LIB_FILE. Each suite keeps its OWN argv PRODUCTION, since constructing
+# a --dry-run argv means running that suite's own SUT; everything downstream of
+# that string has no such tie and lives in the shared lib.
 [ -f "$SCRIPT_DIR/jcodemunch_pin_guard_lib.sh" ] || { echo "ERROR: jcodemunch_pin_guard_lib.sh not found at $SCRIPT_DIR/jcodemunch_pin_guard_lib.sh"; exit 1; }
 # shellcheck source=tests/infra/jcodemunch_pin_guard_lib.sh
 source "$SCRIPT_DIR/jcodemunch_pin_guard_lib.sh"
@@ -514,48 +518,50 @@ b2_lib_identity_env_is_a_two_element_array() {
     return 0
 }
 
-# MAP-WIRING: the lib must be REGISTERED as a verify-pipeline artifact, so that
-# an edit to IT selects these guard suites. Modelled on the self-wiring
-# assertions in tests/infra/test_verify_pipeline_guard.sh:1374-1401
-# (_map_selects_this_test) and test_govtest_slice_reaper.sh's Block K, but asked
-# through the guard's own `is-registered` oracle rather than by re-implementing
-# the map parse here — a second parser is a second thing to drift.
+# MAP-WIRING: every file this suite makes load-bearing must be REGISTERED as a
+# verify-pipeline artifact, so that an edit to IT selects the guard that checks
+# it. Modelled on the self-wiring assertions in
+# tests/infra/test_verify_pipeline_guard.sh:1374-1401 (_map_selects_this_test)
+# and test_govtest_slice_reaper.sh's Block K, but asked through the guard's own
+# `is-registered` oracle (jc_guard_is_registered, shared) rather than by
+# re-implementing the map parse here — a second parser is a second thing to
+# drift.
 #
 # WHY THIS IS NOT DECORATIVE: column 1 of scripts/verify-pipeline-infra-tests.txt
 # is matched by EXACT STRING EQUALITY, never by glob or directory prefix. Without
-# rows of its own, an edit touching ONLY the lib selects NEITHER guard suite —
-# and the lib is precisely the file a pin bump touches. MEASURED against the
-# guard's own oracle, and narrow on purpose: scripts/lib_portable.sh is
-# registered nowhere and takes the fast path, so it suffers exactly that gap.
-# (lib_proc_reaper.sh and lib_clock_stop.sh do NOT — is-registered exits 0 for
-# both, the first auto-derived from verify.sh's `source` line, the second by an
-# explicit row in scripts/verify-pipeline-paths.txt. Checked before citing:
-# a confidently-wrong pointer at a well-covered file invites a "fix" to a
-# non-gap.)
+# rows of its own, an edit touching ONLY that file selects NEITHER guard suite.
+# MEASURED against the guard's own oracle, and narrow on purpose:
+# scripts/lib_portable.sh is registered nowhere and takes the fast path, so it
+# suffers exactly that gap. (lib_proc_reaper.sh and lib_clock_stop.sh do NOT —
+# is-registered exits 0 for both, the first auto-derived from verify.sh's
+# `source` line, the second by an explicit row in
+# scripts/verify-pipeline-paths.txt. Checked before citing: a confidently-wrong
+# pointer at a well-covered file invites a "fix" to a non-gap.)
 #
-# Exit 2 is distinguished from exit 1 deliberately: the former is the guard's
-# arity refusal, so a CLI change would otherwise read here as "not registered".
+# TWO PATHS ARE ASSERTED, NOT THREE. The lib is the file a pin bump touches; α
+# is the consumer that cannot source it and mirrors the two values in consts,
+# and its row is its ONLY registration, so deleting either row is otherwise
+# silent. The third file this change makes load-bearing —
+# tests/infra/jcodemunch_pin_guard_lib.sh, whose edit changes what BOTH suites
+# assert — deliberately takes NO assertion: it is a tests/infra path, so the
+# guard's open-ended infra glob clause answers is-registered 0 for it no matter
+# what the map says (MEASURED: tests/infra/test_helpers.sh has no row anywhere
+# and still exits 0), and that clause routes it to the FULL gate. An assertion
+# there would pass with its rows deleted — the PASS-shaped evidence PRD §2.4
+# names as the disease.
 b2_lib_is_registered() {
-    local guard="$REPO_ROOT/scripts/verify-pipeline-guard.sh" out rc=0
-    if [ ! -f "$guard" ]; then
-        printf '%s\n' "scripts/verify-pipeline-guard.sh not found at $guard"
-        return 1
-    fi
-    out="$(bash "$guard" is-registered scripts/lib_jcodemunch_pin.sh 2>&1)" || rc=$?
-    case "$rc" in
-        0) return 0 ;;
-        1) printf '%s\n' \
-               "scripts/lib_jcodemunch_pin.sh is NOT a registered verify-pipeline artifact:" \
-               "  $out" \
-               "  Add rows to scripts/verify-pipeline-infra-tests.txt mapping the lib to BOTH" \
-               "  guard suites — its column-1 match is exact string equality, so a lib-only edit" \
-               "  otherwise selects neither, leaving the one file a pin bump touches unguarded."
-           return 1 ;;
-        *) printf '%s\n' \
-               "is-registered exited $rc (expected 0 or 1) — its CLI contract may have changed:" \
-               "  $out"
-           return 1 ;;
-    esac
+    jc_guard_is_registered scripts/lib_jcodemunch_pin.sh \
+        "Add rows to scripts/verify-pipeline-infra-tests.txt mapping the lib to BOTH" \
+        "guard suites — its column-1 match is exact string equality, so a lib-only edit" \
+        "otherwise selects neither, leaving the one file a pin bump touches unguarded."
+}
+
+b2_alpha_is_registered() {
+    jc_guard_is_registered crates/reify-audit/tests/jcodemunch_session_live.rs \
+        "Restore α's row in scripts/verify-pipeline-infra-tests.txt, mapping it to this suite." \
+        "α's live test is #[ignore]d and its own crate's gate never reads the two consts, so" \
+        "that row is the ONLY thing that selects a guard for an α-only edit — reverting the" \
+        "interpreter, or renaming either const so both extractors return empty."
 }
 
 # Sourcing TWICE must be a no-op — the repo's `_REIFY_LIB_*_SH_SOURCED` guard
@@ -623,25 +629,24 @@ jc_pin_alpha() {
     awk '/const JCODEMUNCH_PIN/ { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }' "$JC_PIN_ALPHA_FILE"
 }
 
-# b2_pin_agrees <label> <file> <extractor-fn>
+# b2_pin_agrees <label> <file> <extractor-fn>. The comparison itself —
+# emptiness refusal, whole-string compare, uniform DRIFT headline — is
+# jc_guard_value_agrees from the shared guard lib, so this and β's interpreter
+# check are one comparator rather than two near-identical copies of one.
 b2_pin_agrees() {
     local label="$1" file="$2" fn="$3" mine theirs
     mine="$(jc_pin_delta)"
-    require_nonempty "the pin in δ's constructed argv" "$mine" || return 1
     if [ ! -f "$file" ]; then
         printf '%s\n' "$label's pin site is GONE: $file does not exist." \
             "  The four-site inventory in scripts/with-jcodemunch-serve.sh is stale — update it and this guard together."
         return 1
     fi
     theirs="$("$fn")"
-    require_nonempty "the pin extracted from $label ($file)" "$theirs" || return 1
-    [ "$mine" = "$theirs" ] && return 0
-    printf '%s\n' "jcodemunch pin DRIFT: δ constructs [$mine] but $label pins [$theirs]." \
-        "  $file" \
-        "  A serve on a different wheel than the indexer that wrote the index is SILENT at the call site." \
-        "  Bump scripts/lib_jcodemunch_pin.sh — the ONE definition site — plus α's const and the" \
-        "  two literal guard needles its PIN-BUMP CHECKLIST names."
-    return 1
+    jc_guard_value_agrees "jcodemunch pin" \
+        "δ's constructed argv" "$mine" "$label ($file)" "$theirs" \
+        "A serve on a different wheel than the indexer that wrote the index is SILENT at the call site." \
+        "Bump scripts/lib_jcodemunch_pin.sh — the ONE definition site — plus α's const and the" \
+        "two literal guard needles its PIN-BUMP CHECKLIST names."
 }
 
 # -- SINGLE DEFINITION: δ MUST NOT CARRY ITS OWN COPY OF THE TRIPLE ----------
@@ -661,6 +666,13 @@ b2_pin_agrees() {
 # reaped by cleanup().
 b2_delta_defines_no_triple() { jc_guard_defines_no_triple "$JC_SERVE"; }
 b2_delta_sources_the_lib()   { jc_guard_sources_the_lib "$JC_SERVE"; }
+
+# The third structural leg, and the one the two above cannot reach: a script may
+# source the lib and then ignore it. jc_guard_argv_uses_the_lib is the δ/β
+# counterpart of b2_alpha_consts_reach_the_argv below — the three values must be
+# SPLICED on a non-comment line, and no pin or interpreter LITERAL may appear on
+# one. Shared, so β runs the identical check against its own script.
+b2_delta_argv_uses_the_lib() { jc_guard_argv_uses_the_lib "$JC_SERVE"; }
 
 # The REFUSAL, executed rather than grepped: a lib-less copy of δ must exit
 # non-zero, print nothing on stdout, and name the missing file on stderr. The
@@ -688,15 +700,13 @@ b2_delta_refuses_without_lib() {
 # interpreter and not the other, which is exactly how the unpinned form fails on
 # this host — and nothing at the call site reports the divergence.
 #
-# Same extractor discipline as the pin above: ONE awk with an `exit` and no
-# pipeline, emitting nothing when it does not match, with the comparator
-# treating "nothing" as FAILURE rather than as agreement.
 # δ's value comes out of the CONSTRUCTED argv, positionally — the token FOLLOWING
 # `--python` — so what is compared is the interpreter that would really be
-# spawned, including the sourcing plumbing that delivers it.
-jc_python_delta() {
-    awk '{ for (i = 1; i <= NF; i++) if ($i == "--python") { print $(i + 1); exit } }' <<< "$DRY_DEFAULT"
-}
+# spawned, including the sourcing plumbing that delivers it. The positional read
+# itself is jc_argv_python in the shared guard lib: β wants the identical parse
+# over its own argv, and the argv PRODUCTION is the only part that has to stay
+# per-suite.
+jc_python_delta() { jc_argv_python "$DRY_DEFAULT"; }
 
 # α mirrors the value in a NAMED const rather than a bare literal inside its
 # argv array, so this extractor is the same shape as jc_pin_alpha above. Keying
@@ -708,44 +718,48 @@ jc_python_alpha() {
 }
 
 # b2_python_agrees <label> <file> <extractor-fn>. The LIB is the baseline, since
-# it is the definition site. An EMPTY extraction is a FAILURE and never
-# agreement: a renamed const or a reshaped literal must fail loudly rather than
-# compare "" against "" and report that every site agrees.
+# it is the definition site. Emptiness on either side is refused by
+# jc_guard_value_agrees rather than here, which is the point of sharing it: a
+# renamed const or a reshaped literal fails loudly instead of comparing "" with
+# "" and reporting that every site agrees.
 b2_python_agrees() {
     local label="$1" file="$2" fn="$3" mine theirs
     mine="$(jc_lib_python)"
-    require_nonempty "the interpreter the lib defines (JC_PYTHON)" "$mine" || return 1
     if [ ! -f "$file" ]; then
         printf '%s\n' "$label's interpreter site is GONE: $file does not exist." \
             "  The consumer inventory in scripts/lib_jcodemunch_pin.sh is stale — update it and this guard together."
         return 1
     fi
     theirs="$("$fn")"
-    require_nonempty "the interpreter extracted from $label ($file)" "$theirs" || return 1
-    [ "$mine" = "$theirs" ] && return 0
-    printf '%s\n' "jcodemunch INTERPRETER DRIFT: the lib pins [$mine] but $label uses [$theirs]." \
-        "  $file" \
-        "  A serve and an indexer running the SAME pinned wheel under DIFFERENT interpreters is a" \
-        "  hand-maintained drift surface: resolution can succeed for one and fail for the other" \
-        "  (a transitive dep may publish a wheel for only one), and nothing at the call site says so." \
-        "  scripts/lib_jcodemunch_pin.sh is the ONE definition site; α mirrors it in a const only" \
-        "  because a Rust test cannot source a shell lib."
-    return 1
+    jc_guard_value_agrees "jcodemunch INTERPRETER" \
+        "the lib (JC_PYTHON)" "$mine" "$label ($file)" "$theirs" \
+        "A serve and an indexer running the SAME pinned wheel under DIFFERENT interpreters is a" \
+        "hand-maintained drift surface: resolution can succeed for one and fail for the other" \
+        "(a transitive dep may publish a wheel for only one), and nothing at the call site says so." \
+        "scripts/lib_jcodemunch_pin.sh is the ONE definition site; α mirrors it in a const only" \
+        "because a Rust test cannot source a shell lib."
 }
 
 # -- α's CONSTS MUST REACH α's ARGV -----------------------------------------
 #
 # jc_pin_alpha and jc_python_alpha read α's two consts BY NAME, which proves the
-# CONSTS agree with the lib and nothing more. δ and β are cross-checked against
-# a CONSTRUCTED --dry-run argv, so for them the const-to-argv plumbing is
-# checked too; α's live test is `#[ignore]`d, so nothing at gate time ever
-# spawns its command and the same distinction has to be drawn statically. β's
-# suite names this the load-bearing distinction and closes it for itself
-# (b9_python_agrees_with_lib: an INDEXER_CMD rewritten to a bare `--python 3.12`
-# literal passes the whole suite — measured). Without the two assertions below,
-# re-inlining a bare "3.12" at α's `--python` argument while leaving the const
-# at 3.13 passes b2_python_agrees, b2_pin_agrees and b2_delta_alpha_cites_resolve
-# alike, leaving the drift this task exists to close reachable in α alone.
+# CONSTS agree with the lib and nothing more. α's live test is `#[ignore]`d, so
+# nothing at gate time ever spawns its command and the const-to-argv plumbing
+# has to be drawn statically.
+#
+# δ AND β GET THE SAME LEG, NOT A WEAKER ONE, and this block used to claim
+# otherwise. Their argv-agreement assertions do read a CONSTRUCTED --dry-run
+# argv, but that only bites when a re-inlined literal DIFFERS from today's lib
+# value: re-inlining today's value left both suites fully green (MEASURED — β
+# stayed at 54 passed, 0 failed with its INDEXER_CMD reading the lib nowhere).
+# jc_guard_argv_uses_the_lib in the shared guard lib is their symmetric
+# counterpart of the two assertions below, asserted for δ by
+# b2_delta_argv_uses_the_lib and for β by b9_beta_argv_uses_the_lib.
+#
+# Without the two below, re-inlining a bare "3.12" at α's `--python` argument
+# while leaving the const at 3.13 passes b2_python_agrees, b2_pin_agrees and
+# b2_delta_alpha_cites_resolve alike, leaving the drift this task exists to
+# close reachable in α alone.
 #
 # α's use sites are greppable even though its argv is not runnable, so these are
 # referential-integrity checks in the same style as JC_ALPHA_CITES below:
@@ -783,16 +797,35 @@ b2_alpha_consts_reach_the_argv() {
 # must carry exactly ONE quoted interpreter literal, the const's own
 # initialiser. Any second one is a hardcoded interpreter, and it is a second
 # definition site by another name.
+#
+# THE MAJOR IS DERIVED FROM THE LIB, never hardcoded. A JC_PYTHON bump to a
+# non-3 major would otherwise leave α perfectly consistent with the lib while
+# this counter reported 0 and red with "α carries 0 quoted interpreter
+# literals" — a confident failure pointing at a non-problem, and one the
+# PIN-BUMP CHECKLIST would have no reason to warn about. b2_lib_python_shape
+# already accepts any <major>.<minor>, so this is the one place that disagreed.
+#
+# `[.]` rather than an escaped dot: awk processes escape sequences in a -v
+# value, where `\.` is undefined and gawk silently flattens it to a bare `.`
+# that matches ANY character. A bracket expression needs no backslash at all.
+#
+# Counted per OCCURRENCE, not per LINE: two literals on one line are two
+# hardcoded interpreters, and the previous per-line increment called that 1.
 b2_alpha_has_one_interpreter_literal() {
-    local n
+    local want pat n
     if [ ! -f "$JC_PIN_ALPHA_FILE" ]; then
         printf '%s\n' "α is GONE: $JC_PIN_ALPHA_FILE does not exist."
         return 1
     fi
-    n="$(awk '!/^[[:space:]]*\/\// && /"3\.[0-9]+"/ { c++ } END { print c + 0 }' "$JC_PIN_ALPHA_FILE")"
+    want="$(jc_lib_python)"
+    require_nonempty "the interpreter the lib defines (JC_PYTHON)" "$want" || return 1
+    pat="\"${want%%.*}[.][0-9]+\""
+    n="$(awk -v pat="$pat" \
+        '!/^[[:space:]]*\/\// { s = $0; while (match(s, pat)) { c++; s = substr(s, RSTART + RLENGTH) } }
+         END { print c + 0 }' "$JC_PIN_ALPHA_FILE")"
     [ "$n" = "1" ] && return 0
-    printf '%s\n' "α carries $n quoted interpreter literals; exactly 1 is expected (const JCODEMUNCH_PYTHON):" \
-        "$(grep -nE '"3\.[0-9]+"' "$JC_PIN_ALPHA_FILE" || true)" \
+    printf '%s\n' "α carries $n quoted interpreter literals matching $pat; exactly 1 is expected (const JCODEMUNCH_PYTHON):" \
+        "$(grep -nE -- "$pat" "$JC_PIN_ALPHA_FILE" || true)" \
         "  scripts/lib_jcodemunch_pin.sh is the ONE definition site; α mirrors it in that const" \
         "  and must reference the const everywhere else."
     return 1
@@ -917,6 +950,8 @@ assert "sourcing the lib twice is idempotent (the _REIFY_LIB_*_SH_SOURCED guard)
     b2_lib_double_source_is_idempotent
 assert "MAP-WIRING: the lib is a registered verify-pipeline artifact (is-registered)" \
     b2_lib_is_registered
+assert "MAP-WIRING: α is a registered verify-pipeline artifact (is-registered)" \
+    b2_alpha_is_registered
 assert "δ's constructed argv agrees with the lib (scripts/lib_jcodemunch_pin.sh)" \
     b2_pin_agrees "the lib" "$JC_PIN_LIB_FILE" jc_lib_pin_version
 assert "δ defines none of JC_PIN/JC_PYTHON/JC_IDENTITY_ENV itself (single definition site)" \
@@ -925,6 +960,8 @@ assert "δ sources scripts/lib_jcodemunch_pin.sh" \
     b2_delta_sources_the_lib
 assert "δ with no lib beside it refuses: non-zero, silent on stdout, names the file on stderr" \
     b2_delta_refuses_without_lib
+assert "δ's argv splices \$JC_PIN/\$JC_PYTHON/\$JC_IDENTITY_ENV, never re-inlined literals" \
+    b2_delta_argv_uses_the_lib
 assert "δ's pin agrees with α's (crates/reify-audit/tests/jcodemunch_session_live.rs)" \
     b2_pin_agrees "α" "$JC_PIN_ALPHA_FILE" jc_pin_alpha
 assert "δ's constructed argv uses the interpreter the lib pins (JC_PYTHON)" \

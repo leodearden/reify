@@ -27,7 +27,8 @@
 #
 # Consolidated here ONCE, from what were near-duplicate copies in β's and δ's
 # headers. A bump touches this file, α's two consts, and the two literal guard
-# needles named in step 6 — and must work through the following:
+# needles — step 6 names all four assertions that red, and which of them tells
+# you which edit is still outstanding. Work through the following:
 #
 # 1. THE IDENTITY LEVER IS DEPRECATED UPSTREAM. `JCODEMUNCH_GIT_ROOT_IDENTITY`
 #    is accepted at the pinned 1.108.54, but the package logs "will be removed
@@ -65,15 +66,29 @@
 #    does not run at all" means on this host, and for the two standing
 #    measurements (`serve` and `watch`) that authorise the current value.
 #
-# 6. BUMP THE TWO LITERAL GUARD NEEDLES in the same change:
+# 6. FOUR ASSERTIONS RED ON A BUMP OF THIS FILE ALONE, in two pairs that mean
+#    different things. Read which pair failed before editing anything.
+#
+#    THE TWO LITERAL NEEDLES — bump them in the same change:
 #      * tests/infra/test_with_jcodemunch_serve.sh  — b2_pin_and_shape;
 #      * tests/infra/test_jcodemunch_index_reify.sh — `argv pins jcodemunch-mcp==…`.
-#    They keep the literal value ON PURPOSE. Every other assertion reads its
-#    expectation from THIS file and compares it against an argv DERIVED from
-#    this file — comparing the lib to itself, so tautologically green when the
-#    value here moves. These two are the only assertions a bump reds, which is
-#    the whole point of them, and the one step a bumper who only greps for the
-#    old value will still get right.
+#    They keep the literal value ON PURPOSE. δ's and β's argv are DERIVED from
+#    this file, so an assertion that read its expectation from here would be
+#    comparing the lib to itself — tautologically green when the value here
+#    moves. These two are the independent oracle, and the one step a bumper who
+#    only greps for the old value will still get right.
+#
+#    THE TWO α MIRRORS — they are the signal to touch α, not a nuisance:
+#      * b2_pin_agrees "α" and b2_python_agrees "α", both in
+#        tests/infra/test_with_jcodemunch_serve.sh.
+#    α (crates/reify-audit/tests/jcodemunch_session_live.rs) is a Rust test and
+#    CANNOT source this file, so it mirrors the two values in
+#    `const JCODEMUNCH_PIN` / `const JCODEMUNCH_PYTHON`. Those consts are not
+#    derived from here, so a lib-only bump reds them. Their failure means
+#    exactly one thing: update α's two consts to match.
+#
+#    Everything else in both suites compares this file against an argv derived
+#    from it, or checks structure rather than value, and stays green.
 #
 # All of the above was re-verified first-hand against the PINNED 1.108.54 wheel,
 # not a neighbouring release.
