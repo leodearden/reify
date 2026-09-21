@@ -78,9 +78,13 @@
 //!   unresolvable in a default-feature `cargo doc`.
 //!
 //! One guard per writer, all four reading the table through
-//! [`crate::ffi::option_get_number`], so none can rot into a comment. Both
+//! [`crate::ffi::option_get_number`] via one shared loop
+//! (`tests/common/clamp_probe.rs`), so none can rot into a comment. Both
 //! call-order directions are pinned together, in one process, by
-//! `tests/mesh_size_option_hermeticity.rs`.
+//! `tests/mesh_size_option_hermeticity.rs`, whose pair sweep runs all four
+//! writers against each other (the attributed producer's entry there is
+//! `#[cfg(feature = "mesh-morph")]`; the crate's self dev-dependency enables
+//! that feature for every `tests/` binary, so the gate always sees 4x4).
 //!
 //! # Adding a writer
 //!

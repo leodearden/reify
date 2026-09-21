@@ -67,6 +67,8 @@ use clamp_probe::{
 };
 use reify_ir::ElementOrderTag;
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
+#[cfg(feature = "mesh-morph")]
+use reify_kernel_gmsh::{EntityAttribution, mesh_surface_to_volume_with_attribution};
 
 /// Mesh the unit cube through `GmshKernel::mesh_to_volume` at `size` and
 /// return the P1 tet count.
@@ -119,6 +121,51 @@ fn refine_tet_count() -> usize {
         ElementOrderTag::P1,
     )
     .unwrap_or_else(|e| panic!("refine_volume_with_size_field must succeed: {e:?}"))
+    .tet_indices()
+    .expect("P1 tet mesh")
+    .len()
+        / 4
+}
+
+/// `mesh_surface_to_volume_with_attribution` on the unit cube, with no explicit
+/// `mesh_size` so the call is sensitive to the size table it inherits.
+///
+/// The fourth writer. `resolve_mesh_size` returns `None` for
+/// `mesh_size: None` + `auto_size_cfg: None`, so
+/// `run_meshing_with_entity_queries` writes no clamp of its own and the
+/// process-global table alone decides element size — which is what makes this
+/// a DETECTOR leg of the pair sweep rather than a lock-in.
+///
+/// The attribution is empty and `match_tolerance` is `0.0` ("matching
+/// disabled") because anchors decide which B-rep handle each boundary node is
+/// attributed TO, not how many elements gmsh produces. The mesh-size writes
+/// under test are in the shared meshing helper, reached identically either way,
+/// and an empty attribution keeps this binary free of the six-face-anchor
+/// fixture `mesh_surface_to_volume_attributed.rs` needs for its own subject.
+#[cfg(feature = "mesh-morph")]
+fn attributed_tet_count() -> usize {
+    let cube = common::unit_cube_mesh();
+    let opts = MeshingOptions {
+        deterministic: true,
+        ..Default::default()
+    };
+    let attribution = EntityAttribution {
+        faces: Vec::new(),
+        edges: Vec::new(),
+        vertices: Vec::new(),
+        match_tolerance: 0.0,
+    };
+    mesh_surface_to_volume_with_attribution(
+        &cube,
+        &opts,
+        ElementOrderTag::P1,
+        None,
+        None,
+        None,
+        &attribution,
+    )
+    .unwrap_or_else(|e| panic!("mesh_surface_to_volume_with_attribution must succeed: {e:?}"))
+    .volume
     .tet_indices()
     .expect("P1 tet mesh")
     .len()
@@ -471,11 +518,11 @@ fn mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held(
 /// thought to name.
 ///
 /// `ElementOrderTag::P1` and `deterministic: true` throughout. Both are
-/// load-bearing rather than stylistic: all three entry points write
+/// load-bearing rather than stylistic: every entry point writes
 /// `General.NumThreads` under `deterministic`, so pinning it removes the only
 /// non-size process-global that would otherwise differ between the alone-run
 /// and the paired run; and `Mesh.ElementOrder` — which `mesh_plane_2d` never
-/// writes and the other two write unconditionally — stays at `1` for every
+/// writes and the other three write unconditionally — stays at `1` for every
 /// call, so the known element-order inheritance cannot confound the counts. (It
 /// is a real leak of the same class, filed as follow-up work rather than folded
 /// in: it is not a mesh-SIZE option and fixing it changes `mesh_plane_2d`'s
@@ -515,14 +562,43 @@ fn mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held(
 /// file's own history records from an unlucky thread interleaving. The leak
 /// was seen in the wild before it was explained.
 ///
+/// The fourth entry point was added to the sweep later (review of #6968) and
+/// was measured the same way, over the `refine -> attributed` pair and the
+/// `MeshSizeScope::entered` bindings in `refine_volume.rs` and
+/// `mesh_boundary.rs`:
+///
+/// ```text
+/// refine scope | attributed scope    | alone | after | verdict
+/// armed        | armed  (today)      |  1160 |  1160 | PASS
+/// disarmed     | armed               |  1160 |  1160 | PASS
+/// armed        | disarmed            |  1160 |  1160 | PASS
+/// disarmed     | disarmed (pre-#6968)|  1160 |   355 | FAIL  3.3x
+/// ```
+///
+/// Same shape, same conclusion, and it closes a real hole: before this leg the
+/// attributed producer was covered only OUTBOUND, by a table read in
+/// `mesh_surface_to_volume_attributed.rs` — and a table read is structurally
+/// blind to INHERITED state, so a sibling leaking a size option that producer
+/// never writes changed its output with no test able to see it.
+///
 /// # Which legs are detectors and which are lock-ins
 ///
-/// Not every one of the nine pairs can move, and a guard should not imply a
-/// sensitivity it lacks. `refine -> refine` cannot: refine writes all five size
-/// options itself on entry, so it has nothing to inherit. `refine ->
-/// mesh_to_volume` cannot either: `mesh_to_volume` writes
-/// `Mesh.MeshSizeMin == Mesh.MeshSizeMax`, and a shut clamp masks
-/// `Mesh.MeshSizeExtendFromBoundary` entirely. Those are lock-in legs.
+/// Not every one of the sixteen pairs can move, and a guard should not imply a
+/// sensitivity it lacks.
+///
+/// As the SECOND of a pair, two entry points cannot move. `refine` writes all
+/// five size options itself on entry, so it has nothing to inherit;
+/// `mesh_to_volume` writes `Mesh.MeshSizeMin == Mesh.MeshSizeMax`, and a shut
+/// clamp masks `Mesh.MeshSizeExtendFromBoundary` entirely. The two that CAN
+/// move are the defaults-relying ones — `mesh_plane_2d(None)` and the
+/// attributed producer, which with `mesh_size: None` writes no clamp either
+/// (`resolve_mesh_size` returns `None`, `mesh_boundary.rs`).
+///
+/// As the FIRST of a pair, the attributed producer leaks nothing to detect: on
+/// the `mesh_size: None` path it writes no size option at all, armed or not.
+/// Its four rows are lock-ins, kept because "writes nothing" is a property of
+/// today's `resolve_mesh_size`, not a contract — the day it grows an
+/// auto-sizing default, those rows start biting with no test edit.
 ///
 /// That masking is precisely why the trio leak survived #6298. The damage is
 /// invisible in the leaking function's own output, and invisible in any
@@ -539,10 +615,19 @@ fn every_entry_point_measures_the_same_whatever_ran_before_it() {
 
     /// Named so a failure message says which pair diverged rather than which
     /// index did.
-    const ENTRY_POINTS: [EntryPoint; 3] = [
+    ///
+    /// A slice with a `cfg`-gated fourth element rather than a fixed-length
+    /// array, because the attributed producer is `feature = "mesh-morph"` and
+    /// this binary is not. The crate's self dev-dependency enables that feature
+    /// for every `tests/` binary, so in the gate the sweep is always 4x4 = 16
+    /// ordered pairs; a default-feature build degrades to 3x3 rather than
+    /// failing to compile.
+    const ENTRY_POINTS: &[EntryPoint] = &[
         ("mesh_plane_2d(mesh_size: None)", probe_triangle_count),
         ("refine_volume_with_size_field", refine_tet_count),
         ("mesh_to_volume", mesh_to_volume_default_tet_count),
+        #[cfg(feature = "mesh-morph")]
+        ("mesh_surface_to_volume_with_attribution", attributed_tet_count),
     ];
 
     let alone: Vec<usize> = ENTRY_POINTS
