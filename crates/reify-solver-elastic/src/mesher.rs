@@ -357,6 +357,89 @@ pub fn ring_signed_area_2d(ring: &[[f64; 2]]) -> f64 {
     acc * 0.5
 }
 
+/// 2D cross product of `o->a` and `o->b`: positive when `o, a, b` turn left.
+fn orientation(o: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - o[0]) * (b[1] - o[1]) - (b[0] - o[0]) * (a[1] - o[1])
+}
+
+/// First pair of ring edges that transversally CROSS, as `Some((i, j))` with
+/// `i < j`, or `None` if the ring is simple. Edge `k` is `ring[k] ->
+/// ring[(k+1) % n]`; a ring of fewer than 3 points is always `None`.
+///
+/// Companion to [`ring_signed_area_2d`]: that one judges whether a ring
+/// encloses area, this one whether it encloses it ONCE. Returning the edge
+/// pair rather than a `bool` lets a caller name both offenders in its
+/// diagnostic without re-scanning.
+///
+/// # What counts as a crossing
+///
+/// Strict transversal crossing only: each segment's endpoints must lie on
+/// STRICTLY opposite sides of the other's supporting line.
+///
+/// # Tolerance: there is none, deliberately
+///
+/// Shared endpoints are handled EXACTLY rather than approximately. Identical
+/// `f64` coordinates subtract to exactly `0.0`, so the orientation determinant
+/// is exactly `0.0` and a strict opposite-sign test cannot fire. Adjacent
+/// edges, repeated vertices, the closing wrap edge, and a vertex lying exactly
+/// on a non-adjacent edge are therefore accepted STRUCTURALLY — a stronger
+/// guarantee than any epsilon would give, which is why this function takes no
+/// epsilon parameter.
+///
+/// Nearly-touching edges get no tolerance band either. A relative band would
+/// be a roundoff guard rather than a geometric-significance one, and an
+/// absolute one would be a guessed length with no derivation and no single
+/// right value across the scales a profile spans. The asymmetry decides it: a
+/// false positive rejects a legitimate design at build time, a false negative
+/// only preserves existing behaviour. When in doubt this accepts.
+///
+/// # Not detected
+///
+/// - Collinear OVERLAPPING edges — a zero-width spike that backtracks along
+///   itself. Every determinant is zero, so no straddle is observable.
+/// - Touching without crossing (vertex-on-edge, as above). Accepted by the
+///   policy stated above, not by oversight.
+///
+/// Both need overlap/containment logic beyond a proper-crossing predicate.
+///
+/// # Cost
+///
+/// `O(n^2)` over edge pairs, with a small constant and no allocation. No
+/// vertex cap is imposed: rings reaching this are hand-authored profile
+/// boundaries, where the sweep costs microseconds, and a cap would be
+/// speculative generality for input that does not occur.
+pub fn ring_self_intersects_2d(ring: &[[f64; 2]]) -> Option<(usize, usize)> {
+    let n = ring.len();
+    if n < 3 {
+        return None;
+    }
+    for i in 0..n {
+        let (p1, p2) = (ring[i], ring[(i + 1) % n]);
+        for j in (i + 1)..n {
+            // Skip adjacent pairs — consecutive edges, plus the wrap pair
+            // (0, n-1). This is for cost and legibility, NOT correctness: a
+            // shared vertex forces a zero determinant, so an adjacent pair
+            // could never satisfy the strict-straddle test anyway.
+            if j == i + 1 || (i == 0 && j == n - 1) {
+                continue;
+            }
+            let (p3, p4) = (ring[j], ring[(j + 1) % n]);
+            let d1 = orientation(p3, p4, p1);
+            let d2 = orientation(p3, p4, p2);
+            let d3 = orientation(p1, p2, p3);
+            let d4 = orientation(p1, p2, p4);
+            // Strict products: a zero determinant (shared endpoint, vertex on
+            // edge, zero-length edge) yields 0.0, which is not < 0.0. A
+            // non-finite coordinate yields NaN, which is also not < 0.0 — so
+            // every unrepresentable case falls to accept.
+            if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
+                return Some((i, j));
+            }
+        }
+    }
+    None
+}
+
 /// Validation pre-pass shared by every `mesh_swept_profile_2d` target arm.
 ///
 /// Runs before lock acquisition / FFI so error diagnostics stay close to
