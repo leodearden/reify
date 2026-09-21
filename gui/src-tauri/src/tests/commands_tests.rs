@@ -2019,20 +2019,27 @@ fn reload_for_watch_impl_runs_correctly_through_large_stack() {
 
 // ── Task 5772: run_on_worker composition guards ──────────────────────────────
 //
-// These stand in for the 14 un-headless-testable `main.rs` command wrappers that
-// step-8 routes through the persistent worker, exactly as the task-5357 guards
-// above stand in for its three. Those wrappers take `tauri::State` / `AppHandle`
-// and cannot be constructed headlessly, so what is testable — and what actually
-// matters — is the COMPOSITION they perform:
+// These stand in for the un-headless-testable `main.rs` command wrappers that
+// run through the persistent worker, exactly as the task-5357 guards above stand
+// in for its three. `large_stack`'s module docs carry the ENGINE lane roster and
+// are the single definition of it; the names are not repeated here to go stale
+// separately. Every member but `mcp_tool_call` is represented below — each by
+// its payload type in the `Send + 'static` pin, and four of them additionally by
+// a behavioural guard through `run_on_worker`.
+//
+// Those wrappers take `tauri::State` / `AppHandle` and cannot be constructed
+// headlessly, so what is testable — and what actually matters — is the
+// COMPOSITION they perform:
 // `run_on_worker(move || commands::x_impl(&engine, ..))`, with the
 // `Arc<Mutex<EngineSession>>` MOVED into a `'static` closure rather than
 // borrowed as the scoped `run_on_large_stack` tier permits.
 //
-// The wrappers proxied here: `get_initial_state`, `set_parameter`,
-// `sync_observed_demand`, `sync_demand`, `export`, `get_source_location`,
-// `get_entity_tree`, `get_entity_identity_map`, `get_mechanism_descriptors`,
-// `get_def_preview`, `get_containing_definition`,
-// `get_entity_at_source_location`, `get_active_fea_case`, `set_active_fea_case`.
+// `mcp_tool_call` (task 5466) is the one roster member with nothing to prove
+// here. It composes `run_on_worker` over an OWNED `TauriToolContext` inside
+// `mcp_context::mcp_tool_call_on_large_stack`, which `lib.rs` declares UNGATED —
+// so its `Send + 'static` obligation is discharged at the lib COMPILE boundary,
+// and its behaviour is guarded against the real entry point in
+// `mcp_dispatch_tests` and `large_stack_tests` rather than through a stand-in.
 
 /// Compile-time proof that `T` satisfies the bound the whole migration rests on.
 ///
@@ -2042,15 +2049,21 @@ fn reload_for_watch_impl_runs_correctly_through_large_stack() {
 /// in. This never runs; naming the types is the assertion.
 fn assert_send_static<T: Send + 'static>() {}
 
-/// Pins `T: Send + 'static` for every type the migration moves across the
-/// worker's queue: each migrated command's return payload, plus the engine
-/// handle itself.
+/// Pins `T: Send + 'static` for the types the `main.rs` wrappers move across the
+/// worker's queue WITHOUT any lib-side signature already requiring it: each
+/// `commands::*_impl` return payload, plus the engine handle itself.
 ///
 /// `Result<T, String>` follows from `T` (and `String` is `Send + 'static`), so
 /// the payloads are what need naming. If a future command returns something
 /// non-`Send` — an `Rc`, a raw pointer, a borrow — it cannot join this tier, and
 /// this list is where that shows up as a compile error rather than as a puzzling
 /// error at the call site in `main.rs` (which only builds under `--features gui`).
+///
+/// That "without" is what bounds the list: a type the lib already moves into a
+/// `run_on_worker` closure is pinned by the lib compiling, so re-asserting it
+/// here would read as load-bearing while being unable to fail on its own. That
+/// is why `mcp_tool_call`'s `serde_json::Value` and `TauriToolContext` are both
+/// absent — see this section's header.
 #[test]
 fn migrated_command_payloads_are_send_and_static() {
     use crate::engine::EngineSession;
