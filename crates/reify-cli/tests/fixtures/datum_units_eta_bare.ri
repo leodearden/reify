@@ -29,6 +29,17 @@
 // `frame_at`'s x/z slots stay UNGATED (decision D3: a unit vector legitimately
 // has bare components), so the only thing its row can be rejecting is `o`.
 //
+// `frame_at`'s row is the ONE that does not reach stderr, and the cause is the
+// evaluator rather than the gate: an INLINE `self.<datum>` projection is still
+// `Undef` during the pass that emits post-`Undef` builtin diagnostics, so the
+// call short-circuits on an undef ARGUMENT before its builtin is dispatched. The
+// gate still fires — the cell IS `undef`, which is what this fixture's CLI row
+// asserts — but the message is lost. Let-binding the projections is not a
+// workaround: MEASURED, it breaks the SUCCESS path too. The gap is not an η
+// artifact (task δ's `mirror(box(...), self.xy_plane)` shows the same shape) and
+// is filed as task #7765. Keep this call here: when that lands, only the
+// assertion changes.
+//
 // `bp` is `frame3(...).xy_plane`. Once this gate lands, `frame3` is the ONLY
 // remaining `.ri` route to a bare-origin Plane: it validates that its origin is
 // a 3-component `Value::Point` and never its dimension, and `Frame.xy_plane`

@@ -1611,6 +1611,17 @@ fn classify_datum_delta(arg_name: &'static str, v: &Value) -> Result<f64, DatumF
 /// A decoded plane: its origin components and its normal components.
 type PlaneParts = ([f64; 3], [f64; 3]);
 
+/// Three decoded `Point3<Length>` positions, in argument order — what
+/// [`classify_plane_through_args`] yields.
+type PointTriple = ([f64; 3], [f64; 3], [f64; 3]);
+
+/// A decoded frame specification: the origin's components, then the x and z
+/// direction components — what [`classify_frame_at_args`] yields. The same
+/// SHAPE as [`PointTriple`] and a deliberately different NAME: only the first
+/// member is a gated position, and the other two are unit vectors that carry no
+/// dimension (decision D3).
+type FrameParts = ([f64; 3], [f64; 3], [f64; 3]);
+
 /// Decode `midplane(a, b)`'s two planes, or say why they cannot be decoded.
 ///
 /// One of the five per-builtin classifiers that own this family's acceptance.
@@ -1642,9 +1653,7 @@ fn classify_axis_through_args(args: &[Value]) -> Result<([f64; 3], [f64; 3]), Da
 /// Decode `plane_through(a, b, c)`'s three points. See
 /// [`classify_midplane_args`] for the shared-classifier and guard-order
 /// rationale.
-fn classify_plane_through_args(
-    args: &[Value],
-) -> Result<([f64; 3], [f64; 3], [f64; 3]), DatumFault> {
+fn classify_plane_through_args(args: &[Value]) -> Result<PointTriple, DatumFault> {
     if args.len() != 3 {
         return Err(DatumFault::Shape);
     }
@@ -1680,7 +1689,7 @@ fn classify_offset_plane_args(args: &[Value]) -> Result<(PlaneParts, f64), Datum
 /// and are decoded for SHAPE alone, because a unit vector legitimately has bare
 /// components (decision D3). See [`classify_midplane_args`] for the rest of the
 /// rationale.
-fn classify_frame_at_args(args: &[Value]) -> Result<([f64; 3], [f64; 3], [f64; 3]), DatumFault> {
+fn classify_frame_at_args(args: &[Value]) -> Result<FrameParts, DatumFault> {
     if args.len() != 3 {
         return Err(DatumFault::Shape);
     }
@@ -2083,9 +2092,7 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   that is not a Length, and **`axis_x`** / **`axis_y`** / **`axis_z`** (exactly
 ///   1 arg) — an ORIGIN that is not a `Point3<Length>` (task 5746, units-length ε
 ///   / R11). These are the PRODUCER end of the same rule task δ gates at the
-///   consumer end; the five sibling construction-datum constructors stay
-///   dimension-polymorphic and are NOT served here (see [`make_plane`]'s scope
-///   statement). The axis arm names the whole triple `ox/oy/oz` in ONE message,
+///   consumer end. The axis arm names the whole triple `ox/oy/oz` in ONE message,
 ///   for `affine_translate`'s reason: its decoder has already required the three
 ///   components to share one dimension, so all three positions offend identically
 ///   and naming them together is complete information.
@@ -2095,6 +2102,21 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   non-`Point` argument, a component count other than 3, a non-numeric
 ///   component — like the arity convention above: a type failure is not a
 ///   dimension failure.
+/// - **`midplane`** / **`axis_through`** / **`plane_through`** / **`offset`**
+///   (exactly 2 args) / **`frame_at`** — a POSITION operand that is not
+///   `Point3<Length>`, or an `offset` delta that is not a Length (task 6591,
+///   units-length η). Each arm is the ε arms' sibling one family over, and each
+///   reads the SAME per-builtin classifier its eval gate is built from, so it
+///   can neither speak for an argument eval accepted nor stay quiet on one eval
+///   rejected on dimension grounds. The offending argument is named as the
+///   author wrote it in the signature — `a`/`b`/`c`, `p`/`delta`, `o` — and when
+///   several offend the FIRST in argument order is named, deterministically,
+///   because the order lives in that one classifier (the
+///   [`diagnose_bbox_corners`] `min`-before-`max` precedent). `frame_at`'s x/z
+///   and every plane NORMAL stay UNGATED and therefore never named: a unit
+///   vector legitimately has bare components (decision D3). The arity-3
+///   `offset` — the γ RELATION — is never served, which its classifier enforces
+///   rather than this list.
 ///
 /// Invariant: the twist dimension arms consult [`TWIST_LINEAR_DIM`] and
 /// [`TWIST_ANGULAR_DIM`] — the SAME consts the eval gates use — and read BOTH twist
@@ -2359,7 +2381,56 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             }
             diagnose_bbox_corners(&args[0], &args[1])
         }
+        // η's construction-datum arms (task 6591). Each reads the SAME
+        // per-builtin classifier its eval gate is built from, so the gate and
+        // this arm cannot drift asymmetrically — see [`DatumFault`] for why that
+        // matters here in particular, and [`classify_midplane_args`] for the
+        // guard ORDER those classifiers fix.
+        //
+        // Nothing below decides anything: the arm name selects a classifier, the
+        // classifier names the offending argument, and `datum_fault_diagnostic`
+        // renders it. Which operand is blamed when several offend, and which
+        // causes stay silent, are properties of those classifiers alone.
+        "midplane" => datum_fault_diagnostic(name, classify_midplane_args(args).err()),
+        "axis_through" => datum_fault_diagnostic(name, classify_axis_through_args(args).err()),
+        "plane_through" => datum_fault_diagnostic(name, classify_plane_through_args(args).err()),
+        // The arity-3 `offset` is the γ RELATION and must never be given a
+        // datum-constructor rejection. `classify_offset_plane_args` holds that
+        // guard (`args.len() != 2` -> `Shape`, which is silent), so this arm does
+        // not restate it.
+        "offset" => datum_fault_diagnostic(name, classify_offset_plane_args(args).err()),
+        "frame_at" => datum_fault_diagnostic(name, classify_frame_at_args(args).err()),
         _ => None,
+    }
+}
+
+/// Render a construction-datum classifier's verdict as [`diagnose`] reports it.
+///
+/// The ONE place η's five arms turn a [`DatumFault`] into a `Diagnostic`, so
+/// severity, code and wording are chosen once rather than five times.
+///
+/// `NotLength` is the only fault that speaks, and it speaks with the message
+/// MINTED by the shared owner — Contract C1 invariant (i): the wording is
+/// produced only by `ArgRejection::message`, so there is no hand-rolled
+/// rejection string here to fork. `Severity::Error` plus the pre-existing
+/// `DimensionedArgRejected` code is ruling A7: one rejection REASON gets one
+/// code, which is how η joins the landed dimension arms rather than opening
+/// another way to report the same fault class.
+///
+/// `Shape` and acceptance are both SILENT, and that silence is the
+/// no-mis-attribution guard rather than a swallowed fault: a shape failure is
+/// never blamed on a dimension, and an unresolved cell is not a wrong one
+/// (decision D10). The gate still rejects every one of them on its own grounds.
+fn datum_fault_diagnostic(name: &str, fault: Option<DatumFault>) -> Option<reify_core::Diagnostic> {
+    match fault? {
+        DatumFault::NotLength {
+            arg_name,
+            rejection,
+        } => Some(
+            reify_core::Diagnostic::error(rejection.message(name, arg_name))
+                .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+        ),
+        DatumFault::Shape => None,
     }
 }
 
@@ -4616,7 +4687,11 @@ mod tests {
         let long_delta = Value::length(0.005);
         for (label, plane, delta) in [
             // The live hole: a dimensionless `2` silently becomes 2 METRES.
-            ("bare plane, bare delta", bare_plane.clone(), bare_delta.clone()),
+            (
+                "bare plane, bare delta",
+                bare_plane.clone(),
+                bare_delta.clone(),
+            ),
             // Already Undef via the agreement compare — a regression row.
             ("LENGTH plane, bare delta", long_plane.clone(), bare_delta),
             ("bare plane, LENGTH delta", bare_plane, long_delta.clone()),
@@ -9334,11 +9409,7 @@ mod tests {
                     "c",
                     vec![good_point.clone(), good_point.clone(), point.clone()],
                 ),
-                (
-                    "offset",
-                    "p",
-                    vec![plane.clone(), Value::length(0.005)],
-                ),
+                ("offset", "p", vec![plane.clone(), Value::length(0.005)]),
                 (
                     "offset",
                     "delta",
@@ -9350,8 +9421,9 @@ mod tests {
                     vec![point.clone(), xdir.clone(), zdir.clone()],
                 ),
             ] {
-                let diag = super::diagnose(name, &args)
-                    .unwrap_or_else(|| panic!("{name} / {arg_name} / {offender:?}: must be diagnosed"));
+                let diag = super::diagnose(name, &args).unwrap_or_else(|| {
+                    panic!("{name} / {arg_name} / {offender:?}: must be diagnosed")
+                });
                 assert_eq!(diag.severity, reify_core::Severity::Error, "{diag:?}");
                 assert_eq!(
                     diag.code,
@@ -9384,7 +9456,11 @@ mod tests {
         for (name, expected_arg, args) in [
             // Both wrong → the first is named.
             ("midplane", "a", vec![bare_plane.clone(), bare_plane2]),
-            ("axis_through", "a", vec![bare_point.clone(), bare_point2.clone()]),
+            (
+                "axis_through",
+                "a",
+                vec![bare_point.clone(), bare_point2.clone()],
+            ),
             (
                 "plane_through",
                 "a",
@@ -9397,16 +9473,13 @@ mod tests {
                 "b",
                 vec![good_point, bare_point2, bare_point3],
             ),
-            (
-                "offset",
-                "p",
-                vec![bare_plane, Value::Real(2.0)],
-            ),
+            ("offset", "p", vec![bare_plane, Value::Real(2.0)]),
         ] {
             let diag = super::diagnose(name, &args)
                 .unwrap_or_else(|| panic!("{name}: a both-wrong call must be diagnosed"));
             assert!(
-                diag.message.starts_with(&format!("{name}: {expected_arg} argument")),
+                diag.message
+                    .starts_with(&format!("{name}: {expected_arg} argument")),
                 "{name}: expected the message to name `{expected_arg}` first; got {:?}",
                 diag.message
             );
@@ -9557,11 +9630,7 @@ mod tests {
                 "offset",
                 vec![good_plane, Value::length(0.003)],
             ),
-            (
-                "frame_at valid",
-                "frame_at",
-                vec![good_point, xdir, zdir],
-            ),
+            ("frame_at valid", "frame_at", vec![good_point, xdir, zdir]),
         ] {
             assert!(
                 super::diagnose(name, &args).is_none(),

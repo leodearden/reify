@@ -176,7 +176,10 @@ fn eval_bare_datum_constructors_exit_nonzero_with_units_errors() {
         "midplane: a argument expects Length, got Int",
         "axis_through: a argument expects Length, got Int",
         "plane_through: a argument expects Length, got Int",
-        "frame_at: o argument expects Length, got Int",
+        // `frame_at` is DELIBERATELY ABSENT from this list, and the gap is an
+        // evaluator one rather than a gate one — see
+        // `eval_bare_frame_at_gate_fires_but_its_diagnostic_is_not_reachable`
+        // directly below, which pins what IS observable plus the reason.
         // `offset`'s row is the DELTA, not the plane: its plane is a LENGTH
         // `plane_xy(5mm)` and only the bare `2.0` offends. It is the most
         // natural authoring error in the family — a forgotten unit on the
@@ -201,6 +204,48 @@ fn eval_bare_datum_constructors_exit_nonzero_with_units_errors() {
         !stderr.contains("W_MODULE_DECL_MISSING"),
         "datum_units_eta_bare.ri declares its module, so no module-decl warning \
          should appear; got: {stderr}"
+    );
+}
+
+/// `frame_at`'s gate FIRES at the CLI — its cell goes `undef` — but its
+/// diagnostic is NOT reachable from any `.ri` source today, so this row asserts
+/// the former and records the latter rather than asserting a flip that cannot
+/// happen.
+///
+/// MEASURED, not assumed. `self.x` / `self.z` are the ONLY `.ri` route to a
+/// `Value::Direction` (there is no free-function Direction constructor), and an
+/// INLINE `self.<datum>` projection is still `Value::Undef` during the pass that
+/// runs `emit_undef_builtin_diagnostics`. The call therefore hits the strict
+/// undef-ARGUMENT short-circuit and never dispatches its builtin; a later pass
+/// re-evaluates the projection and produces the real value. The missing
+/// `OpContractViolation` note is the discriminator: `push_op_contract_failure`
+/// sits in the SAME eval arm as the diagnostics hook, so its absence shows the
+/// arm was never reached — not that `geometry_diagnose` returned `None`. The
+/// unit rows in reify-stdlib pin that it does not: `frame_at`'s exact message,
+/// severity and code are asserted there.
+///
+/// Let-binding the projections is NOT a workaround and was measured too: it
+/// breaks the SUCCESS path as well (`frame_at(point3(1mm, 2mm, 3mm), sx, sz)`
+/// is `undef` while the inline form builds a Frame), so it would trade a
+/// missing diagnostic for a broken constructor.
+///
+/// The gap is NOT an η artifact — task δ's long-landed gate shows the same
+/// shape, `mirror(box(...), self.xy_plane)` reporting "expected a Plane value,
+/// got undef" inline while the let-bound form resolves. It is filed as
+/// follow-up work as task #7765 (spawned from this one); the fixture already
+/// carries the call, so when that lands only this assertion changes — to the
+/// real stderr anchor
+/// `frame_at: o argument expects Length, got Int`.
+#[test]
+fn eval_bare_frame_at_gate_fires_but_its_diagnostic_is_not_reachable() {
+    let path = common::fixture_path("datum_units_eta_bare.ri");
+    let (_, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        stdout.contains("DatumUnitsEtaBare.f = undef"),
+        "frame_at's LENGTH gate must still FIRE on a bare origin, even though its          diagnostic cannot reach stderr;
+stdout: {stdout}
+stderr: {stderr}"
     );
 }
 
