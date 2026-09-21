@@ -784,7 +784,10 @@ fn parameter_value(result: &serde_json::Value, cell_id: &str) -> String {
 /// failure points at the write.
 #[test]
 fn a_write_dispatched_on_the_lane_lands_in_the_callers_engine() {
-    let engine = make_engine();
+    // The probe is a WRITE, so the session needs a canonical `.ri` on disk to
+    // write back to (INV-GUI-3) — the in-memory `make_engine` fixture the
+    // read-only guards use would fail the write before the lane is exercised.
+    let (_dir, _path, engine) = make_engine_on_disk();
 
     // Non-vacuity: pin what the fixture starts at, so "100" below cannot pass by
     // having been there all along.
