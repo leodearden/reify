@@ -103,12 +103,16 @@ fn split_by_centroid_x(vm: &reify_ir::VolumeMesh, split_x: f64) -> SplitStats {
 /// process-global mesh-size clamp has been poisoned by an earlier call**.
 ///
 /// gmsh's option table is process-global and survives `gmshClear()`, and three
-/// sibling entry points set `Mesh.MeshSizeMin` / `Mesh.MeshSizeMax` and never
-/// restore them: `kernel_real::GmshKernel::mesh_to_volume`,
+/// sibling entry points USED TO set `Mesh.MeshSizeMin` / `Mesh.MeshSizeMax`
+/// and restore neither: `kernel_real::GmshKernel::mesh_to_volume`,
 /// `mesh_profile_2d::mesh_plane_2d` and `mesh_boundary`'s surface remesh. Any
-/// of those running earlier in the same process pins every element of a later
+/// of those running earlier in the same process pinned every element of a later
 /// `refine_volume_with_size_field` remesh to *its* size, making the per-vertex
-/// `vertex_sizes` hints completely inert (task #6211).
+/// `vertex_sizes` hints completely inert (task #6211). All three now enter and
+/// leave a `mesh_size_scope::MeshSizeScope` (#6968), so the leak is closed at
+/// its source; this test keeps reproducing it SYNTHETICALLY, by writing the
+/// hostile table itself, which is what makes it independent of whether any
+/// sibling is still capable of producing one.
 ///
 /// This test reproduces that leak **deterministically** — it writes the clamp
 /// itself via `ffi::option_set_number` rather than depending on which sibling
@@ -129,26 +133,47 @@ fn split_by_centroid_x(vm: &reify_ir::VolumeMesh, split_x: f64) -> SplitStats {
 ///    than merely that one particular poisoned run happened to come out
 ///    monotone.
 ///
+/// # What assertion 2 pins TODAY, which is not what it was written to pin
+///
+/// It was written against task #6211, when the thing standing between the
+/// poison and the mesher was `refine_volume_with_size_field`'s own
+/// `Mesh.MeshSizeMin`/`MeshSizeMax` writes. Since #6968 the poison is erased
+/// before those are reached: `MeshSizeScope::entered` (`refine_volume.rs`,
+/// immediately after `init::ensure_initialized()`) restores gmsh's defaults
+/// for all five size options on the way in. So assertion 2 now pins the
+/// SCOPE's inbound establishment, and with the scope armed the two legs are
+/// two identical defaults runs — green by construction.
+///
+/// That is not a reason to delete it. It is the only test here that reds if
+/// the inbound establishment disappears by ANY route, and it observes the
+/// EFFECT (a tet count) rather than reading the table, so it cannot be
+/// defeated by a leak through an option no test thought to name.
+///
+/// A guard for refine's OWN inbound writes specifically is not reachable from
+/// a test: it would have to poison the table AFTER the scope has entered and
+/// BEFORE the clamp writes run, and that is inside one `GMSH_LOCK`
+/// acquisition, with no seam. Said plainly rather than left as an assertion
+/// this test looks like it makes — `refine_volume.rs`'s own "NO TEST CAN TELL"
+/// note is the other half of it.
+///
 /// The clamp is rewritten before *every* call, because the fixed implementation
 /// sets both options on entry; a single up-front write would only exercise the
 /// first hint. The poison value is derived from `HINTS` rather than written as
 /// a literal — it is the COARSEST hint, i.e. the value that pins the output at
 /// the coarsest size the caller asked for, which is the leak's worst case.
 ///
+/// [`CLAMP_TEST_ORDER`] is still taken across the whole body, and what it buys
+/// is now the test's FALSIFIABILITY rather than today's correctness.
 /// `set_global_mesh_size_clamp` releases `GMSH_LOCK` before
-/// `refine_volume_with_size_field` takes it, so a sibling test could otherwise
-/// overwrite the clamp in that gap — and because the fix now *resets the clamp
-/// to defaults on every exit*, an interleaved sibling refine would erase the
-/// poison and turn the poisoned leg into a second defaults run, making
-/// assertion 2 hold trivially. That is a false PASS, not a false failure, so
-/// it cannot be left to chance: [`CLAMP_TEST_ORDER`] serialises the whole test
-/// body against its siblings, making poison → refine atomic. (Asserting the
-/// written value is still in place immediately before the call would instead
-/// need an `option_get_number` FFI getter. That getter exists since task #6968
-/// — see [`refine_volume_leaves_every_size_option_at_gmsh_defaults`] below,
-/// which uses it — but it would not remove the need for the mutex here: it
-/// reports the table at the moment it is called, not across the gap a sibling
-/// can land in.)
+/// `refine_volume_with_size_field` takes it. On a build where the inbound
+/// establishment is gone — the build this test exists to catch — a sibling
+/// landing in that gap would erase the poison and turn the poisoned leg into a
+/// second defaults run, so the test would pass exactly when it should fail.
+/// That is a false PASS, the worse direction for a regression guard, and the
+/// mutex makes poison → refine atomic against its siblings. (Reading the
+/// written value back immediately before the call, via the `option_get_number`
+/// task #6968 added, would not substitute: it reports the table at the moment
+/// it is called, not across the gap a sibling can land in.)
 #[test]
 fn uniform_size_field_refines_monotonically_under_leaked_global_clamp() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());

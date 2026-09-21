@@ -252,6 +252,14 @@ pub fn refine_volume_with_size_field(
     // corner-entity sizes (set by `gmshModelMeshSetSize` below) drive the
     // interior mesh density, with a smooth interpolation between corners rather
     // than an aggressive gradient from the finest boundary face.
+    //
+    // Only the third of these three is a DEVIATION. `MeshSizeScope::entered`
+    // above established gmsh's defaults, which are `FromPoints = 1` and
+    // `FromCurvature = 0` — so the first two writes restate what is already in
+    // the table, while `ExtendFromBoundary = 0` against a default of `1` is
+    // this function's own choice, and was the entire measured content of the
+    // leak #6968 closed. See "no test can tell" below for why the two
+    // restatements stay anyway.
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;
@@ -267,17 +275,21 @@ pub fn refine_volume_with_size_field(
     // a `mesh_size_scope::MeshSizeScope`, so the table these writes land on
     // holds gmsh's defaults whatever ran earlier in the process.
     //
-    // They stay load-bearing regardless. `MeshSizeMax` is a genuine deviation
-    // from the default (derived below), and an inbound clamp that depends on
-    // no sibling's outbound discipline — nor on this function's own scope — is
-    // the only form that makes the output a pure function of its own
-    // arguments. `MeshSizeMin` restates the default the scope just wrote, so
-    // that the pair reads as one clamp rather than half of one: against a
-    // leaked Min == Max, lowering only Max leaves Min > Max (gmsh still floors
-    // at the leaked value) and lowering only Min leaves the leaked Max capping
-    // everything. `tests/refine_volume_tests.rs::
-    // uniform_size_field_refines_monotonically_under_leaked_global_clamp`
-    // poisons the table before the call and pins exactly that.
+    // Of the five size options this function writes, exactly two DEVIATE from
+    // the defaults the scope established: `MeshSizeMax = max_hint` here, and
+    // `MeshSizeExtendFromBoundary = 0` above. `MeshSizeMin` and the other two
+    // restate the scope's own writes.
+    //
+    // NO TEST CAN TELL whether the three restatements are present. Deleting
+    // any of them is a behavioural no-op while the scope is armed, so nothing
+    // in `tests/` goes red for it — stated here rather than left for a future
+    // author to discover by deleting one and finding the suite still green.
+    // They are kept as defence-in-depth, and specifically so `MeshSizeMin` and
+    // `MeshSizeMax` read as ONE clamp rather than half of one: written as a
+    // pair against a hostile Min == Max, lowering only Max would leave
+    // Min > Max (gmsh still floors at the leaked value) and lowering only Min
+    // would leave the leaked Max capping everything. That is the shape an
+    // inbound clamp needs if it is ever to stand without the scope beneath it.
     //
     // Min = gmsh's default: no floor, so the finest hint is honoured.
     // Deliberately not `min(vertex_sizes)`, which would forbid gmsh from going
