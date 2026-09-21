@@ -50,6 +50,8 @@ mod auto_type_arg_tests;
 mod boundary1_producer;
 #[path = "harness_syntax/cfg_import_attachment_tests.rs"]
 mod cfg_import_attachment_tests;
+#[path = "harness_syntax/check_and_lower_snippet_bound_tests.rs"]
+mod check_and_lower_snippet_bound_tests;
 #[path = "harness_syntax/connect_chain_tests.rs"]
 mod connect_chain_tests;
 #[path = "harness_syntax/constraint_def_tests.rs"]
