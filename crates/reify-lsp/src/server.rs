@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::RwLock;
@@ -139,6 +140,11 @@ pub struct ReifyLanguageServer {
     eval_state: Arc<Mutex<EvalState>>,
     /// Notification sink for server-initiated messages (diagnostics, etc.).
     sink: Arc<dyn NotificationSink>,
+    /// Latched once the poisoned-`eval_state` recovery notice has been sent.
+    /// See [`ReifyLanguageServer::lock_eval_state`] for why the notice is
+    /// reported once rather than per recovery. Shared across clones, since
+    /// the `eval_state` it describes is.
+    eval_state_poison_reported: Arc<AtomicBool>,
 }
 
 impl ReifyLanguageServer {
@@ -159,6 +165,7 @@ impl ReifyLanguageServer {
             })),
             eval_state: Arc::new(Mutex::new(EvalState::new())),
             sink,
+            eval_state_poison_reported: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -168,7 +175,7 @@ impl ReifyLanguageServer {
     }
 
     /// Lock `eval_state`, recovering from a poisoned mutex and reporting the
-    /// recovery to the client.
+    /// recovery to the client ONCE.
     ///
     /// A poisoned lock means a prior panic ran inside the evaluator. The
     /// recovery itself (`e.into_inner()`) is unconditional — dropping every
@@ -176,10 +183,29 @@ impl ReifyLanguageServer {
     /// than continuing with state a panic left behind — so the notice is the
     /// only way a user learns it happened.
     ///
+    /// WHY THE NOTICE IS LATCHED: `PoisonError::into_inner` does not clear
+    /// the flag, so a `std::sync::Mutex` stays poisoned for the life of the
+    /// process. An unlatched notice would therefore push a fresh
+    /// client-visible ERROR line onto the protocol channel on every
+    /// subsequent `did_open`/`did_change` — i.e. on every keystroke, forever
+    /// — drowning the very log surface a user consults to find out what
+    /// broke. That is the unbounded-repetition hazard `did_change`'s
+    /// unknown-URI line was analysed for and found not to have (one line per
+    /// distinct client mistake, pinned by
+    /// `lsp_repeated_unknown_uri_didchange_logs_over_the_protocol_channel_without_wedging`);
+    /// here the repetition tracks nothing at all — one panic, one fact — so
+    /// the latch is what makes the argument transfer. The line says so, so a
+    /// reader cannot mistake later silent recoveries for later health.
+    ///
+    /// `swap` rather than load-then-store: under a multi-threaded runtime two
+    /// handlers can recover concurrently, and exactly one must report.
+    /// `Relaxed` suffices — the latch orders nothing but itself.
+    ///
     /// `MessageType::ERROR`, not WARNING: this is a server fault, unlike
     /// `did_change`'s unknown-URI notice, which reports a client protocol
     /// violation. Pinned by
-    /// `eval_state_poison_recovery_is_reported_on_the_log_channel`.
+    /// `eval_state_poison_recovery_is_reported_on_the_log_channel`, which
+    /// drives both handlers and asserts exactly one notice.
     ///
     /// Shared by `did_open` and `did_change` so the recovery semantics, the
     /// wording and the severity have exactly one spelling. Both callers
@@ -187,10 +213,14 @@ impl ReifyLanguageServer {
     /// [`NotificationSink::log_message`]'s contract.
     fn lock_eval_state(&self) -> std::sync::MutexGuard<'_, EvalState> {
         self.eval_state.lock().unwrap_or_else(|e| {
-            self.sink.log_message(LogLine {
-                typ: MessageType::ERROR,
-                message: "eval_state lock poisoned, recovering".to_string(),
-            });
+            if !self.eval_state_poison_reported.swap(true, Ordering::Relaxed) {
+                self.sink.log_message(LogLine {
+                    typ: MessageType::ERROR,
+                    message: "eval_state lock poisoned, recovering (reported once: the mutex \
+                              stays poisoned, so later edits recover silently)"
+                        .to_string(),
+                });
+            }
             e.into_inner()
         })
     }
@@ -2442,15 +2472,22 @@ mod tests {
     }
 
     /// Companion to `server_recovers_from_eval_state_lock_poisoning` above:
-    /// recovery must also be REPORTED, and reported over the protocol
-    /// channel rather than to stderr (task #6329).
+    /// recovery must also be REPORTED — over the protocol channel rather
+    /// than to stderr (task #6329), and exactly ONCE however many handlers
+    /// go on to recover.
     ///
     /// Same poisoning technique as that test, verbatim — clone the
     /// `eval_state` Arc, panic a thread while it holds the lock, join, and
     /// confirm `lock().is_err()`. The differences are the sink
     /// (`RecordingSink`, so log lines are observable at all) and that BOTH
-    /// `did_open` and `did_change` are driven, since each has its own
-    /// recover-and-report closure and the two must not drift.
+    /// `did_open` and `did_change` are driven.
+    ///
+    /// Driving both is what makes the count load-bearing in two directions
+    /// at once. `lock_eval_state` is shared, so a zero here means recovery
+    /// stopped reporting at all; a two means the latch is gone and the
+    /// notice is back to firing per recovery — which, since
+    /// `PoisonError::into_inner` never clears the flag, means once per
+    /// keystroke for the life of the process. See `lock_eval_state`.
     ///
     /// ERROR, not WARNING: a poisoned `eval_state` means a prior panic ran
     /// inside the evaluator. That is strictly more serious than a client
@@ -2460,7 +2497,8 @@ mod tests {
     ///
     /// Keeps the sibling test's "diagnostics were captured" check so this
     /// test cannot pass by having broken recovery and merely logged about
-    /// it.
+    /// it — and that check runs after BOTH handlers, so the silent second
+    /// recovery the latch introduces is proven still to be a recovery.
     #[tokio::test]
     async fn eval_state_poison_recovery_is_reported_on_the_log_channel() {
         let sink = Arc::new(RecordingSink::default());
@@ -2512,10 +2550,12 @@ mod tests {
             .collect();
         assert_eq!(
             recoveries.len(),
-            2,
-            "expected one poisoned-lock recovery notice per handler (did_open and did_change), \
-             delivered over the sink rather than written to stderr (task #6329); \
-             got log calls: {log_calls:?}"
+            1,
+            "expected EXACTLY ONE poisoned-lock recovery notice across both handlers, \
+             delivered over the sink rather than written to stderr (task #6329). Zero means \
+             recovery stopped reporting; two means the latch in `lock_eval_state` is gone and \
+             a permanently poisoned mutex now emits a client-visible ERROR per keystroke. \
+             Got log calls: {log_calls:?}"
         );
         for (typ, message) in &recoveries {
             assert_eq!(
