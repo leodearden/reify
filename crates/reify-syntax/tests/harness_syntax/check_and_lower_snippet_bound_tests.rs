@@ -8,8 +8,8 @@
 //!
 //! SCOPE is `check_and_lower!` alone. Sibling `push_error` sites in `ts_parser.rs` — the
 //! `syntax error in <context>: {}` arms and the `lower_connect_body` mapping arms — still
-//! interpolate raw `node_text` and are tracked as separate follow-up work, so nothing here
-//! says the diagnostic-excerpt class is closed across the parser.
+//! interpolate raw `node_text`, and are tracked separately by tasks #6156 and #7756, so
+//! nothing here says the diagnostic-excerpt class is closed across the parser.
 //!
 //! Asserted through the public `reify_syntax::parse` API on the messages it actually emits,
 //! not against the private `snippet` helper: the contract is the user-visible diagnostic.
