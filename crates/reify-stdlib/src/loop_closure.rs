@@ -590,6 +590,9 @@ pub fn extract_loop_closure_chains(
     // coupling relation.  Honouring the ratio needs the coupled value
     // re-derived INSIDE each Newton step, which this resolver — which
     // computes `vals_b_initial` once, before the solve — cannot express.
+    // Tracked as #7497; the behaviour above is PINNED by
+    // `extract_loop_closure_chains_iterates_an_unbound_coupling_in_path_b`,
+    // so closing that gap reds a named test rather than drifting silently.
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
@@ -2255,6 +2258,62 @@ mod tests {
             free_b.contains(&0),
             "the unbound prismatic jB is still free — free_b must contain index 0, \
              got {free_b:?}"
+        );
+    }
+
+    /// **Pins the coupling caveat (#7497), not an endorsement of it.** An
+    /// unbound `coupling` in `path_b` is UNDER-CONSTRAINED: `is_zero_dof_joint`
+    /// answers only for `JointKind::Fixed`, so the coupling lands in `free_b`
+    /// and Newton iterates it as an INDEPENDENT variable — its ratio and offset
+    /// relative to its parent are never enforced, and the parent-tracked value
+    /// `resolve_joint_value` returns serves only as the seed.
+    ///
+    /// Both halves are asserted so that closing #7497 reds this test
+    /// deliberately rather than changing the answer silently:
+    ///   * the seed TRACKS the bound parent (0.4 m), unscaled by the 2.0 ratio
+    ///     — `resolve_joint_value`'s coupling arm returns the parent's value
+    ///     verbatim, and it is a seed, not a constraint;
+    ///   * `free_b` CONTAINS the coupling's index.
+    ///
+    /// Excluding couplings from `free_b` instead would freeze one at its seed
+    /// rather than tracking its parent — a different wrong answer, not a fix —
+    /// so the real remedy re-derives the coupled value inside each Newton step.
+    #[test]
+    fn extract_loop_closure_chains_iterates_an_unbound_coupling_in_path_b() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        // The coupling's parent, bound — so the seed is demonstrably
+        // parent-derived rather than the coupling's own range midpoint.
+        let j_p = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_c = eval_builtin("couple", &[j_p.clone(), Value::Real(2.0)]);
+        let bindings = vec![
+            eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]),
+            eval_builtin("bind", &[j_p.clone(), Value::length(0.4)]),
+        ];
+
+        let record = loop_closure_record(
+            vec![world_sentinel(), j_a.clone()],
+            vec![world_sentinel(), j_c.clone()],
+            j_a.clone(),
+        );
+
+        let (_chain_a, _vals_a, chain_b, vals_b_initial, free_b) =
+            super::extract_loop_closure_chains(&record, &bindings)
+                .expect("an unbound coupling in path_b must resolve through its parent");
+
+        assert_eq!(chain_b, vec![j_c.clone()]);
+        match &vals_b_initial[0] {
+            JointValue::Scalar(s) => assert!(
+                (s - 0.4).abs() < 1e-12,
+                "the coupling seeds from its BOUND parent (0.4), with the 2.0 \
+                 ratio not applied, got Scalar({s})"
+            ),
+            other => panic!("expected JointValue::Scalar(0.4), got {other:?}"),
+        }
+        assert_eq!(
+            free_b,
+            vec![0],
+            "under-constrained by design today (#7497): the coupling is iterated \
+             as an independent free variable, got {free_b:?}"
         );
     }
 

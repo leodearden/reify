@@ -1632,9 +1632,6 @@ mod tests {
     //   - List length == steps
     //   - Each Snapshot Map's free_values matches the per-step solved
     //     configuration
-    //   - Solved free var is monotonic in the swept driver (continuity
-    //     check — warm-start preserves the local minimum the cold solve
-    //     would have found, no jumps)
     //
     // Fixture (3-prismatic-X closed loop):
     //   jA: prismatic +X, range 0..1m    (driver, swept by `sweep()`)
@@ -1655,27 +1652,26 @@ mod tests {
     //   chain_a translation = chain_b translation
     //   jA_driver + midpoint(jX) = jB_free
     //   driver    + 0.25         = x      →  x = driver + 0.25
-    // For driver ∈ [0, 1]m, solved jB ∈ [0.25, 1.25]m — strictly monotonic
-    // increasing.  Pins both the warm-start threading AND the per-step
-    // free_values shape.
+    // For driver ∈ [0, 1]m, solved jB ∈ [0.25, 1.25]m.  Pins both the
+    // warm-start threading AND the per-step free_values shape.
     //
-    // **Task 7186 defect A.** The original 2-joint fixture closed jB onto
-    // itself (`body(m2, solidC, jB, jA)`), which under the double-counted
-    // chains put jB on BOTH sides — its chain_a copy resolving to the range
-    // midpoint while its chain_b copy was the free variable, i.e. one joint
-    // carrying two different values at once. With the closing joint composed
-    // exactly once that fixture has no free variable at all (chain_b = [jA],
-    // directly bound by the sweep), so the free var is re-homed onto a
-    // genuine two-deep closing-side walk here.  Cold seed for jB is still its
-    // own range midpoint (1.0 m), distinct from every solved value except at
-    // driver = 0.75, so the warm-start signal is preserved.
+    // The free variable must live on a genuine two-deep closing-side walk:
+    // the closing joint is composed on `path_a` alone, so a two-joint loop
+    // closing jB onto itself would leave `chain_b = [jA]`, directly bound by
+    // the sweep, with no free variable for a warm start to thread.  Cold seed
+    // for jB is its own range midpoint (1.0 m), distinct from every solved
+    // value except at driver = 0.75, so the warm-start signal is preserved.
+    //
+    // What this fixture CANNOT show: its closing residual is 1-D and linear,
+    // so Newton has a unique root per step and a cold solve lands on the same
+    // value.  The per-step closed-form assertion below is therefore the whole
+    // check; a monotonicity assertion is deliberately not kept alongside it,
+    // since that assertion pins each step to within 1e-6 m of a prediction
+    // whose consecutive values are 0.25 m apart and so already implies it.
 
     /// Closed-chain sweep produces N snapshots, each with non-empty
-    /// `free_values` whose single leaf varies monotonically with the
-    /// swept driver.  The continuity check is the warm-start signal —
-    /// without warm-start, the cold solver might converge to a
-    /// secondary minimum (or fail to converge in pathological cases),
-    /// breaking monotonicity.
+    /// `free_values` whose single leaf matches the closed-form closure
+    /// prediction for that step's driver value.
     #[test]
     fn sweep_threads_warm_start_through_closed_chain_steps() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
@@ -1777,11 +1773,9 @@ mod tests {
         };
         assert_eq!(snaps.len(), 5, "sweep must produce 5 snapshots");
 
-        // Per-step free_values shape + monotonicity check.  Expected
+        // Per-step free_values shape + closure prediction.  Expected
         // solved jB = driver + 0.25, so as driver increases 0→1, solved
-        // jB increases 0.25→1.25.  We assert strict-monotonic-increasing
-        // across consecutive steps; tolerance 1µm absorbs solver wobble.
-        let mut prev_solved: Option<f64> = None;
+        // jB increases 0.25→1.25.
         for (i, snap) in snaps.iter().enumerate() {
             let smap = match snap {
                 Value::Map(m) => m,
@@ -1820,15 +1814,6 @@ mod tests {
                 (solved - expected).abs() < 1e-6,
                 "snap {i}: solved jB={solved} must match closure prediction {expected} (driver={driver})"
             );
-            // Monotonic-increasing check (strict; warm-start should hit
-            // the same continuous branch the cold solve found).
-            if let Some(p) = prev_solved {
-                assert!(
-                    solved > p - 1e-6,
-                    "snap {i}: solved jB={solved} must be ≥ previous {p} (monotonic increasing)"
-                );
-            }
-            prev_solved = Some(solved);
         }
     }
 

@@ -23,12 +23,13 @@
 //! must equal the closed-form prediction `driver + 0.25` within 1e-6 m.
 //! That is what locks in correctness — and for this 1-D linear residual
 //! it would also pass under a cold solver, since Newton has a unique root
-//! for every step.  The monotonic-increasing assertion (e) is therefore a
-//! continuity *check*, not a continuity *proof*: it pins the trajectory
-//! shape but does not, by itself, distinguish a warm-start path from a
-//! cold-start one.  A non-linear closing residual with an alternate root
-//! per step would be needed to tell them apart end-to-end; that fixture
-//! is out of scope for v0.2 verification.
+//! for every step.  So this fixture cannot distinguish a warm-start path
+//! from a cold-start one at all; telling them apart end-to-end needs a
+//! non-linear closing residual with an alternate root per step, which is
+//! out of scope for v0.2 verification.  A monotonicity assertion is
+//! deliberately NOT kept as a weaker stand-in: (c) pins every step to
+//! within 1e-6 m of a prediction whose consecutive values are 0.1 m apart,
+//! so monotonicity is mathematically implied and could never fire first.
 //!
 //! The fixture needs THREE joints: the closing joint is composed on `path_a`
 //! alone (task 7186), so a two-joint loop closing jB onto itself leaves
@@ -196,11 +197,6 @@ fn sweep_closed_chain_warm_start_e2e() {
     //       chain_b terminal frame, NOT a `joint_parents` re-walk.
     //       Bodies 1, 2 and 3 therefore all coincide at the closed loop's
     //       shared pivot — that coincidence IS the closure.
-    //   (e) Monotonic-increasing trajectory of the free var across steps,
-    //       captured as `solved[i] ≥ solved[i-1]`.  Without warm-start
-    //       continuity a cold solve at step k could converge to an
-    //       alternate root and break the monotonic invariant.
-    let mut prev_solved: Option<f64> = None;
     for (i, snap) in snaps_list.iter().enumerate() {
         let smap = match snap {
             Value::Map(m) => m,
@@ -269,13 +265,21 @@ fn sweep_closed_chain_warm_start_e2e() {
         // walked via `joint_parents` (which still keeps j_x → j_a from m2's
         // earlier registration), so it is no longer a chain_a readback.
         //
-        // Asserting bodies 1-3 all equal `solved` is therefore the FK-side
-        // statement of the closure AND a convergence cross-check: body 3
-        // rides chain_b while body 1 rides chain_a, and the two frames
-        // coincide exactly when the closure converged.  A drift beyond 1e-6
-        // means the closure did not converge — diagnose that, do NOT retune
-        // the tolerance.  It also confirms the FK re-walk consumed the
+        // Body 1 rides chain_a and body 2 rides chain_b, so THEIR agreement
+        // is the convergence cross-check: a drift beyond 1e-6 means the
+        // closure did not converge — diagnose that, do NOT retune the
+        // tolerance.  It also confirms the FK re-walk consumed the
         // synthesized binding for the free joint.
+        //
+        // Body 3's assertion is weaker than it looks, and deliberately so.
+        // This closing call leaves `pose` at the identity, which makes the
+        // rigid-tie frame `T(j_b) ∘ pose` and the spanning-tree frame
+        // `T(j_a)·T(j_x)` EQUAL whenever the closure holds — so body 3 lands
+        // on `solved` under either composition and this assertion cannot say
+        // which one `walk_fk` picked.  What selects the composition is the
+        // non-identity pose in the stdlib unit twin
+        // `snapshot::tests::snapshot_solves_closed_chain_via_loop_closure_solver`;
+        // here body 3 pins only the FK consequence of the closure.
         let [tx0, ty0, tz0] = body_n_translation(snap, 0, &format!("snaps[{i}].body[0]"));
         let [tx1, ty1, tz1] = body_n_translation(snap, 1, &format!("snaps[{i}].body[1]"));
         let [tx2, ty2, tz2] = body_n_translation(snap, 2, &format!("snaps[{i}].body[2]"));
@@ -331,25 +335,6 @@ fn sweep_closed_chain_warm_start_e2e() {
             "snaps[{i}] body 3 tz must be 0, got {tz3}"
         );
 
-        // (e) Monotonic-increasing trajectory across steps.  Strict-
-        // increasing with a 1µm slack absorbs solver wobble.  The slope
-        // flipped sign with the task 7186 defect-A repair: the free var
-        // moved from the closing side to the tree side of the loop, so
-        // solved jB now TRACKS the driver (driver + 0.25) instead of
-        // opposing it (1.0 − driver).  This is a shape check: with a 1-D
-        // linear residual the root is unique per step, so even a
-        // cold-start solver would converge to the same value.  The real
-        // solver-fidelity check is (c) above — see the module-doc note
-        // explaining what this assertion does and does not tell us about
-        // warm-start vs cold-start.
-        if let Some(p) = prev_solved {
-            assert!(
-                solved > p - 1e-6,
-                "snaps[{i}] monotonicity: solved jB = {solved} must be ≥ previous {p} \
-                 (warm-start continuity)"
-            );
-        }
-        prev_solved = Some(solved);
     }
 }
 
