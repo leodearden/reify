@@ -1289,14 +1289,32 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
 /// stays DIMENSIONLESS: a unit vector legitimately has bare components
 /// (decision D3), and nothing in ε widens the gate to it.
 ///
-/// SCOPE. ε gates THIS producer family (`plane_xy` / `plane_xz` / `plane_yz`,
-/// and [`make_axis`] beside it) and nothing else. The five sibling
-/// construction-datum constructors — `midplane`, `axis_through`, `plane_through`,
-/// the arity-2 `offset` and `frame_at` (task 4387 / η, the section below) —
-/// stay dimension-POLYMORPHIC: they enforce dimension AGREEMENT among their
-/// inputs, never LENGTH. `decode_plane`'s consumer-side `ox`/`oy`/`oz` gate
-/// (task δ / 5745) therefore stays live and reachable through them, which is why
-/// ε shuts R11 at both ends rather than retiring either.
+/// SCOPE. Every construction-datum constructor in this module now REQUIRES
+/// LENGTH of its POSITION operands: this producer family (`plane_xy` /
+/// `plane_xz` / `plane_yz`, and [`make_axis`] beside it) by task ε, and the five
+/// siblings below — `midplane`, `axis_through`, `plane_through`, the arity-2
+/// `offset` and `frame_at` (task 4387 / η, gated by task 6591) — by their own
+/// per-builtin classifiers. Only DIRECTION and unit-vector operands stay bare:
+/// `frame_at`'s x/z axes and every synthesized or decoded plane NORMAL, because
+/// a unit vector legitimately has dimensionless components (decision D3).
+///
+/// `decode_plane`'s consumer-side `ox`/`oy`/`oz` gate (task δ / 5745) stays live
+/// and reachable from real `.ri` source, so R11 is still shut at BOTH ends
+/// rather than either end being retired — but it is no longer these five that
+/// keep it reachable. The producer that does is `frame3` — an [`eval_geometry`]
+/// arm, not a standalone item — which validates only that its origin is a
+/// 3-component `Value::Point` and never its dimension,
+/// together with `Frame.xy_plane` (`reify-expr`'s `frame_xy_plane`), which
+/// clones that origin verbatim. MEASURED, not argued:
+/// `mirror(box(10mm, 10mm, 10mm), frame3(point3(0, 0, 0), orient_identity()).xy_plane)`
+/// exits 1 naming `ox`.
+///
+/// `frame3`'s ungated origin is therefore the REMAINING residual, and closing it
+/// is task #7625 (the Transform/Frame CONSTRUCTOR arms), not this family's.
+/// `crates/reify-cli/tests/fixtures/datum_units_eta_bare.ri` carries that
+/// measurement as an executable row rather than leaving it here as prose, so the
+/// day #7625 lands it fails loudly and this paragraph must be revisited
+/// deliberately.
 fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
