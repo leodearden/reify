@@ -937,13 +937,14 @@ structure def Root {
 "#;
 
 /// `Type::Geometry` arm: a port-member `Geometry` param defaulted to a
-/// dimensioned scalar (`5mm`) must warn — the task's MEASURED repro fixture.
+/// dimensioned scalar (`5mm`) must be REJECTED — the task's MEASURED repro
+/// fixture.
 ///
 /// RED today: `check_param_default_conformance` only walks `value_cells`, so
 /// this port-body default is invisible to it and the module compiles with
 /// zero ctor-conformance diagnostics.
 #[test]
-fn port_member_geometry_param_default_warns() {
+fn port_member_geometry_param_default_errors() {
     let module = compile_source_with_stdlib(SRC_PORT_MEMBER_GEOMETRY_DEFAULT);
     let diags = ctor_conformance_diags(&module);
     assert_eq!(
@@ -954,8 +955,10 @@ fn port_member_geometry_param_default_warns() {
     );
     assert_eq!(
         diags[0].severity,
-        Severity::Warning,
-        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        Severity::Error,
+        "param-default conformance is knob-governed, and δ (#5306) flipped the \
+         knob to `Error`. Restated as a literal because the knob is `pub(crate)` \
+         and unreachable from an integration test. Got: {:?}",
         diags[0]
     );
     assert_eq!(
@@ -996,13 +999,13 @@ structure def Root {
 "#;
 
 /// General concrete-leaf arm: a port-member `String` param defaulted to an
-/// `Int` literal must warn `ArgTypeMismatch`, identically to the top-level
+/// `Int` literal must be REJECTED `ArgTypeMismatch`, identically to the top-level
 /// sibling `param_default_string_given_int_warns_arg_type_mismatch`.
 ///
 /// RED today: same walk gap as the Geometry probe above.
 #[test]
-fn port_member_string_param_default_given_int_warns() {
-    assert_single_arg_type_mismatch_warning(
+fn port_member_string_param_default_given_int_errors() {
+    assert_single_arg_type_mismatch_error(
         SRC_PORT_MEMBER_STRING_DEFAULT_GIVEN_INT,
         "mount.label",
         "port member String ← Int",
@@ -1020,14 +1023,14 @@ structure def Root {
 "#;
 
 /// `Type::StructureRef` arm: a port-member `Widget` (StructureRef) param
-/// defaulted to a `String` literal must warn — a clearly-incompatible
+/// defaulted to a `String` literal must be REJECTED — a clearly-incompatible
 /// primitive default, not the intentionally-lenient StructureRef↔StructureRef
 /// case ([`structureref_param_default_with_different_structureref_silently_accepted`]
 /// in `conformance/mod.rs`, which this probe deliberately does not disturb).
 ///
 /// RED today: same walk gap as the Geometry probe above.
 #[test]
-fn port_member_structureref_param_default_given_string_warns() {
+fn port_member_structureref_param_default_given_string_errors() {
     let module = compile_source_with_stdlib(SRC_PORT_MEMBER_STRUCTUREREF_DEFAULT_GIVEN_STRING);
     let diags = ctor_conformance_diags(&module);
     assert_eq!(
@@ -1038,8 +1041,10 @@ fn port_member_structureref_param_default_given_string_warns() {
     );
     assert_eq!(
         diags[0].severity,
-        Severity::Warning,
-        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        Severity::Error,
+        "param-default conformance is knob-governed, and δ (#5306) flipped the \
+         knob to `Error`. Restated as a literal because the knob is `pub(crate)` \
+         and unreachable from an integration test. Got: {:?}",
         diags[0]
     );
     assert_eq!(
@@ -1111,7 +1116,7 @@ struct PortParityCase {
 /// about the port diagnostics (the rendered fallback type below) reads it off the
 /// compile this helper already paid for rather than compiling the whole stdlib a
 /// third time — the same convention as
-/// [`assert_single_arg_type_mismatch_warning_in`].
+/// [`assert_single_arg_type_mismatch_error_in`].
 fn assert_port_parity_with_top_level(case: &PortParityCase) -> CompiledModule {
     let PortParityCase {
         label,
@@ -1162,12 +1167,14 @@ const PORT_PARITY_CASES: &[PortParityCase] = &[
                         structure def Root {\n    param w : Length = 5kg\n}\n",
         port_src: "module test.parity_dim\ntrait P {}\n\
                    structure def Root {\n    port mount : P {\n        param w : Length = 5kg\n    }\n}\n",
-        // Two COMPLEMENTARY emitters, not a double-report: the Error is
+        // Two COMPLEMENTARY emitters, not a double-report: the first is
         // `check_param_default_type`'s declared-vs-initializer dimension rule,
-        // the Warning is the ctor-conformance walk this task widened.
+        // the second is the ctor-conformance walk #7174 widened. Both are
+        // `Error` since δ (#5306), so severity no longer tells them apart —
+        // the CODE does, which is why both columns are pinned.
         expected: &[
             (Severity::Error, DiagnosticCode::ParamDefaultTypeMismatch),
-            (Severity::Warning, DiagnosticCode::ArgTypeMismatch),
+            (Severity::Error, DiagnosticCode::ArgTypeMismatch),
         ],
     },
     PortParityCase {
@@ -1176,7 +1183,7 @@ const PORT_PARITY_CASES: &[PortParityCase] = &[
                         structure def Root {\n    param w : Length = 5\n}\n",
         port_src: "module test.parity_bare\ntrait P {}\n\
                    structure def Root {\n    port mount : P {\n        param w : Length = 5\n    }\n}\n",
-        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+        expected: &[(Severity::Error, DiagnosticCode::ArgTypeMismatch)],
     },
     PortParityCase {
         label: "String ← 42 (general concrete leaf)",
@@ -1184,7 +1191,7 @@ const PORT_PARITY_CASES: &[PortParityCase] = &[
                         structure def Root {\n    param label : String = 42\n}\n",
         port_src: "module test.parity_str\ntrait P {}\n\
                    structure def Root {\n    port mount : P {\n        param label : String = 42\n    }\n}\n",
-        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+        expected: &[(Severity::Error, DiagnosticCode::ArgTypeMismatch)],
     },
 ];
 
@@ -1201,8 +1208,8 @@ fn port_param_default_diagnostics_match_top_level() {
 }
 
 /// An UNANNOTATED port-body param takes the `Type::dimensionless_scalar()`
-/// language fallback, so an enum default at it warns `Enum(…)` vs `Real` — the
-/// same fallback, and the same warning, as the unannotated top-level form.
+/// language fallback, so an enum default at it is rejected `Enum(…)` vs `Real` — the
+/// same fallback, and the same diagnostic, as the unannotated top-level form.
 ///
 /// This is the behaviour that forces `examples/stdlib/ports_breadth.ri`'s two
 /// enum port params to carry annotations. Pinning it here stops a future "just
@@ -1218,7 +1225,7 @@ fn port_unannotated_param_default_takes_real_fallback_like_top_level() {
                         structure def Root {\n    param c = Color.Red\n}\n",
         port_src: "module test.parity_unann\nenum Color { Red, Green }\ntrait P {}\n\
                    structure def Root {\n    port mount : P {\n        param c = Color.Red\n    }\n}\n",
-        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+        expected: &[(Severity::Error, DiagnosticCode::ArgTypeMismatch)],
     };
     let port = assert_port_parity_with_top_level(&case);
 
@@ -5734,14 +5741,13 @@ structure CtorMisspelledLabelProbe {
     );
     assert_eq!(
         judging[0].severity,
-        Severity::Warning,
-        "ε emits at the `CTOR_FIELD_CONFORMANCE_SEVERITY` knob, whose value is \
-         `Warning` pre-δ. The knob is `pub(crate)` inside a private \
+        Severity::Error,
+        "ε emits at the `CTOR_FIELD_CONFORMANCE_SEVERITY` knob, which δ (#5306) \
+         flipped to `Error`. The knob is `pub(crate)` inside a private \
          `conformance` module, so an integration-test binary cannot name it \
-         and has to restate the value — δ's one-const flip must therefore move \
-         THIS line together with every other restatement of it: the sibling \
-         `Severity::Warning` pins earlier in this file and the ones in \
-         `harness_mechanics/modal_options_validation_tests.rs`. Got: {:?}",
+         and has to restate the value — that independent restatement is the only \
+         thing that makes the flip checkable, so it moved with the sibling pins \
+         earlier in this file. Got: {:?}",
         judging[0]
     );
     assert!(
