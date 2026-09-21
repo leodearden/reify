@@ -5407,9 +5407,9 @@ fn profile_polygon(
     // clears the compiler-side arity guard and used to survive all the way to
     // a late, opaque `Mesh2dError::DegenerateBoundary`. Catch it here instead.
     // The check is on `abs()`, so a clockwise (negative-area) ring is fine —
-    // winding order is not this gate's business. Self-intersection is
-    // deliberately NOT detected here (an O(n²) sweep with robust predicates is
-    // materially different engineering; tracked separately as #5666).
+    // winding order is not this gate's business. A ring that encloses area but
+    // does so more than once is a separate defect, caught by the sweep that
+    // follows.
     //
     // The shoelace formula is the SHARED one — `reify_solver_elastic`'s
     // crate-root `ring_signed_area_2d`, the very function `validate_boundary`
@@ -5433,6 +5433,24 @@ fn profile_polygon(
             signed_area
         )));
         return Err(format!("degenerate (zero-area) {} profile", kind));
+    }
+    // A ring can clear the area gate and still describe no well-defined
+    // region, by crossing itself. Same shared-predicate routing as the area
+    // check above, and same rejection shape. Runs SECOND deliberately: this
+    // sweep is O(n²) where the area test is O(n), and a ring that is both
+    // zero-area and self-crossing should be diagnosed by the more fundamental
+    // defect — pinned by `..._zero_area_bowtie_reports_degeneracy`.
+    //
+    // What counts as a crossing, and why the predicate carries no tolerance,
+    // is stated once on `ring_self_intersects_2d` itself; it is not restated
+    // here, so there is no second copy to drift.
+    if let Some((i, j)) = reify_solver_elastic::ring_self_intersects_2d(&points) {
+        diagnostics.push(Diagnostic::warning(format!(
+            "{} profile dropped: edge {} crosses edge {} \
+             (the ring must not self-intersect)",
+            kind, i, j
+        )));
+        return Err(format!("self-intersecting {} profile", kind));
     }
     Ok(reify_ir::GeometryOp::PolygonProfile { points })
 }
