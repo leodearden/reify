@@ -3714,9 +3714,10 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 ///   • **`PinnedSupport`** — pin only the transverse (Z) DOF on every node of the
 ///     named face, leaving the bending rotation `dw/dx` free (it is carried by
 ///     the axial `u(z)`, not by `w`) — but ONLY on a beam-axis end face of a
-///     model that carries another support. A lone or non-beam-axis pinned face
-///     clamps instead, matching `PinnedOnTetEquivalentToFixed`; see
-///     [`face_realization`] for why that scoping is load-bearing.
+///     model whose supports name another distinct recognized face. A lone or
+///     non-beam-axis pinned face clamps instead, matching
+///     `PinnedOnTetEquivalentToFixed`; see [`face_realization`] for why that
+///     scoping is load-bearing.
 ///
 ///   • **Simply-supported (pin-pin) special case** — when BOTH beam-axis end
 ///     faces (`"x_min"` AND `"x_max"`) are named AND every support naming an end
@@ -3760,14 +3761,15 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 /// # Diagnostics
 ///
 /// Returns a [`DirichletRealization`], not a bare vector, because the
-/// `PinnedSupport` realization DECISION is count-dependent and would otherwise
-/// be invisible: adding or removing a support elsewhere on the body silently
-/// re-realizes a pinned beam end (clamp ⇄ transverse pin), and the author's only
-/// observable would be a frequency that moved. Every such face therefore carries
-/// one `I_ModalPinnedFaceRealization` `Severity::Info` diagnostic naming what it
-/// was realized as AND why — see
-/// [`pinned_end_face_realization_diagnostics`]. Numbers are unaffected; this is
-/// a reporting channel only.
+/// `PinnedSupport` realization decision depends on whether the model's
+/// supports name ANOTHER DISTINCT RECOGNIZED face, and would otherwise be
+/// invisible: naming or un-naming a second face elsewhere on the body
+/// silently re-realizes a pinned beam end (clamp ⇄ transverse pin), and the
+/// author's only observable would be a frequency that moved. Every such face
+/// therefore carries one `I_ModalPinnedFaceRealization` `Severity::Info`
+/// diagnostic naming what it was realized as AND why — see
+/// [`pinned_end_face_realization_diagnostics`]. Numbers are unaffected; this
+/// is a reporting channel only.
 fn build_dirichlet_bcs(
     options: &Value,
     nodes: &[[f64; 3]],
