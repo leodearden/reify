@@ -3888,14 +3888,15 @@ struct DirichletRealization {
 /// # Why this exists
 ///
 /// [`face_realization`] decides what a `PinnedSupport` on a beam end constrains
-/// from a count of the model's DISTINCT named faces, i.e. from something the
-/// author did NOT write on that support. Going from `[Pinned("x_min")]` to
-/// `[Pinned("x_min"), Fixed("y_min")]` re-realizes x_min from a full 3-DOF clamp
-/// to a Z-only transverse pin, and vice versa on removal — a change of
-/// idealization on a face that was never edited. Without a diagnostic the only
-/// observable is a frequency that moved, which is the same
-/// silent-BC-reinterpretation failure mode this task closes, merely narrowed
-/// from "the kind is ignored" to "the kind is read in a context you cannot see".
+/// from whether the model's supports name another distinct recognized face,
+/// i.e. from something the author did NOT write on that support. Going from
+/// `[Pinned("x_min")]` to `[Pinned("x_min"), Fixed("y_min")]` re-realizes
+/// x_min from a full 3-DOF clamp to a Z-only transverse pin, and vice versa on
+/// removal — a change of idealization on a face that was never edited.
+/// Without a diagnostic the only observable is a frequency that moved, which
+/// is the same silent-BC-reinterpretation failure mode this task closes,
+/// merely narrowed from "the kind is ignored" to "the kind is read in a
+/// context you cannot see".
 ///
 /// The scoping argument in [`face_realization`] stands: no reachable
 /// `PinTransverse` configuration is a mechanism. This does not change any
@@ -3906,12 +3907,13 @@ struct DirichletRealization {
 /// # What is reported, and what is not
 ///
 /// One note per distinct face, not per support: `[Pinned("x_min"),
-/// Pinned("x_min")]` is one face (the same `face_bound` set the count runs over,
-/// so the message can never disagree with the decision it describes) and gets
-/// one note. `FixedSupport` is silent — it clamps unconditionally, so there is
-/// nothing context-dependent to explain. A `PinnedSupport` on a NON-end face is
-/// silent for the same reason (it always clamps). A `PinnedSupport` whose target
-/// names no recognized face is silent because it selects nothing at all.
+/// Pinned("x_min")]` is one face (the same `face_bound` predicate the decision
+/// itself reads, so the message can never disagree with the decision it
+/// describes) and gets one note. `FixedSupport` is silent — it clamps
+/// unconditionally, so there is nothing context-dependent to explain. A
+/// `PinnedSupport` on a NON-end face is silent for the same reason (it always
+/// clamps). A `PinnedSupport` whose target names no recognized face is silent
+/// because it selects nothing at all.
 fn pinned_end_face_realization_diagnostics(
     targets: &[(DeclaredSupport, String)],
     n_faces: usize,
@@ -3941,9 +3943,9 @@ fn pinned_end_face_realization_diagnostics(
             format!(
                 "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
                  transverse (Z) pin — the simply-supported beam idealization — because the \
-                 model's supports name {n_faces} distinct faces. Were this the only face \
-                 named, the SAME declaration would clamp all 3 translational DOFs instead and \
-                 the fundamental would rise."
+                 model's supports name another distinct recognized face. Were this the only \
+                 face named, the SAME declaration would clamp all 3 translational DOFs \
+                 instead and the fundamental would rise."
             )
         } else {
             format!(
