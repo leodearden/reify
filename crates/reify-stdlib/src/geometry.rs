@@ -4223,6 +4223,244 @@ mod tests {
         assert!(eval_builtin("frame_at", &[o, Value::Real(1.0), Value::Real(2.0)]).is_undef());
     }
 
+    // ── η LENGTH gate (task 6591): the four POINT / PLANE-ORIGIN constructors ─
+    //
+    // `midplane` / `axis_through` / `plane_through` / `frame_at` REQUIRE LENGTH
+    // of every POSITION operand. The dimension-AGREEMENT rule these rows replace
+    // admitted any shared dimension, so a wholly bare call built a bare-origin
+    // datum and exited 0 — the same R11 hole ε shut at `plane_xy` / `axis_x`, one
+    // family over (units-length η, task 6591).
+    //
+    // DIRECTION / unit-vector operands are NOT gated: `frame_at`'s x/z arrive as
+    // `Value::Direction` (three plain f64 fields — no dimension to gate) and plane
+    // NORMALS keep their dimension-agnostic decode, because a unit vector
+    // legitimately has bare components (decision D3).
+
+    /// A `Value::Plane` whose ORIGIN carries `dim`, with the bare unit +z normal.
+    ///
+    /// The unit-level equivalent of `frame3(point3(…), orient_identity()).xy_plane`
+    /// — which, once this gate lands, is the only `.ri` route left to a
+    /// bare-origin Plane (`frame3` validates its origin's SHAPE and never its
+    /// dimension; `Frame.xy_plane` clones it verbatim).
+    fn plane_with_origin(xyz: [f64; 3], dim: DimensionVector) -> Value {
+        Value::Plane {
+            origin: Box::new(super::make_point3(xyz, dim)),
+            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+        }
+    }
+
+    /// The +x / +z `Value::Direction` pair every `frame_at` row below passes.
+    /// Well-formed on purpose: the only thing under test is the ORIGIN.
+    fn unit_x_z_directions() -> (Value, Value) {
+        (
+            Value::Direction {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            Value::Direction {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+        )
+    }
+
+    /// FLIPPING THIS ROW IS THE FIX, NOT A REGRESSION — `midplane`'s half of η.
+    ///
+    /// Two bare-origin planes AGREE on their (dimensionless) origin dimension, so
+    /// the rule this replaces accepted them and returned a bare-origin Plane at
+    /// exit 0. The mixed rows pin that the gate is per-operand, not a re-spelling
+    /// of agreement, and the MASS row pins it as "LENGTH and nothing else".
+    #[test]
+    fn midplane_requires_length_plane_origins() {
+        let bare = plane_with_origin([0.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+        let heavy = plane_with_origin([1.0, 2.0, 3.0], DimensionVector::MASS);
+        let heavier = plane_with_origin([4.0, 5.0, 6.0], DimensionVector::MASS);
+        let long = plane_at_z(0.010);
+        for (label, a, b) in [
+            ("bare, bare", bare.clone(), bare.clone()),
+            // The two AGREEING non-LENGTH rows are what pin the gate as "LENGTH
+            // and nothing else" rather than merely "not bare": the rule this
+            // replaces compared the two origins to each other, so both of these
+            // built a datum at exit 0.
+            ("MASS, MASS", heavy.clone(), heavier),
+            ("bare, LENGTH", bare.clone(), long.clone()),
+            ("LENGTH, bare", long.clone(), bare),
+            ("MASS, LENGTH", heavy.clone(), long.clone()),
+            ("LENGTH, MASS", long, heavy),
+        ] {
+            assert!(
+                eval_builtin("midplane", &[a, b]).is_undef(),
+                "midplane({label}) must be Undef: both plane origins expect Length"
+            );
+        }
+    }
+
+    /// FLIPPING THIS ROW IS THE FIX, NOT A REGRESSION — the task's HEADLINE case.
+    ///
+    /// `axis_through(point3(0,0,0), point3(0,0,1))` measured as
+    /// `axis(point(0, 0, 0), vec(0, 0, 1))` at exit 0: a bare-origin Axis that
+    /// task δ's consumer-side gate then rejects one layer later, 1000× out.
+    #[test]
+    fn axis_through_requires_length_points() {
+        let bare = super::make_point3([0.0, 0.0, 1.0], DimensionVector::DIMENSIONLESS);
+        let bare_origin = super::make_point3([0.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+        let angular = super::make_point3([1.0, 2.0, 3.0], DimensionVector::ANGLE);
+        let angular_far = super::make_point3([1.0, 2.0, 7.0], DimensionVector::ANGLE);
+        let long = point3_len(0.0, 0.0, 0.010);
+        for (label, a, b) in [
+            ("bare, bare", bare_origin, bare.clone()),
+            // AGREEING but not LENGTH, and deliberately NON-coincident so the
+            // degeneracy guard cannot be what rejects it. The rule this replaces
+            // built an Axis here at exit 0.
+            ("ANGLE, ANGLE", angular.clone(), angular_far),
+            ("bare, LENGTH", bare.clone(), long.clone()),
+            ("LENGTH, bare", long.clone(), bare),
+            ("ANGLE, LENGTH", angular.clone(), long.clone()),
+            ("LENGTH, ANGLE", long, angular),
+        ] {
+            assert!(
+                eval_builtin("axis_through", &[a, b]).is_undef(),
+                "axis_through({label}) must be Undef: both points expect Length"
+            );
+        }
+    }
+
+    /// FLIPPING THIS ROW IS THE FIX, NOT A REGRESSION — `plane_through`'s half.
+    #[test]
+    fn plane_through_requires_length_points() {
+        let bare_o = super::make_point3([0.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+        let bare_x = super::make_point3([1.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+        let bare_y = super::make_point3([0.0, 1.0, 0.0], DimensionVector::DIMENSIONLESS);
+        let heavy = super::make_point3([1.0, 2.0, 3.0], DimensionVector::MASS);
+        let heavy_x = super::make_point3([5.0, 2.0, 3.0], DimensionVector::MASS);
+        let heavy_y = super::make_point3([1.0, 6.0, 3.0], DimensionVector::MASS);
+        let l1 = point3_len(0.0, 0.0, 0.0);
+        let l2 = point3_len(0.010, 0.0, 0.0);
+        let l3 = point3_len(0.0, 0.010, 0.0);
+        for (label, a, b, c) in [
+            ("bare, bare, bare", bare_o, bare_x.clone(), bare_y.clone()),
+            // AGREEING but not LENGTH, and deliberately NON-collinear so the
+            // degeneracy guard cannot be what rejects it.
+            ("MASS, MASS, MASS", heavy.clone(), heavy_x, heavy_y),
+            ("LENGTH, LENGTH, bare", l1.clone(), l2.clone(), bare_y),
+            ("LENGTH, bare, LENGTH", l1.clone(), bare_x, l3.clone()),
+            ("MASS, LENGTH, LENGTH", heavy, l2.clone(), l3.clone()),
+        ] {
+            assert!(
+                eval_builtin("plane_through", &[a, b, c]).is_undef(),
+                "plane_through({label}) must be Undef: all three points expect Length"
+            );
+        }
+    }
+
+    /// FLIPPING THIS ROW IS THE FIX, NOT A REGRESSION — `frame_at`'s half, which
+    /// never checked its origin's dimension AT ALL (not even for agreement).
+    ///
+    /// Both axis arguments are well-formed `Value::Direction`s, so the ONLY thing
+    /// these rows can be rejecting is the origin.
+    #[test]
+    fn frame_at_requires_a_length_origin() {
+        let (xdir, zdir) = unit_x_z_directions();
+        for (label, origin) in [
+            (
+                "bare",
+                super::make_point3([0.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS),
+            ),
+            (
+                "MASS",
+                super::make_point3([1.0, 2.0, 3.0], DimensionVector::MASS),
+            ),
+        ] {
+            assert!(
+                eval_builtin("frame_at", &[origin, xdir.clone(), zdir.clone()]).is_undef(),
+                "frame_at({label} origin) must be Undef: the origin expects Length"
+            );
+        }
+    }
+
+    // ── η LENGTH gate: the INSEPARABLE positive controls ─────────────────────
+    //
+    // A gate that rejected EVERYTHING would satisfy every rejection row above
+    // perfectly. Each control drives the same builtin with LENGTH positions and
+    // DISTINCT NON-ZERO coordinates, so it can tell a correct implementation from
+    // a hardcoded one — the lesson task 5746's review round 1 recorded.
+
+    /// A LENGTH `midplane` still bisects. The origin is REBUILT at the shared
+    /// dimension (`make_point3(mid, …)`), so this pins the geometry and the
+    /// dimension rather than a byte-identical round-trip.
+    #[test]
+    fn midplane_of_length_planes_still_bisects() {
+        let result = eval_builtin("midplane", &[plane_at_z(0.002), plane_at_z(0.008)]);
+        let Value::Plane { origin, normal } = result else {
+            panic!("expected Value::Plane, got {result:?}");
+        };
+        approx3(comps3(&origin), [0.0, 0.0, 0.005]);
+        assert_eq!(
+            super::decompose_point3(&origin).map(|(_, dim)| dim),
+            Some(DimensionVector::LENGTH),
+            "the bisecting plane's origin must stay LENGTH"
+        );
+        approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+    }
+
+    /// A LENGTH `axis_through` still builds its Axis, carrying the first point
+    /// VERBATIM (the impl clones it) beside a DIMENSIONLESS direction — D3's
+    /// scope lock.
+    #[test]
+    fn axis_through_length_points_round_trip_origin_and_keep_direction_bare() {
+        let pa = point3_len(0.001, 0.002, 0.003);
+        let pb = point3_len(0.001, 0.002, 0.007);
+        let result = eval_builtin("axis_through", &[pa.clone(), pb]);
+        let Value::Axis { origin, direction } = result else {
+            panic!("expected Value::Axis, got {result:?}");
+        };
+        assert_eq!(*origin, pa, "a LENGTH origin must round-trip verbatim");
+        assert_eq!(
+            *direction,
+            super::make_real_vec3([0.0, 0.0, 1.0]),
+            "the synthesized direction stays dimensionless (decision D3)"
+        );
+    }
+
+    /// A LENGTH `plane_through` still builds its Plane, carrying `a` VERBATIM
+    /// beside a DIMENSIONLESS normal.
+    #[test]
+    fn plane_through_length_points_round_trip_origin_and_keep_normal_bare() {
+        let a = point3_len(0.001, 0.002, 0.003);
+        let b = point3_len(0.005, 0.002, 0.003);
+        let c = point3_len(0.001, 0.006, 0.003);
+        let result = eval_builtin("plane_through", &[a.clone(), b, c]);
+        let Value::Plane { origin, normal } = result else {
+            panic!("expected Value::Plane, got {result:?}");
+        };
+        assert_eq!(*origin, a, "a LENGTH origin must round-trip verbatim");
+        assert_eq!(
+            *normal,
+            super::make_real_vec3([0.0, 0.0, 1.0]),
+            "the synthesized normal stays dimensionless (decision D3)"
+        );
+    }
+
+    /// A LENGTH `frame_at` still builds its Frame, carrying the origin VERBATIM,
+    /// from x/z arguments that stay BARE `Value::Direction`s — D3's scope lock,
+    /// stated as behaviour: nothing here widens the gate to a unit vector.
+    #[test]
+    fn frame_at_length_origin_round_trips_from_bare_direction_axes() {
+        let (xdir, zdir) = unit_x_z_directions();
+        let origin = point3_len(0.004, 0.005, 0.006);
+        let result = eval_builtin("frame_at", &[origin.clone(), xdir, zdir]);
+        let Value::Frame { origin: o, basis } = result else {
+            panic!("expected Value::Frame, got {result:?}");
+        };
+        assert_eq!(*o, origin, "a LENGTH origin must round-trip verbatim");
+        assert!(
+            matches!(*basis, Value::Orientation { .. }),
+            "expected an Orientation basis, got {basis:?}"
+        );
+    }
+
     // ── step-7: frame_to_frame tests ─────────────────────────────────────────
 
     /// Helper: build a Frame with given origin (LENGTH) and orientation.
