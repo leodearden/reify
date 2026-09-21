@@ -850,9 +850,11 @@ pub fn solve_elastic_static_trampoline(
             // for the shell path (PRD §7). Undef = honest-absence sentinel,
             // consistent with the tet convention for frame/shell_channels.
             ("divergence".to_string(), Value::Undef),
-            // task 4565/β: gradient and curl are tet-only derivative channels.
+            // task 4565/β: gradient and curl are tet-only derivative channels;
+            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set.
             ("gradient".to_string(), Value::Undef),
             ("curl".to_string(), Value::Undef),
+            ("rotation".to_string(), Value::Undef),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -1196,6 +1198,12 @@ pub fn solve_elastic_static_trampoline(
     let stress_field = super::sampled_stress_field(stress_sf);
     let div_field = super::sampled_divergence_field(div_sf);
     let grad_field = super::sampled_gradient_field(grad_sf);
+    // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
+    // here rather than resampled independently — note there is deliberately NO
+    // 6th entry in the `resample_multi_nodal_to_grid` call above, so the channel
+    // costs no extra BVH pass and shares curl's grid bit-identically. Derived
+    // BEFORE `curl_sf` is moved into `sampled_curl_field` below.
+    let rotation_field = super::sampled_rotation_field(super::rotation_sf_from_curl(&curl_sf));
     let curl_field = super::sampled_curl_field(curl_sf);
 
     // ── A-posteriori adaptive refinement (task 4902; v1 mesh-free UNIFORM
@@ -1400,7 +1408,7 @@ pub fn solve_elastic_static_trampoline(
                     bc_override.clone(),
                 );
                 let status = run_adaptive_refinement(&mut problem, &budget, DORFLER_THETA)
-                    .expect("CantileverAdaptiveProblem::refine is Infallible");
+                    .expect("CantileverAdaptiveProblem's AdaptiveProblem seam is Infallible");
                 // Perf-cost visibility (reviewer_comprehensive/performance,
                 // task 4902 amendment): `refine` uniformly doubles all three
                 // grid axes per iteration (~8x DOF growth), so an
@@ -1595,6 +1603,10 @@ pub fn solve_elastic_static_trampoline(
         // Shell path emits Undef (PRD §7).
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
+        // ruling #6164: rotation = ∇×u / 2, the designated crossing where the
+        // radian enters (Vector3<Angle>). Derived from the curl SampledField at
+        // wrap time and stored nowhere. Shell path emits Undef (PRD §7).
+        ("rotation".to_string(), rotation_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -2199,6 +2211,13 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// | solve_time_ms     | (not stored in Value)                          | `0`             |
 /// | aposteriori       | see below (task #4942)                         | `None`          |
 ///
+/// `rotation` is intentionally ABSENT from this table: it is not extracted and
+/// not persisted. Ruling #6164 derives it from the `curl` slab at wrap time
+/// (`value_from_elastic_result`), because it is a pure ×½ of a slab already on
+/// the wire and the binary header is frozen (`curl_len` at a fixed byte offset,
+/// byte-exact golden test). So this direction needs no `rotation` arm, and
+/// existing persisted entries gain a correct `.rotation` for free.
+///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
 /// is set to `Vec::new()` on extraction; `value_from_elastic_result` does not
@@ -2464,9 +2483,24 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(sf) => super::sampled_gradient_field(sf),
         None => Value::Undef,
     };
-    let curl_field = match build_sf(er.curl.clone(), "curl") {
-        Some(sf) => super::sampled_curl_field(sf),
-        None => Value::Undef,
+    // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
+    // never persisted — the compute-contract wire header is frozen (`curl_len`
+    // at a fixed byte offset, byte-exact golden test), and rotation is a pure
+    // ×½ of a slab already on the wire. Deriving here means every EXISTING
+    // persisted cache entry gains a correct `.rotation` for free, with no
+    // format version bump and no new `elastic_result_from_value` extract arm.
+    //
+    // ONE `build_sf` feeds BOTH channels, mirroring the live tet path's single
+    // `curl_sf`. Splitting them into two independent `match` arms would both
+    // rebuild the slab twice on the cache-HIT path (the cheap one) and let a
+    // future edit to curl's reconstruction land on one arm only, silently
+    // desynchronising the two channels.
+    let (curl_field, rotation_field) = match build_sf(er.curl.clone(), "curl") {
+        Some(sf) => {
+            let rotation = super::sampled_rotation_field(super::rotation_sf_from_curl(&sf));
+            (super::sampled_curl_field(sf), rotation)
+        }
+        None => (Value::Undef, Value::Undef),
     };
 
     // shell_channels: None → Value::Undef; Some(ch) → ShellStress StructureInstance.
@@ -2520,6 +2554,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("divergence".to_string(), div_field),
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
+        ("rotation".to_string(), rotation_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -3495,7 +3530,7 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
     /// same `Infallible` for its synthetic stubs).
     type Error = std::convert::Infallible;
 
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         // The refinement loop is interruptible at CG granularity: a cancel
         // raised mid-loop bails out of the current solve and is turned into
         // `ComputeOutcome::Cancelled` by the wiring site's post-loop check. A
@@ -3548,11 +3583,12 @@ impl AdaptiveProblem for CantileverAdaptiveProblem {
         self.last_global_indicator = zz.global_relative_energy_error;
         self.last_n_dofs = n_dofs;
 
-        AdaptiveEstimate {
-            global_indicator: zz.global_relative_energy_error,
+        Ok(AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
             per_element: zz.per_element,
             n_dofs,
-        }
+            qoi: None,
+        })
     }
 
     fn refine(&mut self, _marked: &[usize]) -> Result<(), Self::Error> {
@@ -3760,7 +3796,7 @@ impl RealizedAdaptiveProblem {
     /// fail on its first solve. Making that promise real in the SIGNATURE (an
     /// earlier revision returned `Self` and swallowed the rejection into an
     /// empty `current_sizes`) is what keeps `solve_and_estimate` free of a
-    /// degenerate arm that would have reported `global_indicator: 0.0` — read
+    /// degenerate arm that would have reported `relative_error: 0.0` — read
     /// by `run_adaptive_refinement` as "converged with zero error" on a mesh
     /// that was never solved.
     #[allow(clippy::too_many_arguments)]
@@ -3817,7 +3853,7 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
     ///
     /// Never touches `surface` — only `refine` does — so this runs in a
     /// gmsh-free build exactly as it does in a gmsh build.
-    fn solve_and_estimate(&mut self) -> AdaptiveEstimate {
+    fn solve_and_estimate(&mut self) -> Result<AdaptiveEstimate, Self::Error> {
         // REUSE: `volume_mesh_to_solver_mesh` already performs both the P1
         // gate AND the orphan-vertex compaction that real gmsh output demands
         // (an element-unreferenced node gets no stiffness contribution,
@@ -3826,9 +3862,9 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         // `new` returns `None` for a non-widenable seed and `refine` raises a
         // `RefineError` for a non-widenable remesh result, so `self.volume_mesh`
         // is always widenable here. An earlier revision carried a "degrade
-        // honestly" arm returning `global_indicator: 0.0`; that was the opposite
+        // honestly" arm returning `relative_error: 0.0`; that was the opposite
         // of honest — `run_adaptive_refinement` tests
-        // `est.global_indicator <= budget.target_accuracy` FIRST, so 0.0 reads as
+        // `est.relative_error <= budget.target_accuracy` FIRST, so 0.0 reads as
         // `Converged { final_indicator: 0.0 }` and the caller is told the solve
         // converged perfectly on a mesh that was never solved
         // (reviewer_comprehensive amendment).
@@ -3889,11 +3925,12 @@ impl AdaptiveProblem for RealizedAdaptiveProblem {
         self.last_global_indicator = zz.global_relative_energy_error;
         self.last_n_dofs = n_dofs;
 
-        AdaptiveEstimate {
-            global_indicator: zz.global_relative_energy_error,
+        Ok(AdaptiveEstimate {
+            relative_error: zz.global_relative_energy_error,
             per_element: zz.per_element,
             n_dofs,
-        }
+            qoi: None,
+        })
     }
 
     /// Consume the Dörfler-marked set by remeshing the volume under a
@@ -4114,58 +4151,23 @@ fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
     // Identity material frame: global axes = material principal axes.
     const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
-    match data.type_name.as_str() {
-        "OrthotropicMaterial" => {
-            let e1 = scalar_si_field(data, "e1")?;
-            let e2 = scalar_si_field(data, "e2")?;
-            let e3 = scalar_si_field(data, "e3")?;
-            let g12 = scalar_si_field(data, "g12")?;
-            let g13 = scalar_si_field(data, "g13")?;
-            let g23 = scalar_si_field(data, "g23")?;
-            let nu12 = real_field(data, "nu12")?;
-            let nu13 = real_field(data, "nu13")?;
-            let nu23 = real_field(data, "nu23")?;
-            let law = OrthotropicMaterial {
-                e1,
-                e2,
-                e3,
-                g12,
-                g13,
-                g23,
-                nu12,
-                nu13,
-                nu23,
-            };
-            let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
-            Ok(MaterialModel::Anisotropic(aniso))
-        }
-        "TransverseIsotropicMaterial" => {
-            let e_in_plane = scalar_si_field(data, "e_in_plane")?;
-            let e_axial = scalar_si_field(data, "e_axial")?;
-            let nu_in_plane = real_field(data, "nu_in_plane")?;
-            let nu_axial = real_field(data, "nu_axial")?;
-            let g_axial = scalar_si_field(data, "g_axial")?;
-            let law = TransverseIsotropicMaterial {
-                e_in_plane,
-                e_axial,
-                nu_in_plane,
-                nu_axial,
-                g_axial,
-            };
-            let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
-            Ok(MaterialModel::Anisotropic(aniso))
-        }
-        _ => {
-            // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
-            // from the pre-δ trampoline). `val` is already known to be
-            // Value::StructureInstance here — the `data` match above returns
-            // Err on any other variant before control reaches this arm — so
-            // extract_material's own ExpectedStructureInstance check is
-            // defensive/unreachable from this call site; it exists so the leaf
-            // is directly unit-testable on a non-StructureInstance input (see
-            // extract_material_rejects_non_structure_instance).
-            Ok(MaterialModel::Isotropic(extract_material(val)?))
-        }
+    if is_named_anisotropic_law(&data.type_name) {
+        Ok(MaterialModel::Anisotropic(law_from_value(data, IDENTITY)?))
+    } else {
+        // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
+        // from the pre-δ trampoline). `val` is already known to be
+        // Value::StructureInstance here — the `data` match above returns
+        // Err on any other variant before control reaches this arm — so
+        // extract_material's own ExpectedStructureInstance check is
+        // defensive/unreachable from this call site; it exists so the leaf
+        // is directly unit-testable on a non-StructureInstance input (see
+        // extract_material_rejects_non_structure_instance).
+        //
+        // Deliberately NOT routed through `law_from_value`/`from_law`:
+        // this arm returns the bare `IsotropicElastic` as
+        // `MaterialModel::Isotropic`, not an `AnisotropicMaterial`, so a
+        // homogeneous isotropic field keeps its own compute path.
+        Ok(MaterialModel::Isotropic(extract_material(val)?))
     }
 }
 
@@ -4462,23 +4464,35 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
     })
 }
 
-/// Convert an `AnisotropicMaterial { law: OrthotropicMaterial|TransverseIsotropicMaterial,
-/// frame: MaterialFrame }` Value to a Rust `AnisotropicMaterial`, honouring the
-/// frame's x/y/z axes as the local → global rotation (columns = local basis in global).
+/// Convert an `AnisotropicMaterial { law: ConstitutiveLaw, frame: MaterialFrame }`
+/// Value to a Rust `AnisotropicMaterial`, honouring the frame's x/y/z axes as
+/// the local → global rotation (columns = local basis in global).
 ///
 /// PRD compute-fea-hardening D5: Result-ified leaf extractor. Returns
-/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
-/// with one deliberate, permanent exception: an unsupported law `type_name`
-/// (neither `OrthotropicMaterial` nor `TransverseIsotropicMaterial`) still
-/// panics. The fixed C3 taxonomy (`FeaValueShapeError`'s 5 variants, reused
-/// here — not redefined) has no shape for "type_name is neither known law";
-/// it describes `Value`-variant mismatches and missing fields, not unknown
-/// symbolic dispatch tags. That branch is also unreachable-by-construction
-/// (the DSL only ever emits `Orthotropic`/`TransverseIsotropic` laws into
-/// `AnisotropicMaterial.law`), mirroring `classify_material`'s own
-/// type_name dispatch, which likewise sits outside the shape-error
-/// taxonomy. This is not deferred to a later D-task — see the design
-/// decision on this task's plan.
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`:
+/// `law`'s `type_name` dispatches three ways (the shared `law_from_value`) —
+/// `OrthotropicMaterial`, `TransverseIsotropicMaterial`, or (task #7210) an
+/// isotropic-structural fallback that reads `youngs_modulus`/`poisson_ratio`
+/// via `isotropic_from_data`. The prior "unsupported law type" panic (task
+/// #5084) rested on the premise that the DSL only ever emits the two named
+/// laws here; that premise was false — `AnisotropicMaterial.law` is declared
+/// `ConstitutiveLaw` in `constitutive.ri`, and every isotropic preset in
+/// `materials_fea.ri` is a `DampedMaterial : ElasticMaterial + Damped`,
+/// hence a legal `law` — so the panic was live, not merely prospective. A
+/// law that fits none of the three SHAPES now surfaces
+/// `Err(FeaValueShapeError::ExpectedScalar)` naming both the unrecognised
+/// `type_name` and the underlying missing/malformed field (task #7210
+/// review round 2 — see `annotate_law_type`), still within the existing
+/// fixed C3 taxonomy. This is the ONE place this history is
+/// recorded — the isotropic-law tests below reference it rather than
+/// restate it.
+///
+/// This closes the remaining SHAPE panic only: a VALUE-domain violation
+/// (`youngs_modulus <= 0` or `poisson_ratio` outside `(-1, 0.5)`) still trips
+/// `IsotropicElastic::debug_assert_valid` in debug builds, inside
+/// `AnisotropicMaterial::from_law`'s `d_matrix_local()` call — pre-existing
+/// behaviour this function shares with the two named-law arms, not a check
+/// it performs itself.
 ///
 /// Its 3 call sites (`classify_material_as_printed_zones`'s mat_wall/
 /// mat_skin/mat_infill) thread the `Result` via `?` (task D6).
@@ -4546,7 +4560,9 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
         ]
     };
 
-    // Parse the law: OrthotropicMaterial or TransverseIsotropicMaterial.
+    // Parse the law: destructure to a StructureInstance, then dispatch on
+    // type_name via the shared `law_from_value` (OrthotropicMaterial,
+    // TransverseIsotropicMaterial, or an isotropic fallback).
     let law_data = match law_val {
         Value::StructureInstance(d) => d,
         other => {
@@ -4557,6 +4573,26 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
         }
     };
 
+    law_from_value(law_data, frame)
+}
+
+/// Resolve a law `Value::StructureInstance` to an `AnisotropicMaterial`
+/// under the given local→global `frame`. The shared three-way `type_name`
+/// dispatch — `OrthotropicMaterial`, `TransverseIsotropicMaterial`, or
+/// (structural, NOT name-based) an isotropic fallback — used by both
+/// `classify_material`'s two named-law arms (`frame = IDENTITY`) and
+/// `anisotropic_material_from_value` (the parsed `MaterialFrame`).
+/// `classify_material`'s own guard gates on `is_named_anisotropic_law`
+/// instead of repeating this `match`'s name list, so the two dispatches
+/// can't drift.
+///
+/// Takes the already-destructured `&StructureInstanceData` only — no
+/// separate `&Value` — so there is no pair of arguments a future caller
+/// could mismatch (task #7210 review round 2 suggestion 1).
+fn law_from_value(
+    law_data: &StructureInstanceData,
+    frame: [[f64; 3]; 3],
+) -> Result<AnisotropicMaterial, FeaValueShapeError> {
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
@@ -4582,13 +4618,68 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
             };
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
-        // Intentionally still a panic (not deferred): unreachable-by-construction
-        // (the DSL only emits Orthotropic/TransverseIsotropic laws) and outside
-        // FeaValueShapeError's fixed C3 taxonomy — see the function doc comment.
-        other => panic!(
-            "solve_elastic_static_trampoline: unsupported law type for \
-             AsPrintedZones AnisotropicMaterial: {:?}",
-            other
+        // Isotropic fallback (structural, NOT name-based) — every isotropic
+        // preset carries its OWN type_name (Steel_AISI_1045,
+        // Aluminium_6061_T6, ...) and authors may declare `structure def
+        // MySteel : DampedMaterial`, so presence of the
+        // youngs_modulus/poisson_ratio pair — not a name list — is the only
+        // sound discriminator (mirrors `classify_material`'s own isotropic
+        // `_` arm, which calls `extract_material` directly rather than
+        // through this function — see its comment for why). Reads straight
+        // off `law_data` via `isotropic_from_data`, so there is no second
+        // `&Value` that could describe a different StructureInstance.
+        //
+        // A failure here means `type_name` matched neither named arm above
+        // NOR the isotropic shape, so `annotate_law_type` folds the
+        // `type_name` into the diagnostic — otherwise the error would name
+        // only a missing/malformed field (e.g. "youngs_modulus") with no
+        // hint that the real defect is an unrecognised law type.
+        //
+        // Follow-on (#6879): when the resolved AnisotropicMaterial gains
+        // {rho, eta}, this arm must also read law.density / law.loss_factor —
+        // an isotropic DampedMaterial preset is exactly where a non-zero eta
+        // matters for #6883 (eta, MSE).
+        _ => {
+            let law = isotropic_from_data(law_data)
+                .map_err(|e| annotate_law_type(e, &law_data.type_name))?;
+            Ok(AnisotropicMaterial::from_law(&law, frame))
+        }
+    }
+}
+
+/// Whether `type_name` names one of `law_from_value`'s two dispatch-BY-NAME
+/// arms, as opposed to its structural isotropic fallback. Shared with
+/// `classify_material`'s own guard so the named-law list lives in exactly
+/// one place outside `law_from_value`'s `match` itself (task #7210 review
+/// round 2 suggestion 2) — adding a third named law only touches that
+/// `match` and this predicate, side by side.
+fn is_named_anisotropic_law(type_name: &str) -> bool {
+    matches!(type_name, "OrthotropicMaterial" | "TransverseIsotropicMaterial")
+}
+
+/// Fold a law's `type_name` into an isotropic-field-read failure from
+/// `law_from_value`'s fallback arm, so the diagnostic names the actual
+/// defect — a `type_name` that matched neither named anisotropic law nor
+/// the isotropic shape — instead of just the field that happened to be
+/// missing or malformed, which alone gives no hint the `type_name` went
+/// unrecognised at all (task #7210 review round 2 suggestion 3). Stays
+/// inside the fixed 5-variant `FeaValueShapeError` taxonomy: `MissingField`
+/// has no `got: String` to carry the extra context, so this re-emits as
+/// `ExpectedScalar`, whose `got` is already a free-form diagnostic string
+/// elsewhere in this module (see `scalar_si_field`'s comment).
+fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeError {
+    let reason = match err {
+        FeaValueShapeError::MissingField { field, .. } => format!("missing field {field:?}"),
+        FeaValueShapeError::ExpectedScalar { got, .. }
+        | FeaValueShapeError::ExpectedReal { got, .. }
+        | FeaValueShapeError::ExpectedStructureInstance { got, .. }
+        | FeaValueShapeError::ExpectedList { got, .. } => got,
+    };
+    FeaValueShapeError::ExpectedScalar {
+        context: "law_from_value (isotropic fallback)",
+        got: format!(
+            "law type_name {type_name:?} is neither OrthotropicMaterial nor \
+             TransverseIsotropicMaterial, and is not isotropic-shaped ({reason})"
         ),
     }
 }
@@ -4637,15 +4728,16 @@ fn real_field(
     }
 }
 
-/// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
-/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`.
-///
-/// PRD compute-fea-hardening D3: Result-ified leaf extractor. Returns
-/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
-/// the sole call site (`classify_material`'s isotropic fallback, D7) now
-/// propagates this `Result` directly via `?`; `classify_material`'s own sole
-/// production call site is the validate-all-inputs gate (D9/task 5087) in
-/// `solve_elastic_static_trampoline`.
+/// Read `youngs_modulus`/`poisson_ratio` off an already-destructured
+/// `StructureInstanceData` into `IsotropicElastic`. The data-taking core
+/// behind `extract_material` (below), and behind `law_from_value`'s
+/// isotropic fallback arm, which already holds the law's destructured
+/// `&StructureInstanceData` and calls straight in here — taking a second,
+/// independently-matched `&Value` there instead (as the pre-amendment
+/// `extract_material(law_val)` call did) would let a future caller pass a
+/// `law_data`/`val` pair describing two DIFFERENT `StructureInstance`s with
+/// no error, silently reading the wrong one's fields (task #7210 review
+/// round 2 suggestion 1).
 ///
 /// Note (task #5081 review round 3, suggestion 2): `scalar_si_field` accepts
 /// any `Value::Scalar` for `youngs_modulus` regardless of its `dimension`
@@ -4653,6 +4745,27 @@ fn real_field(
 /// pressure). This is pre-existing behavior, not a D3 regression — dimension
 /// checking is deferred to a later D-step, if/when the `FeaValueShapeError`
 /// taxonomy grows a variant for it.
+fn isotropic_from_data(
+    data: &StructureInstanceData,
+) -> Result<IsotropicElastic, FeaValueShapeError> {
+    let youngs_modulus = scalar_si_field(data, "youngs_modulus")?;
+    let poisson_ratio = real_field(data, "poisson_ratio")?;
+    Ok(IsotropicElastic {
+        youngs_modulus,
+        poisson_ratio,
+    })
+}
+
+/// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
+/// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`. Thin
+/// `&Value`-destructuring wrapper around `isotropic_from_data`.
+///
+/// PRD compute-fea-hardening D3: Result-ified leaf extractor. Returns
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
+/// the sole call site (`classify_material`'s isotropic fallback, D7) now
+/// propagates this `Result` directly via `?`; `classify_material`'s own sole
+/// production call site is the validate-all-inputs gate (D9/task 5087) in
+/// `solve_elastic_static_trampoline`.
 fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError> {
     let data = match val {
         Value::StructureInstance(d) => d,
@@ -4663,12 +4776,7 @@ fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError>
             })
         }
     };
-    let youngs_modulus = scalar_si_field(data, "youngs_modulus")?;
-    let poisson_ratio = real_field(data, "poisson_ratio")?;
-    Ok(IsotropicElastic {
-        youngs_modulus,
-        poisson_ratio,
-    })
+    isotropic_from_data(data)
 }
 
 /// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
@@ -6103,7 +6211,7 @@ mod tests {
     /// step-11 RED (task 4902): `CantileverAdaptiveProblem::solve_and_estimate`
     /// solves the coarse isotropic cantilever (tip load) at its current grid
     /// resolution and reports a Z-Z `AdaptiveEstimate`:
-    /// - `global_indicator` finite and in `[0, 1)` — this MEASURES the
+    /// - `relative_error` finite and in `[0, 1)` — this MEASURES the
     ///   empirical η_global magnitude the step-15 e2e converged-target `0.9`
     ///   must exceed (achievability basis for e2e case (a); see plan design
     ///   decisions — error energy cannot exceed solution energy in relative
@@ -6112,7 +6220,7 @@ mod tests {
     /// - `per_element.len()` == the solve's tet count.
     /// - `n_dofs` == `3 * n_nodes`.
     /// - the problem records `last_global_indicator` == the returned
-    ///   `global_indicator` (threaded into `aposteriori_adaptive_fields` even
+    ///   `relative_error` (threaded into `aposteriori_adaptive_fields` even
     ///   on a budget-capped `NotConverged` outcome — see step-7/8).
     ///
     /// RED: `CantileverAdaptiveProblem` does not exist yet → compile-fail
@@ -6136,12 +6244,14 @@ mod tests {
             None,
         );
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
 
         assert!(
-            est.global_indicator.is_finite() && (0.0..1.0).contains(&est.global_indicator),
-            "global_indicator must be finite and in [0, 1), got {}",
-            est.global_indicator
+            est.relative_error.is_finite() && (0.0..1.0).contains(&est.relative_error),
+            "relative_error must be finite and in [0, 1), got {}",
+            est.relative_error
         );
 
         // Default synthetic_grid_counts(1.0, 0.1) = (nx=60, ny=1, nz=6).
@@ -6160,8 +6270,8 @@ mod tests {
         );
 
         assert_eq!(
-            problem.last_global_indicator, est.global_indicator,
-            "the problem must record the returned global_indicator"
+            problem.last_global_indicator, est.relative_error,
+            "the problem must record the returned relative_error"
         );
     }
 
@@ -6235,7 +6345,9 @@ mod tests {
         // `refine` ran at least once: a fresh solve_and_estimate at the
         // problem's now-current (post-loop) grid resolution must report
         // strictly more dofs than the initial resolution.
-        let final_est = problem.solve_and_estimate();
+        let final_est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         assert!(
             final_est.n_dofs > initial_dofs,
             "expected refine() to have grown the mesh past the initial {} dofs, got {}",
@@ -9737,6 +9849,23 @@ mod tests {
                 "curl".to_string(),
                 super::super::sampled_curl_field(make_sf("curl", 3, 500.0)),
             ),
+            // ruling #6164: the live tet path emits a `rotation` channel derived
+            // from the curl SampledField (= curl/2), so the round-trip fixture
+            // must carry it too — it models what production actually produces.
+            //
+            // NOTE this makes the round trip a second, stronger guard on the
+            // derive: `elastic_result_from_value` deliberately does NOT extract
+            // rotation (no rotation slab is persisted — the wire header is
+            // frozen), so hash identity holds ONLY IF `value_from_elastic_result`
+            // re-derives byte-for-byte the same field from the curl slab. If the
+            // derive ever drifted between the live and cache paths, this test
+            // would red.
+            (
+                "rotation".to_string(),
+                super::super::sampled_rotation_field(super::super::rotation_sf_from_curl(
+                    &make_sf("curl", 3, 500.0),
+                )),
+            ),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -11437,24 +11566,47 @@ mod tests {
         }
     }
 
-    /// Amendment (task #5084 review, suggestion 1): `anisotropic_material_from_value`
-    /// must still `panic!` — not return `Err` — when the law `StructureInstance`'s
-    /// `type_name` is neither `OrthotropicMaterial` nor `TransverseIsotropicMaterial`.
-    /// This is the one deliberate, permanent exception documented on the function
-    /// (see doc comment and this task's design decision): the fixed
-    /// `FeaValueShapeError` taxonomy has no variant for "type_name is neither known
-    /// law", and the branch is unreachable-by-construction since the DSL only ever
-    /// emits the two known laws. Pinning this as `#[should_panic]` guards against a
-    /// future refactor (e.g. D6/D9) silently swallowing or downgrading this panic.
-    #[test]
-    #[should_panic(expected = "unsupported law type")]
-    fn anisotropic_material_from_value_panics_on_unsupported_law_type() {
-        let law = Value::StructureInstance(Box::new(StructureInstanceData {
+    /// Build an isotropic-shaped law `StructureInstance` with the given
+    /// `type_name` and `fields` — the shared builder behind
+    /// `isotropic_steel_law` and the isotropic-fallback rejection tests
+    /// below (task #7210 review round 1 suggestion 4).
+    fn isotropic_law(type_name: &str, fields: PersistentMap<String, Value>) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
-            type_name: "BogusMaterial".to_string(),
+            type_name: type_name.to_string(),
             version: 1,
-            fields: PersistentMap::new(),
-        }));
+            fields,
+        }))
+    }
+
+    /// A well-formed isotropic-shaped law — `type_name` is deliberately
+    /// neither `OrthotropicMaterial` nor `TransverseIsotropicMaterial` (a
+    /// real isotropic preset name instead), with `youngs_modulus`/
+    /// `poisson_ratio` fields satisfying
+    /// `IsotropicElastic::debug_assert_valid` (`E > 0`, `-1 < ν < 0.5`) so a
+    /// debug-build read doesn't abort inside `d_matrix` for the wrong
+    /// reason. Shared by the isotropic-fallback tests below (task #7210).
+    fn isotropic_steel_law() -> Value {
+        let fields: PersistentMap<String, Value> = [
+            (
+                "youngs_modulus".to_string(),
+                Value::Scalar {
+                    si_value: 2.0e11,
+                    dimension: DimensionVector::PRESSURE,
+                },
+            ),
+            ("poisson_ratio".to_string(), Value::Real(0.29)),
+        ]
+        .into_iter()
+        .collect();
+        isotropic_law("Steel_AISI_1045", fields)
+    }
+
+    /// Wrap `law` in an `AnisotropicMaterial` Value with a fixed
+    /// `het_material_frame([0, 0, 1])` frame — the outer-wrapper shape
+    /// shared by the isotropic-fallback rejection tests below, which vary
+    /// only `law` (task #7210 review round 1 suggestion 4).
+    fn aniso_with_law(law: Value) -> Value {
         let fields: PersistentMap<String, Value> = [
             ("law".to_string(), law),
             (
@@ -11464,8 +11616,287 @@ mod tests {
         ]
         .into_iter()
         .collect();
+        anisotropic_material(fields)
+    }
 
-        let _ = anisotropic_material_from_value(&anisotropic_material(fields));
+    /// task #7210: `anisotropic_material_from_value` must accept an
+    /// ISOTROPIC `ConstitutiveLaw` as `AnisotropicMaterial.law` — not just
+    /// the two named anisotropic laws — and lift it through
+    /// `AnisotropicMaterial::from_law`, honouring the PARSED `MaterialFrame`
+    /// (not `IDENTITY`). See `anisotropic_material_from_value`'s doc comment
+    /// for why an isotropic law is legal input here; this test exercises the
+    /// surface #6880 δ's
+    /// `sandwich_material(axis, [(3mm, steel), (16mm, eg), (3mm, steel)])`
+    /// needs.
+    ///
+    /// The frame is deliberately NON-identity: an isotropic `D` is rotation
+    /// invariant, so a lazy implementation that copies `classify_material`'s
+    /// homogeneous arms and passes `IDENTITY` would still produce a
+    /// plausible-looking `d_matrix_global()`, but `AnisotropicMaterial.frame`
+    /// itself would silently diverge from the input `MaterialFrame`. The
+    /// `assert_eq!` below catches that directly on `.frame`, before any
+    /// rotation happens.
+    ///
+    /// Exactness: `from_law` is `Self { d_local: law.d_matrix_local(), frame
+    /// }` — the same construction run on the same inputs in the same
+    /// binary — so the comparison is bitwise, not approximate. The expected
+    /// 3×3 is independently re-derived from the chosen axes (not copied from
+    /// prose): columns = local basis vectors in global coordinates, i.e.
+    /// `frame[row] = [x[row], y[row], z[row]]`.
+    ///
+    /// RED: see module-section comment above; `_ => panic!(..)` currently
+    /// fires for this `type_name` before either law field is read.
+    #[test]
+    fn anisotropic_material_from_value_accepts_isotropic_law_and_honours_frame() {
+        let (x, y, z) = ([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        let aniso_fields: PersistentMap<String, Value> = [
+            ("law".to_string(), isotropic_steel_law()),
+            ("frame".to_string(), frame_with_axes(x, y, z, Value::Real)),
+        ]
+        .into_iter()
+        .collect();
+
+        // frame[row] = [x[row], y[row], z[row]] (columns = local axes in global).
+        let expected_frame = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        assert_eq!(
+            anisotropic_material_from_value(&anisotropic_material(aniso_fields)),
+            Ok(AnisotropicMaterial::from_law(
+                &IsotropicElastic {
+                    youngs_modulus: 2.0e11,
+                    poisson_ratio: 0.29
+                },
+                expected_frame,
+            ))
+        );
+    }
+
+    /// task #7210: supersedes `anisotropic_material_from_value_panics_on_
+    /// unsupported_law_type` (task #5084 review, suggestion 1). That test
+    /// pinned a `panic!` as "the one deliberate, permanent exception" on a
+    /// premise `anisotropic_material_from_value`'s doc comment now records
+    /// as false (see there for why isotropic laws are legal
+    /// `AnisotropicMaterial.law` input). A law that is neither of the two
+    /// named anisotropic laws now falls through to the isotropic extractor;
+    /// a law that ALSO fails to read as isotropic (as here — no fields at
+    /// all) surfaces as `Err(FeaValueShapeError)`, not a panic. Fixture kept
+    /// verbatim from the superseded test.
+    ///
+    /// Review round 2 suggestion 3: the diagnostic must name the
+    /// unrecognised `type_name` itself (via `annotate_law_type`), not just
+    /// the field that happened to be missing — a bare `MissingField {
+    /// field: "youngs_modulus" }` gives no hint the real defect is an
+    /// unmatched law type, and would misdirect an author who, say, typo'd
+    /// `OrthotropicMaterail` into thinking `youngs_modulus` is the fix.
+    #[test]
+    fn anisotropic_material_from_value_rejects_law_without_isotropic_fields() {
+        let law = isotropic_law("BogusMaterial", PersistentMap::new());
+
+        let res = anisotropic_material_from_value(&aniso_with_law(law));
+        match res {
+            Err(FeaValueShapeError::ExpectedScalar { got, .. }) => {
+                assert!(
+                    got.contains("BogusMaterial"),
+                    "diagnostic must name the unrecognised type_name, got: {got:?}"
+                );
+                assert!(
+                    got.contains("youngs_modulus"),
+                    "diagnostic must still name the field that failed to read, got: {got:?}"
+                );
+            }
+            other => panic!(
+                "expected Err(ExpectedScalar) naming both the unrecognised type_name \
+                 \"BogusMaterial\" and the missing \"youngs_modulus\" field, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
+    /// `youngs_modulus` field on an isotropic-shaped law (a `type_name` that
+    /// is neither of the two named anisotropic laws, read through the
+    /// isotropic fallback arm) with `Err(FeaValueShapeError::ExpectedScalar
+    /// { .. })` instead of panicking. Mirrors
+    /// `anisotropic_material_from_value_rejects_malformed_{orthotropic,
+    /// transverse_isotropic}_law` above for the third law arm. `poisson_ratio`
+    /// is well-formed so the assertion isolates the `youngs_modulus`
+    /// rejection.
+    #[test]
+    fn anisotropic_material_from_value_rejects_malformed_isotropic_law() {
+        let law_fields: PersistentMap<String, Value> = [
+            ("youngs_modulus".to_string(), Value::Real(1.0)), // wrong-typed: field under test
+            ("poisson_ratio".to_string(), Value::Real(0.3)),
+        ]
+        .into_iter()
+        .collect();
+        let law = isotropic_law("Aluminium_6061_T6", law_fields);
+
+        let res = anisotropic_material_from_value(&aniso_with_law(law));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a present-but-wrong-type youngs_modulus \
+             field on an isotropic-shaped law, got: {:?}",
+            res
+        );
+    }
+
+    /// `anisotropic_material_from_value` must reject an isotropic-shaped law
+    /// missing `poisson_ratio` with a diagnostic naming both the law's
+    /// `type_name` and the missing field (review round 2 suggestion 3 — see
+    /// `annotate_law_type`; the same annotation applies uniformly to every
+    /// isotropic-fallback failure, not only the wholly-unrecognised-type_name
+    /// case, since the two are structurally indistinguishable at this call
+    /// site). `youngs_modulus` is well-formed, proving control reaches the
+    /// SECOND field read of the isotropic fallback rather than bailing out
+    /// at the first (mirrors `extract_material_rejects_missing_poisson_ratio`'s
+    /// precedent for the leaf this arm delegates to).
+    #[test]
+    fn anisotropic_material_from_value_rejects_isotropic_law_missing_poisson_ratio() {
+        let law_fields: PersistentMap<String, Value> = [(
+            "youngs_modulus".to_string(),
+            Value::Scalar {
+                si_value: 2.0e11,
+                dimension: DimensionVector::PRESSURE,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let law = isotropic_law("Titanium_Ti6Al4V", law_fields);
+
+        let res = anisotropic_material_from_value(&aniso_with_law(law));
+        match res {
+            Err(FeaValueShapeError::ExpectedScalar { got, .. }) => {
+                assert!(
+                    got.contains("Titanium_Ti6Al4V"),
+                    "diagnostic must name the law's type_name, got: {got:?}"
+                );
+                assert!(
+                    got.contains("poisson_ratio"),
+                    "diagnostic must still name the missing field, got: {got:?}"
+                );
+            }
+            other => panic!(
+                "expected Err(ExpectedScalar) naming both type_name \"Titanium_Ti6Al4V\" \
+                 and the missing \"poisson_ratio\" field, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// task #7210 review round 1 suggestion 2: `anisotropic_material_from_value`'s
+    /// doc comment notes that closing the SHAPE panic does not close the
+    /// VALUE-domain one — an out-of-range `poisson_ratio` still trips
+    /// `IsotropicElastic::debug_assert_valid` in debug builds, inside
+    /// `AnisotropicMaterial::from_law`'s `d_matrix_local()` call. This pins
+    /// that as the current, intentional behaviour (shared with the two
+    /// named-law arms, not a regression introduced here) rather than leaving
+    /// it undocumented and untested. `0.5` is the incompressible limit,
+    /// explicitly excluded by the `-1 < ν < 0.5` contract, so it is the
+    /// nearest out-of-range value to the well-formed `0.29` used elsewhere.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "poisson_ratio")]
+    fn anisotropic_material_from_value_isotropic_law_with_out_of_range_poisson_ratio_panics() {
+        let law_fields: PersistentMap<String, Value> = [
+            (
+                "youngs_modulus".to_string(),
+                Value::Scalar {
+                    si_value: 2.0e11,
+                    dimension: DimensionVector::PRESSURE,
+                },
+            ),
+            ("poisson_ratio".to_string(), Value::Real(0.5)),
+        ]
+        .into_iter()
+        .collect();
+        let law = isotropic_law("Steel_AISI_1045", law_fields);
+
+        let _ = anisotropic_material_from_value(&aniso_with_law(law));
+    }
+
+    /// Caller-boundary regression pin (task #7210): `classify_material_as_
+    /// printed_zones` — the function the pre-#7210 panic message named
+    /// directly ("... AsPrintedZones AnisotropicMaterial: ...") — must
+    /// accept an AsPrintedZones lambda whose three zone materials
+    /// (`mat_wall`/`mat_skin`/`mat_infill`) carry an ISOTROPIC law, not just
+    /// Orthotropic/TransverseIsotropic. Guards against a fix that only
+    /// patches `anisotropic_material_from_value` in a way not reachable from
+    /// this caller.
+    ///
+    /// Hand-builds the 7-element lambda directly (rather than reusing the
+    /// shared `het_as_printed_field` fixture, which always wraps an
+    /// isotropic-ALIAS `OrthotropicMaterial` law — not a genuinely
+    /// isotropic-shaped `type_name` — so it cannot exercise this arm).
+    ///
+    /// `expected_frame` is `het_material_frame([0.0, 0.0, 1.0])`'s
+    /// local→global matrix, independently re-derived from that fixture's own
+    /// construction (reference vector = [1,0,0] since |z·x̂| < 0.9, x =
+    /// normalize(ref × z) = [0,-1,0], y = z × x = [1,0,0], frame[row] =
+    /// [x[row], y[row], z[row]]) rather than trusted from prose.
+    #[test]
+    fn classify_material_as_printed_zones_accepts_isotropic_zone_laws() {
+        let len = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let point3 = |v: [f64; 3]| Value::Point(vec![len(v[0]), len(v[1]), len(v[2])]);
+        let zone_fields = || -> PersistentMap<String, Value> {
+            [
+                ("law".to_string(), isotropic_steel_law()),
+                (
+                    "frame".to_string(),
+                    as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+                ),
+            ]
+            .into_iter()
+            .collect()
+        };
+        let params = Value::List(vec![
+            Value::Real(2.0),    // walls
+            Value::Real(3.0),    // top_bottom_layers
+            Value::Real(0.0002), // layer_height
+            Value::Real(0.0004), // line_width
+            Value::Real(0.0),    // bx
+            Value::Real(0.0),    // by
+            Value::Real(1.0),    // bz
+        ]);
+        let lambda = Value::List(vec![
+            point3([0.0, 0.0, 0.0]),
+            point3([0.02, 0.01, 0.01]),
+            params,
+            Value::Real(0.5),                    // cos_threshold
+            anisotropic_material(zone_fields()), // mat_wall
+            anisotropic_material(zone_fields()), // mat_skin
+            anisotropic_material(zone_fields()), // mat_infill
+        ]);
+
+        let expected_frame = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let expected_cell = AnisotropicMaterial::from_law(
+            &IsotropicElastic {
+                youngs_modulus: 2.0e11,
+                poisson_ratio: 0.29,
+            },
+            expected_frame,
+        );
+
+        match classify_material_as_printed_zones(&lambda) {
+            Ok(MaterialModel::Heterogeneous(f)) => {
+                assert_eq!(f.cells.len(), 3);
+                assert_eq!(f.cells[0], expected_cell);
+                assert_eq!(f.cells[1], expected_cell);
+                assert_eq!(f.cells[2], expected_cell);
+            }
+            Ok(MaterialModel::Isotropic(_)) => {
+                panic!("expected Ok(Heterogeneous) for an AsPrintedZones lambda, got Isotropic")
+            }
+            Ok(MaterialModel::Anisotropic(_)) => {
+                panic!("expected Ok(Heterogeneous) for an AsPrintedZones lambda, got Anisotropic")
+            }
+            Err(e) => panic!(
+                "expected Ok(Heterogeneous) for zone materials carrying an isotropic \
+                 law, got Err({:?})",
+                e
+            ),
+        }
     }
 
     // ── task 5848: MaterialFrame's axes are DIMENSIONLESS, and nothing on the
@@ -11924,7 +12355,9 @@ mod tests {
         )
         .expect("a widenable P1 tet mesh seeds a RealizedAdaptiveProblem");
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
 
         assert_eq!(
             est.per_element.len(),
@@ -11936,13 +12369,13 @@ mod tests {
             "n_dofs must be 3 * the POST-COMPACTION node count",
         );
         assert!(
-            est.global_indicator.is_finite() && est.global_indicator >= 0.0,
-            "global_indicator must be finite and non-negative, got {}",
-            est.global_indicator,
+            est.relative_error.is_finite() && est.relative_error >= 0.0,
+            "relative_error must be finite and non-negative, got {}",
+            est.relative_error,
         );
         assert_eq!(
-            problem.last_global_indicator, est.global_indicator,
-            "the problem must record the returned global_indicator",
+            problem.last_global_indicator, est.relative_error,
+            "the problem must record the returned relative_error",
         );
         assert_eq!(
             problem.last_n_dofs, est.n_dofs,
@@ -12062,7 +12495,9 @@ mod tests {
 
         let mut problem = gmsh_realized_problem(0.05);
 
-        let est = problem.solve_and_estimate();
+        let est = problem
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         let marked = reify_solver_elastic::mark_dorfler(&est.per_element, DORFLER_THETA);
         assert!(
             !marked.is_empty(),
@@ -12124,7 +12559,9 @@ mod tests {
         // from the same seed is what proves the growth above was driven by the
         // MARKS and not merely by re-meshing.
         let mut unmarked = gmsh_realized_problem(0.05);
-        unmarked.solve_and_estimate();
+        unmarked
+            .solve_and_estimate()
+            .expect("this problem's AdaptiveProblem seam cannot fail");
         unmarked
             .refine(&[])
             .expect("an empty marked set must still remesh cleanly");
@@ -12751,5 +13188,229 @@ mod tests {
             ),
             "expected SizeHintsLengthMismatch, got: {err:?}",
         );
+    }
+    // ── ruling #6164: the `rotation` derivative channel ───────────────────────
+    //
+    // step-5 RED. `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the
+    // radian enters the elastic-result algebra. It is DERIVED from the `curl`
+    // SampledField at wrap time in every production path and STORED IN NONE —
+    // see `rotation_sf_from_curl`'s doc comment for the wire-format reason.
+    //
+    // These three tests pin all three production paths, plus the negative
+    // no-wire-change guarantee.
+
+    /// Shared helper: pull the `SampledField` out of a `Value::Field { Sampled }`,
+    /// asserting the source kind on the way through.
+    fn rot6164_sampled(v: &Value, what: &str) -> SampledField {
+        match v {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "{what} must be a Sampled field"
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf.clone(),
+                    other => panic!("{what} lambda must be Value::SampledField, got {other:?}"),
+                }
+            }
+            other => panic!("{what} must be Value::Field, got {other:?}"),
+        }
+    }
+
+    // The `rotation == curl/2 on the bit-identical grid` assertion is
+    // enumerated ONCE, beside `rotation_sf_from_curl` itself, so the tet path
+    // and the cache-reconstruction path below cannot drift apart from each
+    // other or from the wrapper unit test.
+    use super::super::assert_rotation_is_half_of;
+
+    /// (a) TET path — the live `solve_elastic_static_trampoline` tet/solid route
+    /// must emit a `"rotation"` key whose SampledField is the `"curl"` field
+    /// halved element-wise, bit-exactly, on the bit-identical grid.
+    ///
+    /// `shell_force=Off` forces the tet route deterministically (same idiom as
+    /// `trampoline_consumes_realized_volume_mesh`).
+    ///
+    /// This test ALSO carries the "no 6th resample entry" guarantee: unit tests
+    /// build in debug, so the `debug_assert_eq!(sampled.len(), 5)` in the tet
+    /// path is live here. Bumping `resample_multi_nodal_to_grid` to a 6th entry
+    /// to resample rotation independently would trip that assert and red this
+    /// test — which is exactly the intent (rotation costs no extra BVH pass).
+    ///
+    /// RED: nothing writes a `"rotation"` key yet.
+    #[test]
+    fn rotation_channel_tet_path_is_curl_halved() {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        let curl_v = fields
+            .get("curl")
+            .expect("tet ElasticResult must carry a curl field");
+        let rot_v = fields
+            .get("rotation")
+            .expect("tet ElasticResult must carry a rotation field (ruling #6164)");
+
+        let curl_sf = rot6164_sampled(curl_v, "curl");
+        let rot_sf = rot6164_sampled(rot_v, "rotation");
+        assert!(
+            !curl_sf.data.is_empty(),
+            "fixture sanity: the tet curl channel must be populated"
+        );
+        assert_rotation_is_half_of(&rot_sf, &curl_sf, "tet");
+
+        // The declared codomain is the whole point: Vector3<Angle>, not
+        // vec3(dimensionless_scalar()) like curl.
+        match rot_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::angle()),
+                "rotation codomain must be Vector3<Angle> (ruling #6164)"
+            ),
+            other => panic!("rotation must be Value::Field, got {other:?}"),
+        }
+        match curl_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                "curl codomain must STAY Vector3<Real> — ruling #6164 HALF 1 \
+                 decides curl is dimensionless; retyping it would put a radian \
+                 into the operator algebra"
+            ),
+            other => panic!("curl must be Value::Field, got {other:?}"),
+        }
+    }
+
+    /// (b) SHELL path — derivative channels are out of scope for the shell
+    /// solver (PRD §7), so `rotation` joins divergence/gradient/curl in the
+    /// honest-absence `Value::Undef` convention.
+    ///
+    /// RED: the shell fields map has no `"rotation"` key at all, so the
+    /// `.expect` fires.
+    #[test]
+    fn rotation_channel_shell_path_is_undef() {
+        // Same 50mm × 10mm × 1mm steel-flexure fixture as
+        // `shell_route_trampoline_populates_shell_channels`.
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.05),
+            shell9_make_len(0.01),
+            shell9_make_len(0.001),
+            shell9_make_point_loads(10.0),
+            shell9_make_supports(),
+            shell9_make_options("On"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        // Fixture sanity: confirm this really is the shell route.
+        assert!(
+            matches!(fields.get("curl"), Some(Value::Undef)),
+            "fixture sanity: the shell route must emit curl=Undef"
+        );
+        assert!(
+            matches!(
+                fields.get("shell_channels"),
+                Some(Value::StructureInstance(_))
+            ),
+            "fixture sanity: the shell route must emit a real ShellStress"
+        );
+
+        assert!(
+            matches!(
+                fields
+                    .get("rotation")
+                    .expect("shell ElasticResult must carry a rotation key (ruling #6164)"),
+                Value::Undef
+            ),
+            "shell rotation must be Value::Undef — honest-absence, matching the \
+             divergence/gradient/curl convention (PRD §7)"
+        );
+    }
+
+    /// (c) CACHE-RECONSTRUCTION path — THE LOAD-BEARING ONE.
+    ///
+    /// `value_from_elastic_result` rebuilds an `ElasticResult` `Value` from the
+    /// persisted compute-contract record. That record carries a `curl` slab and
+    /// NO rotation slab — and it never will, because the binary wire header is
+    /// frozen (`curl_len` at a fixed byte offset, byte-exact golden test).
+    ///
+    /// This test proves that deriving rotation at wrap time means EXISTING
+    /// persisted cache entries gain a correct `.rotation` for free: an `er` with
+    /// only a curl slab must reconstruct to a rotation field bit-identical to
+    /// what the live tet path produces from the same data.
+    ///
+    /// RED: the cache fields map has no `"rotation"` key yet.
+    #[test]
+    fn rotation_channel_cache_reconstruction_derives_from_curl_slab() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        // Regular3D grid, 1 division per axis -> 2 nodes per axis -> 8 nodes.
+        let n_nodes = 8usize;
+        // Deliberately non-power-of-two curl values so a halving bug cannot
+        // hide behind a coincidentally exact result.
+        let curl: Vec<f64> = (0..n_nodes * 3).map(|i| 3.0 + i as f64 * 5.0).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: (0..n_nodes * 9).map(|i| i as f64 * 0.5).collect(),
+            curl: curl.clone(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let curl_sf = rot6164_sampled(
+            d.fields.get("curl").expect("reconstructed curl field"),
+            "curl",
+        );
+        let rot_sf = rot6164_sampled(
+            d.fields
+                .get("rotation")
+                .expect("reconstructed ElasticResult must carry a rotation field (ruling #6164)"),
+            "rotation",
+        );
+        assert_eq!(
+            curl_sf.data, curl,
+            "fixture sanity: the curl slab must round-trip unchanged"
+        );
+        assert_rotation_is_half_of(&rot_sf, &curl_sf, "cache");
+
+        // Cross-path identity: the cache route must produce exactly what the
+        // live tet route's wrap step produces from the same curl SampledField.
+        let live = super::super::rotation_sf_from_curl(&curl_sf);
+        assert_eq!(
+            rot_sf.data, live.data,
+            "cache-reconstructed rotation must be bit-identical to the live tet \
+             path's derive from the same curl data"
+        );
+        assert_eq!(rot_sf.name, live.name);
     }
 }

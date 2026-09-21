@@ -603,7 +603,7 @@ fn run_meshing_with_entity_queries(
         )));
     }
 
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = init::lock()?;
     init::ensure_initialized();
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
@@ -691,7 +691,20 @@ fn run_meshing_with_entity_queries(
     let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
     ffi::geo_synchronize()?;
 
-    ffi::mesh_generate(3)?;
+    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
+    // a failure here must not outlive this call. See that function.
+    //
+    // This site is NOT test-covered, unlike `mesh_to_volume`'s and
+    // `refine_volume_with_size_field`'s. Reaching a failed `mesh_generate(3)`
+    // from here needs a surface this entry point's own watertight preflight
+    // accepts, and `tests/mesher_poison_recovery.rs`'s open triangle is not
+    // one: it is rejected upstream of gmsh as `MeshContractViolation {
+    // invariant: Closed, open_edges: 3 }`. A probe of the two cheap
+    // closed-but-degenerate candidates — a doubled triangle enclosing no
+    // volume, then two interpenetrating cubes — was killed at 25 minutes with
+    // neither call having returned. A fixture that can hang the suite is worse
+    // than an uncovered site, so this stays verified by code review.
+    init::mesh_generate_with_recovery(&_guard, 3)?;
 
     // -----------------------------------------------------------------------
     // Entity-membership queries (must happen BEFORE ffi::clear)
@@ -756,22 +769,16 @@ fn run_meshing_with_entity_queries(
         )));
     }
 
-    let elem_type = match element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 11,
+    let elem_node_tags = match init::read_tet_connectivity(
+        "mesh_surface_to_volume_with_attribution",
+        element_order,
+    ) {
+        Ok(tags) => tags,
+        Err(e) => {
+            let _ = ffi::clear();
+            return Err(e);
+        }
     };
-    let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-    let nodes_per_elem: usize = match element_order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
-    if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
-        let _ = ffi::clear();
-        return Err(GeometryError::OperationFailed(format!(
-            "gmsh element stride mismatch: elem_node_tags.len()={} not multiple of {nodes_per_elem}",
-            elem_node_tags.len()
-        )));
-    }
 
     // Sort by tag → assign local indices
     let mut paired: Vec<(u64, [f64; 3])> = all_node_tags

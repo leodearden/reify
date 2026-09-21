@@ -99,6 +99,26 @@ pub(crate) struct CompilationCtx {
     /// fn-signature type resolution can resolve structure names to
     /// `Type::StructureRef`. Consumed by both `phase_functions` and `phase_traits`.
     pub(crate) resolution_structure_names: HashSet<String>,
+    /// Names this module DECLARES as functions: every local `fn` declaration +
+    /// every prelude function. Populated by `names_phase::build_resolution_names`
+    /// BEFORE `phase_functions`; consumed by both `phase_functions` and
+    /// `phase_traits` (task #5371).
+    ///
+    /// Deliberately NOT `resolution_functions`, and the difference is the whole
+    /// reason this field exists. `resolution_functions` is a table of compiled
+    /// SIGNATURES and is only complete once `phase_functions` has finished, so a
+    /// fn body — which compiles DURING that phase, against the partially-grown
+    /// `ctx.functions` — cannot ask it whether a name exists. This set answers
+    /// the weaker question ("does the module declare this name at all?") and is
+    /// complete before the first body compiles, which is what lets the terminal
+    /// first-arg fallback in `expr.rs` tell "not a builtin, and nothing else
+    /// either" apart from "not a builtin, but declared right here".
+    ///
+    /// Derived from the `fn_refs` DECLARATION list rather than from compiled
+    /// output: a fn whose signature fails to compile is absent from
+    /// `ctx.functions` but is still a name the user declared, and reporting it
+    /// as unresolved at every call site would cascade off one root-cause error.
+    pub(crate) declared_fn_names: HashSet<String>,
 }
 
 impl CompilationCtx {
@@ -130,6 +150,7 @@ impl CompilationCtx {
             resolution_functions: Vec::new(),
             resolution_trait_names: HashSet::new(),
             resolution_structure_names: HashSet::new(),
+            declared_fn_names: HashSet::new(),
         }
     }
 
@@ -414,6 +435,10 @@ mod tests {
         assert!(
             ctx.resolution_structure_names.is_empty(),
             "resolution_structure_names should be empty"
+        );
+        assert!(
+            ctx.declared_fn_names.is_empty(),
+            "declared_fn_names should be empty"
         );
         assert!(
             ctx.seen_entity_names.is_empty(),

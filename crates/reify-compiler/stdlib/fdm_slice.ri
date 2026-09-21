@@ -15,12 +15,13 @@
 //   The Toolpath / Bead / Layer / BeadRole shapes below MUST stay aligned with
 //   `reify_eval::compute_targets::fdm_slice::toolpath_to_value`, which builds the
 //   `Value::StructureInstance{"Toolpath"}` the `@optimized("fdm::slice")` node
-//   returns. In particular the geometry scalars (`width` / `height` / `layer_z`
-//   / `nominal_temp` / `speed`) and the centerline coordinates are marshalled as
-//   **native-unit `Real`** (raw G-code millimetres / mm·min⁻¹, NOT SI-converted)
-//   — the mm→SI conversion is the downstream θ `FDMPrint` mapping's concern (see
-//   `reify-fdm`'s `toolpath.rs` module doc). Hence `Real` / `Point3<Real>` here,
-//   not `Length` / `Point3<Length>`.
+//   returns. That surface is **SI and dimensioned**, like the rest of the
+//   language; `toolpath_to_value`'s doc comment is the canonical statement of the
+//   regime and of the per-field mapping. Every field below declares its own unit,
+//   so there is no carve-out left to remember: `bead.width > 0.1mm` simply works,
+//   and `bead.width > 0.45` no longer silently means a 1000x-wrong thing.
+//   `fdm_slice_e2e.rs`'s `stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime`
+//   is the guard that keeps this block honest — it fails if a field reverts to `Real`.
 
 // ── BeadRole ────────────────────────────────────────────────────────────────
 //
@@ -35,26 +36,48 @@ enum BeadRole { Perimeter, SolidInfill, SparseInfill, Bridge, Support }
 // ── Bead ──────────────────────────────────────────────────────────────────────
 //
 // A single deposited bead: a maximal run of consecutive extruding moves with
-// constant `(role, width, height, layer)`. Coordinates and scalars are native
-// G-code millimetres / mm·min⁻¹ (see the marshalling contract above).
+// constant `(role, width, height, layer)`. Coordinates and scalars are SI and
+// dimensioned (see the marshalling contract above).
 structure def Bead {
-    // Ordered deposited centerline polyline (native mm). The first point is the
-    // pen-down position; each subsequent point an extruding-move endpoint.
-    param centerline : List<Point3<Real>> = []
-    // Extrusion width in mm (PrusaSlicer `;WIDTH:`), constant over the bead.
-    param width : Real = 0.0
-    // Layer height in mm (PrusaSlicer `;HEIGHT:`), constant over the bead.
-    param height : Real = 0.0
+    // Ordered deposited centerline polyline. The first point is the pen-down
+    // position; each subsequent point an extruding-move endpoint.
+    param centerline : List<Point3<Length>> = []
+    // Extrusion width (PrusaSlicer `;WIDTH:`), constant over the bead.
+    param width : Length = 0mm
+    // Layer height (PrusaSlicer `;HEIGHT:`), constant over the bead.
+    param height : Length = 0mm
     // Structural role (PrusaSlicer `;TYPE:` → BeadRole).
     param role : BeadRole = BeadRole.Perimeter
     // 0-based index of the owning layer (deposition order).
     param layer_index : Int = 0
-    // Z height of the owning layer in mm.
-    param layer_z : Real = 0.0
-    // Nominal extruder temperature in °C active when the bead was laid down.
-    param nominal_temp : Real = 0.0
-    // Active feedrate in mm·min⁻¹ when the bead began extruding.
-    param speed : Real = 0.0
+    // Z height of the owning layer.
+    param layer_z : Length = 0mm
+    // Nominal extruder temperature active when the bead was laid down. Kelvin:
+    // `degC` is affine, so a Temperature is always absolute.
+    //
+    // The default is `0degC` (= 273.15K), not `0K`, because 0 °C is this
+    // field's NOT-OBSERVED sentinel: the ζ parser initialises its temperature
+    // accumulator to 0 °C (`reify_fdm::toolpath`'s `Sweep::new`) and never
+    // distinguishes "no M104/M109 was seen" from a genuine 0 °C setpoint, so a
+    // bead marshalled from temperature-less G-code reports 0degC. Defaulting to
+    // the same value keeps a default-constructed `Bead()` and a marshalled
+    // unset bead in agreement — the affine conversion is the only one under
+    // which "zero" does not survive, so this is the one field where the two
+    // could disagree. Consumers MUST NOT read 0degC as a measurement: in
+    // particular `bead.nominal_temp > 0K` is TRUE for every temperature-less
+    // toolpath and is not an "is a temperature known" test.
+    //
+    // KNOWN GAP: that warning has to live in prose because nothing in this
+    // surface encodes it — 273.15K is an in-range, plausible absolute
+    // temperature no predicate can tell from a measurement, so a design author
+    // gating on this field silently gets 0degC physics for temperature-less
+    // G-code. Making "not observed" OBSERVABLE (an Option-shaped field, a
+    // `temp_observed : Bool` companion, or a W_FDM_NO_TEMPERATURE Info
+    // diagnostic from the ζ parser) is out of scope for #6301, which decided
+    // the unit regime only; it is tracked as #7138.
+    param nominal_temp : Temperature = 0degC
+    // Active feedrate when the bead began extruding.
+    param speed : Velocity = 0m/s
 }
 
 // ── Layer ─────────────────────────────────────────────────────────────────────
@@ -63,8 +86,8 @@ structure def Bead {
 structure def Layer {
     // 0-based layer index in deposition order.
     param index : Int = 0
-    // Layer Z height in mm.
-    param z : Real = 0.0
+    // Layer Z height.
+    param z : Length = 0mm
     // Indices into `Toolpath.beads` of the beads on this layer, in order.
     param bead_indices : List<Int> = []
 }

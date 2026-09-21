@@ -25,6 +25,8 @@
 use reify_core::diagnostics::DiagnosticCode;
 use reify_core::{Diagnostic, Severity};
 
+use crate::ctor_conformance::CTOR_DIAGNOSTIC_ARG_PREFIX;
+
 /// Per-SITE waivers for ctor-conformance diagnostics that a shipped example
 /// still emits because its call site has not been migrated yet, and cannot be
 /// migrated by the task that promoted the family.
@@ -74,10 +76,6 @@ pub const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// The `emit_arg_type_mismatch` message prefix that introduces the offending
-/// param name (`crates/reify-compiler/src/conformance/mod.rs`).
-pub const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
-
 /// Recover the offending param name from a ctor-conformance diagnostic message.
 ///
 /// A `Diagnostic` carries no structured param field, so the only handle the
@@ -89,7 +87,12 @@ pub const CTOR_DIAGNOSTIC_ARG_PREFIX: &str = "argument '";
 /// This is a real coupling to diagnostic prose, and it is deliberately guarded
 /// rather than merely commented: if the wording ever drifts so extraction stops
 /// matching, `examples_smoke::ctor_conformance_migration_debt_entries_are_all_live` goes red
-/// naming the entry that stopped matching.
+/// naming the entry that stopped matching. The prefix it keys on is the shared
+/// [`crate::ctor_conformance::CTOR_DIAGNOSTIC_ARG_PREFIX`] (#6323), whose doc
+/// comment is where that coupling is recorded once.
+///
+/// Single copy, not a duplication of that module: this EXTRACTS the param name,
+/// where the shared `ctor_diagnostic_names_arg` only TESTS for a given one.
 pub fn param_name_from_ctor_diagnostic(message: &str) -> Option<String> {
     let start = message.find(CTOR_DIAGNOSTIC_ARG_PREFIX)? + CTOR_DIAGNOSTIC_ARG_PREFIX.len();
     let rest = &message[start..];

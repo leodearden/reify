@@ -170,6 +170,28 @@ fn main() -> ExitCode {
     }
 }
 
+/// Write already-rendered parse errors to `out` and yield the exit code a parse failure
+/// gets, so both entry points cannot drift apart on the prefix or the code.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// Takes the RENDERED `line:col: message` strings rather than the `ParsedModule` they came
+/// from: `reify-cli` does not depend on `reify-ast`, so naming that type in a signature would
+/// have to go through `reify-syntax`'s `pub use reify_ast::*` block, which is marked TRANSIENT
+/// and slated for removal by the PRD task η follow-up. Callers reach the renderer by method
+/// resolution instead, which needs no crate path — and `ParsedModule::render_errors` is where
+/// the reason for rendering the whole list at once is documented.
+///
+/// `out` is injected rather than written as `eprintln!`, matching
+/// [`report_constraint_results`] in this file: the position prefix is the whole point of the
+/// rendering step, and a test that cannot read what was written can only assert that SOMETHING
+/// mentioning "Parse error" reached stderr — which passes just as well with the position gone.
+fn report_parse_errors(rendered: Vec<String>, out: &mut impl std::io::Write) -> ExitCode {
+    for error in rendered {
+        let _ = writeln!(out, "Parse error: {error}");
+    }
+    ExitCode::FAILURE
+}
+
 fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitCode> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -191,10 +213,10 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
 
     if !parsed.errors.is_empty() {
-        for err in &parsed.errors {
-            eprintln!("Parse error: {}", err.message);
-        }
-        return Err(ExitCode::FAILURE);
+        return Err(report_parse_errors(
+            parsed.render_errors(&source),
+            &mut std::io::stderr(),
+        ));
     }
 
     let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
@@ -250,10 +272,10 @@ fn parse_and_compile_with_cfg(
     let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
 
     if !parsed.errors.is_empty() {
-        for err in &parsed.errors {
-            eprintln!("Parse error: {}", err.message);
-        }
-        return Err(ExitCode::FAILURE);
+        return Err(report_parse_errors(
+            parsed.render_errors(&source),
+            &mut std::io::stderr(),
+        ));
     }
 
     // Resolve sibling user imports relative to the entry file's parent dir.
@@ -1205,8 +1227,12 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let mut diagnostics = if used_build {
             // D2 (task 5748) for sub-path (c). The realization re-runs the eval
             // front-end internally, so its list BOTH carries internal
-            // duplicates (measured: the `mirror(...)` 'ox' compile error twice
-            // for one call site) AND overlaps what
+            // duplicates (measured on `tests/fixtures/mirror_bare_origin.ri`:
+            // `failed to compile geometry operation: mirror: expected a Plane
+            // value, got undef` twice for one call site — re-measured at task
+            // 5746, which moved that fixture's rejection to the producer and
+            // with it the text of the duplicated line, not the duplication)
+            // AND overlaps what
             // `check_constraints_with_values` reports; the build entries seed
             // the list and the check entries merge in behind them, so an entry
             // produced by both passes is reported exactly once.
@@ -2128,10 +2154,26 @@ fn cmd_eval(args: &[String]) -> ExitCode {
     //
     // Both `eval` and `build` take `&mut self`, so the engine survives the call.
     let (values, diagnostics, engine) = if module_has_geometry(&compiled) {
-        // Geometry-bearing module: route through the kernel-backed build() path so
-        // that run_post_processes/post_process_geometry_queries fires and resolves
-        // geometry-query value cells (mass, centroid, volume, …).
-        // geometry_output is discarded — reify eval is a value inspector only.
+        // Geometry-bearing module: route through the kernel-backed realization
+        // path so that run_post_processes/post_process_geometry_queries fires and
+        // resolves geometry-query value cells (mass, centroid, volume, …).
+        // No geometry is emitted — reify eval is a value inspector only.
+        //
+        // `realize_for_check`, NOT `build()` (task 5318) — the same esc-5748-6
+        // reason `cmd_check` gives at its two sites above: `build()` also runs
+        // the Phase-B product-export walk, and `eval` writes no artifact, so
+        // that walk's EXPORT-ONLY diagnostics are false errors here, and a false
+        // EXIT — the tail of this function returns FAILURE on any
+        // `Severity::Error`. The argument had simply never been carried across
+        // to the other command that discards the artifact.
+        //
+        // Every value cell `build()` resolved here still resolves:
+        // `realize_for_check` differs from `build` in the export walk and in
+        // nothing else (both delegate to `build_with_geometry_output`, which
+        // takes the export as a flag). Pinned, not assumed, by
+        // `cli_gdt_integration_gate::b5_oracle_inside_oracles_agree`, which
+        // asserts the `dev` and `pokeout` oracle CELLS parsed from this
+        // command's stdout rather than merely its exit code.
         let mut engine =
             configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
                 SimpleConstraintChecker,
@@ -2142,7 +2184,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
             engine.set_persistent_cache_dir(Some(override_dir.clone()));
         }
         engine.set_capture_undef_causes(true);
-        let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+        let result = engine.realize_for_check(&compiled);
         (result.values, result.diagnostics, engine)
     } else {
         // Plain numeric module: keep the existing lightweight eval() path so
@@ -3210,8 +3252,11 @@ fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
 /// Membership is tested against the ACCUMULATING set — seeded from
 /// `check_diags`, then grown as build entries are appended — so duplicates
 /// *internal to* `build_diags` also collapse.  Measured, not hypothetical: on
-/// `tests/fixtures/mirror_bare_origin.ri` the realization emits the `'ox'`
-/// compile error twice for a single call site.  Note the corollary in
+/// `tests/fixtures/mirror_bare_origin.ri` the realization emits `failed to
+/// compile geometry operation: mirror: expected a Plane value, got undef` twice
+/// for a single call site (re-measured at task 5746 / units-length ε, which
+/// gated `plane_yz(0)` at the producer; the duplicated line was the `'ox'`
+/// compile error before that, and the duplication itself is unchanged).  Note the corollary in
 /// [`DiagKey`]: a list that can hold two DISTINCT findings with the same text
 /// must be kept out of that collapse (see [`strip_diagnostics_reproduced_by`]).
 fn merge_build_diagnostics(
@@ -3242,9 +3287,12 @@ fn merge_build_diagnostics(
 ///
 /// Tempting, because it would tell two same-text findings apart — but MEASURED
 /// to be wrong: on `tests/fixtures/mirror_bare_origin.ri` the duplicated
-/// `'ox'` geometry-compile error carries two DIFFERENT `realization_span`s for
-/// the one user-visible problem, so a span-aware key stops collapsing exactly
-/// the duplication this leaf exists to collapse.
+/// geometry-compile error carries two DIFFERENT `realization_span`s for the one
+/// user-visible problem, so a span-aware key stops collapsing exactly the
+/// duplication this leaf exists to collapse.  (That span observation was made on
+/// the `'ox'` message; task 5746 / units-length ε moved the rejection to the
+/// producer, so the duplicated line now reads `mirror: expected a Plane value,
+/// got undef` — same two realization passes, same duplication, re-measured.)
 ///
 /// The corollary is that no local key can distinguish "one finding reported
 /// twice" from "two findings that happen to read alike" (two GD&T callouts of
@@ -3270,7 +3318,10 @@ fn diagnostic_identity(d: &reify_core::Diagnostic) -> DiagKey {
 /// [`diagnostic_identity`] so the two cannot drift onto different keys.
 /// `cmd_check`'s sub-path (c) needs it on its own: the realization re-runs the
 /// eval front-end internally and emits some entries twice for a single call
-/// site (measured: the `mirror(...)` bare-origin `'ox'` compile error).
+/// site (measured on the `mirror(...)` bare-origin fixture: `failed to compile
+/// geometry operation: mirror: expected a Plane value, got undef`, re-measured
+/// at task 5746 — before it, the same duplicated slot carried the `'ox'`
+/// compile error).
 ///
 /// # Why coded entries are exempt
 ///
@@ -3613,6 +3664,83 @@ mod tests {
     use reify_core::ConstraintNodeId;
     use reify_eval::ConstraintCheckEntry;
     use reify_ir::Satisfaction;
+
+    /// A parse error the CLI prints must be one a user can JUMP TO.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    /// Both entry points used to print `err.message` alone — no file, no line, no column — so
+    /// a parse error in a long file named no place to look. The pre-existing CLI harness
+    /// asserts only `stderr.contains("Parse error")`, which passes identically whether the
+    /// position is there or not; this asserts the position itself.
+    ///
+    /// Runs the same two-step composition the entry points run (`parse_with_stdlib` then
+    /// `render_errors`) against the real in-tree fixture, and derives the expected line from
+    /// that fixture with `str::find` rather than hard-coding it, so the test tracks the
+    /// fixture if its layout changes.
+    #[test]
+    fn report_parse_errors_writes_a_line_and_column_for_every_error() {
+        const FIXTURE: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bracket_parse_error.ri"
+        );
+        let source = std::fs::read_to_string(FIXTURE).expect("fixture must be readable");
+        let fault_offset = source
+            .find("@@@")
+            .expect("fixture precondition: bracket_parse_error.ri must contain the `@@@` fault");
+        let fault_line = source[..fault_offset].matches('\n').count() + 1;
+
+        let parsed =
+            reify_compiler::parse_with_stdlib(&source, ModulePath::single("bracket_parse_error"));
+        assert!(
+            !parsed.errors.is_empty(),
+            "fixture precondition: bracket_parse_error.ri must fail to parse"
+        );
+
+        let mut out = Vec::new();
+        report_parse_errors(parsed.render_errors(&source), &mut out);
+        let printed = String::from_utf8(out).expect("CLI output must be UTF-8");
+
+        assert!(
+            !printed.is_empty(),
+            "a failing parse must report something to the user"
+        );
+        for reported in printed.lines() {
+            let located = reported.strip_prefix("Parse error: ").unwrap_or_else(|| {
+                panic!("every reported line keeps the `Parse error: ` prefix; got {reported:?}")
+            });
+            let (line_str, rest) = located.split_once(':').unwrap_or_else(|| {
+                panic!(
+                    "expected a `line:column: message` prefix so the user can jump straight to \
+                     the fault; got {reported:?}"
+                )
+            });
+            let (col_str, message) = rest.split_once(':').unwrap_or_else(|| {
+                panic!("expected a `line:column:` prefix — found a line but no column; got {reported:?}")
+            });
+            let line: usize = line_str.parse().unwrap_or_else(|_| {
+                panic!("the leading field must be a 1-based line number; got {reported:?}")
+            });
+            let col: usize = col_str.parse().unwrap_or_else(|_| {
+                panic!("the second field must be a 1-based column number; got {reported:?}")
+            });
+            assert!(
+                line >= 1 && col >= 1,
+                "line and column are 1-based; got {reported:?}"
+            );
+            assert!(
+                !message.trim().is_empty(),
+                "the position must be ADDED to the parser's message, not substituted for it; \
+                 got {reported:?}"
+            );
+        }
+
+        let expected_prefix = format!("Parse error: {fault_line}:");
+        assert!(
+            printed.lines().any(|l| l.starts_with(&expected_prefix)),
+            "at least one report must land on line {fault_line}, where the fixture's `@@@` \
+             fault sits; got {printed:?}"
+        );
+    }
 
     /// Helper: capture `report_constraint_results` output into an in-memory
     /// buffer and return the outcome plus the formatted output as a `String`.
@@ -5251,15 +5379,18 @@ mod merge_build_diagnostics_tests {
     /// list, not only against check()'s original one.
     ///
     /// Empirically measured on the `mirror(...)` bare-origin fixture task 5748
-    /// adds, RE-MEASURED at task 5662 after it moved to the decoded-value form
-    /// `mirror(arm, plane_yz(0))`: `reify eval` emits
-    /// `failed to compile geometry operation: mirror: missing or non-Length
-    /// argument 'ox' for mirror` TWICE for a single call site — the duplication
-    /// is unchanged by the retarget; only the message gained the `mirror: `
-    /// builtin prefix the decoded-value route carries. Deduping against check()'s
-    /// list alone would print it twice on `check`'s stderr; PRD D2 only requires
-    /// "at least once", and collapsing matches `check`'s existing output
+    /// adds, RE-MEASURED at task 5746 (units-length ε) after it gated
+    /// `plane_yz(0)` at the producer: `reify eval` and `reify build` both emit
+    /// `failed to compile geometry operation: mirror: expected a Plane value,
+    /// got undef` TWICE for a single call site — the duplication is unchanged by
+    /// that move, only the text of the duplicated line is. Deduping against
+    /// check()'s list alone would print it twice on `check`'s stderr; PRD D2 only
+    /// requires "at least once", and collapsing matches `check`'s existing output
     /// discipline.
+    ///
+    /// The literal below is a SYNTHETIC stand-in — this test exercises the merge
+    /// key, not the fixture — so it is left spelling the pre-5746 message rather
+    /// than chasing the measured one.
     #[test]
     fn merge_collapses_duplicates_internal_to_build() {
         let dup = Diagnostic::error(

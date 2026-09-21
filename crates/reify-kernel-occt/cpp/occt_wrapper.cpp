@@ -338,6 +338,115 @@ static TopoDS_Wire require_wire(const TopoDS_Shape& shape, const char* role) {
     return TopoDS::Wire(shape);
 }
 
+/// True when `s` carries no topology at all: a null shape, or a compound with
+/// no children.
+///
+/// EXACTNESS. A shape carries no topology exactly when it is null, or when it
+/// is a compound whose members are — recursively — all empty. Every other
+/// shape type (compsolid, solid, shell, face, wire, edge, vertex) IS a
+/// topological entity by construction, however degenerate its geometry. No
+/// tolerance and no threshold are involved.
+///
+/// DO NOT reduce this to "has no vertices". That test looks equivalent and is
+/// not: UNBOUNDED IS NOT EMPTY. `make_half_space` builds its solid from a bare
+/// `gp_Pln`, i.e. an unbounded face with zero wires (see the note on
+/// `section_profile_to_wire` above), so a bare `half_space(...)` is a solid
+/// with one face, no edges and NO VERTICES. A vertex test calls that empty and
+/// refuses to export it — measured 2026-09-10 as
+/// `reify-eval::half_space_e2e::bare_half_space_is_constructible` failing with
+/// "export error: ... shape to export is empty".
+///
+/// WHY A DEDICATED PREDICATE. `BRepAlgoAPI_Common` on disjoint operands (and
+/// `BRepAlgoAPI_Cut` whose tool fully consumes its target) reports
+/// `IsDone() == true` and hands back an EMPTY `TopoDS_Compound`. Such a
+/// compound is NOT `IsNull()`, so `get_shape`'s null check
+/// (`reify-kernel-occt/src/lib.rs:854`, via the `shape_is_null` entry point
+/// defined in this file) is blind to it.
+///
+/// USED ONLY AS A CONSUMER PRECONDITION, NEVER AS A BOOLEAN POSTCONDITION.
+/// An empty boolean result is a LEGAL kernel value: `examples/tolerancing/
+/// gdt_oracle_inside.ri` designs on one (an empty cut IS the "inside" verdict,
+/// and `volume()` of it is 0.0), and
+/// `harness_occt::boolean_result_normalization_integration::
+/// empty_boolean_results_stay_untouched_compounds` gates exactly that. Only
+/// the consumers that cannot mint an artifact from nothing reject it.
+static bool shape_has_no_topology(const TopoDS_Shape& s) {
+    if (s.IsNull()) {
+        return true;
+    }
+    if (s.ShapeType() != TopAbs_COMPOUND) {
+        return false;
+    }
+    for (TopoDS_Iterator it(s); it.More(); it.Next()) {
+        if (!shape_has_no_topology(it.Value())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// PRECONDITION: reject an input shape that carries no topology, naming the
+/// argument `role` as the DSL author wrote it (e.g. "profile") — the same
+/// convention `require_wire` above uses.
+///
+/// Per the `ContractViolation` contract, the message must NOT repeat the op
+/// name: `wrap_occt_call` already prefixes it, yielding "<op>: <message>".
+///
+/// CALL SITES — the ops that MINT A BODY FROM A PROFILE and cannot mint one
+/// from nothing, nine in all:
+///   `make_prism`, `make_prism_with_history`, `make_prism_infinite`,
+///   `make_revolve`, `make_revolve_with_history`,
+///   `make_pipe`, `make_pipe_with_history`,
+///   `loft_profiles`, `make_loft_with_history`.
+/// At the two loft entry points the check runs PER PROFILE inside the existing
+/// loop, after the "requires at least 2 profiles" count check, so a caller who
+/// passed one profile still gets the diagnostic naming their actual mistake.
+///
+/// …plus a tenth site of a different kind: `export_step`, the LAST line of
+/// defence. A design whose whole product geometry collapsed reaches export
+/// even when no sweep was involved, and an empty STEP file is a phantom
+/// artifact — header-only bytes with a success exit. Its blast radius is
+/// bounded and measured: the build pipeline COMPOUNDS every product body
+/// before exporting (`engine_build.rs` Phase-B, :4996-5010), and a compound
+/// holding any real solid has topology, so this guard cannot fire on an empty
+/// body sitting alongside real ones. Only "the whole product collapsed"
+/// reaches it — pinned by
+/// `harness_occt::empty_shape_consumer_guard_integration::
+/// export_step_of_a_compound_holding_an_empty_member_still_succeeds`.
+///
+/// DELIBERATELY NOT CALLED, each for a stated reason — this list is the
+/// boundary of the invariant, so a reader does not have to re-derive it:
+///   * the booleans (`boolean_fuse` / `_cut` / `_common` and their
+///     with-history siblings): an empty result is a LEGAL value per the
+///     2026-09-08 ruling, and `empty_boolean_results_stay_untouched_compounds`
+///     gates it;
+///   * `fuse_shape_list`: a pure union over an already-non-empty list, on the
+///     hot pattern-realizer path — the branch would be dead;
+///   * the mass-property queries (`volume`, `area`, centroid, inertia): an
+///     empty shape's 0.0 IS the answer the GD&T oracle reads;
+///   * tessellation: an empty mesh is an honest rendering of an empty shape;
+///   * the transforms: empty in, empty out — the emptiness survives intact to
+///     whichever real consumer comes next, which is where it is diagnosed;
+///   * `fillet` / `chamfer`: already refused by the `BRepKind::Solid` gate task
+///     7054 added, since an empty result classifies as `Compound`;
+///   * `make_pipe_shell` and `loft_guided_profiles`: COVERED ELSEWHERE, not
+///     overlooked. Both route their profile through `section_profile_to_wire`
+///     above, whose default arm already rejects an empty compound as
+///     "unsupported profile shape type 'Compound'". A second guard there would
+///     duplicate the invariant; the two characterization pins in
+///     `harness_occt::empty_shape_consumer_guard_integration` are what protect
+///     that existing coverage.
+static void reject_empty_input_shape(const TopoDS_Shape& s, const char* role) {
+    if (!shape_has_no_topology(s)) {
+        return;
+    }
+    throw ContractViolation(
+        std::string(role) +
+        " is empty: it carries no topology, so this operation has nothing to act on. "
+        "This usually means a boolean collapsed — operands that do not overlap, or a "
+        "tool that fully consumed its target. Check operand placement and units.");
+}
+
 } // anonymous namespace
 
 // --- Foundation constants ---
@@ -1860,6 +1969,7 @@ static void synthesize_full_revolution_radial_face_records(
 std::unique_ptr<SweepOpHistory> make_prism_with_history(
     const OcctShape& profile, double dx, double dy, double dz) {
     return wrap_occt_call("make_prism_with_history", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: mirror make_prism's input checks so callers
         // bypassing the Rust validation layer still get a clean error.
         double mag_sq = dx*dx + dy*dy + dz*dz;
@@ -1938,6 +2048,7 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
     double ax, double ay, double az,
     double angle_rad) {
     return wrap_occt_call("make_revolve_with_history", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: mirror make_revolve's input checks so callers
         // bypassing the Rust validation layer still get a clean error
         // (this is the same threshold pattern used by make_prism_with_history).
@@ -2071,6 +2182,7 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
 std::unique_ptr<SweepOpHistory> make_pipe_with_history(
     const OcctShape& profile, const OcctShape& spine) {
     return wrap_occt_call("make_pipe_with_history", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // BRepOffsetAPI_MakePipe inherits from BRepPrimAPI_MakeSweep (via
         // BRepOffsetAPI_BuildAddSurface), which inherits from
         // BRepBuilderAPI_MakeShape — so the Modified/IsDeleted/Generated/
@@ -2205,6 +2317,8 @@ std::unique_ptr<LoftOpHistory> make_loft_with_history(
         BRepOffsetAPI_ThruSections loft(
             is_solid ? Standard_True : Standard_False, Standard_False);
         for (const auto& shape : profiles.shapes) {
+            // Per profile, and AFTER the count check above (see `loft_profiles`).
+            reject_empty_input_shape(shape, "profile");
             loft.AddWire(TopoDS::Wire(shape));
         }
         loft.Build();
@@ -3302,6 +3416,11 @@ std::unique_ptr<OcctShape> make_offset_curve_on_surface(
 
 // --- Draft ---
 
+// `angle_rad` is SI radians, consumed unconverted by
+// `BRepOffsetAPI_DraftAngle::Add(face, pull_dir, angle_rad, neutral_plane)`
+// below, which reads radians — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (INV-AD-4; #6184; that block is scoped to the rotation/revolution
+// entry points, so draft cites it rather than being covered by it).
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape) {
     return wrap_occt_call("draft_shape", [&]() {
@@ -3356,6 +3475,10 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
 ///
 /// The all-faces path uses `draft_shape`; this function requires
 /// `face_indices` to be non-empty.
+///
+/// `angle_rad` is SI radians, consumed unconverted by
+/// `BRepOffsetAPI_DraftAngle::Add`, exactly as in `draft_shape` — see the
+/// ANGULAR UNIT CONTRACT on `rotate_shape` above (INV-AD-4; #6184).
 std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape, const rust::Vec<uint32_t>& face_indices) {
     return wrap_occt_call("draft_faces_shape", [&]() {
@@ -3724,6 +3847,13 @@ std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
 
 // --- make_arc_wire ---
 
+// `start_angle`/`end_angle` are SI radians — but here that follows from OCCT's
+// CURVE PARAMETERISATION rather than from an explicit angle argument:
+// `BRepBuilderAPI_MakeEdge(circle, start_angle, end_angle)` below takes a
+// parameter RANGE, and for a `Geom_Circle` that parameter space is radians by
+// definition (a full circle is 2*M_PI). Nothing converts. See the ANGULAR UNIT
+// CONTRACT on `rotate_shape` above (INV-AD-4; #6184), whose scope is the
+// rotation/revolution entry points, so this curve constructor cites it.
 std::unique_ptr<OcctShape> make_arc_wire(
     double cx, double cy, double cz,
     double radius,
@@ -3770,6 +3900,13 @@ std::unique_ptr<OcctShape> make_helix_wire(
         // Helix as a 2D line on the cylindrical surface.
         // In (u,v) space: u = angle, v = height along axis.
         // A line from (0,0) with slope = pitch/(2*PI) traces a helix.
+        // `u_length` is a total sweep ANGLE in RADIANS in the cylindrical
+        // surface's u-parameter space, derived internally from three LENGTH
+        // inputs — the 2*M_PI (not 360) is what makes it radians. It is a
+        // derived internal quantity: NO angular value crosses the FFI boundary
+        // into `make_helix_wire` (INV-AD-4). Cf. doctrine D4 (2*pi rad/cycle
+        // as its own crossing class), in
+        // docs/prds/v0_6/angle-dimension-completion.md.
         double n_turns = height / pitch;
         double u_length = n_turns * 2.0 * M_PI;
         gp_Pnt2d origin2d(0.0, 0.0);
@@ -4038,6 +4175,9 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
         }
         BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
         for (const auto& shape : profiles.shapes) {
+            // Per profile, and AFTER the count check above, so a caller who
+            // passed only one still gets the diagnostic naming THAT mistake.
+            reject_empty_input_shape(shape, "profile");
             loft.AddWire(TopoDS::Wire(shape));
         }
         loft.Build();
@@ -4054,6 +4194,7 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
 
 std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine) {
     return wrap_occt_call("make_pipe", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         BRepOffsetAPI_MakePipe maker(TopoDS::Wire(spine.shape), profile.shape);
         // BRepOffsetAPI_MakePipe calls Build() internally in its constructor;
         // an explicit Build() here is redundant and was removed (task-383 S1).
@@ -4182,6 +4323,9 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
 
 std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz) {
     return wrap_occt_call("make_prism", [&]() {
+        // Before the scalar checks: a designer whose profile collapsed must be
+        // told THAT, not sent down a direction-vector rabbit hole.
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: Rust extrude validates distance; this catches direct FFI calls.
         double mag_sq = dx*dx + dy*dy + dz*dz;
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
@@ -4204,6 +4348,7 @@ std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, doubl
 std::unique_ptr<OcctShape> make_prism_infinite(const OcctShape& profile,
     double dx, double dy, double dz, bool both) {
     return wrap_occt_call("make_prism_infinite", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: Rust producer validates first; this catches direct FFI calls.
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
             throw std::runtime_error(
@@ -4237,6 +4382,7 @@ std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ax, double ay, double az,
     double angle_rad) {
     return wrap_occt_call("make_revolve", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: Rust validates first with stricter threshold (1e-12 for axis).
         // These C++ checks (1e-30) are a safety net for future code paths that may bypass
         // the Rust layer (e.g., direct FFI calls from tests or hot-path optimizations).
@@ -4403,32 +4549,63 @@ static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
     return std::abs(volume);
 }
 
+/// The ONE site that chooses between OCCT's exact volume integral and the
+/// tessellation fallback, and the only source of a volume number in this
+/// wrapper. `query_volume` and `query_volume_measurement` both delegate here,
+/// so they can never disagree about which arm ran or what it returned.
+///
+/// DEFENSE-IN-DEPTH: reject null/empty topology before any deref. The check
+/// lives HERE rather than in each caller so the precondition is enforced at the
+/// same single site that selects the arm, and a future third entry point
+/// inherits an enforced invariant instead of a hand-off contract. `ShapeType()`
+/// below dereferences the TShape handle and would SIGSEGV on null topology
+/// (wrap_occt_call catches C++ exceptions, not the hardware signal). The
+/// primary guard is get_shape at the Rust boundary; this covers any direct-FFI
+/// or future path that bypasses it. Thrown as a ContractViolation with no op
+/// prefix, so each caller's own wrap_occt_call names itself.
+static VolumeMeasurement compute_volume_arm(const OcctShape& shape) {
+    if (shape.shape.IsNull()) {
+        throw ContractViolation("shape has null/empty topology");
+    }
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(shape.shape, props);
+    const double vol = props.Mass();
+    // Guard is BITWISE, not a tolerance: an FP-noise volume is a measurement,
+    // not an absent one. On OCCT 7.8 a revolution-surface solid integrates to a
+    // correct non-zero volume; the shapes measured to reach the fallback are
+    // FACE-LESS COMPOUNDS (VolumeProperties integrates over faces, so a compound
+    // with none sums to bitwise 0.0 while ShapeType() COMPOUND is <=
+    // TopAbs_SOLID), for which the tessellation arm likewise sums nothing and
+    // returns 0.0 — see make_empty_compound_for_test for the measured detail.
+    // Pinned by volume_measurement_reports_exact_for_real_solids and
+    // volume_measurement_fallback_guard_is_bitwise_not_tolerance.
+    // TODO(#7707): every shape measured to satisfy this guard is face-less, so
+    // mesh_based_volume iterates zero faces and returns the 0.0 the exact arm
+    // already produced — the arm's body is unreachable in practice, and the
+    // flag can only mean "no measurable volume", never "approximated". #7707
+    // rules on deleting the arm outright vs keeping it as defence.
+    if (vol == 0.0 && shape.shape.ShapeType() <= TopAbs_SOLID) {
+        return VolumeMeasurement{mesh_based_volume(shape.shape, 0.01), true};
+    }
+    return VolumeMeasurement{vol, false};
+}
+
 double query_volume(const OcctShape& shape) {
     return wrap_occt_call("query_volume", [&]() {
-        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref. The
-        // ShapeType() fallback below dereferences the TShape handle and would
-        // SIGSEGV on a null shape (wrap_occt_call catches C++ exceptions, not
-        // the hardware signal). Primary guard is get_shape (Rust boundary);
-        // this covers any direct-FFI/future path that bypasses it.
-        if (shape.shape.IsNull()) {
-            throw std::runtime_error("query_volume: shape has null/empty topology");
-        }
-        GProp_GProps props;
-        BRepGProp::VolumeProperties(shape.shape, props);
-        double vol = props.Mass();
-        // BRepGProp::VolumeProperties returns 0 for some parametric surfaces
-        // (e.g. revolution surfaces). Fall back to mesh-based computation.
-        if (vol == 0.0 && shape.shape.ShapeType() <= TopAbs_SOLID) {
-            vol = mesh_based_volume(shape.shape, 0.01);
-        }
-        return vol;
+        return compute_volume_arm(shape).volume;
+    });
+}
+
+VolumeMeasurement query_volume_measurement(const OcctShape& shape) {
+    return wrap_occt_call("query_volume_measurement", [&]() {
+        return compute_volume_arm(shape);
     });
 }
 
 double query_area(const OcctShape& shape) {
     return wrap_occt_call("query_area", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // compute_volume_arm). Primary guard is get_shape (Rust boundary); this
         // covers any direct-FFI/future path that bypasses it.
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_area: shape has null/empty topology");
@@ -4442,7 +4619,7 @@ double query_area(const OcctShape& shape) {
 double query_edge_length(const OcctShape& shape) {
     return wrap_occt_call("query_edge_length", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // compute_volume_arm). Primary guard is get_shape (Rust boundary); this
         // covers any direct-FFI/future path that bypasses it.
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_edge_length: shape has null/empty topology");
@@ -4989,10 +5166,13 @@ double curve_curvature_at(const OcctShape& shape, double px, double py, double p
     });
 }
 
+/// No tessellation fallback here (no mesh-based inertia integrator exists):
+/// at zero mass this returns the degenerate ORIGIN rather than failing.
+/// `query_volume_measurement`'s `tessellation_fallback` flag discriminates.
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Pre-fix this returns Ok(origin) for a null shape;
+        // compute_volume_arm). Pre-fix this returns Ok(origin) for a null shape;
         // refuse loudly instead. Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_centroid: shape has null/empty topology");
@@ -5014,7 +5194,7 @@ Point3 query_centroid(const OcctShape& shape) {
 Point3 query_face_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_face_centroid", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Reached from the Centroid dispatch for Face-repr
+        // compute_volume_arm). Reached from the Centroid dispatch for Face-repr
         // handles, so pre-fix a null-topology face returns Ok(origin); refuse
         // loudly instead. Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
@@ -5030,7 +5210,7 @@ Point3 query_face_centroid(const OcctShape& shape) {
 BBox query_bbox(const OcctShape& shape) {
     return wrap_occt_call("query_bbox", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary).
+        // compute_volume_arm). Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_bbox: shape has null/empty topology");
         }
@@ -5390,6 +5570,9 @@ bool geo_equiv_topo_sample(const OcctShape& a, const OcctShape& b,
     });
 }
 
+/// No tessellation fallback here (no mesh-based inertia integrator exists):
+/// at zero mass this returns the degenerate ZERO rather than failing.
+/// `query_volume_measurement`'s `tessellation_fallback` flag discriminates.
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
     return wrap_occt_call("query_moment_of_inertia", [&]() {
         GProp_GProps props;
@@ -5399,6 +5582,9 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
     });
 }
 
+/// No tessellation fallback here (no mesh-based inertia integrator exists):
+/// at zero mass this returns the degenerate ALL-ZERO TENSOR rather than failing.
+/// `query_volume_measurement`'s `tessellation_fallback` flag discriminates.
 InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     // wrap_occt_call wraps only BRepGProp::VolumeProperties — the sole OCCT call that may
     // legitimately throw (Standard_Failure or std::exception).  MatrixOfInertia() and
@@ -5408,10 +5594,10 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     GProp_GProps props;
     wrap_occt_call("query_inertia_tensor", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before VolumeProperties
-        // (see query_volume). Guard lives inside the wrap_occt_call lambda so
-        // the throw is caught and mapped to a catchable Err; the MatrixOfInertia
-        // math below stays outside the lambda by design. Primary guard is
-        // get_shape (Rust boundary).
+        // (see compute_volume_arm). Guard lives inside the wrap_occt_call
+        // lambda so the throw is caught and mapped to a catchable Err; the
+        // MatrixOfInertia math below stays outside the lambda by design.
+        // Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_inertia_tensor: shape has null/empty topology");
         }
@@ -5780,6 +5966,44 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
             }
         }
 
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_empty_compound_for_test() {
+    // CANONICAL NOTE on which shapes reach compute_volume_arm's tessellation
+    // fallback. The header, the cxx bridge and the Rust tests point here rather
+    // than restating it.
+    //
+    // THE CLASS is FACE-LESS COMPOUNDS, not this fixture alone:
+    // BRepGProp::VolumeProperties integrates over faces, so any compound with
+    // no faces sums to mass EXACTLY 0.0 (bitwise) while ShapeType() (COMPOUND
+    // == 0) is <= TopAbs_SOLID (2) — both halves of the guard. Production
+    // make_compound applies no topology-type restriction to its members, so
+    // e.g. a compound of edges or wires is in the class too. The EMPTY compound
+    // is simply the simplest member, and the one this fixture builds. For every
+    // member the tessellation arm also iterates zero faces, so both arms return
+    // 0.0 and the reported volume is the same either way.
+    //
+    // MEASURED on OCCT 7.8.1 for the empty compound: Mass() == 0.0 bitwise,
+    // IsNull() == false, CentreOfMass == the origin, MatrixOfInertia all-zero,
+    // and BRepMesh_IncrementalMesh completes with 0 faces (so mesh_based_volume
+    // sums nothing and returns 0.0).
+    //
+    // make_nonmanifold_compound_for_test() is NOT usable for this purpose: it
+    // HAS faces, and its three coplanar-with-origin ones integrate to
+    // -6.6174449004242214e-24 (deterministic over 3 repeat runs), which MISSES
+    // the exact `vol == 0.0` guard, so it never takes the fallback.
+    //
+    // Production make_compound refuses empty input, hence this test-only
+    // fixture (same convention as make_null_shape_for_test /
+    // make_nonmanifold_compound_for_test).
+    return wrap_occt_call("make_empty_compound", [&]() {
+        TopoDS_Compound compound;
+        BRep_Builder builder;
+        builder.MakeCompound(compound);
+        auto result = std::make_unique<OcctShape>();
+        result->shape = compound;
         return result;
     });
 }
@@ -6694,8 +6918,20 @@ std::unique_ptr<OcctShapeVec> split_shape(
 static std::mutex g_step_export_mutex;
 
 ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
-    std::lock_guard<std::mutex> lock(g_step_export_mutex);
     return wrap_occt_call("export_step", [&]() {
+        // Refuse a shape with no topology FIRST — before the process-global
+        // export mutex is taken and before any controller/schema plumbing, so
+        // a doomed export costs nothing and never makes a real export queue
+        // behind it. Same stance as `serialize_brep` below, which refuses to
+        // hand back empty output: Reify does not emit a phantom artifact.
+        //
+        // Without this, `writer.Transfer`'s IFSelect_ReturnStatus is discarded
+        // (see below, unlike `writer.Write`), so an empty shape exports as
+        // header-only bytes with a success exit.
+        reject_empty_input_shape(shape.shape, "shape to export");
+
+        std::lock_guard<std::mutex> lock(g_step_export_mutex);
+
         // Register the STEP statics BEFORE setting them. STEPControl_Controller
         // ::Init() is the idempotent call that REGISTERS the
         // `write.step.schema` Interface_Static; calling SetCVal before any

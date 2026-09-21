@@ -15,6 +15,10 @@ use reify_eval::SweptKind;
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::*;
 
+#[path = "../common/angle_expr.rs"]
+mod angle_expr;
+use angle_expr::angle_literal;
+
 /// (a) Extrude-only realization populates the table with a single
 /// `SweptKind::Extrude` keyed by the realization's final handle.
 ///
@@ -311,9 +315,10 @@ fn engine_swept_kind_table_records_revolve_realization() {
     };
 
     // Op 1: Revolve(Step(0), axis=+Z, angle=π/2). The axis ORIGIN is
-    // length-typed (task 5623's units gate rejects a bare Real there); the axis
-    // direction and the angle stay Type::dimensionless_scalar(). Reverting
-    // ox/oy/oz to real_literal here re-trips the gate, not a golden.
+    // length-typed (task 5623's units gate rejects a bare Real there) and the
+    // angle is a dimensioned Angle (PRD 3 leaf γ); only the axis DIRECTION
+    // stays Type::dimensionless_scalar(). Reverting ox/oy/oz or the angle to
+    // real_literal here re-trips a gate, not a golden.
     let revolve_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::Revolve,
         profiles: vec![GeomRef::Step(0)],
@@ -324,7 +329,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),
-            ("angle".into(), real_literal(std::f64::consts::FRAC_PI_2)),
+            ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
     };
 

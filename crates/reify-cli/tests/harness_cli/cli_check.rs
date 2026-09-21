@@ -678,19 +678,24 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
 /// The exit-gate half is pinned by
 /// `check_rejects_bare_scalar_mirror_origin_before_reaching_build` below.
 ///
-/// Baseline RE-MEASURED at task 5662 on the retargeted fixture.  `reify check`
-/// is unchanged in shape (exit 0, both stdout lines above).  `reify eval` on the
-/// same file reports, on stderr:
-///     error: mirror: ox argument expects Length, got Int; …     [TWICE]
-///     error: mirror: oy/oz argument expects Length, got Real; … [TWICE]
-///     error: failed to compile geometry operation: mirror: missing or
-///            non-Length argument 'ox' for mirror                [TWICE]
+/// Baseline RE-MEASURED at task 5746 (units-length ε, R11), which moved the
+/// SPEAKER without touching this test's subject.  `plane_yz(0)` is now rejected
+/// at the PRODUCER, so `mirror` never receives a Plane at all and the ox/oy/oz
+/// consumer-side triple is no longer reached on this route.  `reify check` on the
+/// fixture is unchanged in SHAPE — exit 0, both stdout lines above — and `reify
+/// eval` on the same file now reports, on stderr:
+///     error: plane_yz: offset argument expects Length, got Int; …      [ONCE]
+///     error: failed to compile geometry operation: mirror: expected a
+///            Plane value, got undef                                    [TWICE]
 ///     error: failed to compile geometry operation: unresolvable GeomRef::Step(1) …
 ///     exit 1
-/// The internal duplication — the whole reason for the dedup pin — is unchanged
-/// by the retarget; only the message gained the `mirror: ` builtin prefix that
-/// the decoded-value route carries, and oy/oz read `Real` rather than `Int`
-/// because only the offset argument is the bare literal.
+///
+/// The internal duplication — the whole reason for the dedup pin — SURVIVES that
+/// move, which is what lets the needle be re-anchored rather than weakened: the
+/// `expected a Plane value, got undef` line is the compile-gate diagnostic the
+/// `missing or non-Length argument 'ox'` line used to be, emitted from the same
+/// place, and `reify eval` / `reify build` were both measured printing it twice
+/// while `reify check` prints it once.
 ///
 /// The `matches(...).count() == 1` assertion is the load-bearing one: it pins
 /// D2's ACCUMULATING dedup. `build()` emits that error twice for a single call
@@ -728,7 +733,7 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
         return;
     }
 
-    let needle = "failed to compile geometry operation: mirror: missing or non-Length argument 'ox' for mirror";
+    let needle = "failed to compile geometry operation: mirror: expected a Plane value, got undef";
     assert!(
         stderr.contains(needle),
         "the geometry-compile error `build()` produces must reach `check`'s stderr \
@@ -743,9 +748,10 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
          stderr: {stderr}"
     );
     assert!(
-        stderr.contains("mirror: ox argument expects Length, got Int"),
-        "the companion argument-type warning `build()` produces must reach `check`'s \
-         stderr too.\nstderr: {stderr}"
+        stderr.contains("plane_yz: offset argument expects Length, got Int"),
+        "the companion units rejection `build()` produces must reach `check`'s \
+         stderr too — after ε it is the PRODUCER's, since `mirror` never receives \
+         a Plane.\nstderr: {stderr}"
     );
 }
 
@@ -967,11 +973,13 @@ fn check_constraint_results_come_from_authoritative_check_not_build() {
 /// the `mirror` arm of `builtin_arg_slots` in
 /// `crates/reify-compiler/src/builtin_signatures.rs`.
 ///
-/// Baseline RE-MEASURED at task 5662 on the retargeted fixture, `reify check
-/// --purpose mfg_ready=MirrorBareOriginPurpose`: exit 0, both stdout lines
-/// above unchanged, and on stderr the ox/oy/oz argument-type triple twice plus
-/// `failed to compile geometry operation: mirror: missing or non-Length
-/// argument 'ox' for mirror` exactly ONCE — the dedup pin below is unaffected.
+/// Baseline RE-MEASURED at task 5746 (units-length ε, R11) on `reify check
+/// --purpose mfg_ready=MirrorBareOriginPurpose`: exit 0, both stdout lines above
+/// unchanged, and on stderr the PRODUCER's single `plane_yz: offset argument
+/// expects Length, got Int` plus `failed to compile geometry operation: mirror:
+/// expected a Plane value, got undef` exactly ONCE.  ε moved the speaker, not the
+/// dedup: `reify build` on the same fixture was measured emitting that compile
+/// error TWICE, so the pin below keeps its bite on this branch too.
 ///
 /// The stdout assertions are the load-bearing half of D1 item 2: they prove the
 /// purpose activation + `check_constraints_with_values` path is unaffected by
@@ -1016,7 +1024,7 @@ fn check_purpose_surfaces_geometry_compile_error() {
         return;
     }
 
-    let needle = "failed to compile geometry operation: mirror: missing or non-Length argument 'ox' for mirror";
+    let needle = "failed to compile geometry operation: mirror: expected a Plane value, got undef";
     assert!(
         stderr.contains(needle),
         "with geometry routing, the --purpose branch realizes geometry and must \

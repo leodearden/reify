@@ -48,8 +48,13 @@ assert "scripts/gui-test.sh passes 'bash -n' syntax check" \
 # The whole point of the script: `npm ci` must run first so a lane without
 # gui/node_modules can still run vitest (whose pretest->build:grammar needs
 # lezer-generator from node_modules/.bin).
+#
+# Task 7630 moved the vitest leaf itself into scripts/gui-vitest-run.sh, shared
+# with verify.sh's gui block, so the two can no longer drift. This script's
+# contract is unchanged in substance -- provision, then typecheck, then vitest;
+# only the spelling of the vitest step moved.
 echo ""
-echo "--- Test 3: 'npm ci' precedes 'npm test' (self-provisioning) ---"
+echo "--- Test 3: 'npm ci' precedes the vitest run (self-provisioning) ---"
 
 assert "scripts/gui-test.sh runs 'npm ci'" \
     grep -q 'npm ci' "$GUI_TEST"
@@ -57,15 +62,15 @@ assert "scripts/gui-test.sh runs 'npm ci'" \
 assert "scripts/gui-test.sh uses '--prefer-offline' (warm ~/.npm cache, offline-fast)" \
     bash -c "grep 'npm ci' '$GUI_TEST' | grep -q -- '--prefer-offline'"
 
-assert "scripts/gui-test.sh runs 'npm test' (vitest run)" \
-    grep -q 'npm test' "$GUI_TEST"
+assert "scripts/gui-test.sh runs vitest via the shared scripts/gui-vitest-run.sh" \
+    grep -q 'gui-vitest-run.sh' "$GUI_TEST"
 
-assert "scripts/gui-test.sh: 'npm ci' invocation precedes 'npm test' invocation" \
+assert "scripts/gui-test.sh: 'npm ci' invocation precedes the vitest invocation" \
     bash -c "
-        # Skip comment lines so the header prose (which mentions 'npm test'
+        # Skip comment lines so the header prose (which mentions the runner
         # before 'npm ci') can't spoof the ordering — match the real commands.
         ci_line=\$(awk '/^[[:space:]]*#/{next} /npm ci/{print NR; exit}' '$GUI_TEST')
-        test_line=\$(awk '/^[[:space:]]*#/{next} /npm test/{print NR; exit}' '$GUI_TEST')
+        test_line=\$(awk '/^[[:space:]]*#/{next} /gui-vitest-run\\.sh/{print NR; exit}' '$GUI_TEST')
         [ -n \"\$ci_line\" ] && [ -n \"\$test_line\" ] && [ \"\$ci_line\" -lt \"\$test_line\" ]
     "
 

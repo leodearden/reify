@@ -24,8 +24,8 @@
 
 use reify_ir::{GeometryError, GeometryKernel, VoxelResolution};
 use reify_kernel_openvdb::{
-    DENSIFY_BUDGET_VOXELS, MeshToVoxelOptions, OpenVdbKernel, VoxelResolutionError,
-    test_fixtures::plate_100x100x1,
+    DENSIFY_BUDGET_VOXELS, MIN_FEATURE_VOXELS_ACROSS, MeshToVoxelOptions, OpenVdbKernel,
+    VoxelResolutionError, test_fixtures::plate_100x100x1,
 };
 
 /// `HonestFloor` must behave exactly like plain `ingest_mesh` — same outcome,
@@ -292,4 +292,81 @@ fn too_coarse_request_is_rejected_with_a_named_diagnostic() {
     );
     #[cfg(not(has_openvdb))]
     let _ = msg;
+}
+
+/// The v0.4-shells PRD's original `thickness/3` figure is not merely
+/// discouraged on a thin plate — it is UNREACHABLE through this seam (task
+/// 6566).
+///
+/// On any thin plate the smallest bounding-box extent IS the thickness, so a
+/// `t/3` request has to clear the too-coarse guard against `min_extent = t`
+/// itself: `(t/3) × MIN_FEATURE_VOXELS_ACROSS = 4t/3 > t`. There is no plate
+/// geometry on which that arithmetic comes out differently, which is why the
+/// figure is refused by construction rather than by policy.
+///
+/// # Why this earns its place beside `too_coarse_request_is_rejected_with_a_named_diagnostic`
+///
+/// That test requests `TargetVoxelSize(4.0)` — 0.25 voxels across the
+/// thickness, wildly coarse and nowhere near the boundary. This one pins the
+/// value sitting at exactly `4/3` of the bound: the number a reader of the PRD
+/// would actually type. A guard that rejects the absurd case says nothing
+/// about the plausible one. Do not delete this as a duplicate.
+///
+/// The contrasting arm pins the other half of the statement — that
+/// `t / MIN_FEATURE_VOXELS_ACROSS` is the COARSEST request this seam will
+/// serve, and that it is exactly where `MinFeature(t)` lands. The two arms
+/// agreeing is what makes the lower edge of the shell-voxel window a single
+/// number rather than two that happen to coincide.
+///
+/// Pure Rust throughout: `for_resolution`'s guard is arithmetic over the
+/// bounding box, so this needs no `cfg(has_openvdb)` gate and fires in stub
+/// builds — the same reason part (a) of the tests above is unconditional.
+#[test]
+fn the_prd_thickness_over_three_voxel_size_is_refused_on_a_plate() {
+    let plate = plate_100x100x1();
+    let thickness = 1.0;
+
+    match MeshToVoxelOptions::for_resolution(
+        &plate,
+        VoxelResolution::TargetVoxelSize(thickness / 3.0),
+    ) {
+        Err(VoxelResolutionError::RequestTooCoarse {
+            requested_voxel_size,
+            min_extent,
+        }) => {
+            assert_eq!(
+                min_extent, thickness,
+                "the plate's thinnest extent IS its thickness; that identity is \
+                 what makes t/3 unreachable"
+            );
+            assert!(
+                (requested_voxel_size - thickness / 3.0).abs() <= f64::EPSILON,
+                "the diagnostic must carry the offending request back verbatim; \
+                 got {requested_voxel_size}"
+            );
+        }
+        other => panic!("expected Err(RequestTooCoarse) for the PRD's t/3; got {other:?}"),
+    }
+
+    // Both the request and the expectation are derived from the constant, so
+    // the arm tracks MIN_FEATURE_VOXELS_ACROSS instead of merely coinciding
+    // with it: were it to move to 5, this would ask for t/5 and still be
+    // asserting "the coarsest servable request", not reporting a t/4 request
+    // it no longer makes.
+    let expected_voxel_size = thickness / MIN_FEATURE_VOXELS_ACROSS;
+    let coarsest_label = format!("TargetVoxelSize(t/{MIN_FEATURE_VOXELS_ACROSS})");
+    for (label, request) in [
+        (
+            coarsest_label.as_str(),
+            VoxelResolution::TargetVoxelSize(expected_voxel_size),
+        ),
+        ("MinFeature(t)", VoxelResolution::MinFeature(thickness)),
+    ] {
+        let options = MeshToVoxelOptions::for_resolution(&plate, request)
+            .unwrap_or_else(|e| panic!("{label} is the coarsest servable request; got Err({e:?})"));
+        assert_eq!(
+            options.voxel_size, expected_voxel_size,
+            "{label} must land on t / MIN_FEATURE_VOXELS_ACROSS = {expected_voxel_size}"
+        );
+    }
 }

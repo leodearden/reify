@@ -1022,8 +1022,10 @@ test_print_plan_capture_retries_on_truncation() {
         printf '%s' "$_n" > "$_cf"
         echo "# verify.sh plan"
         if [ "$_n" -ge 2 ]; then
-            echo "./scripts/tree-sitter-generate.sh"
+            # Marker BEFORE the command line, mirroring verify.sh:3636/:3661 —
+            # plan_capture_complete requires a line after it, so do not reorder.
             echo "# --- commands"
+            echo "./scripts/tree-sitter-generate.sh"
         fi
     }
 

@@ -249,12 +249,20 @@ fn create_watcher(
                     emit_status(&handle, "evaluating");
                     {
                         let _idle = IdleGuard(handle.clone());
-                        // reload_for_watch_impl always returns Ok(GuiState): success
-                        // returns the fresh state; failure returns the last-good state
-                        // carrying the reload-error diagnostic in compile_diagnostics.
-                        // The failure path therefore surfaces a compile-diagnostics Tauri
-                        // event to the frontend instead of being silently dropped (the
-                        // former behaviour with update_source_impl's Err branch).
+                        // reload_for_watch_if_changed_impl returns Ok(Some) on a
+                        // real reload: success gives the fresh state; failure gives
+                        // the last-good state carrying the reload-error diagnostic in
+                        // compile_diagnostics. The failure path therefore surfaces a
+                        // compile-diagnostics Tauri event to the frontend instead of
+                        // being silently dropped (the former behaviour with
+                        // update_source_impl's Err branch).
+                        //
+                        // Ok(None) is this process's own write coming back: nothing
+                        // was recompiled, so there is no delta to emit. The
+                        // `file-changed` event below still fires, because that is how
+                        // the editor buffer learns what a parameter write put on disk
+                        // — the echo the guard drops is the redundant RECOMPILE, not
+                        // the reconciliation.
                         // Defense-in-depth (task 5357): this is the
                         // highest-frequency full-recompile path (edit the .ri on
                         // disk → notify event → recompile), and it runs on the
@@ -264,13 +272,13 @@ fn create_watcher(
                         // like the Tauri-command entry points. The scoped helper
                         // borrows the locals/`State` deref directly — no clone.
                         let reload_result = reify_gui::large_stack::run_on_large_stack(|| {
-                            reify_gui::commands::reload_for_watch_impl(
+                            reify_gui::commands::reload_for_watch_if_changed_impl(
                                 &state.engine,
                                 &path_str,
                                 &content,
                             )
                         });
-                        if let Ok(gui_state) = reload_result {
+                        if let Ok(Some(gui_state)) = reload_result {
                             let delta = compute_delta(&state.last_state, &gui_state);
                             emit_delta(&handle, &delta);
                         }
@@ -341,6 +349,7 @@ fn get_initial_state(
     result
 }
 
+/// The DURABLE parameter write (INV-GUI-3, task 5099 η) — one per user gesture.
 #[tauri::command]
 fn set_parameter(
     app: tauri::AppHandle,
@@ -353,6 +362,45 @@ fn set_parameter(
     let engine = Arc::clone(&state.engine);
     let result = reify_gui::large_stack::run_on_worker(move || {
         reify_gui::commands::set_parameter_impl(&engine, &cell_id, &value)
+    });
+    // BOTH arms emit, which is what makes this command differ from every other
+    // one here. A refusal is a state mutation: it discards whatever
+    // `preview_parameter` left in the engine, so the frontend is holding the
+    // preview's geometry and values while the engine has gone back to the
+    // source. It has no other way to learn that — the shared telemetry
+    // choke-point carries auto-resolve and FEA events, never meshes or values —
+    // so a return that only carried the message would strand the viewport on
+    // geometry neither the engine nor the disk holds.
+    match result {
+        Ok(gui_state) => {
+            let delta = compute_delta(&state.last_state, &gui_state);
+            emit_delta(&app, &delta);
+            Ok(gui_state)
+        }
+        Err(refused) => {
+            if let Some(restored) = refused.restored.as_deref() {
+                let delta = compute_delta(&state.last_state, restored);
+                emit_delta(&app, &delta);
+            }
+            Err(refused.message)
+        }
+    }
+}
+
+/// The TRANSIENT parameter preview — one per slider-drag frame. Identical
+/// plumbing to `set_parameter` above; only the engine cadence differs.
+#[tauri::command]
+fn preview_parameter(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    cell_id: String,
+    value: String,
+) -> Result<reify_gui::types::GuiState, String> {
+    emit_status(&app, "evaluating");
+    let _idle = IdleGuard(app.clone());
+    let engine = Arc::clone(&state.engine);
+    let result = reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::preview_parameter_impl(&engine, &cell_id, &value)
     });
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
@@ -1050,6 +1098,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_initial_state,
             set_parameter,
+            preview_parameter,
             sync_observed_demand,
             sync_demand,
             update_source,

@@ -113,6 +113,16 @@ faer = { workspace = true }
 # reify-eval dev-dep, so `reify_ir::Operation::iter()` is reachable; the trait
 # `IntoEnumIterator` lives in `strum`, which is why strum must also appear here.
 strum.workspace = true
+# Task 6013 (registry ψ): the executed static-vs-runtime parity harness in
+# `src/registry_parity_tests.rs` derives its sweep membership from
+# `reify_builtins::rows()` and reads each row's declared result type through
+# `ResultSpec::resolve`. DEV-only, not a normal dep: the harness is a
+# `#[cfg(test)] mod` of this crate's lib, and dev-deps are in scope for lib
+# unit tests. Keeping it dev-only means `cargo tree -e no-dev -p reify-eval`
+# is unchanged, so `engine_hash_closure.txt` needs no edit (reify-builtins is
+# already in that no-dev closure via the reify-compiler / reify-stdlib normal
+# deps, listed there by #6001).
+reify-builtins.workspace = true
 # Task 3565: stdlib_doc_surface integration test calls build_stdlib_doc_model
 # (reify-doc-build) + render_html_pages (reify-doc) directly as a library test.
 # No dependency cycle: reify-doc-build depends on reify-compiler/reify-doc but
@@ -173,3 +183,14 @@ reify-kernel-gmsh = { workspace = true, features = ["mesh-morph"] }
 # `mesh-morph` feature — the engine seam projects through GeometryKernel trait
 # methods (closest_point_on_shape/vertex_point), not the legacy OcctProjector.
 reify-mesh-morph = { workspace = true, features = ["testing"] }
+# Task 7527: `tests/harness_kernel_realization/medial_alignment_invariance_e2e.rs`
+# builds its Z-offset plate sweep from
+# `reify_kernel_openvdb::test_fixtures::axis_aligned_box`, and that
+# module is gated `#[cfg(any(test, feature = "test-fixtures"))]` — a normal dep
+# alone does not reach it. reify-kernel-openvdb is ALREADY a normal dep above, so
+# this line only turns on a pure compile-gate feature for reify-eval's own test
+# builds: no new crate enters the graph, and the openvdb `inventory::submit!`
+# (gated on has_openvdb / `stub_register`, neither touched here) is unaffected.
+# Mirrors the `reify-kernel-manifold = { ..., features = ["test-fixtures"] }`
+# entry above.
+reify-kernel-openvdb = { workspace = true, features = ["test-fixtures"] }

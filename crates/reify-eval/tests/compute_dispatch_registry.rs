@@ -1757,34 +1757,23 @@ fn instance_scope_optimized_param_default_decline_is_silent_while_template_scope
     );
 }
 
-/// The #6750 contingency, made executable — and a MEASURED correction to what
-/// it was contingent on (amend round 5, suggestion #5).
+/// The #6750 contingency, made executable — over a forward-referencing param
+/// default, where the VALUE half is now fixed.
 ///
-/// `elaborate_child_params_only` walks `child_template.value_cells` in
-/// DECLARATION order, and the reuse gate compares `child_values.get(read)`
-/// against the global map — so an `@optimized` param default reading a SIBLING
-/// param declared AFTER it compares `None` against `Some(v)` and declines for a
-/// purely positional reason, not because anything is instance-specific.
+/// Both arms assert two-scope AGREEMENT (instance equals template) because
+/// `elaborate_child_params_only` visits params in dependency order. The `q`
+/// control is what shows the fix belongs to the param loop and not to #6662's
+/// reuse gate: `q` calls a non-`@optimized` fn, so
+/// `resolve_optimized_instance_cell` returns `NotOptimized` and the read
+/// comparison never runs, yet `q` degraded before the fix and resolves after it
+/// exactly like `p`.
 ///
-/// The decline itself is still free: the registered-target gate is
-/// unconditionally false for param defaults (template scope lowers only LET
-/// cells to ComputeNodes), so nothing is reported. That is the contingency this
-/// test pins — when #6750 closes the template-scope gap the gate flips to true
-/// and the warning assertion below REDS, which is when the param loop must be
-/// ordered by dependency (reusing `phase15_node_traces` + `topological_sort`,
-/// as phase 2 already does) rather than when a user first sees a warning about
-/// a cell nothing is wrong with.
-///
-/// The OTHER half of what the code claimed is false, and this test is what
-/// measured it. `unfold.rs` asserted the value was unaffected because "the
-/// fallback `eval_child_expr` resolves the missing read from `snapshot.values`
-/// anyway". It does not: the instance cell comes out `Undef` while the template
-/// cell holds `Int(0)`. The `q` control below — a PLAIN, non-`@optimized`
-/// forward-referencing default, which never touches the reuse gate — degrades
-/// identically, so this is a pre-existing declaration-order gap in
-/// `elaborate_child_params_only`, not something #6662 introduced or can reach.
-/// Filed as ticket `tkt_0RTGVFCMK9K695TCM0WK00FCP9`; characterized here so the
-/// follow-up's premise is pinned and the wrong claim cannot be restated.
+/// The NAME names the half that is still contingent. "is silent" is about the
+/// DECLINE, not the value: the registered-target gate is unconditionally false
+/// for param defaults (template scope lowers only LET cells to ComputeNodes),
+/// so nothing is reported. When #6750 closes the template-scope gap that gate
+/// flips to true and the warning assertion below REDS — and what it reports
+/// will be a genuine input difference, not declaration order.
 #[test]
 fn instance_scope_optimized_param_default_reading_a_later_sibling_is_silent() {
     // `p` and `q` both read `seed`, which is declared AFTER them — the ordering
@@ -1831,29 +1820,36 @@ fn instance_scope_optimized_param_default_reading_a_later_sibling_is_silent() {
         );
     }
 
-    // INSTANCE scope does not — and the plain `q` control is what makes this a
-    // characterization of declaration order rather than of the reuse gate. `q`
-    // is a call to a non-`@optimized` fn, so `resolve_optimized_instance_cell`
-    // returns `NotOptimized` for it and never runs the read comparison; it
-    // degrades anyway. Whatever fixes one fixes both.
+    // INSTANCE scope now agrees — and the plain `q` control is what makes this a
+    // property of the param loop rather than of the reuse gate. `q` is a call to
+    // a non-`@optimized` fn, so `resolve_optimized_instance_cell` returns
+    // `NotOptimized` for it and never runs the read comparison; it degraded
+    // before the fix and resolves after it just like `p`. Whatever fixed one
+    // fixed both.
     for member in ["p", "q"] {
+        let template_id = ValueCellId::new("InnerFwd", member);
+        let instance_id = ValueCellId::new("OuterFwd.a", member);
         assert_eq!(
-            eval_result.values.get(&ValueCellId::new("OuterFwd.a", member)),
-            Some(&Value::Undef),
-            "CHARACTERIZATION, measured by this test: `elaborate_child_params_only` \
-             visits params in DECLARATION order, so OuterFwd.a.{member}'s default \
-             evaluates against a `seed` that is not in `child_values` yet and \
-             degrades to Undef — the fallback does NOT recover it from the \
-             snapshot. If this now equals the template's Int(0), the \
-             declaration-order gap has been closed and this arm should become an \
-             equality against the template cell"
+            eval_result.values.get(&instance_id),
+            eval_result.values.get(&template_id),
+            "instance scope must agree with template scope at OuterFwd.a.{member}: \
+             `elaborate_child_params_only` visits params in dependency order, so \
+             the default evaluates against a `child_values` that already holds \
+             `seed`. An `Undef` here is the declaration-order gap returning"
+        );
+        assert_eq!(
+            eval_result.values.get(&instance_id),
+            Some(&Value::Int(0)),
+            "OuterFwd.a.{member} must be the body-inlined sentinel Int(0), the \
+             same value template scope holds — asserted alongside the equality \
+             above so this cannot pass by both scopes degrading together"
         );
     }
 
-    // THE TRIPWIRE. `OuterFwd.a` carries no ctor override at all, so a decline
-    // warning here would name declaration order, not an instance-specific
-    // input — spurious by construction. It stays absent only while the
-    // registered-target gate is false for param defaults.
+    // THE TRIPWIRE. `OuterFwd.a` carries no ctor override at all, and the loop
+    // is dependency-ordered, so this instance's inputs are value-identical to
+    // the template's and there is nothing left for a decline to name. It stays
+    // absent only while the registered-target gate is false for param defaults.
     let declines: Vec<_> = eval_result
         .diagnostics
         .iter()
@@ -1864,10 +1860,11 @@ fn instance_scope_optimized_param_default_reading_a_later_sibling_is_silent() {
     assert!(
         declines.is_empty(),
         "a forward-referencing @optimized param default must not report a \
-         decline: the instance has no ctor override, so the only thing that \
-         differs is the order this loop happens to visit sibling params in. If \
-         this is now non-empty, #6750 has closed the template-scope gap and \
-         `elaborate_child_params_only` must be reordered by dependency. Got: {:?}",
+         decline: the instance has no ctor override and the param loop is \
+         dependency-ordered, so nothing about this instance differs from the \
+         template. If this is now non-empty, #6750 has closed the template-scope \
+         gap and flipped the registered-target gate — read the reported cause \
+         before assuming the gate is wrong. Got: {:?}",
         declines
     );
 }

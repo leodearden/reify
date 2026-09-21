@@ -145,7 +145,7 @@ fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, 
 /// `Value::Undef`, which is what makes FEA-in-the-loop optimisation possible: the
 /// hook fires on EVERY Nelder-Mead trial point, so the cost surface actually varies
 /// with the auto params the FEA call depends on.
-fn ctx_with<'a>(
+pub(crate) fn ctx_with<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
@@ -195,7 +195,7 @@ fn ctx_with<'a>(
 ///   evaluated. A collision is a membership BUG, so debug builds trip a
 ///   `debug_assert!` naming the offending cell; release builds skip the entry
 ///   and keep the trial point intact.
-fn build_trial_values(
+pub(crate) fn build_trial_values(
     base: &ValueMap,
     params: &[AutoParam],
     x: &[f64],
@@ -511,6 +511,7 @@ fn extract_initial_point(
     let intervals = derive_param_intervals(
         &problem.auto_params,
         &problem.constraints,
+        &problem.dependent_cells,
         &problem.current_values,
         &problem.functions,
         dispatch,
@@ -1084,9 +1085,11 @@ fn worst_unmet_floor_term(
 // Constraint-derived parameter bounds (task #5618)
 //
 // `AutoParam.bounds` is **always `None`** in production — all three construction
-// sites hardcode it (`reify-eval/src/engine_eval.rs:1436`, `engine_edit.rs:1470`,
-// `:3635`) and no `.ri` surface sets it.  So `effective_bounds` always degrades to
-// `default_bounds_for`, which for a dimensionless Real is `(-1e6, 1e6)`: useless as
+// sites hardcode it (`build_auto_param_list` in `reify-eval/src/engine_eval.rs`,
+// and the inline `AutoParam` literals in `Engine::edit_param` and
+// `Engine::edit_source` in `engine_edit.rs`) and no `.ri` surface sets it.  So
+// `effective_bounds` always degrades to `default_bounds_for`, which for a
+// dimensionless Real is `(-1e6, 1e6)`: useless as
 // a seed source, as a Nelder-Mead step scale, and as a clamp target.  A Money
 // objective over an auto bracketed away from 0 (`q >= 1 ∧ q <= 100`) therefore
 // seeded at the fixed `0.01`, outside the synthesised robustness floor's window,
@@ -1153,6 +1156,111 @@ impl DerivedInterval {
     }
 }
 
+/// Everything the bound-derivation family reads and nothing it mutates:
+/// [`derive_param_intervals`], [`params_in_underivable_constraints`] and the
+/// per-leaf workers they drive ([`derive_from_expr`], [`derive_from_side`],
+/// [`collect_underivable_in_leaf`], [`constant_operand_value`]).
+///
+/// One context rather than a positional quartet repeated at every hop: the
+/// family is six functions deep and each signature used to re-list
+/// `(auto_index, values, functions, dispatch)` verbatim, which is what pushed
+/// [`derive_from_side`] past clippy's argument-count threshold. A lookup the
+/// whole family needs is then a new MEMBER here, not a seventh parameter on six
+/// signatures.
+///
+/// Built once per derivation walk by the two entry points, which are the only
+/// members holding `auto_params`; every inner member takes `&DerivationCtx`.
+///
+/// COST: `auto_reads` and `cell_ids` are pure functions of
+/// `(dependent_cells, auto_params)`, neither of which changes across a
+/// resolution — yet both are rebuilt at every entry-point call, which over one
+/// resolution is `extract_initial_point` + [`derived_seed_box`] + one per
+/// `solve_core_with_sd_tolerance` across the multistart points + two in
+/// `verify_uniqueness`. A model with NO dependent cells pays nothing
+/// (`dependent_cell_auto_reads` early-returns an empty map and the `cell_ids`
+/// collect is over an empty slice), and otherwise the reachability DFS is
+/// dwarfed by the Nelder-Mead fold it precedes — so this is priced, not
+/// overlooked. Hoisting the pair to once per resolution means threading a
+/// prebuilt context through all four consumers, which is task #7728 rather
+/// than part of the fix this context exists to carry.
+struct DerivationCtx<'a> {
+    /// Position of each auto param within `auto_params` — the index every
+    /// `DerivedInterval` buffer in the family is addressed by, and the family's
+    /// test for "is this ref an auto?".
+    auto_index: HashMap<ValueCellId, usize>,
+    /// Per dependent cell, the autos it reads TRANSITIVELY —
+    /// [`crate::decompose::dependent_cell_auto_reads`] verbatim, reused rather
+    /// than reimplemented. A constant-only cell is present with an EMPTY set, a
+    /// cycle-tainted one is ABSENT; [`DerivationCtx::varies_with_solve`] is the
+    /// only reader and owns what each of those means here.
+    auto_reads: HashMap<ValueCellId, HashSet<ValueCellId>>,
+    /// Every dependent-cell id, including the cycle-tainted ones `auto_reads`
+    /// omits. This is what tells an omission apart from an ordinary value:
+    /// both are absent from the map, and only one of them varies.
+    cell_ids: HashSet<ValueCellId>,
+    values: &'a ValueMap,
+    functions: &'a [CompiledFunction],
+    dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+}
+
+impl<'a> DerivationCtx<'a> {
+    fn new(
+        auto_params: &[AutoParam],
+        dependent_cells: &[(ValueCellId, CompiledExpr)],
+        values: &'a ValueMap,
+        functions: &'a [CompiledFunction],
+        dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+    ) -> Self {
+        Self {
+            auto_index: auto_params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.id.clone(), i))
+                .collect(),
+            auto_reads: crate::decompose::dependent_cell_auto_reads(dependent_cells, auto_params),
+            cell_ids: dependent_cells.iter().map(|(id, _)| id.clone()).collect(),
+            values,
+            functions,
+            dispatch,
+        }
+    }
+
+    /// Does a ref to `id` MOVE when the solver moves?
+    ///
+    /// True for an auto param itself, and for a dependent cell that either
+    /// transitively reads one or has UNKNOWN auto dependence. All of them are
+    /// finite numbers in the map the family evaluates against —
+    /// `build_trial_values` binds the autos and folds every cell — so
+    /// evaluating is no evidence of constancy, and this is the only question
+    /// that separates a bound from a snapshot.
+    ///
+    /// Unknown resolves to "varies" because the caller is a GUARD, where the
+    /// cost of the two errors is not symmetric: treating a constant as varying
+    /// only widens a box, while treating a varying cell as constant returns a
+    /// wrong answer silently.
+    fn varies_with_solve(&self, id: &ValueCellId) -> bool {
+        if self.auto_index.contains_key(id) {
+            return true;
+        }
+        match self.auto_reads.get(id) {
+            Some(reads) => !reads.is_empty(),
+            // Absent from the map and a known cell id ⇒ cycle-tainted, auto
+            // dependence UNKNOWN. Absent and not a cell id at all ⇒ an ordinary
+            // value or param, which nothing makes vary. Both are absences, so
+            // membership in `cell_ids` is what tells them apart.
+            None => self.cell_ids.contains(id),
+        }
+    }
+
+    /// The expression-evaluation context for a far operand. Assembled per
+    /// operand, exactly as the family did before these three borrows moved into
+    /// the context — [`ctx_with`] is the single place that knows how a
+    /// `dispatch` is attached.
+    fn eval_ctx(&self) -> reify_expr::EvalContext<'a> {
+        ctx_with(self.values, self.functions, self.dispatch)
+    }
+}
+
 /// Evaluate a constraint operand that must be CONSTANT with respect to the auto
 /// params, returning its finite SI value.
 ///
@@ -1166,26 +1274,71 @@ impl DerivedInterval {
 /// scaled can still take its absolute floor.  A bound that cannot be evaluated
 /// must never become a clamp, so here the whole constraint is skipped.
 ///
-/// The auto-param test uses `CompiledExpr::collect_value_refs()`
-/// (`reify-ir/src/expr.rs`), which is exactly the query needed.  It is load-bearing
-/// for the CLAMP box: that box is derived against `trial_values`, in which the auto
-/// params ARE bound, so an expression naming one would evaluate to a perfectly
-/// finite number that is nonetheless not a constant.
-fn constant_operand_value(
-    expr: &CompiledExpr,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> Option<f64> {
+/// The operand's refs come from `CompiledExpr::collect_value_refs()`
+/// (`reify-ir/src/expr.rs`), and each is put to [`DerivationCtx::varies_with_solve`].
+/// This test is load-bearing for the CLAMP box: that box is derived against
+/// `trial_values`, in which the auto params ARE bound and every dependent cell
+/// has been FOLDED to a number, so evaluating successfully proves nothing about
+/// constancy — an operand that moves with the solve evaluates to a perfectly
+/// finite value that is nonetheless not a bound.
+///
+/// `collect_value_refs` alone was not that test (task #6146). It is a purely
+/// SYNTACTIC walk: it recurses into sub-expressions, so an inline
+/// `if up then 3.0 else 5.0` is caught, but it never expands
+/// `dependent_cells`. A derived cell that reads an auto names no auto itself,
+/// so `a >= side` with `side = 3*c` mined this trial's `side` as a HARD lower
+/// bound on `a` — then held `a` to it while `c`, and with it the real value of
+/// `side`, moved away. `varies_with_solve` closes that by following the cell's
+/// transitive auto reads. A cell that reads NO auto (a named alias for a
+/// constant, `let yield_limit = 310MPa`) stays minable: nothing about it moves.
+///
+/// A CYCLE-TAINTED cell is treated as varying too, which resolves — for THIS
+/// consumer, locally — the residual `decompose_into_components_with_reads`
+/// flags ("Closing it properly means returning the omitted-id set alongside the
+/// map … larger than a doc correction and outside task #5467's lock set"). Such
+/// a cell is omitted from the map rather than published with a partial set,
+/// which is the fail-safe direction for that map's drop-side filter and the
+/// UNSAFE one here; `DerivationCtx::cell_ids` recovers the distinction without
+/// widening `dependent_cell_auto_reads`' interface or changing its semantics.
+/// The CONNECTIVITY consumer's copy of the same residual is untouched and
+/// stays open.
+///
+/// The `floor_applied` gate that decides whether a CLAMP box is built at all is
+/// a separate question, settled by task #5711 — not re-litigated here.
+///
+/// # One policy for all four consumers, and what that costs
+///
+/// This rejection is applied UNIFORMLY, though the four consumers do not all
+/// need it. Only the CLAMP box and `verify_uniqueness`' bracketing predicate
+/// require a genuine INVARIANT bound; `extract_initial_point`,
+/// [`derived_seed_box`]/[`multistart_points`] and the perturbation anchors need
+/// only a plausible SEED, for which a trial snapshot of a derived cell would be
+/// harmless — and better than the fallback.
+///
+/// The cost is therefore real and priced, not overlooked: for an auto floored
+/// ONLY by a derived cell, `extract_initial_point` falls through to the fixed
+/// `0.01` and the seed boxes fall back to `default_bounds_for`, giving up
+/// exactly the #5618 improvement those paths exist for. Pinned by
+/// `extract_initial_point_derived_cell_floor_falls_through_to_fixed_default`.
+///
+/// One rule is still preferred over a per-consumer split, on three grounds:
+/// the corpus survey (`docs/notes/derived-cell-bound-derivation-survey.md`)
+/// found ZERO models of that shape, so the loss is latent; the fallback is the
+/// documented pre-#5618 behaviour rather than a new defect; and a second
+/// seed/clamp axis here would cross the one [`resolve_bounds`] already carries
+/// (`include_strict`), leaving two independent switches for a future reader to
+/// keep aligned. If a real model ever pays this cost, the split is a
+/// `snapshot_operands_ok` flag on [`DerivationCtx`] and the test above is the
+/// assertion that should flip.
+fn constant_operand_value(expr: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Option<f64> {
     if expr
         .collect_value_refs()
         .iter()
-        .any(|id| auto_index.contains_key(id))
+        .any(|id| ctx.varies_with_solve(id))
     {
         return None;
     }
-    reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch))
+    reify_expr::eval_expr(expr, &ctx.eval_ctx())
         .as_f64()
         .filter(|v| v.is_finite())
 }
@@ -1229,6 +1382,7 @@ fn for_each_leaf_conjunct(expr: &CompiledExpr, f: &mut impl FnMut(&CompiledExpr)
 fn derive_param_intervals(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -1237,14 +1391,10 @@ fn derive_param_intervals(
     if auto_params.is_empty() {
         return out;
     }
-    let auto_index: HashMap<ValueCellId, usize> = auto_params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (p.id.clone(), i))
-        .collect();
+    let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     for (_, expr) in constraints {
         for_each_leaf_conjunct(expr, &mut |leaf| {
-            derive_from_expr(leaf, &auto_index, values, functions, &mut out, dispatch);
+            derive_from_expr(leaf, &ctx, &mut out);
         });
     }
     out
@@ -1262,14 +1412,7 @@ fn derive_param_intervals(
 /// suggestion 3 — [`collect_underivable_in_leaf`] used to carry a second copy
 /// of that recursion). Calling this directly on an `A AND B` node therefore
 /// derives NOTHING, by design; go through [`for_each_leaf_conjunct`].
-fn derive_from_expr(
-    expr: &CompiledExpr,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    out: &mut [DerivedInterval],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) {
+fn derive_from_expr(expr: &CompiledExpr, ctx: &DerivationCtx<'_>, out: &mut [DerivedInterval]) {
     let CompiledExprKind::BinOp { op, left, right } = &expr.kind else {
         return;
     };
@@ -1277,22 +1420,14 @@ fn derive_from_expr(
         BinOp::Ge | BinOp::Gt => {
             // left ≥ right → `left` bounded BELOW by right, `right` bounded ABOVE by left.
             let strict = matches!(op, BinOp::Gt);
-            derive_from_side(
-                left, right, true, strict, auto_index, values, functions, out, dispatch,
-            );
-            derive_from_side(
-                right, left, false, strict, auto_index, values, functions, out, dispatch,
-            );
+            derive_from_side(left, right, true, strict, ctx, out);
+            derive_from_side(right, left, false, strict, ctx, out);
         }
         BinOp::Le | BinOp::Lt => {
             // left ≤ right → `left` bounded ABOVE by right, `right` bounded BELOW by left.
             let strict = matches!(op, BinOp::Lt);
-            derive_from_side(
-                left, right, false, strict, auto_index, values, functions, out, dispatch,
-            );
-            derive_from_side(
-                right, left, true, strict, auto_index, values, functions, out, dispatch,
-            );
+            derive_from_side(left, right, false, strict, ctx, out);
+            derive_from_side(right, left, true, strict, ctx, out);
         }
         // And (split upstream by `for_each_leaf_conjunct`, so it cannot appear
         // here on the intended call path), Eq, Ne, Or and every arithmetic op:
@@ -1314,25 +1449,20 @@ fn derive_from_expr(
 ///
 /// (the "`far OP p`" shape is covered by the caller invoking this function once per
 /// operand side).  Anything else is skipped.
-#[allow(clippy::too_many_arguments)]
 fn derive_from_side(
     near: &CompiledExpr,
     far: &CompiledExpr,
     lower: bool,
     strict: bool,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
+    ctx: &DerivationCtx<'_>,
     out: &mut [DerivedInterval],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
-    let Some(far_value) = constant_operand_value(far, auto_index, values, functions, dispatch)
-    else {
+    let Some(far_value) = constant_operand_value(far, ctx) else {
         return;
     };
     match &near.kind {
         CompiledExprKind::ValueRef(id) => {
-            if let Some(&i) = auto_index.get(id) {
+            if let Some(&i) = ctx.auto_index.get(id) {
                 record_bound(&mut out[i], far_value, lower, strict);
             }
         }
@@ -1343,18 +1473,16 @@ fn derive_from_side(
         } => {
             // `p − k OP far` → `p OP far + k`
             if let CompiledExprKind::ValueRef(id) = &left.kind
-                && let Some(&i) = auto_index.get(id)
-                && let Some(k) =
-                    constant_operand_value(right, auto_index, values, functions, dispatch)
+                && let Some(&i) = ctx.auto_index.get(id)
+                && let Some(k) = constant_operand_value(right, ctx)
             {
                 record_bound(&mut out[i], far_value + k, lower, strict);
                 return;
             }
             // `k − p OP far` → `p OP′ k − far`  (multiplying by −1 flips the direction)
             if let CompiledExprKind::ValueRef(id) = &right.kind
-                && let Some(&i) = auto_index.get(id)
-                && let Some(k) =
-                    constant_operand_value(left, auto_index, values, functions, dispatch)
+                && let Some(&i) = ctx.auto_index.get(id)
+                && let Some(k) = constant_operand_value(left, ctx)
             {
                 record_bound(&mut out[i], k - far_value, !lower, strict);
             }
@@ -1448,6 +1576,7 @@ fn derived_seed_box(
         &derive_param_intervals(
             &problem.auto_params,
             &problem.constraints,
+            &problem.dependent_cells,
             &problem.current_values,
             &problem.functions,
             dispatch,
@@ -1534,9 +1663,31 @@ fn seed_box_from_intervals(
 /// mentions it is opaque.
 ///
 /// Pure function of its inputs — no solve, no I/O, no mutation.
+///
+/// # The MENTIONS test stays syntactic, by design and not by oversight
+///
+/// [`collect_underivable_in_leaf`] asks which autos a leaf MENTIONS using the
+/// raw `leaf.collect_value_refs()`, so an auto a constraint reaches only
+/// THROUGH a derived cell is invisible to it. Since task #6146 the far-operand
+/// test on the other side of this family IS transitive
+/// ([`DerivationCtx::varies_with_solve`]), so the two halves are deliberately
+/// asymmetric.
+///
+/// The asymmetry has a cost, pre-dating #6146 and unchanged by it:
+/// `constraint side >= 5` with `side = 3*c` bounds nothing for strict auto `c`
+/// AND never adds `c` to this set, so `c` is neither bracketed nor abstaining
+/// and the γ path reports `ConstraintNonUnique` — the same class of §11.6 false
+/// negative #6146 removed, in the mirror direction.
+///
+/// Widening it is NOT a doc-sized change: `decompose::expand_refs_through_dependent_cells`
+/// exists and would supply the reach, but it needs the cycle-tainted treatment
+/// [`DerivationCtx::varies_with_solve`] encodes, and growing this set moves
+/// models from erroring to `Solved` — a §11.6 verdict change that wants its own
+/// regression sweep rather than a ride-along. Tracked as task #7727.
 fn params_in_underivable_constraints(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -1545,11 +1696,7 @@ fn params_in_underivable_constraints(
     if auto_params.is_empty() {
         return out;
     }
-    let auto_index: HashMap<ValueCellId, usize> = auto_params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (p.id.clone(), i))
-        .collect();
+    let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     // One scratch buffer for the whole walk, reset per leaf conjunct rather than
     // reallocated (review suggestion 1): `collect_underivable` scores EVERY leaf,
     // so a per-leaf `vec![DerivedInterval::default(); n]` allocated a fresh Vec
@@ -1557,15 +1704,7 @@ fn params_in_underivable_constraints(
     let mut scratch = vec![DerivedInterval::default(); auto_params.len()];
     for (_, expr) in constraints {
         for_each_leaf_conjunct(expr, &mut |leaf| {
-            collect_underivable_in_leaf(
-                leaf,
-                &auto_index,
-                values,
-                functions,
-                &mut scratch,
-                &mut out,
-                dispatch,
-            );
+            collect_underivable_in_leaf(leaf, &ctx, &mut scratch, &mut out);
         });
     }
     out
@@ -1586,17 +1725,14 @@ fn params_in_underivable_constraints(
 /// documented on [`params_in_underivable_constraints`] depends on the reset.
 fn collect_underivable_in_leaf(
     leaf: &CompiledExpr,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
+    ctx: &DerivationCtx<'_>,
     scratch: &mut [DerivedInterval],
     out: &mut HashSet<usize>,
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
     scratch.fill(DerivedInterval::default());
-    derive_from_expr(leaf, auto_index, values, functions, scratch, dispatch);
+    derive_from_expr(leaf, ctx, scratch);
     for id in leaf.collect_value_refs() {
-        if let Some(&i) = auto_index.get(&id)
+        if let Some(&i) = ctx.auto_index.get(&id)
             && scratch
                 .get(i)
                 .is_some_and(|iv| iv.lo.is_none() && iv.hi.is_none())
@@ -1880,17 +2016,60 @@ struct ConstraintCostFunction<'a> {
     dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
 }
 
+/// Why [`eval_objective_set`] could not produce an orderable score.
+///
+/// Structured rather than a disjunctive free-text sentence, because the causes
+/// send a user somewhere different, and the two NON-FINITE ones send them as far
+/// apart as either does from `Undefined`: `NonFiniteTerm` means the ±Inf/NaN came
+/// OUT of a term's own expression and no weight was involved yet, so the fix is in
+/// that expression; `NonFiniteFold` means every term value was finite and the
+/// combination overflowed anyway, so the fix is in the weights or the magnitudes
+/// being combined. Telling a user their "weighted fold" overflowed when their
+/// expression handed the fold an `inf` points them at the wrong half of their
+/// objective. `solve_core` renders each into its own `NoProgress` reason, so a
+/// reader — and a test — can tell which fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectiveAbstention {
+    /// A term's expression did not evaluate to a number here (e.g. `x / 0`).
+    Undefined,
+    /// A term's expression evaluated to a number, but not a finite one — the
+    /// ±Inf/NaN arrived from the expression itself, before any weight was
+    /// applied and before anything was folded.
+    NonFiniteTerm,
+    /// Every term value was finite and the weighted accumulator went ±Inf/NaN
+    /// regardless (task #6377).
+    NonFiniteFold,
+}
+
+impl ObjectiveAbstention {
+    /// The cause half of a user-facing `NoProgress` reason; the caller appends
+    /// where it was measured ("at solution point" / "at fallback point").
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Undefined => "objective expression evaluated to undefined",
+            Self::NonFiniteTerm => "objective term evaluated to a non-finite value",
+            Self::NonFiniteFold => "objective's weighted fold was non-finite",
+        }
+    }
+}
+
 /// Evaluate an `ObjectiveSet` as a single f64 cost using the I2-preserving
 /// additive fold (PRD §6.2 I3):
 ///
 ///   acc = 0.0
 ///   for each term t:
-///     v = eval(t.expr)           — returns None if Undef or non-finite
+///     v = eval(t.expr)           — abstains if Undef or non-finite
 ///     Minimize → acc += t.weight * v
 ///     Maximize → acc -= t.weight * v
 ///
-/// Returns `None` if ANY term evaluates to a non-numeric / non-finite value,
-/// preserving the single-term None → UNDEF_OBJECTIVE_PENALTY / NoProgress paths.
+/// Abstains instead of returning a score in three cases:
+/// [`ObjectiveAbstention::Undefined`] when a term does not evaluate to a number,
+/// [`ObjectiveAbstention::NonFiniteTerm`] when a term evaluates to a number that
+/// is Inf/NaN, and [`ObjectiveAbstention::NonFiniteFold`] when the ACCUMULATED
+/// fold is Inf/NaN though every term value was finite (task #6377). All three
+/// preserve the single-term UNDEF_OBJECTIVE_PENALTY / NoProgress paths. The
+/// guard at the end of the body states how the accumulator case arises; this
+/// header does not restate it.
 ///
 /// I2 numerical equivalence: for a single term with weight 1.0,
 ///   Minimize → 0.0 + 1.0·v == v  (IEEE-754, finite v)
@@ -1906,7 +2085,7 @@ struct ConstraintCostFunction<'a> {
 /// override scores its enumerated models through THIS function. Both the
 /// discrete and the continuous path therefore fold an objective the same way —
 /// same weight application, same `Maximize` → negation normalisation to
-/// "lower is better" (F-result I2), same non-finite → `None` rejection. A
+/// "lower is better" (F-result I2), same non-finite → abstention. A
 /// second, cpsat-local fold would be free to disagree with this one about any
 /// of those, and nothing would catch it (PRD2 §3.9, G7).
 pub(crate) fn eval_objective_set(
@@ -1914,7 +2093,7 @@ pub(crate) fn eval_objective_set(
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> Option<f64> {
+) -> Result<f64, ObjectiveAbstention> {
     // Guard: only WeightedSum is implemented here.  A Lexicographic set must
     // not be silently mis-solved as a weighted sum.  Assert in debug builds;
     // task ε will implement the full ε-band staged solve.
@@ -1941,13 +2120,48 @@ pub(crate) fn eval_objective_set(
     for term in &objective.terms {
         let v = reify_expr::eval_expr(&term.expr, &ctx_with(values, functions, dispatch))
             .as_f64()
-            .filter(|v| v.is_finite())?;
+            .ok_or(ObjectiveAbstention::Undefined)?;
+        if !v.is_finite() {
+            return Err(ObjectiveAbstention::NonFiniteTerm);
+        }
         match term.sense {
             ObjectiveSense::Minimize => acc += term.weight * v,
             ObjectiveSense::Maximize => acc -= term.weight * v,
         }
     }
-    Some(acc)
+    // Fail-closed (task #6377; PRD docs/prds/compute-fea-hardening.md decision 4
+    // taxonomy). The per-term check above guards each `v` — it does NOT guard
+    // `acc`. Two paths reach a non-finite fold even so: `term.weight` is an
+    // unvalidated `pub f64` (reify-ir/src/constraint.rs, where "> 0; default
+    // 1.0" is a doc comment checked at no construction site), and even with
+    // finite POSITIVE weights `term.weight * v` can overflow to ±Inf, with a
+    // +Inf and a -Inf term folding to NaN. An unorderable score has no correct
+    // consumer, so abstain rather than emit one — which is what makes the
+    // "never actually exercised" claims at the two `unwrap_or(Ordering::Equal)`
+    // ranking sites (`solve_ranked_impl` below, `impl Ord for ScoredModel` in
+    // cpsat.rs) true.
+    //
+    // Abstaining here is a deliberate BEHAVIOUR change at every caller that
+    // consumed the score, not a type-level no-op, and each reclassification is
+    // separately pinned. Which callers, what each now returns, what the
+    // unguarded code returned in its place (MEASURED, not assumed), and the
+    // test that holds each one are recorded together in the PRD under decision
+    // 4 — one inventory, in the place that already owns the evidence.
+    //
+    // `debug!`, not `warn!`: this runs once per Nelder-Mead trial point via
+    // `ConstraintCostFunction::cost`. The call sits INSIDE the branch so the
+    // finite path does no added work (F-result I1 / PRD §6.2 I2 byte-identical
+    // cost surface).
+    if !acc.is_finite() {
+        tracing::debug!(
+            acc,
+            terms = objective.terms.len(),
+            "objective fold produced a non-finite accumulator; abstaining \
+             (no orderable score) rather than returning a NaN/Inf cost"
+        );
+        return Err(ObjectiveAbstention::NonFiniteFold);
+    }
+    Ok(acc)
 }
 
 impl CostFunction for ConstraintCostFunction<'_> {
@@ -2254,6 +2468,7 @@ fn solve_core_with_sd_tolerance(
             &derive_param_intervals(
                 &problem.auto_params,
                 &effective_constraints,
+                &problem.dependent_cells,
                 &trial_values,
                 &problem.functions,
                 dispatch,
@@ -2444,13 +2659,19 @@ fn solve_core_with_sd_tolerance(
             // Validate that the objective is numeric at the initial point
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
+            //
+            // Three causes since task #6377 — an undefined TERM, a non-finite
+            // TERM, and a non-finite weighted FOLD of finite terms — reported
+            // apart rather than as one disjunctive sentence, because they send a
+            // user to different fixes. The last is a deliberate
+            // reclassification; see `eval_objective_set`'s guard.
             if let Some(obj) = effective_objective
-                && eval_objective_set(obj, &trial_values, &problem.functions, dispatch).is_none()
+                && let Err(cause) =
+                    eval_objective_set(obj, &trial_values, &problem.functions, dispatch)
             {
                 return (
                     SolveResult::NoProgress {
-                        reason: "objective expression evaluated to undefined at fallback point"
-                            .to_string(),
+                        reason: format!("{} at fallback point", cause.reason()),
                     },
                     meta,
                 );
@@ -2564,14 +2785,15 @@ fn solve_core_with_sd_tolerance(
         );
     }
 
-    // Post-solve objective validation: if the objective is still non-numeric
-    // at the solution point, report NoProgress rather than Solved.
+    // Post-solve objective validation: if the objective is still unscorable at
+    // the solution point, report NoProgress rather than Solved. Same causes, and
+    // the same #6377 reclassification, as the fallback-point site above.
     if let Some(obj) = effective_objective
-        && eval_objective_set(obj, &final_values, &problem.functions, dispatch).is_none()
+        && let Err(cause) = eval_objective_set(obj, &final_values, &problem.functions, dispatch)
     {
         return (
             SolveResult::NoProgress {
-                reason: "objective expression evaluated to undefined at solution point".to_string(),
+                reason: format!("{} at solution point", cause.reason()),
             },
             meta,
         );
@@ -3176,8 +3398,8 @@ fn build_perturbation_anchors(
 /// feasibility-only solve must report `FeasibilityOnly` + `None` even when
 /// the solver internally optimised a synthetic centrality objective for
 /// exploration. Returns `None` when there is no explicit objective, or when
-/// [`eval_objective_set`] cannot produce a comparable score at `values`
-/// (a non-numeric or non-finite result).
+/// [`eval_objective_set`] abstains at `values` (a non-numeric or non-finite
+/// result).
 ///
 /// Shared by [`rank_single`], the multistart scoring loop in
 /// [`ConstraintSolver::solve_ranked`], and `verify_uniqueness`'s
@@ -3198,7 +3420,7 @@ fn score_solution(
         &problem.functions,
         dispatch,
     );
-    eval_objective_set(obj, &full, &problem.functions, dispatch)
+    eval_objective_set(obj, &full, &problem.functions, dispatch).ok()
 }
 
 /// Verify solution uniqueness by re-solving from a perturbed starting point.
@@ -3400,6 +3622,7 @@ fn verify_uniqueness(
     let intervals = derive_param_intervals(
         &problem.auto_params,
         &problem.constraints,
+        &problem.dependent_cells,
         &problem.current_values,
         &problem.functions,
         dispatch,
@@ -3468,6 +3691,7 @@ fn verify_uniqueness(
             &params_in_underivable_constraints(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 dispatch,
@@ -3686,7 +3910,7 @@ fn rank_single(
             let objective_score = score_solution(problem, &values, dispatch);
             // Key optimality off objective_score (not problem.objective.is_some())
             // to preserve I4: BestFound is only emitted when the score is present.
-            // In the edge case where eval_objective_set returns None despite
+            // In the edge case where eval_objective_set abstains despite
             // problem.objective.is_some() (e.g. objective expression non-numeric
             // at the solved map), fall back to FeasibilityOnly so that
             // objective_score: None is never paired with BestFound.
@@ -3879,14 +4103,15 @@ impl DimensionalSolver {
 
         // Rank feasible candidates by strict ascending objective_score, ties
         // broken by ascending start index (start #0, the historical seed,
-        // wins exact ties). candidates[0] is the optimum (I2). `partial_cmp`
-        // only returns `None` for NaN, which `eval_objective_set` already
-        // filters out (`.filter(|v| v.is_finite())`), so every score here is
-        // a well-ordered finite f64 — `unwrap_or(Equal)` is a defensive
-        // fallback, never actually exercised.
+        // wins exact ties). candidates[0] is the optimum (I2).
+        //
+        // Every score in `scored` is a finite f64, so `partial_cmp` cannot
+        // return `None` here and `unwrap_or(Equal)` is genuinely dead code.
+        // WHY that holds is stated once, at `eval_objective_set`'s fail-closed
+        // accumulator guard (task #6377); do not restate it here.
         scored.sort_by(|a, b| {
             a.2.partial_cmp(&b.2)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — every score is always FINITE (not merely never-NaN); see `eval_objective_set`'s fail-closed accumulator guard (task #6377)
                 .then(a.0.cmp(&b.0))
         });
 
@@ -4278,9 +4503,10 @@ mod tests {
     ///
     /// The DEBUG-count assertion is the key TDD signal: if the early-return is
     /// absent, at least the `"verifying uniqueness via perturbation"` debug event
-    /// at solver.rs:818 fires (DEBUG ≥ 1), plus additional debug events from
-    /// inside `solve_core`'s no-constraint / no-objective early-return path
-    /// (DEBUG ≥ 2).  Zero DEBUG events proves both were skipped.
+    /// (emitted inside `verify_uniqueness` itself) fires (DEBUG ≥ 1), plus
+    /// additional debug events from inside `solve_core`'s no-constraint /
+    /// no-objective early-return path (DEBUG ≥ 2).  Zero DEBUG events proves
+    /// both were skipped.
     #[test]
     fn verify_uniqueness_skips_solve_core_when_param_missing() {
         use std::collections::HashMap;
@@ -5545,6 +5771,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5569,6 +5796,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5604,6 +5832,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5638,6 +5867,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5716,6 +5946,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![both_readable]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5736,6 +5967,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![mixed]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5771,6 +6003,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![disjunction]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5803,6 +6036,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 Some(&mock),
@@ -5863,6 +6097,142 @@ mod tests {
                 &HashSet::from([0]),
             ),
             "param 1 has no unreadable-constraint evidence, so the verdict must stay false"
+        );
+    }
+
+    /// CHARACTERISATION (task #6146): the one user-visible verdict this task
+    /// moves, pinned so the next "optimisation" of the derivation guard cannot
+    /// revert it silently.
+    ///
+    /// A STRICT auto whose only constraint is `a >= side`, with `side = 3*c` a
+    /// derived cell varying with auto `c` — the shape #6146's corpus survey
+    /// found ZERO instances of in 715 tracked `.ri` files, which is why this is
+    /// characterisation rather than a regression fixture.
+    ///
+    /// Unlike its neighbours above this routes through the REAL
+    /// `derive_param_intervals` / `params_in_underivable_constraints` rather
+    /// than hand-built `DerivedInterval`s: what changed is which intervals and
+    /// which abstention set those two produce for this model, and a hand-built
+    /// pair would pin the prediction instead of the behaviour.
+    ///
+    /// MEASURED on this branch, same fixture, by flipping only
+    /// `DerivationCtx::varies_with_solve` back to its pre-#6146 body
+    /// (`auto_index.contains_key(id)`) and re-running:
+    ///
+    /// | | `a`'s interval | abstention set | γ verdict |
+    /// |---|---|---|---|
+    /// | BEFORE | `lo = Some((0.0075, false))`, `hi = None` | `{}` | `ConstraintNonUnique` |
+    /// | AFTER  | `lo = None`, `hi = None` | `{0}` | `Solved` |
+    ///
+    /// BEFORE, the bogus bound populated `lo`, so `collect_underivable_in_leaf`
+    /// saw a readable side and withheld the abstention — and the model errored
+    /// on the strength of a bound the user never wrote. AFTER, `a` derives
+    /// neither side, lands in the abstention set, and the esc-5711-3 abstention
+    /// counts it as bracketed.
+    ///
+    /// The direction is MONOTONE, which is the test's actual point: the fix can
+    /// only GROW the abstention set, and `strict_autos_constraint_bracketed` is
+    /// documented monotone in it ("growing that set can only move a param from
+    /// 'not bracketed' to 'abstain', never the reverse"). So no previously-
+    /// `Solved` γ model can newly fail — the verdict moves `false → true` or
+    /// not at all.
+    ///
+    /// SCOPE: that argument covers the γ branch ONLY. The non-γ path reuses the
+    /// same `intervals` through `seed_box_from_intervals` to build its
+    /// PERTURBATION ANCHORS, and a widened box there re-anchors the confirming
+    /// re-solve, which can land on a different local optimum and so move a
+    /// verdict in EITHER direction. Nothing here pins that; it is latent for
+    /// the same reason the rest of this task is (the corpus survey found no
+    /// model of this shape), and it is a property of the anchor box, not of the
+    /// abstention monotonicity this test asserts.
+    #[test]
+    fn gamma_strict_auto_floored_only_by_a_derived_cell_abstains_not_errors() {
+        use std::collections::HashSet;
+
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let a = ValueCellId::new("Part", "a");
+        let c = ValueCellId::new("Part", "c");
+        let side = ValueCellId::new("Part", "side");
+        let length_ref = |id: &ValueCellId| CompiledExpr::value_ref(id.clone(), Type::length());
+
+        // `a` is the strict auto under test; `c` is free, so it carries no
+        // §11.6 obligation and the verdict turns on `a` alone.
+        let params = vec![
+            AutoParam {
+                id: a.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
+            AutoParam {
+                id: c.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: true,
+            },
+        ];
+        // `side = 3 * c`.
+        let cells = vec![(
+            side.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::literal(
+                    Value::Scalar {
+                        si_value: 3.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Type::dimensionless_scalar(),
+                ),
+                length_ref(&c),
+                Type::length(),
+            ),
+        )];
+        // The model's ONLY constraint on `a`.
+        let constraints = vec![(
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(BinOp::Ge, length_ref(&a), length_ref(&side), Type::Bool),
+        )];
+        let values =
+            super::build_trial_values(&ValueMap::new(), &params, &[0.0, 0.0025], &cells, &[], None);
+
+        let intervals =
+            super::derive_param_intervals(&params, &constraints, &cells, &values, &[], None);
+        let underivable = super::params_in_underivable_constraints(
+            &params,
+            &constraints,
+            &cells,
+            &values,
+            &[],
+            None,
+        );
+
+        assert_eq!(
+            (intervals[0].lo, intervals[0].hi),
+            (None, None),
+            "`a >= side` with `side = 3*c` must leave BOTH sides of `a` underived; \
+             before #6146 the lower side held this trial's 0.0075"
+        );
+        assert!(
+            underivable.contains(&0),
+            "a constraint that now derives nothing for `a` is exactly the \
+             unreadable-constraint evidence the abstention keys on, so `a` must \
+             enter the abstention set — before #6146 the bogus `lo` looked like \
+             a readable side and withheld it"
+        );
+        assert!(
+            super::strict_autos_constraint_bracketed(&params, &intervals, &underivable),
+            "`a` abstains, so the γ path reports the model determined rather than \
+             erroring on the strength of a bound the user never wrote"
+        );
+        assert!(
+            !super::strict_autos_constraint_bracketed(&params, &intervals, &HashSet::new()),
+            "MONOTONICITY, the point of this fixture: the empty-evidence call \
+             `verify_uniqueness` makes FIRST still reports not-bracketed, so the \
+             new verdict comes only from GROWING the abstention set. A larger set \
+             can move a param `not bracketed` → `abstain` and never the reverse, \
+             so no previously-`Solved` γ model can newly fail"
         );
     }
 
@@ -6128,6 +6498,192 @@ mod tests {
 
         let _ = eval_objective_set(&incoherent, &ValueMap::new(), &[], None);
     }
+
+    // ---- eval_objective_set non-finite-ACCUMULATOR fail-closed contract (task #6377) ----
+    //
+    // The per-term `.filter(|v| v.is_finite())?` inside the fold guards each `v`.
+    // It does NOT guard `acc`. These four cases pin the two unguarded paths that
+    // reach a non-finite ACCUMULATED fold anyway, plus one positive control that
+    // must keep passing so the guard cannot be over-eager.
+
+    /// Hand-build a dimensionless single-term `WeightedSum` set with an explicit weight.
+    ///
+    /// Mirrors the struct-literal construction used by
+    /// `eval_objective_set_panics_on_incoherent_dimensions` above; every term is
+    /// dimensionless, so `reify_ir::objective_terms_coherent` is satisfied and the
+    /// I-UNITS `debug_assert!` at the head of the fold stays quiet.
+    fn weighted_set(terms: Vec<(reify_ir::ObjectiveSense, f64, f64)>) -> reify_ir::ObjectiveSet {
+        use reify_ir::{ObjectiveCombination, ObjectiveSet, ObjectiveTerm};
+        ObjectiveSet {
+            terms: terms
+                .into_iter()
+                .map(|(sense, weight, v)| {
+                    let mut t = ObjectiveTerm::new(sense, real_lit(v));
+                    t.weight = weight;
+                    t
+                })
+                .collect(),
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        }
+    }
+
+    /// Pins defect 2(a): `ObjectiveTerm::weight` is a bare `pub f64`
+    /// (`reify-ir/src/constraint.rs`) whose "> 0; default 1.0" contract is a doc
+    /// comment only — no construction site validates it at runtime. A `NaN` weight
+    /// therefore reaches the fold, where `term.weight * v` is `NaN` and the
+    /// accumulator goes `NaN` even though every *term value* passed the per-term
+    /// `is_finite` filter. `eval_objective_set` must abstain, not emit an
+    /// unorderable score.
+    #[test]
+    fn eval_objective_set_nan_weight_abstains_non_finite_fold() {
+        use reify_ir::ObjectiveSense;
+        let obj = weighted_set(vec![(ObjectiveSense::Minimize, f64::NAN, 2.0)]);
+        assert_eq!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None),
+            Err(super::ObjectiveAbstention::NonFiniteFold),
+            "a NaN term weight folds to a NaN accumulator; eval_objective_set must \
+             fail closed rather than return a NaN score — a NaN score is not \
+             orderable, and both ranking sites (solver.rs solve_ranked_impl, \
+             cpsat.rs `impl Ord for ScoredModel`) assume it can never occur. The \
+             variant is asserted, not just the abstention: the term value 2.0 is \
+             finite, so reporting `NonFiniteTerm` here would send a user to edit \
+             an expression that is not the problem"
+        );
+    }
+
+    /// Pins the other half of defect 2(a): an INFINITE weight is equally unvalidated.
+    /// `inf * 2.0` is `+inf`, so the accumulator is non-finite without ever being NaN
+    /// — which is why the guard must test `is_finite()`, not `!is_nan()`. An `+inf`
+    /// score orders fine under `partial_cmp` but is still a garbage optimum.
+    #[test]
+    fn eval_objective_set_infinite_weight_abstains_non_finite_fold() {
+        use reify_ir::ObjectiveSense;
+        let obj = weighted_set(vec![(ObjectiveSense::Minimize, f64::INFINITY, 2.0)]);
+        assert_eq!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None),
+            Err(super::ObjectiveAbstention::NonFiniteFold),
+            "an infinite term weight folds to an infinite accumulator; \
+             eval_objective_set must fail closed. Note this case is NOT \
+             caught by a `!is_nan()` check — the guard has to be `is_finite()`"
+        );
+    }
+
+    /// Pins the first half of defect 2(b): weight validation alone would NOT close
+    /// this path. Both factors are finite and the weight is positive — exactly what
+    /// a "> 0 and finite" construction-site check would enforce — yet
+    /// `f64::MAX * 1e10` overflows to `+inf`, so the accumulator is non-finite.
+    #[test]
+    fn eval_objective_set_weight_times_value_overflow_abstains_non_finite_fold() {
+        use reify_ir::ObjectiveSense;
+        let obj = weighted_set(vec![(ObjectiveSense::Minimize, f64::MAX, 1e10)]);
+        assert_eq!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None),
+            Err(super::ObjectiveAbstention::NonFiniteFold),
+            "f64::MAX * 1e10 overflows to +inf even though BOTH factors are finite \
+             and the weight is positive; eval_objective_set must fail closed. This is \
+             the case that makes upstream weight validation insufficient on its own, \
+             and the variant says so: every input passed the per-term check, so the \
+             cause is the FOLD"
+        );
+    }
+
+    /// The strongest case, and the second half of defect 2(b): every weight is finite
+    /// AND positive, honoring the documented "> 0" contract in full, and the fold is
+    /// still `NaN`. `acc` goes `0.0 → +inf` (Minimize) → `inf - inf = NaN` (Maximize).
+    /// Both terms are dimensionless, so `objective_terms_coherent` returns `Ok` and the
+    /// I-UNITS `debug_assert!` at the head of the fold does not fire — this really does
+    /// reach `Some(acc)` on the unguarded base.
+    #[test]
+    fn eval_objective_set_opposing_infinities_abstain_non_finite_fold() {
+        use reify_ir::ObjectiveSense;
+        let obj = weighted_set(vec![
+            (ObjectiveSense::Minimize, f64::MAX, 1e10),
+            (ObjectiveSense::Maximize, f64::MAX, 1e10),
+        ]);
+        assert_eq!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None),
+            Err(super::ObjectiveAbstention::NonFiniteFold),
+            "a +inf Minimize term and a -inf Maximize term fold to NaN (inf - inf) \
+             with every weight finite and positive; eval_objective_set must fail \
+             closed. No construction-site weight validation can close this path — \
+             only a guard on the ACCUMULATOR can"
+        );
+    }
+
+    /// The `NonFiniteTerm` sibling, and the reason the enum carries two
+    /// non-finite variants rather than one: here the `inf` arrives OUT of the
+    /// term's own expression, with `weight` left at the documented default of
+    /// `1.0`. Nothing about the fold is at fault, so a reason naming "the
+    /// weighted fold" would send a user to audit weights that are correct.
+    /// Discriminates against the four fold cases above, which assert the other
+    /// variant on the same function.
+    #[test]
+    fn eval_objective_set_infinite_term_value_abstains_non_finite_term() {
+        use reify_ir::ObjectiveSense;
+        let obj = weighted_set(vec![(ObjectiveSense::Minimize, 1.0, f64::INFINITY)]);
+        assert_eq!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None),
+            Err(super::ObjectiveAbstention::NonFiniteTerm),
+            "an `inf` term VALUE under the default weight must abstain as a \
+             non-finite TERM. Reporting the fold variant here would be the \
+             mirror image of the defect #6377 closed: an accurate abstention \
+             attached to the wrong cause"
+        );
+    }
+
+    /// The `Undefined` sibling, asserted at the unit level rather than only
+    /// through a `NoProgress` substring match at the `solve_core` sites. A term
+    /// reading a cell absent from the `ValueMap` evaluates to `Undef`, so
+    /// `as_f64()` yields `None` and the abstention fires before the finiteness
+    /// check is even reached.
+    ///
+    /// Without this, a regression that collapsed the accumulator guard onto
+    /// `Undefined` would leave every fold case above still passing while the
+    /// user-facing reason string silently changed.
+    #[test]
+    fn eval_objective_set_undefined_term_abstains_undefined() {
+        use reify_ir::{ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm};
+        let missing = reify_core::ValueCellId::new("Part", "never_assigned");
+        let obj = ObjectiveSet {
+            terms: vec![ObjectiveTerm::new(
+                ObjectiveSense::Minimize,
+                real_ref(&missing),
+            )],
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        };
+        assert_eq!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None),
+            Err(super::ObjectiveAbstention::Undefined),
+            "a term that does not evaluate to a number at all is an AUTHORING \
+             error in the expression, and must stay distinguishable from the \
+             two magnitude causes"
+        );
+    }
+
+    /// Positive control: the guard must not be over-eager. Pins PRD §6.2 invariant I2
+    /// — for a single `Minimize` term with the default `weight = 1.0` and finite `v`,
+    /// the fold is `0.0 + 1.0·v == v` exactly (IEEE-754), so the score is returned
+    /// unchanged and byte-identically. This must pass BEFORE and AFTER the guard lands.
+    #[test]
+    fn eval_objective_set_finite_fold_still_returns_the_score() {
+        use reify_ir::{ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm};
+        let obj = ObjectiveSet {
+            terms: vec![ObjectiveTerm::new(ObjectiveSense::Minimize, real_lit(3.0))],
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        };
+        assert_eq!(
+            super::eval_objective_set(&obj, &ValueMap::new(), &[], None),
+            Ok(3.0),
+            "a finite fold must be returned unchanged: the fail-closed accumulator \
+             guard rejects only non-finite scores, and I2 (0.0 + 1.0·v == v for finite \
+             v) keeps the cost surface byte-identical for every well-formed objective"
+        );
+    }
+
+    // ---- end eval_objective_set non-finite-accumulator contract (task #6377) ----
 
     #[test]
     fn multi_param_solving() {
@@ -6793,17 +7349,35 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cost_function_penalizes_undef_objective() {
+    /// The one cost-surface fixture the three `ConstraintCostFunction` objective
+    /// tests below share: a single auto param `Part.x` bounded to `[0, 10 mm]`
+    /// under the trivially satisfied constraint `x > 0`, evaluated at `x`.
+    ///
+    /// `build_objective` receives the fixture's OWN `x` reference, so an
+    /// objective cannot accidentally be written against a different cell than
+    /// the one the cost function solves for — the one detail worth enforcing
+    /// rather than repeating.
+    ///
+    /// The three tests differ only in the objective and the assertion, so they
+    /// share this surface by construction: a change to `ConstraintCostFunction`'s
+    /// field set lands in one place, and the positive control below provably
+    /// controls for the same surface its two siblings poison rather than a
+    /// copy that has drifted.
+    ///
+    /// At `x = 0.005` both penalty terms are EXACTLY zero (in bounds, constraint
+    /// satisfied), which is what lets that control assert bit equality.
+    fn objective_cost_at(
+        x: f64,
+        build_objective: impl FnOnce(reify_ir::CompiledExpr) -> reify_ir::ObjectiveSet,
+    ) -> f64 {
         use super::ConstraintCostFunction;
         use argmin::core::CostFunction;
         use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
-        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
 
         let x_id = ValueCellId::new("Part", "x");
         let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
 
-        // Trivially satisfied constraint: x > 0
         let zero_scalar = CompiledExpr::literal(
             Value::Scalar {
                 si_value: 0.0,
@@ -6813,14 +7387,9 @@ mod tests {
         );
         let constraint = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), zero_scalar, Type::Bool);
 
-        // Objective: minimize(x / 0) — always Undef
-        let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
-        let div_by_zero =
-            CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::dimensionless_scalar());
-        let objective = Some(ObjectiveSet::single(ObjectiveSense::Minimize, div_by_zero));
-
+        let objective = build_objective(x_ref);
         let auto_params = vec![AutoParam {
-            id: x_id.clone(),
+            id: x_id,
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)),
             free: false,
@@ -6832,19 +7401,96 @@ mod tests {
             auto_params: &auto_params,
             constraints: &constraints,
             base_values: &base_values,
-            objective: objective.as_ref(),
+            objective: Some(&objective),
             functions: &[],
             bounds: &[(0.0, 0.010)],
             dependent_cells: &[],
             dispatch: None,
         };
 
-        // x=0.005 is in bounds and satisfies x > 0, but objective is Undef
-        let cost = cost_fn.cost(&vec![0.005]).unwrap();
+        cost_fn
+            .cost(&vec![x])
+            .expect("the fixture's cost surface is total at every in-box x")
+    }
+
+    #[test]
+    fn cost_function_penalizes_undef_objective() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+
+        // x=0.005 is in bounds and satisfies x > 0, but minimize(x / 0) is Undef.
+        let cost = objective_cost_at(0.005, |x_ref| {
+            let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
+            let div_by_zero = CompiledExpr::binop(
+                reify_ir::BinOp::Div,
+                x_ref,
+                zero_int,
+                Type::dimensionless_scalar(),
+            );
+            ObjectiveSet::single(ObjectiveSense::Minimize, div_by_zero)
+        });
         assert!(
             cost > 1e10,
             "cost should be very large for Undef objective, got {:.2e}",
             cost
+        );
+    }
+
+    /// The COST-SURFACE half of task #6377's reclassification, which nothing
+    /// pinned before this amendment: `cost_function_penalizes_undef_objective`
+    /// above covers only the undefined-TERM cause and keeps passing with the
+    /// accumulator guard removed.
+    ///
+    /// Here the objective expression is a perfectly ordinary finite `x` and the
+    /// fold goes to `-inf` in the accumulator. That direction is the one worth
+    /// pinning: an unguarded `-inf` is the global MINIMUM of the surface, so
+    /// Nelder-Mead dives into an overflow artefact and returns it as the answer.
+    /// Abstaining flips that point from the most attractive available to the
+    /// most repellent (`UNDEF_OBJECTIVE_PENALTY`), which is the intended
+    /// direction, not a side effect.
+    ///
+    /// An infinite weight is the shortest route to a `-inf` fold; the
+    /// contract-honouring overflow shapes (finite, positive weights) reach the
+    /// same abstention — see
+    /// `eval_objective_set_weight_times_value_overflow_abstains_non_finite_fold`.
+    #[test]
+    fn cost_function_penalizes_a_non_finite_objective_fold() {
+        use super::UNDEF_OBJECTIVE_PENALTY;
+        use reify_ir::{ObjectiveSense, ObjectiveSet};
+
+        // minimize(x), then wreck the fold through the unvalidated public
+        // weight field — "> 0; default 1.0" is a doc comment enforced nowhere.
+        let cost = objective_cost_at(0.005, |x_ref| {
+            let mut objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
+            objective.terms[0].weight = f64::NEG_INFINITY;
+            objective
+        });
+        assert!(
+            cost.is_finite() && cost >= UNDEF_OBJECTIVE_PENALTY,
+            "a `-inf` fold must be reported as the most repellent point on the \
+             surface, not the most attractive one. Got {cost:.3e}; `-inf` (or any \
+             value below the penalty) is the unguarded accumulator reaching the \
+             cost surface — the defect task #6377 closed"
+        );
+    }
+
+    /// The positive control for the guard at the cost-surface level: I1 / PRD
+    /// §6.2 I2 promise the finite path is BYTE-IDENTICAL, so this asserts exact
+    /// equality rather than a tolerance. With `x` in bounds and `x > 0`
+    /// satisfied, both penalty terms are exactly zero and the cost IS the
+    /// single-term fold `0.0 + 1.0·v == v`.
+    #[test]
+    fn cost_function_leaves_a_finite_objective_cost_byte_identical() {
+        use reify_ir::{ObjectiveSense, ObjectiveSet};
+
+        assert_eq!(
+            objective_cost_at(0.005, |x_ref| ObjectiveSet::single(
+                ObjectiveSense::Minimize,
+                x_ref
+            )),
+            0.005,
+            "the fail-closed guard rejects only non-finite folds; a well-formed \
+             objective's cost must be unchanged to the bit"
         );
     }
 
@@ -7474,10 +8120,211 @@ mod tests {
                     "expected post-solve path ('solution point'), got: {}",
                     reason
                 );
+                assert!(
+                    reason.contains("evaluated to undefined"),
+                    "the cause here is an undefined TERM (x/0), which must be \
+                     reported as such and not as the sibling non-finite-fold \
+                     cause; got: {}",
+                    reason
+                );
             }
             other => panic!(
                 "feasible initial + undefined objective should return NoProgress, got {:?}",
                 other
+            ),
+        }
+    }
+
+    /// The OUTCOME RECLASSIFICATION that task #6377's accumulator guard causes,
+    /// pinned at the `solve_core` level rather than left incidental (added by
+    /// amendment after review).
+    ///
+    /// Sibling to `undefined_objective_at_feasible_initial_returns_no_progress`
+    /// above, and deliberately the same fixture shape — the ONLY difference is
+    /// *why* `eval_objective_set` abstains. There the objective expression is
+    /// `Undef` and the per-term `.filter(|v| v.is_finite())?` rejects it. Here
+    /// the expression is a perfectly ordinary finite `x`, and the fold goes
+    /// non-finite in the ACCUMULATOR because `ObjectiveTerm::weight` is
+    /// unvalidated (`reify-ir/src/constraint.rs` — "> 0; default 1.0" is a doc
+    /// comment checked at no construction site).
+    ///
+    /// The unguarded code did not return a milder version of this verdict; it
+    /// returned whichever garbage the poisoned cost surface produced, measured
+    /// with this same fixture and recorded in the PRD under decision 4. Neither
+    /// measured verdict carries the `"solution point"` reason asserted below,
+    /// so this pins the guard and not the surrounding plumbing.
+    ///
+    /// The *fallback-point* site (`"fallback point"`, on the
+    /// optimizer-drifted-infeasible path) reclassifies for the identical reason
+    /// — both sites branch on the same `eval_objective_set(..).is_none()`
+    /// predicate — so it is not re-fixtured here;
+    /// `undefined_objective_drift_returns_no_progress_fallback` below pins that
+    /// site's wiring.
+    ///
+    /// A `NaN` weight is the fixture because it is the shortest path to a
+    /// non-finite fold. The overflow paths that need no invalid weight at all
+    /// (`eval_objective_set_weight_times_value_overflow_abstains_non_finite_fold`,
+    /// `eval_objective_set_opposing_infinities_abstain_non_finite_fold`) reach the
+    /// same `Err(NonFiniteFold)` at the same `return`, and therefore route to
+    /// this same outcome.
+    #[test]
+    fn non_finite_objective_fold_at_feasible_initial_returns_no_progress() {
+        use crate::DimensionalSolver;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet, Value};
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 5mm — satisfied when x starts at 10mm, exactly as in the sibling.
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+
+        // Objective: minimize(x) — FINITE at every point of the box, so the
+        // per-term filter has nothing to reject...
+        let mut objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
+        // ...and the fold is wrecked purely by the weight. Set through the
+        // public field because that is precisely what production can do: the
+        // "> 0; default 1.0" contract is documentation, enforced nowhere.
+        objective.terms[0].weight = f64::NAN;
+
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.010,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![].into(),
+        };
+
+        match solver.solve(&problem) {
+            SolveResult::NoProgress { reason } => {
+                // Whole-string, so the assertion covers BOTH halves the site
+                // composes: which cause fired, and where it was measured.
+                assert_eq!(
+                    reason,
+                    format!(
+                        "{} at solution point",
+                        super::ObjectiveAbstention::NonFiniteFold.reason()
+                    ),
+                    "the reason must name the FOLD specifically. Every term here \
+                     is well defined (so not `Undefined`) and every term VALUE \
+                     is finite (so not `NonFiniteTerm`) — only the weight makes \
+                     the accumulator non-finite, and each of the three causes \
+                     renders its own sentence. Comparing the whole string rather \
+                     than a substring is what makes that three-way, since \
+                     `NonFiniteTerm`'s sentence would satisfy a loose \
+                     \"non-finite\" match. Got: {reason}"
+                );
+            }
+            other => panic!(
+                "a NaN-weighted (hence non-finite) objective fold must fail \
+                 closed as a NoProgress that names the objective. Anything else \
+                 is the pre-#6377 behaviour: the NaN reaches the cost surface \
+                 and the verdict becomes whatever Nelder-Mead does with it; \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    /// The FOURTH reclassified caller, which review found unpinned:
+    /// [`score_solution`] — shared by [`rank_single`], the multistart scoring
+    /// loop, and `verify_uniqueness` — swallows the abstention with `.ok()`, so
+    /// here the guard changes a user-visible OPTIMALITY VERDICT rather than a
+    /// reason string, and nothing was asserting it.
+    ///
+    /// Before the guard a `+Inf` fold scored `Some(inf)`, `partial_cmp` ordered
+    /// it perfectly well, and `rank_single` returned `BestFound` next to
+    /// `objective_score: Some(inf)` — "this is the optimum, and it is infinitely
+    /// bad". After, the score is absent and I4 forces `FeasibilityOnly` + `None`.
+    /// `classify_uniqueness` reclassifies off the same `.ok()` for the same
+    /// reason (its `IncumbentSuboptimal` arm needs a `Some` pair and now takes
+    /// `_ => NonUnique`); that arm needs a two-basin fixture and is not
+    /// re-fixtured here.
+    ///
+    /// The ZERO-AUTO shape is deliberate, not a convenience.
+    /// `effective_objective` is `problem.objective.as_ref().or(synth)`, so when a
+    /// user authored an objective the two ARE the same set and `solve_core`'s
+    /// post-solve validation turns the abstention into `NoProgress` (the sibling
+    /// above) before `rank_single` is handed a `Solved`. `solve_with_meta`'s
+    /// empty-auto-params fast path returns `Solved` without consulting the
+    /// objective at all, which is what lets an unscorable objective arrive at
+    /// `rank_single` as a missing SCORE instead of a failed solve. Zero autos
+    /// also keeps the problem multistart-ineligible (which needs `>= 2`), so
+    /// this is the single-candidate path and not the best-of-K one.
+    ///
+    /// The weight is finite and POSITIVE (`f64::MAX`), honouring the documented
+    /// "> 0" contract in full, and `f64::MAX * 1e10` overflows regardless — so
+    /// construction-time weight validation would not have stopped this candidate
+    /// carrying `Some(inf)`.
+    #[test]
+    fn a_non_finite_fold_reranks_a_solved_candidate_as_feasibility_only() {
+        use crate::DimensionalSolver;
+        use reify_ir::{ObjectiveSense, OptimalityStatus, RankedSolveResult};
+
+        let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
+            auto_params: Vec::new(),
+            constraints: Vec::new(),
+            current_values: ValueMap::new(),
+            objective: Some(weighted_set(vec![(
+                ObjectiveSense::Minimize,
+                f64::MAX,
+                1e10,
+            )])),
+            functions: vec![].into(),
+        };
+
+        match DimensionalSolver.solve_ranked(&problem) {
+            RankedSolveResult::Ranked {
+                candidates,
+                optimality,
+            } => {
+                assert_eq!(
+                    candidates.len(),
+                    1,
+                    "the empty assignment is still feasible and still the only \
+                     one — an unscorable objective must not cost a user their \
+                     solution; got {candidates:?}"
+                );
+                assert_eq!(
+                    candidates[0].objective_score, None,
+                    "a `+inf` fold is not a score. `Some(inf)` here is the \
+                     unguarded accumulator reaching the ranked carrier, which \
+                     is what this pins"
+                );
+                assert!(
+                    matches!(optimality, OptimalityStatus::FeasibilityOnly),
+                    "I4: with no score there is nothing to claim optimality \
+                     over, so `BestFound` may not appear. That pairing is \
+                     exactly what the pre-guard code emitted; got {optimality:?}"
+                );
+            }
+            other => panic!(
+                "a feasible zero-auto problem must still rank. Anything but \
+                 `Ranked` means the guard cost a user a solution rather than \
+                 just its score; got {other:?}"
             ),
         }
     }
@@ -8355,6 +9202,7 @@ mod tests {
             &derive_param_intervals(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 None,
@@ -8531,10 +9379,262 @@ mod tests {
         let params = vec![real_auto_param(id.clone())];
         let constraints = as_constraints(exprs);
         let values = ValueMap::new();
-        super::derive_param_intervals(&params, &constraints, &values, &[], None)
+        super::derive_param_intervals(&params, &constraints, &[], &values, &[], None)
             .into_iter()
             .next()
             .expect("one interval per auto param")
+    }
+
+    /// Derive intervals for a problem with SEVERAL autos and DEPENDENT CELLS,
+    /// against the ValueMap the CLAMP box is really derived against.
+    ///
+    /// [`derive_one`] cannot express these cases: it is single-param and
+    /// derives against an EMPTY map, in which no dependent cell resolves at
+    /// all. Here the map comes from `build_trial_values` itself — the
+    /// production fold — so every cell id holds the NUMBER this trial's auto
+    /// assignment materialises it to, which is the precondition that makes a
+    /// varying cell look like a constant to the derivation guard.
+    ///
+    /// `base` is what the model's map already holds before this trial
+    /// (`problem.current_values`' role); `autos` pairs each auto id with its
+    /// value in this trial; `cells` are folded in order over both, so a later
+    /// cell may read an earlier one.
+    fn derive_with_dependent_cells(
+        base: &[(&reify_core::ValueCellId, f64)],
+        autos: &[(&reify_core::ValueCellId, f64)],
+        cells: &[(reify_core::ValueCellId, reify_ir::CompiledExpr)],
+        exprs: Vec<reify_ir::CompiledExpr>,
+    ) -> Vec<super::DerivedInterval> {
+        use reify_core::DimensionVector;
+        let params: Vec<reify_ir::AutoParam> = autos
+            .iter()
+            .map(|(id, _)| real_auto_param((*id).clone()))
+            .collect();
+        let trial: Vec<f64> = autos.iter().map(|&(_, v)| v).collect();
+        let mut prior = ValueMap::new();
+        for &(id, v) in base {
+            prior.insert(
+                id.clone(),
+                reify_ir::Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+        }
+        let values = super::build_trial_values(&prior, &params, &trial, cells, &[], None);
+        super::derive_param_intervals(&params, &as_constraints(exprs), cells, &values, &[], None)
+    }
+
+    /// `<a> OP <b>` between two cell refs — the derived-cell far-operand shape
+    /// `cmp_ref_lit` cannot build.
+    fn cmp_ref_ref(
+        op: reify_ir::BinOp,
+        a: &reify_core::ValueCellId,
+        b: &reify_core::ValueCellId,
+    ) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        reify_ir::CompiledExpr::binop(op, real_ref(a), real_ref(b), Type::Bool)
+    }
+
+    /// `<k> * <id>` — a dependent cell body that VARIES with `id`.
+    fn scaled_ref(k: f64, id: &reify_core::ValueCellId) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        reify_ir::CompiledExpr::binop(
+            reify_ir::BinOp::Mul,
+            real_lit(k),
+            real_ref(id),
+            Type::dimensionless_scalar(),
+        )
+    }
+
+    // ── The dependent-cell indirection hole (task #6146) ────────────────────
+    //
+    // `constant_operand_value` rejects a far operand that SYNTACTICALLY names
+    // an auto, via `collect_value_refs`. That walk is purely syntactic: it
+    // never expands `dependent_cells`. A derived cell that transitively reads
+    // an auto is therefore invisible to it, while `build_trial_values` has
+    // already folded that cell into the map as a finite number — so a
+    // quantity that MOVES with the solve is mined as a fixed bound.
+
+    /// ONE HOP: `a >= side` where `side = 3*c` and `c` is an auto.
+    #[test]
+    fn derive_intervals_rejects_far_operand_that_is_an_auto_reading_dependent_cell() {
+        use reify_core::ValueCellId;
+        use reify_ir::BinOp;
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let side = ValueCellId::new("Derive", "side");
+        let cells = vec![(side.clone(), scaled_ref(3.0, &c))];
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= side` with `side = 3*c` must derive NO lower bound for `a`: \
+             `side` is a VARYING quantity (it moves with auto `c`), and this \
+             trial's materialised 7.5 is a snapshot of it, not a constant. \
+             Deriving from it turns a moving quantity into a fixed clamp on \
+             `a`, held while `c` walks away from the value that produced it"
+        );
+    }
+
+    /// TWO HOPS: `side = 3*mid`, `mid = 2*c`. Pins that the rejection follows
+    /// the chain TRANSITIVELY rather than stopping at the cell's own refs —
+    /// `side`'s body never names an auto at all.
+    #[test]
+    fn derive_intervals_rejects_far_operand_reading_an_auto_two_cells_away() {
+        use reify_core::ValueCellId;
+        use reify_ir::BinOp;
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let mid = ValueCellId::new("Derive", "mid");
+        let side = ValueCellId::new("Derive", "side");
+        let cells = vec![
+            (mid.clone(), scaled_ref(2.0, &c)),
+            (side.clone(), scaled_ref(3.0, &mid)),
+        ];
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&c, 1.25)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= side` with `side = 3*mid` and `mid = 2*c` must derive NO \
+             lower bound: `side` names no auto DIRECTLY, so a one-hop check \
+             would pass it and still clamp `a` against a quantity varying with \
+             auto `c`. Auto dependence has to be followed transitively"
+        );
+    }
+
+    /// ANTI-VACUITY CONTROL — green today and must STAY green. A derived cell
+    /// reading NO auto is a named alias for a constant
+    /// (`examples/fea_bracket_minimize_mass.ri`'s `let yield_limit = 310MPa`),
+    /// and mining a bound from it is CORRECT. Without this case the fix above
+    /// could pass by rejecting every dependent cell outright.
+    #[test]
+    fn derive_intervals_still_mines_a_dependent_cell_that_reads_no_auto() {
+        use reify_core::ValueCellId;
+        use reify_ir::BinOp;
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let yield_limit = ValueCellId::new("Derive", "yield_limit");
+        let cells = vec![(yield_limit.clone(), real_lit(310.0))];
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &yield_limit)],
+        );
+        assert_eq!(
+            ivs[0].lo,
+            Some((310.0, false)),
+            "`a >= yield_limit` with `yield_limit` a constant-only derived cell \
+             must STILL derive 310.0: nothing about it varies with the solve, \
+             so it is a genuine bound. Rejecting every dependent cell would \
+             silently widen the box of every model that names its limits"
+        );
+    }
+
+    /// CONTROL — green today and must STAY green. An INLINE far operand naming
+    /// an auto (`docs/prds/v0_6/fixtures/discrete_mixed.ri`'s
+    /// `constraint t >= (if up then 3.0 else 5.0)`) is already rejected,
+    /// because `collect_value_refs` recurses into `Conditional`. The hole is
+    /// the dependent-cell INDIRECTION specifically, not inline expressions.
+    #[test]
+    fn derive_intervals_still_rejects_an_inline_far_operand_naming_an_auto() {
+        use reify_core::{Type, ValueCellId, hash::ContentHash};
+        use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
+        let a = ValueCellId::new("Derive", "a");
+        let up = ValueCellId::new("Derive", "up");
+        let condition = real_ref(&up);
+        let then_branch = real_lit(3.0);
+        let else_branch = real_lit(5.0);
+        let content_hash = ContentHash::of(&[TAG_CONDITIONAL])
+            .combine(condition.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash);
+        let far = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::dimensionless_scalar(),
+            content_hash,
+        };
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&up, 1.0)],
+            &[],
+            vec![CompiledExpr::binop(BinOp::Ge, real_ref(&a), far, Type::Bool)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= (if up then 3.0 else 5.0)` must derive NO lower bound: the \
+             branch taken varies with auto `up`, and `collect_value_refs` \
+             already sees `up` through the `Conditional`. A fix for the \
+             dependent-cell hole must not regress this syntactic arm"
+        );
+    }
+
+    /// RESIDUAL HOLE: a CYCLE-TAINTED cell is OMITTED from
+    /// `dependent_cell_auto_reads` rather than published with the partial set
+    /// its DFS accumulated (`if incomplete[i] { continue; }`, decompose.rs).
+    /// Omission is the FAIL-SAFE direction for that map's primary consumer, the
+    /// registry's drop-side subset filter — but it is the UNSAFE direction for a
+    /// guard deciding "does this operand vary?", because an absent entry reads
+    /// as "no autos" and the bogus bound is mined anyway.
+    ///
+    /// `p = q + c` and `q = p` are both cycle-tainted AND transitively read auto
+    /// `c`. Reaching `derive_param_intervals` directly is what makes this
+    /// testable: reify-eval's `build_dependent_cells` pre-drops cycles, which is
+    /// the only reason the hole is unreachable in production — and decompose.rs
+    /// says so itself, that the masking "is a property of the CALLER, though,
+    /// not of anything enforced here, so a future producer that stops
+    /// pre-dropping cycles re-opens it with no compile error and no test
+    /// failure". This test is that missing failure.
+    #[test]
+    fn derive_intervals_rejects_a_cycle_tainted_dependent_cell_far_operand() {
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr};
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let p = ValueCellId::new("Derive", "p");
+        let q = ValueCellId::new("Derive", "q");
+        let cells = vec![
+            (
+                p.clone(),
+                CompiledExpr::binop(
+                    BinOp::Add,
+                    real_ref(&q),
+                    real_ref(&c),
+                    Type::dimensionless_scalar(),
+                ),
+            ),
+            (q.clone(), real_ref(&p)),
+        ];
+        // `q` carries a value from the model's last evaluation, so the fold
+        // still resolves the cycle to finite numbers (p = q + c = 3.5) — the
+        // guard cannot lean on an `Undef` to save it.
+        let ivs = derive_with_dependent_cells(
+            &[(&q, 1.0)],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &p)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= p` with `p = q + c` and `q = p` must derive NO lower bound: \
+             `p` is cycle-tainted, so `dependent_cell_auto_reads` OMITS it — and \
+             a non-empty-set test reads that absence as `no autos` and mines the \
+             bound. For this consumer an unknown auto dependence must be treated \
+             as a varying one; absence is the UNSAFE direction here"
+        );
     }
 
     /// (a) A plain `q >= 1.0` / `q <= 100.0` pair derives the raw constraint box,
@@ -8634,7 +9734,7 @@ mod tests {
         let params = vec![real_auto_param(q.clone())];
         let constraints = as_constraints(vec![cmp_ref_lit(BinOp::Gt, &q, 1.0)]);
         let values = ValueMap::new();
-        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[], None);
+        let intervals = super::derive_param_intervals(&params, &constraints, &[], &values, &[], None);
         assert_eq!(
             intervals[0].lo,
             Some((1.0, true)),
@@ -8718,7 +9818,7 @@ mod tests {
         let q_le_inf = cmp_ref_lit(BinOp::Le, &q, f64::INFINITY);
 
         let constraints = as_constraints(vec![q_ge_p, sum_ge, q_eq, q_ne, q_ge_undef, q_le_inf]);
-        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[], None);
+        let intervals = super::derive_param_intervals(&params, &constraints, &[], &values, &[], None);
 
         assert_eq!(
             intervals[0],
@@ -8770,7 +9870,7 @@ mod tests {
 
         // Lower only.
         let lower_only = as_constraints(vec![cmp_ref_lit(BinOp::Ge, &q, 1.0)]);
-        let iv = super::derive_param_intervals(&params, &lower_only, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &lower_only, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (1.0, default_hi),
@@ -8779,7 +9879,7 @@ mod tests {
 
         // Upper only.
         let upper_only = as_constraints(vec![cmp_ref_lit(BinOp::Le, &q, 100.0)]);
-        let iv = super::derive_param_intervals(&params, &upper_only, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &upper_only, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, 100.0),
@@ -8787,7 +9887,7 @@ mod tests {
         );
 
         // Neither.
-        let iv = super::derive_param_intervals(&params, &[], &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &[], &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -8813,7 +9913,7 @@ mod tests {
             cmp_ref_lit(BinOp::Ge, &q, 50.0),
             cmp_ref_lit(BinOp::Le, &q, 10.0),
         ]);
-        let iv = super::derive_param_intervals(&params, &inverted, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &inverted, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -8825,7 +9925,7 @@ mod tests {
             cmp_ref_lit(BinOp::Ge, &q, 5.0),
             cmp_ref_lit(BinOp::Le, &q, 5.0),
         ]);
-        let iv = super::derive_param_intervals(&params, &degenerate, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &degenerate, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -8881,6 +9981,73 @@ mod tests {
             objective: None,
             functions: vec![].into(),
         }
+    }
+
+    /// [`seed_problem`] with dependent cells, for the #6146 seed-path fixtures.
+    fn seed_problem_with_cells(
+        auto_params: Vec<reify_ir::AutoParam>,
+        exprs: Vec<reify_ir::CompiledExpr>,
+        current_values: ValueMap,
+        dependent_cells: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)>,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            dependent_cells,
+            ..seed_problem(auto_params, exprs, current_values)
+        }
+    }
+
+    /// (f) SEED-PATH CONSEQUENCE of the #6146 derivation guard — pinned here
+    /// rather than left to be inferred from the interval assertions.
+    ///
+    /// `extract_initial_point` is one of the three SEED consumers of
+    /// `derive_param_intervals`, and unlike the CLAMP box it does not need an
+    /// invariant bound — any plausible start point will do. The guard is
+    /// nevertheless applied UNIFORMLY, so for an auto floored ONLY by a derived
+    /// cell the derivation now yields `(None, None)` and the seed falls all the
+    /// way through to the fixed `0.01`, rather than starting from this trial's
+    /// snapshot of `side`.
+    ///
+    /// That is a deliberate, priced trade — see `constant_operand_value`'s doc
+    /// for why one rule beats a per-consumer split — and this test is what makes
+    /// it visible. If a future change gives the seed paths their own policy,
+    /// THIS is the assertion that should flip, consciously.
+    #[test]
+    fn extract_initial_point_derived_cell_floor_falls_through_to_fixed_default() {
+        use reify_core::{DimensionVector, ValueCellId};
+        use reify_ir::{BinOp, Value};
+
+        let a = ValueCellId::new("Seed", "a");
+        let c = ValueCellId::new("Seed", "c");
+        let side = ValueCellId::new("Seed", "side");
+
+        // The model's evaluated state: `c` and the derived `side = 3*c` both
+        // resolve, `a` does not — so the current-value arm cannot short-circuit
+        // and the derived-box arm is the one under test.
+        let mut values = ValueMap::new();
+        for (id, v) in [(&c, 2.5), (&side, 7.5)] {
+            values.insert(
+                id.clone(),
+                Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+        }
+        let problem = seed_problem_with_cells(
+            vec![real_auto_param(a.clone()), real_auto_param(c.clone())],
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+            values,
+            vec![(side.clone(), scaled_ref(3.0, &c))],
+        );
+
+        assert_eq!(
+            super::extract_initial_point(&problem, None)[0],
+            0.01,
+            "`a >= side` with `side = 3*c` derives neither side for `a`, so the \
+             seed falls through to the fixed default — the guard is applied to \
+             the SEED paths too, giving up #5618's derived start point for this \
+             shape rather than starting from a snapshot that moves with `c`"
+        );
     }
 
     /// (a) Two derived sides → the seed is the derived box's MIDPOINT, not the

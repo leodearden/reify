@@ -20,7 +20,7 @@
 #   gui/src-tauri          -> Rust+GUI, OCCT-clean (RUN_OCCT_GATE=0)
 #   Cargo.lock / unknown   -> conservative gate (RUN_OCCT_GATE=1)
 #   MERGE_HEAD present     -> forces --scope all regardless of stage
-#   vitest lane            -> tsc/npm-ci run whenever RUN_GUI=1, but `npm test`
+#   vitest lane            -> tsc/npm-ci run whenever RUN_GUI=1, but the vitest runner (`gui-vitest-run.sh`)
 #                             runs only when RUN_GUI_VITEST=1: a frontend-read
 #                             path changed, or the affected-crate closure
 #                             reaches reify-gui (or is unavailable) — task 7427
@@ -189,11 +189,13 @@ assert "PG-1/docs+fixture: hook still completes in seconds — no cargo nextest 
 echo ""
 echo "--- Scenario PG-2: Rust-consumed prd-gate fixture -> stays conservative (control, green before AND after) ---"
 # geometry_let_selector_consumer.ri is pushed into corpus_files() by
-# crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:772 — it is a
-# runtime input to a compiled test target, so EDITING it must keep today's
-# conservative classification even though ADDING an unrelated fixture is inert.
+# crates/reify-eval/tests/harness_corpus_gates/eval_invariant_corpus_sweep.rs
+# (no line number: the previous cite had already drifted, so a fresh one would
+# only re-drift) — it is a runtime input to a compiled test target, so EDITING it
+# must keep today's conservative classification even though ADDING an unrelated
+# fixture is inert.
 plan_for staged tests/prd-gate/fixtures/geometry_let_selector_consumer.ri
-assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by no_stale_undef_invariant_gate.rs)" \
+assert "PG-2/coupled fixture: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (read by eval_invariant_corpus_sweep.rs)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_OUT"
 
 echo ""
@@ -1364,6 +1366,174 @@ assert "B-KLOC-driftguard: crate sets are identical (sorted) — verify.sh white
     test "$_GUARD_CRATES_SORTED" = "$_BASELINE_CRATES_SORTED"
 
 # ===========================================================================
+# B-PDIAG-* scenarios (task #7691): the branch-scope PDIAG ratchet selector,
+# select_pdiag_ratchet in scripts/verify.sh. Lives here, beside the B-KLOC-*
+# family it mirrors, because it needs plan_for_branch and FIX_MOD.
+# ===========================================================================
+echo ""
+echo "=== Branch-scope PDIAG ratchet selector (task #7691 B-PDIAG-* scenarios) ==="
+_PDIAG_LEAF='tests/infra/test_reify_audit_pdiag\.sh'
+
+# ---------------------------------------------------------------------------
+# Scenario PDIAG-DRIFT: verify.sh's pdiag_swept_path is a DERIVED COPY of
+# crates/reify-audit/src/pdiag.rs::is_swept_path. Rather than trusting a
+# "keep in sync" comment, replay the Rust predicate's OWN unit-test corpus —
+# every path its tests assert on, with the polarity they assert — through the
+# selector: a path the Rust calls swept must emit the PDIAG leaf, and a path
+# it refuses must not. Bidirectional, unlike PT-DRIFT: a bash copy that is
+# too wide AND one that is too narrow both go RED. The corpus is re-derived
+# from source on every run (same derive-from-source idiom as PT-DRIFT), so a
+# new Rust test case joins it with no edit here.
+#
+# The corpus is only as complete as the Rust tests, so SCOPE_EXCLUDE_PREFIXES
+# is re-derived separately: every prefix, even one added without a test case,
+# must suppress the leaf for a `<prefix>src/...` path that the structural
+# rules alone would sweep.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario PDIAG-DRIFT: is_swept_path's own unit-test corpus, both polarities, through the branch-scope selector ---"
+_PDIAG_RS="$REPO_ROOT/crates/reify-audit/src/pdiag.rs"
+# Emits "<1|0> <path>": 1 for a path the Rust asserts IS swept, 0 for one it
+# asserts is NOT. A `for path in [ ... ]` array is buffered and flushed with
+# the polarity of the assert that follows it; a single-literal assert is
+# emitted directly. The buffer resets at every `fn`, so an array feeding some
+# other assertion never leaks in.
+_PDIAG_CORPUS="$(awk '
+    /^[[:space:]]*fn [a-z0-9_]+\(\)/      { n = 0 }
+    /for path in \[/                      { inarr = 1; next }
+    inarr && /^[[:space:]]*\] \{/         { inarr = 0; next }
+    inarr { if (match($0, /"[^"]*"/)) buf[n++] = substr($0, RSTART + 1, RLENGTH - 2); next }
+    /assert!\(is_swept_path\(path\)/      { for (i = 0; i < n; i++) print "1 " buf[i]; n = 0; next }
+    /assert!\(!is_swept_path\(path\)/     { for (i = 0; i < n; i++) print "0 " buf[i]; n = 0; next }
+    /assert!\(!?is_swept_path\("/ {
+        pol = ($0 ~ /assert!\(!is_swept_path/) ? 0 : 1
+        if (match($0, /"[^"]*"/)) print pol " " substr($0, RSTART + 1, RLENGTH - 2)
+    }
+' "$_PDIAG_RS")"
+assert "PDIAG-DRIFT: derived corpus has at least one SWEPT path (the positive half is not vacuous)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^1 "' _ "$_PDIAG_CORPUS"
+assert "PDIAG-DRIFT: derived corpus has at least one NOT-swept path (the negative half is not vacuous)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^0 "' _ "$_PDIAG_CORPUS"
+# Completeness of the scrape itself: every is_swept_path( call in pdiag.rs's
+# test module must be an assert form the awk above reads. A test reshaped into
+# a form it does not recognise (a multi-line assert!, a (path, want) table)
+# would otherwise drop out of the corpus while both floors above stay green.
+_PDIAG_TEST_CALLS="$(awk '/^mod tests \{/ { t = 1 } t && /is_swept_path\(/ && !/^[[:space:]]*\/\// { c++ } END { print c + 0 }' "$_PDIAG_RS")"
+_PDIAG_READ_CALLS="$(awk '/^mod tests \{/ { t = 1 } t && /assert!\(!?is_swept_path\(/ { c++ } END { print c + 0 }' "$_PDIAG_RS")"
+assert "PDIAG-DRIFT: every is_swept_path call in pdiag.rs's tests is a form the scraper reads ($_PDIAG_READ_CALLS of $_PDIAG_TEST_CALLS)" \
+    [ "$_PDIAG_TEST_CALLS" -eq "$_PDIAG_READ_CALLS" ]
+while read -r _pd_pol _pd_path; do
+    [ -n "$_pd_path" ] || continue
+    plan_for_branch "$_pd_path"
+    if [ "$_pd_pol" = "1" ]; then
+        assert "PDIAG-DRIFT: $_pd_path (is_swept_path: true) -> PDIAG leaf emitted" \
+            plan_has "$_PDIAG_LEAF"
+    else
+        assert "PDIAG-DRIFT: $_pd_path (is_swept_path: false) -> NO PDIAG leaf" \
+            plan_lacks "$_PDIAG_LEAF"
+    fi
+done <<< "$_PDIAG_CORPUS"
+
+_PDIAG_PREFIXES="$(sed -n '/^const SCOPE_EXCLUDE_PREFIXES/,/^\];/p' "$_PDIAG_RS" \
+    | sed -n 's/^[[:space:]]*"\([^"]*\)",.*/\1/p')"
+assert "PDIAG-DRIFT: derived SCOPE_EXCLUDE_PREFIXES set is NON-EMPTY (guard is not vacuous)" \
+    test -n "$_PDIAG_PREFIXES"
+while IFS= read -r _pd_prefix; do
+    [ -n "$_pd_prefix" ] || continue
+    plan_for_branch "${_pd_prefix}src/pdiag_drift_probe.rs"
+    assert "PDIAG-DRIFT: ${_pd_prefix}src/pdiag_drift_probe.rs (SCOPE_EXCLUDE_PREFIXES) -> NO PDIAG leaf" \
+        plan_lacks "$_PDIAG_LEAF"
+done <<< "$_PDIAG_PREFIXES"
+
+# ---------------------------------------------------------------------------
+# Scenario B-PDIAG-*: the diff-status and non-.rs boundaries the corpus above
+# does not reach. Every plan_for_branch capture there is an ADD, so the MODIFY,
+# RENAME and DELETE vectors are pinned here on FIX_MOD, whose merge-base
+# already carries crates/reify-eval/src/lib.rs.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-PDIAG-mod: MODIFY of a swept file (crates/reify-eval/src/lib.rs) -> PDIAG leaf emitted ---"
+plan_for_branch_modify crates/reify-eval/src/lib.rs
+assert "B-PDIAG-mod: plan contains test_reify_audit_pdiag.sh (M can raise a row: Exceeded is High)" \
+    plan_has "$_PDIAG_LEAF"
+
+echo ""
+echo "--- Scenario B-PDIAG-rename: pure RENAME of a swept file -> PDIAG leaf emitted (the moved sites have no baseline row) ---"
+# The root argument is a NON-swept file, so the only swept trace in the diff is
+# the rename itself; without --no-renames it would be an R entry that
+# --diff-filter=AM drops, and this would go RED.
+plan_for_branch_rename crates/reify-eval/src/lib.rs crates/reify-eval/src/moved.rs \
+    crates/reify-eval/tests/foo.rs '// touched'
+assert "B-PDIAG-rename: plan contains test_reify_audit_pdiag.sh (a moved file is a High NewFile until the baseline is regenerated)" \
+    plan_has "$_PDIAG_LEAF"
+
+echo ""
+echo "--- Scenario B-PDIAG-del: DELETE-only of a swept file -> NO PDIAG leaf (an OrphanRow is Medium, never RED) ---"
+git -C "$FIX_MOD" checkout -q -b task-branch
+git -C "$FIX_MOD" rm -q crates/reify-eval/src/lib.rs
+git -C "$FIX_MOD" commit -q -m "delete a swept file"
+PLAN_OUT="$(cd "$FIX_MOD" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_MOD" checkout -q main
+git -C "$FIX_MOD" branch -q -D task-branch
+assert "B-PDIAG-del-vacuity: the deletion reached decide_scope (RUN_RUST=1), so the absence below is the selector's choice" \
+    plan_has 'RUN_RUST=1'
+assert "B-PDIAG-del: plan LACKS test_reify_audit_pdiag.sh" \
+    plan_lacks "$_PDIAG_LEAF"
+
+echo ""
+echo "--- Scenario B-PDIAG-baseline: the baseline manifest alone -> PDIAG leaf emitted (the ratchet's other operand) ---"
+plan_for_branch crates/reify-audit/pdiag-baseline.txt
+assert "B-PDIAG-baseline: plan contains test_reify_audit_pdiag.sh" \
+    plan_has "$_PDIAG_LEAF"
+
+echo ""
+echo "--- Scenario B-PDIAG-neg: tests/ path, non-.rs under src/, docs-only -> NO PDIAG leaf ---"
+plan_for_branch crates/reify-eval/tests/pdiag_probe.rs
+assert "B-PDIAG-neg/tests: crates/reify-eval/tests/*.rs -> plan LACKS test_reify_audit_pdiag.sh" \
+    plan_lacks "$_PDIAG_LEAF"
+plan_for_branch crates/reify-eval/src/pdiag_probe.txt
+assert "B-PDIAG-neg/non-rs: crates/reify-eval/src/*.txt -> plan LACKS test_reify_audit_pdiag.sh" \
+    plan_lacks "$_PDIAG_LEAF"
+plan_for_branch docs/note.md
+assert "B-PDIAG-neg/docs: docs-only branch -> plan LACKS test_reify_audit_pdiag.sh" \
+    plan_lacks "$_PDIAG_LEAF"
+assert "B-PDIAG-neg/docs: docs-only branch stays a zero-command plan" \
+    test "$(plan_cmdcount)" -eq 0
+
+echo ""
+echo "--- Scenario B-PDIAG-staged: a staged swept .rs -> NO PDIAG leaf (the selector is branch-scope only) ---"
+plan_for staged crates/reify-eval/src/pdiag_probe.rs
+assert "B-PDIAG-staged: plan LACKS test_reify_audit_pdiag.sh" \
+    plan_lacks "$_PDIAG_LEAF"
+
+# ---------------------------------------------------------------------------
+# Scenario B-PDIAG-merge / B-PDIAG-all: no SELECTIVE PDIAG leaf under the
+# merge role or --scope all — run_all.sh runs the file wholesale there
+# (exactly-once, INV-5). Same two-guard reasoning as B-KLOC-merge.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-PDIAG-merge / B-PDIAG-all: swept add under DF_VERIFY_ROLE=merge, and under --scope all -> no selective PDIAG leaf ---"
+git -C "$FIX_B" checkout -q -b task-branch
+mkdir -p "$FIX_B/crates/reify-eval/src"
+printf 'x\n' > "$FIX_B/crates/reify-eval/src/pdiag_probe.rs"
+git -C "$FIX_B" add crates/reify-eval/src/pdiag_probe.rs
+git -C "$FIX_B" commit -q -m "task changes"
+_PDIAG_PLAN_MERGE="$(cd "$FIX_B" && DF_VERIFY_ROLE=merge bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+_PDIAG_PLAN_ALL="$(cd "$FIX_B" && bash scripts/verify.sh all --profile debug --scope all --include-infra --print-plan 2>/dev/null)" || true
+PLAN_OUT="$(cd "$FIX_B" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_B" checkout -q main
+git -C "$FIX_B" branch -q -D task-branch
+rm -f "$FIX_B/crates/reify-eval/src/pdiag_probe.rs"
+assert "B-PDIAG-merge-vacuity: the SAME branch under plain --scope branch DOES emit the PDIAG leaf" \
+    plan_has "$_PDIAG_LEAF"
+assert "B-PDIAG-merge: scope=all in plan header (DF_VERIFY_ROLE=merge forces full scope)" \
+    plan_match "$_PDIAG_PLAN_MERGE" 'scope=all'
+assert "B-PDIAG-merge: selective PDIAG leaf ABSENT (run_all.sh owns it wholesale at the merge tier)" \
+    refute plan_match "$_PDIAG_PLAN_MERGE" "$_PDIAG_LEAF"
+assert "B-PDIAG-all: selective PDIAG leaf ABSENT under --scope all" \
+    refute plan_match "$_PDIAG_PLAN_ALL" "$_PDIAG_LEAF"
+
+# ===========================================================================
 # DEL-* scenarios (task 5140): scope classification must be deletion-aware.
 # verify.sh derives its changed-file list with `git diff --diff-filter=ACMR`
 # at both scope sites (:718 branch, :725 staged) — ACMR silently omits
@@ -2408,7 +2578,7 @@ assert "EX-1n: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (case glob * 
 # The gui block's own inner chain, distinguished from the sidecar block's
 # (which ends `npm run typecheck:test'`). The trailing quote is what pins
 # "typecheck ran and nothing followed it".
-_GUI_LANE_WITH_VITEST="cd gui && .*npm ci && npm run typecheck && npm test'"
+_GUI_LANE_WITH_VITEST="cd gui && .*npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh'"
 _GUI_LANE_TSC_ONLY="cd gui && .*npm ci && npm run typecheck'"
 
 echo ""
@@ -2419,8 +2589,8 @@ assert "GV-1: RUN_GUI_VITEST=0 appended after RUN_OCCT_GATE (RUN_RUST=1 RUN_GUI=
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=0'
 assert "GV-1: gui typecheck still runs (generated bindings)" \
     plan_has "$_GUI_LANE_TSC_ONLY"
-assert "GV-1: vitest skipped — no npm test anywhere in the plan" \
-    plan_lacks 'npm test'
+assert "GV-1: vitest skipped — no gui-vitest-run.sh anywhere in the plan" \
+    plan_lacks 'gui-vitest-run.sh'
 
 echo ""
 echo "--- Scenario GV-2: crate INSIDE reify-gui's cone -> full npm ci && typecheck && test ---"
@@ -2436,7 +2606,7 @@ echo "--- Scenario GV-3: frontend change, no Rust at all -> vitest runs ---"
 plan_for_branch_env "" gui/src/App.tsx
 assert "GV-3: RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (a frontend-read path changed)" \
     _check_scope_header 'RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
-assert "GV-3: gui lane carries npm test" \
+assert "GV-3: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # The three fixtures above cover the SKIP decision and its two positive
@@ -2448,7 +2618,7 @@ echo "--- Scenario GV-4: C5 unmappable path (ALL sentinel) -> vitest runs ---"
 plan_for_branch_env "" scripts/foo.sh
 assert "GV-4: RUN_GUI_VITEST=1 — a widened closure can never SKIP the lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-4: gui lane carries npm test" \
+assert "GV-4: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # GV-4b isolates what GV-4 cannot. An unmappable path also takes
@@ -2461,7 +2631,7 @@ echo "--- Scenario GV-4b: malformed closure knob + crates/** path -> fail WIDE t
 plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=   " crates/reify-doc/src/lib.rs
 assert "GV-4b: RUN_GUI_VITEST=1 — a whitespace-only knob is 'unavailable', not 'excludes reify-gui'" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
-assert "GV-4b: gui lane carries npm test" \
+assert "GV-4b: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 echo ""
@@ -2469,7 +2639,7 @@ echo "--- Scenario GV-5a: --scope all -> vitest unconditional (C2) ---"
 plan_for all crates/reify-doc/src/lib.rs
 assert "GV-5a: RUN_GUI_VITEST=1 at scope=all — the merge gate never narrows" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-5a: gui lane carries npm test" \
+assert "GV-5a: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # The same crate GV-1 skips on. DF_VERIFY_ROLE=merge forces --scope all, so
@@ -2481,7 +2651,7 @@ echo "--- Scenario GV-5b: DF_VERIFY_ROLE=merge --scope branch (forced to all) ->
 plan_for_branch_env "DF_VERIFY_ROLE=merge" crates/reify-doc/src/lib.rs
 assert "GV-5b: RUN_GUI_VITEST=1 under the merge role" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-5b: gui lane carries npm test" \
+assert "GV-5b: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # GV-6 — task 6435 regression guard. The _GUI_COUPLED_RI_FIXTURES arm sets
@@ -2489,16 +2659,20 @@ assert "GV-5b: gui lane carries npm test" \
 # edit to a fixture it pins. A narrowing that skipped vitest here would delete
 # that task's whole coverage argument while leaving its RUN_GUI=1 assertion
 # (PG-DRIFT-GUI, above) passing. Derived from the same ledger as PG-DRIFT-GUI,
-# so it cannot drift from the real pin set.
+# so it cannot drift from the real pin set. The pin must be GUI-ONLY (absent
+# from PG-DRIFT's Rust-coupled set): a Rust-coupled pin classifies RUN_RUST=1,
+# which is a different arm — and the first pin in sort order became one when
+# task 6615 pinned adt_mirror_of_arm.ri.
 echo ""
 echo "--- Scenario GV-6: EXPECTED_CLEAN-pinned prd-gate fixture -> vitest runs (task 6435) ---"
-_GV6_PIN="$(printf '%s\n' "$_PG_GUI_PINS" | head -1)"
+_GV6_PIN="$(printf '%s\n' "$_PG_GUI_PINS" \
+    | grep -vxF -f <(printf '%s\n' "$_PG_COUPLED") | head -1 || true)"
 assert "GV-6: a pinned fixture was derived (guard is not vacuous)" \
     test -n "$_GV6_PIN"
 plan_for staged "$_GV6_PIN"
 assert "GV-6: $_GV6_PIN -> RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (the ledger is the point of gui=1)" \
     _check_scope_header 'RUN_RUST=0 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
-assert "GV-6: gui lane carries npm test" \
+assert "GV-6: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # GV-7 — task 6268's arm 2, the OVERLOADED empty closure. A tests/infra-only
@@ -2510,7 +2684,7 @@ echo "--- Scenario GV-7: tests/infra-only branch diff (empty closure) -> vitest 
 plan_for_branch_env "" tests/infra/foo.sh
 assert "GV-7: RUN_GUI_VITEST=1 on an empty closure (task 6268 arm 2)" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-7: gui lane carries npm test" \
+assert "GV-7: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 echo ""
@@ -2518,7 +2692,7 @@ echo "--- Scenario GV-8: examples/*.ri branch diff -> vitest runs (grammar ledge
 plan_for_branch_env "" examples/foo.ri
 assert "GV-8: RUN_GUI_VITEST=1 for a corpus edit" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-8: gui lane carries npm test" \
+assert "GV-8: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # GV-9 — an explicit spec request is a third route into the lane. dark-factory
@@ -2538,8 +2712,8 @@ plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-cli reify-doc reify-do
 unset REIFY_GUI_RETRY_SPECS
 assert "GV-9: RUN_GUI_VITEST=1 — a requested spec is never silently dropped" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 RUN_GUI_VITEST=1'
-assert "GV-9: the gui lane forwards the requested spec, not a bare npm test" \
-    plan_has "cd gui && .*npm ci && npm run typecheck && npm test -- src/__tests__/foo\.test\.ts'"
+assert "GV-9: the gui lane forwards the requested spec, not a bare runner invocation" \
+    plan_has "cd gui && .*npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh src/__tests__/foo\.test\.ts'"
 
 # ---------------------------------------------------------------------------
 # GV-FAILWIDE-* (task 7427): decide_scope's rename-source fail-wide returns.
@@ -2612,7 +2786,7 @@ assert "GV-FAILWIDE-1: the C5 WARNING is still printed" \
     bash -c 'grep -q "rename-source diff failed — failing WIDE" "$1"' _ "$_FW_ERR"
 assert "GV-FAILWIDE-1: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-FAILWIDE-1: gui lane carries npm test" \
+assert "GV-FAILWIDE-1: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 # The branch twin. plan_for_branch_env's `env ${2:+"$2"}` hook (pre-1) carries
@@ -2627,7 +2801,7 @@ assert "GV-FAILWIDE-2: the shim fired (the fail-wide return was actually taken)"
     test -s "$_FW_FIRED"
 assert "GV-FAILWIDE-2: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
-assert "GV-FAILWIDE-2: gui lane carries npm test" \
+assert "GV-FAILWIDE-2: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
 test_summary

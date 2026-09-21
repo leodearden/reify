@@ -5,6 +5,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod builders;
+pub mod ctor_conformance;
 pub mod ctor_conformance_debt;
 pub mod fixtures;
 pub mod git_env;
@@ -22,6 +23,7 @@ pub mod value_decompose;
 pub mod values;
 
 pub use builders::*;
+pub use ctor_conformance::*;
 // Deliberately NOT `pub use ctor_conformance_debt::*;`, for the same reason as
 // `git_env` below: `CTOR_CONFORMANCE_MIGRATION_DEBT`, `debt_entry_matches` and
 // `param_name_from_ctor_diagnostic` are generic enough names that hoisting them

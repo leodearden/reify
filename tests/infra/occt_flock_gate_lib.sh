@@ -54,6 +54,16 @@ _reify_occt_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 }
 # shellcheck disable=SC1090,SC1091
 source "$_reify_occt_lib_dir/slot_holder_handshake_lib.sh"
+
+# plan_capture_lib.sh supplies plan_match, the fork-free matcher
+# occt_plan_grep_or_dump below is built on. It carries its own source guard, so
+# a test that already sourced it pays nothing for sourcing it again here.
+[ -f "$_reify_occt_lib_dir/plan_capture_lib.sh" ] || {
+    echo "ERROR: plan_capture_lib.sh not found at $_reify_occt_lib_dir/plan_capture_lib.sh" >&2
+    return 1 2>/dev/null || exit 1
+}
+# shellcheck disable=SC1090,SC1091
+source "$_reify_occt_lib_dir/plan_capture_lib.sh"
 unset _reify_occt_lib_dir
 
 # occt_wait_for_ready_count BARRIER_DIR N [BASE_ITERS=100]
@@ -141,10 +151,31 @@ export -f occt_serial3_n2_serialized
 # Plan-grep with an on-no-match child-stderr dump (task 5258, PRD
 # docs/prds/merge-gate-health.md W4d tail).
 #
-# Greps the captured --print-plan PLAN string for the ERE PATTERN.  On a MATCH:
-# returns 0 and emits NOTHING (an all-green run stays byte-for-byte unchanged).
-# On NO-MATCH: echoes the captured verify.sh child-plan stderr (ERRFILE) to
-# STDOUT between delimiters, then returns non-zero.
+# Matches the captured --print-plan PLAN string against the ERE PATTERN.  On a
+# MATCH: returns 0 and emits NOTHING (an all-green run stays byte-for-byte
+# unchanged).  On NO-MATCH: echoes the PATTERN, the PLAN and the captured
+# verify.sh child-plan stderr (ERRFILE) to STDOUT between delimiters, then
+# returns non-zero.
+#
+# FORK-FREE MATCHING, via plan_match rather than `printf | grep -qE`.  A
+# pipe-to-grep match is not a pure predicate on the plan string: grep -q exits
+# on its FIRST match and closes the pipe, so once the plan outgrows the 64 KiB
+# pipe buffer the printf still writing on the other end takes SIGPIPE, and
+# under a caller's `set -o pipefail` the pipeline reports 141 for a pattern
+# that is PRESENT.  plan_match preserves grep -qE's per-line REG_NEWLINE
+# semantics exactly — which is what keeps the existing T-series patterns
+# (alternation, same-line `.*`, escaped dot/star) matching identically — while
+# carrying neither the pipe nor the fork.  This was the last live instance of
+# the idiom documented as the esc-4574-42 spurious-FAIL class in
+# plan_capture_lib.sh's own header.
+#
+# WHY THE PATTERN AND THE PLAN ARE DUMPED, not just ERRFILE: verify.sh writes
+# EMPTY stderr on a healthy --print-plan, so a failing plan assertion used to
+# archive the literal "(child stderr was empty)" and nothing whatsoever about
+# what was searched or what was there.  That is what made this class of failure
+# arrive unattributable.  The plan is bounded so an oversize capture cannot
+# swamp the archived verify log, and says so when it truncates rather than
+# trailing off silently.
 #
 # WHY STDOUT: the six _T*_PLAN captures in test_occt_flock_gate.sh formerly
 # redirected verify.sh stderr to /dev/null, swallowing --print-plan diagnostics
@@ -153,16 +184,39 @@ export -f occt_serial3_n2_serialized
 # assert() on-FAIL capture-dump (test_helpers.sh:42-57, esc-4959-57) surfaces it
 # verbatim in the archived verify log — with ZERO changes to assert().
 #
-#   PATTERN  ERE fed to `grep -qE`.
+#   PATTERN  ERE, matched per-line (grep -qE semantics) by plan_match.
 #   PLAN     the multi-line captured plan string (from `--print-plan`).
 #   ERRFILE  the captured verify.sh stderr (a file path; may be empty).
 occt_plan_grep_or_dump() {
     local pattern="$1"
     local plan="$2"
     local errfile="$3"
-    if printf '%s\n' "$plan" | grep -qE "$pattern"; then
+    # The dump bound is read HERE rather than from a source-time global because
+    # this function is `export -f`'d: a `bash -c` child inherits the FUNCTION
+    # but not a plain shell variable, so a global bound is UNSET in exactly the
+    # path case (b) of the bounds file exercises. Unset, `[ "$_n" -gt ... ]`
+    # emits "integer expression expected" once per plan line and the bound goes
+    # inert (measured: 208 dump lines + 201 stderr errors in the child against
+    # 128 bounded in-shell, same 200-line plan). This is the same inherited-
+    # dependency class `export -f plan_match` closes in plan_capture_lib.sh.
+    # An exported override is still honoured, and the default lives in one place.
+    local _max="${_OCCT_PLAN_DUMP_MAX_LINES:-120}"
+    if plan_match "$plan" "$pattern"; then
         return 0
     fi
+    echo "---- plan pattern that did NOT match ----"
+    echo "$pattern"
+    echo "---- verify.sh --print-plan plan (searched) ----"
+    local _n=0 _line
+    while IFS= read -r _line; do
+        _n=$((_n + 1))
+        if [ "$_n" -gt "$_max" ]; then
+            echo "(plan dump truncated at $_max lines)"
+            break
+        fi
+        echo "$_line"
+    done <<< "$plan"
+    echo "---- end verify.sh --print-plan plan ----"
     echo "---- verify.sh --print-plan stderr (child plan capture) ----"
     if [ -s "$errfile" ]; then
         cat "$errfile"

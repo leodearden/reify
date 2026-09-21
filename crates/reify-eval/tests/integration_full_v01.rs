@@ -64,6 +64,54 @@ fn check_canonical() -> &'static reify_eval::CheckResult {
     })
 }
 
+/// Number of `Indeterminate` constraint entries the canonical example is
+/// *expected* to carry: the two `load_free` brackets. See
+/// [`assert_constraint_health`].
+const EXPECTED_INDETERMINATE: usize = 2;
+
+/// Assert the canonical example's constraint results are healthy: nothing is
+/// [`Satisfaction::Violated`], and exactly [`EXPECTED_INDETERMINATE`] entries
+/// are non-[`Satisfaction::Satisfied`].
+///
+/// Why not the stricter "every entry is `Satisfied`" this replaced (#5417):
+/// `Assembly` declares `minimize load_free` over `param load_free : Length =
+/// auto(free)`, and it *must* carry `constraint load_free >= 0mm` /
+/// `constraint load_free <= 1000mm` or #5417's own `E_OBJECTIVE_UNCONSUMED`
+/// fires on a published example. These tests run under `make_simple_engine()`,
+/// which is deliberately solver-less, so an `auto(free)` cell never resolves
+/// and both brackets read `Indeterminate` by construction.
+///
+/// The count is pinned rather than loosened to a bare "no `Violated`" so a
+/// future silent drift that leaves a *third* constraint `Indeterminate` still
+/// reddens. It is pinned by count rather than by name because these two
+/// entries carry `label: None`, and their `Assembly#constraint[N]` ids are
+/// index-shaped — brittle against any further edit to the example.
+fn assert_constraint_health(entries: &[reify_eval::ConstraintCheckEntry]) {
+    let violated: Vec<_> = entries
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Violated)
+        .map(|e| e.id.to_string())
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "no constraint should be Violated, got {violated:?}"
+    );
+
+    let unsatisfied: Vec<_> = entries
+        .iter()
+        .filter(|e| e.satisfaction != Satisfaction::Satisfied)
+        .map(|e| format!("{} => {:?}", e.id, e.satisfaction))
+        .collect();
+    assert_eq!(
+        unsatisfied.len(),
+        EXPECTED_INDETERMINATE,
+        "expected exactly {EXPECTED_INDETERMINATE} non-Satisfied constraints \
+         (the `load_free` brackets, Indeterminate under the solver-less \
+         make_simple_engine — #5417), got {}: {unsatisfied:?}",
+        unsatisfied.len()
+    );
+}
+
 /// Assert that a diagnostics slice contains no entries with [`Severity::Error`].
 /// Panics with the offending diagnostics and `context` label on failure.
 fn assert_no_errors(diagnostics: &[Diagnostic], context: &str) {
@@ -183,8 +231,8 @@ fn integration_full_v01_compiles() {
 
 // ── Test 3: all constraints satisfied ────────────────────────────────────────
 
-/// Smoke test: check_canonical produces at least one constraint result and
-/// every entry is Satisfaction::Satisfied.
+/// Smoke test: check_canonical produces at least one constraint result, none
+/// Violated, and exactly the two expected Indeterminate entries.
 #[test]
 fn all_constraints_satisfied() {
     let check_result = check_canonical();
@@ -192,35 +240,28 @@ fn all_constraints_satisfied() {
         !check_result.constraint_results.is_empty(),
         "expected at least one constraint result"
     );
-    for entry in &check_result.constraint_results {
-        assert_eq!(
-            entry.satisfaction,
-            Satisfaction::Satisfied,
-            "constraint {} should be Satisfied, got {:?}",
-            entry.id,
-            entry.satisfaction
-        );
-    }
+    // Not "all Satisfied": under the deliberately solver-less `make_simple_engine`
+    // a constraint reading the `auto(free)` cell `load_free` evaluates
+    // Indeterminate by construction, and Assembly must carry such a constraint or
+    // #5417's own E_OBJECTIVE_UNCONSUMED fires on a published example.
+    assert_constraint_health(&check_result.constraint_results);
 }
 
 // ── Test 4: total constraint count meets threshold ────────────────────────────
 
-/// Capstone assertion: constraint_results.len() >= 40, all Satisfied.
-/// Guards against silent constraint drops during future refactoring.
+/// Capstone assertion: constraint_results.len() >= 40, none Violated, exactly
+/// two Indeterminate. Guards against silent constraint drops during future
+/// refactoring.
 #[test]
 fn total_constraint_count_meets_threshold() {
     let check_result = check_canonical();
     let n = check_result.constraint_results.len();
     assert!(n >= 40, "expected >= 40 total constraint results, got {n}");
-    for entry in &check_result.constraint_results {
-        assert_eq!(
-            entry.satisfaction,
-            Satisfaction::Satisfied,
-            "constraint {} should be Satisfied, got {:?}",
-            entry.id,
-            entry.satisfaction
-        );
-    }
+    // Not "all Satisfied": under the deliberately solver-less `make_simple_engine`
+    // a constraint reading the `auto(free)` cell `load_free` evaluates
+    // Indeterminate by construction, and Assembly must carry such a constraint or
+    // #5417's own E_OBJECTIVE_UNCONSUMED fires on a published example.
+    assert_constraint_health(&check_result.constraint_results);
 }
 
 // ── Test 5: geometric let bindings are determined ────────────────────────────

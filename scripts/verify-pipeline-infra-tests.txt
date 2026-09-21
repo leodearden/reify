@@ -43,6 +43,7 @@
 
 scripts/verify.sh    tests/infra/test_verify_*.sh
 scripts/prd-capability-check.py    tests/infra/test_prd_capability_check.sh
+scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
 
 # Warm-lane CoW pool scripts — edits route to the end-to-end integration gate.
 # Note: this is a load-bearing verify-pipeline file (see CLAUDE.md); editing it
@@ -212,6 +213,22 @@ scripts/verify.sh                                 tests/infra/test_infra_classif
 .config/nextest.toml                 tests/infra/test_verify_offline_partition.sh
 scripts/heavy-test-filter-lib.sh     tests/infra/test_verify_offline_partition.sh
 
+# Task 6485: the slow-timeout tiering guard over .config/nextest.toml.
+# Closes a MEASURED gap -- tests/infra/test_nextest_slow_priority.sh had no row
+# anywhere, so a task-scope edit to the nextest overrides never selected the very
+# guard that covers them. It is NOT reachable via the
+# `scripts/verify.sh -> tests/infra/test_verify_*.sh` glob row above: that glob
+# matches on basename, and this one does not start with `test_verify_`, which is
+# why the explicit scripts/verify.sh row below is required rather than redundant.
+#
+# All three rows are load-bearing after task 6485: the guard DERIVES the heavy set
+# by sourcing scripts/heavy-test-filter-lib.sh (Assertions J/K) and EXTRACTS the
+# offline release wall from scripts/verify.sh (Assertion L), so an edit to either
+# can break it -- not merely an edit to the config it checks.
+.config/nextest.toml                 tests/infra/test_nextest_slow_priority.sh
+scripts/heavy-test-filter-lib.sh     tests/infra/test_nextest_slow_priority.sh
+scripts/verify.sh                    tests/infra/test_nextest_slow_priority.sh
+
 # Task 4955 doc-sync drift guard: operational docs cross-referenced by
 # tests/infra doc-sync checks (scripts/doc-sync-paths.txt) get their citing
 # infra test run as a fail-fast pole in any task-scope verify that edits
@@ -263,11 +280,6 @@ hooks/main-gate-lib.sh               tests/infra/test_stash_guard.sh
 # both as fail-fast poles when the lib is edited on a task-scope verify.
 # Mirrors the run-all-classification-lib.sh rows above.
 tests/infra/run_all_ambient_isolation_lib.sh    tests/infra/test_run_all_ambient_isolation*.sh
-
-# Task 5321: the read-only closure-staleness sweep. Mirrors the
-# scripts/warm-lane-audit.sh row above — a task-scope verify runs the sweep's
-# hermetic suite whenever the SUT changes.
-scripts/deterministic-gate-closure-staleness-sweep.sh    tests/infra/test_deterministic_gate_closure_staleness_sweep.sh
 
 # Task 5076: the INV-FEA-1 compute-trampoline delegation gate. Same
 # one-artifact-multiple-rows pattern as check-infra-classification-manifest.sh
@@ -529,3 +541,48 @@ scripts/reify-audit-predone-wrapper.sh  tests/infra/test_reify_audit_predone_wra
 # future edit to a one-line jq filter. The suite is the same hermetic,
 # seconds-long, `pool`-classified one row 513 selects.
 scripts/reify-audit-snapshot-filter.jq  tests/infra/test_reify_audit_predone_wrapper.sh
+
+# Task 7244: the read-only task-branch provenance sweep (which in-flight
+# branches carry commits or files belonging to another task). Mirrors the
+# scripts/deterministic-gate-closure-staleness-sweep.sh row above — same
+# hermetic, `pool`-classified, seconds-long suite, selected as a fail-fast pole
+# whenever the SUT changes.
+scripts/task-branch-contamination-sweep.sh    tests/infra/test_task_branch_contamination_sweep.sh
+
+# Task 7244: scripts/lib_task_citation.sh is the SINGLE copy of the "this commit
+# message cites task N" grammar (its header records, arm by arm, where it agrees
+# with dark-factory's DEFAULT_COMMIT_CITATION_PATTERN), so it needs a row per
+# CONSUMER — the one-artifact-multiple-rows pattern scripts/seed-warm-lane.sh and
+# scripts/warm-lane-audit.sh already use. Its own unit suite plus BOTH consumers'
+# suites, each of which load-bears the lib: a lib-only diff that selected only
+# the lib's unit tests would leave the consumers' classification contracts
+# unrun on the very edit that can break them (esc-7244-16's grammar change
+# moved 81 live degenerate verdicts and the sweep's census at once).
+scripts/lib_task_citation.sh    tests/infra/test_lib_task_citation.sh
+scripts/lib_task_citation.sh    tests/infra/test_warm_lane_degenerate_ref.sh
+scripts/lib_task_citation.sh    tests/infra/test_task_branch_contamination_sweep.sh
+
+# Task 5738: scripts/lib_lane_lock.sh is the SINGLE tri-state warm-lane lock
+# probe (IDLE/BUSY/UNMEASURABLE), shared by scripts/warm-lane-audit.sh and
+# scripts/warm-lane-lock-guard.sh. It owns the measurement; each caller owns
+# its own fail direction on UNMEASURABLE, and those two directions are
+# deliberately OPPOSITE (guard fails open, audit fails closed). So it needs a
+# row per CONSUMER — the same one-artifact-multiple-rows pattern
+# scripts/lib_task_citation.sh uses above. A lib-only diff that selected only
+# the lib's unit suite would leave BOTH mapping contracts unrun on the very
+# edit that can break either of them.
+scripts/lib_lane_lock.sh    tests/infra/test_lane_lock_probe.sh
+scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_audit.sh
+scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_lock_guard.sh
+# ...and a THIRD suite load-bears it transitively: test_warm_lane_sizing_lifecycle.sh
+# drives scripts/warm-lane-audit.sh end to end and asserts on the probe's own
+# verdicts (`HEADROOM live=3` at B2, `live=1` at B19), so a lib-only diff that
+# omitted this row would leave those assertions unrun on the very edit that can
+# move them.
+scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_sizing_lifecycle.sh
+# The lib's assertions live in a .py, and this map is keyed on EXACT changed-path
+# equality with no auto-run-a-changed-infra-test fallback. The thin .sh wrapper
+# closes run_all.sh's `test_*.sh` DISCOVERY hole; it does not close this SELECTION
+# one. Without this row a --scope branch diff touching only the assertions selects
+# no infra test at all.
+tests/infra/test_lane_lock_probe.py    tests/infra/test_lane_lock_probe.sh

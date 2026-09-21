@@ -13,6 +13,7 @@ use reify_test_support::ctor_conformance_debt::{
     param_name_from_ctor_diagnostic,
 };
 use reify_test_support::missing_paths_under;
+use reify_test_support::is_ctor_conformance_code;
 
 /// Absolute path to the workspace `examples/` directory, resolved at compile
 /// time from this crate's manifest directory (two levels up).
@@ -623,27 +624,6 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
     if !errors.is_empty() {
         failures.push((rel_key.to_owned(), errors.join("\n")));
     }
-}
-
-/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance surface (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
-///
-/// The admission set itself lives in the sibling `ctor_conformance_corpus_survey`
-/// module — a `#[path]` module of the SAME test binary — as
-/// `CTOR_CONFORMANCE_CODES`, and this gate reads it rather than restating it, so
-/// the α corpus gate and the β survey cannot drift apart (task #5304). It used to
-/// be a hand-written copy kept in sync by convention.
-///
-/// A third copy remains in
-/// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`
-/// — a separate test binary, which this `#[path]` module cannot reach. That is
-/// NOT a floor: the `reify-test-support` hop that would collapse all three
-/// already exists and is already used by both files. It was left for follow-up
-/// only because it needs edits outside #5304's lock set. See
-/// `CTOR_CONFORMANCE_CODES`'s own doc comment for the full rationale and the
-/// intended destination.
-fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode>) -> bool {
-    crate::ctor_conformance_corpus_survey::is_ctor_conformance_code(code)
 }
 
 /// One ctor-conformance diagnostic observed during the corpus walk.

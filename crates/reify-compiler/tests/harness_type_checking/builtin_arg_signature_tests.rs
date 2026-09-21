@@ -504,10 +504,13 @@ fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
 
 /// (d) NEGATIVE CONTROL — an ANGLE slot's message carries NO hint.
 ///
-/// The compile layer MIRRORS the eval layer exactly: `angle_spec` has no
-/// migration hint either, so neither does this. Pinning it stops a future
-/// reader mistaking the ANGLE gap for an oversight in this task — PRD 3 owns
-/// closing both halves together, by binding seam decree.
+/// This is the one slot kind where the compile layer does NOT mirror eval, and
+/// the asymmetry is scheduled rather than accidental. `angle_spec()` gained
+/// `ANGLE_MIGRATION_HINT` with PRD 3 leaf β, which owns the eval half only;
+/// PRD 3 leaf ζ (task 5782) brings these compile slots onto the hint-carrying
+/// template. Until ζ lands this test is what holds the line: it must keep
+/// FAILING for anyone who adds a hint to the ANGLE slot early, so the two
+/// halves move in one deliberate step instead of drifting apart a second time.
 #[test]
 fn angle_slot_rejection_carries_no_migration_hint() {
     let compiled = compile_struct_body(
@@ -523,8 +526,9 @@ fn angle_slot_rejection_carries_no_migration_hint() {
     );
     assert_eq!(
         errors[0].message, "faces_by_normal: tol argument expects Angle, got Int",
-        "an ANGLE slot must render the un-hinted template — eval's angle path has \
-         no hint either, and PRD 3 owns closing both halves together"
+        "an ANGLE slot must render the un-hinted template — eval's angle path \
+         carries a hint since PRD 3 leaf β, but bringing these slots onto that \
+         template is leaf ζ's (task 5782), not this layer's to anticipate"
     );
     assert!(
         !errors[0].message.contains("pass a dimensioned"),
