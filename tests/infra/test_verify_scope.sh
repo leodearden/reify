@@ -2811,6 +2811,19 @@ assert "GV-FAILWIDE-1: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-FAILWIDE-1: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
+# The load-bearing companion to GV-7, and the ONLY fixture that can be one.
+# These returns set RUN_RUST=1 and leave CHANGED_FILES_RAW="" — the exact "no
+# file list" shape that used to be indistinguishable from "a diff touching zero
+# crates", and the reason the empty closure could not be tightened before task
+# 6268. GV-7 narrows that shape away; this asserts THIS one still widens, so
+# the two stayed distinguished rather than both collapsing to "narrow away".
+#
+# It discriminates where the RUN_GUI_VITEST assertion above cannot: those
+# returns set GUI_PATH_SIGNAL=1 explicitly, so the vitest assertion would hold
+# even if the closure arm were deleted outright. The gui-feature pass has no
+# second route in — it is emitted ONLY via closure_reaches_reify_gui.
+assert "GV-FAILWIDE-1: an UNAVAILABLE closure still emits the gui-feature pass (CHANGED_FILES_RAW='' is not proof of zero crates)" \
+    plan_has "$_GUI_FEATURE_PASS"
 
 # The branch twin. plan_for_branch_env's `env ${2:+"$2"}` hook (pre-1) carries
 # the shim; its capture discards fd 2 by construction, so the WARNING-text
@@ -2826,5 +2839,7 @@ assert "GV-FAILWIDE-2: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-FAILWIDE-2: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
+assert "GV-FAILWIDE-2: an UNAVAILABLE closure still emits the gui-feature pass on the branch tier too" \
+    plan_has "$_GUI_FEATURE_PASS"
 
 test_summary
