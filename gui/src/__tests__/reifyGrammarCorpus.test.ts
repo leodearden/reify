@@ -4942,16 +4942,9 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //   - "arrow (function) types in a param annotation" was already reachable —
 //     `FunctionType` has been in the grammar all along.
 //
-// WHY THE LAST THREE FILES REMAIN — one line each, because "27 short of the
-// corpus" is not a finding and "which three, and whose" is:
+// WHY THE LAST THREE FILES REMAIN — one line each, because a bare count is
+// not a finding and "which three, and why" is:
 //
-//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references.
-//   - stdlib_ns_qualified_type.ri  ) LANDED by #5495 μ, which round 4 named as
-//     the only inheritable work IT HAD IDENTIFIED. Both are now in the ledger
-//     below. The node shapes the two new productions must produce — and the
-//     controls they must not disturb — are pinned in
-//     reifyGrammarQualifiedRef.test.ts, the file that task owns; this ledger
-//     records only that the two fixtures parse clean.
 //   - arrow_type.ri — NOT A GRAMMAR GAP AT ALL. Its `param` is at TOP LEVEL,
 //     and `param` is not a top-level declaration in tree-sitter's
 //     `_declaration` (grammar.js:134) or in the compiler's `lower_source_file`
@@ -4960,29 +4953,25 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //     fixture's own header declares it a deliberate FAIL probe. Both halves are
 //     pinned above: the member-position arrow type IS clean, and the top-level
 //     `param` MUST error.
+//   - shear_angles_vec3_angle_param_pre.ri and shear_angles_vec3_wrongq_ctrl.ri
+//     — both error solely on the local binding name `out`: `let out =
+//     f(axis)`. Measured: `let out = 1` inside a `structure def` block yields
+//     2 error nodes where `let q = 1` yields 0, and `param out : Length =
+//     1mm` also yields 2 — the Vector3<Angle> parameter beside it is not
+//     implicated (`fn f(v : Vector3<Angle>) -> Real { 1.0 }` parses clean).
+//     `out` is a hard `kw<>`, reserved for the `port out` direction form —
+//     the same self-inflicted class as round 4's `chain`/`meta` demotions to
+//     `ekw<>`. Grammar CAPABILITY, owned by the #5907 series, not coverage;
+//     both stay unpinned here.
 //
-// THE ARITHMETIC ABOVE IS INHERITED AND ITS DENOMINATOR IS STALE. Every "of
-// 330" in this block dates from an earlier round's corpus inventory; #5495 μ
-// re-measured it through this test's own walk and `countErrorNodes`, and the
-// corpus is bigger than the block assumes:
-//
-//     361 committed .ri under CORPUS_ROOTS · 358 parse clean · 329 pinned below
-//
-// So arrow_type.ri is NOT the only un-pinned file: 29 currently-clean files sit
-// outside the ratchet — examples/best_practices/angle_crossings.ri, the ten
-// tests/prd-gate/fixtures/pnrg_envelope_*.ri, compose_fn_field_resolves.ri and
-// the rest. That gap is real inheritable work and is the reason this comment no
-// longer claims completeness: a grammar change could regress any of those 29
-// and the ledger — the artifact whose whole purpose is catching exactly that —
-// would stay green.
-//
-// DO NOT RE-STATE THOSE THREE NUMBERS AS THE NEW TRUTH. They were measured on
-// 2026-08-23 and go stale the next time anyone adds a `.ri`, which is how the
-// "330" above rotted in the first place. The LIVE arithmetic is printed by this
-// test's own failure message (`measured N clean of M …; K clean files are not
-// pinned`); to see it on demand, read those three counts off a run rather than
-// off this comment. A future round adding a family should shrink the 29 and
-// leave the counting to the test.
+// THE ARITHMETIC ABOVE IS INHERITED, AND EVERY DENOMINATOR IN IT IS STALE BY
+// CONSTRUCTION — each was a snapshot of the corpus on the day its round ran,
+// and the corpus keeps growing every round after. #6605 re-measured through
+// the ledger's own walk and closed the gap those stale snapshots kept
+// finding: the pinned set below IS the full measured-clean set as of this
+// commit. The LIVE arithmetic is printed by this test's own failure message
+// (`measured N clean of M …; K clean files are not pinned`) — read it off a
+// run, never off this or any other comment.
 //
 // AND NOTE WHAT THIS BLOCK DELIBERATELY DOES NOT CONTAIN. The per-production
 // reasoning for every change above — why `ekw<>` and not `kw<>`, why the
@@ -5018,9 +5007,13 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // every path below is expected to parse clean, filtered by what still exists
 // on disk. Removals drop out naturally, a genuine regression names the exact
 // file that stopped parsing, and a coverage gain is a visible one-line
-// addition here. #5950 turned that ratchet to 327 entries; #5495 μ added its two
-// fixtures. The entries below are a SUBSET of the clean set, not the whole of
-// it — see the re-measured arithmetic above and the 29-file gap it names.
+// addition here. The set below now covers every committed .ri under
+// CORPUS_ROOTS that parses clean — the only files left unpinned are the
+// not-clean ones named above.
+//
+// #6605: coverage, not capability. No production in reify.grammar changed;
+// every path pinned by this round already parsed clean and was simply
+// unlisted.
 const EXPECTED_CLEAN = [
   'examples/ad_hoc_face_selector.ri',
   'examples/affine_tapered_spacer.ri',
