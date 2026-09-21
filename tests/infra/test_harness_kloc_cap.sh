@@ -351,47 +351,48 @@ CAP_LINES=20000
 # below), so an ARRIVING unit is red while a unit LEAVING the set is free.
 WARN_PCT=90
 
-# Units currently between the WARN line and the cap. A SHRINKING ratchet in
-# the same spirit as harness-layout-baseline.manifest: a unit may LEAVE this
-# list freely (that is progress and must never turn the gate red), but a unit
-# ARRIVING must be added deliberately in the same diff -- which is exactly the
-# "surface the squeeze before it breaks" signal task #6121 added the WARN tier
-# for. harness_syntax.rs measured 18957/20000 = 94.8% as of task #6121; it is
-# listed here because it is outside that task's scope, NOT because it is
-# acceptable — the remedy is still rule (a)'s split, and that split is #7040.
+# Units currently between the WARN line and the cap. EMPTY -- no live unit sits
+# in the warn band, which is the healthy end state this tier was built to reach
+# and which Sections 4c and 5c both name as the success condition. The array
+# stays DECLARED rather than deleted so Section 5d's `${_KLOC_WARN_KNOWN[@]+...}`
+# expansion and the `${#_KLOC_WARN_KNOWN[@]}` render beneath it keep working
+# under `set -u`.
 #
-# THE CITE IS LOAD-BEARING, not decoration. Departure from the warn set is free
-# (a) and the stale-row PRUNE note is advisory (c), so nothing in this guard
-# will ever nag about a listed row again: absent a live pointer to the work it
-# defers, harness_syntax would sit just under the line until it broke the cap —
-# precisely the innocent-author ambush the WARN tier exists to prevent. So when
-# #7040 reaches a terminal state, this row must be re-justified or dropped, not
+# A SHRINKING ratchet, in the same spirit as harness-layout-baseline.manifest: a
+# unit may LEAVE this list freely (that is progress and must never turn the gate
+# red), but a unit ARRIVING must be added deliberately IN THE SAME DIFF -- which
+# is exactly the "surface the squeeze before it breaks" signal task #6121 added
+# the WARN tier for. Section 5d enforces the subset direction and reports the
+# prune direction the subset check is blind to: an advisory `PRUNE:` note for a
+# row that stopped WARNing, and a RED for a row whose file left the disk.
+#
+# THE CITE IS LOAD-BEARING, not decoration. Departure is free and the stale-row
+# PRUNE note is advisory, so once a row is listed NOTHING in this guard will ever
+# nag about it again: absent a live pointer to the work it defers, a listed unit
+# sits just under the line until it breaks the cap -- precisely the
+# innocent-author ambush the WARN tier exists to prevent. So a row added here
+# MUST carry a live `#NNNN` cite to the split that will retire it, and when that
+# cite reaches a terminal state the row must be re-justified or dropped, not
 # silently re-inherited. A bare `#NNNN` in prose is the repo's citation form and
-# does not itself create a PTODO marker; what the ratchet reds is an UNBACKED
-# tracked-elsewhere CLAIM, which is why an earlier draft of the WARN_PCT comment
-# above was rejected — a cite that resolves to a live task is the fix for that,
-# not an omission.
+# does not itself create a PTODO marker; what the ptodo fingerprint ratchet reds
+# is an UNBACKED tracked-elsewhere CLAIM, which is why an earlier draft of the
+# WARN_PCT comment above was rejected. With zero rows there is nothing here to
+# cite and nothing to claim, so the rule is stated prospectively -- for the next
+# author who has to add one -- rather than demonstrated by an example row.
 #
-# Kept in-script rather than in a new manifest file because this guard already
-# carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
-# shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
-# needed. Enforced as a SUBSET in Section 5d, which also reports the prune
-# direction the subset check is blind to: an advisory `PRUNE:` note for a row
-# that stopped WARNing, and a RED for a row whose file is no longer on disk.
-# harness_engine.rs measured 18002/20000 = 90% at task #5417 (root 157 + 15655
-# across 28 module files + 2190 external via `#[path = "common/differential.rs"]`).
-# Listed for the same reason as harness_syntax above and NOT because it is
-# acceptable: the remedy is still rule (a)'s split, and that split is #7654. On
-# bare main the unit measured 17240, 760 lines under the warn line, so it was
-# crossing on its next test-bearing leaf regardless of #5417 — which adds one
-# 758-line module and clears the line by 2. This is the unit's SECOND crossing:
-# #6760 filed the first at 18414 and 132a45e8d2 split the auto-resolution cluster
-# out, after which it re-accreted over ~2 weeks. So #7654 should draw a boundary
-# with real headroom, not the minimum that clears the line.
-_KLOC_WARN_KNOWN=(
-    "crates/reify-syntax/tests/harness_syntax.rs"
-    "crates/reify-eval/tests/harness_engine.rs"
-)
+# The deferred work a row cites is always rule (a)'s SPLIT, never a CAP_LINES
+# bump: #6121 split harness_fea_solver_e2e out of the warn band, #7040 split
+# harness_syntax, and #6760 split harness_engine's first crossing. A row here is
+# a deferral of that split, never an exemption from it.
+#
+# Kept in-script rather than promoted to a new manifest file because this guard
+# already carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via
+# the shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
+# needed -- and emptying the array is not an argument for moving it, since the
+# rule is pinned by code, not by its live rows. Section 4c drives the subset
+# classifier against hermetic fixture repos precisely so that an empty live set
+# leaves the rule enforced rather than vacuous.
+_KLOC_WARN_KNOWN=()
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
