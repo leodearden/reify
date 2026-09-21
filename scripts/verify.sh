@@ -2115,21 +2115,42 @@ fi
 # extracted by task 7427); two consumers read it — the gui-feature nextest
 # pass and the vitest lane gate just below.
 #
-# THREE EXPLICIT ARMS, read off SCOPE and AFFECTED_CLOSURE directly:
+# FOUR EXPLICIT ARMS, read off SCOPE, AFFECTED_CLOSURE and
+# AFFECTED_CLOSURE_FROM_DIFF directly:
 #   1. SCOPE=all            -> true.  The merge gate never narrows; that is a
 #                              CONTRACT, not a side effect.
 #   2. closure unavailable  -> true.  FAIL WIDE.  "Unavailable" covers the ALL
 #                              sentinel (a C4 workspace-global file, a C5
-#                              cargo-metadata failure, an unmappable path), an
-#                              empty CHANGED_FILES_RAW, and a malformed
-#                              REIFY_AFFECTED_CRATES_OVERRIDE.  The empty case
-#                              is genuinely OVERLOADED — decide_scope's
-#                              git-failure fail-wide paths also return
-#                              RUN_RUST=1 with CHANGED_FILES_RAW="" — so
-#                              conflating it with "provably no crates" is
-#                              CORRECT here and cannot be tightened without a
-#                              separate closure-available sentinel.
-#   3. otherwise            -> true iff reify-gui ∈ AFFECTED_CLOSURE.
+#                              cargo-metadata failure, an unmappable path), a
+#                              malformed REIFY_AFFECTED_CRATES_OVERRIDE, and an
+#                              empty closure this run never DERIVED — including
+#                              decide_scope's git-failure fail-wide paths, which
+#                              return RUN_RUST=1 with CHANGED_FILES_RAW="".
+#   3. closure COMPUTED and
+#      EMPTY                -> FALSE.  Not the same thing as arm 2, and the
+#                              distinction is the whole of task 6268.  The run
+#                              called affected_crates() on its own changed-file
+#                              list and it came back holding no crate at all, so
+#                              reify-gui is PROVABLY unaffected — narrow the pass
+#                              away rather than fail wide over a question that
+#                              was actually answered.  AFFECTED_CLOSURE_FROM_DIFF
+#                              is what separates the two (see its assignment
+#                              site); an override never sets it, so a malformed
+#                              knob cannot reach this arm.
+#   4. otherwise            -> true iff reify-gui ∈ AFFECTED_CLOSURE.
+#
+# THE SECOND CONSUMER IS SAFE BY DERIVATION, not by hope.  Arm 3 is reachable
+# only when RUN_RUST=1 and every changed path is non-crate (docs/**, *.md,
+# *.yaml/yml, gui/src/**, tests/infra/**).  Of those classes only tests/infra/**
+# classifies RUN_RUST=1, and it does so through decide_scope's `*)` catch-all,
+# which sets `rust=1; gui=1; gate=1` TOGETHER.  The only other
+# rust=1-without-gui=1 arms are `crates/*` (crate-mappable, so never empty) and
+# the docs/gui-event-channels.md rename force, whose recovered source path hits
+# its own arm and sets gui=1 anyway.  So arm 3 implies GUI_PATH_SIGNAL=1, and
+# the vitest lane runs via that route regardless of what this predicate says —
+# arm 3 narrows the gui-feature nextest pass and nothing else.  Pinned in one
+# place rather than argued twice: tests/infra/test_verify_scope.sh's GV-7
+# asserts both halves on one fixture.
 #
 # NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-ACTIVATION flag,
 # not a scope oracle: it is also 0 for `--scope staged` without `--narrow` and
@@ -2137,13 +2158,13 @@ fi
 # gate" was a false equivalence.
 #
 # WHAT ACTUALLY NARROWS is smaller than "every hook run", and the difference is
-# measured, not assumed: only a diff whose paths ALL map to crates AND whose
-# reverse closure excludes reify-gui takes arm 3.  A scripts-only diff yields
-# the ALL sentinel (C5/unmappable) and a tests/infra-only one yields an EMPTY
-# closure (affected-crates-lib treats tests/infra/* as non-crate, while
-# decide_scope's conservative arm still sets RUN_RUST=1) — both take arm 2.
-# Arm 1 keeps the merge gate unconditional, so a hook-tier miss can only ever
-# be LATENCY, never a coverage hole.
+# measured, not assumed.  TWO shapes narrow: a diff whose paths ALL map to
+# crates and whose reverse closure excludes reify-gui (arm 4), and a diff whose
+# paths map to NO crate at all while still classifying RUN_RUST=1 — in practice
+# a tests/infra-only one, extremely common here (arm 3).  A scripts-only diff
+# does NOT: it yields the ALL sentinel (C5/unmappable) and takes arm 2.  Arm 1
+# keeps the merge gate unconditional, so a hook-tier miss can only ever be
+# LATENCY, never a coverage hole.
 #
 # Membership is the REVERSE-dependency closure, not a hand-listed trigger set
 # (reify-gui/reify-eval/reify-mesh-morph), so a change to an indirect
@@ -2170,7 +2191,11 @@ fi
 #     metacharacter, a path fragment, a stray flag.  A real affected_crates()
 #     closure only ever holds crate names, so a token that cannot BE one means
 #     the knob is malformed, not that the closure excludes reify-gui.  Closed
-#     by the grammar check, which routes to arm 2 rather than arm 3.
+#     by the grammar check, which routes to arm 2 rather than arm 4.
+# None of the three can reach arm 3 either, and not because of a second guard:
+# they arrive through REIFY_AFFECTED_CRATES_OVERRIDE, which never sets the
+# from-diff licence, so the whitespace-only shape — the one that DOES split to
+# an empty array — still falls to arm 2.
 #
 # Role-specific skips belong at the CALL SITE, not here: the gui-feature pass's
 # `DF_VERIFY_ROLE != offline` guard is a property of that pass, not of the
@@ -2192,12 +2217,22 @@ closure_reaches_reify_gui() {
     done
     if [ "$_noglob_was" -eq 0 ]; then set +f; fi
 
-    # Arm 2 — closure unavailable: fail wide.
-    [ "${#_words[@]}" -eq 0 ] && return 0
+    # Arm 2 — closure unavailable: fail wide.  Ordered ahead of the empty test,
+    # which is safe as well as clearer: _malformed can only be 1 if the split
+    # loop ran a body, i.e. if _words is non-empty.
     [ "$_malformed" -eq 1 ] && return 0
     { [ "${#_words[@]}" -eq 1 ] && [ "${_words[0]}" = "ALL" ]; } && return 0
 
-    # Arm 3 — a real crate list: membership decides.
+    # Arms 2/3 — an empty closure is two different facts, told apart by the
+    # from-diff licence alone: DERIVED from this run's diff means provably zero
+    # crates (narrow away); anything else means the question was never answered
+    # (fail wide).
+    if [ "${#_words[@]}" -eq 0 ]; then
+        [ "$AFFECTED_CLOSURE_FROM_DIFF" -eq 1 ] && return 1
+        return 0
+    fi
+
+    # Arm 4 — a real crate list: membership decides.
     for _w in "${_words[@]}"; do
         [ "$_w" = "reify-gui" ] && return 0
     done
@@ -2929,7 +2964,7 @@ add_test_passes() {
     #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
     #     partition only.
     #   * NARROWED on the same affected-crate axis every other narrowed pass uses,
-    #     by closure_reaches_reify_gui (defined above — task 6268's three arms and
+    #     by closure_reaches_reify_gui (defined above — task 6268's four arms and
     #     their fail-wide ladder; task 7427 extracted them so the vitest lane reads
     #     the same answer instead of a second copy).
     #     WHAT THAT BUYS *THIS* PASS is a full tauri + webkit2gtk + OCCT
