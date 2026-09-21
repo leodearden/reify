@@ -24,9 +24,11 @@ mod clamp_probe;
 
 #[cfg(has_gmsh)]
 use clamp_probe::{
-    CLAMP_TEST_ORDER, assert_all_size_options_at_gmsh_defaults, set_all_size_options_to_defaults,
-    write_size_options,
+    CLAMP_TEST_ORDER, assert_all_size_options_at_gmsh_defaults, poison_all_size_options,
+    poison_for, set_all_size_options_to_defaults, write_size_options,
 };
+#[cfg(has_gmsh)]
+use reify_kernel_gmsh::mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS;
 use reify_kernel_gmsh::mesh_profile_2d::mesh_plane_2d;
 
 /// Triangle path: `recombine=false` on a unit square produces a triangle
@@ -377,23 +379,15 @@ fn mesh_plane_2d_leaves_every_size_option_at_gmsh_defaults() {
         "the defaults-relying 2D probe must produce triangles; got an empty mesh",
     );
 
-    /// One poison per size option, each measurably away from its default. See
-    /// this test's doc for which of them this fixture is actually sensitive to.
-    const INBOUND_POISONS: [(&str, f64); 5] = [
-        ("Mesh.MeshSizeMin", 0.05),
-        ("Mesh.MeshSizeMax", 0.05),
-        ("Mesh.MeshSizeFromPoints", 0.0),
-        ("Mesh.MeshSizeFromCurvature", 20.0),
-        ("Mesh.MeshSizeExtendFromBoundary", 0.0),
-    ];
-    let poison_one = |poisoned: &str, value: f64| {
-        write_size_options(&|option, default| {
-            if option == poisoned { value } else { default }
+    // One option at a time, driven off the PRODUCTION list rather than a local
+    // copy of it, so a sixth size option joins this sweep on the day it lands
+    // — and `poison_for` panics if it arrived without a poison. See this
+    // test's doc for which of them this fixture is actually sensitive to.
+    for (poisoned, default) in GMSH_SIZE_OPTION_DEFAULTS {
+        let value = poison_for(poisoned, default);
+        write_size_options(&|option, option_default| {
+            if option == poisoned { value } else { option_default }
         });
-    };
-
-    for (poisoned, value) in INBOUND_POISONS {
-        poison_one(poisoned, value);
         let from_poisoned = triangles(None);
         assert_eq!(
             from_poisoned, from_defaults,
@@ -411,13 +405,7 @@ fn mesh_plane_2d_leaves_every_size_option_at_gmsh_defaults() {
     // combination happens to cancel back to the baseline for some poison
     // values — but it does pin the case a real leaking sibling produces, which
     // is several options at once rather than one.
-    write_size_options(&|option, _| {
-        INBOUND_POISONS
-            .iter()
-            .find(|(name, _)| *name == option)
-            .map(|(_, value)| *value)
-            .expect("INBOUND_POISONS must cover every GMSH_SIZE_OPTION_DEFAULTS entry")
-    });
+    poison_all_size_options();
     let from_fully_poisoned = triangles(None);
     assert_eq!(
         from_fully_poisoned, from_defaults,

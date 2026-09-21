@@ -13,7 +13,8 @@
 //! measurement no sibling suite can perturb, and a `tests/*.rs` file is its own
 //! process — but they need the SAME instrument to measure with. Written
 //! independently they carried near-verbatim copies of the serialising mutex,
-//! the probe outline, the defaults pair, the clamp writer and the probe itself.
+//! the probe outline, the defaults pair, the clamp writer, the poison table
+//! and the probe itself.
 //! The cost of that is drift, and drift here is silent rather than loud: a
 //! probe outline or a defaults pair corrected in one copy and not the other
 //! leaves one of the two guards measuring something weaker than it claims
@@ -124,6 +125,58 @@ pub fn write_size_options(value_of: &dyn Fn(&str, f64) -> f64) {
         ffi::option_set_number(option, value_of(option, default))
             .unwrap_or_else(|e| panic!("ffi::option_set_number({option}) failed: {e:?}"));
     }
+}
+
+/// One poison per size option: a value far enough from that option's gmsh
+/// default to change a mesh where the fixture is sensitive to it at all.
+///
+/// The table every "what a leaking sibling left behind" fixture in this crate
+/// writes, shared for the reason this module exists plus one specific to
+/// poisons. A poison DERIVED from its default by arithmetic — the
+/// `1.0 - default` this replaced — silently stops being a poison as soon as
+/// the default it is derived from changes: the row is then written at its own
+/// default, the fixture covers one option less, and it stays green while doing
+/// it. [`poison_for`] makes that loud, and makes an option with no poison at
+/// all loud too.
+pub const SIZE_OPTION_POISONS: [(&str, f64); 5] = [
+    ("Mesh.MeshSizeMin", 0.05),
+    ("Mesh.MeshSizeMax", 0.05),
+    ("Mesh.MeshSizeFromPoints", 0.0),
+    ("Mesh.MeshSizeFromCurvature", 20.0),
+    ("Mesh.MeshSizeExtendFromBoundary", 0.0),
+];
+
+/// The poison for `option`, given gmsh's `default` for it.
+///
+/// Panics rather than degrading if [`SIZE_OPTION_POISONS`] has no entry for
+/// `option` — a sixth production option must arrive here too — or if the entry
+/// equals `default`, which is the same hole reached by omission rather than by
+/// arithmetic. Either way the fixture would be asserting against a table one
+/// option less poisoned than it claims.
+pub fn poison_for(option: &str, default: f64) -> f64 {
+    let poison = SIZE_OPTION_POISONS
+        .iter()
+        .find(|(name, _)| *name == option)
+        .map(|(_, value)| *value)
+        .unwrap_or_else(|| {
+            panic!(
+                "SIZE_OPTION_POISONS must cover every GMSH_SIZE_OPTION_DEFAULTS entry: \
+                 {option} has none, so a fixture that claims to poison every size option \
+                 would leave it at its default and silently cover one option less"
+            )
+        });
+    assert_ne!(
+        poison, default,
+        "the poison for {option} must differ from gmsh's default for it, or that row of \
+         a \"fully poisoned\" table is not poisoned at all — see SIZE_OPTION_POISONS",
+    );
+    poison
+}
+
+/// Put every process-global gmsh size option at its [`poison_for`] value — the
+/// table a leaking sibling entry point leaves behind.
+pub fn poison_all_size_options() {
+    write_size_options(&poison_for);
 }
 
 /// Put every process-global gmsh size option at its documented default.

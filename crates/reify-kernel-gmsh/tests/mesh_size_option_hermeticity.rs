@@ -62,8 +62,8 @@ mod clamp_probe;
 
 use clamp_probe::{
     CLAMP_TEST_ORDER, GMSH_CLAMP_DEFAULTS, assert_all_size_options_at_gmsh_defaults,
-    probe_triangle_count, set_all_size_options_to_defaults, set_global_mesh_size_clamp,
-    write_size_options,
+    poison_all_size_options, probe_triangle_count, set_all_size_options_to_defaults,
+    set_global_mesh_size_clamp,
 };
 use reify_ir::ElementOrderTag;
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, refine_volume_with_size_field};
@@ -424,7 +424,7 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
 /// # Measured RED, and what each leg is worth
 ///
 /// With `MeshSizeScope::entered` commented out of `kernel_real::mesh_to_volume`
-/// — unit cube, `deterministic: true`, P1, poison as below:
+/// — unit cube, `deterministic: true`, P1, `clamp_probe::SIZE_OPTION_POISONS`:
 ///
 /// ```text
 /// leg                                 armed    disarmed
@@ -466,21 +466,18 @@ fn refine_after_mesh_to_volume_honours_its_own_size_field() {
 fn mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held() {
     let _order = CLAMP_TEST_ORDER.lock().unwrap_or_else(|e| e.into_inner());
 
-    /// Distinctive, and far finer than the cube's extent, so a leak into the
-    /// mesher would be loud rather than marginal.
-    const POISON_SIZE: f64 = 0.05;
-
     set_all_size_options_to_defaults();
     let from_defaults = mesh_to_volume_default_tet_count();
     assert!(from_defaults > 0, "mesh_to_volume must produce tets");
 
-    // Every size option away from its default: a fine shut clamp, plus the
-    // three size-SOURCE options flipped.
-    write_size_options(&|option, default| match option {
-        "Mesh.MeshSizeMin" | "Mesh.MeshSizeMax" => POISON_SIZE,
-        "Mesh.MeshSizeFromCurvature" => 20.0,
-        _ => 1.0 - default,
-    });
+    // Every size option away from its default: a fine shut clamp (0.05, far
+    // finer than the cube's extent, so a leak into the mesher is loud rather
+    // than marginal) plus the three size-SOURCE options flipped. Values from
+    // the shared `clamp_probe::SIZE_OPTION_POISONS`, which panics on an option
+    // it has no poison for rather than deriving one — a derived poison stops
+    // being a poison the moment the default it is derived from moves, and the
+    // row then goes unpoisoned with the suite still green.
+    poison_all_size_options();
     let from_poisoned = mesh_to_volume_default_tet_count();
 
     assert_all_size_options_at_gmsh_defaults(
