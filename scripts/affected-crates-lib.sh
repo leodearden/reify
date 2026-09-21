@@ -226,7 +226,30 @@ _reverse_closure() {
         [ -n "$s" ] && seed_args+=("$s")
     done <<< "$seeds"
 
-    printf '%s\n' "$meta" | _reify_compile_closure "${seed_args[@]}" 2>/dev/null || { echo ALL; return 0; }
+    # SEEDS IN, NOTHING OUT is a FAILURE to attribute, not an answer — so it is
+    # C5, not an empty print. _reify_compile_closure resolves seed NAMES through
+    # the metadata's name->id map and silently skips a name that maps to no
+    # package (`name_to_ids.get(sn, [])`), exiting 0 with no output. A RESOLVABLE
+    # workspace seed is always a member of its own compile closure, so an empty
+    # result from a non-empty seed list can only mean a seed did not resolve.
+    # Reachable shapes: a file added under a typo'd or not-yet-declared crate
+    # directory, a crate directory whose package name differs from the directory
+    # name (nothing pins dir == package name), a path under a crate whose
+    # `members` entry was already removed so C4 never fires.
+    #
+    # This is what keeps affected_crates()' empty print SINGLE-SOURCED at the
+    # `${#direct[@]} -eq 0` early return — the property its header claims and
+    # verify.sh's computed-empty arm relies on. Without it a crate-attributed
+    # path whose crate did not resolve would arrive at that consumer wearing the
+    # from-diff licence and be read as "provably zero crates".
+    local closure
+    closure="$(printf '%s\n' "$meta" | _reify_compile_closure "${seed_args[@]}" 2>/dev/null)" || { echo ALL; return 0; }
+    if [ -z "$closure" ]; then
+        echo "affected-crates-lib.sh: seed crate(s) resolved to no workspace package — falling back to ALL" >&2
+        echo ALL
+        return 0
+    fi
+    printf '%s\n' "$closure"
 }
 
 # affected_crates <file>... — print the affected workspace crate set, one name
@@ -235,23 +258,17 @@ _reverse_closure() {
 # classes: docs/**, *.md, *.yaml/yml, gui/src/**, tests/infra/**).
 # Always returns 0 so callers are safe under set -e and inside $() capture.
 #
-# THE EMPTY PRINT IS AN ANSWER, NOT A SHRUG (task 6268). It is produced at the
+# THE EMPTY PRINT IS AN ANSWER, NOT A SHRUG (task 6268). Its meaning is exact:
+# every path was classified, none mapped to a crate, and an unmappable path
+# would have gone wide via C5 instead. It has exactly ONE producer — the
 # `${#direct[@]} -eq 0` early return below, which short-circuits BEFORE
-# _reverse_closure — so it never shells out to `cargo metadata` and is
-# reproducible in a workspace-less fixture. Its meaning is exact: every path was
-# classified, none mapped to a crate, and an unmappable path would have gone
-# wide via C5 instead. verify.sh's closure_reaches_reify_gui now narrows the
-# gui-feature nextest pass away on it rather than failing wide over it.
+# _reverse_closure, so it never shells out to `cargo metadata` and is
+# reproducible in a workspace-less fixture. _reverse_closure holds up the other
+# half of that single-sourcing: a non-empty seed list that yields no closure is
+# C5, never an empty print (see its own header).
 #
-# THE BOUNDARY, stated because it is easy to site the fix wrong: this file's
-# BYTES are unchanged, and the three-valued distinction lives at the CONSUMPTION
-# site. An empty print here is already unambiguous; what is ambiguous is an
-# empty AFFECTED_CLOSURE in verify.sh, which is ALSO what that variable holds
-# when affected_crates was never called at all (scope=all, RUN_RUST=0, an empty
-# CHANGED_FILES_RAW). Only verify.sh can tell those apart, so only verify.sh
-# carries the extra bit — see AFFECTED_CLOSURE_FROM_DIFF there. Emitting a
-# distinct sentinel from here would have pushed the fix into the wrong module
-# and put a second magic token in a string that also holds crate names.
+# A caller that must distinguish this from "affected_crates was never called"
+# carries that bit itself: see AFFECTED_CLOSURE_FROM_DIFF in scripts/verify.sh.
 affected_crates() {
     # C4: if any arg is a global file, immediately emit ALL.
     local arg
