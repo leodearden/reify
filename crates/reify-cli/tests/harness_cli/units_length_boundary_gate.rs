@@ -70,12 +70,21 @@ fn run_source(subcommand: &str, stem: &str, source: &str) -> (ExitStatus, String
 /// once per row would be exactly the lockstep duplication D9 exists to prevent: a reword
 /// of the hint must break this suite in ONE place, not in every row that quotes it.
 fn expect_length_rejection(stderr: &str, builtin: &str, arg: &str, got: &str) {
-    let expected =
-        format!("{builtin}: {arg} argument expects Length, got {got}; {LENGTH_MIGRATION_HINT}");
+    let expected = length_rejection_line(builtin, arg, got);
     assert!(
         stderr.contains(&expected),
         "stderr should carry the units rejection `{expected}`; got: {stderr}"
     );
+}
+
+/// The ONE wording template, and the file's only copy of it.
+///
+/// Its single producer in the tree is `ArgRejection::message`. Every consumer here —
+/// each row's [`expect_length_rejection`] and the cross-route D9 invariant below — reads
+/// the shape from here and the hint from the real const, so a reword breaks this suite in
+/// one place rather than once per row.
+fn length_rejection_line(builtin: &str, arg: &str, got: &str) -> String {
+    format!("{builtin}: {arg} argument expects Length, got {got}; {LENGTH_MIGRATION_HINT}")
 }
 
 /// §6 row 1 — a bare-`Int` primitive dimension is rejected at the process boundary,
@@ -588,5 +597,100 @@ structure S {
         !default_stderr.contains("iso argument expects Length"),
         "D12: an ABSENT `iso:` takes the documented default and must draw no units \
          rejection at all; got: {default_stderr}"
+    );
+}
+
+/// One route into the units chokepoint: a source that reaches it, and the rejection the
+/// user must see when it does.
+struct ChokepointRoute {
+    stem: &'static str,
+    source: &'static str,
+    builtin: &'static str,
+    arg: &'static str,
+    /// Which PRD leaf owns this route — carried so a divergence report names the owner.
+    leaf: &'static str,
+}
+
+/// D9 — the invariant no single row can see: three DIFFERENT chokepoint routes produce
+/// BYTE-IDENTICAL wording.
+///
+/// Each row above checks its own builtin, so each would stay green if one leaf hand-rolled
+/// its own rejection string that happened to contain the right substrings. This test is
+/// where that shows up, because it holds all three routes against the same template at
+/// once: a primitive (β's raw-`Value` route), a modify (γ's), and a transform (ζ's decoded
+/// route). Byte-identical wording across PRDs 1/3/5 is what D9 promises, and
+/// `ArgRejection::message` (`crates/reify-ir/src/arg_acceptance.rs:211-222`) is the single
+/// producer that delivers it.
+///
+/// Divergences are COLLECTED rather than asserted one at a time: a template change should
+/// report every route it broke, not stop at whichever ran first.
+#[test]
+fn every_units_rejection_uses_the_one_wording_template() {
+    let routes = [
+        ChokepointRoute {
+            stem: "d9_primitive_route",
+            source: r#"module d9_primitive_route
+
+structure def S {
+    let b = box(20, 20, 10)
+    param geometry : Solid = b
+}
+"#,
+            builtin: "box",
+            arg: "width",
+            leaf: "β (primitive, raw-Value route)",
+        },
+        ChokepointRoute {
+            stem: "d9_modify_route",
+            source: r#"module d9_modify_route
+
+structure def S {
+    let b = fillet(box(10mm, 10mm, 10mm), 1)
+    param geometry : Solid = b
+}
+"#,
+            builtin: "fillet",
+            arg: "radius",
+            leaf: "γ (modify)",
+        },
+        ChokepointRoute {
+            stem: "d9_transform_route",
+            source: r#"module d9_transform_route
+
+structure def S {
+    let b = box(20mm, 20mm, 10mm)
+    let moved = apply_transform(b, transform3(orient_identity(), vec3(5, 0, 0)))
+    param geometry : Solid = moved
+}
+"#,
+            builtin: "apply_transform",
+            arg: "translation.x",
+            leaf: "ζ (transform, decoded route)",
+        },
+    ];
+
+    let mut divergent = Vec::new();
+    for route in routes {
+        let (status, stdout, stderr) = eval_source(route.stem, route.source);
+        assert!(
+            !status.success(),
+            "the {leaf} route must reach the units chokepoint and exit nonzero;\n\
+             stdout: {stdout}\nstderr: {stderr}",
+            leaf = route.leaf,
+        );
+        let expected = length_rejection_line(route.builtin, route.arg, "Int");
+        if !stderr.contains(&expected) {
+            divergent.push(format!(
+                "  {leaf}: expected `{expected}`\n    got: {stderr}",
+                leaf = route.leaf,
+            ));
+        }
+    }
+
+    assert!(
+        divergent.is_empty(),
+        "D9: every units rejection must use the ONE wording `ArgRejection::message` \
+         produces, whatever route reached the chokepoint. Diverging routes:\n{}",
+        divergent.join("\n"),
     );
 }
