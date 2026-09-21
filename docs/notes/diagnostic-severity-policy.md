@@ -295,10 +295,16 @@ The review checks are the ones that make it falsifiable:
   the gate is RED at every commit in between.
 
 Worked example: bounding the code probe (2026-09, task #5887) raised
-`crates/reify-eval/src/geometry_ops.rs` from 137 to 138 and moved nothing else.
-The three sites it surfaced are inspected one by one in appendix A — two of
-them carry an in-source note declaring them code-less *by class*, so coding
-them would have been wrong, not merely out of scope.
+`crates/reify-eval/src/geometry_ops.rs` from 137 to 138 and moved no other ROW
+— which is exactly why the first check above is necessary but not sufficient.
+It surfaced FOUR sites, not one: `modal_ops.rs` and `reify-stdlib/src/geometry.rs`
+each carried a pre-existing stale row with one of headroom, which absorbed
+their new site without moving a row, so a reviewer reading only the manifest
+diff sees two of the four movers not at all. The census diff does show them,
+which is why the second check names sites rather than rows. All four are
+inspected one by one in appendix A — two carry an in-source note declaring them
+code-less *by class*, so coding them would have been wrong, not merely out of
+scope.
 
 ### When the finding is not about your diff
 
@@ -423,9 +429,9 @@ value that retired nothing.
 
 ### Why the code probe is bounded at a constructor beyond a statement end
 
-*Measured 2026-09, task #5887, on a tree censusing 519 swept files / 67 with
-rows / **645** code-less sites. Not comparable with the window table above,
-which is a #5405-era corpus.*
+*Re-measured 2026-09-21, task #5887, on the tree the bound lands on: 529 swept
+files / 67 with rows / **644** code-less sites. Not comparable with the window
+table above, which is a #5405-era corpus.*
 
 The probe used to run its whole 15-line window unconditionally, so a brand-new
 code-less site parked directly ABOVE an existing coded one was censused as
@@ -434,7 +440,7 @@ twin let a new site be parked to the LEFT of a coded one on one line. Two
 candidate bounds were run over the full corpus and their censuses diffed.
 
 **Rejected — terminate at a line whose trailing non-comment character is `;`.**
-645 → **651** sites across 4 files. Three of the six movers are the genuine
+644 → **651** sites across 4 files. Four of the seven movers are the genuine
 sites the accepted rule also finds; the other THREE are false REDs on landed,
 genuinely-coded code:
 
@@ -459,21 +465,40 @@ constructor is necessarily preceded by that constructor's own anchor, while a
 code attached to THIS site through a variable in a later statement has no
 intervening anchor.
 
-645 → **648** sites: three movers, **zero** false REDs, **zero** newly exempt.
+644 → **648** sites: four movers across three files, **zero** false REDs,
+**zero** newly exempt.
 
 | site | why it is genuinely code-less |
 |---|---|
 | `crates/reify-eval/src/geometry_ops.rs:381` | non-finite `Length` value-domain verdict |
 | `crates/reify-eval/src/geometry_ops.rs:692` | non-finite `Angle`, carrying an in-source "CODE-LESS BY CLASS, not by omission" note |
-| `crates/reify-stdlib/src/geometry.rs:1886` | a real code-less warning, absorbed by the coded `affine_translate` error below it |
+| `crates/reify-eval/src/modal_ops.rs:556` | `W_ModalConvergence`, a real code-less warning: nothing on its chain codes it, and it was absorbed by `ShiftSkippedModes`'s `.with_code(` at :589 — 33 lines below, but reachable because the 18 intervening comment lines cost no window budget |
+| `crates/reify-stdlib/src/geometry.rs:1987` | a real code-less warning, absorbed by the coded `affine_translate` error below it |
 
 Both negative controls held: `fea_diagnostics.rs:48-53` stays coded, and the
 two binding shapes above stay coded. The same-line half moved nothing — the
 corpus carries zero such deltas — so it was landed on the unit tests and the
 `scenario07_code_absorption.rs` fixture rather than on a census movement.
 
-Because the three movers are genuine, the correct action was to re-bless them:
-`geometry_ops.rs` rose 137 → 138 in the manifest. See §3(e).
+Because all four movers are genuine, the correct action was to re-bless them —
+but only ONE manifest row moved, and the gap matters to §3(e)'s first review
+check. `geometry_ops.rs` gained two sites against a row carrying one of
+headroom, so it rose 137 → 138. `modal_ops.rs` (row 25, live 24) and
+`reify-stdlib/src/geometry.rs` (row 2, live 1) each carried a pre-existing
+STALE row with exactly one of headroom, which silently absorbed their new site:
+live rose, the row did not, and the manifest diff shows nothing. So "the diff
+to `pdiag-baseline.txt` is exactly the rows the detector change explains" is a
+necessary check, not a sufficient one — a census diff is what makes every mover
+visible. See §3(e).
+
+The figures above are a re-measurement, and the first record of them was wrong
+in a way worth naming: it recorded the starting census as 645 rather than 644
+and named only three movers. Both follow from ONE omitted site — `modal_ops.rs:556`,
+which is absorbed by a stale row and so leaves no manifest trace — and, counted
+off that inflated start, +7 read as +6 for the rejected rule and +4 as +3 for
+the accepted one. Derive the census and the mover list from the SAME pair of
+generator runs; an endpoint that looks right (651 here did) does not confirm
+the start.
 
 ### Comment-mask incidence
 
@@ -498,6 +523,19 @@ cargo run -p reify-audit --bin pdiag-baseline-gen -- --project-root . > /dev/nul
 ```
 
 Do not commit a manifest generated at a non-canonical window.
+
+To measure a DETECTOR change instead of a constant, generate a manifest with
+each version of `pdiag.rs` — the old one is `git show <base>:crates/reify-audit/src/pdiag.rs`
+— and diff the two files. The diff gives per-file counts, and the stderr census
+line gives the totals; take both from the same pair of runs.
+
+That diff names files, not sites. To name the moved SITES, drop the affected
+rows from `pdiag-baseline.txt` so every site in them is reported, and run
+`reify-audit --pattern PDIAG --runs-db <tmp> --no-jcodemunch`: each High
+summary lists its file's code-less lines, and the set difference between the
+two runs is the mover list. Raise `PDIAG_SUMMARY_LINE_CAP` while doing so —
+summaries elide past 12 lines, and a mover past the cut is invisible. Both
+mutations are measurement scaffolding; revert them before committing.
 
 ---
 
