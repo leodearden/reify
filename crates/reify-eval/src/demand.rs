@@ -111,9 +111,12 @@ impl DemandRegistry {
                     // this is "a demanded cell pulls its producing
                     // realizations in". Neither alone closes the cone — a
                     // geometry-list cell is reachable from an ordinary
-                    // consumer with no element as a root, and
-                    // `GeometryListCellAccumulator::into_entries` drops the
-                    // whole list unless EVERY element resolved.
+                    // consumer with no element as a root.
+                    //
+                    // `GeometryListCellAccumulator::into_entries` is the
+                    // consumer that DEPENDS on this: it drops the whole list
+                    // unless every element resolved, which is conservative only
+                    // while list-element atomicity holds here.
                     //
                     // The ACCUMULATING view, never `deps::realization_by_cell`:
                     // that resolver deliberately drops cells backed by >1

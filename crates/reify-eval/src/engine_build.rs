@@ -12080,6 +12080,12 @@ impl GeometryListCellAccumulator {
     /// Emit `(list cell, Value::List)` for every list whose elements ALL
     /// resolved, in ascending index order.
     ///
+    /// The all-or-nothing drop is a SAFETY property rather than a data
+    /// regression only because `demand.rs`'s reverse edge — a demanded cell
+    /// pulls every realization that produces it into the cone — makes a cone
+    /// holding a strict subset of one list's elements unreachable. Without that
+    /// edge, a partly-demanded list drops the elements that DID resolve.
+    ///
     /// An empty geometry list (`generate(0, …)`) never reaches this function at
     /// all: it emits zero `RealizationDecl`s, so [`Self::declare`] is never
     /// called for it and its key is absent from `declared`. Its cell keeps the

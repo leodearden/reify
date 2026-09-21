@@ -442,11 +442,21 @@ fn resolve_reads_to_realizations(
 /// than calling the replace-semantics setter once per raw link — guarantees the
 /// cached trace carries the SAME accumulated `realization_reads` that
 /// [`build_trace_map_and_fields`] records via `push`, so the two freshness
-/// derivation paths cannot silently diverge if the 1:1 cell↔realization
-/// invariant is ever broken (two realizations sharing one geometry cell). In the
-/// expected 1:1 case each list has exactly one element, identical to the prior
-/// per-link behaviour. The replace-per-build setter remains idempotent across
-/// re-eval / edit rounds because each build re-folds from scratch.
+/// derivation paths cannot silently diverge. The replace-per-build setter
+/// remains idempotent across re-eval / edit rounds because each build re-folds
+/// from scratch.
+///
+/// N:1 is now ORDINARY, not a broken-invariant fallback: a geometry-list `let`
+/// lowers to one sibling realization per element, all sharing the list's cell,
+/// so those `Vec`s legitimately hold `len` entries. Only a 1:1 cell keeps a
+/// single-entry `Vec`.
+///
+/// SECOND CONSUMER: [`crate::demand::DemandRegistry::rebuild_cone`] reads this
+/// same view as its reverse-edge source, so a demanded cell pulls every
+/// realization that produces it into the cone. That is what keeps a cone from
+/// holding a strict subset of one list's elements — which
+/// `GeometryListCellAccumulator::into_entries` would drop wholesale. Changing
+/// the accumulation here changes both the cache post-pass and the demand cone.
 pub(crate) fn geometry_cell_realization_reads(
     graph: &crate::graph::EvaluationGraph,
 ) -> HashMap<ValueCellId, Vec<RealizationNodeId>> {
