@@ -16,6 +16,35 @@
 //! `harness_cli/cli_check.rs:796-797`).
 
 use crate::common;
+use reify_core::units::LENGTH_MIGRATION_HINT;
+use std::process::ExitStatus;
+
+/// Write `source` as `<stem>.ri` into a fresh temp dir and run `reify eval` over it,
+/// returning `(status, stdout, stderr)`.
+///
+/// `source` must declare `module <stem>`; see this module's header for why.
+fn eval_source(stem: &str, source: &str) -> (ExitStatus, String, String) {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let path = dir.path().join(format!("{stem}.ri"));
+    std::fs::write(&path, source).expect("failed to write temp module");
+    common::run_with_args(&["eval", path.to_str().expect("temp path is UTF-8")])
+}
+
+/// Assert that `stderr` carries the ONE units-rejection line `ArgRejection::message`
+/// (`crates/reify-ir/src/arg_acceptance.rs:211-222`) produces for `builtin`'s `arg`.
+///
+/// Built from the template rather than hand-spelled per row, and from the real
+/// [`LENGTH_MIGRATION_HINT`] const rather than a copy of its text. Hand-spelling the hint
+/// once per row would be exactly the lockstep duplication D9 exists to prevent: a reword
+/// of the hint must break this suite in ONE place, not in every row that quotes it.
+fn expect_length_rejection(stderr: &str, builtin: &str, arg: &str, got: &str) {
+    let expected =
+        format!("{builtin}: {arg} argument expects Length, got {got}; {LENGTH_MIGRATION_HINT}");
+    assert!(
+        stderr.contains(&expected),
+        "stderr should carry the units rejection `{expected}`; got: {stderr}"
+    );
+}
 
 /// §6 row 1 — a bare-`Int` primitive dimension is rejected at the process boundary,
 /// naming EVERY offending argument rather than only the first.
@@ -25,10 +54,8 @@ use crate::common;
 /// cannot distinguish a whole gate from a third of one.
 #[test]
 fn bare_box_dimensions_exit_1_naming_every_rejected_argument() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let path = dir.path().join("bare_box_dimensions.ri");
-    std::fs::write(
-        &path,
+    let (status, stdout, stderr) = eval_source(
+        "bare_box_dimensions",
         r#"module bare_box_dimensions
 
 structure def S {
@@ -36,11 +63,7 @@ structure def S {
     param geometry : Solid = b
 }
 "#,
-    )
-    .expect("failed to write temp module");
-
-    let (status, stdout, stderr) =
-        common::run_with_args(&["eval", path.to_str().expect("temp path is UTF-8")]);
+    );
 
     assert!(
         !status.success(),
@@ -48,13 +71,7 @@ structure def S {
          headline signal;\nstdout: {stdout}\nstderr: {stderr}"
     );
     for arg in ["width", "height", "depth"] {
-        assert!(
-            stderr.contains(&format!(
-                "box: {arg} argument expects Length, got Int; \
-                 pass a dimensioned length such as `5mm`"
-            )),
-            "stderr should carry the units rejection for `{arg}`; got: {stderr}"
-        );
+        expect_length_rejection(&stderr, "box", arg, "Int");
     }
 }
 
@@ -66,10 +83,8 @@ structure def S {
 /// 4·10⁻⁶ m³ before the gate and must remain so after it.
 #[test]
 fn dimensioned_box_exits_0_with_the_pre_gate_si_volume() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let path = dir.path().join("dimensioned_box.ri");
-    std::fs::write(
-        &path,
+    let (status, stdout, stderr) = eval_source(
+        "dimensioned_box",
         r#"module dimensioned_box
 
 structure def S {
@@ -78,11 +93,7 @@ structure def S {
     param geometry : Solid = b
 }
 "#,
-    )
-    .expect("failed to write temp module");
-
-    let (status, stdout, stderr) =
-        common::run_with_args(&["eval", path.to_str().expect("temp path is UTF-8")]);
+    );
 
     assert!(
         status.success(),
@@ -106,10 +117,8 @@ structure def S {
 /// one shape that would let a bare-number habit survive the gate.
 #[test]
 fn a_bare_zero_is_rejected_like_any_other_bare_number() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let path = dir.path().join("bare_zero_box.ri");
-    std::fs::write(
-        &path,
+    let (status, stdout, stderr) = eval_source(
+        "bare_zero_box",
         r#"module bare_zero_box
 
 structure def S {
@@ -117,25 +126,14 @@ structure def S {
     param geometry : Solid = b
 }
 "#,
-    )
-    .expect("failed to write temp module");
-
-    let (status, stdout, stderr) =
-        common::run_with_args(&["eval", path.to_str().expect("temp path is UTF-8")]);
+    );
 
     assert!(
         !status.success(),
         "D1: a bare zero must be rejected, not exempted;\nstdout: {stdout}\nstderr: {stderr}"
     );
     for arg in ["width", "height", "depth"] {
-        assert!(
-            stderr.contains(&format!(
-                "box: {arg} argument expects Length, got Int; \
-                 pass a dimensioned length such as `5mm`"
-            )),
-            "a bare zero must draw the SAME wording as any other bare number for \
-             `{arg}`; got: {stderr}"
-        );
+        expect_length_rejection(&stderr, "box", arg, "Int");
     }
 }
 
@@ -149,10 +147,8 @@ structure def S {
 /// fix, so the old failure's absence is asserted too.
 #[test]
 fn a_bare_fillet_radius_replaces_the_span_less_occt_failure() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let path = dir.path().join("bare_fillet_radius.ri");
-    std::fs::write(
-        &path,
+    let (status, stdout, stderr) = eval_source(
+        "bare_fillet_radius",
         r#"module bare_fillet_radius
 
 structure def S {
@@ -160,23 +156,13 @@ structure def S {
     param geometry : Solid = b
 }
 "#,
-    )
-    .expect("failed to write temp module");
-
-    let (status, stdout, stderr) =
-        common::run_with_args(&["eval", path.to_str().expect("temp path is UTF-8")]);
+    );
 
     assert!(
         !status.success(),
         "a bare fillet radius must exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        stderr.contains(
-            "fillet: radius argument expects Length, got Int; \
-             pass a dimensioned length such as `5mm`"
-        ),
-        "stderr should carry the units rejection naming `radius`; got: {stderr}"
-    );
+    expect_length_rejection(&stderr, "fillet", "radius", "Int");
     assert!(
         !stderr.contains("BRepFilletAPI_MakeFillet"),
         "the bare radius must never reach OCCT: the span-less kernel failure is \
@@ -194,10 +180,8 @@ structure def S {
 /// would pass on either and so pin neither.
 #[test]
 fn a_bare_plane_offset_is_rejected_and_mirror_fails_attributably() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let path = dir.path().join("bare_mirror_plane_offset.ri");
-    std::fs::write(
-        &path,
+    let (status, stdout, stderr) = eval_source(
+        "bare_mirror_plane_offset",
         r#"module bare_mirror_plane_offset
 
 structure def S {
@@ -206,23 +190,13 @@ structure def S {
     param geometry : Solid = m
 }
 "#,
-    )
-    .expect("failed to write temp module");
-
-    let (status, stdout, stderr) =
-        common::run_with_args(&["eval", path.to_str().expect("temp path is UTF-8")]);
+    );
 
     assert!(
         !status.success(),
         "a bare plane offset must exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        stderr.contains(
-            "plane_yz: offset argument expects Length, got Int; \
-             pass a dimensioned length such as `5mm`"
-        ),
-        "stderr should name the PLANE's own rejected offset; got: {stderr}"
-    );
+    expect_length_rejection(&stderr, "plane_yz", "offset", "Int");
     assert!(
         stderr.contains("mirror: expected a Plane value, got undef"),
         "the consuming `mirror` must fail attributably on the resulting undef rather \
@@ -238,10 +212,8 @@ structure def S {
 /// per-component gate from a collapsed one.
 #[test]
 fn the_scalar_mirror_origin_keeps_its_per_component_wording() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let path = dir.path().join("bare_mirror_scalar_origin.ri");
-    std::fs::write(
-        &path,
+    let (status, stdout, stderr) = eval_source(
+        "bare_mirror_scalar_origin",
         r#"module bare_mirror_scalar_origin
 
 structure def S {
@@ -250,23 +222,13 @@ structure def S {
     param geometry : Solid = m
 }
 "#,
-    )
-    .expect("failed to write temp module");
-
-    let (status, stdout, stderr) =
-        common::run_with_args(&["eval", path.to_str().expect("temp path is UTF-8")]);
+    );
 
     assert!(
         !status.success(),
         "the scalar mirror origin must still exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        stderr.contains(
-            "mirror: ox argument expects Length, got Int; \
-             pass a dimensioned length such as `5mm`"
-        ),
-        "stderr should carry the per-COMPONENT rejection naming `ox`; got: {stderr}"
-    );
+    expect_length_rejection(&stderr, "mirror", "ox", "Int");
 }
 
 /// §6 row 6 (control) — the dimensioned plane offset still exits 0 and still mirrors
@@ -283,10 +245,8 @@ structure def S {
 /// benign change to the value printer's float formatting instead of on a geometry change.
 #[test]
 fn a_dimensioned_plane_offset_mirrors_to_the_same_si_position() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let path = dir.path().join("dimensioned_mirror_plane.ri");
-    std::fs::write(
-        &path,
+    let (status, stdout, stderr) = eval_source(
+        "dimensioned_mirror_plane",
         r#"module dimensioned_mirror_plane
 
 structure def S {
@@ -296,11 +256,7 @@ structure def S {
     param geometry : Solid = m
 }
 "#,
-    )
-    .expect("failed to write temp module");
-
-    let (status, stdout, stderr) =
-        common::run_with_args(&["eval", path.to_str().expect("temp path is UTF-8")]);
+    );
 
     assert!(
         status.success(),
