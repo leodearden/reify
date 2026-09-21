@@ -34043,6 +34043,118 @@
         }
     }
 
+    // ── Self-intersection: a ring that encloses area, but not ONCE ─────────
+    //
+    // Appended AFTER the tolerance sub-block rather than beside the
+    // clockwise-triangle test, because that block's opening comment claims
+    // "every degenerate case above has a signed area of EXACTLY 0.0" — and the
+    // bow-tie below is a REJECTED ring with an area of 5e-5. Splicing these in
+    // there would quietly falsify it.
+    //
+    // The area gate and this one are complementary, not redundant: the area
+    // gate asks whether the ring encloses area at all, this one whether it
+    // encloses it exactly once. The tolerance policy behind the accept cases
+    // is stated once, on `ring_self_intersects_2d` in
+    // `reify-solver-elastic/src/mesher.rs`, and is deliberately not restated
+    // here.
+
+    /// A bow-tie ring has non-zero enclosed area but crosses itself, so it
+    /// describes no well-defined region and must be rejected at build time.
+    ///
+    /// The fixture is the ASYMMETRIC bow-tie, and that choice is load-bearing:
+    /// its shoelace area is 5e-5 m², nine orders of magnitude above
+    /// `DEGENERATE_RING_AREA_TOLERANCE`, so it CLEARS task 5664's gate. An
+    /// `Err` here can therefore only have come from the self-intersection
+    /// check. (The symmetric bow-tie has an area of exactly 0.0 and is already
+    /// rejected as degenerate — see
+    /// `..._zero_area_bowtie_reports_degeneracy`, which pins that precedence.)
+    ///
+    /// The edge-index needles matter as much as the "self-intersect" one: a
+    /// diagnostic that merely says the polygon is bad leaves the designer to
+    /// find the offending pair by eye.
+    #[test]
+    fn compile_geometry_op_polygon_profile_self_intersecting_returns_err() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.02, 0.0, 0.0, 0.01, 0.01, 0.01]),
+        );
+        assert!(
+            result.is_err(),
+            "a self-intersecting (bow-tie) polygon must be rejected at build time, got: {:?}",
+            result
+        );
+        assert_exactly_one_warning(
+            &diagnostics,
+            &["polygon", "self-intersect", "edge 1", "edge 3"],
+        );
+    }
+
+    /// NEGATIVE CONTROL — a repeated vertex is a redundant vertex, not a
+    /// crossing, and the gate JUDGES rather than normalises: the duplicate
+    /// must survive into `points` untouched.
+    #[test]
+    fn compile_geometry_op_polygon_profile_repeated_vertex_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.01, 0.0, 0.01, 0.0, 0.01, 0.01, 0.0, 0.01]),
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::PolygonProfile { points }) => {
+                assert_eq!(
+                    points,
+                    vec![
+                        [0.0, 0.0],
+                        [0.01, 0.0],
+                        [0.01, 0.0],
+                        [0.01, 0.01],
+                        [0.0, 0.01]
+                    ],
+                    "the duplicate vertex must be PRESERVED — this gate judges, it does not \
+                     normalise"
+                );
+            }
+            other => panic!(
+                "a ring with a repeated vertex must still compile, got: {:?}",
+                other
+            ),
+        }
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    /// NEGATIVE CONTROL — touching is not crossing. Vertex 3 `(0.01, 0)` lies
+    /// exactly on edge 0, so the ring is a T-junction, not a bow-tie.
+    #[test]
+    fn compile_geometry_op_polygon_profile_touching_vertex_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.02, 0.0, 0.02, 0.01, 0.01, 0.0, 0.0, 0.01]),
+        );
+        assert!(
+            result.is_ok(),
+            "a vertex touching a non-adjacent edge is not a crossing and must still compile, \
+             got: {:?}",
+            result
+        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
+    /// NEGATIVE CONTROL — the plainest possible simple ring. Guards the
+    /// over-rejection direction for the sweep, as
+    /// `..._area_just_above_tolerance_returns_ok` does for the area gate.
+    #[test]
+    fn compile_geometry_op_polygon_profile_convex_square_returns_ok() {
+        let (result, diagnostics) = compile_profile_op(
+            reify_compiler::ProfileKind::Polygon,
+            degenerate_coord_args(&[0.0, 0.0, 0.01, 0.0, 0.01, 0.01, 0.0, 0.01]),
+        );
+        assert!(
+            result.is_ok(),
+            "a convex square must compile, got: {:?}",
+            result
+        );
+        assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
+    }
+
     // ── Non-finite dimensions: owned by the LENGTH gate, pinned from here ───
     //
     // A NaN dimension is a strictly WORSE instance of the same defect class as
