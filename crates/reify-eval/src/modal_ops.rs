@@ -4438,13 +4438,15 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        BeamMesh, DENSE_FALLBACK_MAX_DIM, DampingKind, ModalAnalysisCache, ModalAssembly,
+        BeamMesh, DENSE_FALLBACK_MAX_DIM, DampingKind, DeclaredSupport, FaceRealization,
+        ModalAnalysisCache, ModalAssembly,
         ModalCoreResult, ModalDampingPlan, ModalMesh, ModalTrampolineRun, TransientCache,
         assemble_mechanism_km,
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, classify_damping,
         degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
         eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
-        extract_loss_factor, extract_reference_direction, frobenius_norm, mode_shape_value,
+        extract_loss_factor, extract_reference_direction, face_realization, frobenius_norm,
+        mode_shape_value,
         nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
         resolve_location_node, rigid_body_mode_diagnostic, run_modal_analysis,
@@ -7837,6 +7839,102 @@ mod tests {
         assert!(
             !(0..f.n_nodes()).any(|n| f.on_x_min(n) && z_only(&dup, n)),
             "no x_min node may be Z-only — that is the mechanism this closes",
+        );
+    }
+
+    /// Task 6980 (concern 1): the realization decision is face-LOCAL — it
+    /// reads only whether THIS face has company, never a model-wide tally.
+    /// This is invisible through `build_dirichlet_bcs` (see
+    /// `face_company_is_local_not_a_face_tally` for why), so it is pinned
+    /// directly against [`face_realization`]'s full decision table.
+    #[test]
+    fn face_realization_decides_from_its_own_faces_company() {
+        assert_eq!(
+            face_realization(DeclaredSupport::Pinned, "x_min", FaceCompany::Alone),
+            FaceRealization::ClampAllDofs,
+            "a lone pinned beam end must clamp — a transverse-only pin alone is a mechanism",
+        );
+        assert_eq!(
+            face_realization(
+                DeclaredSupport::Pinned,
+                "x_min",
+                FaceCompany::WithAnotherFace
+            ),
+            FaceRealization::PinTransverse,
+            "a pinned beam end WITH another recognized face must pin transversely",
+        );
+        assert_eq!(
+            face_realization(
+                DeclaredSupport::Pinned,
+                "y_min",
+                FaceCompany::WithAnotherFace
+            ),
+            FaceRealization::ClampAllDofs,
+            "a non-beam-axis face clamps regardless of company — only a beam-axis end face \
+             is ever eligible for a transverse pin",
+        );
+        assert_eq!(
+            face_realization(DeclaredSupport::Fixed, "x_min", FaceCompany::Alone),
+            FaceRealization::ClampAllDofs,
+            "FixedSupport clamps unconditionally when alone",
+        );
+        assert_eq!(
+            face_realization(
+                DeclaredSupport::Fixed,
+                "x_min",
+                FaceCompany::WithAnotherFace
+            ),
+            FaceRealization::ClampAllDofs,
+            "FixedSupport clamps unconditionally WithAnotherFace too — the kind, not the \
+             company, decides for Fixed",
+        );
+    }
+
+    /// Task 6980 (concern 1): `face_company` is a per-TARGET predicate, not a
+    /// model-wide tally — the discriminator is the last case below, where a
+    /// model naming exactly ONE recognized face still reports
+    /// `WithAnotherFace` for a target that is not that face.
+    #[test]
+    fn face_company_is_local_not_a_face_tally() {
+        let pinned_target = |t: &str| (DeclaredSupport::Pinned, t.to_string());
+        let fixed_target = |t: &str| (DeclaredSupport::Fixed, t.to_string());
+
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min")]),
+            FaceCompany::Alone,
+            "a lone support names no face OTHER than its own",
+        );
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min"), pinned_target("x_min")]),
+            FaceCompany::Alone,
+            "a duplicate names no face OTHER than the target's own — the ordinary \
+             copy-paste error must not flip a cantilever into a mechanism",
+        );
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min"), fixed_target("")]),
+            FaceCompany::Alone,
+            "an unrecognized/empty target names no face at all and cannot vote",
+        );
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min"), fixed_target("y_min")]),
+            FaceCompany::WithAnotherFace,
+            "y_min is a distinct recognized face from x_min's own",
+        );
+        assert_eq!(
+            face_company("y_min", &[pinned_target("x_min"), fixed_target("y_min")]),
+            FaceCompany::WithAnotherFace,
+            "the same list, decided for the OTHER target: x_min is company for y_min too",
+        );
+
+        // THE DISCRIMINATOR against a model-wide tally: the model names
+        // exactly ONE recognized face, yet x_min — which is not that face —
+        // still has company. A cardinality test (`n > 1`) would read this as
+        // "alone"; the decision is about faces OTHER than THIS one, never
+        // about how many the model has.
+        assert_eq!(
+            face_company("x_min", &[fixed_target("y_min")]),
+            FaceCompany::WithAnotherFace,
+            "one other face is company even though the model names exactly one face total",
         );
     }
 
