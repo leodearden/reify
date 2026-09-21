@@ -3778,33 +3778,34 @@ fn build_dirichlet_bcs(
     height: f64,
 ) -> DirichletRealization {
     let targets = support_targets(options);
-    // Count DISTINCT recognized FACES, not supports. Two hazards fall out of
-    // that one choice, and both are mechanism classes:
+    // Each target's realization is decided from its own [`FaceCompany`] — a
+    // face-LOCAL fact, not a model-wide count. Two hazards fall out of that one
+    // choice, and both are mechanism classes:
     //
     //   * A support whose target names NO recognized face constrains nothing
     //     (`per_face_bcs` skips it through this same [`face_bound`] predicate),
-    //     so it must not vote on another face's realization — otherwise a typo,
-    //     or the stdlib's own `param target : String = ""` default, flips a
+    //     so it must not give another face company — otherwise a typo, or the
+    //     stdlib's own `param target : String = ""` default, flips a
     //     `PinnedSupport` on a beam end from a clamp to a transverse-only pin,
     //     turning a well-posed cantilever into a mechanism. Pinned by
     //     `build_dirichlet_bcs_ignores_supports_that_name_no_face`.
     //   * DUPLICATES collapse. `[Pinned("x_min"), Pinned("x_min")]` — the
-    //     ordinary copy-paste authoring error — names ONE face but counted as
-    //     TWO supports, so it flipped x_min to a transverse-only pin for exactly
+    //     ordinary copy-paste authoring error — names ONE face twice, and a
+    //     face cannot be its own company, so it stays `Alone`, restoring the
+    //     pre-6663 cantilever instead of flipping to a transverse-only pin for
     //     the same mechanism outcome (measured: 4 surviving rigid-body modes,
-    //     reported under a mere `W_ModalRigidBodyMode` Warning). Counting faces
-    //     makes it a lone support again, restoring the pre-6663 cantilever.
-    //     Pinned by `build_dirichlet_bcs_ignores_duplicate_face_targets`.
+    //     reported under a mere `W_ModalRigidBodyMode` Warning). Pinned by
+    //     `build_dirichlet_bcs_ignores_duplicate_face_targets`.
     //
-    // Under face counting, `PinTransverse` can fire ONLY when a beam-axis end
-    // face and some second DISTINCT face are both named — and every such
-    // configuration is well posed: the pin-pin special case below (both ends
-    // pinned, three neutral-axis anchors added), a propped cantilever (the other
-    // end `Fixed`, hence fully clamped), or an end pin plus a non-end face,
-    // which always clamps (see [`face_realization`]). So this closes the
-    // transverse-pin mechanism class outright rather than documenting it as a
-    // residual. `solve_generalized_eigen`'s singular-K fallback remains the
-    // backstop for a singular K_free arriving by any other route.
+    // `PinTransverse` can fire ONLY when a beam-axis end face has another
+    // DISTINCT face's company — and every such configuration is well posed:
+    // the pin-pin special case below (both ends pinned, three neutral-axis
+    // anchors added), a propped cantilever (the other end `Fixed`, hence fully
+    // clamped), or an end pin plus a non-end face, which always clamps (see
+    // [`face_realization`]). So this closes the transverse-pin mechanism class
+    // outright rather than documenting it as a residual.
+    // `solve_generalized_eigen`'s singular-K fallback remains the backstop for
+    // a singular K_free arriving by any other route.
     //
     // All three shapes are pinned by tests, so the argument cannot rot silently:
     // the pin-pin case and the propped cantilever by
@@ -3812,18 +3813,18 @@ fn build_dirichlet_bcs(
     // where the whole argument rests on the non-end face being a FULL clamp — by
     // `build_dirichlet_bcs_pins_transversely_only_on_a_supported_beam_end` (iii).
     //
-    // The count is still non-local, which is why every pinned end face also
-    // reports what it was realized as: see
-    // [`pinned_end_face_realization_diagnostics`].
-    let faces_named: BTreeSet<(usize, bool)> =
-        targets.iter().filter_map(|(_, t)| face_bound(t)).collect();
-    let n_faces = faces_named.len();
+    // A face's company is still something the author did not write on the
+    // support, which is why every pinned end face also reports what it was
+    // realized as: see [`pinned_end_face_realization_diagnostics`].
 
     // Resolve every support to (what it constrains, which face) up front, so the
     // two branches below share ONE realization policy.
     let faces: Vec<(FaceRealization, &str)> = targets
         .iter()
-        .map(|(kind, target)| (face_realization(*kind, target, n_faces), target.as_str()))
+        .map(|(kind, target)| {
+            let company = face_company(target, &targets);
+            (face_realization(*kind, target, company), target.as_str())
+        })
         .collect();
 
     // Simply-supported (pin-pin) special case: BOTH beam-axis end faces named,
@@ -3837,7 +3838,7 @@ fn build_dirichlet_bcs(
         .all(|(kind, _)| *kind == DeclaredSupport::Pinned);
     let simply_supported =
         names_face("x_min") && names_face("x_max") && end_face_supports_all_pinned;
-    let diagnostics = pinned_end_face_realization_diagnostics(&targets, n_faces, simply_supported);
+    let diagnostics = pinned_end_face_realization_diagnostics(&targets, simply_supported);
 
     if simply_supported {
         // The special case re-interprets the TWO END FACES only. Every support
@@ -3866,15 +3867,15 @@ fn build_dirichlet_bcs(
 /// their own declaration.
 ///
 /// A struct rather than a bare `Vec<DirichletBc>` because the `PinnedSupport`
-/// realization is decided from a NON-LOCAL count ([`face_realization`]'s
-/// `n_faces`), so the two halves must be produced by the SAME pass over the same
-/// supports — a sibling function recomputing the decision could drift from the
-/// one that actually emitted the DOFs, which is precisely the silent-BC-
-/// reinterpretation class task 6663 exists to close.
+/// realization is decided per-face via [`face_company`], so the two halves
+/// must be produced by calls to the SAME predicate — a sibling function
+/// recomputing the decision could still drift from the one that actually
+/// emitted the DOFs, which is precisely the silent-BC-reinterpretation class
+/// task 6663 exists to close.
 struct DirichletRealization {
     /// The homogeneous Dirichlet set: sorted by `dof` and deduplicated.
     bcs: Vec<DirichletBc>,
-    /// `Severity::Info` notes about count-dependent realizations. Empty for
+    /// `Severity::Info` notes about context-dependent realizations. Empty for
     /// every model whose supports are all `FixedSupport`, and for every
     /// `PinnedSupport` that names no beam-axis end face — those realizations are
     /// unconditional and need no explanation.
@@ -3916,7 +3917,6 @@ struct DirichletRealization {
 /// because it selects nothing at all.
 fn pinned_end_face_realization_diagnostics(
     targets: &[(DeclaredSupport, String)],
-    n_faces: usize,
     simply_supported: bool,
 ) -> Vec<Diagnostic> {
     let mut seen: BTreeSet<(usize, bool)> = BTreeSet::new();
@@ -3939,7 +3939,9 @@ fn pinned_end_face_realization_diagnostics(
                  so K_free is not singular. The same declaration clamps all 3 translational \
                  DOFs when it is the only face the model's supports name."
             )
-        } else if face_realization(*kind, target, n_faces) == FaceRealization::PinTransverse {
+        } else if face_realization(*kind, target, face_company(target, targets))
+            == FaceRealization::PinTransverse
+        {
             format!(
                 "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
                  transverse (Z) pin — the simply-supported beam idealization — because the \
@@ -3977,22 +3979,22 @@ fn pinned_end_face_realization_diagnostics(
 ///
 /// It is about THIS function: given `(realization, face)` pairs, each pair is
 /// selected and emitted independently of the others. It is NOT a whole-pipeline
-/// claim, because the upstream realization DECISION is still count-dependent:
-/// [`face_realization`] takes `n_faces`, so adding a support **that names a
-/// second DISTINCT recognized face** can flip a `Pinned` beam-end face from a
-/// clamp to a transverse-only pin without that face being mentioned again. That
-/// is a deliberate, documented trade-off (see [`face_realization`]'s "Why
-/// `Pinned` is not Z-only, always"), not an oversight — and, since review
+/// claim, because the upstream realization DECISION is still context-dependent:
+/// [`face_realization`] takes a [`FaceCompany`], so adding a support **that
+/// names a second DISTINCT recognized face** can flip a `Pinned` beam-end face
+/// from a clamp to a transverse-only pin without that face being mentioned
+/// again. That is a deliberate, documented trade-off (see [`face_realization`]'s
+/// "Why `Pinned` is not Z-only, always"), not an oversight — and, since review
 /// suggestion 1, a REPORTED one: every pinned beam-end face carries an
 /// `I_ModalPinnedFaceRealization` Info diagnostic naming which way it went and
 /// why ([`pinned_end_face_realization_diagnostics`]), so the flip is legible
 /// without re-reading this paragraph. It still means "adds rather than
 /// reinterprets" holds for face SELECTION and DOF emission, not for
 /// the choice of realization. Two inputs that used to perturb that decision no
-/// longer can, because the count runs over DISTINCT FACES via [`face_bound`]: a
-/// support naming NO recognized face cannot vote on a realization it cannot
-/// contribute a single DOF to, and a support DUPLICATING a face already named
-/// adds nothing to vote with.
+/// longer can, because face identity runs over DISTINCT FACES via
+/// [`face_bound`]: a support naming NO recognized face cannot give another
+/// face company, and a support DUPLICATING a face already named adds no OTHER
+/// face to be company for.
 ///
 /// The result is a raw union: repeats are possible when two faces share a corner
 /// node, so callers must pass it through [`normalize_bcs`].
@@ -4263,20 +4265,21 @@ fn is_beam_axis_end_face(target: &str) -> bool {
 /// This is the SINGLE place the face-name vocabulary is written down. Two
 /// callers depend on it agreeing with itself:
 ///   * [`per_face_bcs`] selects a face's nodes through it, and
-///   * [`build_dirichlet_bcs`] collects the model's DISTINCT faces through it to
-///     decide whether a `PinnedSupport` on a beam end realizes as a transverse
-///     pin or a clamp.
+///   * [`face_company`] compares faces' bounds through it to decide whether a
+///     `PinnedSupport` on a beam end realizes as a transverse pin or a clamp.
 ///
 /// Keeping both on one predicate is what stops a support that can select NO
 /// node from silently changing another face's realization: before task 6663's
-/// amendment the count was `targets.len()`, so `[Pinned("x_min"),
+/// amendment the decision read `targets.len()`, so `[Pinned("x_min"),
 /// Fixed("<typo>")]` — or the stdlib's own `param target : String = ""`
 /// default — counted as two supports and flipped `x_min` from a clamp
 /// (a well-posed cantilever) to a Z-only pin (a 4-rigid-body-mode mechanism).
 ///
-/// The `(axis, is_max)` return is also what makes that count a SET: identifying
-/// a face by the bound it selects, rather than by its spelling, is what collapses
-/// `[Pinned("x_min"), Pinned("x_min")]` back to one face and so to a clamp.
+/// The `(axis, is_max)` return is also what makes face identity independent of
+/// spelling: identifying a face by the bound it selects, rather than by its
+/// target string, is what makes `[Pinned("x_min"), Pinned("x_min")]`'s second
+/// entry resolve to the SAME face as the first rather than another one, so
+/// [`face_company`] reports it `Alone` rather than in company.
 fn face_bound(target: &str) -> Option<(usize, bool)> {
     match target {
         "x_min" => Some((0, false)),
@@ -4367,22 +4370,24 @@ fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceComp
 /// faces, and `[Fixed("x_min"), Pinned("x_max")]` still realizes x_max as a
 /// genuine transverse-only prop (two distinct faces, beam-axis end face).
 ///
-/// # Why the count is over FACES and not over supports
+/// # Why company is about FACES and not about supports
 ///
 /// A duplicated support — `[Pinned("x_min"), Pinned("x_min")]`, the ordinary
-/// copy-paste authoring error — names one face twice. Counting SUPPORTS made
-/// that a two-support model and flipped x_min to `PinTransverse`, i.e. turned a
-/// well-posed cantilever into a 4-rigid-body-mode mechanism whose ≈ 0 Hz modes
-/// come back under a mere `W_ModalRigidBodyMode` Warning. Counting distinct
-/// faces makes the duplicate a lone support again (the pre-6663 clamp) and, as
-/// [`build_dirichlet_bcs`] argues at the count site, leaves NO reachable
-/// `PinTransverse` configuration that is a mechanism: a second distinct face is
-/// either the other beam end (pin-pin special case, or `Fixed` and therefore
-/// clamped) or a non-end face, which always clamps.
-fn face_realization(kind: DeclaredSupport, target: &str, n_faces: usize) -> FaceRealization {
+/// copy-paste authoring error — names one face twice. Reading SUPPORTS as
+/// company made that a two-support model and flipped x_min to `PinTransverse`,
+/// i.e. turned a well-posed cantilever into a 4-rigid-body-mode mechanism
+/// whose ≈ 0 Hz modes come back under a mere `W_ModalRigidBodyMode` Warning.
+/// Reading distinct FACES as company makes the duplicate `Alone` again (the
+/// pre-6663 clamp) and, as [`build_dirichlet_bcs`] argues in its own comment,
+/// leaves NO reachable `PinTransverse` configuration that is a mechanism: a
+/// second distinct face is either the other beam end (pin-pin special case, or
+/// `Fixed` and therefore clamped) or a non-end face, which always clamps.
+fn face_realization(kind: DeclaredSupport, target: &str, company: FaceCompany) -> FaceRealization {
     match kind {
         DeclaredSupport::Fixed => FaceRealization::ClampAllDofs,
-        DeclaredSupport::Pinned if is_beam_axis_end_face(target) && n_faces > 1 => {
+        DeclaredSupport::Pinned
+            if is_beam_axis_end_face(target) && company == FaceCompany::WithAnotherFace =>
+        {
             FaceRealization::PinTransverse
         }
         DeclaredSupport::Pinned => FaceRealization::ClampAllDofs,
@@ -4474,14 +4479,16 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        BeamMesh, DENSE_FALLBACK_MAX_DIM, DampingKind, DeclaredSupport, FaceRealization,
+        BeamMesh, DENSE_FALLBACK_MAX_DIM, DampingKind, DeclaredSupport, FaceCompany,
+        FaceRealization,
         ModalAnalysisCache, ModalAssembly,
         ModalCoreResult, ModalDampingPlan, ModalMesh, ModalTrampolineRun, TransientCache,
         assemble_mechanism_km,
         assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, classify_damping,
         degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
         eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
-        extract_loss_factor, extract_reference_direction, face_realization, frobenius_norm,
+        extract_loss_factor, extract_reference_direction, face_company, face_realization,
+        frobenius_norm,
         mode_shape_value,
         nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
