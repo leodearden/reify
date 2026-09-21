@@ -1423,6 +1423,233 @@ mod tests {
         }
     }
 
+    // ── Cold -> warm dispatch round trip, Error severity (task 7245) ──────────
+    //
+    // Every other diagnostics assertion either stops at the persist bridge or
+    // SEEDS the on-disk entry with `write_entry` directly, so the COLD write
+    // half of the hit path is never exercised end to end at the dispatch
+    // boundary. These two tests drive `run_compute_dispatch` twice over one
+    // cache dir and close that gap at the severity that matters most.
+    //
+    // Why Error specifically: an Error-severity diagnostic returned inside
+    // `ComputeOutcome::Completed` does not by itself fail the solve, but
+    // `reify eval` and `reify build` DO gate their exit code on
+    // `Severity::Error`. So a Completed+Error solve exits nonzero cold — and if
+    // the Error is not replayed, the SECOND eval of the same scene exits ZERO.
+    // A silent exit-code flip between run 1 and run 2 is the sharpest form of
+    // this task's harm, and these tests forbid it.
+    //
+    // The Error must come from a STUB trampoline, not a `.ri` fixture: every
+    // `Diagnostic::error` in compute_targets/{elastic_static,buckling}.rs sits
+    // on a `ComputeOutcome::Failed` arm, and only the `Completed` arm reaches
+    // `persistent_write`, so no fixture on main can produce a persisted
+    // Error-severity solver diagnostic. Task #7079 is what will make this shape
+    // reachable from real input.
+
+    /// The Error-severity diagnostic the stub trampolines emit on a Completed
+    /// outcome.
+    ///
+    /// `FeaLoadKindUnsupported` is the workspace's existing Error-severity
+    /// "declared, and explicitly not honored rather than silently no-op'd"
+    /// code, which makes it the closest present-day stand-in for the
+    /// `E_PARAM_NOT_HONORED` task #7079 will mint on exactly this shape.
+    fn unhonored_param_error() -> reify_core::Diagnostic {
+        reify_core::Diagnostic::error("solver: unsupported FEA load kind 'TractionLoad'")
+            .with_code(reify_core::DiagnosticCode::FeaLoadKindUnsupported)
+    }
+
+    static DISPATCH_COUNT_ERR_ELASTIC: AtomicUsize = AtomicUsize::new(0);
+
+    /// Stub `solver::elastic_static`: Completes with a persistable result AND an
+    /// Error, counting each invocation so the warm run can prove it was skipped.
+    fn erroring_elastic_trampoline(
+        _vi: &[Value],
+        _ri: &[RealizationReadHandle],
+        _opts: &Value,
+        _prior: Option<&reify_ir::OpaqueState>,
+        _cancel: &CancellationHandle,
+    ) -> ComputeOutcome {
+        DISPATCH_COUNT_ERR_ELASTIC.fetch_add(1, Ordering::SeqCst);
+        ComputeOutcome::Completed {
+            result: elastic_static_cache_value(),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![unhonored_param_error()],
+            structured_detail: vec![],
+        }
+    }
+
+    static DISPATCH_COUNT_ERR_BUCKLING: AtomicUsize = AtomicUsize::new(0);
+
+    /// Stub `solver::buckling`, same shape as [`erroring_elastic_trampoline`].
+    fn erroring_buckling_trampoline(
+        _vi: &[Value],
+        _ri: &[RealizationReadHandle],
+        _opts: &Value,
+        _prior: Option<&reify_ir::OpaqueState>,
+        _cancel: &CancellationHandle,
+    ) -> ComputeOutcome {
+        DISPATCH_COUNT_ERR_BUCKLING.fetch_add(1, Ordering::SeqCst);
+        ComputeOutcome::Completed {
+            result: buckling_cache_value(),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![unhonored_param_error()],
+            structured_detail: vec![],
+        }
+    }
+
+    /// Build a fresh `Engine` over `cache_dir` and run one dispatch of `target`.
+    ///
+    /// Returns the engine (so the caller can read its hit/miss counters) and the
+    /// diagnostics the dispatch handed back — the same channel a cold solve's
+    /// fresh diagnostics arrive on, which is the whole point of the replay.
+    fn dispatch_over_cache_dir(
+        cache_dir: &std::path::Path,
+        target: &'static str,
+        trampoline: crate::ComputeFn,
+        cell: &ValueCellId,
+        c_id: &ComputeNodeId,
+        cache_key: ContentHash,
+    ) -> (Engine, Vec<reify_core::Diagnostic>) {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.set_persistent_cache_dir(Some(cache_dir.to_path_buf()));
+        engine.register_compute_fn(target, trampoline);
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+        let (_value, diagnostics, _detail) = engine
+            .run_compute_dispatch(
+                c_id,
+                std::slice::from_ref(cell),
+                target,
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                cache_key,
+            )
+            .unwrap_or_else(|e| panic!("{target}: dispatch must succeed, got {e:?}"));
+        (engine, diagnostics)
+    }
+
+    /// Assert exactly one diagnostic came back and it is the stub's Error,
+    /// intact in every field a consumer gates on.
+    fn assert_is_the_unhonored_param_error(what: &str, diags: &[reify_core::Diagnostic]) {
+        assert_eq!(
+            diags.len(),
+            1,
+            "{what}: exactly the one emitted diagnostic is expected, got {diags:?}",
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "{what}: severity must be Error — this is what `reify eval` gates its \
+             exit code on, so losing it flips a nonzero exit to zero",
+        );
+        assert_eq!(diags[0].message, unhonored_param_error().message, "{what}");
+        assert_eq!(
+            diags[0].code,
+            Some(reify_core::DiagnosticCode::FeaLoadKindUnsupported),
+            "{what}: the code must survive",
+        );
+    }
+
+    /// Dispatch `target` COLD on one engine and WARM on a fresh engine over the
+    /// SAME cache dir, and assert the warm run serves the Error off disk rather
+    /// than re-producing it.
+    fn assert_cold_then_warm_dispatch_replays_the_error(
+        target: &'static str,
+        trampoline: crate::ComputeFn,
+        invocations: &AtomicUsize,
+        cache_key: ContentHash,
+    ) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Derived from the target so the two callers cannot collide on a name.
+        let cell = ValueCellId::new("T", &format!("r_cp22_{}", target.replace("::", "_")));
+        let c_id = ComputeNodeId::new("T", 220);
+
+        let before = invocations.load(Ordering::SeqCst);
+
+        // ── COLD: no entry on disk, so the trampoline runs and its Error is
+        //    persisted alongside the result.
+        let (engine_a, cold_diags) =
+            dispatch_over_cache_dir(tmp.path(), target, trampoline, &cell, &c_id, cache_key);
+        let after_cold = invocations.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after_cold - before,
+            1,
+            "{target} cold: the trampoline must run when nothing is on disk",
+        );
+        assert_eq!(
+            engine_a.persistent_miss_count(),
+            1,
+            "{target} cold: the first dispatch must be a MISS",
+        );
+        assert_eq!(
+            engine_a.persistent_hit_count(),
+            0,
+            "{target} cold: the first dispatch must not hit",
+        );
+        assert_is_the_unhonored_param_error(&format!("{target} cold"), &cold_diags);
+
+        // ── WARM: a FRESH engine over the same dir — no in-process state
+        //    survives, so anything it reports came off disk.
+        let (engine_b, warm_diags) =
+            dispatch_over_cache_dir(tmp.path(), target, trampoline, &cell, &c_id, cache_key);
+        let after_warm = invocations.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after_warm - after_cold,
+            0,
+            "{target} warm: the trampoline must NOT run again — the Error has to be \
+             REPLAYED from disk, not re-produced, or this test would pass even with \
+             the cache path removed entirely",
+        );
+        assert_eq!(
+            engine_b.persistent_hit_count(),
+            1,
+            "{target} warm: the second dispatch must be a HIT",
+        );
+        assert_eq!(
+            engine_b.persistent_miss_count(),
+            0,
+            "{target} warm: the second dispatch must not miss",
+        );
+        assert_is_the_unhonored_param_error(&format!("{target} warm"), &warm_diags);
+    }
+
+    #[test]
+    fn cold_then_warm_elastic_static_dispatch_replays_an_error_diagnostic() {
+        assert_cold_then_warm_dispatch_replays_the_error(
+            "solver::elastic_static",
+            erroring_elastic_trampoline as crate::ComputeFn,
+            &DISPATCH_COUNT_ERR_ELASTIC,
+            ContentHash(0x7245_0022_7245_0022_7245_0022_7245_0022_u128),
+        );
+    }
+
+    #[test]
+    fn cold_then_warm_buckling_dispatch_replays_an_error_diagnostic() {
+        // `solver::buckling` has no engine-level diagnostics-replay coverage at
+        // any severity today; the elastic arm is not evidence for it, because
+        // each target has its own `persistent_lookup`/`persistent_write` arm.
+        assert_cold_then_warm_dispatch_replays_the_error(
+            "solver::buckling",
+            erroring_buckling_trampoline as crate::ComputeFn,
+            &DISPATCH_COUNT_ERR_BUCKLING,
+            ContentHash(0x7245_0023_7245_0023_7245_0023_7245_0023_u128),
+        );
+    }
+
     /// The live declared-but-not-honored trampoline warning must survive a warm
     /// buckling cache hit.
     ///
