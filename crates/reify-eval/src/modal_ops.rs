@@ -479,11 +479,16 @@ pub(crate) fn eigensolve_modal(
     for (i, &f) in frequencies.iter().enumerate() {
         let omega = 2.0 * PI * f;
         if is_rigid_body_mode(omega, RIGID_BODY_OMEGA_TOL) {
-            diagnostics.push(Diagnostic::warning(format!(
-                "W_ModalRigidBodyMode: mode {i} has near-zero angular frequency \
-                 ω = {omega:.3e} rad/s (≤ {RIGID_BODY_OMEGA_TOL:.1e}); the model \
-                 may be under-constrained (rigid-body or spurious mode)."
-            )));
+            // σ from `eig.shift` — the shift ACTUALLY used — for the same
+            // reason `W_ShiftSkippedModes` below names it from there: both
+            // clauses tell the author to move a σ, so neither may name a σ the
+            // solve might not have applied.
+            diagnostics.push(rigid_body_mode_diagnostic(
+                i,
+                omega,
+                RIGID_BODY_OMEGA_TOL,
+                eig.shift,
+            ));
         }
     }
 
@@ -492,9 +497,10 @@ pub(crate) fn eigensolve_modal(
     // implementation able to report two at once can send an author to fix the
     // wrong thing. [`ModalSolveFault`] carries the rationale.
     //
-    // TODO(#7261): δ owns the FULL surfacing of the shift fault — the λ-space
-    // surface conversion, `ShiftSkippedModes`, and the `.ri` fixture pair. Only
-    // the refusal lands here, so δ verifies and extends rather than builds.
+    // δ (#7261) landed the rest of the shift's surfacing beside this match: the
+    // λ-space read in `extract_eigen_knobs` and the `W_ShiftSkippedModes`
+    // provenance warning below. The refusal stays HERE, in the fault match,
+    // because it is a fault; the warning is deliberately not a fourth arm.
     match fault {
         ModalSolveFault::None => {}
         // The `W_ModalRigidBodyMode` prefix is deliberate: the model IS
@@ -552,6 +558,36 @@ pub(crate) fn eigensolve_modal(
              the result is partial (raise max_iters/tol or lower n_modes).",
             n_modes_out, eigen_opts.n_modes,
         )));
+    }
+
+    // Shift provenance (PRD contract clause C5): the returned set is a WINDOW
+    // around σ, not the bottom of the spectrum, because some eigenvalue lies
+    // between zero and σ and is absent from it. Advisory, not an error —
+    // inspecting a band around σ is a legitimate use.
+    //
+    // σ is named from `eig.shift` — the shift ACTUALLY used, per that field's
+    // contract — never from `eigen_opts.sigma`: a caller must not have to infer
+    // which σ was applied.
+    //
+    // The count is OMITTED from α's template. `EigenSolverResult` carries only
+    // the C5 BOOLEAN; there is no count field to read, and α's rustdoc records
+    // that omitting the count is always correct while including it is correct
+    // only on the dense path (the Lanczos path's Cholesky/LU discriminator
+    // yields a boolean, not an inertia count). Do not "improve" this into a
+    // fabricated number.
+    //
+    // Suppressed unless there is a result to describe — the rule and its three
+    // empty-result channels live in [`shift_window_is_reportable`].
+    if shift_window_is_reportable(eig.shift_skipped_modes, fault, frequencies.len()) {
+        diagnostics.push(
+            Diagnostic::warning(format!(
+                "W_ShiftSkippedModes: the shift sigma = {} skipped mode(s) below \
+                 it; the result is a window around sigma, not the bottom of the \
+                 spectrum",
+                eig.shift,
+            ))
+            .with_code(DiagnosticCode::ShiftSkippedModes),
+        );
     }
 
     ModalCoreResult {
@@ -792,6 +828,94 @@ fn non_finite_frequency_diagnostic(n_modes: usize) -> Diagnostic {
          the eigensolve (e.g. an ill-conditioned or non-PSD stiffness/mass \
          assembly) — treat this result's mode ordering as unverified."
     ))
+}
+
+/// The [`ModalCoreResult::diagnostics`] entry pushed for a per-mode `ω ≈ 0`, one
+/// mode at a time.
+///
+/// Extracted from the loop in [`eigensolve_modal`] so the exact rendering can be
+/// asserted DIRECTLY, without a test having to reproduce a spurious eigenvalue
+/// numerically — the σ ≠ 0 case below is reachable only through a near-singular
+/// `K − σM`, which is not a thing a deterministic test should have to conjure.
+///
+/// ONE format template, never two `format!` arms for one condition: two
+/// templates drift, which is the SPOT violation this file guards against
+/// elsewhere.
+///
+/// At σ ≠ 0 a shift clause is APPENDED — one template with an optional part,
+/// the same discipline α mandates for `W_ShiftSkippedModes`. A near-zero mode
+/// at a shifted solve is more likely a spurious artifact of a near-singular
+/// `K − σM` than a rigid-body mode of the model, so the remedy is to move σ,
+/// not to add supports. Without the clause this warning sends the author to fix
+/// the one thing that is not broken.
+///
+/// The σ = 0 rendering is today's, BYTE FOR BYTE — every existing caller and
+/// assertion keyed on this message reads the unshifted path — so the
+/// `W_ModalRigidBodyMode:` prefix (a consumer grouping key, and the anchor for
+/// β's negative assertions), the `{omega:.3e}` / `{tol:.1e}` formats and the
+/// clause order all stay put. No [`DiagnosticCode`] is attached and the severity
+/// stays `Warning`: this is not one of α's three codes, and inventing a fourth
+/// is out of scope.
+///
+/// `sigma` is the shift ACTUALLY USED — [`EigenSolverResult::shift`], never the
+/// requested [`EigenSolverOptions::sigma`]. Same rule, and for the same reason,
+/// as `W_ShiftSkippedModes` in [`eigensolve_modal`]: both diagnostics name a σ
+/// to an author who is being told to move it, so a path that did not honor the
+/// requested shift must name the one it solved at rather than the one it was
+/// handed.
+fn rigid_body_mode_diagnostic(mode_index: usize, omega: f64, tol: f64, sigma: f64) -> Diagnostic {
+    let shift_note = if sigma == 0.0 {
+        String::new()
+    } else {
+        format!(
+            " A non-zero spectral shift sigma = {sigma} was applied; at a \
+             shifted solve a near-zero mode is more likely a spurious artifact \
+             of a near-singular K − sigma·M than a rigid-body mode of the \
+             model, so move sigma before adding supports."
+        )
+    };
+    Diagnostic::warning(format!(
+        "W_ModalRigidBodyMode: mode {mode_index} has near-zero angular frequency \
+         ω = {omega:.3e} rad/s (≤ {tol:.1e}); the model \
+         may be under-constrained (rigid-body or spurious mode).{shift_note}"
+    ))
+}
+
+/// Whether a `W_ShiftSkippedModes` window claim would describe a result that
+/// EXISTS.
+///
+/// "The returned set is a window around σ" is a statement ABOUT a returned mode
+/// set, so an empty one makes it confidently wrong — and the C5 flag alone does
+/// not exclude that, because two of the three ways a shifted solve can come back
+/// empty carry `shift_skipped_modes == true`:
+///
+/// * the REFUSAL (`ShiftAtEigenvalue`) and the over-ceiling degenerate return,
+///   both via `conservative_shift_provenance(σ)`: no spectrum was computed, so
+///   C5 forbids establishing `false`. Both are faults, and both are suppressed
+///   here by `fault == None` alone;
+/// * a solve that CONVERGED NOTHING. Today `try_solve_eigen_shift_invert`
+///   folds that into the refusal — `shift_is_numerically_singular` returns
+///   `true` for an empty eigenvalue list, so the σ≠0 branch never returns `Ok`
+///   with no eigenpairs (MEASURED: every starved shifted solve reachable from
+///   `eigensolve_modal` arrives carrying `E_ShiftAtEigenvalue`). So the
+///   emptiness test is NOT load-bearing today.
+///
+/// It is kept anyway because the fault test is a PROXY for the property, and a
+/// proxy maintained in another crate is the kind that breaks silently: #7617 is
+/// chartered to split `ShiftAtEigenvalue`'s two causes, and a "converged
+/// nothing" outcome that stops being a refusal makes `fault == None` with an
+/// empty result live. Keying on the property directly costs one comparison and
+/// cannot be invalidated from outside this function.
+///
+/// Deliberately NOT gated on σ: at σ ≠ 0 below λ₁ the flag is ESTABLISHED
+/// `false` by a successful Cholesky, which is the case a `σ != 0.0` test would
+/// get wrong.
+fn shift_window_is_reportable(
+    shift_skipped_modes: bool,
+    fault: ModalSolveFault,
+    n_modes_returned: usize,
+) -> bool {
+    shift_skipped_modes && fault == ModalSolveFault::None && n_modes_returned > 0
 }
 
 /// Largest `n_free` for which a SINGULAR `K_free` is still routed to the dense
@@ -3114,6 +3238,52 @@ fn extract_loss_factor(val: &Value) -> Option<f64> {
 /// (`n_modes = 10`, `tol = 1e-9`, `max_iters = 200`, `sigma = 0`) when the value
 /// is not a StructureInstance or a field is missing / malformed. Mirrors
 /// buckling's `extract_buckling_options`.
+///
+/// # σ is in EIGENVALUE (λ) space
+///
+/// The returned σ is in the same space [`EigenSolverOptions::sigma`] and
+/// [`EigenSolverResult::shift`] document, whose rustdoc states that unit
+/// conversion is the CALLER's job — and this trampoline is that caller.
+///
+/// On this branch the conversion is the identity: `ModalOptions.sigma : Real` is
+/// ALREADY λ-space (`modal_analysis.ri`'s `sigma` field note — "spectral-shift
+/// origin (in eigenvalue units)"), so the read is a pass-through and there is NO
+/// unit crossing here. That is the surface-agnostic contract PRD §7.1 names:
+/// `EigenSolverOptions.sigma` receives λ-space, so leaves α and β never learn
+/// which author-facing surface fed them.
+///
+/// If #6097 later retypes the surface to `shift_frequency : Frequency`, the
+/// `λ = (2π·f)²` conversion belongs HERE, at the trampoline, via the declared
+/// inverse helper in `crates/reify-stdlib/src/modal/free_vibration.rs` — never
+/// as a bare inline `2.0 * PI * f` in this file, which INV-AD-4
+/// (`boundaries-declare-angle-convention`) makes a defect even when the number
+/// it computes is right.
+///
+/// # Which value shapes σ accepts, and which it refuses
+///
+/// A `Real`-typed `.ri` param does not arrive as one Rust variant: a literal
+/// `sigma: 2` arrives as [`Value::Int`], and a value that has been through the
+/// dimensional machinery arrives as a DIMENSIONLESS [`Value::Scalar`]. All
+/// three are accepted, the same `tolerated` discipline [`extract_loss_factor`]
+/// spells out one knob up. The shape list is kept EXPLICIT rather than widened
+/// to `Value::Scalar { .. }` because the dimension gate is the load-bearing
+/// part: [`read_scalar_si`] is dimension-BLIND.
+///
+/// The widening is scoped to σ, and `tol` — declared `param tol : Real` beside
+/// it — is the REMAINING instance of this class: a literal `tol: 1` arrives as
+/// [`Value::Int`] and silently becomes the 1e-9 default, exactly as `sigma: 2`
+/// did before this leaf. Left open deliberately (it is outside δ's scope) and
+/// named here so the next reader does not have to rediscover it; filed as a
+/// follow-up, which should also audit `n_modes`/`max_iters` for the
+/// mirror-image [`Value::Real`] spelling.
+///
+/// A DIMENSIONED `Scalar` — notably a `Scalar<Frequency>` — is refused and falls
+/// back to the default. That shape is #6097's future `shift_frequency` surface,
+/// and reading 300 Hz as `λ = 300` would be a silent 4π²-and-square error:
+/// strictly WORSE than dropping the value, because a wrong shift returns a
+/// plausible-looking spectrum from the wrong band rather than an obviously
+/// unshifted one. Converting it here would also duplicate #6097's scope and
+/// manufacture the INV-AD-4 crossing this branch deliberately does not have.
 fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
     let default_n_modes = 10_usize;
     let default_tol = 1e-9_f64;
@@ -3143,9 +3313,27 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_max_iters,
     };
+    // Gate on the VARIANT (and, for `Scalar`, on the DIMENSION), then convert
+    // ONCE through `read_scalar_si` so the tolerated spellings cannot drift
+    // apart from it — the `tolerated` shape [`extract_loss_factor`] spells out
+    // one knob up, which also keeps the finite guard in a single copy rather
+    // than one per accepted shape. A non-finite σ still falls back: it would
+    // poison `K − σM`.
     let sigma = match data.fields.get("sigma") {
-        Some(Value::Real(r)) if r.is_finite() => *r,
-        _ => default_sigma,
+        Some(raw) => {
+            let tolerated = match raw {
+                Value::Real(_) | Value::Int(_) => true,
+                Value::Scalar { dimension, .. } => *dimension == DimensionVector::DIMENSIONLESS,
+                _ => false,
+            };
+            let s = read_scalar_si(raw);
+            if tolerated && s.is_finite() {
+                s
+            } else {
+                default_sigma
+            }
+        }
+        None => default_sigma,
     };
     (n_modes, tol, max_iters, sigma)
 }
@@ -4255,8 +4443,10 @@ mod tests {
         extract_loss_factor, extract_reference_direction, frobenius_norm, mode_shape_value,
         nearest_node,
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
-        resolve_location_node, run_modal_analysis, run_transient_response,
-        ModalSolveFault, simply_supported_pin_pin_bcs, solve_generalized_eigen,
+        resolve_location_node, rigid_body_mode_diagnostic, run_modal_analysis,
+        run_transient_response,
+        ModalSolveFault, shift_window_is_reportable, simply_supported_pin_pin_bcs,
+        solve_generalized_eigen,
         solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
@@ -5674,16 +5864,31 @@ mod tests {
     /// bypass the shifted factorization entirely, leaving the fixture testing
     /// nothing.
     fn laplacian_modal_assembly() -> (ModalAssembly, Vec<DirichletBc>) {
-        const N_NODES: usize = 29;
-        const N_FREE: usize = 80;
-        let n_dofs = 3 * N_NODES;
+        laplacian_modal_assembly_sized(29, 80)
+    }
+
+    /// [`laplacian_modal_assembly`] at a caller-chosen size, so a test can pick
+    /// which DISPATCH ARM of [`solve_generalized_eigen`] it exercises — the two
+    /// arms compute `shift_skipped_modes` by structurally different predicates
+    /// (absence-based and exact on the dense arm, Cholesky/LU-based and
+    /// conservative on the Lanczos arm), so one arm's coverage is not the
+    /// other's.
+    ///
+    /// The constraint set is always the TRAILING `n_dofs − n_free` DOFs, which
+    /// keeps `K_free` the leading principal submatrix of the tridiagonal and so
+    /// keeps the closed form [`laplacian_lambda`]`(n_free, k)` exact.
+    fn laplacian_modal_assembly_sized(
+        n_nodes: usize,
+        n_free: usize,
+    ) -> (ModalAssembly, Vec<DirichletBc>) {
+        let n_dofs = 3 * n_nodes;
         let (k_full, m_full) = laplacian_pencil(n_dofs);
-        let bcs: Vec<DirichletBc> = (N_FREE..n_dofs)
+        let bcs: Vec<DirichletBc> = (n_free..n_dofs)
             .map(|dof| DirichletBc { dof, value: 0.0 })
             .collect();
         assert!(
-            n_dofs - bcs.len() == N_FREE && bcs.len() >= 6,
-            "the fixture must leave n_free = {N_FREE} free DOFs while keeping \
+            n_dofs - bcs.len() == n_free && bcs.len() >= 6,
+            "the fixture must leave n_free = {n_free} free DOFs while keeping \
              `under_constrained` false",
         );
         let assembly = ModalAssembly {
@@ -5691,7 +5896,7 @@ mod tests {
             stiffness_matrix_norm: frobenius_norm(&k_full),
             k_full,
             m_full,
-            n_nodes: N_NODES,
+            n_nodes,
         };
         (assembly, bcs)
     }
@@ -5836,6 +6041,472 @@ mod tests {
             "the control must actually solve, or it cannot witness that the \
              refusal is about σ rather than about the fixture",
         );
+    }
+
+    /// Every `W_ShiftSkippedModes` diagnostic on a modal result, keyed on the
+    /// typed code rather than on prose — the convention this file's existing
+    /// shift assertions already follow.
+    fn shift_skipped_warnings(result: &ModalCoreResult) -> Vec<&Diagnostic> {
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::ShiftSkippedModes))
+            .collect()
+    }
+
+    /// δ (#7261): the shift-provenance warning must not stand beside a solve
+    /// that returned NOTHING.
+    ///
+    /// `solve_generalized_eigen` sets `shift_skipped_modes` from
+    /// `conservative_shift_provenance(sigma)` — i.e. `sigma != 0.0` — on the
+    /// refused branch, because that branch computed no spectrum and C5 forbids
+    /// ESTABLISHING `false` without evidence. So the flag is `true` here while
+    /// the result holds ZERO eigenpairs.
+    ///
+    /// Emitting "the result is a window around sigma" beside "the solve returned
+    /// nothing" is a confidently wrong statement about a result that does not
+    /// exist — the same defect class as `W_ModalConvergence` standing beside the
+    /// refusal and advising "raise max_iters", which β already fences off. The
+    /// gate therefore keys on the FAULT, not on the flag and not on σ.
+    ///
+    /// The `E_ShiftAtEigenvalue` half is asserted too, so this test cannot pass
+    /// by the refusal itself having regressed into a silent success.
+    #[test]
+    fn shift_skipped_modes_is_not_claimed_beside_a_refused_solve() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 3);
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            result.frequencies.is_empty(),
+            "the premise of this test is a solve that returned nothing; got {:?}",
+            result.frequencies,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ShiftAtEigenvalue)),
+            "the refusal must still be raised, or this test passes for the wrong \
+             reason; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "a refused solve holds no eigenpairs, so it cannot be described as a \
+             window around σ; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): σ = 0 can never raise the shift-provenance warning.
+    ///
+    /// `shift_provenance_from_factorization` and `conservative_shift_provenance`
+    /// both start from `sigma != 0.0`, so the flag is unconditionally `false` on
+    /// an unshifted solve. Pins that the warning is about WHERE σ was put, not
+    /// raised by every shift-capable solve — and asserts the control actually
+    /// solved, since a silent empty result would witness nothing.
+    #[test]
+    fn shift_skipped_modes_is_silent_at_sigma_zero() {
+        let (assembly, bcs) = laplacian_modal_assembly();
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma: 0.0,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "the control must actually solve, or it witnesses nothing",
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "an unshifted solve skips nothing by construction; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): THE DISCRIMINATING NEGATIVE — σ ≠ 0 below the first mode is
+    /// silent.
+    ///
+    /// With `0 < σ < λ₁`, `K − σM` stays positive definite, so Cholesky
+    /// SUCCEEDS and `shift_provenance_from_factorization` ESTABLISHES `false`
+    /// from real evidence rather than defaulting to it. Nothing was skipped:
+    /// the returned set is still the bottom of the spectrum.
+    ///
+    /// A naive `if sigma != 0.0` emission would wrongly fire here. This test is
+    /// what pins that δ READS the C5 flag rather than re-deriving a rule of its
+    /// own from σ, and it is the guard rail that keeps the fault gate from being
+    /// written too wide.
+    #[test]
+    fn shift_skipped_modes_is_silent_for_a_shift_below_the_first_mode() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 1) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "a shift below λ₁ is a healthy solve and must return modes; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "no eigenvalue lies between 0 and σ = {sigma}, so nothing was \
+             skipped; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): the positive case at unit granularity, independent of the FEA
+    /// fixture.
+    ///
+    /// σ placed strictly BETWEEN λ₃ and λ₄ with `n_modes = 2` makes `K − σM`
+    /// indefinite: Cholesky fails, LU wins, and
+    /// `shift_provenance_from_factorization` reports `true` — while the solve
+    /// still returns modes, so there is a real result to describe as a window.
+    /// The midpoint keeps σ off both eigenvalues, so this exercises the skipped
+    /// path rather than β's refusal.
+    #[test]
+    fn shift_skipped_modes_warns_once_for_a_shift_above_the_first_mode() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = (laplacian_lambda(N_FREE, 3) + laplacian_lambda(N_FREE, 4)) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "this is a SUCCESSFUL shifted solve — the window it returns is the \
+             thing the warning describes; got {:?}",
+            result.diagnostics,
+        );
+
+        let warnings = shift_skipped_warnings(&result);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "a skipped-mode window must be reported EXACTLY once; got {:?}",
+            result.diagnostics,
+        );
+        assert_eq!(
+            warnings[0].severity,
+            Severity::Warning,
+            "inspecting a band around σ is legitimate, so this stays advisory",
+        );
+        assert!(
+            warnings[0].message.starts_with("W_ShiftSkippedModes:"),
+            "consumers key on the prefix, not the prose; got {:?}",
+            warnings[0].message,
+        );
+        assert!(
+            warnings[0].message.contains(&sigma.to_string()),
+            "the warning must NAME σ = {sigma} so a reader never has to infer \
+             which shift produced the window; got {:?}",
+            warnings[0].message,
+        );
+    }
+
+    /// Amendment (suggestion 1): the window claim is gated on a RESULT THAT
+    /// EXISTS, over the whole input cube.
+    ///
+    /// Asserted on [`shift_window_is_reportable`] directly, for the same reason
+    /// [`rigid_body_mode_diagnostic`] is: one corner — `fault == None` with a
+    /// `true` flag and ZERO modes — is not reachable through `eigensolve_modal`
+    /// today, because `try_solve_eigen_shift_invert` folds a zero-converged
+    /// shifted solve into `ShiftAtEigenvalue` (`shift_is_numerically_singular`
+    /// answers `true` for an empty eigenvalue list). MEASURED: every starved
+    /// shifted solve reachable from here — σ ∈ {5, 10, 10², 10⁴, 10⁸} on the
+    /// n_free = 80 pencil at `tol = 1e-300, max_iters = 1` — came back carrying
+    /// `E_ShiftAtEigenvalue`, never an empty success.
+    ///
+    /// Driving the predicate directly is therefore the only way to pin that
+    /// corner, and pinning it is the point: it is what makes the emptiness test
+    /// survive #7617 splitting that refusal's two causes, after which the corner
+    /// goes live. The two REACHABLE empty results keep their own end-to-end
+    /// tests below.
+    #[test]
+    fn shift_window_is_reportable_only_for_a_non_empty_result_at_no_fault() {
+        let faults = [
+            ModalSolveFault::None,
+            ModalSolveFault::SingularKOverCeiling,
+            ModalSolveFault::ShiftAtEigenvalue(2.5),
+        ];
+        for flag in [false, true] {
+            for fault in faults {
+                for n_modes_returned in [0_usize, 1, 7] {
+                    let expected =
+                        flag && fault == ModalSolveFault::None && n_modes_returned > 0;
+                    assert_eq!(
+                        shift_window_is_reportable(flag, fault, n_modes_returned),
+                        expected,
+                        "flag = {flag}, fault = {fault:?}, modes = {n_modes_returned}: \
+                         a window claim is legitimate ONLY when the C5 flag is set, \
+                         nothing faulted, and there is a mode set to describe",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Amendment (suggestion 3): the OTHER empty-at-σ≠0 result — the
+    /// over-ceiling degenerate return — is suppressed too.
+    ///
+    /// `solve_generalized_eigen`'s last arm sets `shift_skipped_modes` from
+    /// `conservative_shift_provenance(σ)` exactly as the refusal does, so the
+    /// flag is `true` here while the result holds no eigenpairs. This is the arm
+    /// where the suppression matters MOST: it already pushes a
+    /// `W_ModalRigidBodyMode` AND an `E_ModalNoModesComputed`, both saying "add
+    /// supports", so a leaked window claim would stack a third, contradictory
+    /// remedy on top of them.
+    ///
+    /// Driven with fewer than `RIGID_BODY_DOFS` constrained DOFs (which sets
+    /// `force_dense`) above [`DENSE_FALLBACK_MAX_DIM`], the two conditions that
+    /// arm requires. Two-sided like its refusal sibling: the Error is asserted
+    /// PRESENT so this cannot pass by the degenerate return having regressed
+    /// into a silent success.
+    #[test]
+    fn shift_skipped_modes_is_not_claimed_beside_an_over_ceiling_result() {
+        // 350 nodes → 1050 free DOFs > DENSE_FALLBACK_MAX_DIM = 1024, with ZERO
+        // constrained DOFs so `under_constrained` (< 6) sets `force_dense`.
+        const N_NODES: usize = 350;
+        let n_dofs = 3 * N_NODES;
+        assert!(
+            n_dofs > DENSE_FALLBACK_MAX_DIM,
+            "the fixture must sit ABOVE the dense-fallback ceiling",
+        );
+        let (k_full, m_full) = laplacian_pencil(n_dofs);
+        let assembly = ModalAssembly {
+            mass_matrix_norm: frobenius_norm(&m_full),
+            stiffness_matrix_norm: frobenius_norm(&k_full),
+            k_full,
+            m_full,
+            n_nodes: N_NODES,
+        };
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &[],
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma: 1.5,
+            },
+        );
+
+        assert!(
+            result.frequencies.is_empty(),
+            "the premise of this test is a degenerate return with no modes; got {:?}",
+            result.frequencies,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ModalNoModesComputed")),
+            "the over-ceiling refusal must still be raised, or this test passes \
+             for the wrong reason; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "this result holds no eigenpairs and already carries an \"add \
+             supports\" remedy; a window claim would be a third, contradictory \
+             one; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// Amendment (suggestion 4): the DENSE arm's provenance reaches the warning
+    /// too.
+    ///
+    /// The two dispatch arms compute `shift_skipped_modes` by structurally
+    /// different predicates — the dense arm's
+    /// `any_eigenvalue_skipped_between_zero_and_shift` is ABSENCE-based and
+    /// exact, the Lanczos arm's `shift_provenance_from_factorization` is
+    /// Cholesky/LU-based and conservative. Every other test here (and the
+    /// committed `.ri` fixture pair, deliberately sized to n_free = 504) routes
+    /// to the Lanczos arm, so without this one the dense half of the emission is
+    /// wired but unwitnessed.
+    ///
+    /// `n_free = 63 ≤ max(64, 2·n_modes)` takes the small-model dense arm before
+    /// any factorization is attempted. σ between λ₃ and λ₄ with `n_modes = 2`
+    /// selects {λ₃, λ₄} and leaves λ₁, λ₂ inside `(0, σ)` and ABSENT — exactly
+    /// the condition that predicate tests.
+    #[test]
+    fn shift_skipped_modes_warns_once_on_the_dense_path() {
+        const N_NODES: usize = 23;
+        const N_FREE: usize = 63;
+        const N_MODES: usize = 2;
+        assert!(
+            N_FREE <= 64.max(2 * N_MODES),
+            "the fixture must take the SMALL-MODEL DENSE arm, or it witnesses \
+             the same Lanczos predicate every other test already covers",
+        );
+        let (assembly, bcs) = laplacian_modal_assembly_sized(N_NODES, N_FREE);
+        let sigma = (laplacian_lambda(N_FREE, 3) + laplacian_lambda(N_FREE, 4)) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: N_MODES,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert_eq!(
+            result.frequencies.len(),
+            N_MODES,
+            "the dense arm returns the whole spectrum and selects from it, so \
+             this is a SUCCESSFUL solve with a real window to describe; got {:?}",
+            result.diagnostics,
+        );
+        let warnings = shift_skipped_warnings(&result);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "λ₁ and λ₂ lie in (0, σ) and are absent from the selected set, so \
+             the dense path's exact predicate must report the window EXACTLY \
+             once; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            warnings[0].message.contains(&sigma.to_string()),
+            "the warning must NAME σ = {sigma} on this arm too; got {:?}",
+            warnings[0].message,
+        );
+    }
+
+    /// The exact σ = 0 rendering of [`rigid_body_mode_diagnostic`], as every
+    /// existing caller and assertion reads it today. Any change to
+    /// `RIGID_BODY_OMEGA_TOL`, to the `{omega:.3e}` / `{tol:.1e}` formats or to
+    /// the clause order moves this string, which is the point.
+    const RIGID_BODY_MESSAGE_AT_SIGMA_ZERO: &str =
+        "W_ModalRigidBodyMode: mode 0 has near-zero angular frequency \
+         ω = 0.000e0 rad/s (≤ 1.0e0); the model \
+         may be under-constrained (rigid-body or spurious mode).";
+
+    /// δ (#7261): the UNSHIFTED rigid-body message does not move.
+    ///
+    /// Asserted as full equality rather than by prefix: this is a regression
+    /// floor for every existing consumer of the unshifted path, and step-8's
+    /// optional shift clause must be strictly additive.
+    #[test]
+    fn rigid_body_diagnostic_at_sigma_zero_is_unchanged() {
+        let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, 0.0);
+        assert_eq!(
+            d.message, RIGID_BODY_MESSAGE_AT_SIGMA_ZERO,
+            "the σ = 0 rendering is today's, byte for byte",
+        );
+    }
+
+    /// δ (#7261): at σ ≠ 0, "add supports" must not be the standing remedy.
+    ///
+    /// MEASURED on the `shift_invert_modal_*` fixture geometry: with σ set to
+    /// that model's own λ₁ (13996484663.660404), `reify eval` returns
+    /// `f1 = 0 Hz` and emits the rigid-body warning above. The model's supports
+    /// are perfectly fine — the zero mode is a spurious artifact of a
+    /// near-singular `K − σM` — so the σ-blind loop hands the author a remedy
+    /// that is wrong for a fault entirely about WHERE σ was put. That is the
+    /// confidently-wrong-diagnosis class this leaf is forbidden to create, and
+    /// it is reachable only because β + δ made σ live.
+    ///
+    /// The `W_ModalRigidBodyMode:` prefix and the leading clause are KEPT — β's
+    /// negative assertions and consumer grouping keys depend on them — and the
+    /// shift note is APPENDED. The appended prose itself is not asserted, only
+    /// that σ is named in it: the remedy's wording is free to improve.
+    #[test]
+    fn rigid_body_diagnostic_at_a_shifted_solve_names_the_shift() {
+        let sigma = 13996484663.660404_f64;
+        let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, sigma);
+
+        assert!(
+            d.message.starts_with("W_ModalRigidBodyMode:"),
+            "the prefix is a consumer grouping key and must survive; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.starts_with(RIGID_BODY_MESSAGE_AT_SIGMA_ZERO),
+            "the shift note must EXTEND the one template, not replace it — two \
+             templates for one condition drift; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.contains(&sigma.to_string()),
+            "the appended clause must NAME σ = {sigma}, or the author cannot tell \
+             which shift to move; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.len() > RIGID_BODY_MESSAGE_AT_SIGMA_ZERO.len(),
+            "σ ≠ 0 must say strictly MORE than σ = 0; got {:?}",
+            d.message,
+        );
+    }
+
+    /// δ (#7261): severity and code are unchanged at both shifts.
+    ///
+    /// This stays the advisory it is, and α minted exactly THREE codes for this
+    /// PRD — `ShiftSkippedModes`, `ShiftAtEigenvalue` and
+    /// `FirstModeNotInShiftedResult`. This is none of them; do not invent a
+    /// fourth.
+    #[test]
+    fn rigid_body_diagnostic_stays_an_uncoded_warning_at_every_shift() {
+        for sigma in [0.0, 13996484663.660404_f64] {
+            let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, sigma);
+            assert_eq!(
+                d.severity,
+                Severity::Warning,
+                "σ = {sigma}: this stays advisory",
+            );
+            assert_eq!(d.code, None, "σ = {sigma}: no fourth code is minted here");
+        }
     }
 
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
@@ -6211,6 +6882,90 @@ mod tests {
 
         // Non-StructureInstance → all defaults.
         assert_eq!(extract_eigen_knobs(&Value::Undef), (10, 1e-9, 200, 0.0));
+    }
+
+    /// δ (#7261): the λ-space σ read must not silently become 0.0 for a value
+    /// shape a user actually writes.
+    ///
+    /// A `Real`-typed `.ri` param does not arrive as one Rust variant. A
+    /// literal `sigma: 2` arrives as [`Value::Int`], and a value that has been
+    /// through the dimensional machinery arrives as a DIMENSIONLESS
+    /// [`Value::Scalar`] — the shape the `tolerated` idiom in
+    /// [`extract_loss_factor`] exists for, one knob up in this same file.
+    /// Reading only [`Value::Real`] drops both to the default, which is the
+    /// silent-drop class this PRD exists to close (`buckling.rs` documents and
+    /// handles exactly this trap for the sibling knob, and β's own rustdoc
+    /// records it by name).
+    ///
+    /// A FREQUENCY-dimensioned `Scalar` is deliberately NOT honored — see the
+    /// case below.
+    ///
+    /// Every row also asserts the other three knobs, so the widening is provably
+    /// scoped to σ: the table is over the σ shape ONLY, with `n_modes`/`tol`/
+    /// `max_iters` held at fixed non-default values that must come back
+    /// unchanged.
+    #[test]
+    fn extract_eigen_knobs_sigma_value_shapes() {
+        /// The three non-σ knobs, held at non-default values so a regression in
+        /// their handling cannot hide behind a default.
+        fn with_sigma(sigma: Option<Value>) -> Value {
+            let mut fields = vec![
+                ("n_modes".to_string(), Value::Int(7)),
+                ("tol".to_string(), Value::Real(1e-7)),
+                ("max_iters".to_string(), Value::Int(50)),
+            ];
+            if let Some(sigma) = sigma {
+                fields.push(("sigma".to_string(), sigma));
+            }
+            modal_options(fields)
+        }
+        let dimensionless = |si_value: f64| Value::Scalar {
+            si_value,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+
+        let cases: Vec<(&str, Option<Value>, f64)> = vec![
+            // The regression floor: the shape that already worked.
+            ("Real", Some(Value::Real(2.5)), 2.5),
+            // A `.ri` integer literal `sigma: 2`. RED before the widening.
+            ("Int", Some(Value::Int(2)), 2.0),
+            // A dimensionless Scalar, NEGATIVE: `ModalOptions` declares σ
+            // "explicitly NOT constrained" because a negative shift targets the
+            // negative side of the spectrum, so the sign must round-trip rather
+            // than being clamped away. RED before the widening.
+            ("Scalar<dimensionless>", Some(dimensionless(-1.5)), -1.5),
+            // REFUSED, and the default is the right answer. That shape is
+            // #6097's future `shift_frequency : Frequency` surface; reading
+            // 300 Hz as λ = 300 would be a silent 4π²-and-square error —
+            // strictly WORSE than dropping the value, because a wrong shift
+            // returns a plausible-looking spectrum from the wrong band.
+            // Converting it here would also duplicate #6097's scope and
+            // manufacture the INV-AD-4 angle crossing this branch deliberately
+            // does not have.
+            (
+                "Scalar<frequency>",
+                Some(Value::Scalar {
+                    si_value: 300.0,
+                    dimension: DimensionVector::FREQUENCY,
+                }),
+                0.0,
+            ),
+            // The finite guard survives the widening: an infinite or NaN σ
+            // would poison `K − σM`.
+            ("Real(inf)", Some(Value::Real(f64::INFINITY)), 0.0),
+            ("Real(NaN)", Some(Value::Real(f64::NAN)), 0.0),
+            // Existing fallbacks, unchanged.
+            ("absent", None, 0.0),
+        ];
+
+        for (label, sigma, expected) in cases {
+            assert_eq!(
+                extract_eigen_knobs(&with_sigma(sigma)),
+                (7, 1e-7, 50, expected),
+                "sigma shape {label}: expected σ = {expected} with the other three \
+                 knobs untouched",
+            );
+        }
     }
 
     /// Amendment (suggestion 2): `extract_reference_direction` normalizes the
