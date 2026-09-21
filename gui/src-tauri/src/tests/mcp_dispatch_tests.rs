@@ -24,6 +24,36 @@ fn make_tauri_context() -> TauriToolContext {
     TauriToolContext::builder(make_engine()).build()
 }
 
+/// [`make_engine`] with a canonical `.ri` ON DISK: writes `bracket_source()` to
+/// `<tmp>/bracket.ri` and `load_file`s it, so the source-canonical write path
+/// has a file to write back to (INV-GUI-3, task 5099 η).
+///
+/// The shared in-memory pair above is deliberately left alone — only the
+/// parameter-write tests need a file. Return shape and the bind-don't-discard
+/// rule for the `TempDir` are `engine_tests.rs`'s `writeback_session`'s.
+fn make_engine_on_disk() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Arc<Mutex<EngineSession>>,
+) {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("bracket.ri");
+    std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session.load_file(&path).expect("load_file should succeed");
+
+    (dir, path, Arc::new(Mutex::new(session)))
+}
+
+fn make_tauri_context_on_disk() -> (tempfile::TempDir, std::path::PathBuf, TauriToolContext) {
+    let (dir, path, engine) = make_engine_on_disk();
+    (dir, path, TauriToolContext::builder(engine).build())
+}
+
 #[test]
 fn dispatch_get_eval_status_returns_idle() {
     let ctx = make_tauri_context();
@@ -48,7 +78,7 @@ fn dispatch_get_source_returns_bracket_content() {
 
 #[test]
 fn dispatch_set_parameter_returns_success() {
-    let ctx = make_tauri_context();
+    let (_dir, _path, ctx) = make_tauri_context_on_disk();
     let result = mcp_tool_call_impl(
         "reify_set_parameter",
         serde_json::json!({"cell_id": "Bracket.width", "value": "100mm"}),
@@ -87,7 +117,7 @@ fn dispatch_get_parameters_returns_entries() {
 
 #[test]
 fn mcp_write_tool_produces_state_delta() {
-    let engine = make_engine();
+    let (_dir, path, engine) = make_engine_on_disk();
 
     // 1. Build initial GuiState and store in simulated last_state
     let initial_gui_state = engine
@@ -131,6 +161,15 @@ fn mcp_write_tool_produces_state_delta() {
         "Bracket.width should appear in changed_values"
     );
     assert_eq!(changed_width.unwrap().value, "100");
+
+    // The delta and the file are two views of the SAME write, not two writes:
+    // an MCP edit that moved the frontend without moving the source would be
+    // the ephemeral divergence INV-GUI-3 forbids.
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("disk file should be readable"),
+        bracket_source().replace("80mm", "100mm"),
+        "the write must have reached the canonical .ri too"
+    );
 
     // 6. Verify last_state was updated by compute_delta
     let stored = last_state.lock().unwrap();
