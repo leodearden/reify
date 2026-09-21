@@ -1423,6 +1423,75 @@ mod tests {
         }
     }
 
+    /// The live declared-but-not-honored trampoline warning must survive a warm
+    /// buckling cache hit.
+    ///
+    /// `buckling_unsupported_option_diagnostics` (compute_targets/buckling.rs)
+    /// emits `DiagnosticCode::BucklingOptionUnsupported` as a WARNING on a solve
+    /// that reaches `ComputeOutcome::Completed` — so the entry IS persisted, and
+    /// before this task's fix the warning went silent on every run but the first.
+    /// It is the workspace's only present-day code for a parameter the solver
+    /// accepted and then ignored, which makes it the live analogue of the
+    /// trampoline param-drop class this task exists to keep audible.
+    ///
+    /// Task #7079 will add `E_PARAM_NOT_HONORED` / `W_PARAM_NOT_APPLICABLE` to
+    /// that same class, naming this code as its doc-block precedent. Its
+    /// INV-PD-1 is checked only on a COLD run; a warm run gets whatever this
+    /// replay path hands it and nothing else. The codes #7079 mints therefore
+    /// ride exactly this path, with no further change needed here.
+    ///
+    /// The diagnostic is built locally rather than by calling the emitter:
+    /// widening `buckling_unsupported_option_diagnostics`'s visibility to reach
+    /// it from a test would open a seam into the module's internals that nothing
+    /// in production needs.
+    #[test]
+    fn warm_buckling_hit_replays_the_declared_but_unhonored_option_warning() {
+        // Shaped after `unsupported_diag`'s template for the `mode: "dense"`
+        // case. This is a copy, not a reference to it — the property pinned here
+        // is that whatever the emitter says survives VERBATIM, not that this
+        // string equals today's template. The message is the actionable payload:
+        // it names the ignored param, the value that was dropped, and the
+        // default the solve silently fell back to.
+        let written = reify_core::Diagnostic::warning(
+            "BucklingOptions.mode = \"dense\" is declared but not yet honored by \
+             the solver::buckling trampoline (the buckling kernel has no \
+             mode-select input yet); solve falls back to the default \
+             \"shift_invert\"",
+        )
+        .with_code(reify_core::DiagnosticCode::BucklingOptionUnsupported);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_key = ContentHash(0x7245_0021_7245_0021_7245_0021_7245_0021_u128);
+        let value = buckling_cache_value();
+
+        super::persistent_write(
+            tmp.path(),
+            "solver::buckling",
+            cache_key,
+            &value,
+            std::slice::from_ref(&written),
+        );
+
+        let (_, got_diags) = super::persistent_lookup(tmp.path(), "solver::buckling", cache_key)
+            .expect("the entry just written must be a hit");
+
+        assert_eq!(got_diags.len(), 1, "got {got_diags:?}");
+        let got = &got_diags[0];
+        assert_eq!(
+            got.code,
+            Some(reify_core::DiagnosticCode::BucklingOptionUnsupported),
+            "the warm serve must keep the code — a consumer auditing for a \
+             declared-but-unhonored param keys off it, not off the prose",
+        );
+        assert_eq!(got.severity, reify_core::Severity::Warning);
+        assert_eq!(
+            got.message, written.message,
+            "the full message must survive: it names the ignored param, its value \
+             and the fallback default, which is everything the user needs in order \
+             to act and everything they lose when it goes silent warm",
+        );
+    }
+
     #[test]
     fn persistent_write_then_lookup_replays_an_empty_diagnostics_list() {
         // The common case: a solve that said nothing must still be a HIT, with
