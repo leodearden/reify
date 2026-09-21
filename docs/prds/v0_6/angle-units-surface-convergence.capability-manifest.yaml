@@ -229,6 +229,14 @@ tasks:
   - name: resolve-bare-angle-exists
     binding: capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:880
       fn resolve_bare_angle, call sites :2585 (value-axis) and :2626 (scalar-axis)
+      AT DECOMPOSE — this row's name is a decompose-time label for what the leaf
+      would retire, not an assertion that the function is currently present.
+      Since DELIVERED (re-measured 2026-09-21, task 7748; landed by task 6924,
+      merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9), resolve_bare_angle is
+      zero-hit in crates/reify-eval/src/geometry_ops.rs — retired, not relocated.
+      Unlike the γ/δ angle_spec() checks, this delivered_check IS
+      construct-bound — it asserts the retirement itself and the check and the
+      claim coincide
     verdict: PASS
     delivered_check:
       kind: grep
@@ -237,10 +245,14 @@ tasks:
       - crates/reify-eval/src/geometry_ops.rs
       expect: absent
   - name: codeless-warning-is-live
-    binding: 'rejection-check baseline + INV-SF-6 — probe: circular_pattern(b,0mm,0mm,0mm,0.0,0.0,1.0,4,360)
+    binding: 'rejection-check baseline + INV-SF-6 AT DECOMPOSE — probe: circular_pattern(b,0mm,0mm,0mm,0.0,0.0,1.0,4,360)
       exits 0 with `warning: circular_pattern: bare numeric angle `360` interpreted
       as 360°; use `360deg` or `6.283185rad` for explicit units`; grep:crates/reify-core/src/diagnostics.rs:3885
-      Diagnostic::warning sets code None'
+      Diagnostic::warning sets code None AT DECOMPOSE. Since DELIVERED (re-measured
+      2026-09-21, task 7748; landed by task 6924, merge
+      1a9cf2b51f301c8716eb545dc43ec8a565d765e9), circular_pattern rejects a bare
+      angle through the same shared angle_spec() reader that γ and δ use, and the
+      warning this row describes is gone from that one call path'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -249,10 +261,18 @@ tasks:
       - crates/reify-eval/src/geometry_ops.rs
       expect: absent
   - name: breakage-set-corrected
-    binding: producer-extent (PRD said 3, actual 9) — inverting tests crates/reify-eval/tests/circular_pattern_angle.rs:47,86;
-      BYTE-COMPARED goldens crates/reify-eval/tests/golden/pattern_circular_base.txt:66,:18
-      and pattern_circular_value.txt:66,:18 (include_str! at compile_geometry_op_characterization.rs:1092,1139,
-      compared :229-249, driven by lit(90.0) at :1025,1072); 5 fns crates/reify-eval/src/geometry_ops/tests.rs:2990,3056,3102,3150,3194
+    binding: producer-extent (PRD said 3, actual 9) AT DECOMPOSE — inverting tests
+      crates/reify-eval/tests/circular_pattern_angle.rs:47,86; BYTE-COMPARED
+      goldens crates/reify-eval/tests/golden/pattern_circular_base.txt:66,:18
+      and pattern_circular_value.txt:66,:18 (include_str! at
+      compile_geometry_op_characterization.rs:1092,1139, compared :229-249,
+      driven by lit(90.0) at :1025,1072); 5 fns
+      crates/reify-eval/src/geometry_ops/tests.rs:2990,3056,3102,3150,3194 —
+      every line cite above is from decompose and has drifted. The inverting
+      test landed RENAMED as circular_pattern_bare_360_is_rejected
+      (crates/reify-eval/tests/circular_pattern_angle.rs:50, re-measured
+      2026-09-21, task 7748); the warning-free control survives as
+      circular_pattern_360deg_no_deprecation_warning (:92)
     verdict: PASS
     delivered_check:
       kind: grep
@@ -262,7 +282,12 @@ tasks:
       expect: absent
   - name: stale-doc-cite
     binding: capability→producer (this leaf) — grep:docs/prds/v0_6/type-hygiene.md:106
-      cites resolve_bare_angle at :418-439; real site is :880
+      cites resolve_bare_angle at :418-439; real site is :880 AT DECOMPOSE —
+      fixed by ε itself. Since DELIVERED (re-measured 2026-09-21, task 7748;
+      landed by task 6924, merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9),
+      docs/prds/v0_6/type-hygiene.md §8.1 dropped resolve_bare_angle from its
+      resolver list (zero-hit in that file) and gained an explicit
+      stale-line-cites note at :108
     verdict: PASS
     delivered_check:
       kind: grep
