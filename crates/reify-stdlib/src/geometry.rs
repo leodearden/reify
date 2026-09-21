@@ -1489,25 +1489,193 @@ fn decode_direction(v: &Value) -> Option<[f64; 3]> {
     }
 }
 
-/// `midplane(a: Plane, b: Plane) -> Plane`: the bisecting plane.
-/// normal = normalize(na + nb); origin = midpoint(oa, ob). `Undef` if the two
-/// planes' origins carry different dimensions or the summed normal is zero
-/// (anti-parallel normals).
-fn eval_midplane(args: &[Value]) -> Value {
+/// Why a construction-datum call cannot be built — the fault vocabulary of the
+/// five per-builtin classifiers below, each of which is the ONE acceptance
+/// predicate its eval gate and its [`diagnose`] arm both consult (units-length
+/// η, task 6591).
+///
+/// This is the [`AffineMapFault`] / [`BboxCorner`] discipline applied to the
+/// construction-datum family, for the reason this file already records: a gate
+/// and its post-`Undef` classifier that spell the same predicate twice drift
+/// ASYMMETRICALLY, leaving eval returning `Undef` while the classifier stays
+/// silent — which degrades a loud rejection back to the silent `undef` at exit 0
+/// this PRD exists to close, with no test failing because every case exercises a
+/// value both spellings agree on.
+///
+/// It is not hypothetical for this family. `midplane` and the arity-2 `offset`
+/// reject through [`decode_plane`], which validates the NORMAL as well as the
+/// origin — so a classifier that destructured `Value::Plane { origin, .. }` and
+/// read only the origin would emit a LENGTH rejection for a plane whose actual
+/// fault is a malformed normal.
+enum DatumFault {
+    /// Every SHAPE / CONSISTENCY cause: wrong arity, the wrong `Value` variant,
+    /// a component count other than three, a non-numeric or non-finite
+    /// component, MIXED component dimensions, or a plane whose NORMAL cannot be
+    /// decoded. A shape failure is never blamed on a dimension, so [`diagnose`]
+    /// stays SILENT for all of it — matching the `transform3` / `bbox`
+    /// convention. Carries no parameter name because none of these causes
+    /// belongs to one argument.
+    Shape,
+    /// A POSITION operand is well-formed and its dimension is not LENGTH. The
+    /// ONE fault this family diagnoses.
+    NotLength {
+        /// The offending parameter as the author wrote it, taken from the
+        /// datum-constructor signature block in `reify-compiler/src/units.rs`.
+        arg_name: &'static str,
+        /// Minted by the shared owner, so the wording is never re-rendered here
+        /// (Contract C1 invariant (i)).
+        rejection: ArgRejection,
+    },
+}
+
+/// Classify a `Value::Point` operand that must be a `Point3<Length>`.
+///
+/// Adds ONLY the LENGTH verdict on top of [`decompose_xyz3`], taking both the
+/// verdict and its wording from [`length_group_rejection`], so ONE predicate
+/// owns "is this a LENGTH rejection" for the whole crate.
+///
+/// The message names the whole coordinate group under `arg_name` because
+/// `decompose_xyz3` has ALREADY required the three components to share one
+/// dimension: when this fires, all three offend identically, so naming the
+/// parameter the author actually wrote is complete information rather than a
+/// shortcut.
+fn classify_datum_point(arg_name: &'static str, v: &Value) -> Result<[f64; 3], DatumFault> {
+    let Value::Point(comps) = v else {
+        return Err(DatumFault::Shape);
+    };
+    if let Some(rejection) = length_group_rejection(comps) {
+        return Err(DatumFault::NotLength {
+            arg_name,
+            rejection,
+        });
+    }
+    match decompose_xyz3(comps) {
+        Some((xyz, dim)) if dim == DimensionVector::LENGTH => Ok(xyz),
+        // `length_group_rejection` said nothing, so this is its OTHER silent
+        // cause: a `decompose_xyz3` shape/consistency failure. The non-LENGTH arm
+        // is unreachable (the rejection branch above owns it) and falls here
+        // deliberately — fail CLOSED, exactly as `classify_affine_map_args` does.
+        _ => Err(DatumFault::Shape),
+    }
+}
+
+/// Classify a `Value::Plane` operand whose ORIGIN must be a `Point3<Length>`,
+/// returning its origin and normal components.
+///
+/// The whole SHAPE question — the `Plane` variant, the origin triple AND the
+/// dual `Vector`-or-`Direction` normal — is read through [`decode_plane`], the
+/// SAME decoder the eval gates have always used, and it is read BEFORE any
+/// dimension is judged. That ordering is what makes a malformed normal a
+/// `Shape` fault rather than a `NotLength` one: such a plane never reaches the
+/// LENGTH verdict, so its fault is never blamed on its origin's dimension.
+///
+/// Preserving `decode_plane`'s dual normal acceptance is load-bearing rather
+/// than conservative: the one real `.ri` call site of this family
+/// (`examples/geometric_relations/construction_datum.ri`) feeds a
+/// kernel-realized plane whose normal is a `Value::Direction`, so narrowing the
+/// normal decode would break the shipped example while the unit suite stayed
+/// green.
+fn classify_datum_plane(
+    arg_name: &'static str,
+    v: &Value,
+) -> Result<([f64; 3], [f64; 3]), DatumFault> {
+    let (_, _, normal) = decode_plane(v).ok_or(DatumFault::Shape)?;
+    let Value::Plane { origin, .. } = v else {
+        // Unreachable: `decode_plane` returns `None` for every non-`Plane` value.
+        return Err(DatumFault::Shape);
+    };
+    let o = classify_datum_point(arg_name, origin)?;
+    Ok((o, normal))
+}
+
+/// A decoded plane: its origin components and its normal components.
+type PlaneParts = ([f64; 3], [f64; 3]);
+
+/// Decode `midplane(a, b)`'s two planes, or say why they cannot be decoded.
+///
+/// One of the five per-builtin classifiers that own this family's acceptance.
+/// Each is read by BOTH its eval gate and its [`diagnose`] arm — see
+/// [`DatumFault`] for why — so guard ORDER is a property of this one function
+/// rather than a convention restated at each reader: `a` is classified before
+/// `b`, and a both-wrong call therefore names `a` deterministically at both
+/// readers (the [`diagnose_bbox_corners`] `min`-before-`max` precedent).
+fn classify_midplane_args(args: &[Value]) -> Result<(PlaneParts, PlaneParts), DatumFault> {
     if args.len() != 2 {
-        return Value::Undef;
+        return Err(DatumFault::Shape);
     }
-    let (oa, oa_dim, na) = match decode_plane(&args[0]) {
-        Some(p) => p,
-        None => return Value::Undef,
-    };
-    let (ob, ob_dim, nb) = match decode_plane(&args[1]) {
-        Some(p) => p,
-        None => return Value::Undef,
-    };
-    if oa_dim != ob_dim {
-        return Value::Undef;
+    let a = classify_datum_plane("a", &args[0])?;
+    let b = classify_datum_plane("b", &args[1])?;
+    Ok((a, b))
+}
+
+/// Decode `axis_through(a, b)`'s two points. See [`classify_midplane_args`] for
+/// the shared-classifier and guard-order rationale.
+fn classify_axis_through_args(args: &[Value]) -> Result<([f64; 3], [f64; 3]), DatumFault> {
+    if args.len() != 2 {
+        return Err(DatumFault::Shape);
     }
+    let a = classify_datum_point("a", &args[0])?;
+    let b = classify_datum_point("b", &args[1])?;
+    Ok((a, b))
+}
+
+/// Decode `plane_through(a, b, c)`'s three points. See
+/// [`classify_midplane_args`] for the shared-classifier and guard-order
+/// rationale.
+fn classify_plane_through_args(
+    args: &[Value],
+) -> Result<([f64; 3], [f64; 3], [f64; 3]), DatumFault> {
+    if args.len() != 3 {
+        return Err(DatumFault::Shape);
+    }
+    let a = classify_datum_point("a", &args[0])?;
+    let b = classify_datum_point("b", &args[1])?;
+    let c = classify_datum_point("c", &args[2])?;
+    Ok((a, b, c))
+}
+
+/// Decode `frame_at(o, x, z)`'s origin and its two axis directions.
+///
+/// Only `o` is a POSITION and only `o` is gated. The x/z operands arrive as
+/// `Value::Direction` — three plain `f64` fields, with no dimension to gate —
+/// and are decoded for SHAPE alone, because a unit vector legitimately has bare
+/// components (decision D3). See [`classify_midplane_args`] for the rest of the
+/// rationale.
+fn classify_frame_at_args(args: &[Value]) -> Result<([f64; 3], [f64; 3], [f64; 3]), DatumFault> {
+    if args.len() != 3 {
+        return Err(DatumFault::Shape);
+    }
+    let o = classify_datum_point("o", &args[0])?;
+    let x = decode_direction(&args[1]).ok_or(DatumFault::Shape)?;
+    let z = decode_direction(&args[2]).ok_or(DatumFault::Shape)?;
+    Ok((o, x, z))
+}
+
+/// `midplane(a: Plane, b: Plane) -> Plane`: the bisecting plane.
+/// normal = normalize(na + nb); origin = midpoint(oa, ob).
+///
+/// BOTH plane ORIGINS are REQUIRED to be `Point3<Length>` — units-length η
+/// (task 6591), the same R11 rule ε gates at [`make_plane`] / [`make_axis`] one
+/// family over. `Undef` if either origin is not LENGTH, if either plane cannot
+/// be decoded, or if the summed normal is zero (anti-parallel normals).
+///
+/// That gate REPLACES the dimension-AGREEMENT comparison this function used to
+/// make rather than stacking on top of it: requiring LENGTH of both origins
+/// accepts exactly the set agreement-plus-LENGTH would, so the comparison is
+/// dead code, not a second layer of defence. The invariant is still redundantly
+/// enforced where that has value — at the CONSUMER end, by task δ's
+/// [`decode_plane`] gate — which is a genuinely independent layer rather than a
+/// duplicated predicate one line away.
+///
+/// The verdict is reached through [`classify_midplane_args`], the SAME predicate
+/// [`diagnose`]'s `midplane` arm reads; the degeneracy guard is ordered AFTER
+/// it, so a bare-origin call is attributed to its dimension rather than to a
+/// degeneracy. The two NORMALS stay dimension-agnostic (decision D3), and the
+/// bisector's origin is minted at LENGTH because both inputs now are.
+fn eval_midplane(args: &[Value]) -> Value {
+    let Ok(((oa, na), (ob, nb))) = classify_midplane_args(args) else {
+        return Value::Undef;
+    };
     let normal = match normalize3([na[0] + nb[0], na[1] + nb[1], na[2] + nb[2]]) {
         Some(n) => n,
         None => return Value::Undef,
@@ -1518,28 +1686,27 @@ fn eval_midplane(args: &[Value]) -> Value {
         (oa[2] + ob[2]) / 2.0,
     ];
     Value::Plane {
-        origin: Box::new(make_point3(mid, oa_dim)),
+        origin: Box::new(make_point3(mid, DimensionVector::LENGTH)),
         normal: Box::new(make_real_vec3(normal)),
     }
 }
 
 /// `axis_through(a: Point, b: Point) -> Axis`: origin a, direction normalize(b - a).
-/// `Undef` if the points carry different dimensions or are coincident.
+///
+/// BOTH points are REQUIRED to be `Point3<Length>` — units-length η (task 6591).
+/// `Undef` if either is not LENGTH, if either cannot be decoded, or if the two
+/// are coincident. See [`eval_midplane`] for why the dimension-AGREEMENT
+/// comparison this replaces is deleted rather than kept beside it, and
+/// [`classify_axis_through_args`] for the predicate this gate and
+/// [`diagnose`]'s arm share.
+///
+/// The accepted origin is cloned VERBATIM so a `Point3<Length>` round-trips
+/// byte-identically; the synthesized direction stays DIMENSIONLESS, since a unit
+/// vector legitimately has bare components (decision D3).
 fn eval_axis_through(args: &[Value]) -> Value {
-    if args.len() != 2 {
+    let Ok((pa, pb)) = classify_axis_through_args(args) else {
         return Value::Undef;
-    }
-    let (pa, pa_dim) = match decompose_point3(&args[0]) {
-        Some(p) => p,
-        None => return Value::Undef,
     };
-    let (pb, pb_dim) = match decompose_point3(&args[1]) {
-        Some(p) => p,
-        None => return Value::Undef,
-    };
-    if pa_dim != pb_dim {
-        return Value::Undef;
-    }
     let direction = match normalize3([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]) {
         Some(d) => d,
         None => return Value::Undef,
@@ -1550,29 +1717,26 @@ fn eval_axis_through(args: &[Value]) -> Value {
     }
 }
 
-/// `plane_through(p1, p2, p3) -> Plane`: origin p1, normal normalize((p2-p1)×(p3-p1)).
-/// `Undef` if the points carry mixed dimensions or are collinear.
+/// `plane_through(a: Point, b: Point, c: Point) -> Plane`: origin a, normal
+/// normalize((b-a)×(c-a)).
+///
+/// ALL THREE points are REQUIRED to be `Point3<Length>` — units-length η (task
+/// 6591). `Undef` if any is not LENGTH, if any cannot be decoded, or if the
+/// three are collinear. See [`eval_midplane`] for why the dimension-AGREEMENT
+/// comparison this replaces is deleted rather than kept beside it, and
+/// [`classify_plane_through_args`] for the predicate this gate and
+/// [`diagnose`]'s arm share.
+///
+/// The parameters are `a`/`b`/`c` — the spelling
+/// `reify-compiler/src/units.rs`'s signature block and this family's
+/// diagnostics use. The accepted origin is cloned VERBATIM; the synthesized
+/// normal stays DIMENSIONLESS (decision D3).
 fn eval_plane_through(args: &[Value]) -> Value {
-    if args.len() != 3 {
+    let Ok((a, b, c)) = classify_plane_through_args(args) else {
         return Value::Undef;
-    }
-    let (p1, d1) = match decompose_point3(&args[0]) {
-        Some(p) => p,
-        None => return Value::Undef,
     };
-    let (p2, d2) = match decompose_point3(&args[1]) {
-        Some(p) => p,
-        None => return Value::Undef,
-    };
-    let (p3, d3) = match decompose_point3(&args[2]) {
-        Some(p) => p,
-        None => return Value::Undef,
-    };
-    if d1 != d2 || d1 != d3 {
-        return Value::Undef;
-    }
-    let u = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
-    let v = [p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]];
+    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     let normal = match normalize3(cross3(u, v)) {
         Some(n) => n,
         None => return Value::Undef,
@@ -1619,22 +1783,21 @@ fn eval_offset_plane(args: &[Value]) -> Value {
 /// `frame_at(o: Point, x: Direction, z: Direction) -> Frame`:
 /// orthonormalize (ŷ = ẑ×x̂, x̂' = ŷ×ẑ) into a basis quaternion; origin o.
 /// Reuses the tested `orient_basis` (Shepperd's method + orthonormality guards).
-/// `Undef` on bad arity / non-Point origin / non-Direction axes / x ∥ z.
+///
+/// The ORIGIN is REQUIRED to be a `Point3<Length>` — units-length η (task 6591).
+/// This function previously did not check the origin's dimension at all, not
+/// even for agreement, so a wholly bare `frame_at` built a bare-origin Frame at
+/// exit 0. `Undef` on bad arity / a non-LENGTH or undecodable origin /
+/// non-Direction axes / x ∥ z.
+///
+/// The x and z operands stay UNGATED: they arrive as `Value::Direction`, which
+/// is three plain `f64` fields with no dimension to gate, and a unit vector
+/// legitimately has bare components (decision D3). See
+/// [`classify_frame_at_args`] for the predicate this gate and [`diagnose`]'s arm
+/// share. The accepted origin is cloned VERBATIM.
 fn eval_frame_at(args: &[Value]) -> Value {
-    if args.len() != 3 {
+    let Ok((_, x_in, z_in)) = classify_frame_at_args(args) else {
         return Value::Undef;
-    }
-    // Validate the origin is a finite 3D Point; the clone below preserves its value/dim.
-    if decompose_point3(&args[0]).is_none() {
-        return Value::Undef;
-    }
-    let x_in = match decode_direction(&args[1]) {
-        Some(d) => d,
-        None => return Value::Undef,
-    };
-    let z_in = match decode_direction(&args[2]) {
-        Some(d) => d,
-        None => return Value::Undef,
     };
     let z_hat = match normalize3(z_in) {
         Some(z) => z,
