@@ -189,3 +189,5 @@ mod cli_vc_clearance;
 mod corpus_no_bare_scalar;
 #[path = "harness_cli/units_length_boundary_gate.rs"]
 mod units_length_boundary_gate;
+#[path = "harness_cli/units_length_boundary_ledger.rs"]
+mod units_length_boundary_ledger;
