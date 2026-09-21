@@ -136,10 +136,14 @@ JC_PIN="jcodemunch-mcp==1.108.54"
 # 3.13 is measured against BOTH subcommands directly, not inferred for either.
 #
 # NOTE for a future bumper who repeats that measurement:
-# `result.serverInfo.version` reports upstream's INTERNAL version string
-# ("1.29.1" at this pin), NOT the PyPI wheel version. Readiness checks assert on
-# serverInfo.NAME for exactly that reason and must not be "tightened" to the
-# version.
+# `result.serverInfo.version` reports upstream's INTERNAL version string, and it
+# is not pinned by the wheel pin AT ALL: with `--from jcodemunch-mcp==1.108.54`
+# held fixed it answered "1.29.1" on 2026-09-04 and "1.30.0" on 2026-09-21 (the
+# latter with the serve banner reading `jcodemunch-mcp 1.108.54 by jgravelle`,
+# so the wheel really was unchanged). Both numbers are recorded as EVIDENCE FOR
+# THAT INVARIANT, not as a value to expect back — a third repetition may well
+# report a third number. Readiness checks assert on serverInfo.NAME for exactly
+# that reason and must not be "tightened" to the version.
 JC_PYTHON="3.13"
 
 # ── The identity lever ───────────────────────────────────────────────────────
