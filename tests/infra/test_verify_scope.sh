@@ -2581,6 +2581,15 @@ assert "EX-1n: scope decision RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (case glob * 
 _GUI_LANE_WITH_VITEST="cd gui && .*npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh'"
 _GUI_LANE_TSC_ONLY="cd gui && .*npm ci && npm run typecheck'"
 
+# The gui-FEATURE nextest pass — a different consumer of the SAME predicate, and
+# the discriminating one.  The vitest lane has three routes into it
+# (GUI_PATH_SIGNAL, the closure, an explicit spec request), so a RUN_GUI_VITEST
+# assertion cannot isolate the closure arm; this pass has exactly one route and
+# therefore can.  Used in BOTH directions across the suite — plan_lacks on GV-7's
+# computed-empty closure, plan_has on GV-FAILWIDE-1/2's unavailable one — so
+# neither reading can go vacuously green on a pattern that stopped matching.
+_GUI_FEATURE_PASS="cargo (test|nextest run) .*-p reify-gui --features gui"
+
 echo ""
 echo "--- Scenario GV-1: crate OUTSIDE reify-gui's cone -> tsc yes, vitest NO ---"
 plan_for_branch_env "REIFY_AFFECTED_CRATES_OVERRIDE=reify-cli reify-doc reify-doc-build reify-eval" \
@@ -2675,17 +2684,49 @@ assert "GV-6: $_GV6_PIN -> RUN_RUST=0 RUN_GUI=1 RUN_GUI_VITEST=1 (the ledger is 
 assert "GV-6: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
 
-# GV-7 — task 6268's arm 2, the OVERLOADED empty closure. A tests/infra-only
-# branch diff yields RUN_RUST=1 from decide_scope's conservative catch-all but
-# an EMPTY closure from affected-crates-lib's non-crate allowlist. Cited, not
-# restated: see closure_reaches_reify_gui's arm 2.
+# GV-7 — task 6268's COMPUTED-EMPTY closure, and the one scenario that pins
+# both halves of it at once. A tests/infra-only branch diff yields RUN_RUST=1
+# from decide_scope's conservative catch-all but an EMPTY closure from
+# affected-crates-lib's non-crate allowlist — and that emptiness was DERIVED
+# from this run's own changed-file list, so it proves reify-gui is unaffected
+# rather than merely failing to say. Cited, not restated: see
+# closure_reaches_reify_gui's computed-empty arm.
+#
+# The two assertions go opposite ways ON PURPOSE, and the difference is
+# derived, not incidental. The gui-FEATURE pass is narrowed AWAY: it has one
+# route in, this predicate. The VITEST lane is value-preserved: decide_scope's
+# `*)` catch-all sets `rust=1; gui=1; gate=1` together for tests/infra/*, so
+# GUI_PATH_SIGNAL=1 carries it regardless of what the closure says. That is
+# general, not a property of this fixture — a closure can only be
+# computed-empty when every changed path is non-crate, and of those classes
+# only tests/infra/* reaches RUN_RUST=1, via that same catch-all.
+#
+# The headline is a NEGATIVE (plan_lacks), so it gets an anti-vacuity control
+# FIRST, the same discipline b11/b13/b15 keep in
+# test_compute_trampoline_registration_wired.sh. plan_for_branch_env captures
+# with `|| true` and asserts nothing itself, so on retry exhaustion PLAN_OUT can
+# be a partial dump that still carries the preamble both the scope-header check
+# and the vitest-lane grep live in — and then the one assertion pinning the
+# COMPUTED-EMPTY arm at the branch tier would go green for the wrong reason.
+# GV-FAILWIDE-2's plan_has on the same pattern guards pattern DRIFT, not
+# truncation of THIS capture.
 echo ""
-echo "--- Scenario GV-7: tests/infra-only branch diff (empty closure) -> vitest runs ---"
+echo "--- Scenario GV-7: tests/infra-only branch diff (computed-empty closure) -> vitest runs, gui-feature pass narrowed away ---"
 plan_for_branch_env "" tests/infra/foo.sh
-assert "GV-7: RUN_GUI_VITEST=1 on an empty closure (task 6268 arm 2)" \
+assert "GV-7: plan capture is complete (the plan_lacks below must not be satisfied by a truncated dump)" \
+    plan_capture_complete "$PLAN_OUT"
+assert "GV-7: RUN_GUI_VITEST=1 on a computed-empty closure (carried by GUI_PATH_SIGNAL, not the closure)" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-7: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
+# Positive control on the command BODY specifically: proves test passes were
+# emitted at all, and simultaneously pins that a computed-empty closure does not
+# activate narrowing for the other passes (NARROW_ACTIVE stays 0, so they keep
+# --workspace).
+assert "GV-7: the plan is a real full-workspace test plan (carries a --workspace test pass)" \
+    plan_has 'cargo (test|nextest run) .*--workspace'
+assert "GV-7: the gui-feature nextest pass IS narrowed away (a diff touching zero crates cannot reach reify-gui)" \
+    plan_lacks "$_GUI_FEATURE_PASS"
 
 echo ""
 echo "--- Scenario GV-8: examples/*.ri branch diff -> vitest runs (grammar ledger reads examples/) ---"
@@ -2788,6 +2829,19 @@ assert "GV-FAILWIDE-1: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-FAILWIDE-1: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
+# The load-bearing companion to GV-7, and the ONLY fixture that can be one.
+# These returns set RUN_RUST=1 and leave CHANGED_FILES_RAW="" — the exact "no
+# file list" shape that used to be indistinguishable from "a diff touching zero
+# crates", and the reason the empty closure could not be tightened before task
+# 6268. GV-7 narrows that shape away; this asserts THIS one still widens, so
+# the two stayed distinguished rather than both collapsing to "narrow away".
+#
+# It discriminates where the RUN_GUI_VITEST assertion above cannot: those
+# returns set GUI_PATH_SIGNAL=1 explicitly, so the vitest assertion would hold
+# even if the closure arm were deleted outright. The gui-feature pass has no
+# second route in — it is emitted ONLY via closure_reaches_reify_gui.
+assert "GV-FAILWIDE-1: an UNAVAILABLE closure still emits the gui-feature pass (CHANGED_FILES_RAW='' is not proof of zero crates)" \
+    plan_has "$_GUI_FEATURE_PASS"
 
 # The branch twin. plan_for_branch_env's `env ${2:+"$2"}` hook (pre-1) carries
 # the shim; its capture discards fd 2 by construction, so the WARNING-text
@@ -2803,5 +2857,7 @@ assert "GV-FAILWIDE-2: RUN_GUI_VITEST=1 — failing wide runs the whole lane" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-FAILWIDE-2: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
+assert "GV-FAILWIDE-2: an UNAVAILABLE closure still emits the gui-feature pass on the branch tier too" \
+    plan_has "$_GUI_FEATURE_PASS"
 
 test_summary

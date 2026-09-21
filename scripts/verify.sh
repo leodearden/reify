@@ -1994,6 +1994,27 @@ select_pdiag_ratchet
 # path, so the --workspace coupling that tests/infra/test_verify_scope.sh's
 # B9-default scenario pins is untouched.
 #
+# AFFECTED_CLOSURE_FROM_DIFF — the LICENCE to read an empty AFFECTED_CLOSURE as
+# "this diff provably touches zero crates" (task 6268). An empty closure string
+# alone cannot mean that, because it is what FOUR distinct paths leave behind:
+# the closure was not eligible (scope=all, RUN_RUST=0); CHANGED_FILES_RAW was
+# empty (decide_scope's git-failure fail-wide returns, which DO set RUN_RUST=1);
+# the file list split to zero arguments; or affected_crates() genuinely proved
+# zero crates. Only the last licenses narrowing, and only this flag tells them
+# apart — so it is set on exactly ONE branch below, adjacent to the
+# affected_crates() call it vouches for (heuristic 11), and defaults to 0, the
+# fail-wide answer.
+#
+# A REIFY_AFFECTED_CRATES_OVERRIDE deliberately never sets it. An override is a
+# SUBSTITUTE for the derivation, not a derivation, so it can make no claim about
+# what the diff touches — and letting it claim one would invert the fail-wide
+# invariant the AFFECTED_ALL_FLAGS-empty reset below exists to hold: a
+# whitespace-only override ("   ") is a non-empty STRING that word-splits to
+# zero tokens, so with the flag set it would read as "provably zero crates" and
+# silently narrow coverage away from a typo'd operator knob. Restricting the
+# flag to the affected_crates() branch makes that impossible by construction
+# rather than by a second guard.
+#
 # COST — affected_crates() is invoked at most ONCE per run (hence hoisting it
 # here rather than adding a second call site), and RUN_RUST=0 (a docs-only
 # hook-gated commit) skips it entirely. The call shells out to
@@ -2020,6 +2041,8 @@ select_pdiag_ratchet
 # ---------------------------------------------------------------------------
 AFFECTED=""
 AFFECTED_CLOSURE=""
+# 0 = "no licence to read an empty closure as proof" — the fail-wide default.
+AFFECTED_CLOSURE_FROM_DIFF=0
 NARROW_ACTIVE=0
 AFFECTED_ALL_FLAGS=""
 
@@ -2049,6 +2072,7 @@ if [ "$_closure_eligible" -eq 1 ]; then
         done <<< "$CHANGED_FILES_RAW"
         if [ "${#_af_args[@]}" -gt 0 ]; then
             AFFECTED_CLOSURE="$(affected_crates "${_af_args[@]}")"
+            AFFECTED_CLOSURE_FROM_DIFF=1
         fi
     fi
 fi
@@ -2091,21 +2115,62 @@ fi
 # extracted by task 7427); two consumers read it — the gui-feature nextest
 # pass and the vitest lane gate just below.
 #
-# THREE EXPLICIT ARMS, read off SCOPE and AFFECTED_CLOSURE directly:
-#   1. SCOPE=all            -> true.  The merge gate never narrows; that is a
-#                              CONTRACT, not a side effect.
-#   2. closure unavailable  -> true.  FAIL WIDE.  "Unavailable" covers the ALL
-#                              sentinel (a C4 workspace-global file, a C5
-#                              cargo-metadata failure, an unmappable path), an
-#                              empty CHANGED_FILES_RAW, and a malformed
-#                              REIFY_AFFECTED_CRATES_OVERRIDE.  The empty case
-#                              is genuinely OVERLOADED — decide_scope's
-#                              git-failure fail-wide paths also return
-#                              RUN_RUST=1 with CHANGED_FILES_RAW="" — so
-#                              conflating it with "provably no crates" is
-#                              CORRECT here and cannot be tightened without a
-#                              separate closure-available sentinel.
-#   3. otherwise            -> true iff reify-gui ∈ AFFECTED_CLOSURE.
+# FOUR EXPLICIT ARMS, read off SCOPE, AFFECTED_CLOSURE and
+# AFFECTED_CLOSURE_FROM_DIFF directly.  Each arm has a NAME, and every citation
+# — here, at the call sites, and in the tests — uses the NAME.  An ordinal is a
+# fragile identifier once it is duplicated across files: this list was renumbered
+# once (task 6268 inserted COMPUTED-EMPTY ahead of the membership test) and three
+# remote citations silently became plausible-but-wrong rather than obviously stale.
+#   1. MERGE-GATE arm       SCOPE=all -> true.  The merge gate never narrows;
+#                              that is a CONTRACT, not a side effect.
+#   2. FAIL-WIDE arm        closure unavailable -> true.  "Unavailable" covers
+#                              the ALL sentinel (a C4 workspace-global file, a C5
+#                              cargo-metadata failure, an unmappable path, a seed
+#                              that resolved to no package), a malformed
+#                              REIFY_AFFECTED_CRATES_OVERRIDE, and an empty
+#                              closure this run never DERIVED — including
+#                              decide_scope's git-failure fail-wide paths, which
+#                              return RUN_RUST=1 with CHANGED_FILES_RAW="".
+#   3. COMPUTED-EMPTY arm   closure DERIVED and empty -> FALSE.  Not the same
+#                              thing as FAIL-WIDE, and the distinction is the
+#                              whole of task 6268.  The run called
+#                              affected_crates() on its own changed-file list and
+#                              it came back holding no crate at all, so reify-gui
+#                              is PROVABLY unaffected — narrow the pass away
+#                              rather than fail wide over a question that was
+#                              actually answered.  AFFECTED_CLOSURE_FROM_DIFF is
+#                              what separates the two (see its assignment site);
+#                              an override never sets it, so a malformed knob
+#                              cannot reach this arm.
+#   4. MEMBERSHIP arm       otherwise -> true iff reify-gui ∈ AFFECTED_CLOSURE.
+#
+# THE SECOND CONSUMER IS SAFE BY DERIVATION — with ONE named exception, stated
+# rather than papered over.  COMPUTED-EMPTY is reachable only when RUN_RUST=1
+# and every changed path is non-crate (docs/**, *.md, *.yaml/yml, gui/src/**,
+# tests/infra/**).  Of those classes only tests/infra/** classifies RUN_RUST=1,
+# and it does so through decide_scope's `*)` catch-all, which sets
+# `rust=1; gui=1; gate=1` TOGETHER; the docs/gui-event-channels.md rename force
+# likewise reaches its own arm and sets gui=1.  On every such shape
+# GUI_PATH_SIGNAL=1 already carries the vitest lane, so COMPUTED-EMPTY narrows
+# the gui-feature nextest pass and nothing else.
+#
+# THE EXCEPTION IS A CLASSIFIER DISAGREEMENT, and this arm is what resolves it:
+# an INERT file at depth 1 directly under `crates/` (crates/README.md,
+# crates/anything.yaml).  decide_scope's `crates/*)` glob matches it — a case
+# `*` spans `/` — and sets rust=1 WITHOUT gui=1, while affected-crates-lib's
+# _file_to_crate needs `crates/*/*` to attribute a crate and drops the same path
+# into the inert arm.  Both classifiers are right about their own question
+# ("could this affect Rust?" vs "which crates does this touch?"), and this is
+# the seam where the two verdicts meet.  Consequence: GUI_PATH_SIGNAL=0 there,
+# so COMPUTED-EMPTY narrows the vitest lane away too.  Benign, and not because
+# of this predicate: reify_is_inert_path calls that path documentation, and the
+# same file one directory up (docs/**, a root *.md) classifies RUN_RUST=0 and
+# skips vitest already.  The MERGE-GATE arm runs both regardless.  Measured: no
+# such file exists in the tree today (`find crates -maxdepth 1 -type f` is empty).
+#
+# Pinned in one place rather than argued twice: tests/infra/test_verify_scope.sh's
+# GV-7 asserts both halves — pass narrowed away, vitest lane preserved — on the
+# tests/infra shape, the one that actually occurs.
 #
 # NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-ACTIVATION flag,
 # not a scope oracle: it is also 0 for `--scope staged` without `--narrow` and
@@ -2113,13 +2178,13 @@ fi
 # gate" was a false equivalence.
 #
 # WHAT ACTUALLY NARROWS is smaller than "every hook run", and the difference is
-# measured, not assumed: only a diff whose paths ALL map to crates AND whose
-# reverse closure excludes reify-gui takes arm 3.  A scripts-only diff yields
-# the ALL sentinel (C5/unmappable) and a tests/infra-only one yields an EMPTY
-# closure (affected-crates-lib treats tests/infra/* as non-crate, while
-# decide_scope's conservative arm still sets RUN_RUST=1) — both take arm 2.
-# Arm 1 keeps the merge gate unconditional, so a hook-tier miss can only ever
-# be LATENCY, never a coverage hole.
+# measured, not assumed.  TWO shapes narrow: a diff whose paths ALL map to
+# crates and whose reverse closure excludes reify-gui (MEMBERSHIP), and a diff
+# whose paths map to NO crate at all while still classifying RUN_RUST=1 — in
+# practice a tests/infra-only one, extremely common here (COMPUTED-EMPTY).  A
+# scripts-only diff does NOT: it yields the ALL sentinel (C5/unmappable) and
+# takes FAIL-WIDE.  The MERGE-GATE arm keeps the merge gate unconditional, so a
+# hook-tier miss can only ever be LATENCY, never a coverage hole.
 #
 # Membership is the REVERSE-dependency closure, not a hand-listed trigger set
 # (reify-gui/reify-eval/reify-mesh-morph), so a change to an indirect
@@ -2128,7 +2193,7 @@ fi
 # crates/reify-mesh-morph/src/lib.rs yield sets containing reify-gui;
 # crates/reify-doc/src/lib.rs does not.
 #
-# The closure is normalized ONCE into a word ARRAY so arm 2 sees every
+# The closure is normalized ONCE into a word ARRAY so FAIL-WIDE sees every
 # malformed-knob shape as "unavailable" rather than as a crate list — a
 # malformed REIFY_AFFECTED_CRATES_OVERRIDE must fail WIDE, never narrow, the
 # same invariant as the AFFECTED_ALL_FLAGS-empty reset above.  Three shapes,
@@ -2146,7 +2211,11 @@ fi
 #     metacharacter, a path fragment, a stray flag.  A real affected_crates()
 #     closure only ever holds crate names, so a token that cannot BE one means
 #     the knob is malformed, not that the closure excludes reify-gui.  Closed
-#     by the grammar check, which routes to arm 2 rather than arm 3.
+#     by the grammar check, which routes to FAIL-WIDE rather than MEMBERSHIP.
+# None of the three can reach COMPUTED-EMPTY either, and not because of a second
+# guard: they arrive through REIFY_AFFECTED_CRATES_OVERRIDE, which never sets
+# the from-diff licence, so the whitespace-only shape — the one that DOES split
+# to an empty array — still falls to FAIL-WIDE.
 #
 # Role-specific skips belong at the CALL SITE, not here: the gui-feature pass's
 # `DF_VERIFY_ROLE != offline` guard is a property of that pass, not of the
@@ -2168,12 +2237,22 @@ closure_reaches_reify_gui() {
     done
     if [ "$_noglob_was" -eq 0 ]; then set +f; fi
 
-    # Arm 2 — closure unavailable: fail wide.
-    [ "${#_words[@]}" -eq 0 ] && return 0
+    # FAIL-WIDE — closure unavailable.  Ordered ahead of the empty test,
+    # which is safe as well as clearer: _malformed can only be 1 if the split
+    # loop ran a body, i.e. if _words is non-empty.
     [ "$_malformed" -eq 1 ] && return 0
     { [ "${#_words[@]}" -eq 1 ] && [ "${_words[0]}" = "ALL" ]; } && return 0
 
-    # Arm 3 — a real crate list: membership decides.
+    # FAIL-WIDE vs COMPUTED-EMPTY — an empty closure is two different facts,
+    # told apart by the from-diff licence alone: DERIVED from this run's diff
+    # means provably zero crates (narrow away); anything else means the question
+    # was never answered (fail wide).
+    if [ "${#_words[@]}" -eq 0 ]; then
+        [ "$AFFECTED_CLOSURE_FROM_DIFF" -eq 1 ] && return 1
+        return 0
+    fi
+
+    # MEMBERSHIP — a real crate list: membership decides.
     for _w in "${_words[@]}"; do
         [ "$_w" = "reify-gui" ] && return 0
     done
@@ -2905,7 +2984,7 @@ add_test_passes() {
     #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
     #     partition only.
     #   * NARROWED on the same affected-crate axis every other narrowed pass uses,
-    #     by closure_reaches_reify_gui (defined above — task 6268's three arms and
+    #     by closure_reaches_reify_gui (defined above — task 6268's four arms and
     #     their fail-wide ladder; task 7427 extracted them so the vitest lane reads
     #     the same answer instead of a second copy).
     #     WHAT THAT BUYS *THIS* PASS is a full tauri + webkit2gtk + OCCT
@@ -3761,13 +3840,21 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     # "RUN_RUST=… RUN_GUI=… RUN_OCCT_GATE=…", which survives a trailing append
     # and does not survive a reordering.
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE RUN_GUI_VITEST=$RUN_GUI_VITEST"
-    # `closure=` is APPENDED, never inserted: tests/infra/test_verify_scope.sh
-    # greps this line as the unanchored substrings "NARROW_ACTIVE=1 affected=…" /
-    # "NARROW_ACTIVE=0 affected=ALL", and plan_capture_lib.sh's plan_narrow_active
-    # matches NARROW_ACTIVE=([0-9]+); all three survive a trailing append and none
-    # survives a reordering.  A `#` comment line, so plan_count_noncomment_lines
-    # (`^[^#]`) — the oracle behind the THROUGHPUT-COUNTS sentinel — cannot see it.
-    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-}"
+    # `closure=` and `from_diff=` are APPENDED, never inserted:
+    # tests/infra/test_verify_scope.sh greps this line as the unanchored
+    # substrings "NARROW_ACTIVE=1 affected=…" / "NARROW_ACTIVE=0 affected=ALL",
+    # and plan_capture_lib.sh's plan_narrow_active matches NARROW_ACTIVE=([0-9]+);
+    # all three survive a trailing append and none survives a reordering.  A `#`
+    # comment line, so plan_count_noncomment_lines (`^[^#]`) — the oracle behind
+    # the THROUGHPUT-COUNTS sentinel — cannot see it.
+    #
+    # `from_diff=` is what makes the closure THREE-valued to a plan reader:
+    # `closure=` alone is empty both when a real diff proved zero crates and when
+    # the closure was never computed on this tier, and only the former licenses
+    # narrowing.  Without it a --print-plan assertion of "0 gui-feature passes"
+    # would be satisfiable by an implementation that simply stopped computing the
+    # closure — see AFFECTED_CLOSURE_FROM_DIFF at its assignment site.
+    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-} from_diff=$AFFECTED_CLOSURE_FROM_DIFF"
     echo "# --- environment (process-level; inherited by every command below EXCEPT where a command overrides it inline — see the LD_LIBRARY_PATH scrub on non-cargo lines) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"

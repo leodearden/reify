@@ -15,8 +15,12 @@
 #
 # Provides:
 #   affected_crates <file>...  prints the affected workspace crate names
-#                              (sorted, one per line), or the literal ALL.
-#                              Always returns 0.
+#                              (sorted, one per line), the literal ALL, or
+#                              NOTHING — three outcomes, all load-bearing.
+#                              An empty print means "this file list provably
+#                              touches zero crates" and is a POSITIVE answer,
+#                              not a failure to answer; see the function's own
+#                              header. Always returns 0.
 #   reify_is_inert_path <path> true iff the path is documentation or
 #                              configuration (docs/**, *.md, *.yaml, *.yml).
 #                              The shared definition of that class; verify.sh's
@@ -222,12 +226,49 @@ _reverse_closure() {
         [ -n "$s" ] && seed_args+=("$s")
     done <<< "$seeds"
 
-    printf '%s\n' "$meta" | _reify_compile_closure "${seed_args[@]}" 2>/dev/null || { echo ALL; return 0; }
+    # SEEDS IN, NOTHING OUT is a FAILURE to attribute, not an answer — so it is
+    # C5, not an empty print. _reify_compile_closure resolves seed NAMES through
+    # the metadata's name->id map and silently skips a name that maps to no
+    # package (`name_to_ids.get(sn, [])`), exiting 0 with no output. A RESOLVABLE
+    # workspace seed is always a member of its own compile closure, so an empty
+    # result from a non-empty seed list can only mean a seed did not resolve.
+    # Reachable shapes: a file added under a typo'd or not-yet-declared crate
+    # directory, a crate directory whose package name differs from the directory
+    # name (nothing pins dir == package name), a path under a crate whose
+    # `members` entry was already removed so C4 never fires.
+    #
+    # This is what keeps affected_crates()' empty print SINGLE-SOURCED at the
+    # `${#direct[@]} -eq 0` early return — the property its header claims and
+    # verify.sh's computed-empty arm relies on. Without it a crate-attributed
+    # path whose crate did not resolve would arrive at that consumer wearing the
+    # from-diff licence and be read as "provably zero crates".
+    local closure
+    closure="$(printf '%s\n' "$meta" | _reify_compile_closure "${seed_args[@]}" 2>/dev/null)" || { echo ALL; return 0; }
+    if [ -z "$closure" ]; then
+        echo "affected-crates-lib.sh: seed crate(s) resolved to no workspace package — falling back to ALL" >&2
+        echo ALL
+        return 0
+    fi
+    printf '%s\n' "$closure"
 }
 
 # affected_crates <file>... — print the affected workspace crate set, one name
-# per line, sorted; or print the literal ALL if any C4/C5 condition fires.
+# per line, sorted; or print the literal ALL if any C4/C5 condition fires; or
+# print NOTHING if every path is crate-unmappable-but-known (the non-crate
+# classes: docs/**, *.md, *.yaml/yml, gui/src/**, tests/infra/**).
 # Always returns 0 so callers are safe under set -e and inside $() capture.
+#
+# THE EMPTY PRINT IS AN ANSWER, NOT A SHRUG (task 6268). Its meaning is exact:
+# every path was classified, none mapped to a crate, and an unmappable path
+# would have gone wide via C5 instead. It has exactly ONE producer — the
+# `${#direct[@]} -eq 0` early return below, which short-circuits BEFORE
+# _reverse_closure, so it never shells out to `cargo metadata` and is
+# reproducible in a workspace-less fixture. _reverse_closure holds up the other
+# half of that single-sourcing: a non-empty seed list that yields no closure is
+# C5, never an empty print (see its own header).
+#
+# A caller that must distinguish this from "affected_crates was never called"
+# carries that bit itself: see AFFECTED_CLOSURE_FROM_DIFF in scripts/verify.sh.
 affected_crates() {
     # C4: if any arg is a global file, immediately emit ALL.
     local arg
@@ -257,7 +298,8 @@ affected_crates() {
         fi
     done
 
-    # If no direct crates were accumulated, print nothing.
+    # No direct crates: print nothing. Load-bearing — "provably zero crates",
+    # not "could not tell". See this function's header.
     if [ "${#direct[@]}" -eq 0 ]; then
         return 0
     fi
