@@ -115,8 +115,18 @@ tasks:
   capabilities:
   - name: five-ungated-angle-reads
     binding: capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:2251,2312,2975,3327,3328
-      each f64_arg("angle"|"start_angle"|"end_angle") over the bare-accepting eval_named_arg_f64
-      (:202)
+      each f64_arg("angle"|"start_angle"|"end_angle") over the bare-accepting
+      eval_named_arg_f64 (:202) AT DECOMPOSE — this row's name is a decompose-time
+      label for what the leaf would add, not an assertion that the reads are
+      currently ungated. Since DELIVERED, those five reads go through
+      required_angle_arg (crates/reify-eval/src/geometry_ops.rs:731) and
+      required_angle_args (:795) instead (re-measured 2026-09-21, task 7748),
+      landed by task 6924 (merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9);
+      eval_named_arg_f64 itself still exists at geometry_ops.rs:223 and serves
+      other non-angle readers. This row's delivered_check (angle_spec() present
+      in geometry_ops.rs) is satisfied by ANY occurrence anywhere in that ~500 KB
+      file, including a doc comment, and is not bound to these five reads
+      specifically — comment-satisfiable, not construct-bound
     verdict: PASS
     delivered_check:
       kind: grep
@@ -126,7 +136,12 @@ tasks:
       expect: present
   - name: silent-accept-pre-state
     binding: 'rejection-check baseline — probe (2026-07-29): rotate / rotate_around
-      / revolve(bare 2pi) / arc(bare) each `reify eval` exit 0 with ZERO angle diagnostics'
+      / revolve(bare 2pi) / arc(bare) each `reify eval` exit 0 with ZERO angle
+      diagnostics AT DECOMPOSE. Since DELIVERED (re-measured 2026-09-21, task 7748;
+      landed by task 6924, merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9), all
+      four are rejected by the same required_angle_arg / required_angle_args gate
+      — the fixture test this leaf added (the RED half became the gate) asserts
+      the post-state rejection directly'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -134,9 +149,17 @@ tasks:
         post-state rejection
   - name: b2b-revolve-full-survives
     binding: 'DAG-direction + two-way seam — probe: revolve_full(rectangle(20mm,10mm),
-      -10mm,0mm,0mm, 0.0,1.0,0.0) exits 0 today; grep:crates/reify-compiler/src/geometry.rs:2064-2067,2080
-      wires the TAU literal into the "angle" arg; producer:task 5742 (PRD 1 α) retypes
-      it ANGLE — upstream, hard edge. D10 re-ratified at decompose'
+      -10mm,0mm,0mm, 0.0,1.0,0.0) exits 0 AT DECOMPOSE (2026-07-29); grep:crates/reify-compiler/src/geometry.rs:2064-2067,2080
+      wired the TAU literal into the "angle" arg AT DECOMPOSE; producer:task 5742
+      (PRD 1 α) retypes it ANGLE — upstream, hard edge, D10 re-ratified at
+      decompose. Since DELIVERED (re-measured 2026-09-21, task 7748; landed by
+      task 6924, merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9), the retype
+      landed: the arg is now built Value::angle(std::f64::consts::TAU) /
+      Type::angle() at crates/reify-compiler/src/geometry.rs:2348-2351, exactly
+      what the delivered_check below (Value::Real(std::f64::consts::TAU) absent
+      from that one path) asserts and passes — NOT a repo-wide absence: the old
+      dimensionless literal form still appears at
+      crates/reify-ir/src/geometry.rs:10120, outside the path this check covers'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -150,8 +173,20 @@ tasks:
   capabilities:
   - name: draft-angle-is-ungated-raw-value
     binding: 'capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:1979
-      `let angle = eval_arg("angle")?;`; IR crates/reify-ir/src/geometry.rs:944 `angle:
-      Value`'
+      `let angle = eval_arg("angle")?;` AT DECOMPOSE; IR crates/reify-ir/src/geometry.rs:944
+      `angle: Value` AT DECOMPOSE, unchanged today at :1096 (the Draft variant opens
+      at :1046). The name of this row is a decompose-time label for what the leaf
+      would add, not an assertion that the read is currently ungated — only the
+      "ungated" half is retired. Since DELIVERED (re-measured 2026-09-21, task 7748;
+      landed by task 6924, merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9),
+      modify_draft (geometry_ops.rs:3409) reads the angle through
+      required_angle_value("angle", ..) at :763, above the plane resolution,
+      carrying an in-situ δ BREADCRUMB; the IR field itself is deliberately
+      unchanged, since the gate sits at the eval read and not in the IR. This
+      delivered_check (angle_spec() present in geometry_ops.rs) is byte-identical
+      to the γ leaf five-ungated-angle-reads check and is satisfied by ANY
+      occurrence anywhere in that file — comment-satisfiable, not construct-bound,
+      proving nothing about the draft site specifically'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -160,19 +195,27 @@ tasks:
       - crates/reify-eval/src/geometry_ops.rs
       expect: present
   - name: one-read-site-not-two
-    binding: premise CORRECTION (PRD §11 Q4 refuted) — :1979 sits above the `match
-      faces_expr` split; :1991 and :2049 are mutually-exclusive arms consuming the
-      same binding
+    binding: premise CORRECTION (PRD §11 Q4 refuted) AT DECOMPOSE — :1979 sat above
+      the `match faces_expr` split; :1991 and :2049 were mutually-exclusive arms
+      consuming the same binding. STILL TRUE today — re-measured 2026-09-21 (task
+      7748), the read is now at geometry_ops.rs:3409 opening modify_draft, and the
+      claim is pinned in situ by the landed δ BREADCRUMB there, not only in this
+      manifest
     verdict: PASS
     delivered_check:
       kind: manual
       reason: a structural claim about one function's control flow; no stable pattern
   - name: draft-not-eval-reachable
-    binding: 'producer-absent → SIGNAL WEAKENED per G6(b) — probe: every draft(...)
-      form exits 1 with `no valid plane handle available for Draft` BEFORE the angle
-      matters (bare AND dimensioned alike); zero .ri corpus draft call sites; reify
-      check exits 0. Pre-existing defect, geometry-modify-sweep-completion territory
-      (task 2010 is done while the defect is live)'
+    binding: 'producer-absent → SIGNAL WEAKENED per G6(b) AT DECOMPOSE — probe: every
+      draft(...) form exits 1 with `no valid plane handle available for Draft`
+      BEFORE the angle matters (bare AND dimensioned alike); zero .ri corpus draft
+      call sites; reify check exits 0. Pre-existing defect,
+      geometry-modify-sweep-completion territory (task 2010 is done while the
+      defect is live). STILL LIVE today, not retired by task 6924: re-confirmed
+      2026-09-21 (task 7748), task 2010 plane-handle placeholder
+      (step_handles.last()) is untouched, and the landed δ BREADCRUMB at
+      modify_draft (geometry_ops.rs:3409) documents it in situ as a pre-existing,
+      out-of-scope approximation'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -186,6 +229,14 @@ tasks:
   - name: resolve-bare-angle-exists
     binding: capability→producer (this leaf) — grep:crates/reify-eval/src/geometry_ops.rs:880
       fn resolve_bare_angle, call sites :2585 (value-axis) and :2626 (scalar-axis)
+      AT DECOMPOSE — this row's name is a decompose-time label for what the leaf
+      would retire, not an assertion that the function is currently present.
+      Since DELIVERED (re-measured 2026-09-21, task 7748; landed by task 6924,
+      merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9), resolve_bare_angle is
+      zero-hit in crates/reify-eval/src/geometry_ops.rs — retired, not relocated.
+      Unlike the γ/δ angle_spec() checks, this delivered_check IS
+      construct-bound — it asserts the retirement itself and the check and the
+      claim coincide
     verdict: PASS
     delivered_check:
       kind: grep
@@ -194,10 +245,14 @@ tasks:
       - crates/reify-eval/src/geometry_ops.rs
       expect: absent
   - name: codeless-warning-is-live
-    binding: 'rejection-check baseline + INV-SF-6 — probe: circular_pattern(b,0mm,0mm,0mm,0.0,0.0,1.0,4,360)
+    binding: 'rejection-check baseline + INV-SF-6 AT DECOMPOSE — probe: circular_pattern(b,0mm,0mm,0mm,0.0,0.0,1.0,4,360)
       exits 0 with `warning: circular_pattern: bare numeric angle `360` interpreted
       as 360°; use `360deg` or `6.283185rad` for explicit units`; grep:crates/reify-core/src/diagnostics.rs:3885
-      Diagnostic::warning sets code None'
+      Diagnostic::warning sets code None AT DECOMPOSE. Since DELIVERED (re-measured
+      2026-09-21, task 7748; landed by task 6924, merge
+      1a9cf2b51f301c8716eb545dc43ec8a565d765e9), circular_pattern rejects a bare
+      angle through the same shared angle_spec() reader that γ and δ use, and the
+      warning this row describes is gone from that one call path'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -206,10 +261,18 @@ tasks:
       - crates/reify-eval/src/geometry_ops.rs
       expect: absent
   - name: breakage-set-corrected
-    binding: producer-extent (PRD said 3, actual 9) — inverting tests crates/reify-eval/tests/circular_pattern_angle.rs:47,86;
-      BYTE-COMPARED goldens crates/reify-eval/tests/golden/pattern_circular_base.txt:66,:18
-      and pattern_circular_value.txt:66,:18 (include_str! at compile_geometry_op_characterization.rs:1092,1139,
-      compared :229-249, driven by lit(90.0) at :1025,1072); 5 fns crates/reify-eval/src/geometry_ops/tests.rs:2990,3056,3102,3150,3194
+    binding: producer-extent (PRD said 3, actual 9) AT DECOMPOSE — inverting tests
+      crates/reify-eval/tests/circular_pattern_angle.rs:47,86; BYTE-COMPARED
+      goldens crates/reify-eval/tests/golden/pattern_circular_base.txt:66,:18
+      and pattern_circular_value.txt:66,:18 (include_str! at
+      compile_geometry_op_characterization.rs:1092,1139, compared :229-249,
+      driven by lit(90.0) at :1025,1072); 5 fns
+      crates/reify-eval/src/geometry_ops/tests.rs:2990,3056,3102,3150,3194 —
+      every line cite above is from decompose and has drifted. The inverting
+      test landed RENAMED as circular_pattern_bare_360_is_rejected
+      (crates/reify-eval/tests/circular_pattern_angle.rs:50, re-measured
+      2026-09-21, task 7748); the warning-free control survives as
+      circular_pattern_360deg_no_deprecation_warning (:92)
     verdict: PASS
     delivered_check:
       kind: grep
@@ -219,7 +282,12 @@ tasks:
       expect: absent
   - name: stale-doc-cite
     binding: capability→producer (this leaf) — grep:docs/prds/v0_6/type-hygiene.md:106
-      cites resolve_bare_angle at :418-439; real site is :880
+      cites resolve_bare_angle at :418-439; real site is :880 AT DECOMPOSE —
+      fixed by ε itself. Since DELIVERED (re-measured 2026-09-21, task 7748;
+      landed by task 6924, merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9),
+      docs/prds/v0_6/type-hygiene.md §8.1 dropped resolve_bare_angle from its
+      resolver list (zero-hit in that file) and gained an explicit
+      stale-line-cites note at :108
     verdict: PASS
     delivered_check:
       kind: grep
