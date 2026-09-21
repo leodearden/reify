@@ -347,7 +347,18 @@ fn value_type_kind_matches(
         Value::Point(_) => matches!(ty, Type::Point { .. }),
         Value::Vector(_) => matches!(ty, Type::Vector { .. }),
         Value::Complex { .. } => matches!(ty, Type::Complex(_)),
-        Value::Orientation { .. } => matches!(ty, Type::Orientation(_)),
+        // Only N=3 is inhabited: `Value::Orientation` is a bare quaternion
+        // with no arity field, `try_infer_type` yields `Orientation(3)`
+        // unconditionally, and `resolve_type_name` surfaces only
+        // "Orientation" | "Orientation3" — so every other arity is
+        // unreachable and rejecting it costs nothing. Matches
+        // `reify_compiler::joint_self_check::dof_kind_of`, which task #6335
+        // narrowed to the same arity, so this layer is no longer more
+        // permissive than the classifier consuming its results. See
+        // `reify_core::Type::Orientation`'s variant doc for the normative
+        // statement; #6336 owns widening this arm if SO(2) becomes
+        // first-class.
+        Value::Orientation { .. } => matches!(ty, Type::Orientation(3)),
         Value::Frame { .. } => matches!(ty, Type::Frame(_)),
         Value::Transform { .. } => matches!(ty, Type::Transform(_)),
         Value::Plane { .. } => matches!(ty, Type::Plane),
