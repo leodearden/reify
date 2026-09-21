@@ -4289,21 +4289,57 @@ fn face_bound(target: &str) -> Option<(usize, bool)> {
     }
 }
 
-/// Decide what `kind` constrains on `target`, given how many DISTINCT
-/// RECOGNIZED faces the model's supports name (`n_faces` — see [`face_bound`];
-/// a support that can select no node contributes no face, and two supports
-/// naming the SAME face contribute one, because neither may flip another face's
+/// Whether the model's supports name a recognized face OTHER than `target`'s
+/// own — the face-LOCAL fact [`face_realization`] decides a `PinnedSupport`
+/// beam end's transverse-pin eligibility from, in place of a model-wide count.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FaceCompany {
+    /// No support names a recognized face other than this one's own.
+    Alone,
+    /// At least one support names a DISTINCT recognized face.
+    WithAnotherFace,
+}
+
+/// Decide `target`'s [`FaceCompany`]: whether `targets` names a recognized
+/// face other than `target`'s own, identified by [`face_bound`] rather than by
+/// spelling.
+///
+/// The KIND each support declared is deliberately not read here — company is
+/// about which faces are RECOGNIZED, not about what any of them constrain;
+/// [`face_realization`] is what reads the kind. Identifying a face by the
+/// coordinate bound [`face_bound`] resolves it to, rather than by its target
+/// string, is what makes a duplicate spelling of `target` not count as
+/// "another face" (it resolves to the same bound as `target`'s own) and an
+/// unrecognized or empty target no face at all (`face_bound` returns `None`,
+/// which cannot equal anything).
+fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceCompany {
+    let own = face_bound(target);
+    let has_other_face = targets
+        .iter()
+        .any(|(_, t)| face_bound(t).is_some_and(|b| Some(b) != own));
+    if has_other_face {
+        FaceCompany::WithAnotherFace
+    } else {
+        FaceCompany::Alone
+    }
+}
+
+/// Decide what `kind` constrains on `target`, given whether the model's
+/// supports name another DISTINCT RECOGNIZED face (`company` — see
+/// [`face_company`], which reads [`face_bound`]; a support that can select no
+/// node contributes no face, and a support naming the SAME face as `target`
+/// gives it no OTHER face's company, because neither may flip `target`'s own
 /// realization).
 ///
 /// `Fixed` always clamps. `Pinned` realizes as a transverse (Z) pin ONLY on a
-/// beam-axis end face of a model that names at least one other DISTINCT face;
-/// otherwise it clamps like every other pinned face in the system.
+/// beam-axis end face that has another DISTINCT face's company; otherwise it
+/// clamps like every other pinned face in the system.
 ///
-/// Because that decision reads a count the author did not write on the support,
-/// [`build_dirichlet_bcs`] reports it: every pinned beam-end face gets an
-/// `I_ModalPinnedFaceRealization` Info diagnostic in BOTH directions (see
-/// [`pinned_end_face_realization_diagnostics`]). The rules below decide the
-/// number; that diagnostic is what makes the decision legible.
+/// Because that decision reads a fact the author did not write on the
+/// support, [`build_dirichlet_bcs`] reports it: every pinned beam-end face
+/// gets an `I_ModalPinnedFaceRealization` Info diagnostic in BOTH directions
+/// (see [`pinned_end_face_realization_diagnostics`]). The rules below decide
+/// the realization; that diagnostic is what makes the decision legible.
 ///
 /// # Why `Pinned` is not "Z-only, always"
 ///
