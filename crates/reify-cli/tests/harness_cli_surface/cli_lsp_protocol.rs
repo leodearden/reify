@@ -906,9 +906,13 @@ fn huge_unknown_uri_did_change(index: usize, version: i64) -> (String, serde_jso
 /// Phase 4b's non-vacuity anchor is the `window/logMessage` wait itself:
 /// proof the unknown-URI diagnostic still fires at all, so the
 /// bounded-length assertion beside it cannot pass simply because the log
-/// line vanished entirely. The paired `!stderr.contains(...)` assertion is
-/// the migration's own guard — the diagnostic must be on the protocol
-/// channel INSTEAD of stderr, not on both.
+/// line vanished entirely. What phase 4b does NOT assert is that the line
+/// is absent from stderr: that is task #6329's migration guard, and its
+/// single home is
+/// `lsp_repeated_unknown_uri_didchange_logs_over_the_protocol_channel_without_wedging`,
+/// which asserts it where it can actually bite — against an UNDRAINED
+/// stderr pipe, under eight triggers rather than one, alongside the byte
+/// budget that says WHY a stray stderr line matters.
 #[test]
 fn lsp_full_interactive_loop_through_binary() {
     let _lock = acquire_lsp_test_lock();
@@ -1050,9 +1054,10 @@ fn lsp_full_interactive_loop_through_binary() {
     // 4b) didChange for a never-opened URI with a deliberately huge path.
     // DocumentStore::update returns false for any URI that was never opened
     // via didOpen, so did_change's unknown-URI log line (server.rs) fires.
-    // This is the end-to-end regression guard for task #6329's channel
-    // migration (see rustdoc above): the line is asserted below to arrive as
-    // a bounded window/logMessage notification and to be absent from stderr.
+    // The line is asserted below to arrive as a bounded window/logMessage
+    // notification. Its ABSENCE from stderr — the other half of task
+    // #6329's migration guard — is asserted once, in the burst test (see
+    // rustdoc above), not a third time here.
     let (huge_uri, did_change_unknown_uri) = huge_unknown_uri_did_change(0, 4);
     send_jsonrpc(&mut stdin, &did_change_unknown_uri.to_string());
 
@@ -1151,231 +1156,6 @@ fn lsp_full_interactive_loop_through_binary() {
         status.success(),
         "reify lsp should exit cleanly after full interactive loop (stderr: {stderr_summary})"
     );
-
-    // The migration's own guard (task #6329), and the inversion of what this
-    // test asserted before it: the unknown-URI diagnostic must travel on the
-    // protocol channel INSTEAD of stderr, not on both. The phase-4b
-    // `window/logMessage` wait above already proved it fired at all, so a
-    // failure here means the eprintln! came back (or a second copy was
-    // added) — it does NOT mean the stderr drain is broken or that the
-    // trigger moved.
-    assert!(
-        !stderr.contains("didChange for unknown URI"),
-        "expected the unknown-URI diagnostic to have left stderr entirely for \
-         window/logMessage (task #6329), but it is still being written to stderr. \
-         Captured stderr: {stderr_summary}"
-    );
-}
-
-/// A client that sends a huge unknown-URI `didChange` and never drains the
-/// server's stderr still receives the diagnostic — over the channel it DOES
-/// drain — and the server still exits cleanly.
-///
-/// The premise changed with task #6329 and is restated here rather than
-/// inherited. Task #6162's property was "a bounded stderr write under
-/// backpressure does not wedge the process": that test's whole subject was a
-/// blocking `eprintln!` racing a full pipe. The unknown-URI diagnostic no
-/// longer goes to stderr at all — it is a `window/logMessage` notification
-/// on stdout — so the surviving property is the one above: an undrained
-/// stderr pipe neither swallows the diagnostic nor prevents a clean exit.
-/// The backpressure scenario itself still matters (a client really can
-/// refuse to read stderr), which is why the undrained discipline below is
-/// kept exactly as it was rather than the test being deleted.
-///
-/// Unlike `lsp_full_interactive_loop_through_binary`, this test never spawns
-/// a background reader for the child's stderr pipe. `child.stderr` is taken
-/// into the named `stderr_pipe` binding and deliberately not read while the
-/// process is alive. Holding the read end alive (rather than dropping it) is
-/// load-bearing: dropping it would give the child EPIPE/SIGPIPE on its next
-/// stderr write instead of pipe-full backpressure — a different failure mode
-/// that would make this test silently vacuous.
-///
-/// After the exit assertion below, `stderr_pipe` IS drained with a plain
-/// `read_to_string`: by then the child has already exited and closed its
-/// write end, so the read returns immediately without ever having drained
-/// the pipe during the undrained window under test. That drain now serves
-/// the migration guard (the diagnostic must be ABSENT from stderr) and the
-/// retained total-stderr budget, not non-vacuity — the non-vacuity anchor
-/// has moved to the `window/logMessage` wait taken BEFORE shutdown, which
-/// is the only assertion here that fails if a future reify-lsp change
-/// stopped emitting the unknown-URI line entirely or moved its trigger.
-/// `stderr_pipe`'s lifetime must still span every assertion above the
-/// drain, so a future refactor cannot accidentally shorten it and turn the
-/// backpressure this test sustains into EPIPE.
-///
-/// stdout IS drained via `spawn_reader` (the same helper
-/// `lsp_full_interactive_loop_through_binary` uses): a blocked stdout pipe
-/// is a different wedge, and leaving it undrained would mean this test
-/// proves nothing about stderr specifically.
-///
-/// Historical measured evidence (task #6162), kept because it is what
-/// motivates the undrained discipline still being worth sustaining: with
-/// stderr piped but never drained, the pre-#6162 binary did not exit within
-/// 20s, and the main thread's `/proc/<pid>/task/<tid>/wchan` read
-/// `pipe_write`; with stderr drained it exited `rc=0` in 0.05s having
-/// written 163_895 bytes.
-///
-/// The primary RED tripwire below is now the `window/logMessage` wait: if
-/// the diagnostic is not routed onto the protocol channel, nothing ever
-/// matches and that call panics on its own 30s timeout. Expect this test to
-/// cost ~30s while RED — that is the notification timeout firing as
-/// designed, not a hang.
-///
-/// Stderr byte budget (task #6162 amendment review, retained through
-/// #6329): this test's trigger now writes NOTHING to stderr, so the whole
-/// ~4 KiB worst-case pipe capacity documented on `spawn_pipe_reader` (a
-/// kernel-shrunk pipe bottoms out at a single page) is nominally free. That
-/// headroom is still a SHARED, bounded budget rather than free space — any
-/// future stderr line added to reify-lsp spends directly against it, and
-/// once spent it can wedge this test at the barrier above with a message
-/// that reads as "the #6329 migration regressed" for what is actually a
-/// budget overrun. The post-exit bound below keeps policing it directly.
-///
-/// Deliberately does NOT assert the child's exit CODE and does NOT wait for
-/// the `shutdown` response: tower-lsp dispatches requests/notifications
-/// with concurrency > 1 (see `LspInbox::wait_for`'s doc comment), so the
-/// ordering of `shutdown`'s response relative to `exit` is not guaranteed
-/// under CPU saturation, and asserting on it would add flake without adding
-/// signal. The property the bug violates is "the process never exits at
-/// all", so process exit is the only assertion that needs to carry weight
-/// here — the `LspInbox::notification` barrier above already proves the
-/// handler ran to completion. It does, however, assert the process did not
-/// die from a *signal* (`status.code().is_some()`): unlike a specific exit
-/// code or response ordering, signal death is unambiguous and independent
-/// of tower-lsp's dispatch ordering, so checking it costs no extra flake.
-///
-/// Does NOT call `wait_for_exit`: that helper drains stderr via its
-/// `stderr_reader` argument, which is exactly the one thing this test must
-/// not do.
-///
-/// Not gated `#[cfg(unix)]`, unlike this file's two `/bin/sh`-stub tests:
-/// this test drives `CARGO_BIN_EXE_reify` through the same portable
-/// `Command`/`Stdio` surface as `lsp_full_interactive_loop_through_binary`
-/// and uses no unix-only API, so gating it would silently drop the task's
-/// primary end-to-end regression test on non-unix targets for no reason.
-#[test]
-fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
-    let _lock = acquire_lsp_test_lock();
-    // See `spawn_lsp_and_initialize`'s doc comment for the spawn +
-    // handshake sequence.
-    let UndrainedLspSession {
-        mut child,
-        mut stdin,
-        mut inbox,
-        mut stderr_pipe,
-    } = spawn_lsp_undrained();
-    // Deliberately NEVER read while the process is alive — see doc comment
-    // above. Drained only after exit, below, so this test gets its own
-    // non-vacuity anchor without reopening the backpressure window.
-
-    // Task #6162's trigger (see `huge_unknown_uri_did_change`'s doc
-    // comment): a never-opened URI with a deliberately huge (160 KiB) path,
-    // so DocumentStore::update returns false and did_change's unknown-URI
-    // log line fires (see server.rs).
-    let (huge_uri, did_change_unknown_uri) = huge_unknown_uri_did_change(0, 1);
-    send_jsonrpc(&mut stdin, &did_change_unknown_uri.to_string());
-
-    // Barrier: the handler ran to completion. Retained from #6162 — it is
-    // what lets the shutdown/exit assertions below mean "after the handler",
-    // not "racing it".
-    inbox.notification("textDocument/publishDiagnostics", &huge_uri, 1);
-
-    // Primary RED tripwire and this test's non-vacuity anchor (see doc
-    // comment above): the diagnostic reached the client over the channel it
-    // DOES drain, while stderr sat undrained and full-pipe-capable
-    // throughout. Taken before shutdown so `stderr_pipe` is still holding
-    // the backpressure window open when it lands.
-    let log_notification = inbox.log_message("didChange for unknown URI");
-    let logged_message = log_notification["params"]["message"]
-        .as_str()
-        .expect("window/logMessage params.message should be a JSON string");
-    assert!(
-        logged_message.contains("[truncated,"),
-        "expected the unknown-URI log line delivered under undrained-stderr backpressure to \
-         still be truncated by truncate_for_log — the 160 KiB client-supplied URI must not be \
-         echoed back verbatim just because the channel changed. Message: {}",
-        elide(logged_message)
-    );
-
-    let shutdown = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "shutdown",
-        "params": null
-    });
-    send_jsonrpc(&mut stdin, &shutdown.to_string());
-
-    let exit = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "exit",
-        "params": null
-    });
-    send_jsonrpc(&mut stdin, &exit.to_string());
-
-    drop(stdin);
-
-    // Deliberately NOT wait_for_exit (it drains stderr — see doc comment
-    // above), and deliberately not asserting the exit code or waiting for
-    // the shutdown response (see doc comment above): only that the process
-    // exits at all (without dying from a signal), which is exactly the
-    // property the bug violates. Reuses `wait_for_exit`'s own poll/deadline
-    // policy via `wait_for_exit_no_stderr` rather than a second inline copy
-    // of it (task #6162).
-    let status = wait_for_exit_no_stderr(&mut child, 30).unwrap_or_else(|| {
-        panic!(
-            "reify lsp did not exit within 30s after a huge unknown-URI didChange with stderr \
-             piped but never drained — task #6162's wedge: did_change blocks in pipe_write \
-             while holding the state write lock, so the process can never exit"
-        )
-    });
-    // The exit CODE stays deliberately unasserted (see doc comment above),
-    // but abnormal termination is unambiguous and ordering-independent: a
-    // child killed by SIGSEGV/SIGABRT (e.g. a panic-abort in did_change
-    // after publishDiagnostics already fired) would satisfy a bare "it
-    // exited" check while still being a real regression.
-    assert!(
-        status.code().is_some(),
-        "reify lsp died from a signal ({status:?}) rather than exiting normally after a huge \
-         unknown-URI didChange with stderr piped but never drained"
-    );
-
-    // stderr_pipe must outlive every assertion above: a future refactor
-    // cannot accidentally drop (and thus close) the read end early, which
-    // would turn this test's backpressure into EPIPE and make it silently
-    // vacuous. Only now, after the process has exited, do we read it — the
-    // write end is closed, so this returns immediately without having
-    // drained the pipe during the undrained window under test.
-    let mut stderr_after_exit = String::new();
-    stderr_pipe
-        .read_to_string(&mut stderr_after_exit)
-        .expect("reading stderr after the child has already exited should not fail");
-    let stderr_summary = elide(&stderr_after_exit);
-    // Task #6329's migration guard: the diagnostic the log-message wait
-    // above already observed must have reached the client INSTEAD of
-    // stderr, not on both channels. Non-vacuity is carried by that wait
-    // (see doc comment above), so this is a pure absence assertion.
-    assert!(
-        !stderr_after_exit.contains("didChange for unknown URI"),
-        "expected the unknown-URI diagnostic to have left stderr entirely for \
-         window/logMessage (task #6329), but the child still wrote it to stderr — where, \
-         under the undrained pipe this test sustains, it is exactly the blocking write \
-         task #6162 was about. Captured stderr: {stderr_summary}"
-    );
-    // Task #6162 amendment review, retained through #6329: fails loudly and
-    // specifically if this test's stderr budget (see doc comment above)
-    // ever grows to spend the ~4 KiB worst-case single-page pipe capacity
-    // this test's whole premise depends on staying under — as opposed to
-    // the test wedging at the 30s barrier above with a message that would
-    // read as "the migration regressed" for what is actually a budget
-    // overrun.
-    assert!(
-        stderr_after_exit.len() < 4096,
-        "expected this test's total stderr to stay comfortably under a kernel-shrunk \
-         single-page pipe (4096 bytes) — see the stderr byte budget paragraph in this test's \
-         doc comment. A future stderr addition (here or in reify-lsp) has spent that shared \
-         headroom; got {} bytes. Captured stderr: {stderr_summary}",
-        stderr_after_exit.len()
-    );
 }
 
 /// Repetition guard for task #6329's REMAINING RISK 2: an already-bounded
@@ -1392,14 +1172,48 @@ fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
 /// stops being true, this test is what says so.
 ///
 /// Stderr is deliberately left UNDRAINED (`spawn_lsp_undrained`) for the
-/// whole burst, and `_stderr_pipe` is held to the end of the function to
+/// whole burst, and `stderr_pipe` is held to the end of the function to
 /// sustain it. That is what makes "without wedging" a real claim rather
 /// than a tautology: were the diagnostic still going to stderr, eight
 /// ~1.1 KiB lines would exceed the ~4 KiB worst-case single-page pipe
 /// capacity documented on `spawn_pipe_reader` and park the writer in
 /// `pipe_write` — so this test would fail at the first wait below rather
-/// than pass vacuously. On stdout, which IS drained, the same eight lines
-/// are far inside any pipe budget.
+/// than pass vacuously. (Measured in task #6162 at one trigger: with stderr
+/// piped and never drained the pre-fix binary did not exit within 20s, its
+/// main thread's `/proc/<pid>/task/<tid>/wchan` reading `pipe_write`; with
+/// stderr drained it exited rc=0 in 0.05s having written 163_895 bytes.) On
+/// stdout, which IS drained via `spawn_reader`, the same eight lines are far
+/// inside any pipe budget — and leaving stdout undrained too would be a
+/// different wedge that proves nothing about stderr.
+///
+/// Holding the stderr read end ALIVE rather than dropping it is load-bearing:
+/// dropping it would give the child EPIPE/SIGPIPE on its next stderr write
+/// instead of pipe-full backpressure — a different failure mode that would
+/// make this test silently vacuous — so `stderr_pipe`'s lifetime must span
+/// every assertion, and it is read only at the very end, after the child has
+/// exited and closed its write end. That `read_to_string` therefore returns
+/// immediately without ever having drained the pipe during the window under
+/// test.
+///
+/// The two post-exit assertions are what keep all of that honest, and this
+/// test is their single home (task #6329 amendment review). The absence
+/// assertion is the migration's own guard — the unknown-URI diagnostic must
+/// travel on the protocol channel INSTEAD of stderr, not on both — asserted
+/// here, under eight triggers against an undrained pipe, rather than a third
+/// time in a drained-stderr test where a stray line is harmless. The
+/// `< 4096` bound polices the shared headroom the paragraph above depends
+/// on: this test's trigger writes nothing to stderr today, so the whole
+/// single-page capacity is nominally free, but any stderr line a future
+/// change adds to reify-lsp spends directly against it — and once spent it
+/// wedges this test at the first wait above with a message that would read
+/// as "the migration regressed" for what is really a budget overrun. The
+/// bound names that, so the diagnosis lands where the cost was incurred.
+///
+/// Not gated `#[cfg(unix)]`, unlike this file's `/bin/sh`-stub tests: it
+/// drives `CARGO_BIN_EXE_reify` through the same portable `Command`/`Stdio`
+/// surface as `lsp_full_interactive_loop_through_binary` and uses no
+/// unix-only API, so gating it would silently drop task #6329's primary
+/// end-to-end regression test on non-unix targets for no reason.
 ///
 /// Each iteration uses a DISTINCT huge URI whose index-carrying prefix
 /// (see `huge_unknown_uri_prefix`) survives `truncate_for_log`'s cut, so
@@ -1420,7 +1234,7 @@ fn lsp_repeated_unknown_uri_didchange_logs_over_the_protocol_channel_without_wed
         mut child,
         mut stdin,
         mut inbox,
-        stderr_pipe: _stderr_pipe,
+        mut stderr_pipe,
     } = spawn_lsp_undrained();
 
     const BURST: usize = 8;
@@ -1488,8 +1302,12 @@ fn lsp_repeated_unknown_uri_didchange_logs_over_the_protocol_channel_without_wed
     let status = wait_for_exit_no_stderr(&mut child, 30).unwrap_or_else(|| {
         panic!(
             "reify lsp did not exit within 30s after a burst of {BURST} unknown-URI \
-             didChanges with stderr piped but never drained — repetition of the log line \
-             has wedged the server"
+             didChanges with stderr piped but never drained. Either repetition of the log \
+             line has wedged the server, or this test's stderr budget (see the doc comment) \
+             has been spent and the writer is parked in pipe_write on a full stderr pipe. \
+             The post-exit budget assertion below is what distinguishes the two whenever \
+             the process does exit; it cannot run here, so check reify-lsp for a newly \
+             added stderr write before concluding the log channel wedged."
         )
     });
     assert!(
@@ -1516,6 +1334,32 @@ fn lsp_repeated_unknown_uri_didchange_logs_over_the_protocol_channel_without_wed
         "expected exactly {BURST} unknown-URI window/logMessage notifications for {BURST} \
          didChanges — one per notification — but {leftover_log_lines} further ones were left \
          unclaimed after the {BURST} matched waits above"
+    );
+
+    // Only now, with the child exited and its write end closed, is the
+    // stderr pipe read — see the doc comment for why its lifetime had to
+    // span every assertion above.
+    let mut stderr_after_exit = String::new();
+    stderr_pipe
+        .read_to_string(&mut stderr_after_exit)
+        .expect("reading stderr after the child has already exited should not fail");
+    let stderr_summary = elide(&stderr_after_exit);
+    assert!(
+        !stderr_after_exit.contains("didChange for unknown URI"),
+        "expected the unknown-URI diagnostic to have left stderr entirely for \
+         window/logMessage (task #6329), but the child still wrote it to stderr — where, \
+         under the undrained pipe this test sustains, {BURST} of them are exactly the \
+         blocking write task #6162 was about. Captured stderr: {stderr_summary}"
+    );
+    assert!(
+        stderr_after_exit.len() < 4096,
+        "this test's stderr budget was spent: total stderr must stay under a kernel-shrunk \
+         single-page pipe (4096 bytes), because that headroom is what lets the burst above \
+         run against an UNDRAINED pipe without parking the writer in pipe_write. A stderr \
+         write added here or in reify-lsp has spent it; got {} bytes. This is a budget \
+         overrun, NOT a regression of the #6329 channel migration. Captured stderr: \
+         {stderr_summary}",
+        stderr_after_exit.len()
     );
 }
 
