@@ -202,9 +202,10 @@ fn compute_eval_set_is_the_kahn_core() {
 // divergent cell, never to weaken the assertion.
 //
 // The shared differential harness is `#[path]`-included once at the
-// `harness_engine.rs` unit root (`common/differential.rs` deliberately is NOT
+// `harness_cache.rs` unit root (`common/differential.rs` deliberately is NOT
 // re-exported through `common/mod.rs`), so this submodule reaches it through the
-// crate root — the same way the `selective_demand_*` submodules do.
+// crate root — the same way the `unified_dag_*` and `selective_demand_*`
+// submodules do.
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::differential::{

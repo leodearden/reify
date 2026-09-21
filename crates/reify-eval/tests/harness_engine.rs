@@ -40,9 +40,6 @@
 //! Module order: the modules carrying no rationale comment are listed alphabetically by
 //! stem; the commented block at the end keeps the accretion order its comments refer to
 //! ("… as #5196's above", and `underdetermined_support` before its two consumers).
-#[path = "common/differential.rs"]
-mod differential;
-
 #[path = "harness_engine/diagnostics_cache_replay_migration.rs"]
 mod diagnostics_cache_replay_migration;
 #[path = "harness_engine/edit_param_cell_commit_migration.rs"]
@@ -60,10 +57,6 @@ mod reset_per_build_state_classification;
 // growing that ratchet works against the C1 consolidation direction.
 #[path = "harness_engine/topology_diagnostic_denoise_e2e.rs"]
 mod topology_diagnostic_denoise_e2e;
-// Task #5045's flat-sort/Kahn-core delegation differential test lands here for
-// the same anti-re-accretion reason as #5196's above.
-#[path = "harness_engine/flat_sort_kahn_core_delegation.rs"]
-mod flat_sort_kahn_core_delegation;
 // Task #5360's nested-sub derived-let e2e lands here for the same anti-re-accretion
 // reason as #5196's and #5045's above.
 #[path = "harness_engine/nested_sub_derived_let_e2e.rs"]

@@ -82,6 +82,8 @@ mod differential;
 mod compute_cache_key_population;
 #[path = "harness_cache/eval_cached_diagnostics.rs"]
 mod eval_cached_diagnostics;
+#[path = "harness_cache/flat_sort_kahn_core_delegation.rs"]
+mod flat_sort_kahn_core_delegation;
 #[path = "harness_cache/freshness_only_production_trigger.rs"]
 mod freshness_only_production_trigger;
 #[path = "harness_cache/freshness_only_propagation.rs"]
