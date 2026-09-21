@@ -450,3 +450,143 @@ structure def S {
         );
     }
 }
+
+/// One row of the §6-18 table: a pattern source whose spacing is left `Undef`, the label
+/// its diagnostic MUST carry, and the internal nickname it must no longer carry.
+struct PatternLabelCase {
+    stem: &'static str,
+    source: &'static str,
+    unresolved_arg: &'static str,
+    builtin: &'static str,
+    pre_lambda_nickname: &'static str,
+}
+
+/// §6 row 18 — D7: an unresolved pattern spacing names the builtin the `.ri` author
+/// actually TYPED, not the compiler's internal `PatternKind` nickname.
+///
+/// The route is the REACHABLE one. A bare literal in the spacing position is caught
+/// earlier by the compile slot and never reaches the `Undef` chokepoint that renders this
+/// label, so the source leaves the spacing genuinely unresolved — a `param s : Length`
+/// with no default. Each case asserts the typed name positively AND the nickname
+/// negatively: `contains("linear_pattern")` alone is satisfied by the nickname spelling
+/// too, so only the pair distinguishes the fix from the bug.
+///
+/// `PatternKind::Circular` and `Arbitrary` still render `circular` and `arbitrary` and are
+/// deliberately outside this row: finishing D7 for them is task #6874, which must land the
+/// call-site migration in the same diff.
+#[test]
+fn pattern_spacing_undef_names_the_builtin_the_author_typed() {
+    let cases = [
+        PatternLabelCase {
+            stem: "undef_spacing_linear_pattern",
+            source: r#"module undef_spacing_linear_pattern
+
+structure def S {
+    param s : Length
+    let b = box(10mm, 10mm, 10mm)
+    let p = linear_pattern(b, 1, 0, 0, 3, s)
+    param geometry : Solid = p
+}
+"#,
+            unresolved_arg: "spacing",
+            builtin: "linear_pattern",
+            pre_lambda_nickname: "for linear ",
+        },
+        PatternLabelCase {
+            stem: "undef_spacing_linear_pattern_2d",
+            source: r#"module undef_spacing_linear_pattern_2d
+
+structure def S {
+    param s : Length
+    let b = box(10mm, 10mm, 10mm)
+    let p = linear_pattern_2d(b, 1, 0, 0, 3, s, 0, 1, 0, 3, 20mm)
+    param geometry : Solid = p
+}
+"#,
+            unresolved_arg: "spacing1",
+            builtin: "linear_pattern_2d",
+            pre_lambda_nickname: "linear_2d",
+        },
+    ];
+
+    for case in cases {
+        let (status, stdout, stderr) = eval_source(case.stem, case.source);
+        let expected = format!(
+            "argument '{arg}' for {builtin} is unresolved (Undef)",
+            arg = case.unresolved_arg,
+            builtin = case.builtin,
+        );
+
+        assert!(
+            !status.success(),
+            "an unresolved {builtin} spacing must exit nonzero;\nstdout: {stdout}\nstderr: {stderr}",
+            builtin = case.builtin,
+        );
+        assert!(
+            stderr.contains(&expected),
+            "stderr should carry `{expected}`; got: {stderr}"
+        );
+        assert!(
+            !stderr.contains(case.pre_lambda_nickname),
+            "the diagnostic must not fall back to the internal nickname \
+             `{nickname}`; got: {stderr}",
+            nickname = case.pre_lambda_nickname,
+        );
+    }
+}
+
+/// §6 row 19 — D12: an explicitly passed `iso:` is gated, and its ABSENCE is not.
+///
+/// The contrast is the row. A gate that fired on the defaulted value too would break
+/// every existing `isosurface(solid)` call site, so both halves are needed to tell the
+/// intended behaviour from an over-broad one.
+///
+/// THE SECOND HALF DELIBERATELY DOES NOT ASSERT EXIT 0. Measured: the absent-`iso` form
+/// — and the tracked `examples/multi_kernel/voxel_to_mesh.ri` itself — exit 1 under
+/// `reify eval` with `no openvdb kernel registered (call ensure_openvdb_kernel())`
+/// followed by `GeometryOp::Surface is a Mesh-repr terminal anchor fed by a Voxel→Mesh
+/// conversion edge`. That failure is wholly unrelated to units, and no implementer could
+/// green an exit-0 assertion here. What D12 actually claims IS assertable at this
+/// boundary, and is what this half asserts: the absent argument draws no units rejection.
+/// The exits-0 half is discharged with the kernel registered, in
+/// `crates/reify-eval/tests/isosurface_iso_option_e2e.rs`.
+#[test]
+fn the_iso_option_is_gated_but_its_absence_is_not() {
+    let (status, stdout, stderr) = eval_source(
+        "bare_isosurface_iso",
+        r#"module bare_isosurface_iso
+
+structure S {
+    param size : Length = 20mm
+
+    let solid = box(size, size, size)
+    let shell = isosurface(solid, iso: 5)
+}
+"#,
+    );
+
+    assert!(
+        !status.success(),
+        "a bare `iso:` must exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    expect_length_rejection(&stderr, "isosurface", "iso", "Int");
+
+    let (_, _, default_stderr) = eval_source(
+        "defaulted_isosurface_iso",
+        r#"module defaulted_isosurface_iso
+
+structure S {
+    param size : Length = 20mm
+
+    let solid = box(size, size, size)
+    let shell = isosurface(solid)
+}
+"#,
+    );
+
+    assert!(
+        !default_stderr.contains("iso argument expects Length"),
+        "D12: an ABSENT `iso:` takes the documented default and must draw no units \
+         rejection at all; got: {default_stderr}"
+    );
+}
