@@ -662,7 +662,9 @@ circle on the path's start frame, which is why it needs no posing.
 A profile posed so the path's start tangent sits less than **4 degrees** out of
 the profile's plane is rejected with a typed error rather than silently
 realizing a degenerate body. The corrective pose must be bound with `let`
-before being swept — an inline transform is not accepted as a sweep profile:
+before being swept — an inline transform is not accepted as a sweep profile.
+The error reports the path's measured start tangent, and the rotation that
+aligns the profile with it follows from that tangent; for a **+Y** one it is:
 
 ```
 let p = rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg)

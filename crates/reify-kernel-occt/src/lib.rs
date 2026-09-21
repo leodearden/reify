@@ -426,8 +426,13 @@ fn unit_vector(v: ffi::ffi::Point3) -> Option<(f64, f64, f64)> {
 /// # Fails OPEN
 ///
 /// Returns `Ok(())` whenever the pose predicate is UNDEFINED rather than
-/// satisfied: the profile is not a `Face` (a Wire has no normal to compare
-/// against), either FFI query errors, or either vector carries no direction.
+/// satisfied: the profile is not a PLANAR `Face`, either FFI query errors, or
+/// either vector carries no direction. Planarity is part of that test, not a
+/// refinement of it: `query_face_normal` samples the normal at the face's AREA
+/// CENTROID only, so on a curved face — reachable via a `let`-bound opaque
+/// profile, which the compiler's Closed-and-Planar precondition does not
+/// inspect — that one sample describes no plane and `|t̂·n̂|` is not the
+/// quantity the refusal would be claiming to report.
 /// Failing closed would newly reject sweeps that realize today — a let-bound
 /// `line_segment` profile swept along a +Z spine produces a real 20mm × 200mm
 /// un-capped shell. That case IS a defect, but its remedy is the honest
@@ -440,9 +445,20 @@ fn validate_sweep_pose(
     profile_shape: &ffi::ffi::OcctShape,
     path_shape: &ffi::ffi::OcctShape,
 ) -> Result<(), GeometryError> {
-    match ffi::ffi::shape_type_name(profile_shape) {
-        Ok(name) if name == "Face" => {}
-        _ => return Ok(()),
+    if !matches!(
+        ffi::ffi::shape_type_name(profile_shape).as_deref(),
+        Ok("Face")
+    ) {
+        return Ok(());
+    }
+    let profile_is_planar = ffi::ffi::face_surface_kind(profile_shape).is_ok_and(|kind| {
+        matches!(
+            reify_ir::FaceSurfaceKind::try_from_str(&kind),
+            Ok(reify_ir::FaceSurfaceKind::Plane)
+        )
+    });
+    if !profile_is_planar {
+        return Ok(());
     }
 
     let (Ok(normal), Ok(tangent)) = (
@@ -458,16 +474,19 @@ fn validate_sweep_pose(
     let abs_dot = (t.0 * n.0 + t.1 * n.1 + t.2 * n.2).abs();
     if abs_dot < SWEEP_DEGENERATE_POSE_DEG.to_radians().sin() {
         let off_plane_deg = abs_dot.asin().to_degrees();
+        let (tx, ty, tz) = t;
         return Err(GeometryError::OperationFailed(format!(
             "sweep profile is posed in the path's plane: the path's start \
-             tangent lies in the profile's plane, so the swept body encloses \
-             nothing. Measured |tangent . normal| = {abs_dot:.9}, i.e. \
-             {off_plane_deg:.3} degrees off-plane, where at least \
-             {SWEEP_DEGENERATE_POSE_DEG} degrees is required. Fix: pose the \
-             profile normal to the path's start tangent, and bind the posed \
-             profile with `let` before sweeping it — an inline transform is \
-             rejected as a sweep profile — e.g. `let p = rotate(circle(r), \
-             1.0, 0.0, 0.0, -90deg)` then `sweep(p, path)`."
+             tangent ({tx:.6}, {ty:.6}, {tz:.6}) lies in the profile's plane, \
+             so the swept body encloses nothing. Measured \
+             |tangent . normal| = {abs_dot:.9}, i.e. {off_plane_deg:.3} \
+             degrees off-plane, where at least {SWEEP_DEGENERATE_POSE_DEG} \
+             degrees is required. Fix: pose the profile normal along that \
+             start tangent, and bind the posed profile with `let` before \
+             sweeping it — an inline transform is rejected as a sweep \
+             profile. The rotation that achieves it depends on the tangent \
+             above; for a +Y tangent it is `let p = rotate(circle(r), 1.0, \
+             0.0, 0.0, -90deg)` then `sweep(p, path)`."
         )));
     }
     Ok(())
@@ -11428,6 +11447,99 @@ mod tests {
         );
     }
 
+    /// The planarity half of the entry test must not exempt the real victims.
+    ///
+    /// Every subject the band was measured against sweeps a CIRCLE, not a
+    /// rectangle (`helix_sweep_e2e.rs`, `helix_sweep_dep_5342.ri`,
+    /// `pnrg_envelope_spline.ri`). A circle profile is a planar face like any
+    /// other, but only a test says so: were OCCT to classify its surface as
+    /// anything but `Plane`, the guard would fail open on exactly the shape it
+    /// was built for, and every other test here would stay green.
+    #[test]
+    fn an_in_plane_circle_profile_is_still_refused() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_id = kernel
+            .execute(&GeometryOp::CircleProfile {
+                radius: Value::Real(0.003),
+            })
+            .expect("CircleProfile should build")
+            .id;
+        let spine_id = pose_test_spine(&mut kernel, 0.200, 0.0);
+
+        match kernel.sweep_with_history(profile_id, spine_id) {
+            Err(GeometryError::OperationFailed(msg)) => assert!(
+                msg.contains("posed in the path's plane"),
+                "expected the degenerate-pose refusal for a circle profile, got: {msg}"
+            ),
+            Ok(_) => panic!(
+                "an in-plane CIRCLE profile was admitted; the planarity half of \
+                 the entry test is exempting the very shape the band was \
+                 measured on"
+            ),
+            Err(other) => panic!("expected OperationFailed, got {other:?}"),
+        }
+    }
+
+    /// FAIL-OPEN fence for the planarity half. A CURVED face has no single
+    /// normal — `query_face_normal` samples the area centroid only — so
+    /// `|t̂·n̂|` would not be the "degrees off-plane" the refusal claims to
+    /// report, and the guard must not speak.
+    ///
+    /// Reachable because the compiler's Closed-and-Planar precondition only
+    /// inspects statically-known Surface producers: a `let`-bound opaque
+    /// profile such as `faces(cyl)[0]` arrives here unexamined.
+    ///
+    /// Asserts only that the POSE guard stays silent, not that the sweep
+    /// succeeds: what OCCT makes of a cylindrical profile is its own business
+    /// and not this guard's contract.
+    #[test]
+    fn a_non_planar_face_profile_is_not_judged_on_pose() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let cylinder = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(0.010),
+                height: Value::Real(0.020),
+            })
+            .expect("Cylinder should build")
+            .id;
+        let faces = kernel
+            .extract_faces(cylinder)
+            .expect("a cylinder enumerates faces");
+        let lateral = faces
+            .iter()
+            .copied()
+            .find(|id| {
+                kernel
+                    .query(&GeometryQuery::FaceSurfaceKind(*id))
+                    .ok()
+                    .and_then(|v| match v {
+                        Value::String(kind) => Some(kind == "Cylinder"),
+                        _ => None,
+                    })
+                    .unwrap_or(false)
+            })
+            .expect("a cylinder has a Cylinder-surfaced lateral face");
+        let spine_id = pose_test_spine(&mut kernel, 0.200, 0.0);
+
+        if let Err(GeometryError::OperationFailed(msg)) =
+            kernel.sweep_with_history(lateral, spine_id)
+        {
+            assert!(
+                !msg.contains("posed in the path's plane"),
+                "the pose guard judged a CURVED face, whose centroid normal \
+                 describes no plane: {msg}"
+            );
+        }
+    }
+
     /// The guard must not disturb a correctly-posed sweep, nor its persistent-
     /// naming payload: same volume, and one cap face at each end as before.
     #[test]
@@ -11503,6 +11615,7 @@ mod tests {
             ("the reason", "encloses nothing"),
             ("the corrective action", "pose the profile normal"),
             ("what to pose it against", "start tangent"),
+            ("the measured tangent", "start tangent (1.000000,"),
             ("the named-binding requirement", "bind the posed profile"),
         ] {
             assert!(
@@ -11597,8 +11710,8 @@ mod tests {
     /// `fillet(body, edges_at_height(..), r)` idiom the gate's own REACH note
     /// names. The 2-arg back-compat spelling (`edges: vec![]`) is deliberately
     /// NOT used here: that arm calls `ffi::fillet_all_edges` directly and
-    /// reaches no gate at all, which is a pre-existing gap of its own (#7248
-    /// follow-up) rather than anything the `BRepKind` stamp can fix.
+    /// reaches no gate at all, which is a pre-existing gap of its own (#7742)
+    /// rather than anything the `BRepKind` stamp can fix.
     #[test]
     fn filleting_a_shell_swept_result_is_rejected_by_the_local_feature_gate() {
         if !crate::OCCT_AVAILABLE {
@@ -11640,6 +11753,13 @@ mod tests {
     /// Green-on-arrival fence: honest classification must not regress the
     /// ordinary case. A correctly-posed face profile still sweeps to a Solid
     /// and still fillets.
+    ///
+    /// Spelled with a CURATED edge selection for the same reason its refusing
+    /// sibling above is: only that spelling routes through
+    /// `run_local_feature_with_history`, where the repr gate lives. An
+    /// empty-selection fillet here would assert that the gate ADMITS a Solid
+    /// while never executing the gate, so a gate that had regressed to
+    /// refusing everything would leave both halves of the pair green.
     #[test]
     fn a_correctly_posed_sweep_is_still_a_solid_and_still_fillets() {
         if !crate::OCCT_AVAILABLE {
@@ -11663,10 +11783,14 @@ mod tests {
         );
         assert_eq!(kernel.repr_of(swept.id), Some(BRepKind::Solid));
 
+        let edges = kernel
+            .extract_edges(swept.id)
+            .expect("the swept box enumerates edges");
+        let first_edge = *edges.first().expect("the swept box has edges");
         kernel
             .execute(&GeometryOp::Fillet {
                 target: swept.id,
-                edges: vec![],
+                edges: vec![first_edge],
                 radius: Value::Real(0.002),
             })
             .expect("a genuine Solid must still pass the local-feature gate");

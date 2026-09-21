@@ -57,11 +57,24 @@ use reify_test_support::compile_source_with_stdlib;
 /// `rectangle(20mm, 20mm)` in m² — the swept section of every spine rung.
 const PROFILE_AREA_M2: f64 = 0.020 * 0.020;
 
-/// Relative tolerance for an admitted rung's volume.
+/// Relative tolerance for an admitted PRISM rung's volume.
 ///
 /// The law above is exact arithmetic on the kernel's own numbers, not an
-/// approximation, so this bounds float round-trip only.
-const VOLUME_REL_TOL: f64 = 1e-9;
+/// approximation, and every rung it governs is a planar-faced prism whose
+/// volume integral OCCT evaluates exactly, so this bounds float round-trip
+/// only.
+const PRISM_VOLUME_REL_TOL: f64 = 1e-9;
+
+/// Relative tolerance for rung 6, the one admitted rung that is NOT a
+/// planar-faced prism.
+///
+/// `pipe()` builds a real cylinder and rung 6 checks it against analytic
+/// π·r²·L, so the integrand is not polynomial and the exactness argument above
+/// does not carry: at 1e-9 that rung would be pinning OCCT's quadrature rather
+/// than the pose guard, and would red for a reason unrelated to the band. Still
+/// three decades tighter than the 5e-2 its sibling
+/// `sweep_circle_along_line_creates_pipe` uses.
+const CYLINDER_VOLUME_REL_TOL: f64 = 1e-6;
 
 /// What one rung of the ladder observed: which layer refused the design, and
 /// whether a body with a readable volume came out the other side.
@@ -149,28 +162,50 @@ fn assert_mentions(messages: &[String], words: &[&str], what: &str) {
     );
 }
 
-/// A `.ri` module sweeping a 20mm × 20mm section along a straight 200 mm spine
-/// that leaves the origin for `(x_mm, 0, z_mm)`, reading the result into `S.v`.
+/// One spine rung: the `.ri` module to realize, and the volume it must yield.
 ///
-/// The coordinates are taken as source text, not as `f64`, so the literal each
-/// rung's `|t̂·n̂|` was computed from is the literal the kernel sees.
-fn swept_box_along_spine(x_mm: &str, z_mm: &str) -> String {
-    format!(
-        "structure S {{\n    \
-         let b = sweep(rectangle(20mm, 20mm), line_segment(0mm, 0mm, 0mm, {x_mm}mm, 0mm, {z_mm}mm))\n    \
-         let v = volume(b)\n\
-         }}\n"
-    )
+/// Both are derived from a single spelling of the spine coordinates, so a
+/// rung cannot assert one spine while measuring another.
+struct SweptBox {
+    source: String,
+    expected_m3: f64,
 }
 
-/// The volume [`swept_box_along_spine`] must produce: section area times the
+/// A `.ri` module sweeping a 20mm × 20mm section along a straight 200 mm spine
+/// that leaves the origin for `(x_mm, 0, z_mm)`, reading the result into `S.v`,
+/// paired with the volume that module must produce: section area times the
 /// spine displacement's component along the section normal, which is +Z.
-fn expected_swept_volume_m3(z_mm: f64) -> f64 {
-    PROFILE_AREA_M2 * z_mm / 1000.0
+///
+/// The coordinates arrive as source TEXT, not as `f64`, so the literal each
+/// rung's `|t̂·n̂|` was computed from is the literal the kernel sees. The
+/// expected volume is parsed back out of that same literal rather than
+/// transcribed a second time: a slip in a hand-copied `f64` would silently
+/// change what the rung asserts instead of failing to compile.
+fn swept_box_along_spine(x_mm: &str, z_mm: &str) -> SweptBox {
+    SweptBox {
+        source: format!(
+            "structure S {{\n    \
+             let b = sweep(rectangle(20mm, 20mm), line_segment(0mm, 0mm, 0mm, {x_mm}mm, 0mm, {z_mm}mm))\n    \
+             let v = volume(b)\n\
+             }}\n"
+        ),
+        expected_m3: PROFILE_AREA_M2
+            * z_mm
+                .parse::<f64>()
+                .unwrap_or_else(|e| panic!("spine z literal {z_mm:?} must parse as f64: {e}"))
+            / 1000.0,
+    }
 }
 
-/// Assert a rung compiled clean, realized silently, and produced `expected` m³.
+/// Assert a PRISM rung compiled clean, realized silently, and produced
+/// `expected` m³ to within [`PRISM_VOLUME_REL_TOL`].
 fn assert_admitted(rung: &Rung, expected_m3: f64, what: &str) {
+    assert_admitted_within(rung, expected_m3, PRISM_VOLUME_REL_TOL, what);
+}
+
+/// [`assert_admitted`] with the tolerance named explicitly, for the one rung
+/// the prism exactness argument does not cover.
+fn assert_admitted_within(rung: &Rung, expected_m3: f64, rel_tol: f64, what: &str) {
     assert!(
         rung.compile_errors.is_empty(),
         "{what}: should compile clean, got: {:?}",
@@ -186,8 +221,9 @@ fn assert_admitted(rung: &Rung, expected_m3: f64, what: &str) {
         .unwrap_or_else(|| panic!("{what}: no body realized, so there is no volume to check"));
     let rel_err = (actual - expected_m3).abs() / expected_m3;
     assert!(
-        rel_err < VOLUME_REL_TOL,
-        "{what}: expected {expected_m3:.9e} m³, got {actual:.9e} (rel_err={rel_err:.3e})"
+        rel_err < rel_tol,
+        "{what}: expected {expected_m3:.9e} m³, got {actual:.9e} \
+         (rel_err={rel_err:.3e}, tolerance {rel_tol:.0e})"
     );
 }
 
@@ -220,7 +256,7 @@ fn assert_refused_by_the_kernel(rung: &Rung, what: &str) {
 /// nothing reported success.
 #[test]
 fn in_plane_spine_is_refused() {
-    let Some(rung) = rung(&swept_box_along_spine("200", "0")) else {
+    let Some(rung) = rung(&swept_box_along_spine("200", "0").source) else {
         return;
     };
     assert_refused_by_the_kernel(&rung, "in-plane (+X) spine");
@@ -239,7 +275,7 @@ fn in_plane_spine_is_refused() {
 /// while the other reds.
 #[test]
 fn the_refusal_reaches_the_user_with_every_fact_intact() {
-    let Some(rung) = rung(&swept_box_along_spine("200", "0")) else {
+    let Some(rung) = rung(&swept_box_along_spine("200", "0").source) else {
         return;
     };
     assert_mentions(
@@ -251,7 +287,7 @@ fn the_refusal_reaches_the_user_with_every_fact_intact() {
             "0.000 degrees off-plane",
             "encloses nothing",
             "pose the profile normal",
-            "start tangent",
+            "start tangent (1.000000,",
             "bind the posed profile",
         ],
         "in-plane spine, as the author sees it",
@@ -264,7 +300,7 @@ fn the_refusal_reaches_the_user_with_every_fact_intact() {
 /// would not have been enough.
 #[test]
 fn spine_just_below_the_band_is_refused() {
-    let Some(rung) = rung(&swept_box_along_spine("199.5602937", "13.2547801")) else {
+    let Some(rung) = rung(&swept_box_along_spine("199.5602937", "13.2547801").source) else {
         return;
     };
     assert_refused_by_the_kernel(&rung, "3.8° spine (5% below the floor)");
@@ -275,12 +311,13 @@ fn spine_just_below_the_band_is_refused() {
 /// constant that drifted in either direction reds here.
 #[test]
 fn spine_just_above_the_band_realizes() {
-    let Some(rung) = rung(&swept_box_along_spine("199.4628954", "14.6476394")) else {
+    let subject = swept_box_along_spine("199.4628954", "14.6476394");
+    let Some(rung) = rung(&subject.source) else {
         return;
     };
     assert_admitted(
         &rung,
-        expected_swept_volume_m3(14.6476394),
+        subject.expected_m3,
         "4.2° spine (5% above the floor)",
     );
 }
@@ -298,12 +335,13 @@ fn spine_just_above_the_band_realizes() {
 /// subject costs ~16 s to realize, this one is a straight line segment.
 #[test]
 fn real_subject_pose_proxy_realizes() {
-    let Some(rung) = rung(&swept_box_along_spine("199.3515915", "16.0917050")) else {
+    let subject = swept_box_along_spine("199.3515915", "16.0917050");
+    let Some(rung) = rung(&subject.source) else {
         return;
     };
     assert_admitted(
         &rung,
-        expected_swept_volume_m3(16.0917050),
+        subject.expected_m3,
         "4.6149° spine (pnrg_envelope_sweep.ri pose proxy)",
     );
 }
@@ -312,14 +350,11 @@ fn real_subject_pose_proxy_realizes() {
 /// floor, so it fails only on a band that has grown grossly rather than drifted.
 #[test]
 fn spine_well_above_the_band_realizes() {
-    let Some(rung) = rung(&swept_box_along_spine("198.9043790", "20.9056927")) else {
+    let subject = swept_box_along_spine("198.9043790", "20.9056927");
+    let Some(rung) = rung(&subject.source) else {
         return;
     };
-    assert_admitted(
-        &rung,
-        expected_swept_volume_m3(20.9056927),
-        "6° spine (wide-margin fence)",
-    );
+    assert_admitted(&rung, subject.expected_m3, "6° spine (wide-margin fence)");
 }
 
 // ── Controls: what the guard must leave alone ────────────────────────────────
@@ -330,14 +365,11 @@ fn spine_well_above_the_band_realizes() {
 /// sweep does cap and that the refusals are about pose, not about capping.
 #[test]
 fn normal_spine_realizes() {
-    let Some(rung) = rung(&swept_box_along_spine("0", "200")) else {
+    let subject = swept_box_along_spine("0", "200");
+    let Some(rung) = rung(&subject.source) else {
         return;
     };
-    assert_admitted(
-        &rung,
-        expected_swept_volume_m3(200.0),
-        "+Z spine (positive control)",
-    );
+    assert_admitted(&rung, subject.expected_m3, "+Z spine (positive control)");
 }
 
 /// Rung 5 — the as-posed contract. At 45° the swept volume is the section area
@@ -347,14 +379,11 @@ fn normal_spine_realizes() {
 /// designs pose their sweep profiles deliberately.
 #[test]
 fn as_posed_transport_is_preserved() {
-    let Some(rung) = rung(&swept_box_along_spine("141.4213562", "141.4213562")) else {
+    let subject = swept_box_along_spine("141.4213562", "141.4213562");
+    let Some(rung) = rung(&subject.source) else {
         return;
     };
-    assert_admitted(
-        &rung,
-        expected_swept_volume_m3(141.4213562),
-        "45° spine (as-posed transport)",
-    );
+    assert_admitted(&rung, subject.expected_m3, "45° spine (as-posed transport)");
 }
 
 /// Rung 6 — the working control. `pipe()` derives its own section normal from
@@ -373,7 +402,12 @@ fn pipe_along_the_same_in_plane_spine_realizes() {
     };
     // π·(10mm)²·200mm
     let expected = std::f64::consts::PI * 0.010_f64.powi(2) * 0.200;
-    assert_admitted(&rung, expected, "pipe along the in-plane spine");
+    assert_admitted_within(
+        &rung,
+        expected,
+        CYLINDER_VOLUME_REL_TOL,
+        "pipe along the in-plane spine",
+    );
 }
 
 /// Rung 7 — the compiler half stays closed. A CURVE profile has no surface
