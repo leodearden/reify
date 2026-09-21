@@ -528,21 +528,24 @@ fn four_bar_singular_compiles_clean() {
 /// one drifts out of lockstep with the other, but keeping them in sync is
 /// currently a manual step.
 ///
-/// That lockstep edit has been exercised once, by task 7186 defect A: fixing
-/// `append_body` to compose the closing joint exactly once removed the second
-/// free joint from the closing side, so BOTH fixtures were re-homed together
-/// onto a genuine two-deep closing-side walk (`path_a = [world, j_x]` against
-/// `path_b = [world, j_a, j_b]`). The body COUNT is deliberately unchanged at
-/// four, so the distinguishing assertion below still bites.
+/// That lockstep edit has been exercised once: composing the closing joint
+/// exactly once removed the second free joint from the closing side, so BOTH
+/// fixtures were re-homed together onto a genuine two-deep closing-side walk
+/// (`path_a = [world, j_x]` against `path_b = [world, j_a, j_b]`). The body
+/// COUNT is deliberately unchanged at four, so the distinguishing assertion
+/// below still bites.
 ///
 /// Corpus-wide gates: as a committed `examples/` fixture (unlike the inline
 /// `SINGULAR_SOURCE`), this file is also walked by
-/// `no_stale_undef_invariant_gate.rs::broad_corpus_sweep`,
-/// `reify-compiler/tests/examples_smoke.rs`, and
-/// `auto_type_param_determinism_tests.rs::v0_1_example_corpus_compile_and_check_time_is_bounded`.
-/// Confirmed green (this fixture present, zero violations, zero smoke
-/// failures, time bound unaffected) via targeted local runs at amendment
-/// time; the full `--scope all` merge-queue gate re-confirms on land.
+/// `crates/reify-eval/tests/harness_corpus_gates/eval_invariant_corpus_sweep.rs::corpus_sweep_shard_NN`
+/// (the unified no-stale-Undef + snapshot-cache-divergence sweep; it absorbed
+/// the `no_stale_undef_invariant_gate.rs::broad_corpus_sweep_shard_NN` shards),
+/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`,
+/// and
+/// `crates/reify-eval/tests/harness_auto_resolution/auto_type_param_determinism_tests.rs::v0_1_example_corpus_compile_and_check_time_is_bounded`.
+/// Each walks the whole `examples/` corpus, so editing this fixture is visible
+/// to all three; the full `--scope all` merge-queue gate is what confirms them
+/// on land.
 ///
 /// Deliberately does NOT assert on diagnostic message text, `loop_index`, or
 /// an exact diagnostic count: the eval-surfaced `KinematicSingularity`

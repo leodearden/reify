@@ -38,13 +38,10 @@
 //        above.  Those are the loop's exact zeros with j_rocker's ground pivot
 //        at X=140mm, and they are what B7 (c) asserts via loop_residual_twist.
 //
-//  (ii)  What THIS FILE's `s` cell computes — measured on a real build, not
-//        predicted: `s` is a well-formed Snapshot Map (kind / bodies /
-//        free_values, no is_singular key; it is NOT Value::Undef), and its
-//        free_values are
-//            [[0.7853981634215014, −2.4053026731073214e−11]]  rad
-//        i.e. θ_rocker = π/4 and θ_rocker_tip ≈ 0, in chain_b order
-//        [j_rocker, j_rocker_tip].
+//  (ii)  What THIS FILE's `s` cell computes: a well-formed Snapshot Map
+//        (kind / bodies / free_values, no is_singular key; it is NOT
+//        Value::Undef) whose free_values are θ_rocker = π/4 and
+//        θ_rocker_tip ≈ 0, in chain_b order [j_rocker, j_rocker_tip].
 //
 //  (iii) WHY they differ — the DD3 seam ordering.  `s` evaluates BEFORE the
 //        engine_build seam writes `j_rocker.origin`, so at snapshot time the
@@ -146,13 +143,14 @@ structure RelateMountedFourbar {
     // exactly once, on the spanning-tree side only:
     //   chain_a = [j_crank, j_coupler, j_coupler_tip]   reaches pivot C from A
     //   chain_b = [j_rocker, j_rocker_tip]              reaches pivot C from D
-    // (task #7186).  Appending the closing joint to both sides would conjugate
-    // the residual and relocate the closure from pivot C to pivot B, which is
-    // what used to make this Grashof loop infeasible by 1.045 mm.
+    // The asymmetry is load-bearing: a term on BOTH sides does not cancel, it
+    // conjugates the residual, relocating the closure from pivot C to pivot B
+    // — a whole link away, leaving this Grashof loop with no exact zero.
     //
-    // A closing edge is a rigid 0-DOF TIE from `parent` to `at` whose transform
-    // is the closing call's `pose`, so the closure reads
-    // `T_tree(at) == T(parent) . pose`.  The 4-arg closing call below leaves
+    // The closing edge below is a PARENT-CONFLICT edge (j_coupler_tip already
+    // has j_coupler as its recorded parent), so it is a rigid 0-DOF TIE from
+    // `parent` to `at` whose transform is the closing call's `pose`, and the
+    // closure reads `T_tree(at) == T(parent) . pose`.  The 4-arg form leaves
     // `pose` at the identity, so here the tie is simply
     // `T(j_coupler_tip via chain_a) == T(j_rocker_tip)` — pivot C reached both
     // ways.  The "closing" body itself therefore rides on chain_b's terminal
@@ -176,8 +174,8 @@ structure RelateMountedFourbar {
     //
     // Note: this snapshot evaluates BEFORE the seam writes j_rocker.origin (DD3
     // ordering), so it does NOT reach the analytic assembly — it converges to
-    // the least-squares point (π/4, ≈−2.4e−11) rad of a loop whose rocker
-    // ground pivot is still at the world origin.  See "Snapshot ordering note"
+    // the least-squares point (π/4, ≈0) rad of a loop whose rocker ground
+    // pivot is still at the world origin.  See "Snapshot ordering note"
     // at the top of this file.  The B7 Rust test uses solve_loop_closure
     // directly with the post-seam values to prove the real closure.
     let s = snapshot(m, [

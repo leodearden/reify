@@ -83,10 +83,9 @@ structure def Closed2PrismaticIdyn {
     //   values[0..3]  : per-body joint positions, in BODIES order, in metres.
     //                   m_a@j_a = 0.3, m_b@j_b = 0.3, m_c@j_b = 0.3.
     //
-    //   The loop's closure is q_b == q_a (task 7186 defect A: the closing
-    //   joint j_b is composed on ONE side only, so the record is
-    //   path_a = [world, j_b] against path_b = [world, j_a]), and 0.3 == 0.3
-    //   satisfies it. values[2] is structurally required — snapshot_for_sample
+    //   The loop's closure is q_b == q_a — the closing joint j_b is composed
+    //   on ONE side only, so the record is path_a = [world, j_b] against
+    //   path_b = [world, j_a] — and 0.3 == 0.3 satisfies it. values[2] is structurally required — snapshot_for_sample
     //   rejects a sample whose values length differs from bodies length — and
     //   inert for chain extraction, which reads the FIRST binding keyed on
     //   j_b. Do not read it as a second, independent coordinate for j_b.
