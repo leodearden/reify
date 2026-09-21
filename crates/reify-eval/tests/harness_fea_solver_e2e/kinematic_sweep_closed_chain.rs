@@ -334,7 +334,6 @@ fn sweep_closed_chain_warm_start_e2e() {
             tz3.abs() < 1e-6,
             "snaps[{i}] body 3 tz must be 0, got {tz3}"
         );
-
     }
 }
 

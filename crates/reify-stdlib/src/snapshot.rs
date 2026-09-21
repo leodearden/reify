@@ -3228,8 +3228,7 @@ mod tests {
         let wt_3 = body_3
             .get(&Value::String("world_transform".to_string()))
             .expect("body 3 must carry a world_transform field");
-        let ((rw_3, rx_3, ry_3, rz_3), [tx_3, ty_3, tz_3]) =
-            decompose_transform_for_assert(wt_3);
+        let ((rw_3, rx_3, ry_3, rz_3), [tx_3, ty_3, tz_3]) = decompose_transform_for_assert(wt_3);
         // T(jB) ∘ pose = Tx(0.2) ∘ Tx(0.3)·Rz(π/4) = Tx(0.5)·Rz(π/4).
         assert!(
             (tx_3 - 0.5).abs() < 1e-6,
