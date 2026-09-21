@@ -257,13 +257,14 @@ fn sweep_closed_chain_warm_start_e2e() {
         // carries the solver-driven solved_jB, the chain_b tip.
         //
         // Body 3 is the CLOSING body (at j_x, parent j_b), and
-        // `snapshot.rs::walk_fk` composes it specially: a
-        // parent-conflict closing body (detected by `joint_parents[at]`
-        // disagreeing with `body.parent` — here j_a vs j_b) is composed from
-        // `T(body.parent) ∘ pose` = T(j_b), chain_b's terminal frame, under
-        // the rigid-tie rule `T_tree(at) == T(parent) ∘ pose`.  It is NOT
-        // walked via `joint_parents` (which still keeps j_x → j_a from m2's
-        // earlier registration), so it is no longer a chain_a readback.
+        // `snapshot.rs::walk_fk` composes it specially: a parent-conflict
+        // closing body — selected by `parent_conflict_closing_body_ids`
+        // reading the closure RECORD, not by comparing `joint_parents[at]`
+        // against `body.parent` — is composed from `T(body.parent) ∘ pose`
+        // = T(j_b), chain_b's terminal frame, under the rigid-tie rule
+        // `T_tree(at) == T(parent) ∘ pose`.  It is NOT walked via
+        // `joint_parents` (which still keeps j_x → j_a from m2's earlier
+        // registration), so it is no longer a chain_a readback.
         //
         // Body 1 rides chain_a and body 2 rides chain_b, so THEIR agreement
         // is the convergence cross-check: a drift beyond 1e-6 means the

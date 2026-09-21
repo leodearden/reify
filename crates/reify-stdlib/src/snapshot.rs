@@ -884,6 +884,14 @@ fn walk_fk(
         // Pinned by
         // `snapshot_cycle_body_keeps_its_own_frame_after_later_tree_registration`.
         //
+        // Membership IMPLIES the `joint_parents` disagreement, so the walk
+        // below does not re-check it: `append_body` reaches its
+        // parent-conflict arm only when the spanning tree already holds a
+        // different parent for `at` (the body record keeps user intent, the
+        // tree keeps the first-recorded edge — see `make_body_record`'s doc
+        // note in mechanism.rs), and nothing rewrites `joint_parents[at]`
+        // afterwards.
+        //
         // A closing body ALWAYS carries a `parent` key — `make_body_record`
         // writes all five fields unconditionally — so the `?` below is not a
         // fallback but a rejection: a record missing it is a hand-built Map,

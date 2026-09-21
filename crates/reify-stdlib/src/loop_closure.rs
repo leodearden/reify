@@ -2312,7 +2312,7 @@ mod tests {
         assert_eq!(
             free_b,
             vec![0],
-            "under-constrained by design today (#7497): the coupling is iterated \
+            "under-constrained today (#7497): the coupling is iterated \
              as an independent free variable, got {free_b:?}"
         );
     }
