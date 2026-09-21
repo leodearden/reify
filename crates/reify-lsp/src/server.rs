@@ -55,9 +55,22 @@ pub trait NotificationSink: Send + Sync {
     /// scope: the call dispatches into an arbitrary implementation (the
     /// Tauri one re-enters the GUI event bus), so holding the lock across it
     /// would queue every other `did_open`/`did_change`/`did_close` behind
-    /// third-party code. Pinned by
-    /// `log_message_is_never_called_while_the_state_write_lock_is_held` in
-    /// `crates/reify-lsp/tests/in_process_bridge.rs`.
+    /// third-party code.
+    ///
+    /// WHAT ENFORCES IT, exactly. The server has three log sites and two
+    /// probe tests, each observing the write lock at the moment a line
+    /// arrives:
+    /// `log_message_is_never_called_while_the_state_write_lock_is_held`
+    /// (`crates/reify-lsp/tests/in_process_bridge.rs`) covers `did_change`'s
+    /// unknown-URI line, and
+    /// `eval_state_poison_recovery_is_reported_on_the_log_channel` (this
+    /// file) covers [`ReifyLanguageServer::lock_eval_state`]'s notice. The
+    /// third site — the diagnostics pipeline's own lines — has no trigger
+    /// reachable from the public handler surface (it needs `EvalState`
+    /// internals), so it is not probed directly; it fires from the same
+    /// [`ReifyLanguageServer::evaluate_and_forward_logs`] body as the second,
+    /// which acquires no `ServerState` lock, so the second probe's verdict
+    /// is the third's as well.
     fn log_message(&self, line: LogLine);
 }
 
@@ -225,6 +238,35 @@ impl ReifyLanguageServer {
         })
     }
 
+    /// Run the diagnostics pipeline for `text`/`uri` and forward the log
+    /// lines it returns, yielding the diagnostics to publish.
+    ///
+    /// The one spelling of what `did_open` and `did_change` both do between
+    /// their two brief [`ServerState`] write-lock scopes. Extracted so the
+    /// ordering discipline below has a single home rather than a copy per
+    /// handler free to drift.
+    ///
+    /// THE DISCIPLINE: this body acquires no [`ServerState`] lock at all, so
+    /// both of its log sites — `lock_eval_state`'s poisoned-mutex notice and
+    /// the pipeline's own lines — inherit the lock state of whatever call
+    /// site invokes it, and inherit it identically. The `eval_state` guard is
+    /// dropped before the forwarding loop for the same reason one rung down:
+    /// a sink implementation is arbitrary code (in the GUI it re-enters the
+    /// Tauri event bus) and must not be run under any lock this server holds.
+    /// See [`NotificationSink::log_message`].
+    fn evaluate_and_forward_logs(&self, text: &str, uri: &Url) -> Vec<Diagnostic> {
+        let (diagnostics, log_messages) = {
+            let mut eval_state = self.lock_eval_state();
+            let result =
+                crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, text, uri);
+            (result.diagnostics, result.log_messages)
+        };
+        for line in log_messages {
+            self.sink.log_message(line);
+        }
+        diagnostics
+    }
+
     /// Access eval_state (for testing, e.g. poison recovery tests).
     #[cfg(test)]
     pub(crate) fn eval_state(&self) -> &Arc<Mutex<EvalState>> {
@@ -362,24 +404,10 @@ impl LanguageServer for ReifyLanguageServer {
             state.documents.open(uri.clone(), text.clone(), version);
         }
 
-        // Eval runs outside the RwLock, using only the eval_state Mutex
-        // (`lock_eval_state` also reports poisoned-lock recovery).
-        let (diagnostics, log_messages) = {
-            let mut eval_state = self.lock_eval_state();
-            let result =
-                crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
-            (result.diagnostics, result.log_messages)
-        };
-
-        // Forward the pipeline's own log lines. Here, and identically in the
-        // sibling handler: after the `eval_state` guard has dropped and
-        // outside every `state` write-lock scope, per
-        // `NotificationSink::log_message`'s contract. Uniformly, so the
-        // ordering invariant holds at EVERY log site rather than only at the
-        // one task #6162 happened to find.
-        for line in log_messages {
-            self.sink.log_message(line);
-        }
+        // Eval and the forwarding of its log lines run outside the RwLock,
+        // using only the eval_state Mutex — see `evaluate_and_forward_logs`,
+        // which is the single spelling of this step for both handlers.
+        let diagnostics = self.evaluate_and_forward_logs(&text, &uri);
 
         // Brief write lock: capture diagnostics
         {
@@ -466,24 +494,10 @@ impl LanguageServer for ReifyLanguageServer {
             });
         }
 
-        // Eval runs outside the RwLock, using only the eval_state Mutex
-        // (`lock_eval_state` also reports poisoned-lock recovery).
-        let (diagnostics, log_messages) = {
-            let mut eval_state = self.lock_eval_state();
-            let result =
-                crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
-            (result.diagnostics, result.log_messages)
-        };
-
-        // Forward the pipeline's own log lines. Here, and identically in the
-        // sibling handler: after the `eval_state` guard has dropped and
-        // outside every `state` write-lock scope, per
-        // `NotificationSink::log_message`'s contract. Uniformly, so the
-        // ordering invariant holds at EVERY log site rather than only at the
-        // one task #6162 happened to find.
-        for line in log_messages {
-            self.sink.log_message(line);
-        }
+        // Eval and the forwarding of its log lines run outside the RwLock,
+        // using only the eval_state Mutex — see `evaluate_and_forward_logs`,
+        // which is the single spelling of this step for both handlers.
+        let diagnostics = self.evaluate_and_forward_logs(&text, &uri);
 
         // Brief write lock: capture diagnostics
         {
@@ -875,11 +889,12 @@ impl LanguageServer for ReifyLanguageServer {
 /// in tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex, OnceLock};
 
+    use tokio::sync::RwLock;
     use tower_lsp::lsp_types::{Diagnostic, MessageType, Url};
 
-    use super::{LogLine, NotificationSink};
+    use super::{LogLine, NotificationSink, ServerState};
 
     /// A recording sink that captures all `publish_diagnostics` and
     /// `log_message` calls.
@@ -892,7 +907,11 @@ pub mod test_support {
     pub struct RecordingSink {
         #[allow(clippy::type_complexity)]
         calls: Mutex<Vec<(Url, Vec<Diagnostic>, Option<i32>)>>,
-        log_calls: Mutex<Vec<(MessageType, String)>>,
+        /// `(severity, message, write-lock-was-free)`, in arrival order. The
+        /// third element is `None` unless [`RecordingSink::probe_state`] was
+        /// called — see there.
+        log_calls: Mutex<Vec<(MessageType, String, Option<bool>)>>,
+        probed_state: OnceLock<Arc<RwLock<ServerState>>>,
     }
 
     impl NotificationSink for RecordingSink {
@@ -906,10 +925,14 @@ pub mod test_support {
         }
 
         fn log_message(&self, line: LogLine) {
+            let write_lock_was_free = self
+                .probed_state
+                .get()
+                .map(|state| state.try_write().is_ok());
             self.log_calls
                 .lock()
                 .unwrap()
-                .push((line.typ, line.message));
+                .push((line.typ, line.message, write_lock_was_free));
         }
     }
 
@@ -919,14 +942,38 @@ pub mod test_support {
             self.calls.lock().unwrap().clone()
         }
 
-        /// Return a clone of all recorded `log_message` calls, as
-        /// `(severity, message)` pairs.
+        /// Start recording, for every subsequent `log_message` call,
+        /// whether `state`'s WRITE lock was free when the call arrived.
         ///
-        /// Recorded as a pair rather than as [`LogLine`] so the result is
+        /// Opt-in and one-shot, because the sink must exist BEFORE the
+        /// server whose lock it probes: `LspService::new` takes a closure
+        /// that builds the server from a `Client`, and the sink is moved
+        /// into that closure, so the state can only be injected afterwards
+        /// — and only by the tests actually asking the ordering question
+        /// [`NotificationSink::log_message`]'s contract poses.
+        ///
+        /// `try_write().is_ok()` is a deterministic observation, not a
+        /// timing tolerance, for a `#[tokio::test]` that spawns nothing:
+        /// the current_thread flavor leaves nobody to contend, so it
+        /// succeeds if and only if the guard had already dropped.
+        pub fn probe_state(&self, state: Arc<RwLock<ServerState>>) {
+            assert!(
+                self.probed_state.set(state).is_ok(),
+                "RecordingSink::probe_state must be called at most once, before any request"
+            );
+        }
+
+        /// Return a clone of all recorded `log_message` calls, as
+        /// `(severity, message, write-lock-was-free)` triples. The third
+        /// element is `None` unless [`RecordingSink::probe_state`] was
+        /// called before the calls were recorded.
+        ///
+        /// Recorded as a tuple rather than as [`LogLine`] so the result is
         /// `Clone` without [`LogLine`] having to be — the production type
         /// is moved into a transport by every real sink and has no reason
         /// to be duplicable.
-        pub fn take_log_calls(&self) -> Vec<(MessageType, String)> {
+        #[allow(clippy::type_complexity)]
+        pub fn take_log_calls(&self) -> Vec<(MessageType, String, Option<bool>)> {
             self.log_calls.lock().unwrap().clone()
         }
     }
@@ -2499,12 +2546,25 @@ mod tests {
     /// test cannot pass by having broken recovery and merely logged about
     /// it — and that check runs after BOTH handlers, so the silent second
     /// recovery the latch introduces is proven still to be a recovery.
+    ///
+    /// Also the ORDERING probe for this log site, via
+    /// `RecordingSink::probe_state`. Co-located rather than split into its
+    /// own test because the poisoning dance above is the whole cost of the
+    /// scenario, and a second copy of it would be two tests obliged to stay
+    /// in lockstep for one extra assertion. Its sibling probe lives in
+    /// `crates/reify-lsp/tests/in_process_bridge.rs`
+    /// (`log_message_is_never_called_while_the_state_write_lock_is_held`),
+    /// which covers `did_change`'s unknown-URI site; between them they cover
+    /// both log sites reachable from the public handler surface, and the
+    /// third inherits this one's verdict — see
+    /// [`NotificationSink::log_message`].
     #[tokio::test]
     async fn eval_state_poison_recovery_is_reported_on_the_log_channel() {
         let sink = Arc::new(RecordingSink::default());
         let (service, _socket) =
             LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone()));
         let server = service.inner();
+        sink.probe_state(server.state().clone());
         let uri = test_uri();
 
         // Poison the eval_state Mutex by panicking while holding the lock.
@@ -2546,7 +2606,7 @@ mod tests {
         let log_calls = sink.take_log_calls();
         let recoveries: Vec<_> = log_calls
             .iter()
-            .filter(|(_, message)| message.contains("eval_state lock poisoned, recovering"))
+            .filter(|(_, message, _)| message.contains("eval_state lock poisoned, recovering"))
             .collect();
         assert_eq!(
             recoveries.len(),
@@ -2557,7 +2617,7 @@ mod tests {
              a permanently poisoned mutex now emits a client-visible ERROR per keystroke. \
              Got log calls: {log_calls:?}"
         );
-        for (typ, message) in &recoveries {
+        for (typ, message, _) in &recoveries {
             assert_eq!(
                 *typ,
                 MessageType::ERROR,
@@ -2566,6 +2626,25 @@ mod tests {
                  didChange uses. Got {typ:?} for: {message}"
             );
         }
+
+        // THE ORDERING INVARIANT at this log site: `lock_eval_state` reports
+        // recovery from inside `evaluate_and_forward_logs`, which both
+        // handlers call between their two brief `state` write-lock scopes.
+        // A call arriving with that lock held would queue every other
+        // did_open/did_change/did_close behind an arbitrary sink
+        // implementation — in the GUI, one that re-enters the Tauri event
+        // bus. Non-vacuous by the count assertion above.
+        let while_locked: Vec<_> = log_calls
+            .iter()
+            .filter(|(_, _, write_lock_was_free)| *write_lock_was_free == Some(false))
+            .collect();
+        assert!(
+            while_locked.is_empty(),
+            "a NotificationSink::log_message call ran while the `state` WRITE lock was held. \
+             Every server log site must dispatch outside that lock (see \
+             NotificationSink::log_message) — move the offending call out of the write-lock \
+             block. Offending calls: {while_locked:?}"
+        );
 
         // Recovery itself, not merely the report of it, still happened.
         let state = server.state().read().await;
