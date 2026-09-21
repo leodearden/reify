@@ -405,7 +405,7 @@ tasks:
       - crates/reify-compiler/src/type_compat.rs
       expect: absent
   - name: deliberate-Int-leniency-pin-must-be-restated-not-deleted
-    binding: 'grep:crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:1499-1522
+    binding: 'grep:crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:1490-1522
       int_literal_for_length_param_no_constraint_arg_type_mismatch — its doc comment
       states the leniency as INTENT ("Int-for-Length is deliberately tolerated at
       the binding site (Rule 4) … with dimensional strictness deferred to task 4490''s
