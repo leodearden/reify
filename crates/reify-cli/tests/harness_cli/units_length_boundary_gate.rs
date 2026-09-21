@@ -19,15 +19,31 @@ use crate::common;
 use reify_core::units::LENGTH_MIGRATION_HINT;
 use std::process::ExitStatus;
 
-/// Write `source` as `<stem>.ri` into a fresh temp dir and run `reify eval` over it,
-/// returning `(status, stdout, stderr)`.
-///
-/// `source` must declare `module <stem>`; see this module's header for why.
+/// Run `reify eval` over `source`.
 fn eval_source(stem: &str, source: &str) -> (ExitStatus, String, String) {
+    run_source("eval", stem, source)
+}
+
+/// Run `reify check` over `source` — the twin row 9 needs.
+///
+/// Kept as a named twin rather than folded into a `run_source("check", …)` call so that
+/// row 9's two calls read as the same bytes through two subcommands, which is that row's
+/// entire claim.
+fn check_source(stem: &str, source: &str) -> (ExitStatus, String, String) {
+    run_source("check", stem, source)
+}
+
+/// Write `source` as `<stem>.ri` into a fresh temp dir, run `reify <subcommand>` over it
+/// and return `(status, stdout, stderr)`.
+///
+/// The single spawn site the two helpers above share — the same shape
+/// `tests/common/mod.rs` uses for its own `spawn_reify`. `source` must declare
+/// `module <stem>`; see this module's header for why.
+fn run_source(subcommand: &str, stem: &str, source: &str) -> (ExitStatus, String, String) {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let path = dir.path().join(format!("{stem}.ri"));
     std::fs::write(&path, source).expect("failed to write temp module");
-    common::run_with_args(&["eval", path.to_str().expect("temp path is UTF-8")])
+    common::run_with_args(&[subcommand, path.to_str().expect("temp path is UTF-8")])
 }
 
 /// Assert that `stderr` carries the ONE units-rejection line `ArgRejection::message`
@@ -294,4 +310,127 @@ fn centroid_x_metres(stdout: &str) -> f64 {
         .0;
     x.parse()
         .unwrap_or_else(|e| panic!("centroid x `{x}` is not a number ({e}); stdout: {stdout}"))
+}
+
+/// §6 row 7 — a bare translation component is rejected by NAME, replacing the generic
+/// shape message that named nothing.
+///
+/// Both halves matter. Before the gate, `vec3(5, 0, 0)` failed as
+/// `not a valid Transform<3>` — a whole-argument complaint that told the user neither
+/// which component was wrong nor that units were the reason. The row's claim is that the
+/// generic message was REPLACED, so its absence is asserted alongside the new one.
+///
+/// ARITY TRAP: `transform3` takes `(orientation, translation)`. A 4-arg spelling never
+/// reaches the units gate at all — it fails the generic shape check first, and a fixture
+/// written that way would read as a units failure while measuring something else.
+///
+/// The `Scalar{DIMENSIONLESS}` twin §6 row 7 also names gets NO fixture here, and that
+/// is deliberate rather than an omission: ζ probed it and recorded the result at
+/// `crates/reify-eval/tests/harness_geometry/transform_translation_length_units_e2e.rs:19-29`
+/// — `5mm / 1mm` collapses to `Value::Real`, so no `.ri` source can express the twin, and
+/// writing one anyway would exercise the `Real` path twice while claiming to cover it.
+/// Its home is the unit row
+/// `geometry_ops/tests.rs::compile_geometry_op_apply_transform_translation_follows_the_three_state_contract`,
+/// which constructs the value directly; it enters this suite through the ledger.
+#[test]
+fn a_bare_transform_translation_names_the_component_not_the_shape() {
+    let (status, stdout, stderr) = eval_source(
+        "bare_transform_translation",
+        r#"module bare_transform_translation
+
+structure def S {
+    let b = box(20mm, 20mm, 10mm)
+    let moved = apply_transform(b, transform3(orient_identity(), vec3(5, 0, 0)))
+    param geometry : Solid = moved
+}
+"#,
+    );
+
+    assert!(
+        !status.success(),
+        "a bare translation component must exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    expect_length_rejection(&stderr, "apply_transform", "translation.x", "Int");
+    assert!(
+        !stderr.contains("not a valid Transform<3>"),
+        "the generic shape message must be REPLACED by the per-component units \
+         diagnostic, not accompanied by it; got: {stderr}"
+    );
+}
+
+/// §6 row 9 — D8: `reify check` and `reify eval` agree on the SAME bytes.
+///
+/// One source, two subcommands, one assertion block. `check` is the cheap pre-flight a
+/// user reaches for first; if it passed what `eval` rejects, the gate would be advisory
+/// rather than binding, and a bare-number habit would survive contact with it.
+///
+/// This holds today on η's compile slots alone, with no dependency on PRD 2's `reify
+/// check` semantics — verified live. Should this row ever come to need those semantics,
+/// that is a real dependency edge onto PRD 2's task, never a weakening of the assertion.
+#[test]
+fn check_and_eval_agree_on_a_bare_primitive_dimension() {
+    let stem = "bare_box_both_subcommands";
+    let source = r#"module bare_box_both_subcommands
+
+structure def S {
+    let b = box(20, 20, 10)
+    param geometry : Solid = b
+}
+"#;
+
+    for (subcommand, (status, stdout, stderr)) in [
+        ("check", check_source(stem, source)),
+        ("eval", eval_source(stem, source)),
+    ] {
+        assert!(
+            !status.success(),
+            "`reify {subcommand}` must exit nonzero on a bare primitive dimension;\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+        expect_length_rejection(&stderr, "box", "width", "Int");
+    }
+}
+
+/// §6 row 9b — the arity-6 `linear_pattern_2d` site is resolved as an ARITY error, and
+/// was deliberately NOT given an arity-6 LENGTH slot.
+///
+/// §6 left this row open ("resolved either way"); the decompose-time correction settled
+/// it as the malformed-fixture branch, so the row's postcondition is a PAIR: the arity
+/// diagnostic is present AND no spacing slot was minted at that arity. Asserting only the
+/// arity message would stay green if someone later added the slot, which is the outcome
+/// the row exists to rule out — an arity-6 call has `count2` at index 5, so a slot there
+/// would emit a FALSE units rejection on valid code (the reason
+/// `builtin_signatures.rs` guards the slots with `arg_count == 11`).
+///
+/// Compile-layer twin:
+/// `harness_compilation_surface/compile_api_tests.rs::compile_linear_pattern_2d_wrong_arity_produces_diagnostic`.
+#[test]
+fn the_arity_6_linear_pattern_2d_site_is_an_arity_error_not_a_length_slot() {
+    let (status, stdout, stderr) = eval_source(
+        "arity_6_linear_pattern_2d",
+        r#"module arity_6_linear_pattern_2d
+
+structure def S {
+    let w = box(5mm, 5mm, 5mm)
+    let p = linear_pattern_2d(w, 1, 0, 0, 3, 20)
+    param geometry : Solid = p
+}
+"#,
+    );
+
+    assert!(
+        !status.success(),
+        "an arity-6 linear_pattern_2d call must exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("linear_pattern_2d() expects 11 arguments, got 6"),
+        "the site must resolve as an ARITY error; got: {stderr}"
+    );
+    for slot in ["spacing1", "spacing2"] {
+        assert!(
+            !stderr.contains(slot),
+            "no `{slot}` LENGTH slot exists at arity 6 — index 5 is `count2` there, so a \
+             slot would emit a FALSE units rejection on valid code; got: {stderr}"
+        );
+    }
 }
