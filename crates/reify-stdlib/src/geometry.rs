@@ -4543,6 +4543,120 @@ mod tests {
         }
     }
 
+    // ── η LENGTH gate (task 6591): the arity-2 `offset` ──────────────────────
+    //
+    // BOTH operands are gated. The delta hole is the sharper of the two and is
+    // R12-class rather than merely a missing check: `offset(<bare plane>, 2.0)`
+    // MEASURED as `plane(point(0, 0, 2), vec(0, 0, 1))` at exit 0, so the
+    // dimensionless `2` was silently REINTERPRETED as 2 METRES.
+    //
+    // `offset` is the one arity-OVERLOADED name in this family. Only the arity-2
+    // form is a datum constructor; the arity-3 form is the γ RELATION, claimed by
+    // an earlier compiler arm and never evaluated in this module.
+
+    /// FLIPPING THIS ROW IS THE FIX, NOT A REGRESSION — `offset`'s half of η.
+    ///
+    /// The bare/bare row is the live hole. The LENGTH-plane/bare-delta row was
+    /// ALREADY `Undef` via the agreement compare, and is kept as a regression row
+    /// so the replacement cannot loosen it — silently, since it produced no
+    /// diagnostic either (measured: `offset(plane_xy(5mm), 2.0)` printed `undef`
+    /// and exited 0).
+    #[test]
+    fn offset_requires_a_length_plane_origin_and_a_length_delta() {
+        let bare_plane = plane_with_origin([0.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+        let heavy_plane = plane_with_origin([1.0, 2.0, 3.0], DimensionVector::MASS);
+        let long_plane = plane_at_z(0.010);
+        let bare_delta = Value::Real(2.0);
+        let angular_delta = Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::ANGLE,
+        };
+        let long_delta = Value::length(0.005);
+        for (label, plane, delta) in [
+            // The live hole: a dimensionless `2` silently becomes 2 METRES.
+            ("bare plane, bare delta", bare_plane.clone(), bare_delta.clone()),
+            // Already Undef via the agreement compare — a regression row.
+            ("LENGTH plane, bare delta", long_plane.clone(), bare_delta),
+            ("bare plane, LENGTH delta", bare_plane, long_delta.clone()),
+            // AGREEING but not LENGTH: what pins the gate as "LENGTH and nothing
+            // else" rather than merely "not bare".
+            (
+                "MASS plane, MASS delta",
+                heavy_plane.clone(),
+                Value::Scalar {
+                    si_value: 2.0,
+                    dimension: DimensionVector::MASS,
+                },
+            ),
+            ("MASS plane, LENGTH delta", heavy_plane, long_delta),
+            ("LENGTH plane, ANGLE delta", long_plane, angular_delta),
+        ] {
+            assert!(
+                eval_builtin("offset", &[plane, delta]).is_undef(),
+                "offset({label}) must be Undef: both the plane origin and delta expect Length"
+            );
+        }
+    }
+
+    /// The INSEPARABLE control: a LENGTH plane and a DISTINCT NON-ZERO LENGTH
+    /// delta still shift the origin along the unit normal, leaving the normal
+    /// unchanged and the origin at LENGTH.
+    #[test]
+    fn offset_of_a_length_plane_by_a_length_delta_still_shifts_the_origin() {
+        let result = eval_builtin("offset", &[plane_at_z(0.005), Value::length(0.003)]);
+        let Value::Plane { origin, normal } = result else {
+            panic!("expected Value::Plane, got {result:?}");
+        };
+        approx3(comps3(&origin), [0.0, 0.0, 0.008]);
+        assert_eq!(
+            super::decompose_point3(&origin).map(|(_, dim)| dim),
+            Some(DimensionVector::LENGTH),
+            "the shifted origin must stay LENGTH"
+        );
+        approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+    }
+
+    /// A plane whose NORMAL is a `Value::Direction` rather than a `Value::Vector`
+    /// is still ACCEPTED.
+    ///
+    /// This is the regression guard for `examples/geometric_relations/`
+    /// `construction_datum.ri`, the only real `.ri` call site of this builtin:
+    /// its `top_plane` is kernel-realized and MEASURES as
+    /// `plane(point(… m), direction(0, 0, 1))`. Narrowing `decode_plane`'s dual
+    /// normal acceptance while adding the LENGTH gate would break the shipped
+    /// example and its OCCT-gated e2e test while the rest of this suite stayed
+    /// green.
+    #[test]
+    fn offset_accepts_a_plane_whose_normal_is_a_direction() {
+        let realized = Value::Plane {
+            origin: Box::new(point3_len(0.0, 0.0, 0.005)),
+            normal: Box::new(Value::Direction {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            }),
+        };
+        let result = eval_builtin("offset", &[realized, Value::length(0.003)]);
+        let Value::Plane { origin, .. } = result else {
+            panic!("expected Value::Plane for a Direction-normal plane, got {result:?}");
+        };
+        approx3(comps3(&origin), [0.0, 0.0, 0.008]);
+    }
+
+    /// The arity-3 `offset` is the γ RELATION and is UNTOUCHED by this gate: it
+    /// is claimed by an earlier compiler arm and never evaluated in this module,
+    /// so eval keeps returning `Undef` for it on ARITY grounds — not on units
+    /// grounds. Pinned as behaviour here, and as silence at the classifier in
+    /// the step-5 rows.
+    #[test]
+    fn offset_arity_three_stays_an_arity_rejection() {
+        let args = [plane_at_z(0.0), plane_at_z(0.010), Value::length(0.005)];
+        assert!(
+            eval_builtin("offset", &args).is_undef(),
+            "the arity-3 offset is the γ relation and is not evaluated here"
+        );
+    }
+
     // ── η LENGTH gate: the INSEPARABLE positive controls ─────────────────────
     //
     // A gate that rejected EVERYTHING would satisfy every rejection row above
