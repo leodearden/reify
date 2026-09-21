@@ -13,11 +13,26 @@
 //! pointers that go stale on the next edit above them.
 //!
 //! This reads `debug_server.rs` as TEXT and links nothing, so unlike
-//! `debug_boundary_tests` it carries NO `#[cfg(feature = "gui")]` gate and
-//! runs in the DEFAULT test pass rather than only in `verify.sh`'s
-//! conditionally-emitted `--features gui` arm. The architecture gate
-//! therefore cannot be skipped on a run that does not touch the GUI crate —
-//! exactly the run during which someone adds a bypassing tool elsewhere.
+//! `debug_boundary_tests` it carries NO `#[cfg(feature = "gui")]` gate. The
+//! benefit that holds on EVERY scope is LINTING: `verify.sh` runs
+//! `cargo clippy --workspace --all-targets -- -D warnings` without
+//! `--features gui`, so gui-gated code is type-checked but never
+//! lint-checked — the open gap owned by task #5841 — while an ungated module
+//! is linted like the rest of the workspace today. Being ungated also costs
+//! no `scripts/ensure-gui-sidecar-placeholder.sh` and no tauri/webkit2gtk/
+//! OCCT link, so this gate runs under a plain `cargo test -p reify-gui --lib`
+//! in any warm lane.
+//!
+//! NOT claimed: that a gui-gated test would be skipped by the merge gate.
+//! `verify.sh` emits its `-p reify-gui --features gui` test pass whenever
+//! `closure_reaches_reify_gui` holds, and that returns true unconditionally
+//! for `--scope all` BY CONTRACT — so a gui-gated test runs there too. What
+//! being ungated buys is the NARROW scopes, where that pass is not emitted:
+//! the per-commit hook's `--scope staged` on a diff whose affected-crate
+//! closure misses reify-gui — exactly the run during which someone adds a
+//! bypassing tool elsewhere. Spelled out because the converse reading,
+//! "reify-gui's gui-gated tests do not really run in the gate", is a
+//! near-miss this repo has had to re-refute more than once.
 //!
 //! REDUNDANT ENUMERATION: the write-tool set is read from TWO independent
 //! textual shapes — the `"reify_*" =>` dispatch arms and the `ToolDef`
