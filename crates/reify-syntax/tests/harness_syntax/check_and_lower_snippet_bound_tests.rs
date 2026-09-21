@@ -3,33 +3,87 @@
 //! INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
 //! a diagnostic that reprints a block of source is unreadable, and on a recovered parse the
 //! offending node can span an entire declaration. These tests pin that the `invalid <label>: `
-//! diagnostics emitted by `check_and_lower!` carry a BOUNDED excerpt, while leaving the
-//! prefix — and any excerpt already inside the bound — untouched.
+//! diagnostics emitted by `check_and_lower!` carry a BOUNDED, single-line excerpt, while
+//! leaving the prefix — and any excerpt already inside the bound — untouched.
+//!
+//! SCOPE is `check_and_lower!` alone. Sibling `push_error` sites in `ts_parser.rs` — the
+//! `syntax error in <context>: {}` arms and the `lower_connect_body` mapping arms — still
+//! interpolate raw `node_text` and are tracked as separate follow-up work, so nothing here
+//! says the diagnostic-excerpt class is closed across the parser.
 //!
 //! Asserted through the public `reify_syntax::parse` API on the messages it actually emits,
 //! not against the private `snippet` helper: the contract is the user-visible diagnostic.
-//! `snippet`'s own mechanics (newline cut, char-boundary cut, short-text passthrough) are
-//! unit-tested once in `ts_parser`'s `mod tests` and are deliberately not restated here.
+//! That is also why the newline case is pinned here as well as by `snippet`'s own unit tests
+//! — only the rendered message shows that no raw newline survives into a diagnostic, and both
+//! renderings are line-structured: `report_parse_errors` (crates/reify-cli/src/main.rs) writes
+//! one `Parse error: {error}` line per error, and `mcp_context` joins messages with "; ".
 
 use reify_ast::ParseError;
+
+/// The bound a `check_and_lower!` excerpt must honour: at most this many characters, plus the
+/// ellipsis that marks a cut.
+const MAX_EXCERPT_CHARS: usize = 40;
 
 /// Helper: parse source and return only the parse errors.
 fn parse_errors(source: &str) -> Vec<ParseError> {
     reify_syntax::parse(source, reify_core::ModulePath::single("snippet_bound_test")).errors
 }
 
-/// The excerpt body of an `invalid <label>: ` diagnostic, or a failure naming what was emitted.
+/// The excerpt body of the one `invalid <label>: ` diagnostic, or a failure naming what was
+/// emitted.
+///
+/// Selects by prefix rather than requiring a lone error, so an unrelated diagnostic raised
+/// elsewhere in the same fixture cannot red these tests for a reason other than the bound.
+#[track_caller]
 fn diagnostic_body<'a>(errors: &'a [ParseError], prefix: &str) -> &'a str {
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly one parse error, got: {:?}",
-        errors
+    let mut matching = errors.iter().filter_map(|e| e.message.strip_prefix(prefix));
+    let body = matching
+        .next()
+        .unwrap_or_else(|| panic!("expected an error starting with {prefix:?}, got: {errors:?}"));
+    assert!(
+        matching.next().is_none(),
+        "expected exactly one {prefix:?} diagnostic, got: {errors:?}"
     );
-    errors[0]
-        .message
-        .strip_prefix(prefix)
-        .unwrap_or_else(|| panic!("expected message to start with {prefix:?}, got: {errors:?}"))
+    body
+}
+
+/// Assert a cut excerpt: the BOUND first, then the exact text.
+///
+/// The order is load-bearing. A grammar change to the node's text then reds the exact-match
+/// only, with the bound already shown to hold — so the failure says "the cut point moved",
+/// not "the diagnostic may be unbounded again".
+#[track_caller]
+fn assert_truncated(body: &str, expected: &str, errors: &[ParseError]) {
+    assert!(
+        body.ends_with('…'),
+        "expected a cut excerpt to end in an ellipsis, got: {errors:?}"
+    );
+    assert!(
+        body.chars().count() <= MAX_EXCERPT_CHARS + 1,
+        "expected at most {} excerpt chars plus an ellipsis, got {}: {errors:?}",
+        MAX_EXCERPT_CHARS,
+        body.chars().count()
+    );
+    assert!(
+        !body.contains('\n'),
+        "expected a single-line excerpt, got: {errors:?}"
+    );
+    assert_eq!(body, expected, "unexpected cut point, got: {errors:?}");
+}
+
+/// Assert an excerpt inside the bound is reproduced verbatim: the properties first, then the
+/// exact text, for the same reason as [`assert_truncated`].
+#[track_caller]
+fn assert_verbatim(body: &str, expected: &str, errors: &[ParseError]) {
+    assert!(
+        !body.contains('…'),
+        "expected no ellipsis on an excerpt inside the bound, got: {errors:?}"
+    );
+    assert!(
+        !body.contains('\n'),
+        "expected a single-line excerpt, got: {errors:?}"
+    );
+    assert_eq!(body, expected, "unexpected excerpt, got: {errors:?}");
 }
 
 // ── the bound applies: long excerpts are cut ──────────────────────
@@ -42,55 +96,48 @@ fn long_malformed_connect_is_truncated_with_an_ellipsis() {
     let errors = parse_errors(
         "structure S { port a : out T  port b : in T  connect a -> b { shaft_alignment_reference_member -> } }",
     );
-    let body = diagnostic_body(&errors, "invalid connect: ");
-    assert_eq!(
-        body, "connect a -> b { shaft_alignment_referen…",
-        "expected the excerpt cut at 40 chars, got: {:?}",
-        errors
+    assert_truncated(
+        diagnostic_body(&errors, "invalid connect: "),
+        "connect a -> b { shaft_alignment_referen…",
+        &errors,
     );
-    // Pinned independently of the exact cut point, so a legitimate grammar change to the
-    // node's text cannot silently unbound the diagnostic.
-    assert!(
-        body.ends_with('…'),
-        "expected a truncated excerpt to end in an ellipsis, got: {:?}",
-        errors
+}
+
+#[test]
+fn multiline_connect_excerpt_is_cut_at_the_first_newline() {
+    // The motivating harm, and the one user-visible FORMAT regression the bound fixes: on a
+    // recovered parse the offending node spans the whole block, so this message previously
+    // carried EMBEDDED RAW NEWLINES — measured before the fix as
+    // `invalid connect: connect a -> b {\n    shaft ->\n  }` — which breaks the
+    // one-record-per-diagnostic structure of both renderings named in the module doc.
+    let errors = parse_errors(
+        "structure S {\n  port a : out T\n  port b : in T\n  connect a -> b {\n    shaft ->\n  }\n}\n",
     );
-    assert!(
-        body.chars().count() <= 41,
-        "expected the excerpt bounded to 40 chars + ellipsis, got {} chars: {:?}",
-        body.chars().count(),
-        errors
+    assert_truncated(
+        diagnostic_body(&errors, "invalid connect: "),
+        "connect a -> b {…",
+        &errors,
     );
 }
 
 #[test]
 fn truncation_of_a_multibyte_snippet_lands_on_a_character_boundary() {
-    // `let a = 7850 kg·m^-3` (space between magnitude and unit) is a known, still-open parse
-    // gap — see crates/reify-compiler/tests/harness_units/unit_middot_mul_tests.rs:13 — that
-    // keeps the `let_declaration` kind with has_error() set, so it reaches `check_and_lower!`.
+    // A string literal where a port member name belongs: malformed by GRAMMAR, like the
+    // fixtures above, so repairing any open parse gap cannot silently retire this test.
     //
-    // WHY THIS FIXTURE: the node text `let abcdefghijklmnopqrstuvwxy = 7850 kg·m^-3` is 44
-    // chars but 45 bytes, and byte offset 40 is NOT a char boundary — the U+00B7 MIDDLE DOT
-    // occupies bytes 39-40. A regression from `char_indices` to a byte slice `&first_line[..40]`
-    // therefore PANICS here rather than merely mis-asserting. The 40th character is the `·`
-    // itself, so a correct cut keeps it intact and appends the ellipsis after it.
-    let errors = parse_errors("structure S { let abcdefghijklmnopqrstuvwxy = 7850 kg·m^-3 }");
-    let body = diagnostic_body(&errors, "invalid let: ");
-    assert_eq!(
-        body, "let abcdefghijklmnopqrstuvwxy = 7850 kg·…",
-        "expected the excerpt cut on a char boundary with the `·` intact, got: {:?}",
-        errors
+    // WHY THESE EXACT BYTES: the node text `connect a -> b { "abcdefghijklmnopqrstu·vwxyz"`
+    // is 46 chars but 47 bytes, and byte offset 40 is NOT a char boundary — the U+00B7 MIDDLE
+    // DOT occupies bytes 39-40. A regression from `char_indices` to a byte slice
+    // `&first_line[..40]` therefore PANICS here rather than merely mis-asserting. The 40th
+    // character is the `·` itself, so a correct cut keeps it intact and puts the ellipsis
+    // after it.
+    let errors = parse_errors(
+        "structure S { port a : out T  port b : in T  connect a -> b { \"abcdefghijklmnopqrstu·vwxyz\" -> } }",
     );
-    assert!(
-        body.ends_with('…'),
-        "expected a truncated excerpt to end in an ellipsis, got: {:?}",
-        errors
-    );
-    assert!(
-        body.chars().count() <= 41,
-        "expected the excerpt bounded to 40 chars + ellipsis, got {} chars: {:?}",
-        body.chars().count(),
-        errors
+    assert_truncated(
+        diagnostic_body(&errors, "invalid connect: "),
+        "connect a -> b { \"abcdefghijklmnopqrstu·…",
+        &errors,
     );
 }
 
@@ -103,33 +150,23 @@ fn short_malformed_connect_is_unchanged() {
     // short diagnostics — and the `invalid connect: ` prefix — exactly as they were.
     let errors =
         parse_errors("structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }");
-    let body = diagnostic_body(&errors, "invalid connect: ");
-    assert_eq!(
-        body, "connect a -> b { shaft -> }",
-        "expected a short excerpt reproduced verbatim, got: {:?}",
-        errors
-    );
-    assert!(
-        !body.contains('…'),
-        "expected no ellipsis on an excerpt inside the bound, got: {:?}",
-        errors
+    assert_verbatim(
+        diagnostic_body(&errors, "invalid connect: "),
+        "connect a -> b { shaft -> }",
+        &errors,
     );
 }
 
 #[test]
 fn short_multibyte_diagnostic_is_unchanged() {
-    // The same `kg·m^-3` parse gap with a short binding name: multi-byte, but inside the
-    // bound, so no cut happens at all. Green before and after the fix.
-    let errors = parse_errors("structure S { let a = 7850 kg·m^-3 }");
-    let body = diagnostic_body(&errors, "invalid let: ");
-    assert_eq!(
-        body, "let a = 7850 kg·m^-3",
-        "expected a short multi-byte excerpt reproduced verbatim, got: {:?}",
-        errors
+    // The same malformed string-literal member, short enough that no cut happens at all, so a
+    // multi-byte excerpt inside the bound is reproduced byte for byte. Green before and after.
+    let errors = parse_errors(
+        "structure S { port a : out T  port b : in T  connect a -> b { \"kg·m^-3\" -> } }",
     );
-    assert!(
-        !body.contains('…'),
-        "expected no ellipsis on an excerpt inside the bound, got: {:?}",
-        errors
+    assert_verbatim(
+        diagnostic_body(&errors, "invalid connect: "),
+        "connect a -> b { \"kg·m^-3\"",
+        &errors,
     );
 }
