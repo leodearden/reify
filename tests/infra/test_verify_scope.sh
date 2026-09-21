@@ -2700,13 +2700,31 @@ assert "GV-6: gui lane carries the vitest runner" \
 # general, not a property of this fixture — a closure can only be
 # computed-empty when every changed path is non-crate, and of those classes
 # only tests/infra/* reaches RUN_RUST=1, via that same catch-all.
+#
+# The headline is a NEGATIVE (plan_lacks), so it gets an anti-vacuity control
+# FIRST, the same discipline b11/b13/b15 keep in
+# test_compute_trampoline_registration_wired.sh. plan_for_branch_env captures
+# with `|| true` and asserts nothing itself, so on retry exhaustion PLAN_OUT can
+# be a partial dump that still carries the preamble both the scope-header check
+# and the vitest-lane grep live in — and then the one assertion pinning the
+# COMPUTED-EMPTY arm at the branch tier would go green for the wrong reason.
+# GV-FAILWIDE-2's plan_has on the same pattern guards pattern DRIFT, not
+# truncation of THIS capture.
 echo ""
 echo "--- Scenario GV-7: tests/infra-only branch diff (computed-empty closure) -> vitest runs, gui-feature pass narrowed away ---"
 plan_for_branch_env "" tests/infra/foo.sh
+assert "GV-7: plan capture is complete (the plan_lacks below must not be satisfied by a truncated dump)" \
+    plan_capture_complete "$PLAN_OUT"
 assert "GV-7: RUN_GUI_VITEST=1 on a computed-empty closure (carried by GUI_PATH_SIGNAL, not the closure)" \
     _check_scope_header 'RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 RUN_GUI_VITEST=1'
 assert "GV-7: gui lane carries the vitest runner" \
     plan_has "$_GUI_LANE_WITH_VITEST"
+# Positive control on the command BODY specifically: proves test passes were
+# emitted at all, and simultaneously pins that a computed-empty closure does not
+# activate narrowing for the other passes (NARROW_ACTIVE stays 0, so they keep
+# --workspace).
+assert "GV-7: the plan is a real full-workspace test plan (carries a --workspace test pass)" \
+    plan_has 'cargo (test|nextest run) .*--workspace'
 assert "GV-7: the gui-feature nextest pass IS narrowed away (a diff touching zero crates cannot reach reify-gui)" \
     plan_lacks "$_GUI_FEATURE_PASS"
 
