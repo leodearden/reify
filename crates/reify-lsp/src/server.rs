@@ -13,18 +13,16 @@ use crate::document::DocumentStore;
 
 /// One server log line, addressed to the client rather than to a stream.
 ///
-/// A struct rather than a `(MessageType, String)` pair or a pre-formatted
-/// string so the severity stays a typed field the transport can map onto
-/// `window/logMessage`'s `type`, and so a reader at a call site sees which
-/// is which without counting tuple positions.
+/// Defined in [`crate::diagnostics`], beside the pipeline that produces
+/// them, and re-exported here for the transport that consumes them. Hosting
+/// the type in this module instead made the two mutually dependent: `server`
+/// already depends on `diagnostics` for [`EvalState`] and
+/// `compute_diagnostics_with_state`, so `diagnostics` naming
+/// `crate::server::LogLine` forced the pipeline to name the transport module
+/// it otherwise knows nothing about.
 ///
-/// Owned, not borrowed: [`NotificationSink`] is object-safe and its
-/// `ClientSink` implementation moves the line into a spawned task, so there
-/// is no caller frame for a borrow to outlive.
-pub struct LogLine {
-    pub typ: MessageType,
-    pub message: String,
-}
+/// The public path `reify_lsp::server::LogLine` is unchanged by that move.
+pub use crate::diagnostics::LogLine;
 
 /// Trait for emitting server-initiated notifications to the frontend.
 ///

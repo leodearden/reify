@@ -66,6 +66,27 @@ impl Default for EvalState {
     }
 }
 
+/// One server log line, addressed to the client rather than to a stream.
+///
+/// A struct rather than a `(MessageType, String)` pair or a pre-formatted
+/// string so the severity stays a typed field the transport can map onto
+/// `window/logMessage`'s `type`, and so a reader at a call site sees which
+/// is which without counting tuple positions.
+///
+/// Owned, not borrowed: `crate::server::NotificationSink` is object-safe and
+/// its `ClientSink` implementation moves the line into a spawned task, so
+/// there is no caller frame for a borrow to outlive.
+///
+/// Lives with its producer rather than with its transport, and is
+/// re-exported by `crate::server` for the latter: a value whose two fields
+/// are a severity and a string is transport-neutral, and defining it there
+/// made this module — which claims on [`DiagnosticsResult::log_messages`]
+/// to know nothing about the transport — name that module anyway.
+pub struct LogLine {
+    pub typ: lsp_types::MessageType,
+    pub message: String,
+}
+
 /// Result from the stateful diagnostics pipeline.
 pub struct DiagnosticsResult {
     /// LSP diagnostics to publish.
@@ -86,7 +107,7 @@ pub struct DiagnosticsResult {
     /// channel and the write-lock ordering invariant that governs when it
     /// may be used, so every log site in the server is forwarded from the
     /// same place, spelled the same way, for the same reason (task #6329).
-    pub log_messages: Vec<crate::server::LogLine>,
+    pub log_messages: Vec<LogLine>,
 }
 
 /// Run the stateful parse → compile → eval → check pipeline.
@@ -196,7 +217,7 @@ pub fn compute_diagnostics_with_state(
     let mut diagnostics = Vec::new();
     // Server-log lines, returned for the caller to route — see
     // `DiagnosticsResult::log_messages`.
-    let mut log_messages: Vec<crate::server::LogLine> = Vec::new();
+    let mut log_messages: Vec<LogLine> = Vec::new();
 
     // Derive module name from URI
     let module_name = uri
@@ -304,7 +325,7 @@ pub fn compute_diagnostics_with_state(
         #[cfg(debug_assertions)]
         if state.last_content_hash == Some(compiled.content_hash) && !state.is_engine_initialized()
         {
-            log_messages.push(crate::server::LogLine {
+            log_messages.push(LogLine {
                 typ: lsp_types::MessageType::WARNING,
                 message: "[reify-lsp] WARNING: content_hash matched but engine was uninitialized \
                           — last_content_hash was set without a preceding eval(); \
@@ -321,7 +342,7 @@ pub fn compute_diagnostics_with_state(
     let check_result = match state.engine.check_snapshot(&compiled) {
         Some(result) => result,
         None => {
-            log_messages.push(crate::server::LogLine {
+            log_messages.push(LogLine {
                 typ: lsp_types::MessageType::WARNING,
                 message:
                     "[reify-lsp] check_snapshot returned None after eval, falling back to full check"
