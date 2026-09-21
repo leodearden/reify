@@ -14,6 +14,22 @@
 //! declaration: on a mismatch the CLI reports `E_MODULE_PATH_MISMATCH` and the test
 //! measures that instead of the units gate (the trap documented at
 //! `harness_cli/cli_check.rs:796-797`).
+//!
+//! ROWS §6 NAMES THAT THIS FILE DELIBERATELY DOES NOT RE-ASSERT. Each already has a
+//! shipped, non-vacuous, gate-resident test; a second copy here would be duplication, not
+//! coverage. They enter the suite through `units_length_boundary_ledger.rs`, which binds
+//! every §6 row to the test that discharges it.
+//!
+//! - Row 8 — `harness_cli/cli_affine_eval.rs::eval_affine_translate_mass_exits_1_with_a_units_error`,
+//!   which is already end to end at this same process boundary.
+//! - Row 7's `Scalar{DIMENSIONLESS}` twin —
+//!   `reify-eval/src/geometry_ops/tests.rs::compile_geometry_op_apply_transform_translation_follows_the_three_state_contract`,
+//!   because that value shape is not expressible from `.ri` source.
+//! - Row 1's `DiagnosticCode` clause —
+//!   `harness_geometry/primitive_profile_length_units_e2e.rs::bare_box_dimensions_drop_the_op_with_a_coded_error`,
+//!   because the code is not observable here: `reify eval` has no structured-diagnostics
+//!   flag (`Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>`)
+//!   and its renderer prints no code prefix for these errors.
 
 use crate::common;
 use reify_core::units::LENGTH_MIGRATION_HINT;
