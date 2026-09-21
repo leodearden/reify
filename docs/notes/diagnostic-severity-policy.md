@@ -186,7 +186,9 @@ code and never reached the gate at all. A `;` alone does not stop the scan and
 another constructor alone does not stop it; only the pair does, precisely so
 the common `let d = if bad { …error(m) } else { …warning(m) };` /
 `d.with_code(code)` shape, whose code lands in a LATER statement, keeps
-reading as coded.
+reading as coded. Only a real statement end counts: a `;` inside your message
+string, or a `';'` char literal, is skipped, so punctuating a diagnostic
+message never moves the bound.
 
 The cost is one narrow false RED: an **interleaved binding**, where a second
 constructor is both bound and coded in between your site and your site's own
@@ -439,19 +441,34 @@ coded — a hole in the hard gate rather than mere imprecision, and its same-lin
 twin let a new site be parked to the LEFT of a coded one on one line. Two
 candidate bounds were run over the full corpus and their censuses diffed.
 
+Both are reported on one convention, so the two paragraphs below can be read
+against each other: a **mover** is one site whose verdict changed, **files** are
+the distinct files those movers sit in, and **rows** are the
+`pdiag-baseline.txt` entries that actually moved. Rows are always the smallest
+of the three, because a stale row carrying headroom absorbs a new site without
+moving — which is the whole reason §3(e)'s second review check names sites and
+not rows.
+
 **Rejected — terminate at a line whose trailing non-comment character is `;`.**
-644 → **651** sites across 4 files. Four of the seven movers are the genuine
-sites the accepted rule also finds; the other THREE are false REDs on landed,
-genuinely-coded code:
+644 → **651** sites: **seven movers across five files, three rows moved**. Four
+of the seven are the genuine sites the accepted rule also finds — the three
+files tabled under it below. The other THREE are false REDs on landed,
+genuinely-coded code, in two further files:
 
 | false RED | manifest row | shape |
 |---|---|---|
 | `crates/reify-eval/src/engine_compute.rs:166,168` | 1 → 3 | `let diagnostic = if … { Diagnostic::warning(m) } else { Diagnostic::error(m) };` then `diagnostic.with_code(…)` |
 | `crates/reify-compiler/src/expr.rs:3314` | 64 → 65 | `let base_diag = Diagnostic::error(…)` / `.with_label(…);` then `base_diag.with_code(…)` in a later statement |
 
-All three BIND the constructor to a variable and attach the code in a LATER
-statement, so a bare statement terminator cuts exactly between the site and its
-own code — the same failure class that killed paren-depth matching. Worse,
+The two rows in that table are two of the three; the third is
+`geometry_ops.rs` 137 → 138, the same row the accepted rule moves. The other
+two genuine movers — `modal_ops.rs` and `reify-stdlib/src/geometry.rs` — are
+absorbed by stale headroom under BOTH rules, so five files hold seven movers
+but only three rows change.
+
+All three false REDs BIND the constructor to a variable and attach the code in
+a LATER statement, so a bare statement terminator cuts exactly between the site
+and its own code — the same failure class that killed paren-depth matching. Worse,
 `expr.rs:3314` is the very site the window table above names as the 14 → 15
 step, so this rule would have invalidated `PDIAG_CODE_WINDOW`'s own
 justification.
@@ -465,8 +482,8 @@ constructor is necessarily preceded by that constructor's own anchor, while a
 code attached to THIS site through a variable in a later statement has no
 intervening anchor.
 
-644 → **648** sites: four movers across three files, **zero** false REDs,
-**zero** newly exempt.
+644 → **648** sites: four movers across three files, ONE row moved, **zero**
+false REDs, **zero** newly exempt.
 
 | site | why it is genuinely code-less |
 |---|---|
@@ -479,6 +496,20 @@ Both negative controls held: `fea_diagnostics.rs:48-53` stays coded, and the
 two binding shapes above stay coded. The same-line half moved nothing — the
 corpus carries zero such deltas — so it was landed on the unit tests and the
 `scenario07_code_absorption.rs` fixture rather than on a census movement.
+
+**The terminator is literal-aware, and that is not fastidiousness.** A `;`
+inside a diagnostic MESSAGE is not a statement end, and reading it as one arms
+the bound a statement early: measured on the first cut of this rule, both
+`Diagnostic::error("a ; b")` and `Diagnostic::error(fmt(';'))` cut the first
+arm of a severity dispatch off from the shared trailing `.with_code(`, so a
+genuinely-coded site read code-less. The ingredient is LIVE in the corpus —
+`crates/reify-compiler/src/compile_builder/pre_pass.rs:112` carries a `;`
+inside the message of exactly that two-arm shape — and flips no verdict there
+only because both of its arms happen to be code-less today, which is one edit
+away from not being true. `pdiag.rs`'s `statement_end` therefore skips a `;`
+inside `"…"` or `';'`. Measured census-neutral when it landed: 529 swept / 67
+with rows / **648** sites, reproducing `pdiag-baseline.txt` byte-identically,
+so it closed a latent false RED without moving a verdict.
 
 Because all four movers are genuine, the correct action was to re-bless them —
 but only ONE manifest row moved, and the gap matters to §3(e)'s first review
