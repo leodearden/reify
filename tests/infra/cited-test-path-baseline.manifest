@@ -196,10 +196,8 @@ docs/prds/v0_6/compiler-type-hygiene.md :: crates/reify-compiler/tests/mul_div_s
 docs/prds/v0_6/constrained-2d-sketch.capability-manifest.md :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/constrained-2d-sketch.capability-manifest.yaml :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/dimension-checked-readers.capability-manifest.yaml :: crates/reify-compiler/tests/examples_smoke.rs
-docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.md :: crates/reify-compiler/tests/constraint_def_compile_tests.rs
 docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.md :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.md :: crates/reify-eval/tests/auto_type_param_determinism_tests.rs
-docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.yaml :: crates/reify-compiler/tests/constraint_def_compile_tests.rs
 docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.yaml :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.yaml :: crates/reify-compiler/tests/modal_options_validation_tests.rs
 docs/prds/v0_6/dimensioned-construction-strictness.md :: crates/reify-compiler/tests/constraint_def_compile_tests.rs
