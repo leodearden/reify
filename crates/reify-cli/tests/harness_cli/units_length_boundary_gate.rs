@@ -35,32 +35,80 @@ use crate::common;
 use reify_core::units::LENGTH_MIGRATION_HINT;
 use std::process::ExitStatus;
 
-/// Run `reify eval` over `source`.
-fn eval_source(stem: &str, source: &str) -> (ExitStatus, String, String) {
-    run_source("eval", stem, source)
+/// A `.ri` source together with the file stem its `module` declaration must match.
+///
+/// The two travel as ONE value because they are not independent: on a mismatch the CLI
+/// reports `E_MODULE_PATH_MISMATCH` and the row measures that instead of the units gate.
+/// Two loose `&str` arguments leave that agreement to each call site; one struct makes it
+/// a property of the fixture, which is also what lets a fixture be shared by a row and by
+/// the D9 invariant below without either copying the other's bytes.
+struct RiSource {
+    stem: &'static str,
+    source: &'static str,
 }
 
-/// Run `reify check` over `source` — the twin row 9 needs.
-///
-/// Kept as a named twin rather than folded into a `run_source("check", …)` call so that
-/// row 9's two calls read as the same bytes through two subcommands, which is that row's
-/// entire claim.
-fn check_source(stem: &str, source: &str) -> (ExitStatus, String, String) {
-    run_source("check", stem, source)
+impl RiSource {
+    /// Run `reify eval` over this source.
+    fn eval(&self) -> (ExitStatus, String, String) {
+        self.run("eval")
+    }
+
+    /// Run `reify check` over this source — the twin row 9 needs.
+    fn check(&self) -> (ExitStatus, String, String) {
+        self.run("check")
+    }
+
+    /// Write the source as `<stem>.ri` into a fresh temp dir, run `reify <subcommand>`
+    /// over it and return `(status, stdout, stderr)`.
+    ///
+    /// The single spawn site — the same shape `tests/common/mod.rs` uses for its own
+    /// `spawn_reify`. A fresh dir per call, so two rows may share one fixture (and so one
+    /// stem) without colliding.
+    fn run(&self, subcommand: &str) -> (ExitStatus, String, String) {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let path = dir.path().join(format!("{stem}.ri", stem = self.stem));
+        std::fs::write(&path, self.source).expect("failed to write temp module");
+        common::run_with_args(&[subcommand, path.to_str().expect("temp path is UTF-8")])
+    }
 }
 
-/// Write `source` as `<stem>.ri` into a fresh temp dir, run `reify <subcommand>` over it
-/// and return `(status, stdout, stderr)`.
-///
-/// The single spawn site the two helpers above share — the same shape
-/// `tests/common/mod.rs` uses for its own `spawn_reify`. `source` must declare
-/// `module <stem>`; see this module's header for why.
-fn run_source(subcommand: &str, stem: &str, source: &str) -> (ExitStatus, String, String) {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let path = dir.path().join(format!("{stem}.ri"));
-    std::fs::write(&path, source).expect("failed to write temp module");
-    common::run_with_args(&[subcommand, path.to_str().expect("temp path is UTF-8")])
+/// The bare-primitive source. ONE copy, read by §6 row 1, row 9 and the D9 invariant —
+/// three assertions about the same bytes, which is only true if they are the same bytes.
+const BARE_BOX: RiSource = RiSource {
+    stem: "bare_box_dimensions",
+    source: r#"module bare_box_dimensions
+
+structure def S {
+    let b = box(20, 20, 10)
+    param geometry : Solid = b
 }
+"#,
+};
+
+/// The bare-modify source. ONE copy, read by §6 row 4 and by D9.
+const BARE_FILLET: RiSource = RiSource {
+    stem: "bare_fillet_radius",
+    source: r#"module bare_fillet_radius
+
+structure def S {
+    let b = fillet(box(10mm, 10mm, 10mm), 1)
+    param geometry : Solid = b
+}
+"#,
+};
+
+/// The bare-transform source. ONE copy, read by §6 row 7 and by D9.
+const BARE_TRANSFORM: RiSource = RiSource {
+    stem: "bare_transform_translation",
+    source: r#"module bare_transform_translation
+
+structure def S {
+    let b = box(20mm, 20mm, 10mm)
+    let moved = apply_transform(b, transform3(orient_identity(), vec3(5, 0, 0)))
+    param geometry : Solid = moved
+}
+"#,
+};
 
 /// Assert that `stderr` carries the ONE units-rejection line `ArgRejection::message`
 /// (`crates/reify-ir/src/arg_acceptance.rs:211-222`) produces for `builtin`'s `arg`.
@@ -69,6 +117,11 @@ fn run_source(subcommand: &str, stem: &str, source: &str) -> (ExitStatus, String
 /// [`LENGTH_MIGRATION_HINT`] const rather than a copy of its text. Hand-spelling the hint
 /// once per row would be exactly the lockstep duplication D9 exists to prevent: a reword
 /// of the hint must break this suite in ONE place, not in every row that quotes it.
+///
+/// A SUBSTRING check, deliberately: a row's claim is that the user is told this, wherever
+/// the renderer puts it. The stricter claim — that the line carries this and nothing else,
+/// identically on every route — is [`every_units_rejection_uses_the_one_wording_template`]'s,
+/// and it is stricter precisely because it compares whole lines.
 fn expect_length_rejection(stderr: &str, builtin: &str, arg: &str, got: &str) {
     let expected = length_rejection_line(builtin, arg, got);
     assert!(
@@ -95,16 +148,7 @@ fn length_rejection_line(builtin: &str, arg: &str, got: &str) -> String {
 /// cannot distinguish a whole gate from a third of one.
 #[test]
 fn bare_box_dimensions_exit_1_naming_every_rejected_argument() {
-    let (status, stdout, stderr) = eval_source(
-        "bare_box_dimensions",
-        r#"module bare_box_dimensions
-
-structure def S {
-    let b = box(20, 20, 10)
-    param geometry : Solid = b
-}
-"#,
-    );
+    let (status, stdout, stderr) = BARE_BOX.eval();
 
     assert!(
         !status.success(),
@@ -119,14 +163,18 @@ structure def S {
 /// §6 row 2 (control) — the dimensioned spelling still exits 0 AND still realizes the
 /// same SI volume the pre-gate build produced.
 ///
-/// The volume literal is the load-bearing half. Exit 0 alone would also be produced by a
-/// gate that accepted the LENGTH and then re-scaled it; `20mm × 20mm × 10mm` is
-/// 4·10⁻⁶ m³ before the gate and must remain so after it.
+/// The volume is the load-bearing half. Exit 0 alone would also be produced by a gate
+/// that accepted the LENGTH and then re-scaled it; `20mm × 20mm × 10mm` is 4·10⁻⁶ m³
+/// before the gate and must remain so after it.
+///
+/// Compared as a NUMBER, through [`printed_magnitude`], for the reason row 6 states at
+/// length: pinning the printed spelling would red this row on a benign change to the
+/// value printer instead of on the re-scaling it exists to catch.
 #[test]
 fn dimensioned_box_exits_0_with_the_pre_gate_si_volume() {
-    let (status, stdout, stderr) = eval_source(
-        "dimensioned_box",
-        r#"module dimensioned_box
+    let (status, stdout, stderr) = RiSource {
+        stem: "dimensioned_box",
+        source: r#"module dimensioned_box
 
 structure def S {
     let b = box(20mm, 20mm, 10mm)
@@ -134,7 +182,8 @@ structure def S {
     param geometry : Solid = b
 }
 "#,
-    );
+    }
+    .eval();
 
     assert!(
         status.success(),
@@ -144,10 +193,11 @@ structure def S {
         !stderr.contains("expects Length"),
         "a dimensioned length must not be rejected; got: {stderr}"
     );
+    let v = printed_magnitude(&stdout, "S.v", "m^3");
     assert!(
-        stdout.contains("S.v = 0.000004 m^3"),
+        (v - 4e-6).abs() < 1e-12,
         "the gate must not have re-scaled an ACCEPTED length: 20mm × 20mm × 10mm is \
-         0.000004 m³, the pre-gate SI baseline; got: {stdout}"
+         4e-6 m³, the pre-gate SI baseline; got {v} m³ from: {stdout}"
     );
 }
 
@@ -158,16 +208,17 @@ structure def S {
 /// one shape that would let a bare-number habit survive the gate.
 #[test]
 fn a_bare_zero_is_rejected_like_any_other_bare_number() {
-    let (status, stdout, stderr) = eval_source(
-        "bare_zero_box",
-        r#"module bare_zero_box
+    let (status, stdout, stderr) = RiSource {
+        stem: "bare_zero_box",
+        source: r#"module bare_zero_box
 
 structure def S {
     let b = box(0, 0, 0)
     param geometry : Solid = b
 }
 "#,
-    );
+    }
+    .eval();
 
     assert!(
         !status.success(),
@@ -188,16 +239,7 @@ structure def S {
 /// fix, so the old failure's absence is asserted too.
 #[test]
 fn a_bare_fillet_radius_replaces_the_span_less_occt_failure() {
-    let (status, stdout, stderr) = eval_source(
-        "bare_fillet_radius",
-        r#"module bare_fillet_radius
-
-structure def S {
-    let b = fillet(box(10mm, 10mm, 10mm), 1)
-    param geometry : Solid = b
-}
-"#,
-    );
+    let (status, stdout, stderr) = BARE_FILLET.eval();
 
     assert!(
         !status.success(),
@@ -221,9 +263,9 @@ structure def S {
 /// would pass on either and so pin neither.
 #[test]
 fn a_bare_plane_offset_is_rejected_and_mirror_fails_attributably() {
-    let (status, stdout, stderr) = eval_source(
-        "bare_mirror_plane_offset",
-        r#"module bare_mirror_plane_offset
+    let (status, stdout, stderr) = RiSource {
+        stem: "bare_mirror_plane_offset",
+        source: r#"module bare_mirror_plane_offset
 
 structure def S {
     let b = box(20mm, 20mm, 10mm)
@@ -231,7 +273,8 @@ structure def S {
     param geometry : Solid = m
 }
 "#,
-    );
+    }
+    .eval();
 
     assert!(
         !status.success(),
@@ -253,9 +296,9 @@ structure def S {
 /// per-component gate from a collapsed one.
 #[test]
 fn the_scalar_mirror_origin_keeps_its_per_component_wording() {
-    let (status, stdout, stderr) = eval_source(
-        "bare_mirror_scalar_origin",
-        r#"module bare_mirror_scalar_origin
+    let (status, stdout, stderr) = RiSource {
+        stem: "bare_mirror_scalar_origin",
+        source: r#"module bare_mirror_scalar_origin
 
 structure def S {
     let b = box(20mm, 20mm, 10mm)
@@ -263,7 +306,8 @@ structure def S {
     param geometry : Solid = m
 }
 "#,
-    );
+    }
+    .eval();
 
     assert!(
         !status.success(),
@@ -284,11 +328,13 @@ structure def S {
 /// A tolerance rather than a byte-equal match: the printed x is
 /// `0.019999999999999997 m`, and pinning that spelling would make the row fail on any
 /// benign change to the value printer's float formatting instead of on a geometry change.
+/// [`printed_magnitude`] is where that reasoning lives for every control row, row 2
+/// included.
 #[test]
 fn a_dimensioned_plane_offset_mirrors_to_the_same_si_position() {
-    let (status, stdout, stderr) = eval_source(
-        "dimensioned_mirror_plane",
-        r#"module dimensioned_mirror_plane
+    let (status, stdout, stderr) = RiSource {
+        stem: "dimensioned_mirror_plane",
+        source: r#"module dimensioned_mirror_plane
 
 structure def S {
     let b = box(20mm, 20mm, 10mm)
@@ -297,7 +343,8 @@ structure def S {
     param geometry : Solid = m
 }
 "#,
-    );
+    }
+    .eval();
 
     assert!(
         status.success(),
@@ -308,7 +355,7 @@ structure def S {
         "a dimensioned plane offset must not be rejected; got: {stderr}"
     );
 
-    let x = centroid_x_metres(&stdout);
+    let x = printed_magnitude(&stdout, "S.c", "m");
     assert!(
         (x - 0.02).abs() < 1e-9,
         "mirroring about x = 10mm must leave the centroid at x = 0.02 m — the SI \
@@ -316,25 +363,48 @@ structure def S {
     );
 }
 
-/// Read the x component, in metres, out of the `S.c = point(<x> m, <y> m, <z> m)` line
-/// `reify eval` prints for a `centroid(...)` binding.
+/// The magnitude of the first `<number> <unit>` field `reify eval` prints for `binding`.
 ///
-/// Deliberately narrow: the CLI's only output is text, so SOME extraction is unavoidable
-/// for a tolerance comparison, and the narrowest one that cannot silently succeed on the
-/// wrong line is better than a looser scan. Every failure path panics with the stdout
-/// that produced it, so a printer change surfaces as a readable diagnostic rather than a
-/// wrong number.
-fn centroid_x_metres(stdout: &str) -> f64 {
-    let point = stdout
+/// ONE extractor for every control row, so no row pins a float's SPELLING. That matters
+/// uniformly: `S.v = 0.000004 m^3` and `S.c = point(0.019999999999999997 m, …)` are both
+/// the value printer's choice of rendering, and a benign change to it — `4e-6 m^3`, an
+/// extra significant figure — must not red a row whose claim is about geometry. Rows
+/// compare the number, within a tolerance they choose.
+///
+/// "First field" is exact rather than vague: for a scalar there is only one, and for a
+/// `point(x, y, z)` it is the x component, which is the only component any control row
+/// here asks about.
+///
+/// The CLI's only output is text, so SOME extraction is unavoidable; this is the narrowest
+/// one that cannot silently succeed on the wrong line. Every failure path panics with the
+/// stdout that produced it, so a printer change surfaces as a readable diagnostic rather
+/// than a wrong number.
+fn printed_magnitude(stdout: &str, binding: &str, unit: &str) -> f64 {
+    let prefix = format!("{binding} = ");
+    let rendered = stdout
         .lines()
-        .find_map(|line| line.strip_prefix("S.c = point("))
-        .unwrap_or_else(|| panic!("no `S.c = point(...)` line in stdout: {stdout}"));
-    let x = point
-        .split_once(" m,")
-        .unwrap_or_else(|| panic!("no `<x> m,` component in `{point}` (stdout: {stdout})"))
-        .0;
-    x.parse()
-        .unwrap_or_else(|e| panic!("centroid x `{x}` is not a number ({e}); stdout: {stdout}"))
+        .find_map(|line| line.trim_start().strip_prefix(&prefix))
+        .unwrap_or_else(|| panic!("no `{prefix}…` line in stdout: {stdout}"));
+    let suffix = format!(" {unit}");
+    rendered
+        .split(['(', ',', ')'])
+        .filter_map(|field| field.trim().strip_suffix(&suffix))
+        .find_map(|magnitude| magnitude.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no `<number> {unit}` field in `{rendered}` (stdout: {stdout})"))
+}
+
+/// Every stderr line with the renderer's severity prefix stripped.
+///
+/// What remains is the message its producer built — `ArgRejection::message` for a units
+/// rejection — so a whole-line comparison against the template is a claim about that
+/// producer and not about how the renderer decorates it.
+fn diagnostic_lines(stderr: &str) -> impl Iterator<Item = &str> {
+    stderr.lines().map(|line| {
+        let line = line.trim();
+        line.strip_prefix("error: ")
+            .or_else(|| line.strip_prefix("warning: "))
+            .unwrap_or(line)
+    })
 }
 
 /// §6 row 7 — a bare translation component is rejected by NAME, replacing the generic
@@ -359,17 +429,7 @@ fn centroid_x_metres(stdout: &str) -> f64 {
 /// which constructs the value directly; it enters this suite through the ledger.
 #[test]
 fn a_bare_transform_translation_names_the_component_not_the_shape() {
-    let (status, stdout, stderr) = eval_source(
-        "bare_transform_translation",
-        r#"module bare_transform_translation
-
-structure def S {
-    let b = box(20mm, 20mm, 10mm)
-    let moved = apply_transform(b, transform3(orient_identity(), vec3(5, 0, 0)))
-    param geometry : Solid = moved
-}
-"#,
-    );
+    let (status, stdout, stderr) = BARE_TRANSFORM.eval();
 
     assert!(
         !status.success(),
@@ -385,28 +445,20 @@ structure def S {
 
 /// §6 row 9 — D8: `reify check` and `reify eval` agree on the SAME bytes.
 ///
-/// One source, two subcommands, one assertion block. `check` is the cheap pre-flight a
-/// user reaches for first; if it passed what `eval` rejects, the gate would be advisory
-/// rather than binding, and a bare-number habit would survive contact with it.
+/// One source, two subcommands, one assertion block — and [`BARE_BOX`] really is one
+/// source, shared with row 1 rather than re-typed here, so "the same bytes" is a property
+/// of the fixture and not of two transcriptions staying in step. `check` is the cheap
+/// pre-flight a user reaches for first; if it passed what `eval` rejects, the gate would
+/// be advisory rather than binding, and a bare-number habit would survive contact with it.
 ///
 /// This holds today on η's compile slots alone, with no dependency on PRD 2's `reify
 /// check` semantics — verified live. Should this row ever come to need those semantics,
 /// that is a real dependency edge onto PRD 2's task, never a weakening of the assertion.
 #[test]
 fn check_and_eval_agree_on_a_bare_primitive_dimension() {
-    let stem = "bare_box_both_subcommands";
-    let source = r#"module bare_box_both_subcommands
-
-structure def S {
-    let b = box(20, 20, 10)
-    param geometry : Solid = b
-}
-"#;
-
-    for (subcommand, (status, stdout, stderr)) in [
-        ("check", check_source(stem, source)),
-        ("eval", eval_source(stem, source)),
-    ] {
+    for (subcommand, (status, stdout, stderr)) in
+        [("check", BARE_BOX.check()), ("eval", BARE_BOX.eval())]
+    {
         assert!(
             !status.success(),
             "`reify {subcommand}` must exit nonzero on a bare primitive dimension;\n\
@@ -431,9 +483,9 @@ structure def S {
 /// `harness_compilation_surface/compile_api_tests.rs::compile_linear_pattern_2d_wrong_arity_produces_diagnostic`.
 #[test]
 fn the_arity_6_linear_pattern_2d_site_is_an_arity_error_not_a_length_slot() {
-    let (status, stdout, stderr) = eval_source(
-        "arity_6_linear_pattern_2d",
-        r#"module arity_6_linear_pattern_2d
+    let (status, stdout, stderr) = RiSource {
+        stem: "arity_6_linear_pattern_2d",
+        source: r#"module arity_6_linear_pattern_2d
 
 structure def S {
     let w = box(5mm, 5mm, 5mm)
@@ -441,7 +493,8 @@ structure def S {
     param geometry : Solid = p
 }
 "#,
-    );
+    }
+    .eval();
 
     assert!(
         !status.success(),
@@ -463,8 +516,7 @@ structure def S {
 /// One row of the §6-18 table: a pattern source whose spacing is left `Undef`, the label
 /// its diagnostic MUST carry, and the internal nickname it must no longer carry.
 struct PatternLabelCase {
-    stem: &'static str,
-    source: &'static str,
+    fixture: RiSource,
     unresolved_arg: &'static str,
     builtin: &'static str,
     pre_lambda_nickname: &'static str,
@@ -487,8 +539,9 @@ struct PatternLabelCase {
 fn pattern_spacing_undef_names_the_builtin_the_author_typed() {
     let cases = [
         PatternLabelCase {
-            stem: "undef_spacing_linear_pattern",
-            source: r#"module undef_spacing_linear_pattern
+            fixture: RiSource {
+                stem: "undef_spacing_linear_pattern",
+                source: r#"module undef_spacing_linear_pattern
 
 structure def S {
     param s : Length
@@ -497,13 +550,15 @@ structure def S {
     param geometry : Solid = p
 }
 "#,
+            },
             unresolved_arg: "spacing",
             builtin: "linear_pattern",
             pre_lambda_nickname: "for linear ",
         },
         PatternLabelCase {
-            stem: "undef_spacing_linear_pattern_2d",
-            source: r#"module undef_spacing_linear_pattern_2d
+            fixture: RiSource {
+                stem: "undef_spacing_linear_pattern_2d",
+                source: r#"module undef_spacing_linear_pattern_2d
 
 structure def S {
     param s : Length
@@ -512,6 +567,7 @@ structure def S {
     param geometry : Solid = p
 }
 "#,
+            },
             unresolved_arg: "spacing1",
             builtin: "linear_pattern_2d",
             pre_lambda_nickname: "linear_2d",
@@ -519,7 +575,7 @@ structure def S {
     ];
 
     for case in cases {
-        let (status, stdout, stderr) = eval_source(case.stem, case.source);
+        let (status, stdout, stderr) = case.fixture.eval();
         let expected = format!(
             "argument '{arg}' for {builtin} is unresolved (Undef)",
             arg = case.unresolved_arg,
@@ -559,20 +615,28 @@ structure def S {
 /// boundary, and is what this half asserts: the absent argument draws no units rejection.
 /// The exits-0 half is discharged with the kernel registered, in
 /// `crates/reify-eval/tests/isosurface_iso_option_e2e.rs`.
+///
+/// AN ABSENCE NEEDS AN ANCHOR. `stderr` not carrying a units rejection is also true of a
+/// run that never reached `isosurface` at all — a rename, a changed keyword-argument
+/// spelling, a source that stopped parsing — so on its own the second half would pass
+/// having measured nothing. Two positive anchors hold it down: the `S.shell` binding
+/// appears on stdout, which only happens if the defaulted call evaluated; and the run
+/// fails for the openvdb reason quoted above and not some other one.
 #[test]
 fn the_iso_option_is_gated_but_its_absence_is_not() {
-    let (status, stdout, stderr) = eval_source(
-        "bare_isosurface_iso",
-        r#"module bare_isosurface_iso
+    let (status, stdout, stderr) = RiSource {
+        stem: "bare_isosurface_iso",
+        source: r#"module bare_isosurface_iso
 
-structure S {
+structure def S {
     param size : Length = 20mm
 
     let solid = box(size, size, size)
     let shell = isosurface(solid, iso: 5)
 }
 "#,
-    );
+    }
+    .eval();
 
     assert!(
         !status.success(),
@@ -580,19 +644,31 @@ structure S {
     );
     expect_length_rejection(&stderr, "isosurface", "iso", "Int");
 
-    let (_, _, default_stderr) = eval_source(
-        "defaulted_isosurface_iso",
-        r#"module defaulted_isosurface_iso
+    let (_, default_stdout, default_stderr) = RiSource {
+        stem: "defaulted_isosurface_iso",
+        source: r#"module defaulted_isosurface_iso
 
-structure S {
+structure def S {
     param size : Length = 20mm
 
     let solid = box(size, size, size)
     let shell = isosurface(solid)
 }
 "#,
-    );
+    }
+    .eval();
 
+    assert!(
+        default_stdout.contains("S.shell = <Geometry"),
+        "the defaulted `isosurface(solid)` must actually have been evaluated — without \
+         this, `no units rejection` would also hold for a run that never reached \
+         `isosurface`;\nstdout: {default_stdout}\nstderr: {default_stderr}"
+    );
+    assert!(
+        default_stderr.contains("no openvdb kernel registered"),
+        "the defaulted form is expected to fail for the openvdb reason this row documents, \
+         not some other one; got: {default_stderr}"
+    );
     assert!(
         !default_stderr.contains("iso argument expects Length"),
         "D12: an ABSENT `iso:` takes the documented default and must draw no units \
@@ -600,27 +676,36 @@ structure S {
     );
 }
 
-/// One route into the units chokepoint: a source that reaches it, and the rejection the
-/// user must see when it does.
+/// One route into the units chokepoint: the fixture that reaches it, and the rejection
+/// the user must see when it does.
+///
+/// The fixture is BORROWED from the row that owns it — no copy — so "the three routes
+/// produce identical wording" is a statement about the same three sources the rows
+/// assert on.
 struct ChokepointRoute {
-    stem: &'static str,
-    source: &'static str,
+    fixture: &'static RiSource,
     builtin: &'static str,
     arg: &'static str,
     /// Which PRD leaf owns this route — carried so a divergence report names the owner.
     leaf: &'static str,
 }
 
-/// D9 — the invariant no single row can see: three DIFFERENT chokepoint routes produce
-/// BYTE-IDENTICAL wording.
+/// D9 — the invariant no single row can make: three DIFFERENT chokepoint routes produce
+/// the ENTIRE rejection line identically.
 ///
-/// Each row above checks its own builtin, so each would stay green if one leaf hand-rolled
-/// its own rejection string that happened to contain the right substrings. This test is
-/// where that shows up, because it holds all three routes against the same template at
-/// once: a primitive (β's raw-`Value` route), a modify (γ's), and a transform (ζ's decoded
-/// route). Byte-identical wording across PRDs 1/3/5 is what D9 promises, and
-/// `ArgRejection::message` (`crates/reify-ir/src/arg_acceptance.rs:211-222`) is the single
-/// producer that delivers it.
+/// It is stronger than the rows in the one way that matters, and it has to be, or it
+/// would be three redundant spawns. Each row asks `stderr.contains(template)` — satisfied
+/// by any line that carries the template somewhere, alongside anything else. This test
+/// asks that a diagnostic line, severity prefix stripped, EQUALS the template: no leading
+/// qualifier, no appended suffix, no second hint bolted onto one route's spelling. That
+/// is the byte-identical wording D9 promises across PRDs 1/3/5, and the property
+/// `ArgRejection::message` (`crates/reify-ir/src/arg_acceptance.rs:211-222`) being the
+/// single producer is supposed to deliver.
+///
+/// The three routes are chosen to be genuinely different paths into that one producer: a
+/// primitive (β's raw-`Value` route), a modify (γ's), and a transform (ζ's decoded
+/// route). A leaf that hand-rolled its own rejection string on one of them would satisfy
+/// its own row and fail here.
 ///
 /// Divergences are COLLECTED rather than asserted one at a time: a template change should
 /// report every route it broke, not stop at whichever ran first.
@@ -628,41 +713,19 @@ struct ChokepointRoute {
 fn every_units_rejection_uses_the_one_wording_template() {
     let routes = [
         ChokepointRoute {
-            stem: "d9_primitive_route",
-            source: r#"module d9_primitive_route
-
-structure def S {
-    let b = box(20, 20, 10)
-    param geometry : Solid = b
-}
-"#,
+            fixture: &BARE_BOX,
             builtin: "box",
             arg: "width",
             leaf: "β (primitive, raw-Value route)",
         },
         ChokepointRoute {
-            stem: "d9_modify_route",
-            source: r#"module d9_modify_route
-
-structure def S {
-    let b = fillet(box(10mm, 10mm, 10mm), 1)
-    param geometry : Solid = b
-}
-"#,
+            fixture: &BARE_FILLET,
             builtin: "fillet",
             arg: "radius",
             leaf: "γ (modify)",
         },
         ChokepointRoute {
-            stem: "d9_transform_route",
-            source: r#"module d9_transform_route
-
-structure def S {
-    let b = box(20mm, 20mm, 10mm)
-    let moved = apply_transform(b, transform3(orient_identity(), vec3(5, 0, 0)))
-    param geometry : Solid = moved
-}
-"#,
+            fixture: &BARE_TRANSFORM,
             builtin: "apply_transform",
             arg: "translation.x",
             leaf: "ζ (transform, decoded route)",
@@ -671,7 +734,7 @@ structure def S {
 
     let mut divergent = Vec::new();
     for route in routes {
-        let (status, stdout, stderr) = eval_source(route.stem, route.source);
+        let (status, stdout, stderr) = route.fixture.eval();
         assert!(
             !status.success(),
             "the {leaf} route must reach the units chokepoint and exit nonzero;\n\
@@ -679,9 +742,9 @@ structure def S {
             leaf = route.leaf,
         );
         let expected = length_rejection_line(route.builtin, route.arg, "Int");
-        if !stderr.contains(&expected) {
+        if !diagnostic_lines(&stderr).any(|line| line == expected) {
             divergent.push(format!(
-                "  {leaf}: expected `{expected}`\n    got: {stderr}",
+                "  {leaf}: no diagnostic line EQUALS `{expected}`\n    got: {stderr}",
                 leaf = route.leaf,
             ));
         }
@@ -689,8 +752,8 @@ structure def S {
 
     assert!(
         divergent.is_empty(),
-        "D9: every units rejection must use the ONE wording `ArgRejection::message` \
-         produces, whatever route reached the chokepoint. Diverging routes:\n{}",
+        "D9: every units rejection must be the ONE line `ArgRejection::message` produces, \
+         whole, whatever route reached the chokepoint. Diverging routes:\n{}",
         divergent.join("\n"),
     );
 }

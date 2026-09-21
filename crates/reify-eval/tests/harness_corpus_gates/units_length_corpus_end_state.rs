@@ -340,7 +340,10 @@ fn no_shipped_example_trips_a_length_gate() {
         violations.len(),
     );
     for (rel, skip) in &skipped {
-        eprintln!("  SKIP (not built): {rel}: {:?}: {}", skip.cause, skip.detail);
+        eprintln!(
+            "  SKIP (not built): {rel}: {:?}: {}",
+            skip.cause, skip.detail
+        );
     }
 
     assert_skip_set_is_the_pinned_one(&skipped);
@@ -407,7 +410,11 @@ fn assert_skip_set_is_the_pinned_one(skipped: &[(String, Skip)]) {
         .collect();
     let stale: Vec<String> = KNOWN_SKIPS
         .iter()
-        .filter(|k| !observed.iter().any(|(rel, cause)| *rel == k.rel && *cause == k.cause))
+        .filter(|k| {
+            !observed
+                .iter()
+                .any(|(rel, cause)| *rel == k.rel && *cause == k.cause)
+        })
         .map(|k| format!("{} ({:?}: {})", k.rel, k.cause, k.why))
         .collect();
 
