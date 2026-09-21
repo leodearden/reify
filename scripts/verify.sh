@@ -1994,6 +1994,27 @@ select_pdiag_ratchet
 # path, so the --workspace coupling that tests/infra/test_verify_scope.sh's
 # B9-default scenario pins is untouched.
 #
+# AFFECTED_CLOSURE_FROM_DIFF — the LICENCE to read an empty AFFECTED_CLOSURE as
+# "this diff provably touches zero crates" (task 6268). An empty closure string
+# alone cannot mean that, because it is what FOUR distinct paths leave behind:
+# the closure was not eligible (scope=all, RUN_RUST=0); CHANGED_FILES_RAW was
+# empty (decide_scope's git-failure fail-wide returns, which DO set RUN_RUST=1);
+# the file list split to zero arguments; or affected_crates() genuinely proved
+# zero crates. Only the last licenses narrowing, and only this flag tells them
+# apart — so it is set on exactly ONE branch below, adjacent to the
+# affected_crates() call it vouches for (heuristic 11), and defaults to 0, the
+# fail-wide answer.
+#
+# A REIFY_AFFECTED_CRATES_OVERRIDE deliberately never sets it. An override is a
+# SUBSTITUTE for the derivation, not a derivation, so it can make no claim about
+# what the diff touches — and letting it claim one would invert the fail-wide
+# invariant the AFFECTED_ALL_FLAGS-empty reset below exists to hold: a
+# whitespace-only override ("   ") is a non-empty STRING that word-splits to
+# zero tokens, so with the flag set it would read as "provably zero crates" and
+# silently narrow coverage away from a typo'd operator knob. Restricting the
+# flag to the affected_crates() branch makes that impossible by construction
+# rather than by a second guard.
+#
 # COST — affected_crates() is invoked at most ONCE per run (hence hoisting it
 # here rather than adding a second call site), and RUN_RUST=0 (a docs-only
 # hook-gated commit) skips it entirely. The call shells out to
@@ -2020,6 +2041,8 @@ select_pdiag_ratchet
 # ---------------------------------------------------------------------------
 AFFECTED=""
 AFFECTED_CLOSURE=""
+# 0 = "no licence to read an empty closure as proof" — the fail-wide default.
+AFFECTED_CLOSURE_FROM_DIFF=0
 NARROW_ACTIVE=0
 AFFECTED_ALL_FLAGS=""
 
@@ -2049,6 +2072,7 @@ if [ "$_closure_eligible" -eq 1 ]; then
         done <<< "$CHANGED_FILES_RAW"
         if [ "${#_af_args[@]}" -gt 0 ]; then
             AFFECTED_CLOSURE="$(affected_crates "${_af_args[@]}")"
+            AFFECTED_CLOSURE_FROM_DIFF=1
         fi
     fi
 fi
@@ -3761,13 +3785,21 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     # "RUN_RUST=… RUN_GUI=… RUN_OCCT_GATE=…", which survives a trailing append
     # and does not survive a reordering.
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE RUN_GUI_VITEST=$RUN_GUI_VITEST"
-    # `closure=` is APPENDED, never inserted: tests/infra/test_verify_scope.sh
-    # greps this line as the unanchored substrings "NARROW_ACTIVE=1 affected=…" /
-    # "NARROW_ACTIVE=0 affected=ALL", and plan_capture_lib.sh's plan_narrow_active
-    # matches NARROW_ACTIVE=([0-9]+); all three survive a trailing append and none
-    # survives a reordering.  A `#` comment line, so plan_count_noncomment_lines
-    # (`^[^#]`) — the oracle behind the THROUGHPUT-COUNTS sentinel — cannot see it.
-    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-}"
+    # `closure=` and `from_diff=` are APPENDED, never inserted:
+    # tests/infra/test_verify_scope.sh greps this line as the unanchored
+    # substrings "NARROW_ACTIVE=1 affected=…" / "NARROW_ACTIVE=0 affected=ALL",
+    # and plan_capture_lib.sh's plan_narrow_active matches NARROW_ACTIVE=([0-9]+);
+    # all three survive a trailing append and none survives a reordering.  A `#`
+    # comment line, so plan_count_noncomment_lines (`^[^#]`) — the oracle behind
+    # the THROUGHPUT-COUNTS sentinel — cannot see it.
+    #
+    # `from_diff=` is what makes the closure THREE-valued to a plan reader:
+    # `closure=` alone is empty both when a real diff proved zero crates and when
+    # the closure was never computed on this tier, and only the former licenses
+    # narrowing.  Without it a --print-plan assertion of "0 gui-feature passes"
+    # would be satisfiable by an implementation that simply stopped computing the
+    # closure — see AFFECTED_CLOSURE_FROM_DIFF at its assignment site.
+    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-} from_diff=$AFFECTED_CLOSURE_FROM_DIFF"
     echo "# --- environment (process-level; inherited by every command below EXCEPT where a command overrides it inline — see the LD_LIBRARY_PATH scrub on non-cargo lines) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
