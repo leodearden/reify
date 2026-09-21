@@ -4028,8 +4028,8 @@ fn per_face_bcs(
     let mut bcs = Vec::new();
     for (realization, target) in faces {
         // Face-name vocabulary lives in ONE place ([`face_bound`]), shared with
-        // the support count in `build_dirichlet_bcs`, so the set of names that
-        // can select nodes and the set that can influence a realization cannot
+        // `face_company` in `build_dirichlet_bcs`, so the set of names that can
+        // select nodes and the set that can influence a realization cannot
         // drift apart. An unrecognized name selects nothing, exactly as the
         // former inline `_ => false` arm did.
         let Some((axis, is_max)) = face_bound(target) else {
@@ -4067,12 +4067,13 @@ fn per_face_bcs(
                 // No such anchors belong here, and none are needed:
                 // `face_realization` scopes `PinTransverse` to a beam-axis end
                 // face of a model naming a second DISTINCT face, and
-                // `build_dirichlet_bcs` argues at its count site that every such
-                // configuration is well posed. The three mechanism shapes that
-                // could once reach this arm are all closed upstream — a LONE
-                // pin, an OFF-AXIS pin pair, and (since the count became a set
-                // over `face_bound`) a pin whose only company is a support
-                // naming no recognized face or DUPLICATING the same one.
+                // `build_dirichlet_bcs` argues in its own body comment that
+                // every such configuration is well posed. The three mechanism
+                // shapes that could once reach this arm are all closed
+                // upstream — a LONE pin, an OFF-AXIS pin pair, and (since face
+                // identity now runs through `face_company`/`face_bound`) a pin
+                // whose only company is a support naming no recognized face or
+                // DUPLICATING the same one.
                 //
                 // Should a singular K_free still arrive here by some route this
                 // reasoning does not cover, the intended outcome is unchanged:
@@ -5618,8 +5619,8 @@ mod tests {
     /// contract is a solver-layer one. Until this amendment they reached it
     /// through the DSL, with `[Pinned("x_min"), Pinned("x_min")]`: a duplicated
     /// support kept the SUPPORT count above 1, so `face_realization` returned
-    /// `PinTransverse` on a singly-supported model. That input now clamps
-    /// (`build_dirichlet_bcs` counts DISTINCT FACES — see
+    /// `PinTransverse` on a singly-supported model. That input now clamps (the
+    /// duplicate resolves to the SAME face via `face_company` — see
     /// `build_dirichlet_bcs_ignores_duplicate_face_targets`), and no DSL input
     /// reaches this shape any more, which is exactly the point of that fix.
     ///
@@ -7638,8 +7639,8 @@ mod tests {
         // (iii) Amendment (review suggestion 4): `[Pinned("x_min"),
         //       Fixed("y_min")]` — the third and last shape that can reach
         //       `PinTransverse`, and the ONE the no-mechanism argument rests
-        //       entirely on. `build_dirichlet_bcs`'s count-site comment
-        //       enumerates three: the pin-pin special case (covered by
+        //       entirely on. `build_dirichlet_bcs`'s body comment enumerates
+        //       three: the pin-pin special case (covered by
         //       `build_dirichlet_bcs_discriminates_support_kind` case (i)), the
         //       propped cantilever (case (iv)) and "an end pin plus a non-end
         //       face, which always clamps" — this one, previously untested.
@@ -7674,7 +7675,7 @@ mod tests {
         );
     }
 
-    /// Amendment (review suggestion 1): the count-dependent `PinnedSupport`
+    /// Amendment (review suggestion 1): the context-dependent `PinnedSupport`
     /// realization must be VISIBLE, in both directions.
     ///
     /// [`face_realization`] decides what a pinned beam end constrains from
@@ -7772,13 +7773,13 @@ mod tests {
         );
         assert!(
             notes(vec![pinned_support("y_min"), pinned_support("y_max")]).is_empty(),
-            "a PinnedSupport on a non-beam-axis face always clamps — no count-dependence, so \
-             no note",
+            "a PinnedSupport on a non-beam-axis face always clamps — no company-dependence, \
+             so no note",
         );
 
         // (e) One note per distinct FACE, not per support — the same `face_bound`
-        //     set the realization decision itself counts over, so the message can
-        //     never disagree with the decision it describes.
+        //     predicate the realization decision itself reads, so the message
+        //     can never disagree with the decision it describes.
         let duplicated = notes(vec![pinned_support("x_min"), pinned_support("x_min")]);
         assert_eq!(
             duplicated.len(),
@@ -7802,15 +7803,15 @@ mod tests {
     /// `[Pinned("x_min"), Fixed("")]` reached `face_realization` as a
     /// TWO-support model and flipped x_min from a full clamp (a well-posed
     /// cantilever, the pre-6663 answer) to a transverse-only Z pin — four
-    /// surviving rigid-body modes, reported under a mere Warning. The count now
-    /// runs through [`face_bound`], the same predicate `per_face_bcs` selects
-    /// nodes with, so a support that can contribute no DOF cannot reinterpret
-    /// one either.
+    /// surviving rigid-body modes, reported under a mere Warning. That vote
+    /// now runs through [`face_company`]/[`face_bound`], the same predicate
+    /// `per_face_bcs` selects nodes with, so a support that can contribute no
+    /// DOF cannot reinterpret one either.
     ///
-    /// Sibling exclusion, added later by review suggestion 1: that count is now a
-    /// SET over `face_bound`, not merely a filter through it, so a support
-    /// DUPLICATING a face already named is excluded on the same principle — it
-    /// contributes no NEW face to vote with. See
+    /// Sibling exclusion, added later by review suggestion 1: face identity is
+    /// resolved by [`face_bound`], not by spelling, so a support DUPLICATING a
+    /// face already named is excluded on the same principle — it contributes
+    /// no NEW face to vote with. See
     /// [`build_dirichlet_bcs_ignores_duplicate_face_targets`]. Between the two,
     /// `PinTransverse` is unreachable for any singly-supported model.
     ///
@@ -7874,9 +7875,9 @@ mod tests {
     /// a two-support model and flipped x_min from a full clamp to a Z-only pin —
     /// a well-posed cantilever silently becoming a 4-rigid-body-mode mechanism
     /// whose ≈ 0 Hz modes come back under a mere `W_ModalRigidBodyMode` Warning.
-    /// Counting DISTINCT faces (via [`face_bound`], which identifies a face by
-    /// the coordinate bound it selects rather than by its spelling) collapses the
-    /// duplicate back to one face and restores the pre-6663 clamp.
+    /// Resolving faces by their bound (via [`face_bound`], which identifies a
+    /// face by the coordinate bound it selects rather than by its spelling)
+    /// collapses the duplicate back to one face and restores the pre-6663 clamp.
     ///
     /// Asserted as set EQUALITY against the lone-`Fixed("x_min")` cantilever, the
     /// same shape [`build_dirichlet_bcs_ignores_supports_that_name_no_face`] uses
@@ -7909,8 +7910,8 @@ mod tests {
         );
 
         // Same face, mixed spellings: `Fixed` clamps unconditionally, so this
-        // pins that the collapse is about the FACE count and not about the pair
-        // of supports happening to be identical.
+        // pins that the collapse is about face IDENTITY (via `face_bound`) and
+        // not about the pair of supports happening to be identical.
         assert_eq!(
             dof_set(vec![pinned_support("x_min"), fixed_support("x_min")]),
             cantilever,
