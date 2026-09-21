@@ -1588,6 +1588,26 @@ fn classify_datum_plane(
     Ok((o, normal))
 }
 
+/// Classify a scalar operand that must carry LENGTH — `offset`'s `delta`.
+///
+/// [`classify_datum_point`] one rank down: the verdict and the wording both come
+/// from [`length_scalar_rejection`], and every cause that predicate folds into
+/// `None` other than acceptance is a `Shape` fault here.
+fn classify_datum_delta(arg_name: &'static str, v: &Value) -> Result<f64, DatumFault> {
+    if let Some(rejection) = length_scalar_rejection(v) {
+        return Err(DatumFault::NotLength {
+            arg_name,
+            rejection,
+        });
+    }
+    match v.as_f64() {
+        Some(d) if d.is_finite() && v.dimension() == DimensionVector::LENGTH => Ok(d),
+        // A non-numeric or non-finite value — `length_scalar_rejection`'s other
+        // silent causes. Fail CLOSED, as above.
+        _ => Err(DatumFault::Shape),
+    }
+}
+
 /// A decoded plane: its origin components and its normal components.
 type PlaneParts = ([f64; 3], [f64; 3]);
 
@@ -1632,6 +1652,25 @@ fn classify_plane_through_args(
     let b = classify_datum_point("b", &args[1])?;
     let c = classify_datum_point("c", &args[2])?;
     Ok((a, b, c))
+}
+
+/// Decode the arity-2 `offset(p, delta)`. See [`classify_midplane_args`] for the
+/// shared-classifier and guard-order rationale: `p` is classified before
+/// `delta`, so a call wrong in both names `p`.
+///
+/// The `args.len() != 2` guard is load-bearing beyond arity hygiene: `offset` is
+/// the one arity-OVERLOADED name in this family, and the arity-3 form is the γ
+/// RELATION — claimed by an earlier compiler arm and never evaluated in this
+/// module. Without the guard, [`diagnose`]'s arm would read `args[1]` on a
+/// three-argument call and attribute a datum-constructor units fault to a
+/// builtin this gate has no authority over.
+fn classify_offset_plane_args(args: &[Value]) -> Result<(PlaneParts, f64), DatumFault> {
+    if args.len() != 2 {
+        return Err(DatumFault::Shape);
+    }
+    let plane = classify_datum_plane("p", &args[0])?;
+    let delta = classify_datum_delta("delta", &args[1])?;
+    Ok((plane, delta))
 }
 
 /// Decode `frame_at(o, x, z)`'s origin and its two axis directions.
@@ -1747,24 +1786,27 @@ fn eval_plane_through(args: &[Value]) -> Value {
     }
 }
 
-/// `offset(plane: Plane, delta: Length) -> Plane`: shift the origin by δ along the
-/// unit normal; the normal is unchanged. `delta` must carry the plane origin's
-/// dimension. `Undef` on bad arity / dimension-mismatch / degenerate normal.
+/// `offset(p: Plane, delta: Length) -> Plane`: shift the origin by `delta` along
+/// the unit normal; the normal is unchanged.
+///
+/// BOTH operands are REQUIRED to carry LENGTH — `p`'s ORIGIN and `delta` itself
+/// (units-length η, task 6591). `Undef` on bad arity, a non-LENGTH or
+/// undecodable plane origin, a non-LENGTH delta, or a degenerate normal.
+///
+/// Gating `delta` closes an R12-class SILENT REINTERPRETATION, not merely a
+/// missing check: the rule this replaces compared `delta`'s dimension to the
+/// origin's, so a bare plane offset by a bare `2` MEASURED as
+/// `plane(point(0, 0, 2), …)` — the dimensionless `2` became 2 METRES. See
+/// [`eval_midplane`] for why that comparison is deleted rather than kept beside
+/// the new guard, and [`classify_offset_plane_args`] for the predicate this gate
+/// and [`diagnose`]'s arm share, which also fixes the `p`-before-`delta` order.
+///
+/// The normal keeps its dimension-agnostic decode, including the
+/// `Value::Direction` form a kernel-realized plane carries (decision D3).
 fn eval_offset_plane(args: &[Value]) -> Value {
-    if args.len() != 2 {
+    let Ok(((o, n), delta)) = classify_offset_plane_args(args) else {
         return Value::Undef;
-    }
-    let (o, o_dim, n) = match decode_plane(&args[0]) {
-        Some(p) => p,
-        None => return Value::Undef,
     };
-    let delta = match args[1].as_f64() {
-        Some(d) if d.is_finite() => d,
-        _ => return Value::Undef,
-    };
-    if args[1].dimension() != o_dim {
-        return Value::Undef;
-    }
     let n_hat = match normalize3(n) {
         Some(nh) => nh,
         None => return Value::Undef,
@@ -1775,7 +1817,7 @@ fn eval_offset_plane(args: &[Value]) -> Value {
         o[2] + delta * n_hat[2],
     ];
     Value::Plane {
-        origin: Box::new(make_point3(new_o, o_dim)),
+        origin: Box::new(make_point3(new_o, DimensionVector::LENGTH)),
         normal: Box::new(make_real_vec3(n_hat)),
     }
 }
