@@ -306,13 +306,13 @@ impl GmshKernel {
     /// `Mesh.MeshSizeExtendFromBoundary` through untouched — a silent CARRIER,
     /// damaging its successors while its own output stayed put.
     ///
-    /// The claim is enforced, not asserted:
-    /// `tests/mesh_size_option_hermeticity.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`
-    /// reads all five options back after a call made from a poisoned table, and
-    /// requires the tet count to match an unpoisoned run; the rest of that
-    /// binary pins both call-order directions against the other entry points in
-    /// one process. `tests/mesh_to_volume_tests.rs::mesh_to_volume_leaves_every_size_option_at_gmsh_defaults`
-    /// carries the unpoisoned read alongside this function's own suite.
+    /// The claim is enforced, not asserted — by an option-table read-back
+    /// after a call made from a poisoned table (which also requires the tet
+    /// count to match an unpoisoned run), by the unpoisoned read alongside
+    /// this function's own suite, and by a both-orders pair sweep against the
+    /// other entry points in one process. [`crate::mesh_size_scope`] names
+    /// each of those guards; restating them here would be a second copy of
+    /// that map which a test rename could silently falsify.
     ///
     /// # Errors
     ///

@@ -7,8 +7,8 @@
 //! therefore survives for the life of the process and is inherited by every
 //! later call that does not write it. So:
 //!
-//! > **Gmsh's size-option table is at its documented defaults outside a
-//! > [`MeshSizeScope`].**
+//! > **Every option in [`GMSH_SIZE_OPTION_DEFAULTS`] is at gmsh's documented
+//! > default outside a [`MeshSizeScope`].**
 //!
 //! [`MeshSizeScope`] enforces that from both ends. [`MeshSizeScope::entered`]
 //! writes every entry of [`GMSH_SIZE_OPTION_DEFAULTS`] on the way IN, and
@@ -77,6 +77,11 @@
 //!   `#[cfg(feature = "mesh-morph")]`, so an intra-doc link to it is
 //!   unresolvable in a default-feature `cargo doc`.
 //!
+//! [`MeshSizeScope::entered`]'s own failure path — the `Result` the four above
+//! only ever see as `Ok` — is pinned separately by
+//! `tests/mesh_size_scope_uninitialized.rs`, which is its own binary because
+//! it needs a process where `init::ensure_initialized` has never run.
+//!
 //! One guard per writer, all four reading the table through
 //! [`crate::ffi::option_get_number`] via one shared loop
 //! (`tests/common/clamp_probe.rs`), so none can rot into a comment. Both
@@ -88,9 +93,11 @@
 //!
 //! # Adding a writer
 //!
-//! A fifth entry point that writes a size option must arm a scope, and a sixth
-//! process-global that decides element size must join
-//! [`GMSH_SIZE_OPTION_DEFAULTS`] with its default MEASURED, not assumed. The
+//! A fifth entry point that writes a size option must arm a scope, and any
+//! size-deciding process-global it writes must join
+//! [`GMSH_SIZE_OPTION_DEFAULTS`] with its default MEASURED, not assumed —
+//! including one that constant's "Membership" note lists as excluded, since
+//! what excludes it is precisely that nothing here writes it. The
 //! four guards above iterate that constant, so a new entry there is asserted
 //! against every existing writer on the day it lands — but nothing forces a
 //! new WRITER to arm a scope, which is why each one carries its own guard.
@@ -112,8 +119,8 @@ pub const GMSH_MESH_SIZE_MIN_DEFAULT: f64 = 0.0;
 /// `pub` for the same reason as [`GMSH_MESH_SIZE_MIN_DEFAULT`].
 pub const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
 
-/// Every process-global gmsh option that decides element size, paired with
-/// gmsh's default for it.
+/// Every size-deciding process-global gmsh option *this crate writes*, paired
+/// with gmsh's default for it.
 ///
 /// The single source of truth for both halves of the discipline: what
 /// [`MeshSizeScope::entered`] establishes inbound and what `drop` restores
@@ -125,6 +132,18 @@ pub const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
 /// the distinction matters only when reading a density-based probe, which can
 /// observe the clamp but not the sources (their effect vanishes whenever
 /// `MeshSizeMin == MeshSizeMax`).
+///
+/// # Membership: what this crate writes
+///
+/// Gmsh has size-deciding globals beyond these five, and they are out
+/// deliberately rather than by oversight: `Mesh.MeshSizeFactor` (measured
+/// default `1`), which scales every size the options here produce, and
+/// `Mesh.MeshSizeFromParametricPoints` (measured default `0`). No entry point
+/// in this crate writes either, so no call's output can depend on call order
+/// through one — and entering at a default this crate never chose would
+/// override an embedder's deliberate global scaling rather than close a leak
+/// of ours. A writer added here changes that, which is why the rule is stated
+/// rather than left to be inferred from the list.
 ///
 /// Every default MEASURED against the shipped library rather than assumed:
 /// `/opt/reify-deps/bin/gmsh` 4.15.2 `-0` on a `.geo` of

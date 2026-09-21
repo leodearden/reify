@@ -45,14 +45,14 @@
 //! Scope of that guarantee: since task #6968 it covers all five size options,
 //! not just the `MeshSizeMin`/`MeshSizeMax` pair. The
 //! `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
-//! `MeshSizeExtendFromBoundary` writes below used to be left behind for a later
-//! caller to inherit; `MeshSizeScope` now restores them too, and the whole-set
-//! guard is
-//! `tests/refine_volume_tests.rs::refine_volume_leaves_every_size_option_at_gmsh_defaults`.
-//! Of the three, only `MeshSizeExtendFromBoundary` ever actually deviated — it
-//! is written `0` here against a gmsh default of `1`, and the other two restate
-//! their defaults — which is why the leak was invisible for so long. See the
-//! inline rationale at the option writes below.
+//! `MeshSizeExtendFromBoundary` writes below used to be left behind for a
+//! later caller to inherit; `MeshSizeScope` now restores them too. Measured
+//! against gmsh 4.15.2, only `MeshSizeExtendFromBoundary` — written `0` here
+//! against a measured default of `1` — deviated far enough to change a later
+//! caller's mesh, which is why the leak was invisible for so long. See the
+//! inline rationale at the option writes below, and
+//! [`crate::mesh_size_scope`] for which guard holds this writer; that map is
+//! kept in one place rather than restated per writer.
 //!
 //! # Cost basis: full remesh from surface
 //!
@@ -253,13 +253,11 @@ pub fn refine_volume_with_size_field(
     // interior mesh density, with a smooth interpolation between corners rather
     // than an aggressive gradient from the finest boundary face.
     //
-    // Only the third of these three is a DEVIATION. `MeshSizeScope::entered`
-    // above established gmsh's defaults, which are `FromPoints = 1` and
-    // `FromCurvature = 0` — so the first two writes restate what is already in
-    // the table, while `ExtendFromBoundary = 0` against a default of `1` is
-    // this function's own choice, and was the entire measured content of the
-    // leak #6968 closed. See "no test can tell" below for why the two
-    // restatements stay anyway.
+    // All three are written unconditionally and independently of
+    // `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS`: each is a REQUIREMENT of
+    // the per-vertex size field below, so this function states it rather than
+    // inherit it from a default that is gmsh's to change. See "no test can
+    // tell" below for what that costs.
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;
@@ -275,17 +273,13 @@ pub fn refine_volume_with_size_field(
     // a `mesh_size_scope::MeshSizeScope`, so the table these writes land on
     // holds gmsh's defaults whatever ran earlier in the process.
     //
-    // Of the five size options this function writes, exactly two DEVIATE from
-    // the defaults the scope established: `MeshSizeMax = max_hint` here, and
-    // `MeshSizeExtendFromBoundary = 0` above. `MeshSizeMin` and the other two
-    // restate the scope's own writes.
-    //
-    // NO TEST CAN TELL whether the three restatements are present. Deleting
-    // any of them is a behavioural no-op while the scope is armed, so nothing
-    // in `tests/` goes red for it — stated here rather than left for a future
-    // author to discover by deleting one and finding the suite still green.
-    // They are kept as defence-in-depth, and specifically so `MeshSizeMin` and
-    // `MeshSizeMax` read as ONE clamp rather than half of one: written as a
+    // NO TEST CAN TELL whether a write whose value coincides with gmsh's
+    // current default is present: while the scope is armed it is a behavioural
+    // no-op, so deleting it leaves `tests/` green. Stated here rather than
+    // left for a future author to discover by deleting one and finding the
+    // suite still green. They stay because they are this function's
+    // requirements, and specifically so `MeshSizeMin` and `MeshSizeMax` read
+    // as ONE clamp rather than half of one: written as a
     // pair against a hostile Min == Max, lowering only Max would leave
     // Min > Max (gmsh still floors at the leaked value) and lowering only Min
     // would leave the leaked Max capping everything. That is the shape an

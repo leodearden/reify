@@ -548,16 +548,13 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 ///   behind at all. It enters `mesh_size_scope::MeshSizeScope` (in
 ///   `kernel_real.rs`), which establishes gmsh's defaults for every size option
 ///   on entry and restores them on every exit path, early `?` returns included.
-///   Pinned by
-///   `tests/mesh_size_option_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`
-///   and, for the whole option set, by
-///   `tests/mesh_size_option_hermeticity.rs::mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`.
 ///
-/// The end-to-end sequence this note is about — seed via `mesh_to_volume`,
-/// then refine with a size field — is itself pinned, in that same crate, by
-/// `tests/mesh_size_option_hermeticity.rs::refine_after_mesh_to_volume_honours_its_own_size_field`,
-/// which measured that it takes the loss of BOTH halves to reproduce the
-/// original symptom.
+/// Both halves — and the end-to-end sequence this note is about, seed via
+/// `mesh_to_volume` then refine with a size field — are pinned by guards in
+/// `reify-kernel-gmsh`, which measured that it takes the loss of BOTH to
+/// reproduce the original symptom. That crate's `mesh_size_scope` module doc
+/// maps each writer to its guard; naming them here would be a third copy of
+/// that map, in another crate, with nothing to keep it in step.
 ///
 /// **Why it stays hand-built anyway.** (i) *Producer symmetry*: the section
 /// above re-based the baseline onto this same function precisely so both sides
@@ -679,10 +676,10 @@ fn localized_size_reduction_refines_marked_region_only() {
          `refine_volume.rs`'s inbound writes at the 'Mesh-size clamp: set \
          explicitly, never inherited' block (#6211) and \
          `mesh_size_scope::MeshSizeScope` entered in \
-         `kernel_real.rs::mesh_to_volume` (#6298, #6968). The guards in \
-         reify-kernel-gmsh's `tests/refine_volume_tests.rs` and \
-         `tests/mesh_size_option_hermeticity.rs` would have gone red too; \
-         if they are green, suspect the size field after all. See the \
+         `kernel_real.rs::mesh_to_volume` (#6298, #6968). That crate's own \
+         size-option guards — listed in its `mesh_size_scope` module doc — \
+         would have gone red too; if they are green, suspect the size field \
+         after all. See the \
          'Why the seed is hand-built' note on this test."
     );
 
