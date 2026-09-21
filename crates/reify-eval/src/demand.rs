@@ -798,4 +798,96 @@ mod tests {
             );
         }
     }
+
+    /// The REVERSE of `demanding_a_geometry_list_element_pulls_its_list_cell_…`:
+    /// a demanded geometry-list CELL must pull every realization that produces
+    /// it into the cone. The two read as ONE invariant — neither half alone
+    /// closes the cone.
+    ///
+    /// `rebuild_cone`'s `NodeId::Value` arm follows only `default_expr`'s reads,
+    /// so before this task the asymmetry was harmless: the compiler emits NO
+    /// value cell for a scalar geometry `let`, leaving no demandable node whose
+    /// producers were unreachable from it. A geometry-LIST let DOES emit one
+    /// (`Type::List(Type::Geometry)`), so this task newly creates exactly that
+    /// node — which is why the edge belongs here.
+    ///
+    /// Three roots, each asserted PER ELEMENT so a partial fix cannot pass:
+    ///
+    /// 1. REVERSE — the list cell alone.
+    /// 2. ATOMICITY — a STRICT SUBSET of the elements must reach its own
+    ///    missing sibling, via element → γ → list cell → reverse → siblings.
+    ///    A subset must be UNREACHABLE, not merely tolerated downstream:
+    ///    `GeometryListCellAccumulator::into_entries` drops the whole cell
+    ///    unless the resolved index set is exactly `0..len`.
+    /// 3. INDIRECT ROOT — an ordinary consumer (`holes[0]`, measured to read
+    ///    `S.holes`) with no element as a root at all.
+    ///
+    /// CONTROL: a second list `pins`, backing a DIFFERENT cell, stays OUT of
+    /// all three cones — the edge is keyed per cell, not "enqueue every
+    /// realization".
+    #[test]
+    fn a_demanded_geometry_list_cell_pulls_every_element_realization_into_the_cone() {
+        use crate::graph::EvaluationGraph;
+        use reify_test_support::parse_and_compile;
+
+        let module = parse_and_compile(
+            r#"structure S {
+    param r : Length = 5mm
+    let holes = generate(3, |i| cylinder(r, 20mm))
+    let pins = generate(2, |i| cylinder(r, 4mm))
+    let first = holes[0]
+}"#,
+        );
+        let element = |name: &str| -> NodeId {
+            module
+                .templates
+                .iter()
+                .flat_map(|t| t.realizations.iter())
+                .find(|r| r.name.as_deref() == Some(name))
+                .map(|r| NodeId::Realization(r.id.clone()))
+                .unwrap_or_else(|| panic!("repro must compile a realization named {name:?}"))
+        };
+        let holes: Vec<NodeId> = (0..3).map(|k| element(&format!("holes#{k}"))).collect();
+        let pins: Vec<NodeId> = (0..2).map(|k| element(&format!("pins#{k}"))).collect();
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        let cone_from = |roots: &[NodeId]| {
+            let mut reg = DemandRegistry::new();
+            for root in roots {
+                reg.add_demand(root.clone());
+            }
+            reg.rebuild_cone(&graph);
+            reg
+        };
+
+        for (root_label, roots) in [
+            (
+                "Value(S.holes)",
+                vec![NodeId::Value(ValueCellId::new("S", "holes"))],
+            ),
+            (
+                "the strict subset {holes#0, holes#2}",
+                vec![holes[0].clone(), holes[2].clone()],
+            ),
+            (
+                "Value(S.first), a consumer with no element as a root",
+                vec![NodeId::Value(ValueCellId::new("S", "first"))],
+            ),
+        ] {
+            let reg = cone_from(&roots);
+            for (k, el) in holes.iter().enumerate() {
+                assert!(
+                    reg.is_demanded(el),
+                    "a cone rooted at {root_label} must contain Realization(holes#{k})"
+                );
+            }
+            for (k, el) in pins.iter().enumerate() {
+                assert!(
+                    !reg.is_demanded(el),
+                    "a cone rooted at {root_label} must NOT pull the unrelated \
+                     Realization(pins#{k}) in — the reverse edge is keyed per cell"
+                );
+            }
+        }
+    }
 }
