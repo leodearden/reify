@@ -9275,4 +9275,333 @@ mod tests {
         assert_eq!(zero.code, None);
     }
 
+    // ── η classifier contract (task 6591): `diagnose` for the five ───────────
+    //
+    // The gate alone is INVISIBLE to the author: `Value::Undef` prints `undef`
+    // and exits 0 (measured for all five before these arms landed). The
+    // classifier is what turns each silent acceptance-turned-`undef` into a
+    // `Severity::Error` and a nonzero `reify eval` exit code.
+    //
+    // Argument NAMES come from the datum-constructor signature block in
+    // `reify-compiler/src/units.rs` — `midplane(a, b)`, `axis_through(a, b)`,
+    // `plane_through(a, b, c)`, `offset(p, delta)`, `frame_at(o, x, z)` — one
+    // scheme across all five, so the message names the argument the author
+    // actually wrote. A POINT/ORIGIN operand is named as the WHOLE parameter in
+    // ONE message rather than per coordinate, for the `ox/oy/oz` reason: the
+    // decoder both the gate and the classifier read has already required the
+    // three components to share one dimension, so all three offend identically
+    // and one edit fixes the one line the author wrote.
+
+    /// Every offending shape, at every gated POSITION of all five construction
+    /// datum constructors, is reported as the SHARED `ArgRejection` sentence at
+    /// `Severity::Error` carrying the pre-existing `DimensionedArgRejected` code
+    /// — ruling A7, one rejection REASON gets one code.
+    ///
+    /// The expected wording is obtained LIVE from the owner on every row rather
+    /// than spelled here, so a reword on `ArgRejection::message`'s side fails
+    /// this test instead of silently forking this crate's copy (Contract C1
+    /// invariant (i)). This is the η twin of
+    /// `diagnose_plane_family_non_length_offset_is_the_shared_coded_error`.
+    #[test]
+    fn diagnose_datum_family_non_length_position_is_the_shared_coded_error() {
+        use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
+
+        for offender in non_length_offenders() {
+            let Acceptance::Rejected(rejection) = accept_arg(&offender, &length_spec()) else {
+                panic!("{offender:?}: the owner must REJECT this at a length_spec position");
+            };
+            let point = Value::Point(vec![offender.clone(), offender.clone(), offender.clone()]);
+            let plane = Value::Plane {
+                origin: Box::new(point.clone()),
+                normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+            };
+            let good_point = point3_len(0.001, 0.002, 0.003);
+            let good_plane = plane_at_z(0.010);
+            let (xdir, zdir) = unit_x_z_directions();
+
+            for (name, arg_name, args) in [
+                ("midplane", "a", vec![plane.clone(), good_plane.clone()]),
+                ("midplane", "b", vec![good_plane.clone(), plane.clone()]),
+                ("axis_through", "a", vec![point.clone(), good_point.clone()]),
+                ("axis_through", "b", vec![good_point.clone(), point.clone()]),
+                (
+                    "plane_through",
+                    "a",
+                    vec![point.clone(), good_point.clone(), good_point.clone()],
+                ),
+                (
+                    "plane_through",
+                    "c",
+                    vec![good_point.clone(), good_point.clone(), point.clone()],
+                ),
+                (
+                    "offset",
+                    "p",
+                    vec![plane.clone(), Value::length(0.005)],
+                ),
+                (
+                    "offset",
+                    "delta",
+                    vec![good_plane.clone(), offender.clone()],
+                ),
+                (
+                    "frame_at",
+                    "o",
+                    vec![point.clone(), xdir.clone(), zdir.clone()],
+                ),
+            ] {
+                let diag = super::diagnose(name, &args)
+                    .unwrap_or_else(|| panic!("{name} / {arg_name} / {offender:?}: must be diagnosed"));
+                assert_eq!(diag.severity, reify_core::Severity::Error, "{diag:?}");
+                assert_eq!(
+                    diag.code,
+                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                    "{diag:?}"
+                );
+                assert_eq!(
+                    diag.message,
+                    rejection.message(name, arg_name),
+                    "{name} / {arg_name}: this wording has forked from the shared \
+                     ArgRejection template"
+                );
+            }
+        }
+    }
+
+    /// When SEVERAL operands offend, the FIRST in ARGUMENT ORDER is named —
+    /// deterministically, because the order is a property of the ONE per-builtin
+    /// classifier both the gate and this arm read, not a convention restated at
+    /// each (the `diagnose_bbox_corners` `min`-before-`max` precedent).
+    #[test]
+    fn diagnose_datum_family_names_the_first_offending_argument() {
+        let bare_point = super::make_point3([0.0, 0.0, 1.0], DimensionVector::DIMENSIONLESS);
+        let bare_point2 = super::make_point3([1.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+        let bare_point3 = super::make_point3([0.0, 1.0, 0.0], DimensionVector::DIMENSIONLESS);
+        let bare_plane = plane_with_origin([0.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+        let bare_plane2 = plane_with_origin([0.0, 0.0, 1.0], DimensionVector::DIMENSIONLESS);
+        let good_point = point3_len(0.001, 0.002, 0.003);
+
+        for (name, expected_arg, args) in [
+            // Both wrong → the first is named.
+            ("midplane", "a", vec![bare_plane.clone(), bare_plane2]),
+            ("axis_through", "a", vec![bare_point.clone(), bare_point2.clone()]),
+            (
+                "plane_through",
+                "a",
+                vec![bare_point.clone(), bare_point2.clone(), bare_point3.clone()],
+            ),
+            // First good, the other two wrong → the SECOND is named, which is
+            // what makes this an order pin rather than an "always names `a`" one.
+            (
+                "plane_through",
+                "b",
+                vec![good_point, bare_point2, bare_point3],
+            ),
+            (
+                "offset",
+                "p",
+                vec![bare_plane, Value::Real(2.0)],
+            ),
+        ] {
+            let diag = super::diagnose(name, &args)
+                .unwrap_or_else(|| panic!("{name}: a both-wrong call must be diagnosed"));
+            assert!(
+                diag.message.starts_with(&format!("{name}: {expected_arg} argument")),
+                "{name}: expected the message to name `{expected_arg}` first; got {:?}",
+                diag.message
+            );
+        }
+    }
+
+    /// The SILENCE contract: `diagnose` says nothing for every cause that is not
+    /// a units fault, because a shape failure is never blamed on a dimension and
+    /// an unresolved cell is not a wrong one (decision D10).
+    ///
+    /// Each row is a cause the GATE still rejects — these are not acceptances.
+    /// They are the half of the no-mis-attribution invariant that a classifier
+    /// re-spelling the gate's predicate would get wrong.
+    #[test]
+    fn diagnose_datum_family_stays_silent_on_every_shape_fault() {
+        let good_point = point3_len(0.001, 0.002, 0.003);
+        let good_plane = plane_at_z(0.010);
+        let (xdir, zdir) = unit_x_z_directions();
+        let mixed = Value::Point(vec![
+            Value::length(1.0),
+            Value::Real(0.0),
+            Value::length(0.0),
+        ]);
+        let non_finite = Value::Point(vec![
+            Value::length(f64::NAN),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let mixed_plane = Value::Plane {
+            origin: Box::new(mixed.clone()),
+            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+        };
+        // A NORMAL that cannot be decoded at all, and one that decodes but is
+        // degenerate. Neither is a units fault, and neither may be blamed on the
+        // origin's dimension — the hazard a classifier reading only the origin
+        // would walk straight into.
+        let bad_normal_plane = Value::Plane {
+            origin: Box::new(good_point.clone()),
+            normal: Box::new(Value::Real(1.0)),
+        };
+        let degenerate_normal_plane = Value::Plane {
+            origin: Box::new(good_point.clone()),
+            normal: Box::new(super::make_real_vec3([0.0, 0.0, 0.0])),
+        };
+
+        for (label, name, args) in [
+            // Wrong variant in a POSITION slot.
+            (
+                "midplane non-Plane",
+                "midplane",
+                vec![Value::Real(1.0), good_plane.clone()],
+            ),
+            (
+                "axis_through non-Point",
+                "axis_through",
+                vec![Value::Real(1.0), good_point.clone()],
+            ),
+            (
+                "plane_through non-Point",
+                "plane_through",
+                vec![Value::Real(1.0), good_point.clone(), good_point.clone()],
+            ),
+            (
+                "offset non-Plane",
+                "offset",
+                vec![Value::Real(1.0), Value::length(0.005)],
+            ),
+            (
+                "frame_at non-Point origin",
+                "frame_at",
+                vec![Value::Real(1.0), xdir.clone(), zdir.clone()],
+            ),
+            // MIXED component dimensions and a NON-FINITE component: both
+            // `decompose_xyz3` CONSISTENCY failures, not LENGTH ones.
+            (
+                "axis_through mixed-dimension point",
+                "axis_through",
+                vec![mixed.clone(), good_point.clone()],
+            ),
+            (
+                "axis_through non-finite point",
+                "axis_through",
+                vec![non_finite, good_point.clone()],
+            ),
+            (
+                "midplane mixed-dimension origin",
+                "midplane",
+                vec![mixed_plane, good_plane.clone()],
+            ),
+            // A malformed or degenerate plane NORMAL.
+            (
+                "midplane undecodable normal",
+                "midplane",
+                vec![bad_normal_plane.clone(), good_plane.clone()],
+            ),
+            (
+                "offset undecodable normal",
+                "offset",
+                vec![bad_normal_plane, Value::length(0.005)],
+            ),
+            (
+                "offset degenerate normal",
+                "offset",
+                vec![degenerate_normal_plane, Value::length(0.005)],
+            ),
+            // `frame_at`'s x/z slots are NOT gated (decision D3), so a fault
+            // confined to them is a shape fault and stays silent.
+            (
+                "frame_at non-Direction axes",
+                "frame_at",
+                vec![good_point.clone(), Value::Real(1.0), Value::Real(2.0)],
+            ),
+            (
+                "frame_at parallel axes",
+                "frame_at",
+                vec![good_point.clone(), zdir.clone(), zdir.clone()],
+            ),
+            // Wrong arity in every family.
+            ("midplane arity 1", "midplane", vec![good_plane.clone()]),
+            (
+                "axis_through arity 1",
+                "axis_through",
+                vec![good_point.clone()],
+            ),
+            (
+                "plane_through arity 2",
+                "plane_through",
+                vec![good_point.clone(), good_point.clone()],
+            ),
+            (
+                "frame_at arity 2",
+                "frame_at",
+                vec![good_point.clone(), xdir.clone()],
+            ),
+            // A wholly VALID call: nothing to say.
+            (
+                "midplane valid",
+                "midplane",
+                vec![plane_at_z(0.002), plane_at_z(0.008)],
+            ),
+            (
+                "axis_through valid",
+                "axis_through",
+                vec![good_point.clone(), point3_len(0.001, 0.002, 0.007)],
+            ),
+            (
+                "offset valid",
+                "offset",
+                vec![good_plane, Value::length(0.003)],
+            ),
+            (
+                "frame_at valid",
+                "frame_at",
+                vec![good_point, xdir, zdir],
+            ),
+        ] {
+            assert!(
+                super::diagnose(name, &args).is_none(),
+                "{label}: a shape failure is never blamed on a dimension, so \
+                 diagnose must stay silent; got {:?}",
+                super::diagnose(name, &args)
+            );
+        }
+    }
+
+    /// The ARITY-3 `offset` is the γ RELATION and must NEVER be given a
+    /// datum-constructor rejection, whatever its arguments look like.
+    ///
+    /// `eval_geometry`'s dispatch is arity-blind (`"offset" => eval_offset_plane`),
+    /// so without the `args.len() == 2` guard inside `classify_offset_plane_args`
+    /// this arm would read `args[1]` on a three-argument call and attribute a
+    /// units fault to a builtin this gate has no authority over.
+    #[test]
+    fn diagnose_offset_stays_silent_at_arity_three() {
+        let bare_plane = plane_with_origin([0.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+        for (label, args) in [
+            (
+                "all-bare γ relation",
+                vec![bare_plane.clone(), bare_plane, Value::Real(2.0)],
+            ),
+            (
+                "LENGTH γ relation",
+                vec![plane_at_z(0.0), plane_at_z(0.010), Value::length(0.005)],
+            ),
+            (
+                "bare delta in the γ slot",
+                vec![plane_at_z(0.0), plane_at_z(0.010), Value::Real(2.0)],
+            ),
+        ] {
+            assert!(
+                super::diagnose("offset", &args).is_none(),
+                "{label}: the arity-3 offset is the γ relation, not this gate's \
+                 to reject; got {:?}",
+                super::diagnose("offset", &args)
+            );
+        }
+    }
 }
