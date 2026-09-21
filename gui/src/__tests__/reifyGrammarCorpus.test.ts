@@ -4943,7 +4943,8 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //     `FunctionType` has been in the grammar all along.
 //
 // WHY THE LAST THREE FILES REMAIN — one line each, because a bare count is
-// not a finding and "which three, and why" is:
+// not a finding and "which three, and why" is. Named in KNOWN_NOT_CLEAN
+// below, which the ledger checks rather than trusts:
 //
 //   - arrow_type.ri — NOT A GRAMMAR GAP AT ALL. Its `param` is at TOP LEVEL,
 //     and `param` is not a top-level declaration in tree-sitter's
@@ -5007,9 +5008,13 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // every path below is expected to parse clean, filtered by what still exists
 // on disk. Removals drop out naturally, a genuine regression names the exact
 // file that stopped parsing, and a coverage gain is a visible one-line
-// addition here. The set below now covers every committed .ri under
-// CORPUS_ROOTS that parses clean — the only files left unpinned are the
-// not-clean ones named above.
+// addition here. Whether every clean file is pinned is measured and reported
+// in the failure message below (`unpinnedClean`) but deliberately not gated —
+// gating it would force every future clean prd-gate fixture into a matching
+// _GUI_COUPLED_RI_FIXTURES edit with no grammar change behind it. The three
+// files named above ARE gated: KNOWN_NOT_CLEAN below asserts each still fails
+// to parse, so a capability gain reads as a failure instead of a stale
+// exclusion.
 //
 // #6605: coverage, not capability. No production in reify.grammar changed;
 // every path pinned by this round already parsed clean and was simply
@@ -5441,6 +5446,16 @@ function collectRiFiles(relDir: string): string[] {
   return out;
 }
 
+// The three files named in "WHY THE LAST THREE FILES REMAIN" above — checked
+// below against the live not-clean set instead of only asserted in prose, so
+// a grammar change that starts parsing one of them clean fails loudly rather
+// than leaving a stale exclusion.
+const KNOWN_NOT_CLEAN = [
+  'tests/prd-gate/fixtures/arrow_type.ri',
+  'tests/prd-gate/fixtures/shear_angles_vec3_angle_param_pre.ri',
+  'tests/prd-gate/fixtures/shear_angles_vec3_wrongq_ctrl.ri',
+];
+
 // Wall-clock for the ledger below. The walk itself is fast — 329 files parse
 // in ~0.75 s when this file runs alone — but under the full suite (159 test
 // files across parallel workers) it is CPU-starved and overran vitest's 15 s
@@ -5486,6 +5501,21 @@ describe('reify.grammar — corpus drift ledger', () => {
         `(measured ${cleanSet.size} clean of ${allFiles.length} committed .ri files; ` +
         `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk; ` +
         `${unpinnedClean.length} clean files are not pinned by this ledger)`,
+    ).toEqual([]);
+
+    // The converse of `regressed`: KNOWN_NOT_CLEAN names files this ledger
+    // currently expects to fail, so if the grammar gains the capability to
+    // parse one of them, that must fail loudly here rather than leave "WHY
+    // THE LAST THREE FILES REMAIN" above silently wrong.
+    const knownNotCleanPresent = KNOWN_NOT_CLEAN.filter((p) => existsSync(join(REPO_ROOT, p)));
+    const capabilityGained = knownNotCleanPresent.filter((p) => cleanSet.has(p));
+
+    expect(
+      capabilityGained,
+      `These files are listed in KNOWN_NOT_CLEAN ("WHY THE LAST THREE FILES ` +
+        `REMAIN" above) but now parse with zero error nodes — move each into ` +
+        `EXPECTED_CLEAN and drop it from KNOWN_NOT_CLEAN:\n` +
+        `${capabilityGained.map((p) => `  ${p}`).join('\n')}`,
     ).toEqual([]);
   }, LEDGER_TIMEOUT_MS);
 });
