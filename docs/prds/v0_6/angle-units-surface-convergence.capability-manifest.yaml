@@ -57,9 +57,12 @@ tasks:
   - name: angle-spec-absent-today
     binding: capability→producer (this leaf) — grep:crates/reify-ir/src/arg_acceptance.rs:298
       density_spec, :337 length_spec, :635 accept_arg; no angle_spec anywhere in the
-      repo AT DECOMPOSE — since DELIVERED, pub fn angle_spec() at
-      crates/reify-ir/src/arg_acceptance.rs:411 (re-measured 2026-09-18, task 7550;
-      anchors re-measured against main @ ea896581d1, not bd10b6d0e1)
+      repo AT DECOMPOSE — this row's name is a decompose-time label for what the
+      leaf would add, not an assertion that the artefact is absent. Since DELIVERED,
+      pub fn angle_spec() is live at crates/reify-ir/src/arg_acceptance.rs:341
+      (re-measured 2026-09-21, task 7698; was :411 @ ea896581d1, task 7550), landed
+      by task 6924 (merge 1a9cf2b51f301c8716eb545dc43ec8a565d765e9); this row's
+      delivered_check targets that post-state artefact and passes today.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -87,10 +90,14 @@ tasks:
       Some(reify_core::units::ANGLE_MIGRATION_HINT) (crates/reify-core/src/units.rs:103),
       reached via resolve_angle_scalar_arg → the shared resolve_spec_arg
       (re-measured 2026-09-21, task 7698; landed by task 6924, merge
-      1a9cf2b51f301c8716eb545dc43ec8a565d765e9). Both this row's name and
-      angle-spec-absent-today's are decompose-time labels for what the leaf would
-      add, not assertions that the artefact is absent — both rows' delivered_check
-      already targets the post-state artefact and passes today.
+      1a9cf2b51f301c8716eb545dc43ec8a565d765e9). This row's name is likewise a
+      decompose-time label for what the leaf would add, not an assertion that the
+      artefact is absent — its delivered_check passes today, though the grep is
+      satisfied by the doc-comment example at arg_acceptance.rs:335, not by
+      observing the live migration_hint field
+      (Some(reify_core::units::ANGLE_MIGRATION_HINT)) wired at :345 (const in
+      crates/reify-core/src/units.rs:103) — comment-satisfiable, not
+      construct-bound.
     verdict: PASS
     delivered_check:
       kind: grep
