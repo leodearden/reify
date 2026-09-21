@@ -479,6 +479,10 @@ fn acquire_lsp_test_lock_recovers_from_poisoned_mutex() {
         .unwrap_or_else(|e| e.into_inner());
 }
 
+/// How long any single [`LspInbox`] wait may take in total, as a deadline
+/// rather than a per-message timeout. See [`LspInbox::wait_for`].
+const WAIT_BUDGET: Duration = Duration::from_secs(30);
+
 /// The stdout message stream plus a replay buffer, so no wait can starve
 /// another of a message it still needs.
 ///
@@ -517,11 +521,20 @@ impl LspInbox {
     /// replay buffer before pulling from the channel and buffering every
     /// non-match for later waits.
     ///
-    /// Uses a 30-second timeout to accommodate CPU saturation when many test
+    /// Uses a 30-second budget to accommodate CPU saturation when many test
     /// binaries run in parallel (e.g., during `cargo test --workspace`).  Under
     /// heavy load the spawned tokio runtime may not be scheduled for several
     /// seconds before it can process the `initialize` request; 30 s gives ample
     /// headroom without making genuinely failing tests unreasonably slow.
+    ///
+    /// That budget is an `Instant` DEADLINE computed once, not a timeout
+    /// restarted per message — the idiom `wait_for_exit`, `reap_bounded` and
+    /// `drain_bounded` already use. Passing the same `Duration` to each
+    /// `recv_timeout` would let a steady trickle of non-matching messages
+    /// postpone the deadline indefinitely while the panic below still claimed
+    /// 30s, which the burst test makes reachable in practice: up to eight
+    /// `publishDiagnostics` notifications, each carrying a 160 KiB URI, can
+    /// interleave with its log-message waits.
     ///
     /// `what` is the caller's own fully-formed noun phrase, interpolated into
     /// both panic messages below. Those messages are load-bearing diagnostics
@@ -536,9 +549,12 @@ impl LspInbox {
         if let Some(idx) = self.seen.iter().position(&pred) {
             return self.seen.remove(idx);
         }
-        let timeout = std::time::Duration::from_secs(30);
+        let deadline = Instant::now() + WAIT_BUDGET;
         loop {
-            match self.rx.recv_timeout(timeout) {
+            match self
+                .rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
                 Ok(msg) => {
                     if pred(&msg) {
                         return msg;
@@ -627,9 +643,11 @@ impl LspInbox {
     /// of them.
     ///
     /// Sound ONLY after the child has exited: `spawn_reader`'s thread returns
-    /// on EOF and drops its sender, which is what makes the blocking `recv()`
-    /// below terminate. Called before that, it would block for the rest of the
-    /// session. Takes `self` by value so a caller cannot reuse a drained
+    /// on EOF and drops its sender, which is what ends the loop below. Called
+    /// before that it would wait for the rest of the session, so it is bounded
+    /// by the same [`WAIT_BUDGET`] deadline as [`LspInbox::wait_for`] and
+    /// panics rather than hanging — this file's discipline is never hang,
+    /// always fail. Takes `self` by value so a caller cannot reuse a drained
     /// inbox and mistake "the stream ended" for "nothing matched".
     ///
     /// Exists so a test can assert an EXACT notification count — "no message
@@ -637,10 +655,26 @@ impl LspInbox {
     /// to be complete.
     fn drain_after_exit(mut self) -> Vec<serde_json::Value> {
         let mut all = std::mem::take(&mut self.seen);
-        while let Ok(msg) = self.rx.recv() {
-            all.push(msg);
+        let deadline = Instant::now() + WAIT_BUDGET;
+        loop {
+            match self
+                .rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(msg) => all.push(msg),
+                // The reader thread hit EOF and dropped its sender: the
+                // stream really is complete, which is the whole precondition
+                // an exact-count assertion rests on.
+                Err(mpsc::RecvTimeoutError::Disconnected) => return all,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                    "timed out after 30s draining the message stream — the child had \
+                     supposedly exited, so `spawn_reader` should have reached EOF and dropped \
+                     its sender. Either it is still alive (drain_after_exit called too early) \
+                     or the reader thread is stuck. Drained {} messages before giving up.",
+                    all.len()
+                ),
+            }
         }
-        all
     }
 }
 
