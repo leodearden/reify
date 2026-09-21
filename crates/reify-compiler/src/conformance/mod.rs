@@ -453,8 +453,9 @@ pub(crate) fn check_fn_arg_conformance(
 /// one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
 ///
 /// Whether an inference fallback should be judged AT ALL is a live question, and
-/// it is δ's (task #5306): that flip turns this Warning into a hard error on
-/// source that named no type. It is recorded here rather than pre-empted because
+/// δ (task #5306) made it a loud one: the flip turned this diagnostic into a
+/// hard error on source that named no type. It is recorded here rather than
+/// pre-empted because
 /// gating it is a behaviour change at BOTH sites — this chain cannot skip the
 /// fallback for port cells without also skipping it for top-level ones, which is
 /// exactly the parity this task established. The bit such a gate would need
@@ -685,14 +686,15 @@ struct WalkCtx<'a> {
     /// Severity at which conformance diagnostics emitted through this walk are
     /// built (task 5302). The two ctor-conformance entries
     /// (`check_trait_arg_conformance`, `check_param_default_conformance`) set
-    /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α); the fn-call
+    /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α, `Error` since
+    /// δ / task #5306); the fn-call
     /// entry (`check_fn_arg_conformance`) sets it to `Severity::Error` so the
     /// out-of-scope fn-call trait-conformance semantics stay hard errors. Every
     /// *field-conformance* emit site (leaf-trait, StructureRef, Vector, selector,
     /// wrapper-shape, and the general concrete-leaf `ArgTypeMismatch`) builds its
     /// `Diagnostic` via [`diag_at`]`(ctx.severity, …)`, so severity is read from
-    /// exactly one place per walk (C2(iv) severity-invariance); the δ follow-up
-    /// flips only the const.
+    /// exactly one place per walk (C2(iv) severity-invariance), which is what let
+    /// δ (task #5306) promote the whole family by flipping only the const.
     ///
     /// **Carve-out — geometry-trait conformance stays always-Error.** The
     /// `Bounded` / `Connected` / `Convex` geometry-trait leaf (reached inside
@@ -7722,7 +7724,8 @@ mod tests {
     ///
     /// The `.ri` twin of this exact cell is
     /// `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
-    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Warning`).
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Error`
+    /// since δ / task #5306).
     /// Pinning BOTH seams matters because they reach this arm by different
     /// routes — a hand-built `Type` here, versus a `FunctionCall`'s inferred
     /// `result_type` there — so this probe holds the walker's rule whatever the
@@ -8105,8 +8108,9 @@ mod tests {
     ///
     /// The `.ri` twin of this exact cell is
     /// `point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch`
-    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Warning`),
-    /// which pins the inference chain this direct-`Type` probe deliberately
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Error`
+    /// since δ / task #5306), which pins the inference chain this direct-`Type`
+    /// probe deliberately
     /// bypasses.
     #[test]
     fn dimensionless_quantity_point_param_rejects_dimensioned_point_arg() {
