@@ -1502,7 +1502,7 @@ struct DerivationCtx<'a> {
     /// test for "is this ref an auto?".
     auto_index: HashMap<ValueCellId, usize>,
     /// Per dependent cell, the autos it reads TRANSITIVELY —
-    /// [`crate::decompose::dependent_cell_auto_reads`] verbatim, reused rather
+    /// [`crate::dependent_reads::dependent_cell_auto_reads`] verbatim, reused rather
     /// than reimplemented. A constant-only cell is present with an EMPTY set, a
     /// cycle-tainted one is ABSENT; [`DerivationCtx::varies_with_solve`] is the
     /// only reader and owns what each of those means here.
@@ -1530,7 +1530,10 @@ impl<'a> DerivationCtx<'a> {
                 .enumerate()
                 .map(|(i, p)| (p.id.clone(), i))
                 .collect(),
-            auto_reads: crate::decompose::dependent_cell_auto_reads(dependent_cells, auto_params),
+            auto_reads: crate::dependent_reads::dependent_cell_auto_reads(
+                dependent_cells,
+                auto_params,
+            ),
             cell_ids: dependent_cells.iter().map(|(id, _)| id.clone()).collect(),
             values,
             functions,
@@ -9832,7 +9835,7 @@ mod tests {
 
     /// RESIDUAL HOLE: a CYCLE-TAINTED cell is OMITTED from
     /// `dependent_cell_auto_reads` rather than published with the partial set
-    /// its DFS accumulated (`if incomplete[i] { continue; }`, decompose.rs).
+    /// its DFS accumulated (`if incomplete[i] { continue; }`, dependent_reads.rs).
     /// Omission is the FAIL-SAFE direction for that map's primary consumer, the
     /// registry's drop-side subset filter — but it is the UNSAFE direction for a
     /// guard deciding "does this operand vary?", because an absent entry reads

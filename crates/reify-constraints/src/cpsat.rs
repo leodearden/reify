@@ -537,7 +537,7 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
 /// persistent-map insert each — and a `Type::Int` domain runs to
 /// `MAX_INT_DOMAIN` = 1000 values, so the multiplier is not academic. The
 /// obvious saving is to hand this function each cell's transitive auto set
-/// (`decompose::dependent_cell_auto_reads`, which `SolverRegistry::solve_inner`
+/// (`dependent_reads::dependent_cell_auto_reads`, which `SolverRegistry::solve_inner`
 /// already builds once per solve) and SKIP a cell at a depth where any of its
 /// autos is still unassigned — the folded value would be `Undef` there anyway,
 /// and `get_or_undef` treats absent and `Undef` alike.

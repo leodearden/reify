@@ -147,8 +147,10 @@ fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
     // Computed ONCE — it is consumed three times below (the objective-ref
     // expansion, the decomposition, and, through the returned components,
     // solve_inner's per-component fold filter).
-    let dependent_auto_reads =
-        crate::decompose::dependent_cell_auto_reads(&problem.dependent_cells, &problem.auto_params);
+    let dependent_auto_reads = crate::dependent_reads::dependent_cell_auto_reads(
+        &problem.dependent_cells,
+        &problem.auto_params,
+    );
 
     // Collect value-refs from ALL objective terms for objective-aware
     // decomposition. Single-term `ObjectiveSet`s reduce to the prior
@@ -162,7 +164,7 @@ fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
         problem.objective.as_ref().map(|obj: &ObjectiveSet| {
             let mut refs = std::collections::HashSet::new();
             for term in &obj.terms {
-                crate::decompose::collect_value_refs_pub(&term.expr, &mut refs);
+                crate::dependent_reads::collect_value_refs(&term.expr, &mut refs);
             }
             // Expand through `dependent_cells` (task #5720): a ref to a derived
             // cell also means every auto that cell transitively drives.
