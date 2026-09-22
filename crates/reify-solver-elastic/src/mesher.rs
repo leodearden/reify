@@ -1005,6 +1005,83 @@ mod tests {
         );
     }
 
+    // ---- task 5684: validate_boundary honours DEGENERATE_RING_AREA_TOLERANCE ----
+    //
+    // The collinear tests above pin only EXACTLY-zero areas. These straddle the
+    // shared threshold at 0.5x and 2x, once per call site (outer ring, hole), so
+    // a site that stops honouring the constant fails here: a literal that drifts
+    // from it, a flipped sense, a rescaled bound. That is what lets reify-eval's
+    // build-time polygon gate, which compares against the same constant, claim
+    // to be a strict pre-image of this one.
+    //
+    // They call the private `validate_boundary` directly because, through
+    // `mesh_swept_profile_2d`, the accept half would continue into Gmsh with a
+    // ~0.1 µm auto mesh size.
+
+    /// Mirrors reify-eval's `triangle_args_with_area`: both gates see identical rings.
+    fn right_triangle_ring_with_area(area: f64) -> Vec<[f64; 2]> {
+        let h = 1e-7_f64; // 0.1 µm
+        let b = 2.0 * area / h;
+        vec![[0.0, 0.0], [b, 0.0], [0.0, h]]
+    }
+
+    #[test]
+    fn validate_boundary_rejects_outer_ring_below_area_tolerance() {
+        let area = DEGENERATE_RING_AREA_TOLERANCE * 0.5;
+        let pb = ProfileBoundary {
+            outer: right_triangle_ring_with_area(area),
+            holes: vec![],
+        };
+        let r = validate_boundary(&pb);
+        assert!(
+            matches!(r, Err(Mesh2dError::DegenerateBoundary)),
+            "outer ring of area {area:e} must be DegenerateBoundary, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn validate_boundary_accepts_outer_ring_above_area_tolerance() {
+        let area = DEGENERATE_RING_AREA_TOLERANCE * 2.0;
+        let pb = ProfileBoundary {
+            outer: right_triangle_ring_with_area(area),
+            holes: vec![],
+        };
+        let r = validate_boundary(&pb);
+        assert!(
+            r.is_ok(),
+            "outer ring of area {area:e} must be accepted, got {r:?}"
+        );
+    }
+
+    // Hole position and winding are moot: validate_boundary judges each |area| alone.
+    #[test]
+    fn validate_boundary_rejects_hole_below_area_tolerance() {
+        let area = DEGENERATE_RING_AREA_TOLERANCE * 0.5;
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            holes: vec![right_triangle_ring_with_area(area)],
+        };
+        let r = validate_boundary(&pb);
+        assert!(
+            matches!(r, Err(Mesh2dError::DegenerateBoundary)),
+            "hole of area {area:e} must be DegenerateBoundary, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn validate_boundary_accepts_hole_above_area_tolerance() {
+        let area = DEGENERATE_RING_AREA_TOLERANCE * 2.0;
+        let pb = ProfileBoundary {
+            outer: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            holes: vec![right_triangle_ring_with_area(area)],
+        };
+        let r = validate_boundary(&pb);
+        assert!(
+            r.is_ok(),
+            "hole of area {area:e} must be accepted, got {r:?}"
+        );
+    }
+
     // ---- amend: auto_mesh_size_from_boundary all-duplicate ring ----
     //
     // Pins the chosen semantics for the all-coincident-points case: the
