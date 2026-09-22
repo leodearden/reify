@@ -623,11 +623,16 @@ fn probe_segment(
 /// reason: every byte matched here is ASCII, so it can never be a UTF-8
 /// continuation byte, and the returned offset is always a char boundary.
 ///
-/// The scan is per-segment and deliberately shallow, with two accepted costs.
-/// A string spanning a line break is re-read from scratch on its continuation
-/// lines, and a raw string's `r#"…"#` delimiters are read as plain quotes;
-/// both mis-read only INTO or OUT OF a literal that holds no terminator, so
-/// they cost at worst a missed `;` — the permissive direction, never a RED.
+/// The scan is per-segment and deliberately shallow — a string spanning a line
+/// break is re-read from scratch on its continuation lines, a raw string's
+/// `r#"…"#` delimiters read as plain quotes, and a `'"'` char literal opens a
+/// phantom string. None of that can cost a false RED, and the reason is
+/// structural rather than a survey of shapes: this scan only ever DECLINES to
+/// report a `;`, so its answer is always the bare `line[from..].find(';')` it
+/// replaced, or a later `;`, or `None`. Since [`probe_segment`] bounds only on
+/// anchors strictly AFTER the terminator, a later-or-absent `;` admits a
+/// SUBSET of the bounds the unfiltered scan admitted. Every mis-read is
+/// therefore permissive by construction, whatever the literal does.
 fn statement_end(line: &str, from: usize) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut in_string = false;
