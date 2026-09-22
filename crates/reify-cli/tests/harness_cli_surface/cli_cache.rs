@@ -1700,6 +1700,20 @@ fn run_eval_with_cache_dir(fixture: &std::path::Path, cache_dir: &std::path::Pat
     format!("{stdout}\n{stderr}")
 }
 
+/// Every `.bin` entry under `cache_dir`, keyed by path, with its bytes.
+fn snapshot_bin_entries(
+    cache_dir: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    collect_cache_files(cache_dir)
+        .into_iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .map(|p| {
+            let bytes = std::fs::read(&p).expect("a cache .bin must be readable");
+            (p, bytes)
+        })
+        .collect()
+}
+
 /// The literal reported defect: run `reify eval` twice against one cache dir
 /// and the `W_SHELL_TOO_THICK` warning must appear on BOTH runs.
 ///
@@ -1708,6 +1722,10 @@ fn run_eval_with_cache_dir(fixture: &std::path::Path, cache_dir: &std::path::Pat
 /// envelope, run 2 printed nothing — the warning was first-run-only and stayed
 /// gone until the cache was cleared, which is exactly the shape a user hits
 /// (edit nothing, re-run, the warning vanishes).
+///
+/// That run 2 really is a warm serve is asserted, not assumed: a re-solve
+/// rewrites the `.bin`, and the header's millisecond `written_at` makes any
+/// rewrite byte-visible.
 #[test]
 fn shell_too_thick_warning_survives_a_second_eval_against_a_warm_cache() {
     let cache_dir = tempdir().expect("tempdir");
@@ -1720,8 +1738,24 @@ fn shell_too_thick_warning_survives_a_second_eval_against_a_warm_cache() {
         "run 1 (cold) must warn that the body is too thick, or this test is \
          vacuous; output was:\n{first}",
     );
+    let entries_after_cold = snapshot_bin_entries(cache_dir.path());
+    assert!(
+        !entries_after_cold.is_empty(),
+        "run 1 must write a persistent entry, or run 2 cannot be a warm serve; \
+         no .bin under {}",
+        cache_dir.path().display(),
+    );
 
     let second = run_eval_with_cache_dir(&fixture, cache_dir.path());
+    let entries_after_warm = snapshot_bin_entries(cache_dir.path());
+    assert!(
+        entries_after_warm == entries_after_cold,
+        "run 2 must be served from run 1's entry, not re-solved: a re-solve \
+         adds a .bin or rewrites one in place (same path, new bytes); \
+         entries before: {:?}, after: {:?}",
+        entries_after_cold.keys().collect::<Vec<_>>(),
+        entries_after_warm.keys().collect::<Vec<_>>(),
+    );
     assert!(
         second.contains(SHELL_TOO_THICK_TEXT),
         "run 2 (warm, served from the on-disk cache) must print the SAME \
