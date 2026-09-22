@@ -157,6 +157,32 @@ pub(super) enum DeclineCause {
     /// cause with a message to print is the one cause that carries text: no
     /// string is built for an outcome that is filtered out.
     InputsDiffer { detail: String },
+    /// A cell in the call's DIRECT read set exists at ONE of the two scopes and
+    /// not the other, so the gate CANNOT COMPARE the two values and declines
+    /// conservatively. A VISIBILITY fact, not a divergence: the two values are
+    /// very likely identical, and reuse would very likely have been sound.
+    ///
+    /// Both directions are reachable:
+    ///
+    /// * ABSENT AT INSTANCE SCOPE. `child_values` carries the child template's
+    ///   own params, the collapsed sub instances, and a BFS projection over the
+    ///   subs phase 1.5 actually elaborated — so a read of a member of a
+    ///   DECLINED sub (a collection, a keyed sub, a `skip_reason_for_shape`
+    ///   miss, an unresolvable target, a cycle cut) is missing here while the
+    ///   global map holds it from the top-level pass.
+    /// * ABSENT AT TEMPLATE SCOPE. For a prelude/stdlib child structure — the
+    ///   same population [`Self::NoTemplateValue`] describes, absent from
+    ///   `module.templates` — the top-level pass never seeds `{Tmpl}.{param}`
+    ///   into the global map, while `elaborate_child_params_only` always seeds
+    ///   it into the instance map.
+    ///
+    /// This cause IS REPORTED, unlike [`Self::NoTemplateValue`]: the instance
+    /// still falls back to the `.ri` body's sentinel, and staying silent about
+    /// that is precisely the defect #6662 exists to remove. What it must NOT do
+    /// is borrow [`Self::InputsDiffer`]'s framing — that clause names
+    /// constructor overrides and cites #6592 (per-instance dispatch under
+    /// overrides), which is no remedy at all for a read the gate could not see.
+    InputNotComparable { detail: String },
     /// The template-scope OUTPUT cell holds no value at all. NOT reported —
     /// under [`report_optimized_instance_decline`]'s registered-target gate
     /// this cause has no honest message to print:
@@ -261,8 +287,18 @@ fn render_input_value(value: &Value) -> String {
 /// result is a pure function of the values its reads resolve to. Comparing the
 /// DIRECT read set is therefore sufficient — transitive dependencies are
 /// already folded into the direct reads' values. The comparison is conservative
-/// in the right direction: present-in-one-map vs absent-in-the-other compares
-/// unequal, so the helper declines rather than guesses.
+/// in the right direction: present-in-one-map vs absent-in-the-other is not a
+/// comparison the gate can make at all, so the helper declines rather than
+/// guesses — which is what keeps reuse sound.
+///
+/// That decline is CLASSIFIED apart from a genuine divergence
+/// ([`DeclineCause::InputNotComparable`] rather than
+/// [`DeclineCause::InputsDiffer`]), because a read the gate cannot see is a
+/// VISIBILITY fact and reporting it as a value difference accuses the author of
+/// a constructor override that is very likely not there. Only the
+/// classification and the wording move: the DECLINING SET is bit-identical
+/// either way, so the "Why the two instance maps reach the SAME decision"
+/// argument below is untouched by it.
 ///
 /// SHAPE-EXACTNESS is inherited from template scope, not re-invented: the probe
 /// is [`optimized_target_of`]. So a cell that merely WRAPS an `@optimized` call
@@ -364,29 +400,47 @@ where
     // default of every instance only to discard it on `NotOptimized`.
     let reads = reads();
     for read in reads.as_ref() {
-        let instance_val = instance_values.get(read);
-        let global_val = global_values.get(read);
-        if instance_val != global_val {
-            // Each side goes through [`render_input_value`]'s budget, so an
-            // enormous input summarises to its variant instead of pouring its
-            // whole payload into a user-facing warning.
-            let render = |side: Option<&Value>| match side {
-                Some(value) => render_input_value(value),
-                None => "None".to_string(),
-            };
-            return OptimizedInstanceResolution::Unreusable {
-                target,
-                cause: DeclineCause::InputsDiffer {
+        // Exhaustive over the PRESENCE PAIR rather than a bare `!=` over two
+        // `Option`s. Absent-at-one-scope and unequal-at-both are distinct facts
+        // about the same read, and only the second is a divergence; matching on
+        // the pair makes that distinction structural, so a future third scope
+        // map cannot silently land in the wrong bucket the way `!=` allowed.
+        let cause = match (instance_values.get(read), global_values.get(read)) {
+            (Some(instance_val), Some(global_val)) if instance_val != global_val => {
+                // Each side goes through [`render_input_value`]'s budget, so an
+                // enormous input summarises to its variant instead of pouring
+                // its whole payload into a user-facing warning.
+                DeclineCause::InputsDiffer {
                     detail: format!(
                         "input {}.{} differs from the template's ({} vs {})",
                         read.entity,
                         read.member,
-                        render(instance_val),
-                        render(global_val)
+                        render_input_value(instance_val),
+                        render_input_value(global_val)
                     ),
-                },
-            };
-        }
+                }
+            }
+            // No value is rendered on either not-comparable arm: there is
+            // nothing to compare, and printing the one side that does exist
+            // would invite the reader to hunt for a difference that is not
+            // there.
+            (None, Some(_)) => DeclineCause::InputNotComparable {
+                detail: format!(
+                    "input {}.{} is not visible at instance scope",
+                    read.entity, read.member
+                ),
+            },
+            (Some(_), None) => DeclineCause::InputNotComparable {
+                detail: format!(
+                    "input {}.{} is not visible at template scope",
+                    read.entity, read.member
+                ),
+            },
+            // Equal at both scopes, or named by neither map: this read gives the
+            // gate no reason to decline — exactly as before.
+            (Some(_), Some(_)) | (None, None) => continue,
+        };
+        return OptimizedInstanceResolution::Unreusable { target, cause };
     }
 
     // The template-scope output cell. Absent under either of two conditions
