@@ -74,13 +74,103 @@ pub fn get_initial_state_impl(engine: &Mutex<EngineSession>) -> Result<GuiState,
         .and_then(std::convert::identity)
 }
 
-/// Set a parameter value and return updated state.
+/// A REFUSED durable parameter write, and the state the frontend must render
+/// now that the refusal has happened.
+///
+/// The second field is the whole reason this is a struct rather than the
+/// `String` a Tauri command error ultimately becomes.
+/// [`EngineSession::commit_parameter`] does not merely decline on the error
+/// path — it DISCARDS any live [`preview_parameter_impl`] override by
+/// recompiling the canonical source, so a refusal is itself a state mutation.
+/// Returning only a message would leave the frontend rendering the preview's
+/// geometry and values while the engine and the disk both hold the source
+/// value: esc-7281-4's divergence relocated from the engine to the frontend,
+/// and with no later event to correct it. Carrying the restored state in the
+/// error makes the emit the caller's obligation rather than its option — the
+/// compiler will not let `main.rs` destructure this and forget.
+#[derive(Debug, Clone)]
+pub struct RefusedParameterWrite {
+    /// The refusal, verbatim from [`EngineSession::commit_parameter`] — this is
+    /// what reaches the user as a toast.
+    pub message: String,
+    /// State AFTER the discard: what the engine and the canonical `.ri` now
+    /// agree on. `None` only when no state could be read back at all (a
+    /// panicking or poisoned engine), where there is nothing truthful to emit.
+    ///
+    /// Boxed to keep this struct — and therefore the `Err` variant of every
+    /// `Result<_, RefusedParameterWrite>` below — under the
+    /// `clippy::result_large_err` threshold. A `GuiState` is ~360 bytes
+    /// inline, which every `Ok` return would otherwise pay for on the far
+    /// commoner success path. The indirection is storage only: carrying the
+    /// state remains the caller's compiler-enforced obligation.
+    pub restored: Option<Box<GuiState>>,
+}
+
+/// Set a parameter value DURABLY — write it back into the canonical `.ri` — and
+/// return updated state.
+///
+/// This is the INV-GUI-3 user-path command (task 5099 η): the property panel's
+/// edit box on Enter/blur, and the mechanism slider on release. It is the same
+/// mechanism the reify-debug MCP write tool uses, so what a user does and what
+/// the AI does mean the same thing. See [`EngineSession::commit_parameter`].
+///
+/// Pair it with [`preview_parameter_impl`], which is what the frames of a drag
+/// call.
 pub fn set_parameter_impl(
     engine: &Mutex<EngineSession>,
     cell_id: &str,
     value: &str,
+) -> Result<GuiState, RefusedParameterWrite> {
+    // The rebuild happens INSIDE the same lock the commit ran under, so no
+    // other command can interleave between the discard and the snapshot the
+    // frontend will be told to render.
+    //
+    // It is NOT the discard's own `GuiState` reused, and the difference is not
+    // cosmetic. `commit_parameter`'s discard runs through `update_source`,
+    // whose `commit_state` clears `compile_failure` and `last_reload_error`
+    // unconditionally — including banners that PREDATE this call — and builds
+    // its state in that cleared window. `commit_parameter` restores the two
+    // surfaces afterwards, so that state is already out of date about them by
+    // the time the refusal surfaces here: it carries no `hot-reload-error`
+    // diagnostic, because `build_compile_diagnostics` synthesizes that entry
+    // FROM `last_reload_error`.
+    //
+    // Handing it to the frontend to save this rebuild would therefore clear a
+    // staleness banner the engine still holds — the defect the engine-level
+    // restore closes, moved one layer out and made invisible, since the
+    // frontend has no later event to correct it. Pinned by
+    // `set_parameter_impl_refusal_restores_a_state_that_still_shows_the_banner`.
+    match crate::engine_lock::with_engine_lock(engine, |s| {
+        s.commit_parameter(cell_id, value)
+            .map_err(|message| RefusedParameterWrite {
+                message,
+                restored: s.build_gui_state().ok().map(Box::new),
+            })
+    }) {
+        Ok(committed_or_refused) => committed_or_refused,
+        // A poisoned lock or a panic inside the engine: nothing is known to
+        // have been discarded, and there is no trustworthy state to hand back.
+        Err(lock_failure) => Err(RefusedParameterWrite {
+            message: lock_failure,
+            restored: None,
+        }),
+    }
+}
+
+/// Show a parameter value TRANSIENTLY and return updated state, without making
+/// it durable.
+///
+/// The per-frame cadence of a slider drag: it keeps the viewport tracking the
+/// pointer at RAF rate, where running `set_parameter_impl`'s full recompile and
+/// disk write per frame would be the task-1861 regression. The value it shows
+/// is an engine-state override and expires — [`set_parameter_impl`] is what
+/// makes it durable, or discards it. See [`EngineSession::preview_parameter`].
+pub fn preview_parameter_impl(
+    engine: &Mutex<EngineSession>,
+    cell_id: &str,
+    value: &str,
 ) -> Result<GuiState, String> {
-    crate::engine_lock::with_engine_lock(engine, |s| s.set_parameter(cell_id, value))
+    crate::engine_lock::with_engine_lock(engine, |s| s.preview_parameter(cell_id, value))
         .and_then(std::convert::identity)
 }
 
@@ -460,6 +550,40 @@ pub fn reload_for_watch_impl(
             get_initial_state_impl(engine)
         }
     }
+}
+
+/// [`reload_for_watch_impl`], skipped entirely when the session already holds
+/// `content` — `Ok(None)` meaning nothing was recompiled and there is nothing
+/// to emit.
+///
+/// The FS-watcher's entry point, and the reason it is not
+/// `reload_for_watch_impl` itself: the OTHER caller of that function is the
+/// editor's `update_source` command, which owes the frontend a `GuiState`
+/// whatever it finds and so has no use for a skip.
+///
+/// The watcher, by contrast, sees its own tail. Every durable parameter write
+/// (`EngineSession::apply_param_to_source`) rewrites the `.ri`, the watcher
+/// observes that write and hands the same bytes back here, and recompiling
+/// them re-derives exactly the state the write already committed and emitted.
+/// That doubles what a user gesture costs — the one recompile per gesture this
+/// task's preview/commit split exists to budget for, paid twice — so the echo
+/// is dropped here rather than at the watcher, where a caller would have to
+/// remember to ask.
+///
+/// The predicate is [`EngineSession::reload_would_be_a_no_op`], which owns
+/// what "already holds" has to mean (identical text AND no failure banner a
+/// recompile would lift) and documents the one case it does not cover.
+pub fn reload_for_watch_if_changed_impl(
+    engine: &Mutex<EngineSession>,
+    path: &str,
+    content: &str,
+) -> Result<Option<GuiState>, String> {
+    // Asked under the SAME lock the reload runs under, so nothing can change
+    // the session's source between the question and the answer.
+    if crate::engine_lock::with_engine_lock(engine, |s| s.reload_would_be_a_no_op(content))? {
+        return Ok(None);
+    }
+    reload_for_watch_impl(engine, path, content).map(Some)
 }
 
 /// Map an export-format SPELLING to the [`reify_ir::ExportFormat`] it names.

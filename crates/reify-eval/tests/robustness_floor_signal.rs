@@ -24,6 +24,11 @@
 //!     The `CostMinFloorInfeasible` fixture (tight box [10mm, 10.3mm]) is infeasible
 //!     under the floor; eval surfaces `RobustnessFloorInfeasible` (Error) and NO bare
 //!     `ConstraintUnsatisfiable`.
+//!
+//! (d) `floor_infeasible_message_names_the_margin_not_an_empty_region` (task #5714):
+//!     the same fixture's user-visible MESSAGE names the 2% robustness margin and does
+//!     not claim the user's own box is empty.  (c) pins the code; the code alone was
+//!     never what misled the original report.
 
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, ValueCellId};
@@ -249,5 +254,74 @@ fn floor_infeasible_surfaces_distinct_diagnostic() {
         "floor-infeasible must NOT emit contradictory RobustnessFloorApplied Info; \
          got: {:#?}",
         floor_applied,
+    );
+}
+
+/// (d) Task #5714: the message the user actually reads on the headline fixture
+/// must name the 2% robustness margin, NOT claim their box is empty.
+///
+/// `cost_min_floor_infeasible.ri` IS the tight-but-satisfiable Length bracket
+/// `x ∈ (10mm, 10.3mm)` under a steep Money objective — the shape the original
+/// report complained about.  (c) above pins the diagnostic CODE; this pins the
+/// WORDING at the same eval boundary, because the code alone was never what
+/// misled the user: "the floored feasible region is empty" sent them off
+/// relaxing a design that was never over-constrained.
+///
+/// The solver-level sibling is
+/// `reify-constraints/tests/robustness_floor.rs::steep_objective_margin_only_infeasibility_names_the_margin`.
+#[test]
+fn floor_infeasible_message_names_the_margin_not_an_empty_region() {
+    let compiled = compile_source_with_stdlib(floor_infeasible_fixture_source());
+
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "fixture should compile without errors: {:#?}",
+        errors
+    );
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&compiled);
+
+    let floor_inf: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::RobustnessFloorInfeasible))
+        .collect();
+    assert_eq!(
+        floor_inf.len(),
+        1,
+        "expected exactly one RobustnessFloorInfeasible diagnostic; got {}. All \
+         diagnostics: {:#?}",
+        floor_inf.len(),
+        result.diagnostics,
+    );
+    let message = &floor_inf[0].message;
+
+    assert!(
+        !message.contains("feasible region is empty"),
+        "the fixture's own box (10mm, 10.3mm) is 0.3mm wide and non-empty — the \
+         user-visible message must not claim otherwise; got: {message}"
+    );
+    assert!(
+        message.contains("original constraints"),
+        "the message must say the ORIGINAL constraints are satisfiable; got: {message}"
+    );
+    assert!(
+        message.contains("robustness margin"),
+        "the message must name the synthesised robustness margin as what cannot be \
+         met; got: {message}"
+    );
+    assert!(
+        message.contains("2%"),
+        "the message must report the REL_MARGIN (2%) the user has to relax; \
+         got: {message}"
+    );
+    assert!(
+        message.contains("cost_robustness_tradeoff"),
+        "the message must keep the cost_robustness_tradeoff override hint (PRD \
+         §2.4/§9); got: {message}"
     );
 }

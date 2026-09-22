@@ -301,6 +301,32 @@ fn receiver_structure_name(scope: &CompilationScope, sub_name: &str) -> Option<S
     None
 }
 
+/// The four **determinacy predicate** intrinsics — the single source of truth
+/// for the `determinacy_kind` dispatch in the `NoUserFunctions` ladder below.
+///
+/// Unlike every other ladder family, this vocabulary has no `*_signatures.rs`
+/// module and no `*_result_type` resolver: the names are transformed into
+/// `DeterminacyPredicateKind` nodes inline. Promoting the list to a slice
+/// (task #5371) is what lets `unresolved_function::is_known_builtin` see the
+/// family at all, so a call to `determined(x)` is not reported as an
+/// unresolved function.
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in the
+/// `determinacy_kind` dispatch below AND a new `DeterminacyPredicateKind`
+/// variant. The dispatch *reads* this slice as its membership gate, so a name
+/// cannot enter the vocabulary without appearing here. The reverse direction
+/// is covered by exhaustiveness, not a test: an entry here with no `match` arm
+/// falls to `_ => None` and the predicate silently becomes an ordinary
+/// function call — so treat a new entry as incomplete until its arm exists.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const DETERMINACY_PREDICATE_NAMES: &[&str] = &[
+    "determined",
+    "undetermined",
+    "constrained",
+    "partially_determined",
+];
+
 /// The Option/Map recovery combinators whose `dflt` argument type must unify
 /// with the subject's element type (contract C-3,
 /// PRD docs/prds/v0_6/result-and-fallback.md).
@@ -3327,6 +3353,16 @@ fn compile_expr_guarded_with_expected_inner(
                     //                             narrowed from original spec to
                     //                             distinguish from Auto (which is
                     //                             covered by constrained())
+                    //
+                    // `DETERMINACY_PREDICATE_NAMES` exists so
+                    // `unresolved_function::is_known_builtin` can see this
+                    // vocabulary — it is the one ladder family that lives as a
+                    // bare `match` here rather than as a name slice in a
+                    // `*_signatures.rs` module. It is deliberately NOT consulted
+                    // as a guard: the arms below already encode membership
+                    // exactly, and gating on the slice would make an arm added
+                    // here without a slice entry silently dead rather than
+                    // merely invisible to the closed-world union.
                     let determinacy_kind = match name.as_str() {
                         "determined" => Some(DeterminacyPredicateKind::Determined),
                         "undetermined" => Some(DeterminacyPredicateKind::Undetermined),
@@ -3858,20 +3894,163 @@ fn compile_expr_guarded_with_expected_inner(
                         // the ladder is unobservable.
                         orientation_typed_fn_result_type(name)
                     } else {
+                        // TERMINAL FIRST-ARG FALLBACK — the open end of the
+                        // ladder. Any callee no arm above claimed is typed as
+                        // its first argument (or Real when zero-arg).
+                        //
+                        // Task #5371 closes the WORLD here without touching the
+                        // TYPING. Three outcomes, and exactly one holds of any
+                        // one call; `DiagnosticCode::UnresolvedFunction` and
+                        // its sibling `BuiltinArgShapeUnrecognized` carry the
+                        // full account of the split and of the silent third
+                        // state:
+                        //
+                        //   1. the name is in NO family and the module does not
+                        //      declare it        -> W_UNRESOLVED_FUNCTION
+                        //   2. the name IS a builtin whose arg-aware resolver
+                        //      declined the shape -> W_BUILTIN_ARG_SHAPE
+                        //   3. the module declares it but this body cannot yet
+                        //      resolve it         -> silence
+                        //
+                        // Outcome 3 is why the push below asks a second
+                        // question of `scope`; see
+                        // `CompilationScope::declared_callable_names`.
+                        //
+                        // Warn-mode-first is deliberate: no corpus can break on
+                        // a diagnostic alone, and the typing at every one of the
+                        // three is byte-identical to the pre-#5371 answer.
+                        //
+                        // Durable track: docs/prds/v0_6/builtin-signature-registry.md.
+                        // #5997 flips this Warning to Error behind a break-glass
+                        // env knob; #6014 (registry ω) DELETES this whole
+                        // fallback, the `FIRST_ARG_TYPED_NAMES` allowlist and the
+                        // legacy zero-arg warning with it.
+                        //
+                        // ARG-SHAPE is resolved FIRST. Three ladder arms above
+                        // are ARG-AWARE — `infer_list_helper_return_type`,
+                        // `affine_map_algebra_result_type`, `field_op_result_type`
+                        // — and return `None` when the name is theirs but the
+                        // argument SHAPE is not, deliberately, to preserve
+                        // anti-cascade. At this site that `None` is
+                        // indistinguishable from "not my name", so the call
+                        // arrived here and was typed from arg0 with no
+                        // diagnostic at all: measured pre-#5371, `single(42)`
+                        // and `sample(42, 7)` compiled clean as `Int`. That is
+                        // a worse failure than the unknown-name case, because
+                        // the user wrote a REAL builtin and got no hint its
+                        // contract was missed. Reaching this arm while the name
+                        // is still in one of the three families is, by
+                        // construction, the "known name, declined shape"
+                        // signal — those arms are the only route by which the
+                        // names are claimed — which is what lets a name-only
+                        // lookup diagnose an arg shape, and why
+                        // `arg_shape_expectation` is sound at this site ONLY.
+                        //
+                        // Emitting here rather than inside the three resolvers
+                        // keeps them pure `Option`-returning functions with no
+                        // `&mut Vec<Diagnostic>` threaded through `units.rs` and
+                        // `list_helpers.rs`.
+                        let arg_shape_expected =
+                            crate::unresolved_function::arg_shape_expectation(name);
+                        if let Some(expected) = arg_shape_expected {
+                            diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "builtin '{name}' does not recognise this argument shape"
+                                ))
+                                .with_code(DiagnosticCode::BuiltinArgShapeUnrecognized)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    format!(
+                                        "'{name}' expects {expected}; these arguments do not \
+                                         match, so its return type was inferred from the first \
+                                         argument instead"
+                                    ),
+                                )),
+                            );
+                        }
+
+                        // `is_known_builtin` answers "is this a BUILTIN?", and
+                        // answers it correctly; a user `fn` is not one. Reading
+                        // its `false` as "exists nowhere" is only sound when
+                        // this body's vocabulary was complete, and in a fn body
+                        // it is not. That is a DIFFERENT question — "does this
+                        // module declare it?" — so it is asked separately rather
+                        // than by threading module state into the pure name
+                        // predicate. Rationale:
+                        // `CompilationScope::declared_callable_names`.
+                        let known = crate::unresolved_function::is_known_builtin(name);
+                        let declared_here = scope
+                            .declared_callable_names
+                            .is_some_and(|declared| declared.contains(name));
+                        // A third route to a real callee: a function-TYPED value
+                        // applied by bare name, e.g. `fn apply(f: (Real) -> Real)
+                        // -> Real = f(1.0)`. `f` is an ordinary value binding, so
+                        // it is in `names` and NOT in the module's declared
+                        // vocabulary, and no arm above claims a call whose callee
+                        // is a local of `Type::Function`. Withholding here keeps
+                        // the predicate honest for the higher-order combinators
+                        // the stdlib already declares (`map_or`, `map_err`),
+                        // whose bodies are stubs today and so hide the route from
+                        // the corpus sweep — but not from #5997's Error flip.
+                        let bound_as_a_function = scope
+                            .names
+                            .get(name)
+                            .is_some_and(|(_, ty, _)| matches!(ty, Type::Function { .. }));
+                        // Mutually exclusive with the arg-shape warning above
+                        // without needing a guard: all three arg-aware families
+                        // contribute production slices to `is_known_builtin`'s
+                        // union, so `arg_shape_expected.is_some()` implies
+                        // `known`. Pinned by
+                        // `mis_shaped_known_builtins_are_never_reported_unresolved`.
+                        if !known && !declared_here && !bound_as_a_function {
+                            diagnostics.push(
+                                Diagnostic::warning(format!("unresolved function: {name}"))
+                                    .with_code(DiagnosticCode::UnresolvedFunction)
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        format!(
+                                            "no builtin or user function named '{name}' is in scope"
+                                        ),
+                                    )),
+                            );
+                        }
                         compiled_args
                             .first()
                             .map(|a| a.result_type.clone())
                             .unwrap_or_else(|| {
-                                diagnostics.push(
-                                    Diagnostic::warning(format!(
-                                        "cannot infer return type of zero-arg function '{}', defaulting to Real",
-                                        name
-                                    ))
-                                    .with_label(DiagnosticLabel::new(
-                                        expr.span,
-                                        "zero-arg function: return type inferred as Real",
-                                    )),
-                                );
+                                // Zero-arg. The legacy warning is TRUE only for
+                                // a name the compiler actually knows (e.g.
+                                // `world`, a real zero-arg builtin still
+                                // awaiting its registry row). For an unknown
+                                // name, or for a mis-shaped call to a known one,
+                                // it is noise stacked on the stronger claim
+                                // already made above — one defect, one line.
+                                //
+                                // It is therefore SILENT for a zero-arg callee
+                                // the module declares but this body cannot yet
+                                // resolve, which is strictly wider than the
+                                // pre-#5371 silence; `BuiltinArgShapeUnrecognized`
+                                // records that widening as an explicit
+                                // precondition on #5997, and
+                                // `forward_referenced_sibling_emits_neither_warning`
+                                // pins it in both arities.
+                                //
+                                // INTERIM SHAPE, not a design: #6014 (registry ω)
+                                // deletes this legacy warning outright along with
+                                // the fallback, and its cases become
+                                // E_UnresolvedFunction.
+                                if known && arg_shape_expected.is_none() {
+                                    diagnostics.push(
+                                        Diagnostic::warning(format!(
+                                            "cannot infer return type of zero-arg function '{}', defaulting to Real",
+                                            name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            expr.span,
+                                            "zero-arg function: return type inferred as Real",
+                                        )),
+                                    );
+                                }
                                 Type::dimensionless_scalar()
                             })
                     };

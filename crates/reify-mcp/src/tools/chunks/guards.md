@@ -4,7 +4,7 @@
 
 ## Per-Declaration Guard
 
-```
+```reify-schematic
 sub fan_mount : FanMount where needs_cooling { ... }
 constraint vent_count >= 2 where needs_cooling
 ```
@@ -13,7 +13,7 @@ Rule: `where` comes after the "what" and before the body (if any).
 
 ## Block-Level Where
 
-```
+```reify-schematic
 where needs_cooling {
     constraint vent_count >= 2
     sub fan_mount : FanMount { ... }
@@ -25,7 +25,7 @@ Desugars to per-declaration guards. `where` blocks do NOT introduce a new lexica
 
 ## Else Clause
 
-```
+```reify-schematic
 where needs_cooling {
     sub fan_mount : FanMount { ... }
 } else {
@@ -38,7 +38,7 @@ Members in `else` block desugar to `where !condition` guards.
 ## Nesting
 
 Guards compose conjunctively:
-```
+```reify-schematic
 where is_structural {
     where needs_reinforcement {
         sub ribs : List<Rib> { ... }

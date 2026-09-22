@@ -33,37 +33,22 @@ use reify_core::diagnostics::DiagnosticCode;
 use reify_core::{
     BASE_UNIT_SYMBOLS, Diagnostic, DimensionVector, NAMED_DIMENSIONS, Severity, SourceSpan,
 };
-use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
-
-/// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance surface (task 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
-///
-/// Filtering to this set keeps the per-fixture "exactly one diagnostic" counts
-/// from being polluted by unrelated diagnostics (an incidental `W_*` warning, a
-/// downstream note, etc.). The first five codes already existed in
-/// `diagnostics.rs`; α minted none. ε (task 5303) adds the two structural codes
-/// `CtorUnknownField` / `CtorArity` — they belong here because they are emitted
-/// at the same `CTOR_FIELD_CONFORMANCE_SEVERITY` knob and δ flips them together
-/// with the α type codes, so the ε probes' "exactly N" counts must see them.
-fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
-    matches!(
-        code,
-        Some(
-            DiagnosticCode::ArgTypeMismatch
-                | DiagnosticCode::SelectorKindMismatch
-                | DiagnosticCode::TypeNotConformingToTrait
-                | DiagnosticCode::TypeNotConformingToStructureRef
-                | DiagnosticCode::TypeNotConformingToVector
-                | DiagnosticCode::CtorUnknownField
-                | DiagnosticCode::CtorArity
-        )
-    )
-}
+use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::{
+    compile_source_with_stdlib, errors_only, is_ctor_conformance_code, warnings_only,
+};
 
 /// All ctor-conformance diagnostics in `module`, of any severity.
 ///
 /// Used by "exactly N diagnostics" / "zero diagnostics" assertions so an
-/// incidental unrelated diagnostic does not throw off the count.
+/// incidental unrelated diagnostic does not throw off the count: a probe
+/// compiled through `compile_source_with_stdlib` carries the whole stdlib
+/// prelude's diagnostics too, so without this narrowing an unrelated `W_*`
+/// warning or downstream note would pollute every per-fixture count.
+///
+/// The admission set is `reify_test_support::ctor_conformance`'s
+/// [`is_ctor_conformance_code`] — severity-agnostic, so δ's Warning→Error flip
+/// moves no pin that filters here.
 fn ctor_conformance_diags(module: &CompiledModule) -> Vec<&Diagnostic> {
     module
         .diagnostics
@@ -899,6 +884,483 @@ fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
         errors_only(&module).is_empty(),
         "fea_pressure_smoke.ri must compile without errors, got: {:?}",
         errors_only(&module)
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 7174 probes: port-block param defaults must reach
+// `check_param_default_conformance`.
+//
+// `CompiledPort.members` (port-body `param`s) is a list DISJOINT from
+// `TopologyTemplate.value_cells`. `reify_ast::decl::collect_param_default_candidates`'s
+// doc comment is where the disjointness is justified — cited by SYMBOL, never by
+// line, because a raw line range in another crate rots on that module's next
+// edit. `check_param_default_conformance` walked only
+// `value_cells`, so a `Geometry`/`String`/`StructureRef` param default written
+// inside a `port { … }` block compiled with ZERO diagnostics — measured on this
+// branch. `SRC_CTX_PORT_MEMBER_DEFAULT` above already proves the sibling
+// call-site ctor entry (`Widget(label: 42)` as an EXPRESSION) reaches port
+// bodies; these probes cover the missing param-DEFAULT entry.
+//
+// Every probe below OBSERVES the diagnostic firing (code + severity + a message
+// naming the composite `<port>.<param>`) — the task's negative-assertion
+// requirement flags a "stays silent" probe as vacuous before the fix (the walk
+// sees no port cells at all, so absence proves nothing). The zero-diagnostic
+// no-false-positive fence is added separately, after the fix lands.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SRC_PORT_MEMBER_GEOMETRY_DEFAULT: &str = r#"module test.port_geometry
+trait P {}
+structure def Root {
+    port mount : P {
+        param region : Geometry = 5mm
+    }
+}
+"#;
+
+/// `Type::Geometry` arm: a port-member `Geometry` param defaulted to a
+/// dimensioned scalar (`5mm`) must warn — the task's MEASURED repro fixture.
+///
+/// RED today: `check_param_default_conformance` only walks `value_cells`, so
+/// this port-body default is invisible to it and the module compiles with
+/// zero ctor-conformance diagnostics.
+#[test]
+fn port_member_geometry_param_default_warns() {
+    let module = compile_source_with_stdlib(SRC_PORT_MEMBER_GEOMETRY_DEFAULT);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "port-block Geometry param default with a non-geometry expression must emit \
+         exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "Geometry param-default mismatch must carry TypeNotConformingToStructureRef, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains("mount.region"),
+        "message must name the composite port-member param 'mount.region', got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        diags[0].message.contains("Geometry") && diags[0].message.contains("non-geometry"),
+        "message must state the Geometry/non-geometry mismatch, got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        !diags[0].labels.is_empty(),
+        "diagnostic must carry a label span, got: {:?}",
+        diags[0]
+    );
+    assert!(
+        !diags[0].labels[0].span.is_empty(),
+        "label span must be non-empty (anchored at the port-body param declaration), got: {:?}",
+        diags[0].labels[0].span
+    );
+}
+
+const SRC_PORT_MEMBER_STRING_DEFAULT_GIVEN_INT: &str = r#"module test.port_string
+trait P {}
+structure def Root {
+    port mount : P {
+        param label : String = 42
+    }
+}
+"#;
+
+/// General concrete-leaf arm: a port-member `String` param defaulted to an
+/// `Int` literal must warn `ArgTypeMismatch`, identically to the top-level
+/// sibling `param_default_string_given_int_warns_arg_type_mismatch`.
+///
+/// RED today: same walk gap as the Geometry probe above.
+#[test]
+fn port_member_string_param_default_given_int_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_PORT_MEMBER_STRING_DEFAULT_GIVEN_INT,
+        "mount.label",
+        "port member String ← Int",
+    );
+}
+
+const SRC_PORT_MEMBER_STRUCTUREREF_DEFAULT_GIVEN_STRING: &str = r#"module test.port_structref
+structure def Widget { param label : String }
+trait P {}
+structure def Root {
+    port mount : P {
+        param part : Widget = "nope"
+    }
+}
+"#;
+
+/// `Type::StructureRef` arm: a port-member `Widget` (StructureRef) param
+/// defaulted to a `String` literal must warn — a clearly-incompatible
+/// primitive default, not the intentionally-lenient StructureRef↔StructureRef
+/// case ([`structureref_param_default_with_different_structureref_silently_accepted`]
+/// in `conformance/mod.rs`, which this probe deliberately does not disturb).
+///
+/// RED today: same walk gap as the Geometry probe above.
+#[test]
+fn port_member_structureref_param_default_given_string_warns() {
+    let module = compile_source_with_stdlib(SRC_PORT_MEMBER_STRUCTUREREF_DEFAULT_GIVEN_STRING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "port-block StructureRef param default with an incompatible primitive default \
+         must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "expected TypeNotConformingToStructureRef, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains("mount.part"),
+        "message must name the composite port-member param 'mount.part', got: {:?}",
+        diags[0].message
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 7174 parity fence: a port-body param default must diagnose IDENTICALLY
+// to the same param written at structure top level.
+//
+// Before the fix the port form emitted strictly FEWER diagnostics than its
+// top-level twin in every case below (the walk never saw `CompiledPort.members`),
+// so each row here is a genuine RED-before / GREEN-after observation and not a
+// restatement of the single-arm probes above. Comparing over the FULL
+// `module.diagnostics` — not just the ctor-conformance subset — is what also
+// makes the fence prove the fix does not DOUBLE-report: `check_param_default_type`
+// (the Error-severity declared-vs-initializer check in `entity.rs`) and
+// `check_param_default_conformance` stay complementary at the port site exactly
+// as they already are at the top level.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One parity row: the same param-default mismatch written both ways, plus the
+/// `(severity, code)` sequence BOTH forms must produce, in emission order.
+struct PortParityCase {
+    label: &'static str,
+    /// `structure def Root { param … }`.
+    top_level_src: &'static str,
+    /// `structure def Root { port mount : P { param … } }`.
+    port_src: &'static str,
+    expected: &'static [(Severity, DiagnosticCode)],
+}
+
+/// Compile both halves of `case` and assert they diagnose identically.
+///
+/// Three assertions, in the order that makes a failure self-diagnosing:
+/// 1. the TOP-LEVEL form matches `case.expected` — the non-vacuity pin, so a
+///    future change that silences BOTH sites fails here rather than sliding
+///    through a both-empty parity comparison;
+/// 2. the PORT form matches the same sequence — the parity claim itself;
+/// 3. each message pair is byte-identical once the port form's `mount.` member
+///    prefix is normalized away.
+///
+/// (3) is deliberately exact rather than a `contains` check: the composite
+/// `<port>.<param>` name is the ONLY licensed difference between the two
+/// surfaces, so anything else — a different hint clause, a different rendered
+/// type — is drift. Every fixture in this block names its port `mount`, which
+/// is what makes the one-line normalization sufficient.
+///
+/// All three run over the FULL `module.diagnostics`, deliberately overriding this
+/// file's [`ctor_conformance_diags`] narrowing convention. That is not a slip:
+/// the Error half of row 1 is `ParamDefaultTypeMismatch`, which is NOT in
+/// `CTOR_CONFORMANCE_CODES`, so a filtered comparison could not see it at all and
+/// the no-double-report claim above would silently evaporate into a
+/// Warning-only check. The cost the convention exists to avoid is accepted, not
+/// denied — an unrelated future `W_*` on these fixtures reds this helper — and
+/// is kept small by every fixture it drives being a three-line inline source
+/// carrying the `module test.<name>` prologue.
+///
+/// Returns the PORT half's compiled module, so a caller pinning anything further
+/// about the port diagnostics (the rendered fallback type below) reads it off the
+/// compile this helper already paid for rather than compiling the whole stdlib a
+/// third time — the same convention as
+/// [`assert_single_arg_type_mismatch_warning_in`].
+fn assert_port_parity_with_top_level(case: &PortParityCase) -> CompiledModule {
+    let PortParityCase {
+        label,
+        top_level_src,
+        port_src,
+        expected,
+    } = case;
+    let top = compile_source_with_stdlib(top_level_src);
+    let port = compile_source_with_stdlib(port_src);
+
+    let expected: Vec<(Severity, Option<DiagnosticCode>)> =
+        expected.iter().map(|(s, c)| (*s, Some(*c))).collect();
+    let shape = |m: &CompiledModule| -> Vec<(Severity, Option<DiagnosticCode>)> {
+        m.diagnostics.iter().map(|d| (d.severity, d.code)).collect()
+    };
+
+    assert_eq!(
+        shape(&top),
+        expected,
+        "{label}: top-level form must produce the measured diagnostic sequence \
+         (non-vacuity pin), got: {:#?}",
+        top.diagnostics
+    );
+    assert_eq!(
+        shape(&port),
+        expected,
+        "{label}: port-body form must produce the SAME diagnostic sequence as its \
+         top-level twin, got: {:#?}",
+        port.diagnostics
+    );
+    for (i, (t, p)) in top.diagnostics.iter().zip(&port.diagnostics).enumerate() {
+        assert_eq!(
+            p.message.replace("'mount.", "'"),
+            t.message,
+            "{label}: diagnostic {i} must read identically at both sites modulo the \
+             'mount.' member prefix; port: {:?}, top level: {:?}",
+            p.message,
+            t.message
+        );
+    }
+    port
+}
+
+const PORT_PARITY_CASES: &[PortParityCase] = &[
+    PortParityCase {
+        label: "Length ← 5kg (wrong dimension)",
+        top_level_src: "module test.parity_dim\n\
+                        structure def Root {\n    param w : Length = 5kg\n}\n",
+        port_src: "module test.parity_dim\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param w : Length = 5kg\n    }\n}\n",
+        // Two COMPLEMENTARY emitters, not a double-report: the Error is
+        // `check_param_default_type`'s declared-vs-initializer dimension rule,
+        // the Warning is the ctor-conformance walk this task widened.
+        expected: &[
+            (Severity::Error, DiagnosticCode::ParamDefaultTypeMismatch),
+            (Severity::Warning, DiagnosticCode::ArgTypeMismatch),
+        ],
+    },
+    PortParityCase {
+        label: "Length ← 5 (bare Int at a dimensioned param)",
+        top_level_src: "module test.parity_bare\n\
+                        structure def Root {\n    param w : Length = 5\n}\n",
+        port_src: "module test.parity_bare\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param w : Length = 5\n    }\n}\n",
+        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+    },
+    PortParityCase {
+        label: "String ← 42 (general concrete leaf)",
+        top_level_src: "module test.parity_str\n\
+                        structure def Root {\n    param label : String = 42\n}\n",
+        port_src: "module test.parity_str\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param label : String = 42\n    }\n}\n",
+        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+    },
+];
+
+/// The fence: every mismatch shape in [`PORT_PARITY_CASES`] diagnoses the same
+/// way inside a `port { }` block as it does at structure top level.
+///
+/// Driven off one table so the rows cannot drift apart — adding a fourth shape
+/// is a table row, not a fourth copy of the assertions.
+#[test]
+fn port_param_default_diagnostics_match_top_level() {
+    for case in PORT_PARITY_CASES {
+        assert_port_parity_with_top_level(case);
+    }
+}
+
+/// An UNANNOTATED port-body param takes the `Type::dimensionless_scalar()`
+/// language fallback, so an enum default at it warns `Enum(…)` vs `Real` — the
+/// same fallback, and the same warning, as the unannotated top-level form.
+///
+/// This is the behaviour that forces `examples/stdlib/ports_breadth.ri`'s two
+/// enum port params to carry annotations. Pinning it here stops a future "just
+/// silence unannotated port params" patch from quietly re-diverging the two
+/// sites: whether the defaults-to-`Real` fallback should warn at all is a
+/// pre-existing, site-INDEPENDENT language question, and this probe forces any
+/// answer to move both sites together.
+#[test]
+fn port_unannotated_param_default_takes_real_fallback_like_top_level() {
+    let case = PortParityCase {
+        label: "unannotated param ← Color.Red (dimensionless-scalar fallback)",
+        top_level_src: "module test.parity_unann\nenum Color { Red, Green }\n\
+                        structure def Root {\n    param c = Color.Red\n}\n",
+        port_src: "module test.parity_unann\nenum Color { Red, Green }\ntrait P {}\n\
+                   structure def Root {\n    port mount : P {\n        param c = Color.Red\n    }\n}\n",
+        expected: &[(Severity::Warning, DiagnosticCode::ArgTypeMismatch)],
+    };
+    let port = assert_port_parity_with_top_level(&case);
+
+    // Pin the rendered fallback type too: parity alone would survive the
+    // fallback changing from `Real` to something else at BOTH sites. Read off
+    // the module the helper already compiled — re-compiling `case.port_src` here
+    // would pay for the whole stdlib prelude a third time to learn nothing new.
+    assert_eq!(
+        port.diagnostics[0].message,
+        "argument 'mount.c' has type 'Enum(Color)' but param 'mount.c' requires type 'Real'",
+        "unannotated port param must report the dimensionless-scalar fallback as 'Real'"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 7174 no-false-positive fence.
+//
+// HONEST FRAMING, so nobody later reads these as acceptance probes: they are
+// REGRESSION FENCES and they are NOT red before the fix. Pre-fix the walk saw no
+// port cells at all, so their silence proved nothing. The task's
+// negative-assertion requirement is discharged by the OBSERVING probes above
+// (the three single-arm probes and the parity fence, all measured red-before /
+// green-after).
+//
+// Their value is forward: widening the walk widens what it JUDGES, so each arm
+// it now reaches for port cells must be pinned against over-firing on a
+// legitimate port-body default.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Assert `source` compiles with ZERO diagnostics of any severity, and that the
+/// port it declares really did compile `expected_members` member cells.
+///
+/// The member-count check is what keeps the zero-assertion honest. A bare
+/// "no diagnostics" probe passes just as well when the port body was dropped on
+/// the floor, or when the fixture stopped parsing the way it reads — the exact
+/// failure modes a silence-based fence is blind to. Pinning the count asserts
+/// the walk was actually HANDED these cells and chose to stay quiet.
+///
+/// Zero diagnostics of ANY severity, not the ctor-conformance subset — the same
+/// deliberate override of this file's [`ctor_conformance_diags`] convention that
+/// [`assert_port_parity_with_top_level`] makes, for the same reason. The emitter
+/// a well-typed port default is next most likely to over-fire at is the
+/// complementary `check_param_default_type`, whose `ParamDefaultTypeMismatch` is
+/// not in `CTOR_CONFORMANCE_CODES`; narrowing would put it out of view. The
+/// accepted cost is an unrelated future `W_*` on these fixtures reading as a red
+/// here, which is why both carry the `module test.<name>` prologue.
+fn assert_port_body_compiles_clean(
+    source: &str,
+    port_name: &str,
+    expected_members: usize,
+    label: &str,
+) {
+    let module = compile_source_with_stdlib(source);
+    assert!(
+        module.diagnostics.is_empty(),
+        "{label}: a port body whose param defaults are all well-typed must compile \
+         with zero diagnostics, got: {:#?}",
+        module.diagnostics
+    );
+    let members: Vec<usize> = module
+        .templates
+        .iter()
+        .flat_map(|t| &t.ports)
+        .filter(|p| p.name == port_name)
+        .map(|p| p.members.len())
+        .collect();
+    assert_eq!(
+        members,
+        vec![expected_members],
+        "{label}: expected exactly one port named {port_name:?} carrying \
+         {expected_members} member cells — without this the zero-diagnostic \
+         assertion above would pass vacuously on a dropped port body"
+    );
+}
+
+const SRC_PORT_BODY_ALL_DEFAULTS_WELL_TYPED: &str = r#"module test.port_clean
+enum Color { Red, Green }
+trait P {}
+structure def Widget { param label : String }
+structure def Root {
+    port mount : P {
+        param label : String = "ok"
+        param n : Int = 3
+        param w : Length = 5mm
+        param region : Geometry = box(1mm, 2mm, 3mm)
+        param part : Widget = Widget(label: "ok")
+        param c : Color = Color.Red
+    }
+}
+"#;
+
+/// Every arm the widened walk now reaches for port cells, given a LEGITIMATE
+/// default, stays silent — one default per arm:
+///
+/// - general concrete-leaf: `String = "ok"`, `Int = 3`, `Length = 5mm`
+/// - `Type::Geometry`: `Geometry = box(…)`, which also covers the GHR-γ
+///   scalar-placeholder path (geometry constructors compile to a dimensionless
+///   scalar, so a naive `type_compatible(Geometry, …)` would reject them)
+/// - `Type::StructureRef`: `Widget = Widget(label: "ok")`
+/// - annotated enum: `Color = Color.Red` — the shape the corpus was migrated to
+#[test]
+fn port_body_well_typed_param_defaults_stay_clean() {
+    assert_port_body_compiles_clean(
+        SRC_PORT_BODY_ALL_DEFAULTS_WELL_TYPED,
+        "mount",
+        6,
+        "well-typed port body, one default per walk arm",
+    );
+}
+
+const SRC_MIGRATED_HYDRO_CONFORMER: &str = r#"module test.migrated_hydro
+import std.ports.fluid
+
+structure def HydroConformer {
+    port p : in HydraulicPort {
+        param pressure : Pressure = 101325Pa
+        param flow_rate : VolumetricFlowRate = 1gal / 1s
+        param medium : String = "hydraulic_oil"
+        param fluid_type : FluidType = FluidType.Liquid
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
+        )
+        param fitting_type : FittingStandard = FittingStandard.NPT
+    }
+}
+"#;
+
+/// The MIGRATED `HydroConformer` shape — real stdlib enum types (`FluidType`,
+/// `FittingStandard`) annotated on port params under `import std.ports.fluid` —
+/// is clean.
+///
+/// This is the inline twin of the `examples/stdlib/ports_breadth.ri` migration:
+/// a cross-module enum annotation is the one part of the migration an inline
+/// `enum Color { … }` fixture cannot exercise, and it is the part that would
+/// break if enum resolution inside a port body ever regressed to the
+/// dimensionless-scalar fallback the un-annotated form takes.
+///
+/// THREE hand-kept copies of this source exist, one per claim — a re-migration
+/// of the annotations has to move all three:
+///
+/// - `examples/stdlib/ports_breadth.ri` — the corpus site, judged by
+///   `no_example_emits_ctor_field_conformance_diagnostics`;
+/// - `ports_stdlib_compile.rs::hydraulic_port_concrete_conformer_multidomain_compiles`
+///   — the ζ signal that the FluidPort+MechanicalPort diamond resolves,
+///   asserting Error-severity only;
+/// - this one — zero diagnostics of ANY severity plus the port's member count.
+///
+/// They are kept separate rather than folded into the ζ fixture because that
+/// would make the ports harness assert on the ctor-conformance walk, coupling
+/// two surfaces that fail for unrelated reasons.
+#[test]
+fn migrated_hydro_conformer_port_body_stays_clean() {
+    assert_port_body_compiles_clean(
+        SRC_MIGRATED_HYDRO_CONFORMER,
+        "p",
+        6,
+        "migrated HydroConformer (annotated stdlib enum port params)",
     );
 }
 
@@ -2845,14 +3307,15 @@ fn point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch() {
 /// `Real` is the SAME CELL as `Dimensionless` — the same fixture, spelled the
 /// other way, end to end.
 ///
-/// `crates/reify-core/src/ty.rs` rules the two exact synonyms at every route into
-/// a quantity slot and measures this cell "identically at `Point3<Real>`, the
-/// `fdm_slice.ri` spelling". That is a claim about `resolve_type_name` and the
-/// dimension-EXPRESSION route in `type_resolution.rs`, not about the conformance
-/// rule, so only a second fixture can hold it: were the `Real` spelling ever to
-/// resolve to something other than `Type::Scalar { dimension: DIMENSIONLESS }`,
-/// the sibling above would stay green while
-/// `stdlib/fdm_slice.ri:43`'s `List<Point3<Real>>` silently left the ruling.
+/// `crates/reify-core/src/ty.rs` rules the two exact synonyms at every route
+/// into a quantity slot, `Point3<Real>` among them. That is a claim about
+/// `resolve_type_name` and the dimension-EXPRESSION route in
+/// `type_resolution.rs`, not about the conformance rule, so only a second
+/// fixture can hold it: were the `Real` spelling ever to resolve to something
+/// other than `Type::Scalar { dimension: DIMENSIONLESS }`, the sibling above
+/// would stay green while every `Point3<Real>` declaration in the corpus
+/// silently left the ruling. The fixture is inline and reads no `.ri` file, so
+/// the claim rests on no particular stdlib declaration.
 #[test]
 fn point3_dimensioned_at_real_point_param_warns_arg_type_mismatch() {
     let module = compile_source_with_stdlib(SRC_POINT3_DIMENSIONED_AT_REAL);
@@ -4959,5 +5422,319 @@ fn a_repeated_known_named_argument_is_a_duplicate_not_an_unknown_field() {
         Severity::Error,
         "the duplicate guard is a hard Error and is NOT behind the ctor-conformance \
          knob — it must not move with the δ flip"
+    );
+}
+
+// ═══ by-name ctor binding: the `expr.rs` binder contract ═════════════════════
+//
+// The two tests below and their shared helper pin the STRUCTURE-CTOR ARGUMENT
+// BINDER in `crates/reify-compiler/src/expr.rs`: task 4522's by-name binding,
+// and task 5303 (ε)'s diagnosed-but-still-lenient `__arg{i}` fallback for an
+// unknown label. That binder is this file's subject, which is why they live
+// here.
+//
+// `RayleighDamping` is only the VEHICLE. It is a two-param stdlib structure
+// whose params carry DISTINCT dimensions (`alpha : Frequency`, `beta : Time`),
+// so a binder that routed an argument to the wrong slot shows up as a swapped
+// (si_value, DimensionVector) pair rather than as two interchangeable numbers.
+// Nothing below is a claim about modal analysis, and a change to
+// `stdlib/modal_analysis.ri` that keeps that two-param shape need not touch it.
+
+// ─── ctor args bind BY NAME ──────────────────────────────────────────────────
+
+/// Structure-ctor arguments bind BY NAME, not positionally.
+///
+/// The guard for a claim three example files state in
+/// prose (`printer_gantry_modes.ri`, `transient_step_response.ri`,
+/// `printer_print_envelope.ri`) — all three previously asserted the OPPOSITE
+/// ("binding is POSITIONAL; `name:` labels are cosmetic"), which task-4522's
+/// by-name binder in `expr.rs` had already made false. A prose-only correction
+/// would rot the same way, so it is pinned here.
+///
+/// Compiles a `RayleighDamping` ctor in each argument FORM the prose claims
+/// about and asserts the lowered `ordered_args` always re-key to
+/// `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`. A positional binder would instead
+/// produce alpha = 0.0003 s and beta = 0.0 s⁻¹ for the reverse-labelled form,
+/// i.e. the same two names carrying each other's value.
+///
+/// Five arms, because the prose makes a TWO-clause claim and an all-labelled
+/// probe only exercises the first:
+///   (a) all-labelled, in REVERSE declaration order — the by-name clause;
+///   (b) MIXED, `beta` labelled, positional first (`0.0Hz, beta: 0.0003s`);
+///   (c) MIXED, `beta` labelled, positional last (`beta: 0.0003s, 0.0Hz`);
+///   (d) MIXED, `alpha` labelled, positional last (`alpha: 0.0Hz, 0.0003s`);
+///   (e) MIXED, `alpha` labelled, positional first (`0.0003s, alpha: 0.0Hz`).
+///
+/// (d) and (e) are the two that carry the second clause — "only UNLABELLED args
+/// fill the REMAINING slots in declaration order" — because they are the only
+/// forms whose result CHANGES if the binder's positional pass stops skipping
+/// already-named-bound slots (`reify-compiler/src/expr.rs`, pass 2's
+/// `while … param_arg[next_slot].is_some() { next_slot += 1 }`). With the skip
+/// removed, both bind the unlabelled `0.0003s` at slot 0, clobbering `alpha`
+/// and leaving `beta` unbound — so `ordered_args` becomes `[("alpha", 0.0003 s)]`
+/// and the key-list assertion goes red.
+///
+/// (b) and (c) do NOT discriminate that: `beta` occupies slot 1, so the
+/// positional pass lands on slot 0 either way. They are kept as the
+/// mixed-form PARSE + by-name coverage the prose also claims, not as skip
+/// pins — recorded here so a later reader does not mistake them for the guard.
+#[test]
+fn structure_ctor_args_bind_by_name_not_positionally() {
+    // (a) all-labelled, reverse declaration order.
+    assert_rayleigh_ctor_binds_canonically("CtorBindByNameProbe", "beta: 0.0003s, alpha: 0.0Hz");
+    // (b)/(c) mixed with `beta` labelled — the unlabelled arg fills slot 0.
+    assert_rayleigh_ctor_binds_canonically("CtorMixedBetaLabelLastProbe", "0.0Hz, beta: 0.0003s");
+    assert_rayleigh_ctor_binds_canonically("CtorMixedBetaLabelFirstProbe", "beta: 0.0003s, 0.0Hz");
+    // (d)/(e) mixed with `alpha` labelled — the unlabelled arg must SKIP the
+    //     named-bound slot 0 and land on slot 1 (`beta`). The skip pins.
+    assert_rayleigh_ctor_binds_canonically(
+        "CtorMixedAlphaLabelFirstProbe",
+        "alpha: 0.0Hz, 0.0003s",
+    );
+    assert_rayleigh_ctor_binds_canonically("CtorMixedAlphaLabelLastProbe", "0.0003s, alpha: 0.0Hz");
+}
+
+/// Compile `structure {probe} { let damping = RayleighDamping({ctor_args}) }`
+/// and assert the ctor lowers to exactly `[(alpha, 0.0 s⁻¹), (beta, 0.0003 s)]`
+/// — the canonical binding, whatever the argument FORM.
+///
+/// Shared by every arm of [`structure_ctor_args_bind_by_name_not_positionally`]
+/// so a new form is one call, not a copied block.
+fn assert_rayleigh_ctor_binds_canonically(probe: &str, ctor_args: &str) {
+    let source = format!(
+        r#"
+structure {probe} {{
+    let damping = RayleighDamping({ctor_args})
+}}
+"#
+    );
+    let module = compile_source_with_stdlib(&source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "`RayleighDamping({ctor_args})` must compile clean, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == probe)
+        .unwrap_or_else(|| panic!("{probe} template should be compiled"));
+    let damping_expr = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "damping")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("the `damping` let cell should carry its ctor expression");
+
+    let CompiledExprKind::StructureInstanceCtor { ordered_args, .. } = &damping_expr.kind else {
+        panic!(
+            "`damping` should lower to a StructureInstanceCtor, got {:?}",
+            damping_expr.kind
+        );
+    };
+
+    let bound: Vec<(&str, Option<&Value>)> = ordered_args
+        .iter()
+        .map(|(name, e)| {
+            (
+                name.as_str(),
+                match &e.kind {
+                    CompiledExprKind::Literal(v) => Some(v),
+                    _ => None,
+                },
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        bound.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        vec!["alpha", "beta"],
+        "`RayleighDamping({ctor_args})`: ordered_args must be re-keyed into \
+         template declaration order, with each label routed to its OWN param \
+         and each UNLABELLED arg filling the next REMAINING slot (never a \
+         synthetic `__arg{{i}}`); got: {:?}",
+        bound
+    );
+
+    let expected: &[(&str, f64, DimensionVector)] = &[
+        ("alpha", 0.0, DimensionVector::FREQUENCY),
+        ("beta", 0.0003, DimensionVector::TIME),
+    ];
+    for (i, (name, si, dim)) in expected.iter().enumerate() {
+        match bound[i].1 {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert_eq!(
+                    (*si_value, *dimension),
+                    (*si, *dim),
+                    "`RayleighDamping({ctor_args})`: `{}` must carry the value \
+                     written against ITS OWN label (a positional binder that \
+                     ignored labels, or one whose positional pass did not skip \
+                     named-bound slots, would swap the two)",
+                    name
+                );
+            }
+            other => panic!(
+                "`RayleighDamping({ctor_args})`: `{}` should bind a dimensioned \
+                 Scalar literal, got {:?}",
+                name, other
+            ),
+        }
+    }
+}
+
+// ─── …and the MISLABEL path is diagnosed but still lenient ───────────────────
+
+/// An UNKNOWN ctor label is DIAGNOSED — task 5303 (ε) emits
+/// `E_CTOR_UNKNOWN_FIELD` / [`DiagnosticCode::CtorUnknownField`] at the
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning pre-δ, Error at δ) — and is
+/// STILL appended as a positional `__arg{i}`, so the param it was meant for
+/// falls back to its default (or stays unbound).
+///
+/// The diagnostic and the lenient push carry DIFFERENT predicates on purpose
+/// (`crates/reify-compiler/src/expr.rs`, the by-name binder): ε is
+/// diagnostics-only and left the IR byte-for-byte what it was before, which is
+/// why (b) and (c) below are unchanged from this pin's pre-ε shape while (a)
+/// is inverted.
+///
+/// The hazard three example files describe in prose;
+/// pinned here so their wording cannot rot. If the diagnosis moves again —
+/// δ's Warning→Error flip is the scheduled one — update this pin AND the
+/// binding notes in `examples/modal/printer_gantry_modes.ri`,
+/// `examples/modal/transient_step_response.ri` and
+/// `examples/trajectory/printer_print_envelope.ri`.
+#[test]
+fn misspelled_ctor_label_is_diagnosed_but_still_leniently_appended() {
+    // `bta` is a typo for `beta`. Nothing REJECTS it: ε diagnoses it at
+    // Warning and binds it leniently anyway, so the compile still succeeds.
+    let module = compile_source_with_stdlib(
+        r#"
+structure CtorMisspelledLabelProbe {
+    let damping = RayleighDamping(alpha: 0.0Hz, bta: 0.0003s)
+}
+"#,
+    );
+
+    // (a) the typo IS judged. Deliberately NOT counted over
+    // `module.diagnostics` whole: that ranges over the probe source AND the
+    // whole stdlib prelude, so any unrelated future lint would turn this red
+    // with a message that actively misdirects. Narrowed to the diagnostics
+    // naming the typo'd label `bta` — a SOURCE IDENTIFIER that occurs nowhere
+    // in the prelude, so the count below is exact — with the code, severity
+    // and wording then asserted on the single hit.
+    //
+    // Narrowing on the IDENTIFIER rather than on the ctor-conformance code set
+    // is also what keeps this pin able to see a CODELESS emission. Codeless is
+    // no longer the shape of THIS diagnostic — ε (task 5303) gave it
+    // `DiagnosticCode::CtorUnknownField`, which is what (a) now asserts — but
+    // it is still a live shape on this surface: the sibling duplicate-named-arg
+    // diagnostic in the same binder is built with a bare `Diagnostic::error`
+    // and carries no code at all, so a code-set filter alone would miss a
+    // re-emission in that style.
+    //
+    // The label match is QUOTED (`'bta'` / `` `bta` ``), never a bare
+    // `contains("bta")`: the bare form matches the substring inside ordinary
+    // English words — "o(bta)in" is the obvious one — which would reintroduce
+    // exactly the unrelated-axis false red this narrowing exists to remove.
+    // Both quotings are accepted because the live emitters disagree:
+    // `E_CTOR_UNKNOWN_FIELD` says `argument 'bta'` and the duplicate-named-arg
+    // error says `duplicate named argument 'x'`, while backtick-quoting is
+    // common elsewhere in the diagnostic corpus. Passing this filter at all is
+    // therefore the "message names the offending label" assertion; the
+    // constructor half is asserted separately below.
+    let names_typo = |m: &str| m.contains("'bta'") || m.contains("`bta`");
+    let judging: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| names_typo(&d.message))
+        .collect();
+    assert_eq!(
+        judging.len(),
+        1,
+        "an unknown ctor label must emit exactly one diagnostic naming it \
+         (ε, task 5303 — before that it was silently accepted). Got {}: {:#?}",
+        judging.len(),
+        judging
+    );
+    assert_eq!(
+        judging[0].code,
+        Some(DiagnosticCode::CtorUnknownField),
+        "the unknown-label diagnostic must carry the CtorUnknownField code — \
+         `reify check` never prints the code, so this is the only place the \
+         machine-readable half is pinned from this file. Got: {:?}",
+        judging[0]
+    );
+    assert!(
+        is_ctor_conformance_code(judging[0].code),
+        "…and the SHARED `reify_test_support::ctor_conformance` admission set \
+         must recognise it. This arm is the behavioural proof, at a real \
+         former call site, that the hoisted predicate admits the code the \
+         assertions above independently established. Got: {:?}",
+        judging[0].code
+    );
+    assert_eq!(
+        judging[0].severity,
+        Severity::Warning,
+        "ε emits at the `CTOR_FIELD_CONFORMANCE_SEVERITY` knob, whose value is \
+         `Warning` pre-δ. The knob is `pub(crate)` inside a private \
+         `conformance` module, so an integration-test binary cannot name it \
+         and has to restate the value — δ's one-const flip must therefore move \
+         THIS line together with every other restatement of it: the sibling \
+         `Severity::Warning` pins earlier in this file and the ones in \
+         `harness_mechanics/modal_options_validation_tests.rs`. Got: {:?}",
+        judging[0]
+    );
+    assert!(
+        judging[0].message.starts_with("E_CTOR_UNKNOWN_FIELD: "),
+        "the mnemonic must be a message PREFIX — `reify check` renders \
+         `{{severity}}: {{message}}` and never prints the DiagnosticCode, so \
+         without it the signal is invisible at the CLI. Got: {:?}",
+        judging[0].message
+    );
+    assert!(
+        judging[0].message.contains("RayleighDamping"),
+        "the message must name the CONSTRUCTOR as well as the offending \
+         label, or a reader cannot tell which call is wrong. Got: {:?}",
+        judging[0].message
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "CtorMisspelledLabelProbe")
+        .expect("CtorMisspelledLabelProbe template should be compiled");
+    let damping_expr = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "damping")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("the `damping` let cell should carry its ctor expression");
+    let CompiledExprKind::StructureInstanceCtor { ordered_args, .. } = &damping_expr.kind else {
+        panic!(
+            "`damping` should lower to a StructureInstanceCtor, got {:?}",
+            damping_expr.kind
+        );
+    };
+    let bound: Vec<&str> = ordered_args.iter().map(|(n, _)| n.as_str()).collect();
+
+    // (b) the typo survives lowering as a synthetic positional key.
+    assert!(
+        bound.iter().any(|n| n.starts_with("__arg")),
+        "the unknown label must survive as a synthetic `__arg{{i}}` key; \
+         got ordered_args keys: {:?}",
+        bound
+    );
+
+    // (c) …and `beta` — the param the author meant — never got a value.
+    assert!(
+        !bound.contains(&"beta"),
+        "`beta` must be left unbound when its label is misspelled (it falls \
+         back to its default, which RayleighDamping does not have); got \
+         ordered_args keys: {:?}",
+        bound
     );
 }

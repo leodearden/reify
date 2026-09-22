@@ -723,7 +723,7 @@ _die_nextest_config() {
     echo "verify.sh: ERROR — gen-nextest-config.sh refused to generate the nextest config (exit $1); its diagnostic is immediately above" >&2
     exit "$1"
 }
-DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
+export DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"  # exported: gui/vitest.config.ts reads it from the child env (task 7630)
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
 # release-only tests are exercised on every merge (matching the local
@@ -1145,8 +1145,9 @@ is_occt_crate() {
 # basenames NAMED BY a compiled Rust test target, and so EXCLUDED from
 # decide_scope's no-heavy-checks carve-out for that directory:
 #   proven runtime reads (a #[test] builds the path and opens the file):
-#     geometry_let_selector_consumer.ri (pushed into no_stale_undef_invariant_
-#     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
+#     geometry_let_selector_consumer.ri (pushed into corpus_files() by
+#     harness_corpus_gates/eval_invariant_corpus_sweep.rs),
+#     geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786),
 #     unit_curated_labels_ascii.ri (likewise, by volume_unit_tests.rs, task 5788),
@@ -1166,7 +1167,16 @@ is_occt_crate() {
 #     existing_sub_arms_regression_floor, task 5481);
 #     stdlib_ns_qualified_expr.ri, stdlib_ns_qualified_type.ri (the two
 #     qualified-reference probes held as qualified_ref_grammar_tests.rs's
-#     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495)
+#     prd_gate_qualified_{expr,type}_fixture_parses_with_zero_errors, task 5495);
+#     adt_mirror_of_arm.ri, adt_relation_verbs.ri (the derived sub arm's
+#     signal and its relation-verb regression floor, held as
+#     derived_sub_grammar_tests.rs's derived_sub_fixture_parses_with_zero_error_nodes
+#     and relation_verbs_fixture_regression_floor, task 6615)
+#     shift_invert_modal_shifted.ri, shift_invert_modal_unshifted.ri (the
+#     committed shifted/unshifted modal pair, embedded by
+#     shift_invert_modal_e2e.rs's shift_changes_the_mode_set_and_warns_once —
+#     the two files differ ONLY in their `sigma:` literal and header, so the
+#     mode-set difference between them IS the signal, task 7261)
 #   named by a WAIVER TABLE in a compiled test (task 5305): the seven fixtures
 #     keyed by (file, param) in ctor_conformance_corpus_survey.rs's
 #     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
@@ -1210,7 +1220,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1233,22 +1243,24 @@ _RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri co
 # fails on any pinned fixture missing here. Do not hand-edit without re-running
 # it; do not trust a copy of this list anywhere else.
 #
-# NOTE the two lists MOSTLY NEST: every _RUST_COUPLED_RI_FIXTURES member that is
-# also a grammar-ledger pin is listed below as well, and the rust arm already
-# sets gui=1, so it short-circuits them. They are retained here deliberately so
-# that dropping a fixture from the rust list can never silently drop its gui
-# coverage too. THREE members are not EXPECTED_CLEAN pins and so have no gui
-# entry to retain: jacobian_column_members.ri (read by a compiled Rust target
-# but never pinned, task 6102), and task 6877's
-# damped_material_{mixin,preset}_conformance.ri (deliberately not pinned — an
-# unpinned fixture is inert for that ledger, so pinning them would add the
-# PG-DRIFT-GUI obligation for no added signal).
+# NOTE the two lists now NEST EXACTLY (#6605): every _RUST_COUPLED_RI_FIXTURES
+# member is also a grammar-ledger pin, and the rust arm already sets gui=1 for
+# them, so listing them again below is a short-circuit, not new coverage. They
+# stay listed here anyway so that dropping a fixture from the rust list can
+# never silently drop its gui coverage too. The list below is now exactly the
+# EXPECTED_CLEAN prd-gate pin set, with no retained non-pin members — #6605
+# pinned the four fixtures that used to be the exception
+# (jacobian_column_members.ri, damped_material_mixin_conformance.ri,
+# damped_material_preset_conformance.ri, adt_relation_verbs.ri). Do not
+# re-apply the retired "pinning adds a PG-DRIFT-GUI obligation for no signal"
+# reasoning to a future gap without re-deriving the sets first — that policy is
+# what #6605 reversed.
 #
 # Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
 # MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
 # rots on the next addition — this one already had, still reading 10 after the
 # list had grown past it, when task #5784 added unit_middot_mul.ri.
-_GUI_COUPLED_RI_FIXTURES=" bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri ir_clean_eval.ri objective_inherit_ambiguous.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri revolute_silent_accept.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri single_sub_pose_resolves.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_GUI_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri adv_beta_undef_arith_control.ri adv_beta_v7_degraded_arith.ri adv_beta_v7_pm_is_real_zero.ri adv_ivf_undef_ctor_arg_check_silent.ri adv_ivf_undef_flow_constraint_indeterminate_exit0.ri angle_crossing_idiom.ri bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri compose_fn_field_resolves.ri compose_middle_type_mismatch_rejected.ri compose_one_arg_rejected.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dce_runtime_payload.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri driver_contract_allow_indeterminate.ri driver_contract_dfm_measurement_arm.ri driver_contract_eval_blind_to_violation.ri driver_contract_geometry_test_indeterminate.ri driver_contract_header_mismatch.ri driver_contract_report_blind_to_violation.ri driver_parity_auto_ctl.ri driver_parity_eq_plus_ineq.ri driver_parity_one_sided_auto.ri driver_parity_relate_conflict.ri driver_parity_two_sided_auto.ri dwr_cantilever_energy.ri dwr_cantilever_qoi.ri dwr_qoi_readback.ri dwr_qoi_without_adaptive.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri frame_to_frame_resolves.ri frame_to_frame_transform3_nomatch.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri gui_purpose_surface.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri instantiation_value_flow_probe.ri ir_clean_eval.ri ivf_override_violates_constraint.ri jacobian_column_members.ri numeric_floor_bare_baseline.ri numeric_floor_dimensioned_silent_accept.ri numeric_floor_two_arg_parses.ri numeric_sinh_bare_baseline.ri numeric_sinh_dimensioned_silent_accept.ri objective_inherit_ambiguous.ri orient_axis_angle_member_parses.ri orient_to_axis_angle_call_resolves.ri parse_length_match_resolves.ri pnrg_cost_split_sphere.ri pnrg_envelope_cone.ri pnrg_envelope_fillet_blend.ri pnrg_envelope_loft.ri pnrg_envelope_nurbs_surface.ri pnrg_envelope_pipe.ri pnrg_envelope_sphere.ri pnrg_envelope_spline.ri pnrg_envelope_sweep.ri pnrg_envelope_torus.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri raw_lambda_material_field_rejected.ri revolute_silent_accept.ri rotational_closure_prestate.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri shear_angles_component_deg_compare_pre.ri shear_angles_field_decl_pre.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri single_sub_pose_resolves.ri solver_unification_ineq_eq_penalty_offset.ri solver_unification_ineq_eq_two_sided_control.ri solver_unification_tangent_silent_accept.ri spec_conformance_directive_block.ri ssc_ineq_bracketed_strict.ri ssc_refuted_pair.ri ssc_single_root_free.ri ssc_two_roots_free.ri ssc_two_roots_strict.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri unknown_fn_silent_accept_baseline.ri value_clean_eval_cells.ri "
 
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
@@ -1386,11 +1398,12 @@ decide_scope() {
                 # .capability-manifest.yaml + its .ri fixtures, gated by
                 # hooks/pre-commit -> `--scope staged`) stays a seconds-long
                 # hook instead of escalating to a full workspace nextest run.
-                #   • Nothing globs this directory: reify-eval's
-                #     no_stale_undef_invariant_gate.rs corpus_files() walks only
-                #     its own tests/fixtures + examples/, then pushes ONE
-                #     explicit prd-gate path — so ADDING a fixture provably
-                #     cannot change any Rust target's inputs. EDITING one of the
+                #   • Nothing globs this directory: reify-eval's unified corpus
+                #     sweep (harness_corpus_gates/eval_invariant_corpus_sweep.rs,
+                #     corpus_files()) walks only its own tests/fixtures +
+                #     examples/, then pushes ONE explicit prd-gate path — so
+                #     ADDING a fixture provably cannot change any Rust target's
+                #     inputs. EDITING one of the
                 #     names in _RUST_COUPLED_RI_FIXTURES can, hence the exclusion
                 #     below (a blanket rule would let such an edit reach `main`
                 #     through the hook-gated docs path with no heavy checks and
@@ -1576,8 +1589,9 @@ add_selected_infra_glob() {
 # That selector is the sole producer of this glob token today and is already
 # staged-only, but a future verify-pipeline-infra-tests.txt row mapping some
 # artifact to this same path would reach the arm under --scope branch, where a
-# warm-lane stamped target/ makes a rc-125-with-present-binary freshness
-# result the COMMON case and a hard refusal would red every task lane. What
+# rc-125-with-present-binary freshness result is still reachable (a FAILED
+# rebuild leaves the older binary executable; since #7691 a successful no-op
+# rebuild no longer lands here) and a hard refusal would red that lane. What
 # the arm produces there is an EMPTY prefix — the same un-armed, byte-identical
 # leaf every other glob gets — and that un-armed branch leaf is what
 # test_verify_scope.sh's PT-RATCHET-BRANCH pins.
@@ -1792,9 +1806,9 @@ select_harness_kloc_guard
 #
 # A THIRD outcome of that rebuild is NOT accepted, and is closed here. If
 # reify_audit_guard's rebuild attempt still leaves the binary judged stale
-# (rc=125 — e.g. a cargo no-op fingerprint match against an on-disk mtime
-# older than the last crates/reify-audit commit, such as a warm-lane target/
-# with stamped mtimes) while REIFY_AUDIT_BIN stays executable,
+# (rc=125 — since #7691 that means the rebuild FAILED, or REIFY_AUDIT_BIN is
+# not cargo's own artifact; a successful no-op rebuild now returns 0) while
+# REIFY_AUDIT_BIN stays executable,
 # tests/infra/test_reify_audit_ptodo.sh still sets RATCHET_SKIP=1 and skips
 # exactly scenario (a)+(b) — the gen-driven fingerprint ratchet this selector
 # exists to run — while executing its (c)-(g) exit-code hard gate, which is
@@ -1863,6 +1877,102 @@ select_cheap_ptodo_gate() {
 select_cheap_ptodo_gate
 
 # ---------------------------------------------------------------------------
+# Branch-scope at-source trigger for the PDIAG ratchet (task #7691).
+#
+# tests/infra/test_reify_audit_pdiag.sh scenario (a) — live per-file code-less
+# Diagnostic::error/warning counts must stay within
+# crates/reify-audit/pdiag-baseline.txt (INV-SF-6,
+# docs/notes/diagnostic-severity-policy.md) — ran ONLY in the merge-tier
+# run_all.sh pool. Task 7376 added two code-less sites to
+# crates/reify-compiler/src/connect.rs, went green on its own branch, and
+# learned of the regression from two ~20-minute merge-gate cycles and a thrash
+# escalation (esc-7376-2). This selector runs the same file on the task lane
+# whenever the branch could have moved a PDIAG count.
+#
+# Trigger: the merge-base diff ADDS or MODIFIES either
+#   (i)  a path pdiag_swept_path (below) accepts — only those files are
+#        counted, so only they can raise a count or appear as a new file; or
+#   (ii) crates/reify-audit/pdiag-baseline.txt itself — the other operand of
+#        the same comparison; a hand-lowered or malformed row reds scenario
+#        (a) with no swept file touched.
+# Diff-status policy (git diff --no-renames --diff-filter=AM): A and M are
+# the only statuses whose ratchet verdict can be High (NewFile / Exceeded);
+# a DELETE can only yield a Medium OrphanRow, which never reds the gate
+# (pdiag.rs RatchetVerdict::severity), so D is deliberately excluded.
+# --no-renames is load-bearing, unlike select_harness_kloc_guard's diff: a
+# renamed swept file keeps its sites but moves them to a path with no
+# baseline row — a High NewFile — so its new side must surface as an A
+# rather than vanish into an R entry --diff-filter=AM drops. Scanner edits
+# under crates/reify-audit/src/ are NOT a trigger (that crate is outside the
+# sweep, and its own cargo tests run on such a branch); the merge gate
+# remains the wholesale authority, so that residual is latency, not a hole.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS as select_harness_kloc_guard, so
+# it inherits the same four things select_cheap_ptodo_gate enumerates:
+# merge/background suppression (run_all.sh runs this file wholesale there —
+# exactly-once, INV-5; scope=branch is also structurally impossible under
+# those roles), the REIFY_INFRA_SUITE_ACTIVE re-entrancy guard, fail-fast
+# ordering before the cargo poles, and add_tool's LD_LIBRARY_PATH scrub.
+#
+# Measured cost (2026-09-19, whole leaf wall, warm lanes seeded from base gen
+# 439): 0.6s when reify_audit_guard finds target/release/reify-audit fresh —
+# the common case, since only a crates/reify-audit commit advances its
+# freshness epoch; 1.4s when that epoch has moved but the guard's cargo build
+# is a fingerprint no-op; 87s when that build really recompiles part of
+# reify-audit's release closure (a reify-compiler edit, which that closure
+# includes via reify-test-support) — inside the leaf's 10m wall.
+#
+# STALE-BINARY DECISION. The leaf deliberately does NOT set
+# REIFY_AUDIT_NO_COLD_BUILD (that would turn every stale verdict into a
+# budget-safe SKIP of scenario (a) — exactly the ratchet this selector exists
+# to run) and does NOT arm any ratchet-required refusal. The false-stale
+# state that used to make this leaf vacuous — guard rc 125 after a cargo
+# no-op against an mtime older than the last crates/reify-audit commit,
+# reproduced on a warm lane by a baseline-only commit — is closed at its
+# source instead: reify_audit_guard now accepts a successful cargo build as
+# proof of freshness for cargo's OWN artifact (see "CARGO IS THE AUTHORITY"
+# in scripts/reify-audit-freshness.sh). What still reaches rc 125 with a
+# present binary is a FAILED cargo build, where skipping (a) against the old
+# binary, loudly, is the right degrade on a task lane — the merge gate still
+# runs it.
+# ---------------------------------------------------------------------------
+
+# pdiag_swept_path <repo-relative-path> — succeeds iff PDIAG sweeps the path.
+# A DERIVED COPY of crates/reify-audit/src/pdiag.rs::is_swept_path and its
+# SCOPE_EXCLUDE_PREFIXES (cited by name, not line). Its source of truth is
+# behavioural: test_verify_scope.sh's PDIAG-DRIFT scenario replays every path
+# is_swept_path's own unit tests assert on, in both polarities, through this
+# selector, and re-derives SCOPE_EXCLUDE_PREFIXES from the Rust source.
+# Case-sensitive, like the Rust (`ends_with(".rs")`, no to_lowercase).
+pdiag_swept_path() {
+    local _p="$1" _file _stem
+    case "$_p" in *.rs) : ;; *) return 1 ;; esac
+    case "$_p" in crates/reify-audit/*|crates/reify-test-support/*) return 1 ;; esac
+    # Exactly the third segment must be `src` (a `*` glob would cross `/`).
+    [[ "$_p" =~ ^crates/[^/]*/src/ ]] || [[ "$_p" == gui/src-tauri/src/* ]] || return 1
+    # Test loci: a `tests` DIRECTORY segment, or a tests.rs / *_tests.rs stem.
+    [[ "$_p" =~ (^|/)tests/ ]] && return 1
+    _file="${_p##*/}"
+    _stem="${_file%.rs}"
+    [ "$_stem" != "tests" ] && [[ "$_stem" != *_tests ]]
+}
+
+select_pdiag_ratchet() {
+    [ "$SCOPE" = "branch" ] || return 0
+    [ -n "$_MERGE_BASE" ] || return 0
+    local _changed _path
+    _changed="$(git -C "$REPO_ROOT" diff --name-only --no-renames --diff-filter=AM "$_MERGE_BASE" 2>/dev/null)" || return 0
+    while IFS= read -r _path; do
+        [ -n "$_path" ] || continue
+        if [ "$_path" = "crates/reify-audit/pdiag-baseline.txt" ] || pdiag_swept_path "$_path"; then
+            add_selected_infra_glob "tests/infra/test_reify_audit_pdiag.sh"
+            return 0
+        fi
+    done <<< "$_changed"
+}
+select_pdiag_ratchet
+
+# ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
 #
 # Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
@@ -1883,6 +1993,27 @@ select_cheap_ptodo_gate
 # NARROW_ACTIVE and AFFECTED_ALL_FLAGS end up with the same values on every
 # path, so the --workspace coupling that tests/infra/test_verify_scope.sh's
 # B9-default scenario pins is untouched.
+#
+# AFFECTED_CLOSURE_FROM_DIFF — the LICENCE to read an empty AFFECTED_CLOSURE as
+# "this diff provably touches zero crates" (task 6268). An empty closure string
+# alone cannot mean that, because it is what FOUR distinct paths leave behind:
+# the closure was not eligible (scope=all, RUN_RUST=0); CHANGED_FILES_RAW was
+# empty (decide_scope's git-failure fail-wide returns, which DO set RUN_RUST=1);
+# the file list split to zero arguments; or affected_crates() genuinely proved
+# zero crates. Only the last licenses narrowing, and only this flag tells them
+# apart — so it is set on exactly ONE branch below, adjacent to the
+# affected_crates() call it vouches for (heuristic 11), and defaults to 0, the
+# fail-wide answer.
+#
+# A REIFY_AFFECTED_CRATES_OVERRIDE deliberately never sets it. An override is a
+# SUBSTITUTE for the derivation, not a derivation, so it can make no claim about
+# what the diff touches — and letting it claim one would invert the fail-wide
+# invariant the AFFECTED_ALL_FLAGS-empty reset below exists to hold: a
+# whitespace-only override ("   ") is a non-empty STRING that word-splits to
+# zero tokens, so with the flag set it would read as "provably zero crates" and
+# silently narrow coverage away from a typo'd operator knob. Restricting the
+# flag to the affected_crates() branch makes that impossible by construction
+# rather than by a second guard.
 #
 # COST — affected_crates() is invoked at most ONCE per run (hence hoisting it
 # here rather than adding a second call site), and RUN_RUST=0 (a docs-only
@@ -1910,6 +2041,8 @@ select_cheap_ptodo_gate
 # ---------------------------------------------------------------------------
 AFFECTED=""
 AFFECTED_CLOSURE=""
+# 0 = "no licence to read an empty closure as proof" — the fail-wide default.
+AFFECTED_CLOSURE_FROM_DIFF=0
 NARROW_ACTIVE=0
 AFFECTED_ALL_FLAGS=""
 
@@ -1939,6 +2072,7 @@ if [ "$_closure_eligible" -eq 1 ]; then
         done <<< "$CHANGED_FILES_RAW"
         if [ "${#_af_args[@]}" -gt 0 ]; then
             AFFECTED_CLOSURE="$(affected_crates "${_af_args[@]}")"
+            AFFECTED_CLOSURE_FROM_DIFF=1
         fi
     fi
 fi
@@ -1981,21 +2115,62 @@ fi
 # extracted by task 7427); two consumers read it — the gui-feature nextest
 # pass and the vitest lane gate just below.
 #
-# THREE EXPLICIT ARMS, read off SCOPE and AFFECTED_CLOSURE directly:
-#   1. SCOPE=all            -> true.  The merge gate never narrows; that is a
-#                              CONTRACT, not a side effect.
-#   2. closure unavailable  -> true.  FAIL WIDE.  "Unavailable" covers the ALL
-#                              sentinel (a C4 workspace-global file, a C5
-#                              cargo-metadata failure, an unmappable path), an
-#                              empty CHANGED_FILES_RAW, and a malformed
-#                              REIFY_AFFECTED_CRATES_OVERRIDE.  The empty case
-#                              is genuinely OVERLOADED — decide_scope's
-#                              git-failure fail-wide paths also return
-#                              RUN_RUST=1 with CHANGED_FILES_RAW="" — so
-#                              conflating it with "provably no crates" is
-#                              CORRECT here and cannot be tightened without a
-#                              separate closure-available sentinel.
-#   3. otherwise            -> true iff reify-gui ∈ AFFECTED_CLOSURE.
+# FOUR EXPLICIT ARMS, read off SCOPE, AFFECTED_CLOSURE and
+# AFFECTED_CLOSURE_FROM_DIFF directly.  Each arm has a NAME, and every citation
+# — here, at the call sites, and in the tests — uses the NAME.  An ordinal is a
+# fragile identifier once it is duplicated across files: this list was renumbered
+# once (task 6268 inserted COMPUTED-EMPTY ahead of the membership test) and three
+# remote citations silently became plausible-but-wrong rather than obviously stale.
+#   1. MERGE-GATE arm       SCOPE=all -> true.  The merge gate never narrows;
+#                              that is a CONTRACT, not a side effect.
+#   2. FAIL-WIDE arm        closure unavailable -> true.  "Unavailable" covers
+#                              the ALL sentinel (a C4 workspace-global file, a C5
+#                              cargo-metadata failure, an unmappable path, a seed
+#                              that resolved to no package), a malformed
+#                              REIFY_AFFECTED_CRATES_OVERRIDE, and an empty
+#                              closure this run never DERIVED — including
+#                              decide_scope's git-failure fail-wide paths, which
+#                              return RUN_RUST=1 with CHANGED_FILES_RAW="".
+#   3. COMPUTED-EMPTY arm   closure DERIVED and empty -> FALSE.  Not the same
+#                              thing as FAIL-WIDE, and the distinction is the
+#                              whole of task 6268.  The run called
+#                              affected_crates() on its own changed-file list and
+#                              it came back holding no crate at all, so reify-gui
+#                              is PROVABLY unaffected — narrow the pass away
+#                              rather than fail wide over a question that was
+#                              actually answered.  AFFECTED_CLOSURE_FROM_DIFF is
+#                              what separates the two (see its assignment site);
+#                              an override never sets it, so a malformed knob
+#                              cannot reach this arm.
+#   4. MEMBERSHIP arm       otherwise -> true iff reify-gui ∈ AFFECTED_CLOSURE.
+#
+# THE SECOND CONSUMER IS SAFE BY DERIVATION — with ONE named exception, stated
+# rather than papered over.  COMPUTED-EMPTY is reachable only when RUN_RUST=1
+# and every changed path is non-crate (docs/**, *.md, *.yaml/yml, gui/src/**,
+# tests/infra/**).  Of those classes only tests/infra/** classifies RUN_RUST=1,
+# and it does so through decide_scope's `*)` catch-all, which sets
+# `rust=1; gui=1; gate=1` TOGETHER; the docs/gui-event-channels.md rename force
+# likewise reaches its own arm and sets gui=1.  On every such shape
+# GUI_PATH_SIGNAL=1 already carries the vitest lane, so COMPUTED-EMPTY narrows
+# the gui-feature nextest pass and nothing else.
+#
+# THE EXCEPTION IS A CLASSIFIER DISAGREEMENT, and this arm is what resolves it:
+# an INERT file at depth 1 directly under `crates/` (crates/README.md,
+# crates/anything.yaml).  decide_scope's `crates/*)` glob matches it — a case
+# `*` spans `/` — and sets rust=1 WITHOUT gui=1, while affected-crates-lib's
+# _file_to_crate needs `crates/*/*` to attribute a crate and drops the same path
+# into the inert arm.  Both classifiers are right about their own question
+# ("could this affect Rust?" vs "which crates does this touch?"), and this is
+# the seam where the two verdicts meet.  Consequence: GUI_PATH_SIGNAL=0 there,
+# so COMPUTED-EMPTY narrows the vitest lane away too.  Benign, and not because
+# of this predicate: reify_is_inert_path calls that path documentation, and the
+# same file one directory up (docs/**, a root *.md) classifies RUN_RUST=0 and
+# skips vitest already.  The MERGE-GATE arm runs both regardless.  Measured: no
+# such file exists in the tree today (`find crates -maxdepth 1 -type f` is empty).
+#
+# Pinned in one place rather than argued twice: tests/infra/test_verify_scope.sh's
+# GV-7 asserts both halves — pass narrowed away, vitest lane preserved — on the
+# tests/infra shape, the one that actually occurs.
 #
 # NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-ACTIVATION flag,
 # not a scope oracle: it is also 0 for `--scope staged` without `--narrow` and
@@ -2003,13 +2178,13 @@ fi
 # gate" was a false equivalence.
 #
 # WHAT ACTUALLY NARROWS is smaller than "every hook run", and the difference is
-# measured, not assumed: only a diff whose paths ALL map to crates AND whose
-# reverse closure excludes reify-gui takes arm 3.  A scripts-only diff yields
-# the ALL sentinel (C5/unmappable) and a tests/infra-only one yields an EMPTY
-# closure (affected-crates-lib treats tests/infra/* as non-crate, while
-# decide_scope's conservative arm still sets RUN_RUST=1) — both take arm 2.
-# Arm 1 keeps the merge gate unconditional, so a hook-tier miss can only ever
-# be LATENCY, never a coverage hole.
+# measured, not assumed.  TWO shapes narrow: a diff whose paths ALL map to
+# crates and whose reverse closure excludes reify-gui (MEMBERSHIP), and a diff
+# whose paths map to NO crate at all while still classifying RUN_RUST=1 — in
+# practice a tests/infra-only one, extremely common here (COMPUTED-EMPTY).  A
+# scripts-only diff does NOT: it yields the ALL sentinel (C5/unmappable) and
+# takes FAIL-WIDE.  The MERGE-GATE arm keeps the merge gate unconditional, so a
+# hook-tier miss can only ever be LATENCY, never a coverage hole.
 #
 # Membership is the REVERSE-dependency closure, not a hand-listed trigger set
 # (reify-gui/reify-eval/reify-mesh-morph), so a change to an indirect
@@ -2018,7 +2193,7 @@ fi
 # crates/reify-mesh-morph/src/lib.rs yield sets containing reify-gui;
 # crates/reify-doc/src/lib.rs does not.
 #
-# The closure is normalized ONCE into a word ARRAY so arm 2 sees every
+# The closure is normalized ONCE into a word ARRAY so FAIL-WIDE sees every
 # malformed-knob shape as "unavailable" rather than as a crate list — a
 # malformed REIFY_AFFECTED_CRATES_OVERRIDE must fail WIDE, never narrow, the
 # same invariant as the AFFECTED_ALL_FLAGS-empty reset above.  Three shapes,
@@ -2036,7 +2211,11 @@ fi
 #     metacharacter, a path fragment, a stray flag.  A real affected_crates()
 #     closure only ever holds crate names, so a token that cannot BE one means
 #     the knob is malformed, not that the closure excludes reify-gui.  Closed
-#     by the grammar check, which routes to arm 2 rather than arm 3.
+#     by the grammar check, which routes to FAIL-WIDE rather than MEMBERSHIP.
+# None of the three can reach COMPUTED-EMPTY either, and not because of a second
+# guard: they arrive through REIFY_AFFECTED_CRATES_OVERRIDE, which never sets
+# the from-diff licence, so the whitespace-only shape — the one that DOES split
+# to an empty array — still falls to FAIL-WIDE.
 #
 # Role-specific skips belong at the CALL SITE, not here: the gui-feature pass's
 # `DF_VERIFY_ROLE != offline` guard is a property of that pass, not of the
@@ -2058,12 +2237,22 @@ closure_reaches_reify_gui() {
     done
     if [ "$_noglob_was" -eq 0 ]; then set +f; fi
 
-    # Arm 2 — closure unavailable: fail wide.
-    [ "${#_words[@]}" -eq 0 ] && return 0
+    # FAIL-WIDE — closure unavailable.  Ordered ahead of the empty test,
+    # which is safe as well as clearer: _malformed can only be 1 if the split
+    # loop ran a body, i.e. if _words is non-empty.
     [ "$_malformed" -eq 1 ] && return 0
     { [ "${#_words[@]}" -eq 1 ] && [ "${_words[0]}" = "ALL" ]; } && return 0
 
-    # Arm 3 — a real crate list: membership decides.
+    # FAIL-WIDE vs COMPUTED-EMPTY — an empty closure is two different facts,
+    # told apart by the from-diff licence alone: DERIVED from this run's diff
+    # means provably zero crates (narrow away); anything else means the question
+    # was never answered (fail wide).
+    if [ "${#_words[@]}" -eq 0 ]; then
+        [ "$AFFECTED_CLOSURE_FROM_DIFF" -eq 1 ] && return 1
+        return 0
+    fi
+
+    # MEMBERSHIP — a real crate list: membership decides.
     for _w in "${_words[@]}"; do
         [ "$_w" = "reify-gui" ] && return 0
     done
@@ -2795,7 +2984,7 @@ add_test_passes() {
     #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
     #     partition only.
     #   * NARROWED on the same affected-crate axis every other narrowed pass uses,
-    #     by closure_reaches_reify_gui (defined above — task 6268's three arms and
+    #     by closure_reaches_reify_gui (defined above — task 6268's four arms and
     #     their fail-wide ladder; task 7427 extracted them so the vitest lane reads
     #     the same answer instead of a second copy).
     #     WHAT THAT BUYS *THIS* PASS is a full tauri + webkit2gtk + OCCT
@@ -3034,9 +3223,11 @@ build_plan() {
         # because the frontend consumes generated Rust->TS bindings). On a merge-gate narrowed retry, dark-factory sets
         # REIFY_GUI_RETRY_SPECS to the space-separated, gui-root-relative vitest
         # spec paths that failed (e.g. `src/__tests__/foo.test.ts`); forward them
-        # so the block runs ONLY those specs via `npm test -- <specs>` (== `vitest
-        # run <specs>`; the block cd's into gui/, so gui-relative positionals
-        # match). Unset OR empty => full `npm test`, byte-identical to the
+        # so the block runs ONLY those specs via the shared runner
+        # ../scripts/gui-vitest-run.sh (== `npm test -- <specs>` == `vitest run
+        # <specs>`, plus task 7630's bounded worker-RPC-flake retry; the block
+        # cd's into gui/, hence the ../ prefix, and gui-relative positionals
+        # match). Unset OR empty => the full suite, byte-identical to the
         # non-retry path (the §4.3 loud full-fallback for an empty gui subset).
         # PRD docs/prds/verify-retry-failed-only.md §4.2 leaf γ.
         #
@@ -3077,7 +3268,7 @@ build_plan() {
                 done
             fi
             if [ "$_gui_retry_ok" -eq 1 ]; then
-                gui_inner+=" && npm test -- $_gui_retry_specs"
+                gui_inner+=" && ../scripts/gui-vitest-run.sh $_gui_retry_specs"
                 # δ honest marker (task 5290): count the VALIDATED specs at this
                 # SINGLE narrowing site (INV-5 — reuse the allowlist result, so
                 # an ignored/invalid REIFY_GUI_RETRY_SPECS reports gui=0, matching
@@ -3088,7 +3279,7 @@ build_plan() {
                 _RETRY_GUI_SUBSET_APPLIED=${#_gui_retry_toks[@]}
             else
                 [ -n "$_gui_retry_specs" ] && echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS contains characters outside [A-Za-z0-9._/ -] or a token beginning with '-'; ignoring the subset and running the full gui suite" >&2
-                gui_inner+=" && npm test"
+                gui_inner+=" && ../scripts/gui-vitest-run.sh"
             fi
         fi
         _gui_cmd="if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
@@ -3649,13 +3840,21 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
     # "RUN_RUST=… RUN_GUI=… RUN_OCCT_GATE=…", which survives a trailing append
     # and does not survive a reordering.
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE RUN_GUI_VITEST=$RUN_GUI_VITEST"
-    # `closure=` is APPENDED, never inserted: tests/infra/test_verify_scope.sh
-    # greps this line as the unanchored substrings "NARROW_ACTIVE=1 affected=…" /
-    # "NARROW_ACTIVE=0 affected=ALL", and plan_capture_lib.sh's plan_narrow_active
-    # matches NARROW_ACTIVE=([0-9]+); all three survive a trailing append and none
-    # survives a reordering.  A `#` comment line, so plan_count_noncomment_lines
-    # (`^[^#]`) — the oracle behind the THROUGHPUT-COUNTS sentinel — cannot see it.
-    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-}"
+    # `closure=` and `from_diff=` are APPENDED, never inserted:
+    # tests/infra/test_verify_scope.sh greps this line as the unanchored
+    # substrings "NARROW_ACTIVE=1 affected=…" / "NARROW_ACTIVE=0 affected=ALL",
+    # and plan_capture_lib.sh's plan_narrow_active matches NARROW_ACTIVE=([0-9]+);
+    # all three survive a trailing append and none survives a reordering.  A `#`
+    # comment line, so plan_count_noncomment_lines (`^[^#]`) — the oracle behind
+    # the THROUGHPUT-COUNTS sentinel — cannot see it.
+    #
+    # `from_diff=` is what makes the closure THREE-valued to a plan reader:
+    # `closure=` alone is empty both when a real diff proved zero crates and when
+    # the closure was never computed on this tier, and only the former licenses
+    # narrowing.  Without it a --print-plan assertion of "0 gui-feature passes"
+    # would be satisfiable by an implementation that simply stopped computing the
+    # closure — see AFFECTED_CLOSURE_FROM_DIFF at its assignment site.
+    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-} from_diff=$AFFECTED_CLOSURE_FROM_DIFF"
     echo "# --- environment (process-level; inherited by every command below EXCEPT where a command overrides it inline — see the LD_LIBRARY_PATH scrub on non-cargo lines) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"

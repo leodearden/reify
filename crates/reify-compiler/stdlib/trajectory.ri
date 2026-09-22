@@ -1025,20 +1025,20 @@ structure def KlipperDialect : GcodeDialect { }
 // `"G1 X10 Y10"` is a move to (10 mm, 10 mm), and it surfaces here as
 // (0.01 m, 0.01 m).
 //
-// That regime is NOT what the FDM slice surface does, and the difference is
-// worth knowing before authoring against both. `fdm_slice.ri` keeps its
-// `Toolpath` NATIVE all the way through the DSL: `Bead.width`, `.height`,
-// `.layer_z`, `.speed` and the centerline are declared as undimensioned `Real`
-// / `Point3<Real>` in raw millimetres and mm·min⁻¹ (see the field-type ↔
-// marshalling contract at the top of that file), with mm→SI deferred to the
-// downstream θ `FDMPrint` mapping inside Rust. So the two g-code-derived
-// payloads sit in OPPOSITE unit regimes today — this one is not following an
-// existing precedent, it is establishing the other pole of the split.
+// The FDM slice surface does the same thing, so authoring against both is one
+// rule, not two. `fdm_slice.ri` declares `Bead.width`, `.height`, `.layer_z`
+// and `Layer.z` as `Length`, `.speed` as `Velocity`, `.nominal_temp` as
+// `Temperature` and the centerline as `List<Point3<Length>>` (see the
+// field-type ↔ marshalling contract at the top of that file), and its
+// `toolpath_to_value` converts at that projection just as `waypoint_to_value`
+// does here — while its parser-side `Toolpath` stays native for the same
+// lossless-fidelity reason.
 //
-// A NEW DSL-visible payload should follow the regime here: converting at the
-// projection is what lets a design author's dimensional arithmetic see the
-// units at all, and it puts the whole conversion at one nameable boundary
-// instead of leaving every consumer to remember which axis is in what.
+// So converting at the projection is THE convention for a DSL-visible payload:
+// it is what lets a design author's dimensional
+// arithmetic see the units at all, and it puts the whole conversion at one
+// nameable boundary instead of leaving every consumer to remember which axis
+// is in what.
 //
 // Two tests keep this paragraph honest: `gcode_import_smoke_waypoints_are_si_lengths`
 // in `crates/reify-eval/tests/gcode_import_eval_e2e.rs` pins the positions

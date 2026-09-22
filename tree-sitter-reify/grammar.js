@@ -933,6 +933,184 @@ module.exports = grammar({
         optional(field('body', choice($.specialization_body, $.keyed_member_block))),
         optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
       ),
+      // Derived form: sub name = mirror of <proto> across <plane> { body }
+      //              sub name = image  of <proto> under  <transform> { body }
+      //
+      // Leaf A-alpha of `docs/prds/v0_6/assembly-derivation-toolbox.md`
+      // (task #6615). A-alpha is SYNTAX + LOWERING only; every compile-scope
+      // rejection (unknown / non-sibling / cyclic prototype, disposition-path
+      // resolution, let-override rules, auto-prototype) belongs to A-beta
+      // (#6616).
+      //
+      // (i) CONTEXTUAL KEYWORDS, not reserved words. `mirror`, `image`, `of`,
+      //     `across`, `under`, `keep`, `exclude` and `using` are plain
+      //     anonymous string tokens. grammar.js declares NO `word:` rule, so
+      //     none of them is reserved and `$.identifier` still matches them
+      //     everywhere else — the same mechanism `relate`, `joint`, `priv`
+      //     and `default` already rely on. This is load-bearing: MEASURED
+      //     occurrences of each word in the 673 committed `.ri` files are
+      //     mirror 65, image 15, across 64, under 143, keep 21, symmetry 5,
+      //     exclude 0 (`of` 937). Reserving any of them would un-pin
+      //     committed source.
+      //
+      // (ii) UNLIKE `relate`, these two lead tokens sit at a state where
+      //     `$.identifier` is ALSO valid: after `sub <name> =` the
+      //     instantiation arm expects `field('structure_name', $.identifier)`.
+      //     So `'mirror'` / `'image'` are separated from a structure name by
+      //     tree-sitter's documented LEXER rules, exactly like the `'List'`
+      //     collection arm above (see the long rule #1 / rule #2 note at the
+      //     specialization arm):
+      //       Rule #1 (longest match): `mirrored` is 8 chars vs `'mirror'`'s
+      //         6, so `sub y = mirrored(a: 1mm)` still reaches the
+      //         instantiation arm with structure_name == "mirrored".
+      //       Rule #2 (string beats regex on an EQUAL-length match): on the
+      //         exact text `mirror`, both `'mirror'` and $.identifier match 6
+      //         chars, so `'mirror'` wins and this arm is taken.
+      //     MEASURED CONSEQUENCE, deliberate: `sub x = mirror(a: 1mm)` and
+      //     `sub y = image(a: 1mm)` parsed on the base commit and are a LOUD
+      //     parse error from here on. ZERO committed `.ri` is affected — the
+      //     only `sub <name> = mirror|image` occurrence in the tree is the
+      //     A-alpha target fixture itself. Pinned by the negative controls in
+      //     `tests/derived_sub_grammar_tests.rs`.
+      //
+      // (iii) The body brace is REQUIRED (not `optional`), upholding
+      //     INV-SF-7: a derivation clause ends in `field('plane'|'transform',
+      //     $._expression)`, so an optional body would leave a dangling
+      //     right-edge expression free to absorb the following line's tokens
+      //     (`across plane_yz` + a newline + `55mm` juxtaposing into one
+      //     expression). Requiring `{` closes that seam by construction, and
+      //     omitting the body is a loud parse error.
+      //
+      // (iv) `at <pose>` is deliberately ACCEPTED here. Placement of a
+      //     derived sub is DERIVED, so an explicit `at` is an error — but it
+      //     is a COMPILE-scope error, `E_DERIVED_SUB_EXPLICIT_AT` (T8), owned
+      //     by A-beta per the D3-adversary ownership ruling. Same shape as
+      //     the collection arm's `at` note above: the grammar accepts it for
+      //     uniformity and the compiler rejects it with a good message.
+      //
+      // (v)  `keep <path> using <plane>` is RESERVED syntax for v2 (PRD
+      //     §3.3 / §11). It parses and lowers into a stored slot; it carries
+      //     NO v1 meaning and no lowering consequence.
+      //
+      // (vi) `symmetry` is RESERVED as a future contextual keyword (PRD §8
+      //     contract item ii). It gets NO production here on purpose — a
+      //     production would start capturing the 5 committed occurrences.
+      //     The reservation is documentation-only; that `symmetry` still
+      //     lexes as an ordinary identifier is asserted at runtime by the
+      //     contextual-keyword battery in `tests/derived_sub_grammar_tests.rs`.
+      //
+      // (vii) `xs[<element>]` element addressing inside a disposition path is
+      //     RESERVED (PRD §8 contract item iii) — no implementation here.
+      //     `disposition_path` is a dotted identifier chain only.
+      //
+      // Arm disambiguation costs NOTHING: MEASURED, `tree-sitter generate`
+      // reports zero new conflicts, so this arm adds no `conflicts:` entry
+      // and no `prec(...)`. The pre-existing `conflicts: [$.sub_declaration]`
+      // entry already covers the shared `priv? aux? sub <name>` prefix.
+      seq(
+        optional('priv'),
+        optional('aux'),
+        'sub',
+        field('name', $.identifier),
+        '=',
+        field('derivation', $.sub_derivation),
+        field('body', $.derived_body),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
+      ),
+    ),
+
+    // ── Sub derivation clause ─────────────────────────────────
+    // The derivation itself: which prototype, and under which transform.
+    //
+    // Modelled as ONE rule with two alternatives (rather than two sibling
+    // rules) because PRD §6 D1 makes the derivation an ELEMENT type with
+    // several constructors: Layer-3 group elements become FURTHER
+    // alternatives here, and consumers should switch on the constructor, not
+    // on which of two node kinds appeared.
+    //
+    // `prototype` is `$.identifier`, NOT `$.import_path` and not
+    // `$._expression`: the PRD names a bare sibling-sub identifier. A dotted
+    // `mirror of a.child across P` is therefore a loud parse error rather
+    // than a silently-accepted path that A-beta would have to reject later.
+    sub_derivation: $ => choice(
+      seq('mirror', 'of', field('prototype', $.identifier), 'across', field('plane', $._expression)),
+      seq('image', 'of', field('prototype', $.identifier), 'under', field('transform', $._expression)),
+    ),
+
+    // ── Derived body ─────────────────────────────────────────
+    // Body of a derived sub: overrides, dispositions, and local members.
+    //
+    // Deliberately NOT `specialization_body`: that rule admits the full
+    // `$._member` set (param / port / sub / connect / …), whereas a derived
+    // body admits exactly param overrides, `keep`/`exclude` dispositions,
+    // `let` and `constraint`. Reusing `specialization_body` would have
+    // widened the derived surface to member kinds the PRD does not define
+    // and pushed their rejection into A-beta for no benefit.
+    //
+    // `repeat` (not `repeat1`) so an empty `{ }` body is legal — the
+    // derivation alone is a complete specification.
+    derived_body: $ => seq(
+      '{',
+      repeat(choice(
+        $.derived_param_assignment,
+        $.keep_disposition,
+        $.exclude_disposition,
+        $.let_declaration,
+        $.constraint_declaration,
+      )),
+      '}',
+    ),
+
+    // A param override inside a derived body: `name = value where?`.
+    //
+    // Distinct from `param_assignment` (specialization bodies) ONLY because
+    // of `default_reset`: `<param> = default` resets an inherited value to
+    // the prototype's declared default, which is meaningless in a
+    // specialization body. Everything else — the `where` guard, the
+    // `_binding_value` value slot (so `auto` / `auto(free)` overrides lower
+    // to ExprKind::Auto exactly as on the specialization arm) — is the same
+    // shape, and the distinct name keeps the two contexts unconfusable, the
+    // same rationale `connect_param_assignment` records.
+    derived_param_assignment: $ => seq(
+      field('name', $.identifier),
+      '=',
+      field('value', choice($.default_reset, $._binding_value)),
+      optional(field('guard', $.where_clause)),
+    ),
+
+    // `default` in value position: reset an inherited param to its default.
+    // A named node (not a bare anonymous token) so lowering can discriminate
+    // a reset from an override without re-inspecting source text.
+    default_reset: $ => 'default',
+
+    // Dispositions: which of the prototype's features survive derivation.
+    //
+    // `keep <path> using <plane>` — the `using` tail is RESERVED (PRD §3.3 /
+    // §11), stored but meaningless in v1. See note (v) on the arm above.
+    keep_disposition: $ => seq(
+      'keep',
+      field('path', $.disposition_path),
+      optional(seq('using', field('plane', $._expression))),
+    ),
+
+    exclude_disposition: $ => seq(
+      'exclude',
+      field('path', $.disposition_path),
+    ),
+
+    // A dotted feature path: `web`, `web.hub`, `a.b.c`.
+    //
+    // Deliberately the `import_path` dotted-identifier SHAPE rather than
+    // `$._expression`. This is the second INV-SF-7 seam closed by
+    // construction: a `$._expression` path would end at a right edge that
+    // could absorb the next newline-separated body item (`keep drum` +
+    // newline + `w = 2mm` juxtaposing), whereas a dotted identifier chain
+    // cannot continue past its last identifier. It also makes the reserved
+    // `xs[<element>]` addressing of PRD §8 item (iii) a parse error today
+    // rather than something silently accepted with no meaning.
+    disposition_path: $ => seq(
+      $.identifier,
+      repeat(seq('.', $.identifier)),
     ),
 
     // ── Specialization body ──────────────────────────────────

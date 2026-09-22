@@ -20,152 +20,150 @@
 //!
 //! Provides [`accept_arg`] and the associated types (`ArgSpec`, `Acceptance`,
 //! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
-//! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
-//! Contract C — the LENGTH-semantic args (task 5214, extended by 5350, 5623,
-//! 5658, 5661, 5743 and 5744): `geometry_ops`' `eval_named_arg_length`, its
-//! raw-`Value` wrapper `required_length_value`, and `resolve_length_scalar_arg`
-//! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
-//! [`length_spec`] so both emit identical rejection text.
+//! Contract B (`body_mass_props` density ladder in `dynamics_ops`), and
+//! Contract C — the LENGTH-semantic args: `geometry_ops`'
+//! `eval_named_arg_length`, its raw-`Value` wrapper `required_length_value`, and
+//! `resolve_length_scalar_arg` (`edges_at_height` z/tol, `geo_equiv` tol), which
+//! share the single [`length_spec`] so all of them emit identical rejection
+//! text.
 //!
-//! The positions currently routed through the Contract C chokepoint, by family.
-//! THREE routes reach it, all bottoming out in the same
+//! # WHICH POSITIONS CONTRACT C GOVERNS — the machine check, not this comment
+//!
+//! `crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs`.
+//!
+//! That guard sweeps EVERY builtin in `reify_compiler::GEOMETRY_FUNCTION_NAMES`
+//! across every arity, drives each numeric position through the eval-side op
+//! compiler with a bare number planted in it, and asserts that every position it
+//! reaches is either rejected here or carries an entry stating why it is
+//! legitimately dimensionless — a closed `Justification` taxonomy (decision D14)
+//! for the justified ones, a `Residual` row with a live task cite for the rest.
+//! Dropping any one entry makes it fire; so does stubbing out any one observed
+//! gate.
+//!
+//! This note used to carry that enumeration by hand — a per-family table of
+//! gated positions, a list of what was deliberately left bare, and a list of who
+//! owned the rest. Decision D6 replaced it: a prose list cannot go red, five
+//! successive hand audits missed the raw-`Value` passthrough class, and a
+//! position added without a matching doc edit was invisible. Add a length-
+//! semantic argument anywhere and the guard will tell you; you no longer have to
+//! remember to tell it.
+//!
+//! What stays here is what describes THIS MODULE rather than tracking work.
+//!
+//! # The three routes, and the one chokepoint
+//!
+//! THREE routes reach Contract C, all bottoming out in the same
 //! `accept_arg(&value, &length_spec())` call so their rejection wording is
-//! byte-identical by construction: the NAMED-ARG route
-//! (`eval_named_arg_length`); since task 5658 the VARIADIC route
-//! (`accept_variadic_length_args`, for the arity-open positional coordinate
-//! streams whose args the compiler names inertly `c0`…`cN`); and since task
-//! 5745 the DECODED-VALUE route (`accept_length_point3`, for a position that
-//! arrives already assembled into a composite `Value` by a stdlib producer —
-//! `plane_yz(10mm)` → `Value::Plane`, `point3(…)` → `Value::Point` — and so
-//! never passes through an argument-name read at all). Since task 5661 the
-//! variadic route carries 2-D vertex PAIRS as well as 3-D triples, which is why
-//! its coordinate renderer (`CoordName`) carries a per-point STRIDE: at stride 3
-//! a pair stream would be named `x1,y1,z1,x2,…`, misdirecting the author on both
-//! the axis letter and the vertex number. The decoded-value route has the
-//! analogous renderer problem in a GRID rather than a stream, and answers it the
-//! same way (`GridCoordName`, rendering `control_points[r][c].{x|y|z}`).
+//! byte-identical by construction:
+//!
+//! * the NAMED-ARG route (`eval_named_arg_length`);
+//! * the VARIADIC route (`accept_variadic_length_args`), for the arity-open
+//!   positional coordinate streams whose args the compiler names inertly
+//!   `c0`…`cN`;
+//! * the DECODED-VALUE route (`accept_length_point3`), for a position that
+//!   arrives already assembled into a composite `Value` by a stdlib producer —
+//!   `plane_yz(10mm)` → `Value::Plane`, `point3(…)` → `Value::Point` — and so
+//!   never passes through an argument-name read at all.
+//!
+//! The variadic route carries 2-D vertex PAIRS as well as 3-D triples, which is
+//! why its coordinate renderer (`CoordName`) carries a per-point STRIDE: at
+//! stride 3 a pair stream would be named `x1,y1,z1,x2,…`, misdirecting the
+//! author on both the axis letter and the vertex number. The decoded-value route
+//! has the analogous renderer problem in a GRID rather than a stream, and answers
+//! it the same way (`GridCoordName`, rendering `control_points[r][c].{x|y|z}`).
 //!
 //! The named-arg route has TWO ARITIES, and a new optional dimensioned slot
 //! should reuse the second rather than open-code it: `required_length_arg` (an
-//! absent arg is a diagnosed failure) and, since task 5755,
-//! `optional_length_value` (an absent arg is `Ok(None)`, so the caller supplies
-//! its own documented default, while a PRESENT one is gated identically). Both
-//! mint their `Err` text from the same `length_arg_to_result`, so an optional
-//! slot is not a second dialect. This is an ARITY of the named-arg route, not a
-//! fourth route: the value is obtained by the same argument-name lookup +
-//! `eval_expr`, which is what "route" distinguishes above. `isosurface`'s `iso`
-//! (below) is its first caller.
+//! absent arg is a diagnosed failure) and `optional_length_value` (an absent arg
+//! is `Ok(None)`, so the caller supplies its own documented default, while a
+//! PRESENT one is gated identically). Both mint their `Err` text from the same
+//! `length_arg_to_result`, so an optional slot is not a second dialect. This is
+//! an ARITY of the named-arg route, not a fourth route: the value is obtained by
+//! the same argument-name lookup + `eval_expr`, which is what "route"
+//! distinguishes. `isosurface`'s `iso` is its first caller — and note that only
+//! a PRESENT `iso` is gated; an ABSENT one keeps a deliberate un-gated `0.0`
+//! default (decision D12), so the absent branch is not a hole.
 //!
-//! | family    | builtin / position                                   | task |
-//! |-----------|------------------------------------------------------|------|
-//! | pattern   | linear + 2-D spacing, arbitrary-pattern offsets, mirror-plane origin | 5214 |
-//! | pattern   | circular-pattern axis origin `ox`/`oy`/`oz`          | 5350 |
-//! | transform | `translate` `dx`/`dy`/`dz`; `rotate_around` pivot `px`/`py`/`pz` | 5623 |
-//! | sweep     | `revolve` axis origin `ox`/`oy`/`oz`                 | 5623 |
-//! | curve     | `line_segment` endpoints `x1`…`z2`; `arc` centre `cx`/`cy`/`cz` + `radius`; `helix` `radius`/`pitch`/`height` | 5623 |
-//! | curve     | `interp` + `bezier` variadic coordinate triples (EVERY position); `nurbs` pole coordinates (`2 .. 2 + 3·n_points`) — via the variadic route | 5658 |
-//! | profile   | `polygon` variadic 2-D vertex pairs (EVERY position) — via the variadic route | 5661 |
-//! | surface   | `isosurface` isovalue `iso` — OPTIONAL: only a PRESENT `iso` is gated; an ABSENT one keeps a deliberate un-gated `0.0` default (decision D12) — via `optional_length_value`, so the absent branch is NOT a residual hole | 5755 |
-//! | primitive | `box` width/height/depth, `cylinder` radius/height, `sphere` radius, `tube` outer_r/inner_r/height, `cone` bottom_radius/top_radius/height, `wedge` width/depth/height/top_width, `torus` major/minor_radius, `half_space` POINT `px`/`py`/`pz` (21 fields) | 5743 |
-//! | profile   | `rectangle` width/height, `circle` radius, `ellipse` semi_major/semi_minor (5 fields) | 5743 |
-//! | modify    | `fillet` radius, `chamfer` distance, `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken` offset, `zone_slab` width, `offset_solid`/`offset_curve` distance (9 fields) | 5744 |
-//! | sweep     | `extrude`/`extrude_symmetric` distance, `pipe` radius (3 fields) | 5744 |
-//! | decoded value | `decode_plane` / `decode_axis` ORIGINS `ox`/`oy`/`oz`; the `nurbs_surface` control-point GRID (the SURFACE sibling of the curve poles 5658 gated) — via the decoded-value route | 5745 |
+//! # The raw-`Value` slots reach the same chokepoint, all at once
 //!
-//! The two **5743** rows (`primitive` + `profile`) and the two **5744** rows
-//! (`modify` + `sweep`) are the R7 **raw-`Value`** positions: unlike the
-//! named-arg rows above them, these 38 are stored into their `GeometryOp`
-//! field as a `Value` and read by the kernel via `as_f64`, never through a
-//! named-arg `f64` helper. (The **5745** `decoded value` row below them is a
-//! THIRD route, not a raw-`Value` one: its coordinates are already assembled
-//! into a composite `Value` by a producer and are read back out by
-//! `point3_components`, so it reaches the chokepoint via `accept_length_point3`
-//! rather than via `required_length_value`.)
+//! The primitive / profile / modify / sweep fields are stored into their
+//! `GeometryOp` field as a `Value` and read by the kernel via `as_f64`, never
+//! through a named-arg `f64` helper. They reach the chokepoint through
+//! `geometry_ops`' `required_length_values` (and its `N == 1` wrapper
+//! `required_length_value`), which layers over the named-arg route
+//! (`required_length_args` → `required_length_arg` → `eval_named_arg_length`)
+//! and re-wraps each ACCEPTED SI f64 back into a dimensioned `Value` — so the
+//! stored representation is unchanged and the rejection wording is shared,
+//! rather than forked for the kernel boundary.
 //!
-//! Those 38 reach the chokepoint through `geometry_ops`' `required_length_values`
-//! (and its `N == 1` wrapper `required_length_value`), which layers over the
-//! named-arg route (`required_length_args` → `required_length_arg` →
-//! `eval_named_arg_length`) and re-wraps each ACCEPTED SI f64 back into a
-//! dimensioned `Value` — so the stored representation is unchanged and the
-//! rejection wording is shared, rather than forked for the kernel boundary.
-//! Every builtin with MORE THAN ONE gated slot reads its whole set in one
+//! Every builtin with MORE THAN ONE gated slot reads its whole set in ONE
 //! `required_length_values` call, so a bare `box(20, 20, 10)` is diagnosed at
-//! `width`, `height` AND `depth` — and a bare
-//! `chamfer_asymmetric(solid, 1, 2)` at BOTH `d1` and `d2` — in a single build
-//! rather than one arg name per rebuild. Task 5744 extended that same
-//! all-at-once discipline to the named-arg route's last `?`-chained group,
+//! `width`, `height` AND `depth` — and a bare `chamfer_asymmetric(solid, 1, 2)`
+//! at BOTH `d1` and `d2` — in a single build rather than one arg name per
+//! rebuild. The named-arg route's last `?`-chained group,
 //! `pattern_arbitrary`'s per-transform `t{i}_dx`/`t{i}_dy`/`t{i}_dz` offset
-//! triple (esc-5743-4), which now reads through `required_length_args`.
-//! Task 5743 also attached `reify_core::DiagnosticCode::DimensionedArgRejected`
-//! to every `ArgSpec`-backed rejection emitted in `geometry_ops`, retrofitting
-//! the previously code-less Contract C sites on both of the routes that existed
-//! then. Task 5745's decoded-value route inherits the code for free, by calling
-//! the same shared `accept_length_value`.
+//! triple, reads through `required_length_args` for the same reason (esc-5743-4).
+//! `accept_transform_to_arrays` shape-checks a `Value::Transform` locally and
+//! hands its translation WHOLE to `accept_length_point3`, so it inherits the
+//! wording, the code, D10's `unresolved (Undef)` message and the
+//! all-failures-at-once precedence across the triple without re-deriving any of
+//! them.
 //!
-//! Contract C is NOT yet exhaustive, and this note stays open until the closure
-//! guard of task 5752 replaces it with a pointer. What remains un-gated, and
-//! who owns it:
+//! `reify_core::DiagnosticCode::DimensionedArgRejected` is attached to every
+//! `ArgSpec`-backed rejection emitted in `geometry_ops` (INV-SF-6). That code,
+//! not the message text, is the structured contract a consumer should match on —
+//! the closure guard above reads it, and `ArgRejection::message` remains the
+//! sole owner of the wording so the ANGLE (PRD 3) and reader (PRD 5) follow-ups
+//! inherit identical text.
 //!
-//! - The SEVERITY residuals — task 6157. Task 5743 promoted the shared
-//!   `accept_length_value` rejection from `Warning` to `Error` + code, but
-//!   deliberately left three classes alone: the quiet-degrade readers
-//!   (`resolve_spec_arg` / `resolve_density_arg`), which return `Option<f64>`
-//!   and whose callers CONTINUE on `None` with no paired op-compile Error, so
-//!   promoting them would flip `reify eval` to exit 1 for positions no boundary
-//!   row covers; the non-finite-`Length` arm, which `accept_arg` ACCEPTED (it
-//!   IS a Length, merely NaN/±inf) and which therefore carries no
-//!   `ArgRejection` to hang a dimension-rejection code on; and the inline
-//!   non-`ArgSpec` `ArgRejection` sites (`Int`, `Point<Length>`, `Vec3`,
-//!   `Range`, `String` — including `resolve_int_value_ref`) plus Contract B.
+//! # Two QUIET consumers, gated but deliberately silent
 //!
-//! Deliberately NOT gated, and not a residual — the DECODED-VALUE counterparts
-//! of the unit-vector row below, each with the justification task 5752's
-//! closure-guard allowlist can lift verbatim (D14). All three are the remaining
-//! `point3_components` callers, which is why that helper SURVIVES task 5745
-//! rather than being replaced by the gate:
+//! `interferes`/`min_clearance`'s per-body `world_transform` and
+//! `walk_templates`' `composed_world` go through `decompose_transform_to_arrays`,
+//! now a thin wrapper over `accept_transform_to_arrays` with a throwaway
+//! diagnostic sink. They ARE gated; they are deliberately SILENT, and are NOT
+//! un-gated holes. Both already treat `None` as "identity / not decomposable →
+//! use the raw handle, no kernel op", and both read transforms that are LENGTH
+//! BY CONSTRUCTION: `identity_pose_transform` and `compose_pose_chain`'s seed
+//! mint `reify_ir::Value::length(0.0)`, `frame_to_pose_transform` hard-requires
+//! LENGTH components, and `reify_stdlib::compose_transforms` requires
+//! `t1_dim == t2_dim` so composition preserves the dimension. A rejection there
+//! is unreachable in production, and emitting one would DOUBLE-REPORT a failure
+//! the pose producer has already diagnosed.
 //!
-//! - the `decode_plane` plane NORMAL — a dimensionless unit vector, normalised
-//!   by `unit_vector3`; the plane equation is invariant to its scale;
-//! - the `decode_axis` axis DIRECTION — likewise a dimensionless unit vector,
-//!   normalised by `unit_vector3`;
-//! - `offset_curve`'s 3rd argument when it is not a reference Surface — its own
-//!   production diagnostic already calls it "a direction vec3".
+//! # What this module's gate CANNOT see
 //!
-//! Gating any of the three would REJECT CORRECT `.ri` CODE, since a unit vector
-//! legitimately has bare components. This is the D3 adversary finding
-//! (2026-07-28, BINDING) — the same ORIGIN-vs-DIRECTION split the SCALAR forms
-//! already draw, restated for the decoded-value route.
+//! `reify-stdlib`'s own `decompose_transform`
+//! (`crates/reify-stdlib/src/geometry.rs`) and its consumers
+//! `affine_from_transform` and `transform_inverse`. Measured: the first DISCARDS
+//! the translation dimension into `_dim` outright, the second propagates whatever
+//! dimension arrived through `make_dimensioned_component`. Both are one call away
+//! from the R12 gate, but they are pure VALUE-layer builtins that mint an
+//! `AffineMap`/`Transform` and never produce a `CompiledGeometryOp` — and neither
+//! name is in `GEOMETRY_FUNCTION_NAMES` — so **the closure guard cannot reach
+//! them**, and records them as an explicit out-of-universe residual rather than
+//! sweeping them up. Their owner is **task #6089** (the Frame/Transform/AffineMap
+//! LENGTH ruling), not the guard. The THIRD consumer, `transform_log`, was closed
+//! by RULING #6126, which dropped its `LENGTH || DIMENSIONLESS` admission to
+//! `t_dim != TWIST_LINEAR_DIM` and gave it a `Severity::Error` arm in
+//! `geometry::diagnose`; `transform_exp`'s LINEAR half went with it.
 //!
-//! Deliberately NOT gated, and not a residual: unit-vector DIRECTIONS
-//! (`ax`/`ay`/`az`, `nx`/`ny`/`nz`, and `extrude_infinite`'s `dx`/`dy`/`dz`),
-//! instance COUNTS, dimensionless scale FACTORS, and every ANGLE — angles are
-//! `docs/prds/v0_6/angle-units-surface-convergence.md`'s by seam-table decree,
-//! so gating one here would be a scope violation, not an improvement. That PRD
-//! reuses the SAME `DimensionedArgRejected` code rather than minting a
-//! per-dimension sibling, so no ANGLE row will ever appear in this table's
-//! residual list — only in that PRD's. `half_space` is the one builtin whose
-//! args STRADDLE the boundary: its `px`/`py`/`pz` POINT is gated (above) while
-//! its `nx`/`ny`/`nz` outward NORMAL stays bare, mirroring the `ax`/`ay`/`az`
-//! vs `ox`/`oy`/`oz` split already drawn for the circular pattern.
+//! # ANGLES are gated, but not here
 //!
-//! Also deliberately NOT gated, and the reason `nurbs` gates a SPAN rather than
-//! every position — its dimensionless neighbours sit on BOTH sides of the poles
-//! (task 5658), each ungated for a stated reason rather than by omission:
-//! `degree` is a polynomial degree, i.e. a count; `n_points` is a count; the
-//! weights are rational blending factors; the knots are parameter-space values.
-//! None of the four is a quantity in metres, so demanding a dimension of them
-//! would reject correct `.ri` code. The gated span is consequently
-//! ARITY-DEPENDENT — `2 .. 2 + 3·n_points`, computed from an argument — so a
-//! mechanical allowlist over it needs per-arity keys.
+//! They have their own spec in this module — [`angle_spec`] — owned by
+//! `docs/prds/v0_6/angle-units-surface-convergence.md` by seam-table decree, and
+//! the positions it governs are enumerated on that function rather than here.
+//! That PRD reuses the SAME `DimensionedArgRejected` code rather than minting a
+//! per-dimension sibling, so an angle position is tracked in ITS list and never
+//! in this one; which list a newly-added argument belongs to is decided by its
+//! dimension, not by its file.
 //!
-//! Until the residual closes, adding a length-semantic arg anywhere means
-//! adding it to the owning task's triage list too.
+//! # Value-level only
 //!
-//! The helper is **value-level only**: it operates on an already-resolved
-//! `Value` and has no knowledge of `CompiledExpr` or `ValueMap`.
-//! Callers are responsible for extracting the value from the expression
-//! (`resolve_density_arg`/`resolve_spec_arg` evaluate a `CompiledExpr`;
-//! `eval_named_arg_length` goes through `eval_named_arg`).
+//! The helper operates on an already-resolved `Value` and has no knowledge of
+//! `CompiledExpr` or `ValueMap`. Callers are responsible for extracting the value
+//! from the expression (`resolve_density_arg`/`resolve_spec_arg` evaluate a
+//! `CompiledExpr`; `eval_named_arg_length` goes through `eval_named_arg`).
 
 /// Specification for a single builtin argument — its expected type name, the
 /// required `DimensionVector`, and an optional hint shown in rejection messages.
@@ -311,6 +309,43 @@ pub fn length_spec() -> ArgSpec {
 /// `TractionLoad.traction`.
 ///
 /// `migration_hint` is intentionally `None` — see the section banner above.
+/// Returns the [`ArgSpec`] for an ANGLE-semantic builtin argument: a
+/// `Value::Scalar` with `DimensionVector::ANGLE` (radians). Mirrors
+/// [`length_spec`].
+///
+/// Two families of position share this spec:
+///
+/// - the PRODUCER angles — `rotate`'s and `rotate_around`'s rotation angle,
+///   `revolve`'s sweep angle, `arc`'s `start_angle` and `end_angle`, `draft`'s
+///   draft angle and `circular_pattern`'s total sweep;
+/// - the SELECTOR tolerances — the `tol` of the four directional face
+///   selectors (`faces_by_normal` and siblings), which is an angular tolerance
+///   rather than a length.
+///
+/// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
+/// **radians** by `Value::as_f64`, so an author writing `45` meaning 45° gets
+/// 45 radians — the ≈57× analogue of the 10-vs-10mm 1000× hazard `length_spec`
+/// documents. `circular_pattern` is the one position where the bare reading
+/// was DEGREES instead, which is precisely why it cannot stay bare: two
+/// neighbouring angle slots disagreeing on what a bare number means is the
+/// hole this spec closes. See PRD
+/// `docs/prds/v0_6/angle-units-surface-convergence.md` (leaves β/γ/δ/ε).
+///
+/// Example rendered rejection:
+/// `"faces_by_normal: tol argument expects Angle, got Real; pass a dimensioned angle such as \`45deg\` or \`1.5rad\`"`
+///
+/// The rendered rejection for a dimensionless `Scalar` reads "...expects
+/// Angle, got dimensionless Scalar" — [`value_short_label`]'s existing wording,
+/// deliberately NOT overridden here, so the angle text stays uniform with the
+/// LENGTH one rather than growing a per-dimension special case.
+pub fn angle_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Angle",
+        dimension: reify_core::DimensionVector::ANGLE,
+        migration_hint: Some(reify_core::units::ANGLE_MIGRATION_HINT),
+    }
+}
+
 pub fn pressure_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Pressure",
@@ -1186,4 +1221,69 @@ mod tests {
         );
     }
 
+    // ── PRD angle-units-surface-convergence §C1 leaf β: angle_spec() ─────────
+
+    #[test]
+    fn angle_spec_names_the_angle_dimension() {
+        let spec = angle_spec();
+        assert_eq!(spec.type_name, "Angle");
+        assert_eq!(spec.dimension, reify_core::DimensionVector::ANGLE);
+    }
+
+    #[test]
+    fn accept_angle_scalar_returns_accepted() {
+        let value = crate::value::Value::Scalar {
+            si_value: std::f64::consts::FRAC_PI_2,
+            dimension: reify_core::DimensionVector::ANGLE,
+        };
+        assert_eq!(
+            accept_arg(&value, &angle_spec()),
+            Acceptance::Accepted(std::f64::consts::FRAC_PI_2),
+            "an ANGLE scalar must be accepted carrying its SI radians"
+        );
+    }
+
+    #[test]
+    fn accept_bare_real_angle_rejected_with_migration_hint() {
+        // Structural assertion, mirroring the density case: Real must be
+        // Rejected, the hint must be Some, and message() must embed it. The
+        // exact wording is pinned once, at the const in reify-core.
+        let value = crate::value::Value::Real(45.0);
+        match accept_arg(&value, &angle_spec()) {
+            Acceptance::Rejected(rej) => {
+                assert!(
+                    rej.migration_hint.is_some(),
+                    "ArgRejection for a bare Real angle must carry a migration hint"
+                );
+                let hint = rej.migration_hint.unwrap();
+                let msg = rej.message("faces_by_normal", "tol");
+                assert!(
+                    msg.contains(hint),
+                    "message() must embed the migration_hint text; got: {msg:?}"
+                );
+            }
+            other => panic!("Value::Real(45.0) must be Rejected, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accept_length_scalar_rejected_by_angle_spec() {
+        let value = crate::value::Value::Scalar {
+            si_value: 0.045,
+            dimension: reify_core::DimensionVector::LENGTH,
+        };
+        assert!(
+            matches!(accept_arg(&value, &angle_spec()), Acceptance::Rejected(_)),
+            "a LENGTH scalar must be Rejected at an angle slot (strict-dimension equality)"
+        );
+    }
+
+    #[test]
+    fn accept_undef_angle_returns_undefined() {
+        assert_eq!(
+            accept_arg(&crate::value::Value::Undef, &angle_spec()),
+            Acceptance::Undefined,
+            "Undef must return Undefined at an angle slot too"
+        );
+    }
 }

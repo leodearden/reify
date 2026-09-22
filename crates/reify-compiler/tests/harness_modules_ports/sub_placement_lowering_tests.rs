@@ -363,6 +363,7 @@ fn match_arm_sub_pose_is_lowered() {
             index_binder: None,
             index_domain: None,
             relate_relations: vec![],
+            derivation: None,
             span: zero_span(),
             content_hash: ContentHash(0),
         })

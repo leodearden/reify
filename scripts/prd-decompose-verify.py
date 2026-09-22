@@ -104,12 +104,19 @@ class Premise:
 #   resolves  → check / present  — reify check exits 0 → match {exit_code:0} satisfied → PRESENT
 #   produces  → ir / present     — reify eval exits ≠ 0 with signature → PRESENT → PASS
 #   ir        → ir / absent      — reify eval exits 0 (clean) → ABSENT → expected absent → PASS
+#   value     → value / present  — reify eval exits 0 AND the stdout capture satisfies the
+#                                   numeric constraint → PRESENT → PASS; exits 0 and a capture
+#                                   was read but is wrong or undef → ABSENT → FAIL; exits ≠ 0,
+#                                   or the pattern located nothing → INDETERMINATE → UNPROVABLE
+#                                   (ABSENT is reserved for a value actually read: a mis-aimed
+#                                   pattern is a broken probe, not a negative finding)
 _ASSERTION_KIND_MAP: Dict[str, tuple] = {
     "rejection": ("check",   "present"),
     "parses":    ("grammar", "present"),
     "resolves":  ("check",   "present"),
     "produces":  ("ir",      "present"),
     "ir":        ("ir",      "absent"),
+    "value":     ("value",   "present"),
 }
 
 
@@ -125,6 +132,13 @@ def premise_to_probe(premise: Premise) -> Dict[str, Any]:
     accepts (exit 0), the match is not satisfied → ABSENT → expected "present" → FAIL.
     This is the exact W1 polarity guard: a human or LLM would naturally write "absent"
     (the rejection is absent), which inverts the test sense and masks the 4575 bug.
+
+    Choosing "value" over "ir": a premise whose text asserts anything about the
+    printed VALUE — finite, nonzero, in range, equals X — must bind "value".
+    "ir" is exit-code-only on the clean branch: it answers ABSENT on exit 0
+    without consulting the match dict at all, so such a premise bound as
+    ir/absent verifies only "eval did not crash" and is vacuous with respect to
+    the value half.
 
     Args:
         premise: A Premise record from the Enumerator or a leaf fixture.

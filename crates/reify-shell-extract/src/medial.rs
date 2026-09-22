@@ -34,6 +34,7 @@
 use reify_ir::value::SampledField;
 
 use crate::grid_validation::{GridValidationError, validate_regular3d};
+use crate::walk_direction::medial_walk_direction;
 
 /// Sparse voxel mask: indices `(i, j, k)` of every voxel tagged as medial
 /// by [`compute_medial_mask`].
@@ -95,10 +96,36 @@ pub struct MedialOptions {
     /// with `|φ(v)| > narrow_band_half_width_voxels × spacing` are
     /// excluded from the inner loop, emulating OpenVDB's sparse
     /// active-voxel iterator on top of a dense `SampledField`.
-    /// Default `3.0` covers the smallest medial axis at the PRD's
-    /// `thickness/3` voxel-size default (smallest medial slab is 3
-    /// voxels thick → half-width 1.5; 3 leaves headroom for
-    /// gradient-stencil sampling at the boundary voxels).
+    ///
+    /// **This field sets the extractor's UPPER resolution edge.** A
+    /// wall's medial plane sits at `|φ| = half-thickness`, so the band
+    /// filter (this file, ~:617) admits it only while
+    ///
+    /// ```text
+    /// voxels-per-thickness ≤ 2 × narrow_band_half_width_voxels
+    /// ```
+    ///
+    /// — 6 voxels per thickness at the default `3.0`. Refining past
+    /// that edge does not improve the measurement, it destroys it, and
+    /// silently: the filter runs BEFORE `medial_walk_direction`, so
+    /// #7527's ridge fallback never gets the chance to rescue a
+    /// dropped mid-plane voxel.
+    ///
+    /// The field is bounded BELOW by its producer, which this crate
+    /// cannot see: `reify-kernel-openvdb` will not build a grid coarser
+    /// than `MIN_FEATURE_VOXELS_ACROSS` voxels across the thinnest
+    /// feature, so `2 × nb` must stay ≥ that constant or no grid the
+    /// producer serves is measurable at all. **Do not lower this field
+    /// to "re-match" a voxel-size default** without re-checking that.
+    ///
+    /// Derivation, measured basis and the unclosed producer-side gap
+    /// are owned by the 2026-09-18 update in
+    /// `docs/prds/v0_4/structural-analysis-shells.md`. Pinned by
+    /// `tests/medial_resolution_window.rs` (the upper edge, which also
+    /// reproduces the measurement) and
+    /// `crates/reify-eval/tests/harness_kernel_realization/shell_voxel_resolution_window.rs`
+    /// (the cross-crate bracket — named in prose only, since this crate
+    /// deliberately carries no kernel/eval dependency).
     pub narrow_band_half_width_voxels: f64,
     /// Surface-patch distinctness threshold on the dot product of the
     /// SDF gradients sampled at the two surface-hit points. The
@@ -395,14 +422,29 @@ pub fn min_wall_thickness(
     let (max_steps, walk_step, _max_walk_dist) = walk_params(min_spacing, &options);
 
     match medial_min_scalar(sdf, |idx| {
-        // World coordinate and normalised gradient for this medial voxel.
+        // World coordinate and walk direction for this medial voxel. The walk
+        // direction is decided here a SECOND time (this path re-walks the mask
+        // rather than caching compute_medial_mask's distances — see the
+        // Performance note above), so it MUST be decided the same way: both
+        // sites go through `medial_walk_direction`.
+        //
+        // `gradient_at_index` is the gradient source because this path has no
+        // precomputed gradient grid to draw on; `phi` likewise has no cached
+        // source here, so unlike `compute_medial_mask` this site reads it.
         let world = world_at_index(sdf, idx);
+        let phi = sample_at_index(sdf, idx);
         let grad_raw = gradient_at_index(sdf, idx);
-        let g = normalize3(grad_raw)?; // None → skip (degenerate gradient)
-        // Bidirectional walk: d⁺ + d⁻ for this voxel.
+        // None → skip: neither a usable gradient nor an interior ridge axis.
+        let walk = medial_walk_direction(sdf, idx, phi, grad_raw)?;
+        // Bidirectional walk: d⁺ + d⁻ for this voxel. None → skip.
         let (d_plus, d_minus, _, _) =
-            bidirectional_distances(sdf, world, g, max_steps, walk_step)?; // None → skip
-        let sum = d_plus + d_minus;
+            bidirectional_distances(sdf, world, walk.direction, max_steps, walk_step)?;
+        // Converted from a distance along the walk direction to a PERPENDICULAR
+        // thickness. The ridge fallback walks a grid axis, which crosses an
+        // oblique medial plane diagonally and would otherwise over-read the
+        // wall by up to √3× — the reverse of this measure's documented
+        // conservative-lower-bound bias.
+        let sum = (d_plus + d_minus) * walk.normal_cosine;
         sum.is_finite().then_some(sum)
     })? {
         None => Ok(MinWallThickness::NoMeasurement),
@@ -533,6 +575,11 @@ fn walk_params(min_spacing: f64, options: &MedialOptions) -> (usize, f64, f64) {
 /// tag the voxel as medial iff (a) `|d⁺ − d⁻| / max(d⁺, d⁻) <
 /// distance_tolerance` AND (b) the gradients sampled at the two hit
 /// points are roughly antiparallel (`g_a · g_b < normal_antiparallel_threshold`).
+///
+/// At a voxel the medial surface passes exactly through, the central
+/// difference cancels by symmetry and carries no direction; there the walk
+/// direction comes instead from the one-sided ridge axis (see
+/// [`crate::walk_direction`]).
 pub fn compute_medial_mask(
     sdf: &SampledField,
     options: &MedialOptions,
@@ -655,7 +702,9 @@ pub fn compute_medial_mask(
                                 continue;
                             }
 
-                            // (b) gradient at the voxel; reject degenerate.
+                            // (b) walk direction at the voxel; reject voxels
+                            // that offer neither a usable gradient nor a
+                            // ridge axis.
                             //
                             // Invariant: `precompute_gradient_grid` only computes
                             // slots where |φ| ≤ band_width; out-of-band slots are
@@ -672,12 +721,19 @@ pub fn compute_medial_mask(
                                  |phi|={phi} > band_width={band_width}"
                             );
                             let grad = gradient_grid_ref[i * ny * nz + j * nz + k];
-                            let gnorm =
-                                (grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]).sqrt();
-                            if gnorm < GRADIENT_EPSILON {
+                            // `phi` is handed on rather than re-read, so the
+                            // ridge fallback's interior test is made on the very
+                            // value the band filter and debug_assert above gate.
+                            let Some(walk) = medial_walk_direction(sdf, [i, j, k], phi, grad)
+                            else {
                                 continue;
-                            }
-                            let g = [grad[0] / gnorm, grad[1] / gnorm, grad[2] / gnorm];
+                            };
+                            // `.direction` only: the equality test below stays
+                            // in the walk-axis metric deliberately, so this
+                            // mask can only ever GROW. Correcting it would be
+                            // a no-op anyway — see `walk_direction`'s
+                            // "Walking an axis, measuring a perpendicular".
+                            let g = walk.direction;
 
                             // (c) bidirectional ray walk from the voxel's
                             // world coordinate in ±g, with sub-voxel
@@ -1213,7 +1269,7 @@ pub(crate) fn surface_patches_distinct(
     dot < threshold
 }
 
-fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
+pub(crate) fn normalize3(v: [f64; 3]) -> Option<[f64; 3]> {
     let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if n < GRADIENT_EPSILON {
         None
@@ -1257,7 +1313,9 @@ mod tests {
     /// central-difference gradient (every axis collapses to a single
     /// sample) so the lone voxel is rejected by the
     /// `GRADIENT_EPSILON` degenerate-gradient filter, NOT by the
-    /// narrow-band threshold. The test still validates that the
+    /// narrow-band threshold. The ridge-axis fallback declines it
+    /// twice over: `phi = +1.0` is exterior, and no axis has an
+    /// interior neighbour pair. The test still validates that the
     /// public surface compiles and the function returns Ok regardless
     /// of which guard fires.
     #[test]
@@ -1469,21 +1527,12 @@ mod tests {
     /// load-bearing assertion complementing
     /// [`compute_medial_mask_flags_slab_centerline_voxels`].
     ///
-    /// **Why this test, not an odd-N sphere/thick-block?** The natural
-    /// "add a positive assertion to the radial fixtures" idea fails
-    /// because point-medial geometry on this algorithm is fundamentally
-    /// un-flaggable: on even-N grids no voxel sits at the exact medial,
-    /// and on odd-N grids the exact-medial voxel has degenerate
-    /// (zero-by-symmetry) central-difference gradient and is skipped by
-    /// `GRADIENT_EPSILON`; the off-by-one voxels then fail the
-    /// equality test by construction (their `abs_diff/dmax` exceeds the
-    /// default tolerance + absolute slack). A second slab
-    /// orientation gives a clean positive assertion that exercises a
-    /// genuinely different code path: gradient indexing along the
-    /// outer-loop axis (`i`) rather than the inner-loop axis (`k`). A
-    /// regression that swapped i↔k somewhere in the inner loop, or that
-    /// only exercised gradient_at_index's z-axis branch, would fail
-    /// this test while leaving the z-slab test green.
+    /// **Why a second slab orientation?** It exercises a genuinely
+    /// different code path from the z-slab test: gradient indexing
+    /// along the outer-loop axis (`i`) rather than the inner-loop axis
+    /// (`k`). A regression that swapped i↔k somewhere in the inner
+    /// loop, or that only exercised gradient_at_index's z-axis branch,
+    /// would fail this test while leaving the z-slab test green.
     ///
     /// Asserts the same three load-bearing properties as the z-slab
     /// test, but on the i-index instead of k.
@@ -1623,10 +1672,10 @@ mod tests {
     ///
     /// - `distance_tolerance == 0.05` — the PRD's "~5%" relative-distance
     ///   equality threshold for the bidirectional ray walk.
-    /// - `narrow_band_half_width_voxels == 3.0` — covers the smallest medial
-    ///   axis at the PRD's `thickness/3` voxel-size default (smallest
-    ///   medial slab is 3 voxels thick → half-width 1.5; 3 leaves headroom
-    ///   for gradient sampling at the boundary voxels).
+    /// - `narrow_band_half_width_voxels == 3.0` — the extractor's UPPER
+    ///   resolution edge, at `2 × nb = 6` voxels across the thickness. See
+    ///   [`MedialOptions::narrow_band_half_width_voxels`] for the window
+    ///   derivation; do not restate it here.
     /// - `normal_antiparallel_threshold == -0.5` — opposing-face hits whose
     ///   gradients dot to less than this (i.e. roughly antiparallel,
     ///   ≥120° between normals) count as "distinct surface patches" per

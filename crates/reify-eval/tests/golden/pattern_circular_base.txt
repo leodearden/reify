@@ -63,4 +63,3 @@ Ok(
         },
     },
 )
-[diag] Warning "circular_pattern: bare numeric angle `90` interpreted as 90°; use `90deg` or `1.570796rad` for explicit units"

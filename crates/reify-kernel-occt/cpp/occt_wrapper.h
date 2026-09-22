@@ -90,6 +90,7 @@ struct StepGuardProbeResult;
 enum class StepGuardFault : ::std::uint8_t;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
+struct VolumeMeasurement;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
 struct RevolveSynthesisPostSortResult;
 /// Returned by `face_analytic_datum` / `edge_analytic_datum` (geometric-relations ε);
@@ -1047,6 +1048,12 @@ Point3 wire_start_point(const OcctShape& wire);
 // --- Queries ---
 
 double query_volume(const OcctShape& shape);
+
+/// `query_volume`'s number plus which arm produced it. Both functions delegate
+/// to the same `compute_volume_arm` helper, so the returned `volume` is
+/// bit-identical to `query_volume(shape)` and the two can never disagree about
+/// which arm ran. Throws std::runtime_error on null/empty topology.
+VolumeMeasurement query_volume_measurement(const OcctShape& shape);
 double query_area(const OcctShape& shape);
 Point3 query_centroid(const OcctShape& shape);
 
@@ -1535,6 +1542,15 @@ bool shape_is_null(const OcctShape& shape);
 /// Build three planar faces sharing a common edge, assembled into a compound.
 /// The shared edge has 3 incident faces, making the compound non-manifold.
 std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test();
+
+/// Build an EMPTY `TopoDS_Compound` (a compound with no children) — the
+/// simplest member of the face-less-compound class that takes
+/// `compute_volume_arm`'s tessellation fallback. The measured detail, the class
+/// boundary, and why `make_nonmanifold_compound_for_test()` cannot serve here
+/// live in ONE place: the canonical note on this fixture's definition in
+/// occt_wrapper.cpp. Production `make_compound` rejects empty input, hence this
+/// fixture.
+std::unique_ptr<OcctShape> make_empty_compound_for_test();
 
 /// Build a 10×10×10 mm box with one face removed, wrapped in a solid.
 /// The resulting open shell causes BRepCheck_Analyzer::IsValid() to return false.

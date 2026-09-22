@@ -1227,8 +1227,12 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let mut diagnostics = if used_build {
             // D2 (task 5748) for sub-path (c). The realization re-runs the eval
             // front-end internally, so its list BOTH carries internal
-            // duplicates (measured: the `mirror(...)` 'ox' compile error twice
-            // for one call site) AND overlaps what
+            // duplicates (measured on `tests/fixtures/mirror_bare_origin.ri`:
+            // `failed to compile geometry operation: mirror: expected a Plane
+            // value, got undef` twice for one call site — re-measured at task
+            // 5746, which moved that fixture's rejection to the producer and
+            // with it the text of the duplicated line, not the duplication)
+            // AND overlaps what
             // `check_constraints_with_values` reports; the build entries seed
             // the list and the check entries merge in behind them, so an entry
             // produced by both passes is reported exactly once.
@@ -2150,10 +2154,26 @@ fn cmd_eval(args: &[String]) -> ExitCode {
     //
     // Both `eval` and `build` take `&mut self`, so the engine survives the call.
     let (values, diagnostics, engine) = if module_has_geometry(&compiled) {
-        // Geometry-bearing module: route through the kernel-backed build() path so
-        // that run_post_processes/post_process_geometry_queries fires and resolves
-        // geometry-query value cells (mass, centroid, volume, …).
-        // geometry_output is discarded — reify eval is a value inspector only.
+        // Geometry-bearing module: route through the kernel-backed realization
+        // path so that run_post_processes/post_process_geometry_queries fires and
+        // resolves geometry-query value cells (mass, centroid, volume, …).
+        // No geometry is emitted — reify eval is a value inspector only.
+        //
+        // `realize_for_check`, NOT `build()` (task 5318) — the same esc-5748-6
+        // reason `cmd_check` gives at its two sites above: `build()` also runs
+        // the Phase-B product-export walk, and `eval` writes no artifact, so
+        // that walk's EXPORT-ONLY diagnostics are false errors here, and a false
+        // EXIT — the tail of this function returns FAILURE on any
+        // `Severity::Error`. The argument had simply never been carried across
+        // to the other command that discards the artifact.
+        //
+        // Every value cell `build()` resolved here still resolves:
+        // `realize_for_check` differs from `build` in the export walk and in
+        // nothing else (both delegate to `build_with_geometry_output`, which
+        // takes the export as a flag). Pinned, not assumed, by
+        // `cli_gdt_integration_gate::b5_oracle_inside_oracles_agree`, which
+        // asserts the `dev` and `pokeout` oracle CELLS parsed from this
+        // command's stdout rather than merely its exit code.
         let mut engine =
             configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
                 SimpleConstraintChecker,
@@ -2164,7 +2184,7 @@ fn cmd_eval(args: &[String]) -> ExitCode {
             engine.set_persistent_cache_dir(Some(override_dir.clone()));
         }
         engine.set_capture_undef_causes(true);
-        let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+        let result = engine.realize_for_check(&compiled);
         (result.values, result.diagnostics, engine)
     } else {
         // Plain numeric module: keep the existing lightweight eval() path so
@@ -3232,8 +3252,11 @@ fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
 /// Membership is tested against the ACCUMULATING set — seeded from
 /// `check_diags`, then grown as build entries are appended — so duplicates
 /// *internal to* `build_diags` also collapse.  Measured, not hypothetical: on
-/// `tests/fixtures/mirror_bare_origin.ri` the realization emits the `'ox'`
-/// compile error twice for a single call site.  Note the corollary in
+/// `tests/fixtures/mirror_bare_origin.ri` the realization emits `failed to
+/// compile geometry operation: mirror: expected a Plane value, got undef` twice
+/// for a single call site (re-measured at task 5746 / units-length ε, which
+/// gated `plane_yz(0)` at the producer; the duplicated line was the `'ox'`
+/// compile error before that, and the duplication itself is unchanged).  Note the corollary in
 /// [`DiagKey`]: a list that can hold two DISTINCT findings with the same text
 /// must be kept out of that collapse (see [`strip_diagnostics_reproduced_by`]).
 fn merge_build_diagnostics(
@@ -3264,9 +3287,12 @@ fn merge_build_diagnostics(
 ///
 /// Tempting, because it would tell two same-text findings apart — but MEASURED
 /// to be wrong: on `tests/fixtures/mirror_bare_origin.ri` the duplicated
-/// `'ox'` geometry-compile error carries two DIFFERENT `realization_span`s for
-/// the one user-visible problem, so a span-aware key stops collapsing exactly
-/// the duplication this leaf exists to collapse.
+/// geometry-compile error carries two DIFFERENT `realization_span`s for the one
+/// user-visible problem, so a span-aware key stops collapsing exactly the
+/// duplication this leaf exists to collapse.  (That span observation was made on
+/// the `'ox'` message; task 5746 / units-length ε moved the rejection to the
+/// producer, so the duplicated line now reads `mirror: expected a Plane value,
+/// got undef` — same two realization passes, same duplication, re-measured.)
 ///
 /// The corollary is that no local key can distinguish "one finding reported
 /// twice" from "two findings that happen to read alike" (two GD&T callouts of
@@ -3292,7 +3318,10 @@ fn diagnostic_identity(d: &reify_core::Diagnostic) -> DiagKey {
 /// [`diagnostic_identity`] so the two cannot drift onto different keys.
 /// `cmd_check`'s sub-path (c) needs it on its own: the realization re-runs the
 /// eval front-end internally and emits some entries twice for a single call
-/// site (measured: the `mirror(...)` bare-origin `'ox'` compile error).
+/// site (measured on the `mirror(...)` bare-origin fixture: `failed to compile
+/// geometry operation: mirror: expected a Plane value, got undef`, re-measured
+/// at task 5746 — before it, the same duplicated slot carried the `'ox'`
+/// compile error).
 ///
 /// # Why coded entries are exempt
 ///
@@ -5350,15 +5379,18 @@ mod merge_build_diagnostics_tests {
     /// list, not only against check()'s original one.
     ///
     /// Empirically measured on the `mirror(...)` bare-origin fixture task 5748
-    /// adds, RE-MEASURED at task 5662 after it moved to the decoded-value form
-    /// `mirror(arm, plane_yz(0))`: `reify eval` emits
-    /// `failed to compile geometry operation: mirror: missing or non-Length
-    /// argument 'ox' for mirror` TWICE for a single call site — the duplication
-    /// is unchanged by the retarget; only the message gained the `mirror: `
-    /// builtin prefix the decoded-value route carries. Deduping against check()'s
-    /// list alone would print it twice on `check`'s stderr; PRD D2 only requires
-    /// "at least once", and collapsing matches `check`'s existing output
+    /// adds, RE-MEASURED at task 5746 (units-length ε) after it gated
+    /// `plane_yz(0)` at the producer: `reify eval` and `reify build` both emit
+    /// `failed to compile geometry operation: mirror: expected a Plane value,
+    /// got undef` TWICE for a single call site — the duplication is unchanged by
+    /// that move, only the text of the duplicated line is. Deduping against
+    /// check()'s list alone would print it twice on `check`'s stderr; PRD D2 only
+    /// requires "at least once", and collapsing matches `check`'s existing output
     /// discipline.
+    ///
+    /// The literal below is a SYNTHETIC stand-in — this test exercises the merge
+    /// key, not the fixture — so it is left spelling the pre-5746 message rather
+    /// than chasing the measured one.
     #[test]
     fn merge_collapses_duplicates_internal_to_build() {
         let dup = Diagnostic::error(

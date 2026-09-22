@@ -1,23 +1,37 @@
-//! Shared helpers for the `harness_occt` integration tests: local-feature
-//! (fillet/chamfer) assertions, bounding-box query parsing, and JSON-Point3
-//! (xyz) query parsing.
+//! Shared helpers for the `harness_occt_measurement` integration tests:
+//! local-feature (fillet/chamfer) assertions, bounding-box query parsing, and
+//! JSON-Point3 (xyz) query parsing.
+//!
+//! This file is a retained `tests/` SIBLING, not a member of any harness module
+//! dir, and exactly ONE harness root declares it — `harness_occt_measurement.rs`,
+//! via the bare `mod common;` that the kLOC guard's Section 6 sanctions. Task
+//! #7466 split `harness_occt` along precisely that boundary: the modules that
+//! consume these helpers moved to `harness_occt_measurement/` and took the
+//! include with them, so `harness_occt/` no longer sees `common::` at all and
+//! must not start (with no `mod common;` in that root, a `crate::common` use
+//! there fails to build). Declaring this file from a second root would compile a
+//! duplicate copy into that binary and charge its lines twice under the cap.
 //!
 //! The local-feature assertions were extracted from
-//! `fillet_with_history_integration.rs` and
-//! `chamfer_with_history_integration.rs` to eliminate byte-for-byte duplication
-//! of the edge-buffer assertion blocks (h)–(l). Future history-record additions
-//! (e.g. result_subshape_index sentinels) require only a single edit here rather
-//! than dual edits with drift risk.
+//! `harness_occt_measurement/fillet_with_history_integration.rs` and
+//! `harness_occt_measurement/chamfer_with_history_integration.rs` to eliminate
+//! byte-for-byte duplication of the edge-buffer assertion blocks (h)–(l). Future
+//! history-record additions (e.g. result_subshape_index sentinels) require only a
+//! single edit here rather than dual edits with drift risk.
 //!
 //! Block (g) mirrors the silent_drop_count invariant from
-//! `boolean_op_history_integration.rs` (parity, not extraction).
+//! `harness_occt/boolean_op_history_integration.rs` (parity, not extraction).
+//! That one sits on the OTHER side of the #7466 seam — it consumes nothing from
+//! this file, which is why it stayed behind — so the two are kept in parity by
+//! hand, and neither can drift into a compile error that flags it.
 //!
 //! The bounding-box half ([`BBox`], [`parse_bbox`]) consolidates seven
 //! hand-rolled `GeometryQuery::BoundingBox` JSON parsers that had accumulated
-//! across `tests/harness_occt/` — a duplication finding filed during task
-//! 5377's reviewer-amendment pass and resolved by task 5893. The wire-format
-//! contract, and why the parser is deliberately not `serde_json`-based, are
-//! stated ONCE on [`parse_bbox`]; do not restate either here.
+//! across what is now `tests/harness_occt_measurement/` — a duplication finding
+//! filed during task 5377's reviewer-amendment pass and resolved by task 5893.
+//! The wire-format contract, and why the parser is deliberately not
+//! `serde_json`-based, are stated ONCE on [`parse_bbox`]; do not restate either
+//! here.
 //!
 //! The JSON-Point3 half ([`Xyz`], [`parse_xyz`], [`xyz_of`]) does the same for
 //! the `{"x":_,"y":_,"z":_}` format shared by the Centroid / EdgeTangent /
@@ -642,9 +656,11 @@ pub fn bbox_of<E: std::fmt::Debug>(query_result: Result<Value, E>) -> BBox {
 // ---------------------------------------------------------------------------
 // Contract tests for the shared `BBox` / `parse_bbox` helpers above, which
 // consolidate the seven hand-rolled bbox parsers previously scattered across
-// `tests/harness_occt/`. These `#[test]` fns run as `common::<name>` within the
-// single `harness_occt` test binary (task 5277 folded the 51 former binaries
-// into one compile unit, so `mod common;` is a normal module of it).
+// what is now `tests/harness_occt_measurement/`. These `#[test]` fns run as
+// `common::<name>` within the single `harness_occt_measurement` test binary
+// (task 5277 folded the 51 former binaries into one compile unit, so
+// `mod common;` is a normal module of it; task #7466 then split that unit and
+// this file went with its consumers).
 // ---------------------------------------------------------------------------
 
 /// Build a bbox string EXACTLY the way the kernel does
@@ -869,7 +885,8 @@ fn bbox_all_finite_discriminates() {
 // JSON-Point3 (xyz) parsing (task 5937)
 //
 // Consolidates six hand-rolled `{"x":_,"y":_,"z":_}` parsers that had
-// accumulated across `tests/harness_occt/` — three standalone functions
+// accumulated across what is now `tests/harness_occt_measurement/` — three
+// standalone functions
 // (`topology_extract_integration.rs`'s and `shell_open_curated_faces.rs`'s
 // `parse_xyz`, `sweep_guided_integration.rs`'s `parse_centroid`) and three
 // inline decodes (in `closest_point_on_shape_integration.rs`,
@@ -1018,7 +1035,7 @@ pub fn xyz_of<E: std::fmt::Debug>(query_result: Result<Value, E>, query_label: &
 // ---------------------------------------------------------------------------
 // Contract tests for the shared `Xyz` / `parse_xyz` helpers above. Like the
 // bbox ones, these `#[test]` fns run as `common::<name>` within the single
-// `harness_occt` test binary.
+// `harness_occt_measurement` test binary.
 // ---------------------------------------------------------------------------
 
 /// Build a JSON-Point3 string EXACTLY the way this crate's `centroid_json`

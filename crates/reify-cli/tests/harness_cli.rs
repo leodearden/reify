@@ -87,6 +87,8 @@ mod cli_doc;
 mod cli_eval_auto_resolve;
 #[path = "harness_cli/cli_eval_data_carrying_enum.rs"]
 mod cli_eval_data_carrying_enum;
+#[path = "harness_cli/cli_eval_datum_units.rs"]
+mod cli_eval_datum_units;
 #[path = "harness_cli/cli_eval_fallback_recovery.rs"]
 mod cli_eval_fallback_recovery;
 #[path = "harness_cli/cli_eval_generic_enum.rs"]
@@ -133,6 +135,8 @@ mod cli_materials_starter_library_golden;
 mod cli_module_visibility_example;
 #[path = "harness_cli/cli_objective_inheritance_golden.rs"]
 mod cli_objective_inheritance_golden;
+#[path = "harness_cli/cli_orientation_rotvec_dimension.rs"]
+mod cli_orientation_rotvec_dimension;
 #[path = "harness_cli/cli_purpose.rs"]
 mod cli_purpose;
 #[path = "harness_cli/cli_purpose_stdlib.rs"]

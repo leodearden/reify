@@ -66,6 +66,7 @@ mod type_compat;
 mod type_resolution;
 mod types;
 mod units;
+mod unresolved_function;
 mod variant_construct;
 
 pub use annotations::materialize::{
@@ -123,6 +124,12 @@ pub use units::{
     UnitResolveError, WHOLE_HANDLE_GEOMETRY_QUERY_NAMES, geometry_query_result_type,
     resolve_unit_expr, topology_selector_result_type,
 };
+/// Closed-world builtin-name membership oracle (task #5371).
+///
+/// `pub` so reify-lsp can gate an "unknown function" hint on the same oracle
+/// the compiler's `UnresolvedFunction` warning uses, instead of re-deriving
+/// the union of every builtin-name family.
+pub use unresolved_function::is_known_builtin;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -580,6 +587,7 @@ pub fn compile_with_prelude_context_checked_with_config(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.trait_refs,
+        &decl_refs.fn_refs,
     );
 
     // The merged prelude enum set, used BOTH to resolve enum-typed variant
@@ -760,6 +768,24 @@ pub fn compile_with_prelude_context_checked_with_config(
     // compute_module_hash (so the minted cells + refreshed template content_hashes
     // fold into the module hash — design decision 5).
     hoist_nested_selectors::phase_hoist_nested_selector_ctors(&mut compile_ctx);
+
+    // Report declared objectives that provably govern nothing (DIC γ, task
+    // #5417). Runs LAST among the template post-passes, which is what makes the
+    // rule safe: `phase_sub_override_autos` / `phase_connect_auto_params` have
+    // already minted the parent-scoped `Parent.sub`/`member` cells that prove a
+    // child objective is governing after all, and
+    // `phase_hoist_nested_selector_ctors` has already finished rewriting
+    // ValueRefs. Runs before `compute_module_hash` for consistency with the
+    // other post-passes; it mutates only `diagnostics`, so the hash is
+    // unaffected either way. Purposes are excluded structurally — the pass
+    // walks `ctx.templates` and never touches `CompiledPurpose.objective`.
+    //
+    // `prelude_refs` is passed for ONE reason: to name the imported templates
+    // the pass must refuse to judge, including the monomorph clones
+    // `phase_auto_type_param_resolution` pushed into `ctx.templates` above. It
+    // does NOT widen the override search — see `inert_objective_finding`'s
+    // obligation 0′.
+    compile_builder::post_passes::phase_inert_objective_check(&mut compile_ctx, prelude_refs);
 
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);
