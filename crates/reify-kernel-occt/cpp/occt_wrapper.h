@@ -1608,14 +1608,10 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 /// label, same guard — after injecting exactly one fault into the transferred
 /// STEP model, and return the plane-angle audit counts alongside the file text.
 ///
-/// WHY THIS EXISTS. `STEPConstruct_UnitContext::Init`, the sole builder of the
-/// write-side unit context, emits `SI_UNIT($,.RADIAN.)` as an immediate
-/// constant with no branch on any writer option, so NO input shape and NO
-/// `Interface_Static` can make a real export produce a non-radian plane-angle
-/// declaration. The INV-AD-4 refusal guard's failure arms are therefore
-/// unreachable from ordinary inputs, and without injection the guard would be
-/// decorative. Same argument as `make_null_shape_for_test` above, which exists
-/// because its crash input "cannot be built from Rust".
+/// WHY THIS EXISTS: the guard's failure arms are unreachable from ordinary
+/// inputs, so injection is the only way to show it ever fires. The argument in
+/// full is on the `StepGuardFault` enum (declared in `src/ffi.rs`, generated
+/// into this language too), which is also where it stays current.
 ///
 /// `fault` selects the corruption, applied inside the export mutex and after
 /// the shape has been transferred. Each value names the defect it models and
@@ -1636,10 +1632,10 @@ StepGuardProbeResult export_step_with_injected_fault_for_test(
 );
 
 /// The same injected export, REPORTING the guard's finding instead of throwing
-/// it (#6344). Test-only, and identical to
-/// `export_step_with_injected_fault_for_test` in every other respect: same
-/// mutex, same `wrap_occt_call("export_step")` label, same
-/// `export_step_locked` body, same `fault` vocabulary.
+/// it (#6344). Test-only. It differs from
+/// `export_step_with_injected_fault_for_test` in its `StepGuardDisposition`
+/// and in nothing else; what that word covers is on the enum itself, in
+/// `occt_wrapper.cpp`.
 ///
 /// WHY IT EXISTS. On the refusing path the audit counts are reachable only as
 /// digits embedded in an English diagnostic, so every negative test had to

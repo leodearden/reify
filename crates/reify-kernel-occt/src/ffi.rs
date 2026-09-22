@@ -42,6 +42,17 @@ pub mod ffi {
     /// the transferred model before the INV-AD-4 plane-angle guard runs
     /// (#6344).
     ///
+    /// WHY INJECTION EXISTS AT ALL — the canonical statement; everything else
+    /// points here. `STEPConstruct_UnitContext::Init`, the sole builder of the
+    /// write-side unit context, emits `SI_UNIT($,.RADIAN.)` as an immediate
+    /// constant with no branch on any writer option (measured for #6184; the
+    /// numbers live in the dated OBSERVATION LOG in `export_step_locked`). So
+    /// NO input shape and NO `Interface_Static` can drive a real export into
+    /// the guard's failure arms: they are unreachable from ordinary inputs,
+    /// and without injection the guard would be DECORATIVE — present, compiled,
+    /// and never once shown to fire. Same argument as `make_null_shape_for_test`
+    /// elsewhere in this bridge, whose crash input "cannot be built from Rust".
+    ///
     /// A shared cxx enum rather than a fault-name string, so every fixture call
     /// site is compile-checked and a misspelling cannot reach the C++ side at
     /// all. Each variant says WHICH defect it models and which guard arm it
@@ -97,6 +108,13 @@ pub mod ffi {
         /// does not emit — reaching a steradian. The only fault that reaches
         /// `step_unit_assigned_context`'s third downcast.
         TwoPartContext,
+        /// Add a representation context of a spelling that exists nowhere in
+        /// OCCT — synthesised by the fixture, because the V5 allow-list
+        /// enumerates every real one. Added ALONGSIDE the genuine contexts, so
+        /// the other counts stay healthy and the blindness is PARTIAL: the
+        /// case V1, which measures only the total, cannot see. The only fault
+        /// that reaches V5.
+        UnrecognisedContext,
         /// Set the process-global `step.angleunit.mode` static to the Deg
         /// regime for ONE export, restored by RAII. Applied BEFORE Transfer
         /// (which is what consumes it) and caught by the SEPARATE mode arm —
@@ -128,14 +146,16 @@ pub mod ffi {
         contexts: u32,
         plane_angle_units: u32,
         radian_ok: u32,
-        /// Angular unit ENTITIES no unit-assigned context references.
-        ///
-        /// Deliberately NOT part of the three association counts above, which
-        /// are blind to an orphan by construction: a unit nothing points at
-        /// cannot change "does THIS context reach a radian?" for any context.
-        /// Reported separately so a V4-only refusal does not print a header
-        /// describing a healthy file.
+        /// Angular unit ENTITIES no unit-assigned context references — V4's
+        /// input. Deliberately NOT part of the three association counts above;
+        /// why they are blind to an orphan by construction is on
+        /// `StepPlaneAngleAuditCounts::orphan_angular_units`.
         orphan_angular_units: u32,
+        /// Representation contexts whose SPELLING the guard could not resolve
+        /// — V5's input, and separate from `contexts` for the same reason:
+        /// a context that was skipped contributes to none of the counts above,
+        /// so without this a V5-only refusal reads as a healthy file.
+        unrecognised_contexts: u32,
     }
 
     /// Full 3×3 inertia tensor returned from `query_inertia_tensor`.
@@ -1445,12 +1465,9 @@ pub mod ffi {
         /// guard — after injecting exactly one fault into the transferred STEP
         /// model, returning the audit counts alongside the file text.
         ///
-        /// OCCT emits `SI_UNIT($,.RADIAN.)` unconditionally, so no input shape
-        /// and no `Interface_Static` can drive a real export into the guard's
-        /// failure arms; injection is the only way to exercise them, and
-        /// without it the guard would be decorative. Same justification as
-        /// `make_null_shape_for_test` above. The `fault` vocabulary is
-        /// [`StepGuardFault`], which documents what each value corrupts.
+        /// The `fault` vocabulary is [`StepGuardFault`], which also carries
+        /// the canonical argument for why injection is the only way to reach
+        /// the guard's failure arms.
         fn export_step_with_injected_fault_for_test(
             shape: &OcctShape,
             schema: &str,
@@ -1460,9 +1477,9 @@ pub mod ffi {
         /// The same injected export, REPORTING the guard's finding in
         /// `StepGuardProbeResult::refusal` instead of throwing it.
         ///
-        /// Identical in every other respect — same mutex, same
-        /// `wrap_occt_call("export_step")` label, same `export_step_locked`
-        /// body, same `fault` vocabulary. It exists so a test can read the
+        /// The two hooks differ in their `StepGuardDisposition` and in nothing
+        /// else; what that word covers is on the enum itself, in
+        /// `cpp/occt_wrapper.cpp`. This one exists so a test can read the
         /// audit counts as NUMBERS on the refusing path, where they are
         /// otherwise reachable only as digits embedded in an English
         /// diagnostic. A refused export still writes nothing (`content` is

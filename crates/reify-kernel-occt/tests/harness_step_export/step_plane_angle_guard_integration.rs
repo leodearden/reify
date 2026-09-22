@@ -8,25 +8,27 @@
 //! correctness defect in the emitted bytes, and a warning on stderr does not
 //! stop the wrong file from reaching an external CAD tool.
 //!
-//! WHY THESE TESTS NEED FAULT INJECTION. `STEPConstruct_UnitContext::Init` —
-//! the sole builder of the write-side unit context — emits
-//! `SI_UNIT($,.RADIAN.)` as an immediate constant with no branch on any writer
-//! option (measured for #6184; see the PLANE-ANGLE UNIT REGIME comment in
-//! `cpp/occt_wrapper.cpp`). So NO input shape and NO `Interface_Static` can
-//! make a real export produce a non-radian declaration, and the guard's
-//! failure arms are unreachable from ordinary inputs. Without injection the
-//! guard would be decorative. `export_step_with_injected_fault_for_test`
-//! therefore runs the SAME `export_step_locked` body under the SAME mutex,
-//! corrupting exactly one thing first. Which thing is a `StepGuardFault`, a
-//! shared cxx enum, so a misspelled fault is a compile error here rather than
-//! a runtime rejection — and the established `*_for_test` fixture-hook pattern
-//! this crate already uses for `make_null_shape_for_test`
-//! ("the exact crash input … it cannot be built from Rust because `OcctShape`
-//! is opaque"; the same argument applies to a STEP model with a corrupted unit
-//! context).
+//! WHY THESE TESTS NEED FAULT INJECTION. The guard's failure arms are
+//! unreachable from ordinary inputs; the argument is on the `StepGuardFault`
+//! enum in `src/ffi.rs` and is not restated here.
+//! `export_step_with_injected_fault_for_test` runs the SAME
+//! `export_step_locked` body under the SAME mutex, corrupting exactly one
+//! thing first. Which thing is a `StepGuardFault`, a shared cxx enum, so a
+//! misspelled fault is a compile error here rather than a runtime rejection.
+//!
+//! WHAT THE INJECTED PATH CANNOT PIN, and what covers it. Every test below
+//! enters through a `*_for_test` hook, so the production entry point's own
+//! `StepGuardDisposition::Refuse` argument is not exercised by any of them —
+//! and it is not observable from outside either, because the two dispositions
+//! differ only on a model the guard refuses, which no production input
+//! produces. `the_production_export_path_runs_the_guard` covers the half that
+//! IS observable (the real `OcctKernel::export` reaches the guard and is
+//! accepted by it); the half that is not is closed structurally instead, by
+//! `export_step` re-throwing any non-empty refusal whatever disposition it
+//! asked for.
 //!
 //! ASSERTING ON A REFUSAL. Every violation line is prefixed with an
-//! identifier-shaped `[INV-AD-4/Vn]` arm tag (`V1`..`V4` for the declaration
+//! identifier-shaped `[INV-AD-4/Vn]` arm tag (`V1`..`V5` for the declaration
 //! walk, `MODE` for the separate `step.angleunit.mode` arm), and the tests pin
 //! THOSE rather than the English around them. The distinction between arms —
 //! a MISSING declaration is a different defect, with a different fix, from a
@@ -297,7 +299,7 @@ fn refusal(
 /// distinguish the two cases it exists to separate. A missing tag reds the
 /// positive assertion first, which is the correct failure direction.
 ///
-/// Takes arms (`V1`..`V4`, `MODE`) and the `UNVERIFIABLE` qualifier
+/// Takes arms (`V1`..`V5`, `MODE`) and the `UNVERIFIABLE` qualifier
 /// interchangeably: both are spelled `[INV-AD-4/<tag>]`, and the qualifier is
 /// as much a behavioural claim as the arm is.
 fn assert_arms(msg: &str, expected: &[&str], forbidden: &[&str]) {
@@ -643,7 +645,7 @@ fn guard_refuses_a_conversion_based_degree_declaration() {
 /// write-side consumer is `TopoDSToStep_MakeStepFace::Init` ->
 /// `GeomConvert_Units::RadianToDegree`, which rescales PCURVE PARAMETER space;
 /// the unit declaration ignores it entirely. The payload moves; the
-/// declaration does not. So the four declaration arms above provably cannot
+/// declaration does not. So the five declaration arms above provably cannot
 /// see this, and it needs its own check of the static — which is also a far
 /// more actionable diagnostic than any unit walk could be. The dated
 /// three-mode measurement behind that claim lives in exactly one place, the
@@ -691,7 +693,7 @@ fn guard_refuses_the_half_wired_degree_angle_mode() {
          file self-inconsistent; got: {msg}"
     );
 
-    // (b2) This is the MODE arm. The four declaration arms provably cannot see
+    // (b2) This is the MODE arm. The five declaration arms provably cannot see
     // this defect (the declaration is byte-identical under every enum value),
     // and a diagnostic claiming one of them fired would be claiming something
     // the guard's own evidence log contradicts.
@@ -779,11 +781,9 @@ fn guard_refuses_an_orphaned_non_radian_plane_angle_unit() {
         "the refusal must name what the orphan actually is; got: {msg}"
     );
 
-    // (d) THE COUNTS ARE NOT SELF-CONTRADICTING. This is the whole reason
-    // `orphan_angular_units` is in the header: the other three counts are
-    // blind to an orphan by construction, so on a V4-only refusal they read as
-    // a completely healthy file. A reader parsing them must be able to see
-    // where the finding came from.
+    // (d) THE COUNTS ARE NOT SELF-CONTRADICTING — the whole reason
+    // `orphan_angular_units` is in the header. Why the other three cannot
+    // carry this: `StepPlaneAngleAuditCounts::orphan_angular_units`.
     assert!(
         probe.orphan_angular_units > 0,
         "the refusal must report the orphan the violation line blames, \
@@ -905,10 +905,11 @@ fn guard_refuses_an_orphaned_unverifiable_plane_angle_unit() {
     );
     positive_number_after(&msg, "unreferenced plane-angle unit #");
 
-    // (d) The counts localise the finding to the orphan and nowhere else. The
-    // three association counts are blind to an orphan by construction, so they
-    // must be untouched — and `orphan_angular_units` must be exactly the one
-    // this fault added, because the accept-path test pins a clean export at 0.
+    // (d) The counts localise the finding to the orphan and nowhere else: the
+    // three association counts must be untouched (see
+    // `StepPlaneAngleAuditCounts::orphan_angular_units` for why they cannot
+    // move), and `orphan_angular_units` must be exactly the one this fault
+    // added, because the accept-path test pins a clean export at 0.
     assert_eq!(
         probe.orphan_angular_units, 1,
         "this fault adds exactly ONE unreferenced angular unit to a model that \
@@ -1065,5 +1066,178 @@ fn guard_refuses_a_model_with_no_unit_assigned_context() {
          that a file full of .RADIAN. tokens is refused when nothing reaches \
          them; got orphan_angular_units={} in: {msg}",
         probe.orphan_angular_units
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The V5 arm — a representation context whose spelling the walk cannot resolve
+// ---------------------------------------------------------------------------
+
+/// A representation context of an UNKNOWN spelling is REFUSED, even though
+/// every context the walk *did* resolve is a perfectly good radian.
+///
+/// V5 IS THE PARTIAL-BLINDNESS ARM, and it is the only one that can see this
+/// case. `step_unit_assigned_context` unwraps three spellings; a fourth — a
+/// later OCCT release, or a STEPCAFControl/XCAF writer path — returns null
+/// from all three and would otherwise be skipped in silence. V1 cannot catch
+/// that: it fires on a TOTAL of zero, and here the total is still three. So
+/// without V5 the file exports cleanly with `contexts=3 plane_angle_units=3
+/// radian_ok=3` and one context, which could be declaring degrees, never
+/// looked at.
+///
+/// The assertions below are written to pin exactly that: the healthy counts
+/// must SURVIVE (assertion (d)) while the refusal still fires (b). A test that
+/// let the counts collapse would no longer distinguish V5 from V1.
+#[test]
+fn guard_refuses_an_unrecognised_representation_context_spelling() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    // (a) Refused, with Reify's own attribution.
+    let (msg, probe) = refusal(&kernel, union_id, StepGuardFault::UnrecognisedContext);
+
+    // (b) V5 alone. Every other arm is quantified over things this fault did
+    // not touch: the real contexts still resolve and still reach radians (V1,
+    // V2, V3 silent), and it adds no angular unit at all (V4 silent).
+    assert_arms(&msg, &["V5"], &["V1", "V2", "V3", "V4", "MODE", "UNVERIFIABLE"]);
+
+    // (c) The diagnostic names the DYNAMIC TYPE it could not resolve. That is
+    // the only actionable thing here — the fix is either to teach
+    // `step_unit_assigned_context` the spelling or to add it to
+    // `step_context_carries_no_units`, and neither is possible without knowing
+    // which type it was.
+    assert!(
+        msg.contains("StepGuardUnknownContext"),
+        "the refusal must name the unresolvable context's OCCT class, or a \
+         reader cannot tell which spelling to teach the guard; got: {msg}"
+    );
+    assert!(
+        msg.contains("entity #"),
+        "the refusal must locate the entity in the model; got: {msg}"
+    );
+
+    // (d) THE COUNTS PROVE THIS IS THE PARTIAL CASE, not V1's total blindness.
+    // The genuine contexts were untouched, so a guard that only measured the
+    // total would see a completely healthy file here.
+    assert_eq!(
+        probe.unrecognised_contexts, 1,
+        "this fault adds exactly ONE unresolvable context; a different number \
+         means the fault or the allow-list changed shape; got \
+         unrecognised_contexts={} in: {msg}",
+        probe.unrecognised_contexts
+    );
+    assert!(
+        probe.contexts >= 2,
+        "the REAL contexts must still resolve — that is what makes this the \
+         PARTIAL-blindness case V1 cannot see; got contexts={} in: {msg}",
+        probe.contexts
+    );
+    assert_eq!(
+        probe.radian_ok, probe.plane_angle_units,
+        "every association this walk DID resolve is still a correct radian, \
+         so the refusal rests on the skipped context alone; got radian_ok={} \
+         of plane_angle_units={} in: {msg}",
+        probe.radian_ok, probe.plane_angle_units
+    );
+
+    // (e) The header carries the count the violation line blames. Without it
+    // the numbers above — three healthy contexts — sit directly over a line
+    // saying the file was not verified.
+    assert!(
+        msg.contains("unrecognised_contexts="),
+        "a V5-only refusal must report `unrecognised_contexts` in its header, \
+         or the counts describe a healthy file directly above a line saying \
+         they could not be trusted; got: {msg}"
+    );
+}
+
+/// A clean export is ACCEPTED by the guard when it is NOT in the allow-list's
+/// blind spot — i.e. the allow-list does not over-reach.
+///
+/// The companion to the test above, and the reason the allow-list is an
+/// allow-list rather than a deny-list. `guard_accepts_a_real_multi_context_
+/// export` already pins that a real export is accepted; this pins the
+/// specifically V5-shaped way that could stop being true, by requiring the
+/// clean model to report ZERO unresolvable contexts. If some real OCCT
+/// spelling were dropped from both the downcast chain and the allow-list, the
+/// counts there would still look healthy and only this assertion would red.
+#[test]
+fn a_clean_export_resolves_every_context_spelling_it_meets() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    let probe = kernel
+        .step_guard_probe_for_test(union_id, "AP214", StepGuardFault::None)
+        .expect("a legitimate export must be accepted");
+
+    assert!(
+        probe.refusal.is_empty(),
+        "a legitimate export must produce no refusal; got: {}",
+        probe.refusal
+    );
+    assert_eq!(
+        probe.unrecognised_contexts, 0,
+        "every representation context a real export emits must resolve — \
+         either to a unit assignment or to a known unit-free spelling. A \
+         non-zero count means OCCT emits a spelling the guard does not know, \
+         and the other counts CANNOT show that; got unrecognised_contexts={}",
+        probe.unrecognised_contexts
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The production entry point
+// ---------------------------------------------------------------------------
+
+/// The REAL `OcctKernel::export` path runs the guard and is accepted by it.
+///
+/// Every other test in this file enters through a `*_for_test` hook, so the
+/// claim the whole design rests on — that the hooks run the production body —
+/// is asserted nowhere against production itself. This test closes the half of
+/// that gap which is observable from outside: the user-facing export reaches
+/// the guard, is accepted, and returns the bytes the guard approved.
+///
+/// WHAT IT DELIBERATELY DOES NOT CLAIM. It cannot pin `export_step`'s
+/// `StepGuardDisposition::Refuse` argument, because the two dispositions
+/// differ only on a model the guard REFUSES, and no production input can
+/// produce one (see `StepGuardFault` for why). That half is closed
+/// structurally instead: `export_step` re-throws any non-empty refusal
+/// whatever disposition it asked for, so a flip of that argument cannot
+/// silently weaken a refusal into an empty file. Do not "strengthen" this test
+/// by asserting a refusal here — there is no input that produces one.
+#[test]
+fn the_production_export_path_runs_the_guard() {
+    let (kernel, union_id) = two_cone_union_kernel();
+
+    let mut buf = Vec::new();
+    kernel
+        .export(union_id, reify_ir::ExportFormat::Step, &mut buf)
+        .expect(
+            "the production export path must ACCEPT a legitimate model — a \
+             guard that refuses a correct file through the user-facing entry \
+             point is worse than no guard at all",
+        );
+
+    assert!(
+        !buf.is_empty(),
+        "the production path must return the file the guard approved. An \
+         empty-but-Ok result is exactly what a refusal reported rather than \
+         thrown would look like from here"
+    );
+
+    let content = String::from_utf8(buf).expect("STEP output must be UTF-8");
+    let stripped: String = content
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
+    assert!(
+        stripped.contains("SI_UNIT($,.RADIAN.)"),
+        "the accepted file must carry the unprefixed SI radian the guard \
+         verified; without this the assertion above would pass on any \
+         non-empty output"
+    );
+    assert!(
+        stripped.contains("GLOBAL_UNIT_ASSIGNED_CONTEXT"),
+        "the accepted file must carry the unit contexts the guard walks — \
+         otherwise this test would pass on a file the guard had nothing to \
+         look at"
     );
 }

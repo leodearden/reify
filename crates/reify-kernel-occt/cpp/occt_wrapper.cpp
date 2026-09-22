@@ -161,6 +161,14 @@
 #include <StepRepr_RepresentationContext.hxx>
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
 #include <StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext.hxx>
+// The unit-FREE representation-context spellings. They are never downcast to;
+// they are the V5 allow-list, and `step_context_carries_no_units` explains why
+// naming them exhaustively is what turns an unknown fourth spelling from a
+// silent skip into a refusal.
+#include <StepGeom_GeometricRepresentationContext.hxx>
+#include <StepGeom_GeometricRepresentationContextAndParametricRepresentationContext.hxx>
+#include <StepRepr_GlobalUncertaintyAssignedContext.hxx>
+#include <StepRepr_ParametricRepresentationContext.hxx>
 #include <StepBasic_NamedUnit.hxx>
 #include <StepBasic_SiUnit.hxx>
 #include <StepBasic_SiUnitName.hxx>
@@ -6747,10 +6755,9 @@ namespace {
 // as an immediate constant with no branch on any writer option (measured for
 // #6184 — see the OBSERVATION LOG in export_step below). So no benign OCCT
 // change can move the declaration; only a change that genuinely alters the
-// declared unit trips this guard, and that IS the defect. The corollary is
-// that the failure arms are unreachable from ordinary inputs, which is why
-// they are exercised through `export_step_with_injected_fault_for_test`
-// rather than through a crafted input shape.
+// declared unit trips this guard, and that IS the defect. The same premise has
+// a corollary for the TESTS, which is stated once on the `StepGuardFault` enum
+// in src/ffi.rs rather than restated here.
 //
 // THE WALK IS BY ASSOCIATION, NOT BY COUNT — the choice and its reasoning
 // live on `StepPlaneAngleAuditCounts` below, which is the one place to change
@@ -6784,7 +6791,46 @@ struct StepPlaneAngleAuditCounts {
     /// them. Counted for EVERY orphan, radian or not, so the number stays a
     /// property of the model rather than of the violations.
     uint32_t orphan_angular_units = 0;
+    /// Representation-context entities whose spelling `step_unit_assigned_
+    /// context` could not resolve EITHER WAY — neither to a unit assignment
+    /// nor to a known unit-free context. V5's input, and reported here for the
+    /// same reason `orphan_angular_units` is: the three association counts say
+    /// nothing about a context that was skipped, so a V5-only refusal would
+    /// otherwise print a header describing a healthy file.
+    uint32_t unrecognised_contexts = 0;
 };
+
+/// True for the representation-context spellings that carry NO unit
+/// assignment by design, so failing to unwrap one is expected rather than a
+/// gap in `step_unit_assigned_context`.
+///
+/// AN ALLOW-LIST, NOT A DENY-LIST, and that direction is the whole point. The
+/// three unit-CARRYING spellings plus these five are every
+/// `StepRepr_RepresentationContext` descendant OCCT 7.8 defines (verified in
+/// /usr/include/opencascade: the base itself, GlobalUncertaintyAssignedContext,
+/// ParametricRepresentationContext, GeometricRepresentationContext, and
+/// GeometricRepresentationContextAndParametricRepresentationContext). A ninth
+/// spelling — a later OCCT release, or an XCAF/STEPCAFControl writer path —
+/// therefore lands in NEITHER list, which is exactly the case V5 refuses. A
+/// deny-list would have let it through.
+///
+/// COMPARED BY `DynamicType()` POINTER, not by class NAME. `Standard_Type`
+/// instances are process-unique, so this is a pointer equality test against a
+/// fixed set rather than a substring match over a meaningful string. It is
+/// also deliberately an EXACT-type test rather than an is-a test: a future
+/// subclass of `StepGeom_GeometricRepresentationContext` is a spelling this
+/// build has not seen, and an `IsKind` test would silently absorb it into the
+/// allow-list on the strength of its base class alone.
+bool step_context_carries_no_units(const Handle(Standard_Transient)& entity) {
+    const Handle(Standard_Type)& type = entity->DynamicType();
+    return type == STANDARD_TYPE(StepRepr_RepresentationContext) ||
+           type == STANDARD_TYPE(StepRepr_GlobalUncertaintyAssignedContext) ||
+           type == STANDARD_TYPE(StepRepr_ParametricRepresentationContext) ||
+           type == STANDARD_TYPE(StepGeom_GeometricRepresentationContext) ||
+           type ==
+               STANDARD_TYPE(
+                   StepGeom_GeometricRepresentationContextAndParametricRepresentationContext);
+}
 
 /// Resolve `entity` to the `StepRepr_GlobalUnitAssignedContext` it carries,
 /// or a null handle if it carries none.
@@ -6808,15 +6854,26 @@ struct StepPlaneAngleAuditCounts {
 /// produces, and the two-part
 /// `…GeometricRepresentationContextAndGlobalUnitAssignedContext` (identical
 /// shape, no uncertainty component) that other writer paths — AP203, a
-/// wireframe or XCAF/assembly writer — can produce. A spelling this function
-/// does not know about returns null from every downcast and is skipped
-/// SILENTLY, which is the same silent-vacuity failure the direct-only form
-/// above suffers: `contexts` under-counts, V2/V3 never run for that context,
-/// and the guard passes for the entity it exists to check. The
-/// `assert_eq!(audit.contexts, text_contexts)` cross-check catches it only for
-/// the one fixture that test exports, so the completeness has to live here.
+/// wireframe or XCAF/assembly writer — can produce.
+///
+/// A SPELLING THIS FUNCTION DOES NOT KNOW ABOUT IS NOT SKIPPED SILENTLY. It
+/// would be the same silent-vacuity failure the direct-only form above
+/// suffers — `contexts` under-counts, V2/V3 never run for that context, and
+/// the guard passes for the entity it exists to check — and, being PARTIAL
+/// (two contexts resolved, one skipped), it is invisible to V1, which fires
+/// only on a total of zero. So when the entity IS a representation context
+/// and none of the three spellings unwrapped it, `*unrecognised_spelling` is
+/// set and V5 refuses the export. `step_context_carries_no_units` below is
+/// what keeps that from firing on the unit-free contexts OCCT legitimately
+/// emits; between them, completeness is CHECKED rather than asserted in this
+/// comment.
+///
+/// `unrecognised_spelling` may be null (the fault-injection call sites, which
+/// only want the handle). It is only ever SET, never cleared, so one flag can
+/// accumulate across a walk.
 Handle(StepRepr_GlobalUnitAssignedContext) step_unit_assigned_context(
-    const Handle(Standard_Transient)& entity) {
+    const Handle(Standard_Transient)& entity,
+    bool* unrecognised_spelling = nullptr) {
     // ONE discriminating downcast ahead of the three spellings below: every
     // one of them derives from `StepRepr_RepresentationContext` (verified in
     // the OCCT 7.8 headers — including `StepRepr_GlobalUnitAssignedContext`
@@ -6845,6 +6902,12 @@ Handle(StepRepr_GlobalUnitAssignedContext) step_unit_assigned_context(
                 DownCast(entity);
     if (!composed_no_uncertainty.IsNull()) {
         return composed_no_uncertainty->GlobalUnitAssignedContext();
+    }
+    // A representation context none of the three spellings unwrapped. Either
+    // one of the unit-free spellings OCCT legitimately emits, or a spelling
+    // this build has never seen — and only the second is a finding.
+    if (unrecognised_spelling != nullptr && !step_context_carries_no_units(entity)) {
+        *unrecognised_spelling = true;
     }
     return Handle(StepRepr_GlobalUnitAssignedContext)();
 }
@@ -7011,7 +7074,7 @@ StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& ent
 /// An identifier-shaped tag cannot rot that way — rename it and the POSITIVE
 /// assertions red first, which is the direction a guard's tests must fail in.
 ///
-/// TWO KINDS OF TAG, same spelling. `V1`..`V4` and `MODE` are ARMS: exactly one
+/// TWO KINDS OF TAG, same spelling. `V1`..`V5` and `MODE` are ARMS: exactly one
 /// of them opens every violation line. `UNVERIFIABLE` is a QUALIFIER that
 /// follows an arm tag and never appears alone; it marks the sub-case where the
 /// guard could not READ a declaration, as opposed to having read one and found
@@ -7062,7 +7125,7 @@ std::string describe_reached_units(const Handle(Interface_InterfaceModel)& model
 
 /// Walk `model` and audit every plane-angle unit declaration BY ASSOCIATION.
 ///
-/// Four arms, each a distinct failure the others cannot see:
+/// Five arms, each a distinct failure the others cannot see:
 ///   V1  the model carries NO unit-assigned context at all. Also the
 ///       anti-naive-downcast tripwire: a direct-only `step_unit_assigned_
 ///       context` reports zero on a real file, and V1 is what turns that
@@ -7078,6 +7141,12 @@ std::string describe_reached_units(const Handle(Interface_InterfaceModel)& model
 ///       the model is checked exactly once. It is deliberately STRONGER than
 ///       INV-AD-4 as worded; the V4 block below is where that widening, and
 ///       what it costs, are recorded.
+///   V5  a representation context whose SPELLING the walk cannot resolve —
+///       neither to a unit assignment nor to a known unit-free context. This
+///       is the arm that keeps V2/V3 from passing VACUOUSLY on an entity they
+///       never saw, and it is the only one that can catch a PARTIAL blindness
+///       (two contexts resolved, a third skipped): V1 measures the total, so
+///       it stays silent at two. See `step_context_carries_no_units`.
 ///
 /// Appends one line per violation to `violations` (when non-null) and returns
 /// the counts either way — the counts are also useful on the accepting path,
@@ -7135,8 +7204,28 @@ StepPlaneAngleAuditCounts audit_step_plane_angle_units(
             }
         }
 
+        bool unrecognised_spelling = false;
         Handle(StepRepr_GlobalUnitAssignedContext) ctx =
-            step_unit_assigned_context(entity);
+            step_unit_assigned_context(entity, &unrecognised_spelling);
+        if (unrecognised_spelling) {
+            counts.unrecognised_contexts += 1;
+            if (violations != nullptr) {
+                // V5. Named by DYNAMIC TYPE because that is the only
+                // actionable thing a reader has: the fix is to teach
+                // `step_unit_assigned_context` this spelling, or to add it to
+                // `step_context_carries_no_units` if it genuinely carries no
+                // units, and neither can be done without knowing which type it
+                // was. The name is OUTPUT here, never a decision input.
+                std::ostringstream oss;
+                oss << REIFY_INV_AD_4_ARM("V5") << "entity #" << i << " is a "
+                    << entity->DynamicType()->Name()
+                    << ", a representation context whose spelling this guard "
+                       "can neither resolve to a unit assignment nor recognise "
+                       "as unit-free, so its plane-angle declaration was NOT "
+                       "verified";
+                violations->push_back(oss.str());
+            }
+        }
         if (ctx.IsNull()) {
             continue;
         }
@@ -7298,23 +7387,24 @@ std::string step_plane_angle_refusal(const Handle(Interface_InterfaceModel)& mod
         return std::string();
     }
     std::ostringstream oss;
-    // The orphan count belongs in this header: the three association counts
-    // are blind to an unreferenced unit by construction, so a V4-only refusal
-    // would otherwise report a set of numbers describing a perfectly healthy
-    // file directly above a line saying the file is not.
+    // EVERY count goes in this header, including the two the association walk
+    // does not feed. Why leaving either out would print numbers describing a
+    // healthy file directly above a line saying it is not:
+    // `StepPlaneAngleAuditCounts::orphan_angular_units` / `::unrecognised_contexts`.
     oss << "refusing to write STEP: INV-AD-4 requires every representation "
            "context to declare the unprefixed SI radian for plane angles "
            "(contexts=" << walked.contexts
         << " plane_angle_units=" << walked.plane_angle_units
         << " radian_ok=" << walked.radian_ok
-        << " orphan_angular_units=" << walked.orphan_angular_units << ")";
+        << " orphan_angular_units=" << walked.orphan_angular_units
+        << " unrecognised_contexts=" << walked.unrecognised_contexts << ")";
     for (const std::string& v : violations) {
         oss << "\n  - " << v;
     }
     return oss.str();
 }
 
-/// The FIFTH arm, independent of the four declaration arms above: refuse the
+/// The MODE arm, independent of the five DECLARATION arms above: refuse the
 /// export when the process-global `step.angleunit.mode` static reads as the
 /// DEGREE regime.
 ///
@@ -7335,6 +7425,34 @@ std::string step_plane_angle_refusal(const Handle(Interface_InterfaceModel)& mod
 /// OBSERVE ONLY, NEVER SET. The #6184 contract states reify "never sets this
 /// static, and MUST NOT" — setting it to Deg is what produces the
 /// self-inconsistent file in the first place. This arm reads it and refuses.
+///
+/// WHY THIS STATIC IS DEFENDED BY REFUSING WHILE `write.step.schema` TWENTY
+/// LINES BELOW IS DEFENDED BY SETTING. The two look like one dimension of
+/// variability handled two ways; they are not, and the discriminator is
+/// whether reify has a choice about writing at all.
+///   - `write.step.schema` carries a PER-EXPORT INPUT. AP203/AP214/AP242 come
+///     from the caller, so there is no value reify could leave in place that
+///     yields a correct file. Given it must write, a per-call explicit set is
+///     the least-bad discipline, and what it stomps is reify's own previous
+///     export's leftovers.
+///   - `step.angleunit.mode` carries NO reify input. The value reify wants is
+///     the one OCCT already defaults to (0=File and 1=Rad both map to a
+///     plane-angle factor of exactly 1.0), so "leave it alone" is available
+///     and is strictly less invasive. Taking the setting posture here would
+///     mean reify starts WRITING a process-global it has no input for, purely
+///     to overwrite a value some other component in this address space chose
+///     deliberately — reify links OCCT alongside gmsh, and `g_step_export_
+///     mutex` serialises reify's exports only, not that component's. Pinning
+///     it to Rad is an identity transform for reify's own bytes and a
+///     non-identity one for a concurrent third-party writer.
+/// So: set what you own and must supply; refuse what you neither own nor need
+/// to change. THE COST OF REFUSING, stated plainly: a third party that sets
+/// this static to Deg and leaves it there hard-blocks every reify STEP export
+/// process-wide, with no break-glass. That is accepted because the diagnostic
+/// below names the static, the value and the fact that reify never writes it,
+/// which is actionable at the only place it can be fixed — the component that
+/// set it. The forcing alternative was reviewed and declined here; reopening
+/// it means reopening #6184's prohibition too, not just this arm.
 ///
 /// Pure, for the same reason `step_plane_angle_refusal` is: returns the
 /// refusal text, or "" when the export may proceed.
@@ -7586,6 +7704,20 @@ bool substitute_first_referenced_angular_unit(
     return false;
 }
 
+/// A representation context of a spelling that exists nowhere in OCCT — the
+/// `StepGuardFault::UnrecognisedContext` fixture, and the only way to reach V5.
+///
+/// TEST-ONLY, and it never reaches a file: every disposition returns or throws
+/// on the refusal this entity provokes, so `writer.Write` is unreachable with
+/// it in the model. It inherits `StepRepr_RepresentationContext` so the
+/// guard's discriminating downcast admits it, and declares its RTTI inline so
+/// its `Standard_Type` is distinct from every entry in the V5 allow-list —
+/// which is the entire property under test.
+class StepGuardUnknownContext : public StepRepr_RepresentationContext {
+public:
+    DEFINE_STANDARD_RTTI_INLINE(StepGuardUnknownContext, StepRepr_RepresentationContext)
+};
+
 /// Corrupt exactly ONE thing in `model`, per `fault`.
 ///
 /// EXACTLY ONE, deliberately. A partial flip — one context wrong, the rest
@@ -7828,6 +7960,46 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
         return;
     }
 
+    if (fault == StepGuardFault::UnrecognisedContext) {
+        // A representation context of a spelling the guard cannot resolve.
+        //
+        // NO OCCT 7.8 TYPE FITS, and that is not an accident: the V5
+        // allow-list enumerates every `StepRepr_RepresentationContext`
+        // descendant the headers define, which is precisely what makes V5
+        // unreachable from any model this build can produce. So the fixture
+        // SYNTHESISES the future — a fresh descendant whose `DynamicType()` is
+        // in neither list, which is exactly the shape a later OCCT release, or
+        // a STEPCAFControl/XCAF writer path, would present to this walk.
+        //
+        // The entity is added ALONGSIDE the real contexts rather than
+        // replacing one, so the other counts stay healthy and the test
+        // observes the PARTIAL-blindness case specifically: contexts still
+        // resolve, every one of them is radian, and V5 is the only arm with
+        // anything to say. That is the case V1 cannot see.
+        Handle(StepGuardUnknownContext) unknown = new StepGuardUnknownContext();
+        unknown->Init(new TCollection_HAsciiString("reify-fixture"),
+                      new TCollection_HAsciiString("unknown-spelling"));
+        model->AddEntity(unknown);
+        if (model->Number(unknown) == 0) {
+            throw ContractViolation(
+                "cannot inject the UnrecognisedContext fault: the hand-built "
+                "context did not become a model entity, so this negative test "
+                "would pass vacuously");
+        }
+        // Fixture-integrity check stated in terms of the ALLOW-LIST rather
+        // than of `step_unit_assigned_context`, which is the function under
+        // test. If some future edit adds this fixture type to the allow-list,
+        // the fault becomes inert and the test must say so here rather than
+        // silently observe a healthy export.
+        if (step_context_carries_no_units(unknown)) {
+            throw ContractViolation(
+                "cannot inject the UnrecognisedContext fault: the fixture type "
+                "is on the V5 allow-list, so the guard would recognise it and "
+                "this negative test would pass vacuously");
+        }
+        return;
+    }
+
     if (fault == StepGuardFault::NoContext) {
         // Neutralise the composite spelling by nulling the
         // `GlobalUnitAssignedContext` it composes. There is no way to REMOVE
@@ -7903,6 +8075,7 @@ void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
             case StepGuardFault::OrphanUnrecognised:
             case StepGuardFault::NoContext:
             case StepGuardFault::TwoPartContext:
+            case StepGuardFault::UnrecognisedContext:
             case StepGuardFault::AngleModeDeg:
                 // Handled above or earlier; unreachable here.
                 break;
@@ -8125,12 +8298,14 @@ static StepExportLockedResult export_step_locked(const OcctShape& shape,
     // runs a few lines below, between Transfer and Write:
     // `step_angle_mode_refusal()` (the separate mode arm named in
     // THE TRAP paragraph above) and
-    // `step_plane_angle_refusal()`, whose four declaration arms are
+    // `step_plane_angle_refusal()`, whose five declaration arms are
     // (V1) the model carries at least one unit-assigned context, (V2) every
     // context reaches at least one angular unit, (V3) every angular unit a
     // context reaches is the unprefixed SI radian, (V4) every angular unit no
-    // context references is too. Why it walks BY ASSOCIATION rather than
-    // comparing global counts: `StepPlaneAngleAuditCounts` above.
+    // context references is too, and (V5) every representation context the
+    // walk MEETS is one whose spelling it can resolve. Why it walks BY
+    // ASSOCIATION rather than comparing global counts:
+    // `StepPlaneAngleAuditCounts` above.
     //
     // Its failure arms are unreachable from ordinary inputs — as stated above,
     // OCCT emits the radian unconditionally, so no input shape and no
@@ -8263,6 +8438,7 @@ static StepGuardProbeResult step_guard_probe(StepExportLockedResult locked) {
     out.plane_angle_units = locked.audit.plane_angle_units;
     out.radian_ok = locked.audit.radian_ok;
     out.orphan_angular_units = locked.audit.orphan_angular_units;
+    out.unrecognised_contexts = locked.audit.unrecognised_contexts;
     return out;
 }
 
@@ -8271,6 +8447,19 @@ ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
     return wrap_occt_call("export_step", [&]() {
         StepExportLockedResult locked = export_step_locked(
             shape, schema, StepGuardFault::None, StepGuardDisposition::Refuse);
+        // BELT AND BRACES ON THE DISPOSITION ARGUMENT. `Refuse` above is what
+        // makes a finding throw, and it is a per-call-site value no test can
+        // observe from outside on an accepted export — the two dispositions
+        // differ only on a REFUSED model, which production inputs cannot
+        // produce. So a regression that flipped this one argument to `Report`
+        // would silently convert production from "refuse the write" to
+        // "return an empty file and no error", the warning-not-refusal
+        // weakening this guard exists to prevent, with every test still green.
+        // Re-throwing here makes that flip harmless: the refusal still
+        // refuses, whichever disposition was asked for.
+        if (!locked.refusal.empty()) {
+            throw ContractViolation(locked.refusal);
+        }
         // The audit counts are deliberately dropped here: the production
         // signature is unchanged by #6344, and a violation has already been
         // turned into a refusal by the time control reaches this line.

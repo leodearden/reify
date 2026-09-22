@@ -4829,13 +4829,9 @@ impl OcctKernel {
     /// refusal guard — with exactly one fault injected into the transferred
     /// STEP model, returning the guard's audit counts alongside the file text.
     ///
-    /// This is the ONLY way to reach the guard's failure arms.
-    /// `STEPConstruct_UnitContext::Init` emits `SI_UNIT($,.RADIAN.)` as an
-    /// immediate constant with no branch, so no input shape and no
-    /// `Interface_Static` can make a real export declare a non-radian plane
-    /// angle — without injection the guard would be untestable and therefore
-    /// decorative. What each [`StepGuardFault`] corrupts is documented on the
-    /// variant itself.
+    /// This is the ONLY way to reach the guard's failure arms; why no real
+    /// input can, and what each fault corrupts, are both on
+    /// [`StepGuardFault`].
     ///
     /// # Errors
     ///
@@ -4862,9 +4858,9 @@ impl OcctKernel {
     /// The same injected export, REPORTING the guard's finding in
     /// [`StepGuardProbeResult::refusal`] instead of returning `Err`.
     ///
-    /// Identical to `export_step_with_injected_fault_for_test` in every other
-    /// respect: same mutex, same `"export_step"` attribution, same
-    /// `export_step_locked` body, same `fault` vocabulary.
+    /// It differs from `export_step_with_injected_fault_for_test` in its
+    /// `StepGuardDisposition` and in nothing else; what that word covers is on
+    /// the enum itself, in `cpp/occt_wrapper.cpp`.
     ///
     /// WHY BOTH EXIST. The refusing hook is the only place the production
     /// behaviour is observable — a guard violation must surface as
