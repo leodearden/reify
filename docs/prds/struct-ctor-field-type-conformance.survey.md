@@ -57,10 +57,10 @@ a non-identifier, identifier not followed by `(`, span out of range, …), so no
 prose here has to guess a cause on a reader's behalf.
 
 The **`disposition` column is γ's RULING**, projected from the site's measured
-severity and wording and the two per-site waiver tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`
-in the generator, `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling
-`examples_smoke.rs`) rather than typed here. It has three states, and they call
-for three DIFFERENT actions:
+severity and wording and the three per-site tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`
+and `CTOR_CONFORMANCE_REJECTION_FIXTURES` in the generator,
+`CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling `examples_smoke.rs`) rather than
+typed here. It has four states, and they call for four DIFFERENT actions:
 
 - **`deferred`** names the LIVE task that owns retiring the site, and the reason
 migrating it here would destroy something — most of these are committed RED
@@ -73,6 +73,13 @@ composition, overload resolution, trait conformance): the rejection IS the
 behaviour under test. **Not actionable, and not residual either** — it carries no
 owner because it needs none, and reading it as unclaimed work would send you to
 delete another PRD’s signal.
+- **`intended rejection`** is an in-scope site whose violation IS the
+deliverable: a committed PRD §7 boundary-row fixture that `reify check` is
+asserted to REJECT by a probe in
+`tests/prd-gate/struct-ctor-conformance-probe-set.json`. It differs from `n/a` on
+scope — the knob's ctor-argument walk really is what emitted it — and from
+`deferred` on ownership: no task retires it, so it names none. **Leave it alone**;
+migrating the site deletes δ's own signal and reds that CLI gate.
 - **`unattributed`** is an in-scope site claimed by nobody: that is the
 actionable state, and after γ the corpus holds none.
 
