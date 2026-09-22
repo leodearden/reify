@@ -682,6 +682,34 @@ _slow_ceiling_for_filter() {
 # docs/prds/offline-deep-test-lane.md DA6 — do not restate them here.
 HEAVY_CEILING_SECONDS=3240
 
+# The START-OFFSET BUDGET: worst-case seconds from the `cargo nextest run`
+# invocation to a heavy test's PROCESS start (task 7552 amendment).
+#
+# WHY IT EXISTS. verify.sh's `timeout` clock starts at PASS start and wraps what
+# its own comment calls "one combined build+execution nextest pass per profile";
+# nextest's `terminate-after` clock starts at TEST-PROCESS start. The two do not
+# start together, so a ceiling merely SMALLER than the wall proves nothing — it
+# has to be smaller by more than the pass takes to reach the test. Assertion L
+# compared bare wall against bare ceiling until this constant existed, and was
+# green on a ceiling `background` could not actually reach.
+#
+# BASIS. The max over N=2 full debug `--workspace` runs of the LATEST-starting
+# heavy atom's offset (1078.7s and 315.5s, rounded up to the whole second), under
+# natural host contention. Two terms, both measured: the combined build the outer
+# `timeout` also wraps, and the un-prioritised heavy atoms' position in the test
+# queue — the LPT `priority` overrides cover only 4 of the 8, so the other three
+# start several hundred seconds after the first test. It is a max over two
+# observations on one host and a bound in no stronger sense.
+#
+# WHY IT IS A LITERAL, unlike every other operand here. The start offset is a
+# property of the BUILD, not of any config file, so there is nothing in the tree
+# to derive it from. It is compared only against a DIFFERENCE of two
+# file-derived numbers, never against itself, so no assertion below can pass by
+# comparing a literal to itself. Evidence:
+# docs/notes/heavy-test-per-test-duration-measurement.md. Derivation and the
+# constraints it feeds: docs/prds/offline-deep-test-lane.md DA6.
+L_START_OFFSET_BUDGET_SECONDS=1079
+
 # ---------------------------------------------------------------------------
 # Parse the heavy atoms out of the single source of truth. Split the
 # or-joined expression on its top-level ' | ' joiner and strip each atom's
@@ -1081,10 +1109,18 @@ assert "K-tier: the smallest HEAVY ceiling (${_MIN_HEAVY_CEIL:-?}s) strictly exc
 #
 # THE INVARIANT, in one line: a hung heavy test must be SIGTERM'd BY NAME by
 # nextest's per-test ceiling before the pass-level `timeout` wall fires exit 124
-# attributing nothing (the task 4877/4878 shape) — and on any role where that is
-# NOT true, the role must be named both in L_RESIDUAL_ROLES below and in
-# .config/nextest.toml's ACCEPTED RESIDUAL paragraph, so the gap is a recorded
-# decision rather than an accident.
+# attributing nothing (the task 4877/4878 shape) — which needs the binding wall
+# to exceed the ceiling BY MORE than the pass takes to reach the test, not
+# merely to exceed it — and on any role where that is NOT true, the role must be
+# named both in L_RESIDUAL_ROLES below and in .config/nextest.toml's ACCEPTED
+# RESIDUAL paragraph, so the gap is a recorded decision rather than an accident.
+#
+# THAT QUALIFIER IS THE WHOLE OF THE 7552 AMENDMENT, and it is not pedantry: the
+# first corrected form of this file asserted the bare `wall > ceiling` and went
+# green on a 3240s ceiling under `background`'s 3600s wall, leaving 360s of
+# headroom for a pass whose measured build-plus-queue term is 1078.7s. The wrong
+# rule was the ASSERTED rule, which is how the same claim survived simultaneous
+# review of the config, the PRD and this guard.
 #
 # WHY THE ROLE SET IS DERIVED, NOT ASSUMED. The first form of this assertion
 # covered the offline role alone and missed `background` entirely — a live
@@ -1099,8 +1135,8 @@ assert "K-tier: the smallest HEAVY ceiling (${_MIN_HEAVY_CEIL:-?}s) strictly exc
 # background or offline. (Mechanism and the accepted residual:
 # docs/prds/offline-deep-test-lane.md DA6.)
 #
-# EVERY OPERAND IS DERIVED FROM A FILE — including, since the amendment pass,
-# the role => binding-wall mapping itself. The ceiling comes from
+# EVERY OPERAND IS DERIVED FROM A FILE, WITH ONE DELIBERATE EXCEPTION —
+# including the role => binding-wall mapping itself. The ceiling comes from
 # .config/nextest.toml; from scripts/verify.sh come both role sets, the two wall
 # defaults, which role the release wall is re-scoped for, AND which profile each
 # role forces (so a role running `both` is judged against the TIGHTER of its two
@@ -1108,11 +1144,21 @@ assert "K-tier: the smallest HEAVY ceiling (${_MIN_HEAVY_CEIL:-?}s) strictly exc
 # assertion whose operands are literals cannot fail whatever the files say, and
 # a mapping that is a CONSEQUENCE of verify.sh is a literal in disguise.
 #
-# WALLCLOCK-GUARD SAFETY: every comparison here is a lower bound (-gt, never
-# -le/-lt), the operand vars carry no ELAPSED/_S/_MS/_NS/SECONDS suffix, and no
-# description uses an elapsed/duration/within-Ns lexeme. These are CONFIG
-# CONSTANTS, not measured durations, so
-# tests/infra/test_no_new_wallclock_upper_bounds.sh does not fire.
+# THE EXCEPTION is L_START_OFFSET_BUDGET_SECONDS, which is measured and cannot
+# be otherwise: the seconds a pass takes to reach a heavy test are a property of
+# the BUILD and of nextest's scheduling, and no file in the tree states them. It
+# is kept honest by being compared only against a DIFFERENCE of two file-derived
+# numbers — so a drifting ceiling or a drifting wall still moves the comparison,
+# and no assertion here compares a literal to itself.
+#
+# WALLCLOCK-GUARD SAFETY: every comparison here is a lower bound (-gt/-ge, never
+# -le/-lt) and no description uses an elapsed/duration/within-Ns lexeme. These
+# comparisons are between CONFIG CONSTANTS, not between a measured run time and
+# a deadline, so tests/infra/test_no_new_wallclock_upper_bounds.sh does not fire.
+# L_START_OFFSET_BUDGET_SECONDS does carry a SECONDS suffix and IS measured, so
+# keep it on the lower-bound side of every comparison it appears in: written as
+# an upper bound it would be indistinguishable to that ratchet from the
+# wall-clock flake class it exists to keep out.
 # ===========================================================================
 
 # Roles whose binding wall does NOT reach the heavy ceiling and which are
@@ -1330,6 +1376,15 @@ _residual_role_documented() {
 # or returns 1 for a role belonging to neither class. Written once and used by
 # both the per-role assertions and the boolean whole-file checker below, so the
 # fixtures exercise the very logic the assertions report.
+#
+# THE PREDICATE LIVES HERE AND NOWHERE ELSE (task 7552 amendment). It was
+# `wall > ceiling`, which compares two clocks that do not start together and was
+# therefore green on a ceiling no hung test could ever reach under the binding
+# wall. The corrected rule is `wall - ceiling > start-offset budget`, and the
+# RESIDUAL branch's mislabel guard is its EXACT complement — written as the
+# complement deliberately, since a residual is by definition a role the
+# REACHABLE branch rejected, and any gap between the two conditions would leave
+# a role the caller must classify but neither branch claims.
 # ---------------------------------------------------------------------------
 _role_class() {
     local toml="$1" vsh="$2" role="$3" wall ceiling
@@ -1337,13 +1392,13 @@ _role_class() {
     [ -n "$ceiling" ] || return 1
     wall="$(_role_wall_secs "$vsh" "$role")"
     [ -n "$wall" ] || return 1
-    if [ "$wall" -gt "$ceiling" ]; then
+    if [ "$(( wall - ceiling ))" -gt "$L_START_OFFSET_BUDGET_SECONDS" ]; then
         printf 'REACHABLE'
         return 0
     fi
     if _in_list "$role" ${L_RESIDUAL_ROLES+"${L_RESIDUAL_ROLES[@]}"} \
         && _residual_role_documented "$toml" "$role" \
-        && [ "$ceiling" -gt "$wall" ]; then
+        && [ "$(( ceiling + L_START_OFFSET_BUDGET_SECONDS ))" -ge "$wall" ]; then
         printf 'RESIDUAL'
         return 0
     fi
@@ -1423,8 +1478,8 @@ for _atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
     _lgot="$(_slow_ceiling_for_filter "$NEXTEST_TOML" "$_atom")"
     assert "L: heavy ceiling for [${_atom}] extracted from nextest.toml (non-empty seconds, got '${_lgot:-<none>}')" \
         test -n "${_lgot:-}"
-    assert "L: offline release wall (${_OFFLINE_WALL:-?}s, from verify.sh) strictly exceeds the heavy ceiling for [${_atom}] (${_lgot:-?}s, from nextest.toml) so nextest kills BY NAME before the wall fires" \
-        test "${_OFFLINE_WALL:-0}" -gt "${_lgot:-0}"
+    assert "L: offline release wall (${_OFFLINE_WALL:-?}s, from verify.sh) exceeds the heavy ceiling for [${_atom}] (${_lgot:-?}s, from nextest.toml) by more than the ${L_START_OFFSET_BUDGET_SECONDS}s start-offset budget, so nextest kills BY NAME before the wall fires" \
+        test "$(( ${_OFFLINE_WALL:-0} - ${_lgot:-0} ))" -gt "$L_START_OFFSET_BUDGET_SECONDS"
 done
 
 _HEAVY_ROLES=()
@@ -1449,17 +1504,17 @@ for _role in ${_HEAVY_ROLES+"${_HEAVY_ROLES[@]}"}; do
     _rclass="$(_role_class "$NEXTEST_TOML" "$VERIFY_SH" "$_role" || true)"
     case "$_rclass" in
         REACHABLE)
-            assert "L: role '${_role}' is REACHABLE — its binding wall (${_rwall:-?}s, from verify.sh) strictly exceeds the heavy ceiling (${_CEILING:-?}s, from nextest.toml), so a hung heavy test is killed BY NAME" \
-                test "${_rwall:-0}" -gt "${_CEILING:-0}"
+            assert "L: role '${_role}' is REACHABLE — its binding wall (${_rwall:-?}s, from verify.sh) exceeds the heavy ceiling (${_CEILING:-?}s, from nextest.toml) by more than the ${L_START_OFFSET_BUDGET_SECONDS}s the pass takes to reach a heavy test, so a hung one is killed BY NAME" \
+                test "$(( ${_rwall:-0} - ${_CEILING:-0} ))" -gt "$L_START_OFFSET_BUDGET_SECONDS"
             ;;
         RESIDUAL)
             assert "L: role '${_role}' is an ACCEPTED RESIDUAL — allowlisted in L_RESIDUAL_ROLES here AND named in .config/nextest.toml's ACCEPTED RESIDUAL paragraph, so the gap is recorded where a config reader will find it" \
                 _residual_role_documented "$NEXTEST_TOML" "$_role"
-            assert "L: role '${_role}' really is a residual and not a mislabel — the heavy ceiling (${_CEILING:-?}s) exceeds its binding wall (${_rwall:-?}s), so raising that wall past the ceiling must move it to REACHABLE" \
-                test "${_CEILING:-0}" -gt "${_rwall:-0}"
+            assert "L: role '${_role}' really is a residual and not a mislabel — the heavy ceiling (${_CEILING:-?}s) plus the ${L_START_OFFSET_BUDGET_SECONDS}s start-offset budget is at or above its binding wall (${_rwall:-?}s), so raising that wall past their sum must move it to REACHABLE" \
+                test "$(( ${_CEILING:-0} + L_START_OFFSET_BUDGET_SECONDS ))" -ge "${_rwall:-0}"
             ;;
         *)
-            assert "L: role '${_role}' runs heavy members (verify.sh accepts it and the _GATE_HEAVY_EXCLUDE guard does not cover it) but is NEITHER reachable (its binding wall '${_rwall:-<unmodelled>}' does not exceed the ${_CEILING:-?}s ceiling) NOR an enumerated residual. Classify it: raise its wall past the ceiling, add it to the exclusion guard, or add it to L_RESIDUAL_ROLES here AND to .config/nextest.toml's ACCEPTED RESIDUAL paragraph. Do not widen the guard." \
+            assert "L: role '${_role}' runs heavy members (verify.sh accepts it and the _GATE_HEAVY_EXCLUDE guard does not cover it) but is NEITHER reachable (its binding wall '${_rwall:-<unmodelled>}' does not clear the ${_CEILING:-?}s ceiling by the ${L_START_OFFSET_BUDGET_SECONDS}s the pass takes to reach a heavy test) NOR an enumerated residual. Classify it: raise its wall past the ceiling plus that budget, lower the ceiling, add it to the exclusion guard, or add it to L_RESIDUAL_ROLES here AND to .config/nextest.toml's ACCEPTED RESIDUAL paragraph. Do not widen the guard." \
                 false
             ;;
     esac
@@ -1591,6 +1646,34 @@ _seed_narrow_debug_wall() {
         "$1" > "$2"
 }
 
+# _seed_heavy_ceiling <src> <dst> <grain-count> — rewrite EVERY heavy atom's
+# override block to a different per-test ceiling, leaving the gate-resident
+# blocks and the [profile.default] ceiling untouched. Keyed on each block's
+# `filter =` value matching an entry of HEAVY_ATOMS — the same byte-identical
+# correspondence Assertion J checks — so this seed cannot drift from the atom
+# list the rest of the file derives. Both TOML quote characters are recognised,
+# for the same reason K-neg (x) exists.
+_seed_heavy_ceiling() {
+    local src="$1" dst="$2" n="$3"
+    printf '%s\n' ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"} \
+    | awk -v n="$n" -v q="'" '
+        FNR == NR { want[$0] = 1; next }
+        /^\[\[/ { hit = 0 }
+        $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
+            hit = 0
+            if (match($0, q "[^" q "]*" q) || match($0, "\"[^\"]*\"")) {
+                val = substr($0, RSTART + 1, RLENGTH - 2)
+                if (val in want) hit = 1
+            }
+        }
+        hit && /^[[:space:]]*slow-timeout[[:space:]]*=/ {
+            sub(/terminate-after[[:space:]]*=[[:space:]]*[0-9]+/, "terminate-after = " n)
+            hit = 0
+        }
+        { print }
+    ' - "$src" > "$dst"
+}
+
 # _seed_document_residual <src> <dst> <role> — name <role> inside the config's
 # ACCEPTED RESIDUAL paragraph, immediately after the shared anchor line so the
 # insertion lands inside the contiguous comment block _residual_role_documented
@@ -1629,9 +1712,34 @@ _seed_exclude_role "$_KL_FIX/verify-synth.sh" "$_KL_FIX/verify-synth-excluded.sh
 #      after task 7552: the ceiling is sized UNDER the debug wall, so the debug
 #      wall is the operand a future re-tune can invalidate it with. (Before this
 #      task the same fixture seeded the OFFLINE RELEASE wall down to 6h; at a
-#      3240s ceiling no whole-hour release wall is small enough to express a gap,
-#      and the release walls are no longer what the ceiling is sized against.)
+#      re-sized ceiling no whole-hour release wall is small enough to express a
+#      gap, and the release walls are no longer what the ceiling is sized
+#      against.) This covers the wall-BELOW-ceiling direction only; (vi-b) below
+#      covers the wall-above-ceiling-but-inside-the-budget direction, and the
+#      two are different shapes rather than one with a different number — the
+#      superseded predicate rejected this one and accepted that one.
 _seed_narrow_debug_wall "$VERIFY_SH" "$_KL_FIX/verify-narrow-debug.sh" "$_SYNTH_DEBUG_WALL_M"
+
+# (vi-b) the shape the task 7552 amendment exists for, and the one fixture (vi)
+#        cannot express: a debug wall that EXCEEDS the heavy ceiling — so the
+#        superseded bare wall-over-ceiling rule called it REACHABLE and went
+#        green — but not by the start-offset budget, so the pass never reaches a
+#        heavy test before the wall fires and the by-name kill never happens.
+#        This is the false green itself, seeded. Derived from the ceiling rather
+#        than written as a literal so it stays at exactly that shape whatever
+#        the ceiling is re-tuned to: one whole minute above it.
+_SYNTH_TIGHT_WALL_M=$(( _CEILING / 60 + 1 ))
+_seed_narrow_debug_wall "$VERIFY_SH" "$_KL_FIX/verify-tight-debug.sh" "$_SYNTH_TIGHT_WALL_M"
+
+# (xi) THE OPPOSITE DIRECTION: a .config/nextest.toml whose heavy ceiling leaves
+#      headroom comfortably clear of the start-offset budget must still classify
+#      REACHABLE. Every other L fixture asserts a REJECTION, so without this one
+#      a budget that failed to parse — an empty string, a botched substitution —
+#      would make the corrected predicate reject every role and look exactly
+#      like rigour. Sized to leave twice the budget of headroom, derived from
+#      the same two numbers the predicate itself compares.
+_ROOMY_CEILING_N=$(( (_DEBUG_WALL - 2 * L_START_OFFSET_BUDGET_SECONDS) / 120 ))
+_seed_heavy_ceiling "$NEXTEST_TOML" "$_KL_FIX/roomy.toml" "$_ROOMY_CEILING_N"
 
 # (vii) the scaffold plus a further `experimental` role with no exclusion, no
 #       allowlist entry and no residual note: the newcomer shape, which must not
@@ -1709,6 +1817,21 @@ assert "L-neg (vi) fixture is non-vacuous — the narrowed-debug-wall seed reall
 
 assert "L-neg (vi): classifier REJECTS a verify.sh whose DEBUG wall (${_SYNTH_DEBUG_WALL_M}m) no longer exceeds the ${HEAVY_CEILING_SECONDS}s heavy ceiling — the wall the ceiling is SIZED under, leaving the both-profile roles an unrecorded gap" \
     _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-narrow-debug.sh"
+
+assert "L-neg (vi-b) fixture is non-vacuous — the tight-debug-wall seed really changed scripts/verify.sh" \
+    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-tight-debug.sh"
+
+assert "L-neg (vi-b): classifier REJECTS a verify.sh whose DEBUG wall (${_SYNTH_TIGHT_WALL_M}m) EXCEEDS the ${_CEILING:-?}s heavy ceiling but clears it by less than the ${L_START_OFFSET_BUDGET_SECONDS}s start-offset budget — the false green the superseded bare wall-over-ceiling rule produced, which is the whole reason that rule was replaced" \
+    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-tight-debug.sh"
+
+assert "L-neg (xi): the roomy-ceiling fixture is expressible at all — leaving twice the ${L_START_OFFSET_BUDGET_SECONDS}s budget of headroom under the ${_DEBUG_WALL:-?}s debug wall needs a positive 120s grain count (got ${_ROOMY_CEILING_N:-<none>})" \
+    test "${_ROOMY_CEILING_N:-0}" -ge 1
+
+assert "L-neg (xi) fixture is non-vacuous — the roomy-ceiling seed really changed .config/nextest.toml" \
+    _files_differ "$NEXTEST_TOML" "$_KL_FIX/roomy.toml"
+
+assert "L-neg (xi): the SAME role classifier ACCEPTS a nextest.toml whose heavy ceiling ($(( _ROOMY_CEILING_N * 120 ))s) leaves every heavy-running role headroom well clear of the budget — the corrected predicate DISCRIMINATES, it does not simply reject" \
+    _role_classification_ok "$_KL_FIX/roomy.toml" "$VERIFY_SH"
 
 assert "L-neg (vii) fixture is non-vacuous — the extra-role seed really changed the scaffold's verify.sh" \
     _files_differ "$_KL_FIX/verify-synth.sh" "$_KL_FIX/verify-synth-extra-role.sh"
