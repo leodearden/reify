@@ -3880,10 +3880,10 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
           prose here has to guess a cause on a reader's behalf.\n\
         \n\
         The **`disposition` column is γ's RULING**, projected from the site's measured\n\
-        severity and wording and the two per-site waiver tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`\n\
-        in the generator, `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling\n\
-        `examples_smoke.rs`) rather than typed here. It has three states, and they call\n\
-        for three DIFFERENT actions:\n\
+        severity and wording and the three per-site tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`\n\
+        and `CTOR_CONFORMANCE_REJECTION_FIXTURES` in the generator,\n\
+        `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling `examples_smoke.rs`) rather than\n\
+        typed here. It has four states, and they call for four DIFFERENT actions:\n\
         \n\
         - **`deferred`** names the LIVE task that owns retiring the site, and the reason\n\
         migrating it here would destroy something — most of these are committed RED\n\
@@ -3896,6 +3896,13 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
         behaviour under test. **Not actionable, and not residual either** — it carries no\n\
         owner because it needs none, and reading it as unclaimed work would send you to\n\
         delete another PRD’s signal.\n\
+        - **`intended rejection`** is an in-scope site whose violation IS the\n\
+        deliverable: a committed PRD §7 boundary-row fixture that `reify check` is\n\
+        asserted to REJECT by a probe in\n\
+        `tests/prd-gate/struct-ctor-conformance-probe-set.json`. It differs from `n/a` on\n\
+        scope — the knob's ctor-argument walk really is what emitted it — and from\n\
+        `deferred` on ownership: no task retires it, so it names none. **Leave it alone**;\n\
+        migrating the site deletes δ's own signal and reds that CLI gate.\n\
         - **`unattributed`** is an in-scope site claimed by nobody: that is the\n\
         actionable state, and after γ the corpus holds none.\n\
         \n\
