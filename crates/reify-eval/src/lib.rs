@@ -347,17 +347,11 @@ fn value_type_kind_matches(
         Value::Point(_) => matches!(ty, Type::Point { .. }),
         Value::Vector(_) => matches!(ty, Type::Vector { .. }),
         Value::Complex { .. } => matches!(ty, Type::Complex(_)),
-        // Only N=3 is inhabited: `Value::Orientation` is a bare quaternion
-        // with no arity field, `try_infer_type` yields `Orientation(3)`
-        // unconditionally, and `resolve_type_name` surfaces only
-        // "Orientation" | "Orientation3" — so every other arity is
-        // unreachable and rejecting it costs nothing. Matches
-        // `reify_compiler::joint_self_check::dof_kind_of`, which task #6335
-        // narrowed to the same arity, so this layer is no longer more
-        // permissive than the classifier consuming its results. See
-        // `reify_core::Type::Orientation`'s variant doc for the normative
-        // statement; #6336 owns widening this arm if SO(2) becomes
-        // first-class.
+        // Only N=3 is inhabited — see `reify_core::Type::Orientation`'s
+        // variant doc; mirrors `joint_self_check::dof_kind_of`. The sibling
+        // Frame/Transform/AffineMap arms stay permissive under the same
+        // #6336 deferral — that asymmetry is intentional, not an oversight.
+        // #6336 owns widening this arm.
         Value::Orientation { .. } => matches!(ty, Type::Orientation(3)),
         Value::Frame { .. } => matches!(ty, Type::Frame(_)),
         Value::Transform { .. } => matches!(ty, Type::Transform(_)),
@@ -2048,21 +2042,14 @@ mod tests {
 
     // ── value_type_kind_matches: Orientation arity narrowing (task 6546) ───
 
-    /// Locks the narrowed production arm
-    /// `Value::Orientation { .. } => matches!(ty, Type::Orientation(3))`.
+    /// Locks `Value::Orientation` to `Type::Orientation(3)` only — see
+    /// `reify_core::Type::Orientation`'s variant doc for why N=3 is the only
+    /// inhabited arity.
     ///
-    /// (b) and (c) are the RED assertions: today's arm is still
-    /// `matches!(ty, Type::Orientation(_))`, which accepts every arity, so
-    /// both fail until the arm is narrowed to the literal `3` pattern.
-    /// (a), (d) and (e) are controls that are already green and must stay
-    /// green after the narrowing lands.
-    ///
-    /// Reachability basis: no value carries `N != 3` — `Value::Orientation`
-    /// is a bare unit quaternion with no arity field, and
-    /// `reify-ir/src/value.rs`'s `try_infer_type` yields `Type::Orientation(3)`
-    /// unconditionally — and no surface spelling names one — the builtin-name
-    /// table in `type_resolution.rs` maps only `"Orientation" | "Orientation3"`
-    /// to `Type::Orientation(3)`. So narrowing rejects no constructible input.
+    /// (a) the sole inhabited arity; (b)/(c) rejected arities (mirrors the
+    /// witnesses `joint_self_check::dof_kind_of` already pins to `None`);
+    /// (d) the `Value::Undef` wildcard sits upstream of this match and is
+    /// unaffected; (e) the sibling `Value::Frame` arm is unaffected.
     #[test]
     fn value_type_kind_matches_orientation_value_rejects_non_three_arity() {
         use reify_core::Type;
@@ -2074,21 +2061,20 @@ mod tests {
             z: 0.0,
         };
 
-        // (a) POSITIVE CONTROL — the only inhabited arity. GREEN before and
-        // after; catches an over-narrowing that would reject everything.
+        // (a) The only inhabited arity; also guards against an
+        // over-narrowing that would reject everything.
         assert!(
             value_type_kind_matches(&q, &Type::Orientation(3), None),
             "Value::Orientation must satisfy Type::Orientation(3), the only inhabited arity (a)"
         );
 
-        // (b) THE RED ASSERTION — fails today because the arm is
-        // `matches!(ty, Type::Orientation(_))`, which accepts every arity.
+        // (b) No value can carry N=2, so Type::Orientation(2) is rejected.
         assert!(
             !value_type_kind_matches(&q, &Type::Orientation(2), None),
             "Value::Orientation must be rejected by Type::Orientation(2) — no value can carry N=2 (b)"
         );
 
-        // (c) RED — mirrors the arities joint_self_check::dof_kind_of already
+        // (c) Mirrors the arities joint_self_check::dof_kind_of already
         // pins to None, so the value layer and the classifier agree.
         assert!(
             !value_type_kind_matches(&q, &Type::Orientation(0), None),
@@ -2100,15 +2086,13 @@ mod tests {
         );
 
         // (d) Value::Undef is the universal wildcard and sits upstream of
-        // this match — must survive the narrowing untouched. GREEN before
-        // and after.
+        // this match — unaffected by the narrowing.
         assert!(
             value_type_kind_matches(&Value::Undef, &Type::Orientation(2), None),
             "Value::Undef against Type::Orientation(2) must stay true (universal wildcard) (d)"
         );
 
-        // (e) CROSS-VARIANT CONTROL — the narrowing must not leak into the
-        // sibling Value::Frame arm. GREEN before and after.
+        // (e) The narrowing must not leak into the sibling Value::Frame arm.
         assert!(
             !value_type_kind_matches(&q, &Type::Frame(3), None),
             "Value::Orientation must be rejected by Type::Frame(3) (different outer variant) (e)"
