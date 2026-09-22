@@ -4344,9 +4344,9 @@ impl std::fmt::Display for FeaValueShapeError {
 /// not an oversight; see [`ComponentRead`]'s doc for why the policy is
 /// decided here rather than inside `component`, and
 /// `extract_vec3_si_treats_an_undef_component_as_a_shape_error` for the
-/// characterization lock. A follow-up is filed to decide, deliberately and
-/// with its own test coverage, whether this position should widen to quiet
-/// degradation too.
+/// characterization lock. Follow-up #7793 is filed to decide, deliberately
+/// and with its own test coverage, whether this position should widen to
+/// quiet degradation too.
 fn extract_scalar_triple(
     comps: &[Value],
     shape_context: &'static str,
@@ -4381,7 +4381,9 @@ fn extract_scalar_triple(
 /// regression where folding the two together made `read_direction_or_neg_z`
 /// hard-fail the whole solve on transient solver state instead of degrading
 /// quietly). `extract_scalar_triple`'s `comp` closure treats `Undefined` as a
-/// shape error — today's pre-existing behaviour, preserved — while
+/// shape error — today's pre-existing behaviour, preserved out of this
+/// task's charter (follow-up #7793 is filed to decide, deliberately and with
+/// its own test coverage, whether to widen it) — while
 /// `read_direction_or_neg_z` degrades it quietly to `0.0`, per PRD
 /// `dimension-checked-readers.md` decision 2 ("`Undef` in => `Undef` out,
 /// quietly"). Dimension EXPECTATION (what `spec_component` classifies) and
