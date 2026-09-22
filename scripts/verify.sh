@@ -485,7 +485,7 @@ _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_
 # docs/notes/heavy-test-per-test-duration-measurement.md.) This is a WHOLE-RUN
 # budget; it says nothing about any single test.
 #
-# Pinned by test_occt_flock_gate.sh T14-T17 (rendering; T18 pins that the scoping
+# Pinned by test_occt_flock_gate.sh T14-T17 (rendering; T18-BG pins that the scoping
 # still does not leak to background) and by test_nextest_slow_priority.sh
 # Assertion L, which DERIVES this wall and the role it is scoped to from the
 # block below.
@@ -2901,7 +2901,7 @@ add_test_passes() {
     #    accepted residual it used to imply is retired. That headroom is a
     #    two-sample max, not a structural guarantee; DA6 says what would re-open it. Which wall binds which role, and how the ceiling
     #    is derived, are normative in docs/prds/offline-deep-test-lane.md DA6.
-    #    T14-T17 mechanise offline's rendering and T18 background's;
+    #    T14-T17 mechanise offline's rendering and T18-BG background's;
     #    test_nextest_slow_priority.sh Assertion L mechanises wall > ceiling for
     #    every heavy-running role with every operand derived from a file.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh

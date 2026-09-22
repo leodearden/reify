@@ -910,7 +910,7 @@ assert "T17-AMB-CTRL: same hostile ambient WITHOUT the pin: the 90m release next
     _t17amb_lacks_release_pass "$_T17AMBCTRL_PLAN"
 rm -f "$_T17AMBCTRL_ERR"
 
-# -- Test T18 (task 7552): the background role's rendered walls and its heavy --
+# -- Test T18-BG (task 7552): the background role's rendered walls and its heavy --
 #    membership.
 #
 # T14-T17 above pin that the OFFLINE role's 13h release default reaches the
@@ -949,41 +949,49 @@ rm -f "$_T17AMBCTRL_ERR"
 #
 # No --profile flag, on purpose: background forces PROFILE="both" itself, and
 # that is part of what is under test.
+#
+# THE `-BG` SUFFIX IS NOT DECORATION — do not "tidy" it back to a bare T18. This
+# file carries TWO independently-numbered series that share the same integers
+# (the file's own comment at the top says so), and plain `Test 18` already exists
+# ~70 lines below — about fd 9 leaking into BACKGROUND DAEMONS, so both sections
+# match a grep for `18` AND for `background`. Suffixing follows the T17-AMB
+# precedent and keeps `grep -n "Test 18"` pointing at exactly one case, which is
+# how anyone triaging a failure finds the right section to edit.
 echo ""
-echo "--- Test T18 (task 7552): background renders the base 60m/90m walls and runs the heavy members ---"
+echo "--- Test T18-BG (task 7552): background renders the base 60m/90m walls and runs the heavy members ---"
 
-_t18_lacks_heavy_exclusion() { ! plan_match "$1" 'cargo nextest run.*-E "not \('; }
+_t18bg_lacks_heavy_exclusion() { ! plan_match "$1" 'cargo nextest run.*-E "not \('; }
 
-_T18_ERR="$(mktemp)"
-_T18_RAW=""
-capture_print_plan _T18_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+_T18BG_ERR="$(mktemp)"
+_T18BG_RAW=""
+capture_print_plan _T18BG_RAW "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
         env -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
         -u REIFY_RELEASE_DELTA_SKIP \
         REIFY_GATE_EXCLUDE_HEAVY=1 DF_VERIFY_ROLE=background \
         bash "$REPO_ROOT/scripts/verify.sh" test \
-        --scope all --print-plan 2>"$_T18_ERR" || true
-assert "T18: --print-plan capture complete (structural markers present, load-robust)" \
-    plan_capture_complete "$_T18_RAW"
-_T18_PLAN="$(plan_strip_comments "$_T18_RAW")"
-export _T18_PLAN _T18_RAW
+        --scope all --print-plan 2>"$_T18BG_ERR" || true
+assert "T18-BG: --print-plan capture complete (structural markers present, load-robust)" \
+    plan_capture_complete "$_T18BG_RAW"
+_T18BG_PLAN="$(plan_strip_comments "$_T18BG_RAW")"
+export _T18BG_PLAN _T18BG_RAW
 
 # Misconfiguration canaries first: if the role or the profile did not take, every
 # assertion below would be exercising something other than what it names.
 # Asserted against the RAW capture — plan_strip_comments drops the `#` header.
-assert "T18: plan header confirms role=background (the assertions below really are exercising the background role)" \
-    occt_plan_grep_or_dump 'role=background' "$_T18_RAW" "$_T18_ERR"
-assert "T18: plan header confirms profile=both (background forces both passes with no --profile flag, so the tighter DEBUG wall is the one that binds it)" \
-    occt_plan_grep_or_dump 'profile=both' "$_T18_RAW" "$_T18_ERR"
+assert "T18-BG: plan header confirms role=background (the assertions below really are exercising the background role)" \
+    occt_plan_grep_or_dump 'role=background' "$_T18BG_RAW" "$_T18BG_ERR"
+assert "T18-BG: plan header confirms profile=both (background forces both passes with no --profile flag, so the tighter DEBUG wall is the one that binds it)" \
+    occt_plan_grep_or_dump 'profile=both' "$_T18BG_RAW" "$_T18BG_ERR"
 
-assert "T18: DF_VERIFY_ROLE=background: debug nextest pass renders the base 60m wall — the tighter of its two, and the wall .config/nextest.toml's heavy ceiling is sized under" \
-    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T18_PLAN" "$_T18_ERR"
-assert "T18: DF_VERIFY_ROLE=background: release nextest pass renders the base 90m wall, NOT offline's 13h (the role-scoping does not leak here either)" \
-    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T18_PLAN" "$_T18_ERR"
+assert "T18-BG: DF_VERIFY_ROLE=background: debug nextest pass renders the base 60m wall — the tighter of its two, and the wall .config/nextest.toml's heavy ceiling is sized under" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T18BG_PLAN" "$_T18BG_ERR"
+assert "T18-BG: DF_VERIFY_ROLE=background: release nextest pass renders the base 90m wall, NOT offline's 13h (the role-scoping does not leak here either)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T18BG_PLAN" "$_T18BG_ERR"
 
 # The premise assertion — the real point of this case.
-assert "T18: DF_VERIFY_ROLE=background with REIFY_GATE_EXCLUDE_HEAVY=1 (its production value): NO -E \"not (<heavy>)\" fragment on any nextest line, so the role genuinely runs all 8 heavy members and the ceiling sized under its wall is sized against something real" \
-    _t18_lacks_heavy_exclusion "$_T18_PLAN"
-rm -f "$_T18_ERR"
+assert "T18-BG: DF_VERIFY_ROLE=background with REIFY_GATE_EXCLUDE_HEAVY=1 (its production value): NO -E \"not (<heavy>)\" fragment on any nextest line, so the role genuinely runs all 8 heavy members and the ceiling sized under its wall is sized against something real" \
+    _t18bg_lacks_heavy_exclusion "$_T18BG_PLAN"
+rm -f "$_T18BG_ERR"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a

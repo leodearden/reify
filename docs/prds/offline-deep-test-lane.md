@@ -402,7 +402,7 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   same commit — which is what the guard was built self-cleaning to force. L's residual allowlist is now
   EMPTY, so its residual branch has no live user; it is kept honest by a synthetic-role fixture scaffold
   rather than by a real gap. `tests/infra/test_occt_flock_gate.sh` T14-T17 pin offline's role-scoped
-  wall and T18 (new in 7552) pins `background`'s base 60m/90m walls and its heavy membership, the two
+  wall and T18-BG (new in 7552) pins `background`'s base 60m/90m walls and its heavy membership, the two
   facts the re-size rests on.
 
   **Follow-up tickets, both discharged by task 7552.** `tkt_0RTN426YPJ2JWVP3YGQQZ8KH7C` (measure the
