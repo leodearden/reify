@@ -8972,6 +8972,59 @@ mod tests {
         assert!((fz).abs() < 1e-9, "expected fz≈0, got {fz}");
     }
 
+    /// step-2 RED (task #7019, PRD invariant I2 — "no coercion: a reader
+    /// never substitutes a default, a `0.0` floor, or a `1.0` sentinel for a
+    /// *present* value", `docs/prds/v0_6/dimension-checked-readers.md:483-485`):
+    /// a PRESENT, correctly-SHAPED `direction` component that carries a unit
+    /// must be rejected, not silently coerced.
+    ///
+    /// This two-stage wrongness is why step-3 cannot land the MaterialFrame
+    /// axis gate and this fix separately: TODAY the unit is silently
+    /// stripped and `fy == -800.0` (the LENGTH Scalar's SI magnitude read as
+    /// the bare component). If `dimensionless_component`'s gate landed
+    /// WITHOUT also Result-ifying `read_direction_or_neg_z`'s
+    /// `.unwrap_or(0.0)`, this same input would instead give `fy == 0.0` —
+    /// the whole load direction silently deleted, which is strictly worse
+    /// than the unit strip it replaces.
+    #[test]
+    fn extract_loads_rejects_a_dimensioned_direction_component() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [
+            ("force".to_string(), Value::Real(800.0)),
+            (
+                "direction".to_string(),
+                Value::Vector(vec![
+                    Value::Real(0.0),
+                    Value::Scalar {
+                        si_value: -1.0,
+                        dimension: DimensionVector::LENGTH,
+                    },
+                    Value::Real(0.0),
+                ]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let point_load = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "PointLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }));
+
+        let res = extract_loads(&Value::List(vec![point_load]), 0.0);
+        assert!(
+            res.is_err(),
+            "expected Err for a PRESENT, correctly-shaped direction component \
+             carrying a unit — today the unit is silently stripped and this \
+             reads as fy=-800.0; if the dimensionless_component gate landed \
+             without this fix the same input would instead give fy=0.0, \
+             silently deleting the whole load direction, got: {:?}",
+            res
+        );
+    }
+
     // ── task 5905: `direction` retyped to Vector3<Dimensionless> ─────────────
 
     /// Build a `PointLoad` whose `direction` field is the supplied `Value`
