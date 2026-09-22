@@ -763,6 +763,10 @@ pub mod ffi {
         /// The operation runs with `Copy=true`, so the source shape is never mutated;
         /// a fresh `UniquePtr<OcctShape>` is returned.
         ///
+        /// The returned shape carries no polygonal representation: any triangulation on
+        /// `shape` is left off the result (and `shape`'s own mesh is untouched), so the
+        /// result is the same whether or not `shape` was tessellated first.
+        ///
         /// Singular-input guard: rejects rank-deficient linear parts using a scale-invariant
         /// Hadamard-ratio check (`|det| / (‖row0‖·‖row1‖·‖row2‖) < 1e-12`), with an error
         /// message containing "singular". Non-uniform scale and shear are valid (e.g.
