@@ -85,6 +85,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 | Debug-port provisioning contract | `scripts/setup-worktree-debug-port.sh` header |
 | PRD `.ri` fixture location standard (4 tiers; `docs/prds/**/fixtures/` deprecated) | `tests/prd-gate/README.md` → "Where fixtures live"; `.claude/skills/prd/project.md` → "Landing PRD artifacts" |
 | PTODO grammar & violation taxonomy | `docs/prds/reify-audit-ptodo-detector.md` §8 |
+| Machine-written legibility artifacts on `main` (nightly trickle, census): who validates, refusal semantics, gate charter | `docs/legibility/landing-contract.md` |
 | Infra-test bash→Python migration policy, ledger evidence & the `.sh`-wrapper trap | `docs/notes/infra-test-bash-to-python-migration-policy.md`; discovery mechanics: `tests/infra/README.md` → "Auto-discovery" |
 | Flaky-ledger accounting CLI (per-member counts; density needs `--total-runs`) | `scripts/flake-density-report.py --help` |
 | sccache / cross-worktree build-cache design | `~/.claude/plans/playful-hopping-nygaard.md` |
