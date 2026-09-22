@@ -226,7 +226,10 @@ impl ReifyLanguageServer {
     /// [`NotificationSink::log_message`]'s contract.
     fn lock_eval_state(&self) -> std::sync::MutexGuard<'_, EvalState> {
         self.eval_state.lock().unwrap_or_else(|e| {
-            if !self.eval_state_poison_reported.swap(true, Ordering::Relaxed) {
+            let already_reported = self
+                .eval_state_poison_reported
+                .swap(true, Ordering::Relaxed);
+            if !already_reported {
                 self.sink.log_message(LogLine {
                     typ: MessageType::ERROR,
                     message: "eval_state lock poisoned, recovering (reported once: the mutex \
