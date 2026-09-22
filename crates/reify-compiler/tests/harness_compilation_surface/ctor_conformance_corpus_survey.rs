@@ -5236,6 +5236,76 @@ fn git_succeeds(args: &[&str]) -> bool {
         .success()
 }
 
+/// TRIPWIRE: the committed artifact still renders the CURRENT
+/// [`Disposition::NotApplicable`] cell.
+///
+/// Makes artifact staleness a repeatable gate-resident signal instead of
+/// something only a human review catches. Before this guard, step 8 re-scoped the
+/// resolver and δ moved the knob while the committed artifact went on rendering
+/// 13 `Warning` severity cells and the pre-re-scope `n/a` wording — a divergence
+/// that survived a full merge gate.
+///
+/// # WHY ONE STRING IS ENOUGH
+///
+/// A generator run rewrites the WHOLE file, so the severity column and the
+/// disposition labels can never go stale independently of one another. A
+/// tripwire on any single code-owned rendered string therefore detects staleness
+/// in every dimension at once. This is a tripwire, NOT a golden-file comparison:
+/// it asks whether the artifact was produced by roughly today's renderer, never
+/// whether it is byte-current. A plain substring, because parsing the rendered
+/// markdown table here would be a second copy of the renderer.
+///
+/// # WHY IT MUST NOT BE STRENGTHENED INTO A FRESHNESS GATE
+///
+/// Re-deriving the artifact to compare against it would compile all 723 tracked
+/// `.ri` on every merge-gate run — exactly what
+/// `docs/prds/merge-gate-compile-cost.md` forbids, and exactly why the generator
+/// is `#[ignore]`d in the first place. This gates the artifact on the RESOLVER'S
+/// SEMANTICS, which are current code. It never gates the CENSUS — the counts and
+/// the row set — which the artifact's own header deliberately declares a
+/// point-in-time snapshot.
+///
+/// # Why `NotApplicable` is the right anchor
+///
+/// Its cell is fixed by construction. [`Disposition::Deferred`] and
+/// [`Disposition::IntendedRejection`] both interpolate a per-row `why`, so
+/// neither has a stable rendering to pin. [`Disposition::Unattributed`]'s is
+/// fixed too, but a correct artifact may legitimately contain ZERO unattributed
+/// rows — that is the goal state — so pinning it would red on success.
+///
+/// Skips on absence for the same reason
+/// [`committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`] does:
+/// deleting a consumed census is its documented end of life, not a defect.
+#[test]
+fn committed_survey_renders_the_current_disposition_vocabulary() {
+    let artifact = std::path::Path::new(WORKSPACE_ROOT).join(ARTIFACT_REL);
+    if !artifact.is_file() {
+        println!(
+            "skipped: {ARTIFACT_REL} is not present — the survey snapshot has been \
+             retired or not yet generated; nothing to check"
+        );
+        return;
+    }
+    let text = std::fs::read_to_string(&artifact)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", artifact.display()));
+
+    let expected = Disposition::NotApplicable.label();
+    assert!(
+        text.contains(&expected),
+        "{ARTIFACT_REL} does not render the current `Disposition::NotApplicable` cell, so \
+         it was produced by an older renderer and EVERY code-owned string in it is \
+         suspect — including the severity column, which δ (#5306) moved.\n\n\
+         Expected to find: {expected:?}\n\n\
+         REGENERATE it, on a CLEAN tree (`stamp_decision` refuses a dirty one):\n  \
+         cargo test -p reify-compiler --test harness_compilation_surface -- --ignored \
+         ctor_conformance\n\n\
+         Do NOT weaken this into a comparison against a freshly derived artifact: that \
+         would compile every tracked `.ri` on each merge-gate run, which is what \
+         docs/prds/merge-gate-compile-cost.md forbids and why the generator is \
+         `#[ignore]`d."
+    );
+}
+
 #[test]
 fn committed_survey_stamps_a_commit_that_is_an_ancestor_of_head() {
     // Makes the dangling-anchor defect class LOUD on every gate run instead of
