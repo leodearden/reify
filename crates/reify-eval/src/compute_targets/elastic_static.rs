@@ -4416,9 +4416,15 @@ enum ComponentRead {
 /// `Value::Scalar` whose `dimension` is wrong
 /// ([`FeaValueShapeError::WrongDimension`]) vs. a value that is not a
 /// `Value::Scalar` at all (`ExpectedScalar`) — which is what keeps every
-/// non-Scalar, DEFINED value on today's exact `ExpectedScalar` path. `got`
-/// keeps `format!("{v:?}")`, which already prints the offending dimension, so
-/// the diagnostic is self-locating.
+/// non-Scalar, DEFINED value on today's exact `ExpectedScalar` path. Both
+/// arms reuse the `ArgRejection` that `accept_arg` already built (task #7019
+/// review [reviewer_comprehensive]) instead of re-deriving a second wording
+/// from `format!("{v:?}")`: `rej.got` is `value_short_label`'s rendering
+/// (e.g. `"Length Scalar"`) and `rej.expected` is `spec.type_name`, so a
+/// `WrongDimension` at a `dimensionless_spec` position reads "expected Real
+/// … got Length Scalar" instead of a raw `Value::Scalar { .. }` `Debug` dump
+/// that names the dimension but not in the same words the `expected` side
+/// uses.
 fn spec_component(
     v: &Value,
     spec: &crate::arg_acceptance::ArgSpec,
@@ -4429,16 +4435,16 @@ fn spec_component(
     match accept_arg(v, spec) {
         Acceptance::Accepted(x) => ComponentRead::Accepted(x),
         Acceptance::Undefined => ComponentRead::Undefined,
-        Acceptance::Rejected(_) if matches!(v, Value::Scalar { .. }) => {
+        Acceptance::Rejected(rej) if matches!(v, Value::Scalar { .. }) => {
             ComponentRead::Rejected(FeaValueShapeError::WrongDimension {
                 context,
-                expected: spec.type_name,
-                got: format!("{v:?}"),
+                expected: rej.expected,
+                got: rej.got,
             })
         }
-        Acceptance::Rejected(_) => ComponentRead::Rejected(FeaValueShapeError::ExpectedScalar {
+        Acceptance::Rejected(rej) => ComponentRead::Rejected(FeaValueShapeError::ExpectedScalar {
             context,
-            got: format!("{v:?}"),
+            got: rej.got,
         }),
     }
 }
