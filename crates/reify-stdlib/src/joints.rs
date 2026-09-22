@@ -422,8 +422,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     // above) with explicit guards. A Map built by a trusted `couple`
                     // call always has them, but hand-built Maps used in tests or future
                     // serialisation paths may not.
-                    let parent_map = match map.get(&Value::String("parent".to_string())) {
-                        Some(Value::Map(pm)) => pm,
+                    let (parent, parent_map) = match map.get(&Value::String("parent".to_string())) {
+                        Some(parent @ Value::Map(pm)) => (parent, pm),
                         _ => return Some(Value::Undef),
                     };
                     let ratio_f64 = match map.get(&Value::String("ratio".to_string())) {
@@ -443,10 +443,9 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                         _ => return Some(Value::Undef),
                     };
                     // Validate the stored parent kind — defense-in-depth against
-                    // hand-built Map fixtures with invalid parent kinds.
-                    // Extracting the kind as a &str (rather than a bool) means this
-                    // is the single validation point; transform_at_simple_joint
-                    // receives the already-validated kind and never re-reads it.
+                    // hand-built Map fixtures with invalid parent kinds. The kind picks
+                    // the coupled value's dimension below; the recursive `transform_at`
+                    // call re-dispatches on it.
                     let parent_kind = match parent_map.get(&Value::String("kind".to_string())) {
                         Some(Value::String(s))
                             if matches!(s.as_str(), "prismatic" | "revolute") =>
@@ -483,11 +482,10 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     } else {
                         Value::angle(coupled_si)
                     };
-                    // Delegate to the parent joint via the private helper.
-                    // Termination is guaranteed: `couple` rejects coupling parents
-                    // at construction, so the recursion always reaches a
-                    // prismatic/revolute arm at depth 1.
-                    transform_at_simple_joint(parent_kind, parent_map, &coupled_value)
+                    // Re-drive the parent through the one `transform_at` primitive every
+                    // consumer uses, so the coupling inherits the parent's mount (task 7187).
+                    // Depth 1: the kind guard above admits only prismatic/revolute parents.
+                    crate::eval_builtin("transform_at", &[parent.clone(), coupled_value])
                 }
                 _ => Value::Undef,
             };
@@ -1748,10 +1746,6 @@ fn axis_angle_quaternion(nax: f64, nay: f64, naz: f64, theta: f64) -> Value {
 /// added to the caller and this match — not to both separately.
 /// Returns `Value::Undef` as a defence-in-depth fallback for any unrecognised kind,
 /// and for any missing axis or invalid value argument.
-///
-/// This helper is also the terminal dispatch target for the coupling arm of
-/// `transform_at` — `couple` rejects coupling parents at construction, so the
-/// recursion always reaches this helper at depth 1, guaranteeing termination.
 fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &Value) -> Value {
     match kind {
         "prismatic" => {
