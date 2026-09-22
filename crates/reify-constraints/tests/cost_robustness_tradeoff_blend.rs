@@ -25,8 +25,8 @@
 use reify_constraints::{DimensionalSolver, build_centrality_objective};
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_ir::{
-    AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSet, ResolutionProblem,
-    SolveResult, Value, ValueMap,
+    AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSense, ObjectiveSet,
+    ResolutionProblem, SolveResult, Value, ValueMap,
 };
 
 /// Absolute tolerance (metres) for anchor-convergence checks below. The
@@ -494,6 +494,137 @@ fn gamma_strict_auto_one_sided_stays_non_unique() {
              predicate has been weakened into a blanket γ abstention."
         ),
     }
+}
+
+// ── γ diagnostic PRECISION for a default-bounds-determined model (#6465 (2)) ─
+//
+// `gamma_strict_auto_one_sided_stays_non_unique` above pins that the VERDICT
+// stays `ConstraintNonUnique`. These arms pin what the message SAYS: the γ
+// branch of `verify_uniqueness` already measures which side of each strict
+// auto's interval came from `default_bounds_for` rather than from a user
+// constraint, and collapsing that to a bool is why `finalise_uniqueness` could
+// emit only one generic sentence for three different causes.
+
+/// Returns the sole `ConstraintNonUnique` diagnostic's message, asserting there
+/// is EXACTLY one — an aggregate verdict, never one-per-offender.
+fn sole_non_unique_message(problem: &ResolutionProblem, what: &str) -> String {
+    match DimensionalSolver.solve(problem) {
+        SolveResult::Infeasible { diagnostics } => {
+            let non_unique: Vec<_> = diagnostics
+                .iter()
+                .filter(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique))
+                .collect();
+            assert_eq!(
+                non_unique.len(),
+                1,
+                "{what}: expected exactly one ConstraintNonUnique diagnostic; got \
+                 {diagnostics:?}"
+            );
+            non_unique[0].message.clone()
+        }
+        other => panic!("{what}: expected Infeasible{{ConstraintNonUnique}}; got {other:?}"),
+    }
+}
+
+/// A default-bounds-determined γ model's `ConstraintNonUnique` message must
+/// report the MEASURED cause — which param, which side, and the bound the solve
+/// fell back to — while a model with no such evidence keeps today's sentence.
+///
+/// Three arms, because the three are three different obligations:
+///
+///  1. ONE unbounded side (`t > 1mm`, the shape of
+///     `tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`). Each fact
+///     the user needs is its own assertion with its own failure text, so a
+///     partial regression says WHICH fact went missing.
+///  2. TWO unbounded params. Exactly ONE diagnostic naming BOTH — the verdict is
+///     about the model, not about an arbitrary first offender.
+///  3. CONTROL, non-γ. The evidence-free branch has no per-param measurement to
+///     report and must not pretend otherwise: its sentence stays byte-identical,
+///     which is what four existing non-γ tests elsewhere substring-match.
+///
+/// RED at authoring time for arms 1 and 2, MEASURED: the message is exactly
+/// `strict auto parameter resolution is not uniquely determined — consider
+/// using auto(free) for exploration`, naming neither param, side, nor bound.
+/// Arm 3 is GREEN on arrival and is here to pin what must NOT change.
+#[test]
+fn gamma_default_bounds_determined_diagnostic_names_the_missing_bound() {
+    // ── arm 1: one param, upper side unbounded ────────────────────────────
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    let message = sole_non_unique_message(
+        &strict_problem(&t_id, 0.5, None),
+        "one strict auto, unbounded above",
+    );
+
+    assert!(
+        message.contains("not uniquely determined"),
+        "the diagnosis phrase must stay ONE phrase across both branches — four \
+         non-γ tests substring-match it. Got: {message}"
+    );
+    assert!(
+        message.contains("CostRobustnessTradeoff.t"),
+        "the message must NAME the param (`ValueCellId`'s Display is \
+         `entity.member`); a verdict that does not say which param it is about \
+         is not actionable. Got: {message}"
+    );
+    assert!(
+        message.contains("above"),
+        "the message must name the missing SIDE — `t > 1mm` bounds t below, so \
+         the side the model left open is ABOVE, and an upper-bound constraint is \
+         the fix. Got: {message}"
+    );
+    assert!(
+        message.contains("10"),
+        "the message must state the bound the solve FELL BACK TO — \
+         `default_bounds_for(Length)`'s 10 m ceiling, in metres. The result is \
+         demoted to Infeasible, so that number is visible NOWHERE else: the \
+         value the user sees is `undef`. Got: {message}"
+    );
+
+    // ── arm 2: two params, both unbounded above → ONE aggregate verdict ───
+    let x_id = ValueCellId::new("CostRobustnessTradeoff", "x");
+    let y_id = ValueCellId::new("CostRobustnessTradeoff", "y");
+    let both = strict_problem_with(
+        &[x_id.clone(), y_id.clone()],
+        &x_id,
+        0.5,
+        vec![gt_expr(&x_id, 0.001), gt_expr(&y_id, 0.001)],
+    );
+    let message = sole_non_unique_message(&both, "two strict autos, both unbounded above");
+    for id in [&x_id, &y_id] {
+        assert!(
+            message.contains(&id.to_string()),
+            "one aggregate diagnostic must name EVERY default-bounds-determined \
+             param, not just the first; `{id}` is missing from: {message}"
+        );
+    }
+
+    // ── arm 3: CONTROL — non-γ keeps the generic sentence byte-identical ──
+    //
+    // Same under-determined shape, differing ONLY in the objective form: a plain
+    // `Minimize` over the same Money expression carries no
+    // `cost_robustness_lambda`, so `verify_uniqueness` takes the perturbation
+    // path, which measures no per-param evidence.
+    let mut control = strict_problem_with(
+        &[x_id.clone(), y_id.clone()],
+        &x_id,
+        0.5,
+        vec![gt_expr(&x_id, 0.001), gt_expr(&y_id, 0.001)],
+    );
+    control.objective = Some(ObjectiveSet::single(
+        ObjectiveSense::Minimize,
+        money_expr_x_per_mm(&x_id),
+    ));
+    let message = sole_non_unique_message(&control, "non-γ control");
+    assert_eq!(
+        message,
+        "strict auto parameter resolution is not uniquely determined \u{2014} \
+         consider using auto(free) for exploration",
+        "the evidence-free branch has no measured cause to report and must keep \
+         its sentence byte-identical — `reify-eval/tests/resolution.rs`, \
+         `auto_binding_sites_remaining_resolution.rs` and \
+         `auto_sub_override_resolution.rs` all substring-match it, and the \
+         solution-set-completeness capability manifest greps for it"
+    );
 }
 
 // ── γ + a bound the DERIVATION cannot read (task #5711, esc-5711-3) ───────
