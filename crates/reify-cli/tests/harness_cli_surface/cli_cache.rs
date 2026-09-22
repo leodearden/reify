@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 
 use reify_eval::persistent_cache::{
     CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_FORMAT_VERSION, ElasticResult, STALE_TEMPFILE_AGE,
-    read_entry, shard_dir, write_entry,
+    WithDiagnostics, read_entry, shard_dir, write_entry,
 };
 use tempfile::tempdir;
 
@@ -42,6 +42,25 @@ fn make_elastic_result_fixture() -> ElasticResult {
         curl: vec![0.1, 0.2, 0.3],
         aposteriori: None,
     }
+}
+
+/// Seed one cache entry in the shape `reify eval` writes and reads: `value`
+/// inside the [`WithDiagnostics`] envelope, here with no diagnostics.
+fn seed_entry(
+    cache_root: &std::path::Path,
+    engine_version_hash: &str,
+    input_hash: &str,
+    value: &ElasticResult,
+) -> std::io::Result<()> {
+    write_entry(
+        cache_root,
+        engine_version_hash,
+        input_hash,
+        &WithDiagnostics {
+            diagnostics: Vec::new(),
+            value: value.clone(),
+        },
+    )
 }
 
 #[test]
@@ -152,7 +171,7 @@ fn export_existing_entry_writes_tar_with_bin_and_meta_to_stdout() {
     let input_hash = "a".repeat(32);
     let fixture = make_elastic_result_fixture();
 
-    write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+    seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
         .expect("write_entry must seed the source cache");
 
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
@@ -333,7 +352,7 @@ fn round_trip_export_import_preserves_elastic_result() {
     let input_hash = "b".repeat(32);
     let fixture = make_elastic_result_fixture();
 
-    write_entry(src.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+    seed_entry(src.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
         .expect("write_entry must seed source cache");
 
     // (1) Export from src.
@@ -378,9 +397,12 @@ fn round_trip_export_import_preserves_elastic_result() {
     );
 
     // (3) Read the entry back from dst and verify equality.
-    let round_tripped = read_entry::<ElasticResult>(dst.path(), ENGINE_VERSION_HASH, &input_hash)
-        .expect("read_entry must not error");
-    let round_tripped = round_tripped.expect("dst cache must contain the imported entry");
+    let round_tripped =
+        read_entry::<WithDiagnostics<ElasticResult>>(dst.path(), ENGINE_VERSION_HASH, &input_hash)
+            .expect("read_entry must not error");
+    let round_tripped = round_tripped
+        .expect("dst cache must contain the imported entry")
+        .value;
     assert_eq!(
         round_tripped, fixture,
         "round-tripped ElasticResult must equal the seeded fixture"
@@ -843,7 +865,7 @@ fn cache_stats_reports_correct_entry_count_and_total_size_for_seeded_cache() {
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b', 'c'] {
         let input_hash: String = std::iter::repeat_n(c, 32).collect();
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -927,7 +949,7 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
             curl: vec![0.0; n * 3],
             aposteriori: None,
         };
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -1070,9 +1092,9 @@ fn cache_stats_aggregates_across_engine_versions() {
     let live_input = "a".repeat(32);
     let stale_input = "b".repeat(32);
     let fixture = make_elastic_result_fixture();
-    write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &live_input, &fixture)
+    seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &live_input, &fixture)
         .expect("write_entry must seed under live engine version");
-    write_entry(cache_dir.path(), &stale_engine, &stale_input, &fixture)
+    seed_entry(cache_dir.path(), &stale_engine, &stale_input, &fixture)
         .expect("write_entry must seed under synthesized stale engine version");
 
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
@@ -1127,7 +1149,7 @@ fn cache_clear_without_yes_refuses_and_exits_failure_and_preserves_entries() {
     let cache_dir = tempdir().expect("tempdir");
     let input_hash = "c".repeat(32);
     let fixture = make_elastic_result_fixture();
-    write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+    seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
         .expect("write_entry must seed the cache");
     // Sanity-check the seed.
     let pre = collect_cache_files(cache_dir.path());
@@ -1177,7 +1199,7 @@ fn cache_clear_yes_then_stats_round_trip_reports_empty() {
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b', 'c'] {
         let input_hash: String = std::iter::repeat_n(c, 32).collect();
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -1242,9 +1264,9 @@ fn cache_clear_with_engine_version_yes_clears_only_target_subdir_and_preserves_o
     let input_hash_a = "a".repeat(32);
     let input_hash_b = "b".repeat(32);
     let fixture = make_elastic_result_fixture();
-    write_entry(cache_dir.path(), &hash_a, &input_hash_a, &fixture)
+    seed_entry(cache_dir.path(), &hash_a, &input_hash_a, &fixture)
         .expect("write_entry must seed engine-version A");
-    write_entry(cache_dir.path(), &hash_b, &input_hash_b, &fixture)
+    seed_entry(cache_dir.path(), &hash_b, &input_hash_b, &fixture)
         .expect("write_entry must seed engine-version B");
 
     let subdir_a = cache_dir.path().join(&hash_a);
@@ -1347,7 +1369,7 @@ fn cache_gc_under_cap_is_no_op_and_preserves_all_entries() {
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b', 'c'] {
         let input_hash: String = std::iter::repeat_n(c, 32).collect();
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -1425,7 +1447,7 @@ fn cache_gc_evicts_when_forced_over_cap() {
             curl: vec![0.0; n * 3],
             aposteriori: None,
         };
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -1507,12 +1529,12 @@ fn cache_stats_honors_cache_dir_flag_overriding_env_var() {
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b'] {
         let input_hash: String = std::iter::repeat_n(c, 32).collect();
-        write_entry(flag_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(flag_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed flag_dir");
     }
     {
         let input_hash: String = "c".repeat(32);
-        write_entry(env_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(env_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed env_dir");
     }
 
