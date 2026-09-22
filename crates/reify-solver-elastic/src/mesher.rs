@@ -357,6 +357,89 @@ pub fn ring_signed_area_2d(ring: &[[f64; 2]]) -> f64 {
     acc * 0.5
 }
 
+/// 2D cross product of `o->a` and `o->b`: positive when `o, a, b` turn left.
+fn orientation(o: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - o[0]) * (b[1] - o[1]) - (b[0] - o[0]) * (a[1] - o[1])
+}
+
+/// First pair of ring edges that transversally CROSS, as `Some((i, j))` with
+/// `i < j`, or `None` if the ring is simple. Edge `k` is `ring[k] ->
+/// ring[(k+1) % n]`; a ring of fewer than 3 points is always `None`.
+///
+/// Companion to [`ring_signed_area_2d`]: that one judges whether a ring
+/// encloses area, this one whether it encloses it ONCE. Returning the edge
+/// pair rather than a `bool` lets a caller name both offenders in its
+/// diagnostic without re-scanning.
+///
+/// # What counts as a crossing
+///
+/// Strict transversal crossing only: each segment's endpoints must lie on
+/// STRICTLY opposite sides of the other's supporting line.
+///
+/// # Tolerance: there is none, deliberately
+///
+/// Shared endpoints are handled EXACTLY rather than approximately. Identical
+/// `f64` coordinates subtract to exactly `0.0`, so the orientation determinant
+/// is exactly `0.0` and a strict opposite-sign test cannot fire. Adjacent
+/// edges, repeated vertices, the closing wrap edge, and a vertex lying exactly
+/// on a non-adjacent edge are therefore accepted STRUCTURALLY — a stronger
+/// guarantee than any epsilon would give, which is why this function takes no
+/// epsilon parameter.
+///
+/// Nearly-touching edges get no tolerance band either. A relative band would
+/// be a roundoff guard rather than a geometric-significance one, and an
+/// absolute one would be a guessed length with no derivation and no single
+/// right value across the scales a profile spans. The asymmetry decides it: a
+/// false positive rejects a legitimate design at build time, a false negative
+/// only preserves existing behaviour. When in doubt this accepts.
+///
+/// # Not detected
+///
+/// - Collinear OVERLAPPING edges — a zero-width spike that backtracks along
+///   itself. Every determinant is zero, so no straddle is observable.
+/// - Touching without crossing (vertex-on-edge, as above). Accepted by the
+///   policy stated above, not by oversight.
+///
+/// Both need overlap/containment logic beyond a proper-crossing predicate.
+///
+/// # Cost
+///
+/// `O(n^2)` over edge pairs, with a small constant and no allocation. No
+/// vertex cap is imposed: rings reaching this are hand-authored profile
+/// boundaries, where the sweep costs microseconds, and a cap would be
+/// speculative generality for input that does not occur.
+pub fn ring_self_intersects_2d(ring: &[[f64; 2]]) -> Option<(usize, usize)> {
+    let n = ring.len();
+    if n < 3 {
+        return None;
+    }
+    for i in 0..n {
+        let (p1, p2) = (ring[i], ring[(i + 1) % n]);
+        for j in (i + 1)..n {
+            // Skip adjacent pairs — consecutive edges, plus the wrap pair
+            // (0, n-1). This is for cost and legibility, NOT correctness: a
+            // shared vertex forces a zero determinant, so an adjacent pair
+            // could never satisfy the strict-straddle test anyway.
+            if j == i + 1 || (i == 0 && j == n - 1) {
+                continue;
+            }
+            let (p3, p4) = (ring[j], ring[(j + 1) % n]);
+            let d1 = orientation(p3, p4, p1);
+            let d2 = orientation(p3, p4, p2);
+            let d3 = orientation(p1, p2, p3);
+            let d4 = orientation(p1, p2, p4);
+            // Strict products: a zero determinant (shared endpoint, vertex on
+            // edge, zero-length edge) yields 0.0, which is not < 0.0. A
+            // non-finite coordinate yields NaN, which is also not < 0.0 — so
+            // every unrepresentable case falls to accept.
+            if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
+                return Some((i, j));
+            }
+        }
+    }
+    None
+}
+
 /// Validation pre-pass shared by every `mesh_swept_profile_2d` target arm.
 ///
 /// Runs before lock acquisition / FFI so error diagnostics stay close to
@@ -995,5 +1078,107 @@ mod tests {
             matches!(mapped, Mesh2dError::GmshFailed(_)),
             "runtime failure must map to GmshFailed, got {mapped:?}",
         );
+    }
+
+    // ---- task 5666: ring_self_intersects_2d ----
+    //
+    // The tolerance policy is asserted as BEHAVIOUR, not restated as prose:
+    // every accept case below is one the plausible wrong implementation (a
+    // non-strict `>=`/`<=` straddle test) would reject.
+
+    /// DETECTION — the one positive case.
+    ///
+    /// The fixture is ASYMMETRIC deliberately. The obvious bow-tie
+    /// `[[0,0],[0.01,0],[0,0.01],[0.01,0.01]]` has a shoelace area of exactly
+    /// 0.0, so task 5664's degenerate-ring gate already rejects it and a test
+    /// built on it would pass without this predicate existing. Widening the
+    /// first vertex pair to 0.02 gives the same crossing with an area of
+    /// 5e-5 m² — nine orders above the 1e-14 degeneracy floor — so only a
+    /// non-zero-area bow-tie proves THIS predicate fires.
+    ///
+    /// The area assertion is in the SAME test as the crossing assertion on
+    /// purpose: it is what stops a later edit from swapping in a false-green
+    /// fixture that is really being caught by the area gate.
+    #[test]
+    fn ring_self_intersects_2d_asymmetric_bowtie_reports_crossing_edges() {
+        let ring = [[0.0, 0.0], [0.02, 0.0], [0.0, 0.01], [0.01, 0.01]];
+        assert!(
+            ring_signed_area_2d(&ring).abs() > 1e-14,
+            "fixture must CLEAR the degenerate-area gate, else this test would \
+             pass for the wrong reason; got area {}",
+            ring_signed_area_2d(&ring)
+        );
+        assert_eq!(
+            ring_self_intersects_2d(&ring),
+            Some((1, 3)),
+            "edge 1 ((0.02,0)->(0,0.01)) transversally crosses edge 3 ((0.01,0.01)->(0,0))",
+        );
+    }
+
+    /// ACCEPT — a plain convex ring has no crossing at all (over-rejection
+    /// guard).
+    #[test]
+    fn ring_self_intersects_2d_convex_square_is_none() {
+        let ring = [[0.0, 0.0], [0.01, 0.0], [0.01, 0.01], [0.0, 0.01]];
+        assert_eq!(ring_self_intersects_2d(&ring), None);
+    }
+
+    /// ACCEPT — winding order is not this predicate's business, mirroring the
+    /// area gate's `abs()`. A CW triangle has negative signed area and no
+    /// crossing.
+    #[test]
+    fn ring_self_intersects_2d_clockwise_triangle_is_none() {
+        let ring = [[0.0, 0.0], [0.005, 0.01], [0.01, 0.0]];
+        assert!(
+            ring_signed_area_2d(&ring) < 0.0,
+            "fixture must actually be clockwise"
+        );
+        assert_eq!(ring_self_intersects_2d(&ring), None);
+    }
+
+    /// ACCEPT — a duplicated vertex is a REDUNDANT vertex, not a crossing.
+    ///
+    /// Vertex 1 is repeated, so edge 1 has zero length and every orientation
+    /// determinant taken against it is exactly 0.0 in f64 — no tolerance is
+    /// involved. This case reds against a non-strict straddle test.
+    #[test]
+    fn ring_self_intersects_2d_repeated_vertex_is_none() {
+        let ring = [
+            [0.0, 0.0],
+            [0.01, 0.0],
+            [0.01, 0.0],
+            [0.01, 0.01],
+            [0.0, 0.01],
+        ];
+        assert_eq!(ring_self_intersects_2d(&ring), None);
+    }
+
+    /// ACCEPT — touching is not crossing.
+    ///
+    /// Vertex 3 `(0.01, 0)` lies EXACTLY on edge 0 (the segment
+    /// `(0,0)->(0.02,0)`), so the determinant for that endpoint is exactly 0.0
+    /// and the strict opposite-sign test cannot fire. This is the policy
+    /// decision — a T-junction is accepted — expressed as behaviour, and it is
+    /// the other case that reds against a non-strict straddle test.
+    #[test]
+    fn ring_self_intersects_2d_touching_vertex_is_none() {
+        let ring = [
+            [0.0, 0.0],
+            [0.02, 0.0],
+            [0.02, 0.01],
+            [0.01, 0.0],
+            [0.0, 0.01],
+        ];
+        assert_eq!(ring_self_intersects_2d(&ring), None);
+    }
+
+    /// ACCEPT — a ring of fewer than 3 points has no non-adjacent edge pair,
+    /// so there is nothing that could cross. Same under-3 contract as
+    /// [`ring_signed_area_2d`], which returns 0.0 for these.
+    #[test]
+    fn ring_self_intersects_2d_under_three_points_is_none() {
+        assert_eq!(ring_self_intersects_2d(&[]), None);
+        assert_eq!(ring_self_intersects_2d(&[[0.0, 0.0]]), None);
+        assert_eq!(ring_self_intersects_2d(&[[0.0, 0.0], [0.01, 0.01]]), None);
     }
 }
