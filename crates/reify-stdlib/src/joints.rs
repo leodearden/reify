@@ -7376,7 +7376,7 @@ mod tests {
     // absent-origin path.  This test closes the gap: every JOINT_KINDS member
     // built WITHOUT an "origin" key must return the expected bare-motion
     // transform from `transform_at` — i.e. the uniform pre-compose at
-    // joints.rs:494-504 is a true no-op when origin is absent (PRD §7.4).
+    // joints.rs:492-502 is a true no-op when origin is absent (PRD §7.4).
 
     /// B2 cross-kind: `transform_at` on a joint built WITHOUT an "origin" key
     /// returns the expected bare-motion transform for EVERY kind in JOINT_KINDS
@@ -7384,7 +7384,7 @@ mod tests {
     ///
     /// α (task 4331) already covered revolute + prismatic.  This test adds
     /// the remaining five kinds so the absent-origin no-op invariance at
-    /// joints.rs:494-504 is exhaustively pinned across ALL JOINT_KINDS.
+    /// joints.rs:492-502 is exhaustively pinned across ALL JOINT_KINDS.
     ///
     /// Expected GREEN against post-α main; RED would mean a kind silently
     /// broke the absent-origin path (PRD §7.4).
