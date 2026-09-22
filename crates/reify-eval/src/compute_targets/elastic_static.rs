@@ -4336,12 +4336,23 @@ impl std::fmt::Display for FeaValueShapeError {
 /// [`spec_component`]/`accept_arg` rule, so this parameter carries the one
 /// axis of variability between the two positions rather than a bespoke
 /// per-caller predicate.
+///
+/// `comp` (below) is the ONE place this function's `Value::Undef` policy is
+/// expressed (task #7019 review [reviewer_comprehensive]): it maps
+/// `ComponentRead::Undefined` to `Err(ExpectedScalar)`, preserving BOTH
+/// triple extractors' pre-existing behaviour unchanged — a deliberate hold,
+/// not an oversight; see [`ComponentRead`]'s doc for why the policy is
+/// decided here rather than inside `component`, and
+/// `extract_vec3_si_treats_an_undef_component_as_a_shape_error` for the
+/// characterization lock. A follow-up is filed to decide, deliberately and
+/// with its own test coverage, whether this position should widen to quiet
+/// degradation too.
 fn extract_scalar_triple(
     comps: &[Value],
     shape_context: &'static str,
     component_context: &'static str,
     noun: &'static str,
-    component: fn(&Value, &'static str) -> Result<f64, FeaValueShapeError>,
+    component: fn(&Value, &'static str) -> ComponentRead,
 ) -> Result<[f64; 3], FeaValueShapeError> {
     if comps.len() < 3 {
         return Err(FeaValueShapeError::ExpectedList {
@@ -4349,38 +4360,81 @@ fn extract_scalar_triple(
             got: format!("{noun} with {} components", comps.len()),
         });
     }
-    let comp = |v: &Value| component(v, component_context);
+    let comp = |v: &Value| match component(v, component_context) {
+        ComponentRead::Accepted(x) => Ok(x),
+        ComponentRead::Undefined => Err(FeaValueShapeError::ExpectedScalar {
+            context: component_context,
+            got: format!("{v:?}"),
+        }),
+        ComponentRead::Rejected(e) => Err(e),
+    };
     Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
 }
 
-/// Shared spec-driven per-component reader (task #7019): classifies `v`
+/// The outcome of reading ONE component of a triple. Mirrors
+/// `reify_ir::arg_acceptance::Acceptance` 1:1, carrying this module's
+/// [`FeaValueShapeError`] in place of `ArgRejection`.
+///
+/// `Undefined` is surfaced rather than folded into `Rejected` because the
+/// right response to an unresolved value is the CALLER's to choose, not
+/// [`spec_component`]'s (task #7019 review [reviewer_comprehensive], fixing a
+/// regression where folding the two together made `read_direction_or_neg_z`
+/// hard-fail the whole solve on transient solver state instead of degrading
+/// quietly). `extract_scalar_triple`'s `comp` closure treats `Undefined` as a
+/// shape error — today's pre-existing behaviour, preserved — while
+/// `read_direction_or_neg_z` degrades it quietly to `0.0`, per PRD
+/// `dimension-checked-readers.md` decision 2 ("`Undef` in => `Undef` out,
+/// quietly"). Dimension EXPECTATION (what `spec_component` classifies) and
+/// undef POLICY (what the caller decides) are orthogonal axes; this enum is
+/// what keeps a catch-all arm from fusing them back together.
+enum ComponentRead {
+    /// The value has the expected dimension; carries the SI f64.
+    Accepted(f64),
+    /// The value is `Value::Undef` — an unresolved cell, not a mistake. The
+    /// caller decides what that means at this position.
+    Undefined,
+    /// The value is defined but the wrong shape/dimension.
+    Rejected(FeaValueShapeError),
+}
+
+/// Shared spec-driven per-component classifier (task #7019): classifies `v`
 /// against `spec` via the canonical `reify_ir::arg_acceptance::accept_arg`,
 /// so [`dimensioned_component`]/[`dimensionless_component`] differ only in
 /// which `ArgSpec` they pass, not in a hand-written `match` over `Value`.
 ///
-/// The `matches!(v, Value::Scalar { .. })` discriminator on a `Rejected`
-/// distinguishes two genuinely different faults: a `Value::Scalar` whose
-/// `dimension` is wrong ([`FeaValueShapeError::WrongDimension`]) vs. a value
-/// that is not a `Value::Scalar` at all (`ExpectedScalar`) — which is what
-/// keeps `Acceptance::Undefined` (only `Value::Undef` produces this, and it
-/// is not a Scalar) and every non-Scalar value on today's exact
-/// `ExpectedScalar` path. `got` keeps `format!("{v:?}")`, which already
-/// prints the offending dimension, so the diagnostic is self-locating.
+/// Returns [`ComponentRead`], not a `Result`: this function's job is to
+/// CLASSIFY `v` against `spec`, not to decide what an `Acceptance::Undefined`
+/// result means to its caller — see `ComponentRead`'s doc. The match below
+/// names all three `Acceptance` variants explicitly, with no catch-all, so a
+/// future fourth variant is a compile error here rather than a silent
+/// miscategorisation.
+///
+/// The `matches!(v, Value::Scalar { .. })` discriminator applies to the
+/// `Rejected` arms ONLY, and distinguishes two genuinely different faults: a
+/// `Value::Scalar` whose `dimension` is wrong
+/// ([`FeaValueShapeError::WrongDimension`]) vs. a value that is not a
+/// `Value::Scalar` at all (`ExpectedScalar`) — which is what keeps every
+/// non-Scalar, DEFINED value on today's exact `ExpectedScalar` path. `got`
+/// keeps `format!("{v:?}")`, which already prints the offending dimension, so
+/// the diagnostic is self-locating.
 fn spec_component(
     v: &Value,
     spec: &crate::arg_acceptance::ArgSpec,
     context: &'static str,
-) -> Result<f64, FeaValueShapeError> {
+) -> ComponentRead {
     use crate::arg_acceptance::{Acceptance, accept_arg};
 
     match accept_arg(v, spec) {
-        Acceptance::Accepted(x) => Ok(x),
-        _ if matches!(v, Value::Scalar { .. }) => Err(FeaValueShapeError::WrongDimension {
-            context,
-            expected: spec.type_name,
-            got: format!("{v:?}"),
-        }),
-        _ => Err(FeaValueShapeError::ExpectedScalar {
+        Acceptance::Accepted(x) => ComponentRead::Accepted(x),
+        Acceptance::Undefined => ComponentRead::Undefined,
+        Acceptance::Rejected(_) if matches!(v, Value::Scalar { .. }) => {
+            ComponentRead::Rejected(FeaValueShapeError::WrongDimension {
+                context,
+                expected: spec.type_name,
+                got: format!("{v:?}"),
+            })
+        }
+        Acceptance::Rejected(_) => ComponentRead::Rejected(FeaValueShapeError::ExpectedScalar {
             context,
             got: format!("{v:?}"),
         }),
@@ -4405,7 +4459,11 @@ fn spec_component(
 /// acceptance RULE is shared, the expectation is per-position, which is the
 /// orthogonal axis of variability `extract_scalar_triple`'s `component`
 /// parameter already isolates.
-fn dimensioned_component(v: &Value, context: &'static str) -> Result<f64, FeaValueShapeError> {
+///
+/// Returns the three-way [`ComponentRead`], not a `Result`: this reader has
+/// no Undef policy of its own — its caller (`extract_scalar_triple`'s `comp`
+/// closure) does.
+fn dimensioned_component(v: &Value, context: &'static str) -> ComponentRead {
     use crate::arg_acceptance::length_spec;
 
     spec_component(v, &length_spec(), context)
@@ -4427,7 +4485,12 @@ fn dimensioned_component(v: &Value, context: &'static str) -> Result<f64, FeaVal
 /// reinterpreted as the bare component; a genuinely non-numeric component
 /// still fails. `tensegrity_crack::crack_dimensionless_scalar` is the sibling
 /// reader at the same Leg B position, consuming the same spec.
-fn dimensionless_component(v: &Value, context: &'static str) -> Result<f64, FeaValueShapeError> {
+///
+/// Returns the three-way [`ComponentRead`], not a `Result`: this reader has
+/// no Undef policy of its own — each of its two callers
+/// (`extract_scalar_triple`'s `comp` closure for `extract_vec3_si`, and
+/// `read_direction_or_neg_z` directly) decides its own.
+fn dimensionless_component(v: &Value, context: &'static str) -> ComponentRead {
     use crate::arg_acceptance::dimensionless_spec;
 
     spec_component(v, &dimensionless_spec(), context)
@@ -4920,25 +4983,40 @@ fn extract_density(val: &Value) -> f64 {
 /// Per-component reads delegate to [`dimensionless_component`], so a component
 /// spelled `Value::Scalar{DIMENSIONLESS}`, `Value::Real` or `Value::Int` all
 /// read alike. Task #7019 (PRD `dimension-checked-readers.md` invariant I2 —
-/// no coercion for a *present* value): a genuinely non-numeric OR
+/// no coercion for a *present* value): a DEFINED, genuinely non-numeric OR
 /// wrong-dimension component now returns `Err` instead of silently
 /// contributing `0.0` — for a direction like `[0, 1, 0]`, coercing an
 /// unreadable middle component to `0.0` would silently delete the load's
 /// entire direction, which is strictly worse than the unit-strip it replaces.
 ///
-/// The `_ => [0.0, 0.0, -1.0]` fallback for genuinely malformed input is
-/// intentional forward-compatibility contract, pinned by
+/// A `Value::Undef` component is a THIRD class, distinct from both of the
+/// above (task #7019 review [reviewer_comprehensive], fixing a regression the
+/// initial `Result`-ification introduced): PRD decision 2 / acceptance row B6
+/// — an unresolved component is expected transient solver state, not a
+/// mistake, and degrades quietly to `0.0` per-component, with no diagnostic,
+/// exit 0. It does NOT take the `Err` path above (that is for *defined*
+/// values only) and does NOT take the shape-level fallback below (the
+/// `direction` field is present and correctly shaped; only one component is
+/// unresolved).
+///
+/// The `_ => [0.0, 0.0, -1.0]` fallback for genuinely malformed input is a
+/// separate, intentional forward-compatibility contract, pinned by
 /// `extract_loads_malformed_direction_defaults_to_neg_z`. This draws the
-/// boundary between the two failure classes: an absent or mis-SHAPED
-/// `direction` (not 3 elements, not a Vector/List at all) keeps this
-/// documented fallback (decision 3, "Absent != wrong"); a PRESENT component
-/// that fails to read is a rejection (I2), not a fallback.
+/// boundary between the failure classes documented at this reader: an absent
+/// or mis-SHAPED `direction` (not 3 elements, not a Vector/List at all) keeps
+/// this documented fallback (decision 3, "Absent != wrong"); a PRESENT,
+/// DEFINED component that fails to read is a rejection (I2); a PRESENT,
+/// UNDEFINED component degrades quietly (decision 2).
 fn read_direction_or_neg_z(direction: Option<&Value>) -> Result<[f64; 3], FeaValueShapeError> {
     match direction {
         Some(Value::Vector(elems) | Value::List(elems)) if elems.len() == 3 => {
             let mut d = [0.0f64; 3];
             for (slot, e) in d.iter_mut().zip(elems.iter()) {
-                *slot = dimensionless_component(e, "read_direction_or_neg_z component")?;
+                *slot = match dimensionless_component(e, "read_direction_or_neg_z component") {
+                    ComponentRead::Accepted(x) => x,
+                    ComponentRead::Undefined => 0.0,
+                    ComponentRead::Rejected(e) => return Err(e),
+                };
             }
             Ok(d)
         }
