@@ -73,6 +73,7 @@ requires a census row in the same change.**
 | doc-chunk ↔ registry truth | PDOCCOVER | shipped |
 | `dimensionless_scalar()` reintroduction | PDSSENTINEL | shipped |
 | layer-rule imports | PLAYER | shipped |
+| code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
 | prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
 | whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
@@ -237,12 +238,20 @@ systematically, and force message-substring hacks downstream.
 without a code? Does any consumer it adds match on message text where a
 code should exist?
 
-**Evidence**: 362 `Diagnostic::error/warning` ctor sites in reify-eval,
-67 with codes; the CLI's `E_DFM_` message-prefix escalation exists only
+**Evidence**: the 2026-07-24 census counted 362
+`Diagnostic::error/warning` ctor sites in reify-eval, 67 with codes —
+the live successor measurement is the per-file code-less-site ratchet
+in `crates/reify-audit/pdiag-baseline.txt` (broader scope: all swept
+crate `src/` trees, test paths excluded), not a re-count of this same
+ratio; the CLI's `E_DFM_` message-prefix escalation exists only
 because co-resident Error diagnostics are code-less.
 
 **House pattern**: `DiagnosticCode` registry + typed-code test assertions
-(tasks 2255, 3416 flipped substring tests to code identity).
+(tasks 2255, 3416 flipped substring tests to code identity); the PDIAG
+detector (`reify-audit --pattern PDIAG`, ratcheted against
+`crates/reify-audit/pdiag-baseline.txt`, remediation recipe in
+`docs/notes/diagnostic-severity-policy.md` §3, hard-gated by
+`tests/infra/test_reify_audit_pdiag.sh`) as the enforcement substrate.
 
 ## INV-SF-7 `parse-is-value-faithful`
 
