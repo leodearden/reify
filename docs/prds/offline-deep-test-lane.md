@@ -176,9 +176,9 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   completed run) that picks the commit up — within ~2 minutes — and runs the heavy set there under the
   by-name ceiling.
   **PREMISE CHANGED, ruling untouched (task 7552, 2026-09-22).** The diagnosability half of that trade
-  no longer holds as stated: DA6's ceiling is now 3240s, which is REACHABLE under this path's own 3600s
-  debug wall, so running heavy members here would be attributed by name rather than degrading to exit
-  124. DA5 is a ratified human ruling and task 7552 did not re-open it — its other stated grounds (the
+  no longer holds as stated: DA6's ceiling is now 2520s, which this path's own 3600s debug wall clears
+  by more than the measured time a pass takes to reach a heavy test, so running heavy members here
+  would be attributed by name rather than degrading to exit 124. DA5 is a ratified human ruling and task 7552 did not re-open it — its other stated grounds (the
   hook is the shared gate entry point; coverage is deferred by ~2 minutes, not lost) are unaffected, and
   the latency/cost of running the heavy set on every local land was never the zero-attribution argument
   anyway. Recorded here so the next reader does not cite a premise that has since changed. Whether DA5
@@ -201,29 +201,56 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   |---|---|---|
   | default | 1200s | everything with no more specific override |
   | gate-resident | 1800s | `representation_within_assertion` (LPT tier 50), `solve_elastic_static_body_e2e` (task 7339 contention headroom) |
-  | heavy | 3240s (120s x 27) | all 8 members of `REIFY_HEAVY_NEXTEST_FILTER` |
+  | heavy | 2520s (120s x 21) | all 8 members of `REIFY_HEAVY_NEXTEST_FILTER` |
 
   **What the ceiling buys.** On expiry nextest SIGTERMs the offending test BY NAME. The pass-level
   `timeout` wall in `scripts/verify.sh` does not: it kills the whole nextest process tree as exit 124
   attributing nothing — the task 4877/4878 shape. So a ceiling is only worth having where it is
-  REACHABLE, i.e. strictly under the wall that binds the run.
+  REACHABLE. **"Reachable" is NOT "strictly under the wall"**, which is how this document had it and
+  is the error corrected below: the wall's clock and the ceiling's clock do not start together, so
+  reachability is `binding_wall - ceiling > the time the pass takes to reach the test`.
 
-  **SUPERSEDED, 2026-09-22 (task 7552): the heavy tier was 43200s (12h) and is now 3240s.** The 12h
+  **SUPERSEDED (1 of 2), 2026-09-22 (task 7552): the heavy tier was 43200s (12h).** The 12h
   figure is kept visible rather than overwritten, because what changed is not a typo but a decision
   this PRD had already flagged as its own weakest point. DA6 closed by conceding "12h is not a measured
   figure" and naming the measurement ticket as the one that "should be settled BEFORE" the background
   ticket, since "a small enough measured ceiling dissolves the background gap rather than answering it".
-  Task 7552 did exactly that, in that order. Everything below this line is the post-7552 argument; the
-  paragraphs it replaces are recoverable from git (`docs/prds/offline-deep-test-lane.md` @ 8897299ac0,
-  the task-6485 amendment that first collapsed six copies of this argument into DA6).
+  Task 7552 did exactly that, in that order. The paragraphs this replaces are recoverable from git
+  (`docs/prds/offline-deep-test-lane.md` @ 8897299ac0, the task-6485 amendment that first collapsed six
+  copies of this argument into DA6).
+
+  **SUPERSEDED (2 of 2), same day, same task: the first re-size landed 3240s and the RULE that produced
+  it was wrong.** This is the second supersession in one document and the intact trail is the point,
+  because the obvious question — why did a *measured* figure need correcting within hours? — has a
+  specific answer, and it is not "the measurement was bad".
+
+  **The defect: the 0.9x rule compared two clocks that do not start together.** `scripts/verify.sh`
+  emits `timeout --kill-after=60 ${outer_timeout} ... cargo nextest run ...` around what its own comment
+  calls "one combined build+execution nextest pass per profile" — that clock starts at PASS start, and
+  the BUILD is inside it. nextest's `slow-timeout.terminate-after` clock starts at TEST-PROCESS start.
+  A ceiling C is therefore the binding bound only for a test that starts within `W - C` of pass start,
+  which at C=3240 and W=3600 is 360 seconds. Two figures already in this repository exceeded that
+  before the measurement was taken: `scripts/verify.sh` records **798.9s** as the worst observed
+  HEALTHY whole-pass debug completion (cold target, warm sccache, and on a test set that did not yet
+  carry today's 8 heavy members), and this task's own notes file records **580s** for the RELEASE,
+  heavy-ONLY `--no-run` build — a strictly smaller build than the `--workspace` debug one `background`
+  runs. `background` was never reliably reachable at 3240s.
+
+  **What made it survive review.** The wrong rule was the ASSERTED rule:
+  `tests/infra/test_nextest_slow_priority.sh` mechanised the same bare `wall > ceiling` comparison, so
+  Assertion L reported REACHABLE and stayed green while the config, this PRD and the guard were
+  reviewed together. Fixing only the number would have left the rule in place. The predicate moved
+  first (`_role_class`, the one helper both the assertions and the fixtures drive), and the number
+  followed from it.
 
   **Which wall binds is a per-role fact**, and it is the joint everything else turns on. A role's
   binding wall is the tighter of the walls for the profiles it forces. `offline` forces `release` and
   gets a role-scoped 13h wall (46800s). `background` forces `both`, so its binding wall is the 60m
   (3600s) debug one — the TIGHTEST wall any heavy-running role imposes, and therefore the one the
-  ceiling has to fit under. `task` and `merge` do not run heavy members at all.
+  ceiling has to fit under, by the margin the paragraph above defines. `task` and `merge` do not run
+  heavy members at all.
 
-  **How 3240s was derived.** Top-down from reachability, with the measurement used as a floor
+  **How 2520s was derived.** Top-down from reachability, with the measurement used as a floor
   VALIDATION rather than as the source of the number. This direction is deliberate: a per-test ceiling
   exists to ATTRIBUTE a hang by name before the pass-level `timeout` fires exit 124 naming nothing, so
   its correctness condition is a relation to the WALL, not to a measurement. A bottom-up figure
@@ -232,23 +259,54 @@ and **auditable** — the drift-guard lists exactly what is deferred.
 
   | bound | value | source |
   |---|---|---|
-  | upper (reachability) | <= 0.9 x 3600s = 3240s | tightest heavy-running wall, derived from `scripts/verify.sh` |
+  | upper (reachability) | <= `binding_wall - O_bound` = 3600s - 1078.7s = 2521.3s | wall derived from `scripts/verify.sh`; `O_bound` measured |
+  | ~~upper, SUPERSEDED~~ | ~~<= 0.9 x 3600s = 3240s~~ | ~~the two-clock error above: 10% of the wall is not the time the pass takes to reach the test~~ |
   | lower (tier order) | > 1800s gate-resident, > 1200s default | `.config/nextest.toml` |
   | grain | multiple of the 120s `period` | `.config/nextest.toml` |
-  | floor (no false kills) | >= 3 x measured per-test max | measurement, below |
+  | floor (no false kills) | >= 3 x measured per-test max, in EITHER profile | measurement, below |
 
-  C = the largest multiple of 120s at or below 0.9 x 3600s = **3240s** (`terminate-after = 27`), leaving
-  360s = exactly 10% headroom under the wall. That headroom mirrors the offline tier's own shape (the
-  46800s wall over the old 43200s ceiling was 7.7%).
+  `O_bound` = **1078.7s**, the pre-test-start overhead: the seconds from the `cargo nextest run`
+  invocation to the LATEST-starting heavy atom's process start, measured on the pass that actually
+  binds — `background`'s debug `--workspace` pass. The latest-starting one, not the first, because any
+  of the 8 could be the member that hangs. It has two terms and both matter: the combined build the
+  outer `timeout` also wraps (544.5s in the worse of two runs), and queue position (a further 534.2s),
+  because the LPT `priority = 100/50` overrides cover only 4 of the 8 atoms and the other three start
+  several hundred seconds after the first test.
 
-  **The measurement.** Two full runs of the offline lane's own release invocation — lifted from its
-  `--print-plan` output, `--run-ignored all` included — back to back under the host's natural contention
-  (loadavg 57-131 on 32 cores), at HEAD `e49c9ee218`. 52 tests, 52 passed, both runs, no FAIL and no
-  TIMEOUT. **Worst per-test cost M = 545.0s**; 3240s clears 3 x M = 1635s with a 5.9x actual margin.
-  Full per-test table, host state, method and caveats:
-  `docs/notes/heavy-test-per-test-duration-measurement.md`. **N = 2** — two samples bound a worst case
-  observed on one host, and are not a distribution; the slowest test more than doubled between the runs
-  tracking host load, so contention, not intrinsic cost, is the dominant term.
+  C = the largest multiple of 120s at or below 2521.3s = **2520s** (`terminate-after = 21`). The window
+  `[max(3 x M, 1800), 2521.3]` was non-empty — `{1920, 2040, 2160, 2280, 2400, 2520}` — and the LARGEST
+  candidate is taken on purpose: when the false-kill floor and the attribution bound pull against each
+  other the floor wins, because a ceiling below a legitimate test's real cost SIGTERMs a healthy test
+  and reports it as a timeout, destroying the very signal the ceiling exists to produce, while a
+  ceiling too high to be reached merely fails to improve on the pass-level `timeout`.
+
+  **READ THE 1-SECOND MARGIN CORRECTLY.** `3600 - 2520 = 1080` clears the 1078.7s budget by 1.3s. That
+  remainder is the GRAIN STEP, not a safety margin: the rule puts C at the largest 120s step under the
+  bound, so the leftover is always in `[0, 120)` and carries no information at all. The safety is
+  entirely in `O_bound` — which is a max over N=2 observations on one host and a bound in no stronger
+  sense. Neither run measured a COLD `target/`; a colder one can exceed it, and then `background` is
+  unreachable again. Anyone re-tuning this should re-measure `O` first, not adjust the remainder.
+
+  **The measurement, in two passes.** The first measured the OFFLINE lane's release invocation —
+  lifted from its `--print-plan` output, `--run-ignored all` included — twice, back to back under the
+  host's natural contention (loadavg 57-131 on 32 cores). 52 tests, 52 passed both runs, no FAIL and
+  no TIMEOUT. **Worst per-test cost, release: 545.0s.**
+
+  The second closed a gap the first left, and it is the reason the floor is now stated "in EITHER
+  profile": `[profile.default]`'s overrides govern BOTH profiles while `background` forces
+  `--profile both`, so a release-only figure was standing in for a bound it had never been measured
+  against — and could have been understating it. Two further full debug `--workspace` runs (loadavg 254 then 82 on 32 cores,
+  24690/24690 passing both, exit 0 both) settled it and produced `O_bound` from the same runs.
+  **Worst per-test cost, debug: 545.2s — the SAME test, at the same cost.** So the debug profile does
+  not move the worst case on this host, and **M = 545.2s**; 2520s clears 3 x M = 1635.6s at 4.6x.
+  (`reify-solver-elastic::modal_benchmarks` is `cfg_attr(debug_assertions, ignore)` and does not run in
+  debug at all, so 7 of the 8 atoms, 43 tests.)
+
+  Full per-test tables both ways, host state, sccache deltas, method and caveats:
+  `docs/notes/heavy-test-per-test-duration-measurement.md`. **N = 2 per profile** — two samples bound a
+  worst case observed on one host and are not a distribution; the slowest tests more than doubled
+  between runs tracking host load, so contention, not intrinsic cost, is the dominant term in M, and
+  cache/`target/` state is the dominant term in `O`.
 
   **Why 3x and not 4.5x.** 3x is this repo's own PER-TEST precedent: task 7339 put 1800s over a 615s
   worst COMPLETED run under measured contention. `scripts/verify.sh`'s 4.5x idiom is for whole-PASS
@@ -256,7 +314,7 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   widens the window before a genuine hang is attributed, which is the defect task 5141 introduced the
   per-test ceiling to fix.
 
-  **Why a 3240s ceiling is safe on the BLOCKING gate.** Not because "no gate path runs heavy members" —
+  **Why a 2520s ceiling is safe on the BLOCKING gate.** Not because "no gate path runs heavy members" —
   that is false as stated. `REIFY_GATE_EXCLUDE_HEAVY=1` is set for every orchestrator-spawned role
   (`dark-factory-orchestrator.yaml`) and by `scripts/land.sh`, but setting the env var decides nothing:
   `scripts/verify.sh` scopes its EFFECT to the `task` and `merge` roles alone (`_GATE_HEAVY_EXCLUDE`).
@@ -264,13 +322,28 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   the env var, is what makes the tier safe where a red blocks a merge. Since task 7552 the tier is also
   safe in the stronger sense that it is reachable everywhere it applies.
 
-  **Accepted residual: NONE (task 7552 retired it).** `background`'s binding 3600s debug wall now
-  strictly exceeds the 3240s ceiling, so the main-tip cadence sweep kills a hung heavy test BY NAME
-  like every other path. The two non-orchestrator paths that shared the gap close with it and for the
-  same reason: a `scripts/verify.sh` run with `REIFY_GATE_EXCLUDE_HEAVY` unset runs under that same
-  3600s debug wall, and a bare `cargo nextest run` has no outer wall for the ceiling to be unreachable
-  under at all. `.config/nextest.toml` keeps the CONTRACT that introduced the list — a role may be
-  unreachable only if named both in that paragraph and in Assertion L's allowlist — with no members.
+  **Accepted residual: NONE (task 7552 retired it) — and here is the honest version of why.**
+  `background`'s binding 3600s debug wall exceeds the 2520s ceiling by 1080s, which is more than the
+  1078.7s the pass was measured to take to reach the latest-starting heavy atom. That is the claim,
+  stated against the clock that actually applies; the earlier form of this paragraph ("the wall
+  strictly exceeds the ceiling") was true of the numbers and false of the mechanism. The two
+  non-orchestrator paths close with it: a `scripts/verify.sh` run with `REIFY_GATE_EXCLUDE_HEAVY`
+  unset runs under that same 3600s debug wall, and a bare `cargo nextest run` has no outer wall for
+  the ceiling to be unreachable under at all — the last of those closes unconditionally and does not
+  depend on any measurement.
+
+  **What would re-open it.** A `background` debug pass whose build plus queue position exceeds 1080s —
+  a cold `target/`, a heavier workspace, more heavy atoms left outside the LPT priority set. `O_bound`
+  is a two-sample max, not a guarantee, so this residual is retired on measured evidence rather than
+  proved absent. The cheap structural improvement, if it does re-open, is to give the three
+  un-prioritised heavy atoms an LPT `priority` so they start with the other four: that removes the
+  534s queue term outright and leaves `O` as a build-time fact alone. The expensive ones are the two
+  named under "why the re-size" below, both still rejected.
+
+  `.config/nextest.toml` keeps the CONTRACT that introduced the list — a role may be unreachable only
+  if named both in that paragraph and in Assertion L's allowlist — with no members. Assertion L's
+  residual branch is exercised by a synthetic-role fixture scaffold rather than by a live gap, so the
+  machinery stays honest at zero members and a future residual needs no fixture work.
 
   **Why the re-size, and not either remedy DA6 originally offered.** Both were coverage/budget
   decisions needing the same kind of explicit human ruling DA5 got, and task 7552 took neither:
@@ -291,8 +364,11 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   machinery's live user rather than moving it.
 
   **The offline 13h release wall STAYS, on a different basis.** Its ORIGINAL justification is gone:
-  once the ceiling is 3240s the 90m (5400s) BASE release wall already exceeds it, so "13h exists to make
-  the per-test ceiling the binding bound" is no longer true of anything. A second basis survives and was
+  at a 2520s ceiling the 90m (5400s) BASE release wall clears it by 2880s — comfortably more than the
+  580s that release, heavy-only build was measured to take — so "13h exists to make the per-test
+  ceiling the binding bound" is no longer true of anything. (That comparison is made against the
+  corrected rule, not the superseded one: 2880s of headroom against a 580s build, not merely
+  5400 > 2520.) A second basis survives and was
   never the stated one — WHOLE-RUN headroom for the lane's `--run-ignored all` release pass, whose
   recorded sub-runs reach 2625s against that 5400s base wall (barely 2x) while heavy membership has
   grown from 6 atoms to 8 since the lane was designed. (Task 7552's own timed runs of that pass, 770s
@@ -301,12 +377,25 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   deletes the scoping against a rationale that is already gone, nor keeps it for one.
   `scripts/verify.sh` carries the same restatement at all three sites that used to assert the old one.
 
-  **Mechanised, not asserted.** `tests/infra/test_nextest_slow_priority.sh` derives the heavy set from
+  **Mechanised, not asserted — but mechanising the WRONG rule is what let 3240s land.** That is the
+  lesson this paragraph has to carry, not just the assertion list.
+  `tests/infra/test_nextest_slow_priority.sh` derives the heavy set from
   `scripts/heavy-test-filter-lib.sh` and the role sets, walls and per-role profiles from
-  `scripts/verify.sh`: Assertion J requires a 3240s block per heavy atom, K requires every slow-timeout
+  `scripts/verify.sh`: Assertion J requires a 2520s block per heavy atom, K requires every slow-timeout
   override to classify as heavy or gate-resident, K-tier (new in 7552) requires the heavy tier to stay
-  strictly ABOVE the gate-resident tier — newly load-bearing now the two are within 2x rather than 24x —
+  strictly ABOVE the gate-resident tier — newly load-bearing now the two are within 1.4x rather than 24x —
   and L requires every heavy-RUNNING role to either reach the ceiling or be an enumerated residual.
+
+  L's reachability predicate now lives in ONE helper, `_role_class`, as
+  `wall - ceiling > L_START_OFFSET_BUDGET_SECONDS`, with the RESIDUAL branch written as its exact
+  complement so no role can fall between them. That budget (1079s) is the ONLY measured literal in the
+  file and cannot be otherwise — the seconds a pass takes to reach a test are a property of the build
+  and of nextest's scheduling, and no file in the tree states them — so it is kept honest by being
+  compared only against a DIFFERENCE of two file-derived numbers. Two fixtures were added with it,
+  because the predicate changed shape: one seeds a wall that EXCEEDS the ceiling but not by the budget
+  (the false green itself, which the old rule accepted), and one seeds a roomy ceiling that must still
+  classify REACHABLE, without which a budget that failed to parse would reject every role and look
+  like rigour.
   DA6 predicted "L reds again, deliberately, once remedy (a) lands and the `background` entry goes
   stale". **That prediction came true through a different remedy and is now closed**: L red-lit on the
   re-size, not on remedy (a), and the allowlist entry and the config's residual note were retired in the
@@ -317,10 +406,13 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   facts the re-size rests on.
 
   **Follow-up tickets, both discharged by task 7552.** `tkt_0RTN426YPJ2JWVP3YGQQZ8KH7C` (measure the
-  heavy set, including the `#[ignore]`d convergence studies) — done, evidence in
-  `docs/notes/heavy-test-per-test-duration-measurement.md`. `tkt_0RTN0PQ35EZGXGQ7WF2HXZE2N9` (the
-  `background` reachability gap) — dissolved rather than answered, per the sequencing DA6 itself
-  prescribed.
+  heavy set, including the `#[ignore]`d convergence studies) — done twice over: the release pass it
+  asked for, and then the debug pass and pre-test-start overhead the first re-size turned out to need.
+  Evidence for both in `docs/notes/heavy-test-per-test-duration-measurement.md`.
+  `tkt_0RTN0PQ35EZGXGQ7WF2HXZE2N9` (the `background` reachability gap) — dissolved rather than
+  answered, per the sequencing DA6 itself prescribed, and dissolved on the CORRECTED bound rather than
+  the 0.9x one it was first closed against. Re-open it if a re-measured `O` exceeds 1080s; "what would
+  re-open it" above says what to try first.
 
   **Rejected: role-scoping the ceiling in the DERIVED config (option D, esc-6485-3).** It would dissolve
   the verify.sh-mediated paths but not a bare `cargo nextest run`, and `gen-nextest-config.sh` is a

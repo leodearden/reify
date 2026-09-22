@@ -54,9 +54,12 @@ occt = { max-threads = 24 }
 #   - heavy: 2520s = 120s x 21, on all 8 members of
 #     REIFY_HEAVY_NEXTEST_FILTER (scripts/heavy-test-filter-lib.sh). Was 43200s
 #     (12h) until task 7552, which measured the heavy set for the first time and
-#     re-sized the tier from that measurement: worst per-test cost 545.0s over 2
-#     full runs under natural host contention, against a ceiling that must stay
-#     under the TIGHTEST wall any heavy-running role imposes. Evidence:
+#     re-sized the tier from that measurement: worst per-test cost 545.2s in
+#     DEBUG and 545.0s in RELEASE — the same test, and this tier governs both
+#     profiles — over 2 full runs each under natural host contention. The upper
+#     bound is NOT the tightest heavy-running wall itself but that wall MINUS
+#     the measured seconds a pass takes to reach a heavy test; see the
+#     tensegrity_t0a block below for why those are different numbers. Evidence:
 #     docs/notes/heavy-test-per-test-duration-measurement.md.
 # nextest resolves each override SETTING by first-match independently, so none
 # of these falls through to this default.
@@ -304,16 +307,29 @@ priority = 100
 # comment carried until task 7552, that offline "is the only path that runs these
 # binaries — no gate path does", was false, and the 43200s ceiling it justified
 # was 12x background's binding 3600s debug wall: a hang there degraded to a bare
-# `timeout` exit 124 naming nothing. 2520s is sized to be REACHABLE on BOTH roles
-# — under the tighter of the two walls, with headroom — so nextest SIGTERMs a
-# hung test BY NAME on either.
+# `timeout` exit 124 naming nothing.
+#
+# WHAT "REACHABLE" MEANS HERE, because the obvious reading is wrong and cost this
+# tier one whole re-size. The wall above and this ceiling are measured on
+# DIFFERENT CLOCKS: verify.sh's `timeout` wraps the combined build+execution
+# pass and starts at PASS start, while nextest's terminate-after starts at
+# TEST-PROCESS start. A ceiling merely SMALLER than the wall therefore attributes
+# nothing — the pass has to be able to REACH the test first. 2520s is sized so
+# background's 3600s debug wall clears it by 1080s, against a measured 1078.7s
+# from `cargo nextest run` to the latest-starting heavy atom (build plus queue
+# position). Offline clears it by 44280s. The first attempt at this re-size used
+# `0.9 x wall` and landed 3240s, leaving 360s for a pass whose build alone is
+# hundreds of seconds; it was reachable on paper only.
 #
 # STATE BOTH BOUNDS HONESTLY, as the task 7339 block at the end of this file
-# does: the measured worst per-test cost across the heavy set is 545.0s over 2
-# full runs under natural contention, so 2520s is ~4.6x the worst observed run —
-# but it is also a TIGHTER kill bound than the 43200s it replaces, so a heavy
-# test that legitimately grows past ~2520s loses its margin sooner than before.
-# The measurement is 2 samples, not a distribution: see
+# does. The measured worst per-test cost across the heavy set is 545.2s in DEBUG
+# and 545.0s in RELEASE — the same test at the same cost, which matters because
+# this ceiling governs BOTH profiles and a release-only figure would have been
+# standing in for a bound it never validated. 2520s is ~4.6x that worst observed
+# run, and it is also a TIGHTER kill bound than the 43200s it replaces, so a
+# heavy test that legitimately grows past ~2520s loses its margin sooner than
+# before. Both measurements are 2 samples, not distributions, and the 1080s of
+# reachability headroom is a two-sample max and not a guarantee: see
 # docs/notes/heavy-test-per-test-duration-measurement.md before re-tuning, and
 # docs/prds/offline-deep-test-lane.md DA6 for the derivation.
 #

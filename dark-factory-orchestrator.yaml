@@ -86,9 +86,17 @@ lock_depth: 10
 # the sweep runs `--profile both --scope all` and is outside verify.sh's
 # `task|merge` heavy-exclusion, it runs all 8 members of
 # REIFY_HEAVY_NEXTEST_FILTER. As of task 7552 the per-test heavy ceiling in
-# reify's .config/nextest.toml is sized to be REACHABLE under verify.sh's 60m
-# debug wall on this path, so a hung heavy test is SIGTERM'd BY NAME there
+# reify's .config/nextest.toml (2520s) is sized to be REACHABLE under verify.sh's
+# 60m debug wall on this path, so a hung heavy test is SIGTERM'd BY NAME there
 # rather than degrading to a bare exit 124 attributing nothing.
+#
+# REACHABLE IN THE EXACT SENSE, since the loose reading of it is what produced
+# the first, wrong re-size within that same task: verify.sh's 60m wraps the
+# combined BUILD+execution pass while the per-test ceiling starts counting at
+# test-process start, so the ceiling has to sit under the wall by more than the
+# pass takes to reach the test — 1080s of headroom against a measured 1078.7s,
+# not merely 2520 < 3600. That headroom is a two-sample max, so this is an
+# evidence-backed claim rather than a structural guarantee.
 #
 # AND THIS KEY IS WHY THE ALTERNATIVE REMEDY IS IMPOSSIBLE. Role-scoping
 # verify.sh's INNER walls above ~3600s for background — the obvious-looking way

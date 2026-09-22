@@ -170,9 +170,10 @@
 #                                  not 90m. It exists for WHOLE-RUN headroom on that
 #                                  lane's `--run-ignored all` release pass, NOT — since
 #                                  task 7552 — to make .config/nextest.toml's heavy
-#                                  per-test ceiling reachable: that ceiling is now
-#                                  smaller than the 90m base wall, which reaches it
-#                                  unaided. An explicit valid value still wins verbatim
+#                                  per-test ceiling reachable: the base wall two knobs
+#                                  up clears that ceiling by far more than the pass
+#                                  takes to reach a test, so it reaches it unaided.
+#                                  An explicit valid value still wins verbatim
 #                                  under either role. Rationale: PRD
 #                                  offline-deep-test-lane DA6.
 #   REIFY_VERIFY_PREBUILD_TIMEOUT — outer timeout for the merge-path RELEASE
@@ -463,10 +464,15 @@ _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_
 # .config/nextest.toml's heavy per-test ceiling (then 43200s) had to be REACHABLE,
 # i.e. strictly under this wall, so a hung heavy test is SIGTERM'd BY NAME rather
 # than degrading to exit 124 attributing nothing. Task 7552 re-sized that ceiling
-# to 3240s, which is below the 90m BASE release wall two lines up — so the base
-# wall already makes it reachable and that reason is gone. Do not keep this block
-# on a rationale that no longer holds, and do not delete it on the strength of
-# that either: it has a second basis, below, that was never the stated one.
+# to 2520s and corrected what REACHABLE means: not "under the wall" — these walls
+# wrap the combined build+execution pass while the per-test ceiling starts at
+# test-process start — but "under the wall by more than the pass takes to reach
+# the test". The BASE release wall two lines up clears 2520s by 2880s, against a
+# measured 580s for that release pass's own heavy-only build, so the base wall
+# reaches it unaided and this block is not what makes it reachable. Do not keep
+# this block on a rationale that no longer holds, and do not delete it on the
+# strength of that either: it has a second basis, below, that was never the
+# stated one.
 #
 # WHAT IT IS FOR: whole-run headroom for the offline lane's release pass, which is
 # the only pass that runs the heavy filterset with `--run-ignored all` — the two
@@ -2889,9 +2895,11 @@ add_test_passes() {
     #    the full restatement and the figures. Offline is NOT the only role that runs
     #    the heavy filterset: background does too, and does not get this tier. That
     #    sentence used to name the gap this tier left open; since task 7552 re-sized
-    #    the per-test ceiling to 3240s — under background's own 60m debug wall — it
-    #    names why background is FINE without the tier, and the accepted residual it
-    #    used to imply is retired. Which wall binds which role, and how the ceiling
+    #    the per-test ceiling to 2520s — which background's own 60m debug wall clears
+    #    by 1080s, more than the 1078.7s that pass was measured to take to reach a
+    #    heavy test — it names why background is FINE without the tier, and the
+    #    accepted residual it used to imply is retired. That headroom is a
+    #    two-sample max, not a structural guarantee; DA6 says what would re-open it. Which wall binds which role, and how the ceiling
     #    is derived, are normative in docs/prds/offline-deep-test-lane.md DA6.
     #    T14-T17 mechanise offline's rendering and T18 background's;
     #    test_nextest_slow_priority.sh Assertion L mechanises wall > ceiling for

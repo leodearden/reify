@@ -135,6 +135,10 @@ failure or a kill.
 
 ## Per-test durations
 
+**RELEASE PROFILE ONLY.** The heavy ceiling governs both profiles; the debug
+figures, and the pre-test-start overhead this section says nothing about, are in
+"Pre-test-start overhead and debug-profile cost — task 7552 amendment" below.
+
 52 tests, one row per test the heavy filterset selected, one column per run,
 plus the per-test max. Sorted by max, descending.
 
