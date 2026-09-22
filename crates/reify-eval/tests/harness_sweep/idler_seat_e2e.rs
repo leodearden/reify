@@ -1110,12 +1110,26 @@ fn circle_fit(pts: &[(f64, f64)]) -> ((f64, f64), f64) {
         b1 += w * du;
         b2 += w * dv;
     }
+    // Conditioning, not mere non-zeroness. By Cauchy-Schwarz `det` lies in
+    // `[0, a11·a22]`, so `a11·a22` is the scale it has to be read against: a
+    // NEAR-collinear or near-duplicate set gives a denormal-but-NON-ZERO `det`
+    // that a `!= 0.0` test waves straight through, after which the fit returns a
+    // garbage centre and radius and the caller reports a meaningless residual in
+    // micrometres instead of the diagnosis this message promises. MEASURED: 41
+    // points spread over 18 mm with ±0.1 pm of jitter — arithmetically collinear
+    // — give det/scale = 3e-16, which `!= 0.0` admits and this floor rejects,
+    // against 1.7e-1 for a well-conditioned 90° arc of the same 18 mm circle. So
+    // the floor sits ~4 orders above the degenerate case and ~11 below the
+    // healthy one: it fires on the condition the message names, and on nothing
+    // else.
     let det = a11 * a22 - a12 * a12;
     assert!(
-        det.abs() > 0.0,
-        "degenerate circle fit over {} points — they are collinear, so no centre \
-         is determined",
-        pts.len()
+        det.abs() > a11 * a22 * 1e-12,
+        "degenerate circle fit over {} points — they are collinear (or \
+         coincident) to within the conditioning of the 2×2 normal equations \
+         (det {det:.3e} against scale {:.3e}), so no centre is determined",
+        pts.len(),
+        a11 * a22,
     );
     let centre = (
         mu + 0.5 * (b1 * a22 - b2 * a12) / det,
