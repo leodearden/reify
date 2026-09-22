@@ -206,6 +206,182 @@ accounted for), and 29 of the 52 complete in under 5 s. The binaries
 membership reasons, not cost — every one of their tests is under 7 s in both
 runs. A future re-tune should not read "heavy filterset member" as "slow test".
 
+## Pre-test-start overhead and debug-profile cost — task 7552 amendment
+
+Everything above was measured on the OFFLINE lane's RELEASE invocation. That
+left two quantities unmeasured which the ceiling nonetheless depends on, and
+this section records them. Same discipline: observations only, no derived
+figure — the ceiling and its derivation stay in DA6.
+
+### Why a second measurement was needed
+
+1. **Pre-test-start overhead (O).** `scripts/verify.sh` wraps each nextest pass
+   in `timeout --kill-after=60 <wall> ... cargo nextest run ...` around what its
+   own comment calls "one combined build+execution nextest pass per profile", so
+   that wall's clock starts at PASS start and includes the build. nextest's
+   `slow-timeout.terminate-after` clock starts at TEST-PROCESS start. The two
+   clocks do not start together, and nothing above measured the gap.
+2. **Debug-profile per-test cost (M_debug).** `[profile.default]`'s overrides
+   govern BOTH profiles, and `DF_VERIFY_ROLE=background` forces
+   `--profile both`. Every per-test figure above is a RELEASE figure.
+
+### What was run
+
+The debug pass of the `background` role, lifted verbatim from
+
+```
+DF_VERIFY_ROLE=background bash scripts/verify.sh test --scope all --print-plan
+```
+
+which renders it as
+
+```
+timeout --kill-after=60 60m nice -n 19 ionice -c3 \
+  cargo nextest run --workspace --config-file <gen-nextest-config.sh output> 9<&-
+```
+
+No `--release`, no `-E` filter, no `--run-ignored` — this pass runs the whole
+workspace and does NOT run the two convergence studies. Environment as the plan
+renders it: `RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0`,
+`LD_LIBRARY_PATH=/opt/reify-deps/lib`. `CARGO_MAKEFLAGS` was not set (the
+jobserver FIFO the plan names belongs to a verify.sh process, not to this one).
+
+- **HEAD:** `2c67cf22b82d92066fa73161954cb077a199ee60` (task/7552)
+- **Native deps preflight:** `scripts/check-manifold-deps.sh` exit 0 — OCCT 7.8
+  (`/usr/lib/x86_64-linux-gnu`), Gmsh 4.15.2, OpenVDB 13.0
+  (`/opt/reify-deps/lib`). Run FIRST, per CLAUDE.md's SILENT-VACUITY RULE.
+- **Timestamper:** `ts` (moreutils) is NOT installed on this host, so the
+  fallback was used: `gawk '@load "time"; { printf "%.3f %s\n", gettimeofday(),
+  $0; fflush() }'`. `gettimeofday()` gives MILLISECOND resolution, so no figure
+  here is quantised by the timestamper. (`systime()` would have quantised every
+  one of them to a whole second; it was not used.) Output went to a log FILE and
+  the file was parsed, via an absolute cargo path, so the PreToolUse skim
+  wrapper's `PASS: N | FAIL: M` condensation never applied.
+- **Start offsets are DERIVED, not printed.** nextest prints no start time. For
+  every completion line `PASS [ <d>s] <binary> <test>` the start was computed as
+  `line_timestamp - t0 - d`, where `t0` is the wall-clock instant the
+  `cargo nextest run` process was launched.
+
+### Host state per run
+
+Both runs back to back, host not quiesced. Other verify runs were active
+throughout; run 1 began at loadavg 254 on 32 cores.
+
+| | run 1 | run 2 |
+|---|---|---|
+| start | 2026-09-22T09:41:55+01:00 | 2026-09-22T10:11:19+01:00 |
+| end | 2026-09-22T10:11:19+01:00 | 2026-09-22T10:24:33+01:00 |
+| `/proc/loadavg` at start | 254.08 153.67 135.85 | 82.36 161.72 176.10 |
+| `/proc/loadavg` at end | 82.36 161.72 176.10 | 121.90 186.44 179.68 |
+| `target/` state | WARM but stale — `target/debug/deps` already held 17607 files from earlier lane work at an older tree | WARM from run 1 — 17912 files, nothing to rebuild |
+| exit code | 0 | 0 |
+| driver-measured wall-clock | 1763.4 s | 794.6 s |
+| nextest summary | `24690 tests run: 24690 passed (18 slow, 22 leaky), 70 skipped` | `24690 tests run: 24690 passed (11 slow, 4 leaky), 70 skipped` |
+| nextest-reported execution | 1218.997 s | 778.070 s |
+| sccache compile requests (delta) | +1503 | +566 |
+| sccache requests EXECUTED (delta) | +201 | +11 |
+| sccache cache hits / misses (delta) | +161 / +40 | +2 / +9 |
+
+**READ THE CACHE ROW BEFORE ANY OTHER NUMBER HERE.** Cache and `target/` state
+is the dominant term in O and these figures are worthless without it. Run 1
+executed only 201 compilations: its 544 s of pre-test time was overwhelmingly
+LINKING — 623 test binaries — plus nextest's own binary-list pass, not rustc
+work sccache could have absorbed. Neither run measured a COLD `target/`, and
+neither is an upper bound on one. `scripts/verify.sh`'s own recorded 798.9 s
+worst-observed healthy whole-pass debug completion was measured on a cold target
+with a warm sccache, i.e. the state neither run here reproduces.
+
+### QUANTITY 1 — pre-test-start overhead (O)
+
+Per-atom first-start offsets, seconds after the `cargo nextest run` launch:
+
+| heavy atom | run 1 | run 2 |
+|---|---:|---:|
+| `reify-eval::tensegrity_t0a` (LPT priority 100) | +544.5 | +16.5 |
+| `reify-eval-fea-tests::fea_diagnostics_e2e` (priority 50) | +544.6 | +16.5 |
+| `reify-solver-elastic::analytical_validation` (priority 50) | +544.6 | +16.5 |
+| `reify-solver-elastic::determinism` (priority 50) | +546.6 | +17.8 |
+| `reify-eval-fea-tests::buckling_smoke` (no priority) | +904.8 | +218.6 |
+| `reify-eval::harness_fea_solver_e2e [fea_bracket_minimize_mass_e2e::*]` (no priority) | +1078.6 | +315.3 |
+| `reify-eval::harness_fea_solver_e2e [fea_in_the_loop_producer::*]` (no priority) | +1078.7 | +315.5 |
+| `reify-solver-elastic::modal_benchmarks` | not run — see below | not run |
+
+| | run 1 | run 2 |
+|---|---:|---:|
+| `O_first` — first test of ANY kind to start | +544.5 s | +16.5 s |
+| `O_heavy_max` — LATEST-starting heavy atom | +1078.7 s | +315.5 s |
+
+**`O_bound` = 1078.7 s**, the max of `O_heavy_max` across the two runs. It is a
+max over N = 2 observations on one host, and it is a bound in no stronger sense
+than that. Its two terms move independently and neither was measured at its
+worst: the build term (544.5 s vs 16.5 s here) tracks `target/`/sccache state,
+and the queue term — 534.2 s in run 1, 299.0 s in run 2 — tracks host
+contention and the test-thread pool.
+
+Two observations worth separating from the numbers:
+
+- **The LPT priority overrides do not cover the whole heavy set, and the gap is
+  large.** The four atoms carrying `priority = 100`/`50` start within ~2 s of
+  the first test, as intended. The three that carry no priority start 360 s and
+  534 s later (run 1). `O_heavy_max` is therefore a scheduling fact about the
+  un-prioritised members, not a build fact — which is why it has to be measured
+  rather than assumed equal to `O_first`.
+- **In run 1 the latest heavy start (+1078.7 s) was ~2x `O_first` (+544.5 s).**
+  Quoting the build term alone would understate the offset by half.
+
+### QUANTITY 2 — debug-profile per-test cost (M_debug)
+
+43 heavy tests ran in the debug profile across 7 of the 8 atoms. All passed in
+both runs. No `FAIL`, no `TIMEOUT`, no kill.
+
+**`reify-solver-elastic::modal_benchmarks` does not run in this profile at all.**
+Its tests carry `cfg_attr(debug_assertions, ignore)`
+(`crates/reify-solver-elastic/tests/modal_benchmarks.rs`, task 4066: "release-only
+at the merge gate; debug skips it for per-task speed"), and this pass passes no
+`--run-ignored`. Its per-test costs are therefore release-only figures and stay
+in the release table above.
+
+Debug per-test durations, one row per heavy test, slowest first (the 30 tests
+whose max is under 3 s are omitted — every one is a `tensegrity_t0a`,
+`fea_diagnostics_e2e`, `buckling_smoke` or sub-second `analytical_validation`
+test, and the full list is recoverable from the same logs):
+
+| Test (`atom testname`) | run 1 (s) | run 2 (s) | max (s) |
+|---|---:|---:|---:|
+| `harness_fea_solver_e2e fea_in_the_loop_producer::solve_elastic_static_dispatches_real_result_inside_minimize_where_loop` | 545.2 | 398.5 | **545.2** |
+| `determinism default_parallel_tolerance_equivalent_across_thread_counts` | 526.2 | 270.7 | **526.2** |
+| `determinism default_parallel_tolerance_equivalent_across_repeated_runs` | 520.4 | 284.9 | **520.4** |
+| `determinism deterministic_stress_field_and_von_mises_bit_stable_across_thread_counts` | 166.6 | 113.3 | **166.6** |
+| `harness_fea_solver_e2e fea_bracket_minimize_mass_e2e::fea_bracket_minimize_mass_example_converges_to_an_interior_thickness` | 160.8 | 139.5 | **160.8** |
+| `determinism deterministic_displacement_bit_stable_across_repeats_and_thread_counts` | 138.2 | 110.3 | **138.2** |
+| `analytical_validation thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame` | 102.4 | 62.8 | **102.4** |
+| `analytical_validation cantilever_beam_p2_tip_deflection_slender_within_1pct_of_timoshenko` | 83.5 | 73.0 | **83.5** |
+| `analytical_validation boussinesq_subsurface_sigma_z_p2_within_10pct` | 70.8 | 43.1 | **70.8** |
+| `analytical_validation cantilever_beam_p2_tip_deflection_within_3pct_of_timoshenko` | 24.1 | 13.2 | **24.1** |
+| `analytical_validation boussinesq_subsurface_sigma_z_p1_within_10pct` | 19.7 | 11.0 | **19.7** |
+| `analytical_validation cantilever_beam_p1_tip_deflection_within_5pct_of_timoshenko` | 7.7 | 5.6 | **7.7** |
+| `fea_diagnostics_e2e thin_body_fixture_emits_fea_thin_body_warning` | 4.8 | 4.0 | **4.8** |
+| `fea_diagnostics_e2e no_supports_fixture_emits_fea_under_constrained_warning` | 3.1 | 1.0 | **3.1** |
+| `determinism deterministic_fast_shared_dof_cantilever_full_pipeline_bit_stable` | 2.8 | 3.1 | **3.1** |
+
+**`M_debug` = 545.2 s** — `fea_in_the_loop_producer::solve_elastic_static_dispatches_real_result_inside_minimize_where_loop`,
+in run 1.
+
+**The same test is the pole in both profiles, at the same cost.** Its release max
+was 545.0 s (table above); its debug max is 545.2 s. No heavy member costs
+materially more in debug than in release on this host, so the debug profile does
+not move the worst case. That is an observation about these two runs, not a
+general claim: the next three rows all more than doubled between run 1 and run 2
+purely on load, so contention dominates the profile difference in both
+directions.
+
+### Observed failures and timeouts
+
+**None**, in either run. 24690 of 24690 tests passed in each, exit code 0 both
+times. The `(18 slow)` / `(11 slow)` counts are `SLOW [>Ns]` progress markers,
+not failures or kills. No heavy member came close to the 3240 s ceiling in force
+at the time of measurement; the largest was 545.2 s.
+
 ## Where the derived figure lives
 
 The ceiling derived from this measurement, the four constraints it was checked
