@@ -467,9 +467,8 @@ impl crate::Engine {
                     // dispatch can never do both.
                     //
                     // The 3rd element stays `vec![]`: `structured_detail`
-                    // replay is the same defect class but a different codec,
-                    // deliberately out of this task's scope and filed as its
-                    // own follow-up.
+                    // replay is the same defect class through a different
+                    // codec, deferred to #7345.
                     return Ok((result, replayed, vec![]));
                 }
                 None => {
