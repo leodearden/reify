@@ -51,7 +51,7 @@ occt = { max-threads = 24 }
 #     solve_elastic_static_body_e2e (task 7339, contention headroom rather than
 #     intrinsic slowness; see that block's own comment). Both must stay strictly
 #     under the 3600s pass-level wall.
-#   - heavy: 2520s = 120s x 21, on all 8 members of
+#   - heavy: 2160s = 120s x 18, on all 8 members of
 #     REIFY_HEAVY_NEXTEST_FILTER (scripts/heavy-test-filter-lib.sh). Was 43200s
 #     (12h) until task 7552, which measured the heavy set for the first time and
 #     re-sized the tier from that measurement: worst per-test cost 545.2s in
@@ -305,7 +305,7 @@ test-group = 'occt'
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(tensegrity_t0a)'
 priority = 100
-# Heavy-tier slow-timeout ceiling: 120s x 21 = 2520s, shared by all 8 members of
+# Heavy-tier slow-timeout ceiling: 120s x 18 = 2160s, shared by all 8 members of
 # REIFY_HEAVY_NEXTEST_FILTER (task 7552; was 43200s/12h, task 6485; 1800s/30min
 # before that, task 5141).
 #
@@ -323,34 +323,48 @@ priority = 100
 # DIFFERENT CLOCKS: verify.sh's `timeout` wraps the combined build+execution
 # pass and starts at PASS start, while nextest's terminate-after starts at
 # TEST-PROCESS start. A ceiling merely SMALLER than the wall therefore attributes
-# nothing — the pass has to be able to REACH the test first. 2520s is sized so
-# background's 3600s debug wall clears it by 1080s, against a measured 1078.7s
+# nothing — the pass has to be able to REACH the test first. 2160s is sized so
+# background's 3600s debug wall clears it by 1440s, against a measured 1078.7s
 # from `cargo nextest run` to the latest-starting heavy atom (build plus queue
-# position). Offline clears it by 44280s. The first attempt at this re-size used
+# position). Offline clears it by 44640s. The first attempt at this re-size used
 # `0.9 x wall` and landed 3240s, leaving 360s for a pass whose build alone is
 # hundreds of seconds; it was reachable on paper only.
+#
+# THE 1440s IS NOT THE MOST THE BOUND ALLOWS, and the gap is deliberate. The
+# reachability bound is 3600 - 1078.7 = 2521.3s, whose largest 120s step is
+# 2520s — and 2520s was landed first, leaving 1.3s of slack against a budget that
+# is a max over TWO runs on ONE host, both with a WARM target/ (run 1 executed
+# only 201 compilations). The build term in that budget is therefore known to be
+# under-measured — verify.sh separately records 798.9s as a worst healthy
+# whole-pass debug completion on a COLD target with a SMALLER test set — so
+# spending 100% of the derived headroom would have meant a freshly-seeded cold
+# lane silently reverting `background` to the bare exit-124 shape this tier
+# exists to prevent, with no guard able to see it. One step down buys ~33%
+# margin over the measured budget and costs only false-kill margin that was
+# already generous.
 #
 # STATE BOTH BOUNDS HONESTLY, as the task 7339 block at the end of this file
 # does. The measured worst per-test cost across the heavy set is 545.2s in DEBUG
 # and 545.0s in RELEASE — the same test at the same cost, which matters because
 # this ceiling governs BOTH profiles and a release-only figure would have been
-# standing in for a bound it never validated. 2520s is ~4.6x that worst observed
-# run, and it is also a TIGHTER kill bound than the 43200s it replaces, so a
-# heavy test that legitimately grows past ~2520s loses its margin sooner than
-# before. Both measurements are 2 samples, not distributions, and the 1080s of
-# reachability headroom is a two-sample max and not a guarantee: see
+# standing in for a bound it never validated. 2160s is ~4.0x that worst observed
+# run (the false-kill floor is 3x, task 7339's per-test precedent), and it is
+# also a TIGHTER kill bound than the 43200s it replaces, so a heavy test that
+# legitimately grows past ~2160s loses its margin sooner than before. Both
+# measurements are 2 samples, not distributions, and the 1440s of reachability
+# headroom is margin over a two-sample max, not a guarantee: see
 # docs/notes/heavy-test-per-test-duration-measurement.md before re-tuning, and
 # docs/prds/offline-deep-test-lane.md DA6 for the derivation.
 #
 # nextest resolves each override SETTING (priority, slow-timeout) by first-match
 # independently, so this ceiling is unaffected by both this block's own
 # `priority` value and the earlier occt test-group override.
-slow-timeout = { period = "120s", terminate-after = 21 }
+slow-timeout = { period = "120s", terminate-after = 18 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)'
 priority = 50
-slow-timeout = { period = "120s", terminate-after = 21 }
+slow-timeout = { period = "120s", terminate-after = 18 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(representation_within_assertion)'
@@ -360,12 +374,12 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 [[profile.default.overrides]]
 filter = 'package(reify-solver-elastic) & binary(analytical_validation)'
 priority = 50
-slow-timeout = { period = "120s", terminate-after = 21 }
+slow-timeout = { period = "120s", terminate-after = 18 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-solver-elastic) & binary(determinism)'
 priority = 50
-slow-timeout = { period = "120s", terminate-after = 21 }
+slow-timeout = { period = "120s", terminate-after = 18 }
 
 # The four heavy-filter members that carry no LPT priority (task 6485). These
 # were the completeness gap this task closed: all four are in
@@ -393,19 +407,19 @@ slow-timeout = { period = "120s", terminate-after = 21 }
 # independent first-match.
 [[profile.default.overrides]]
 filter = 'package(reify-solver-elastic) & binary(modal_benchmarks)'
-slow-timeout = { period = "120s", terminate-after = 21 }
+slow-timeout = { period = "120s", terminate-after = 18 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval-fea-tests) & binary(buckling_smoke)'
-slow-timeout = { period = "120s", terminate-after = 21 }
+slow-timeout = { period = "120s", terminate-after = 18 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_in_the_loop_producer::/)'
-slow-timeout = { period = "120s", terminate-after = 21 }
+slow-timeout = { period = "120s", terminate-after = 18 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(harness_fea_solver_e2e) & test(/^fea_bracket_minimize_mass_e2e::/)'
-slow-timeout = { period = "120s", terminate-after = 21 }
+slow-timeout = { period = "120s", terminate-after = 18 }
 
 # solve_elastic_static_body_e2e (reify-eval): NOT a 6th "intrinsically slow"
 # heavy binary like the 5 above — its own history says otherwise. Across

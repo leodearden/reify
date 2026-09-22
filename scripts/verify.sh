@@ -464,10 +464,10 @@ _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_
 # .config/nextest.toml's heavy per-test ceiling (then 43200s) had to be REACHABLE,
 # i.e. strictly under this wall, so a hung heavy test is SIGTERM'd BY NAME rather
 # than degrading to exit 124 attributing nothing. Task 7552 re-sized that ceiling
-# to 2520s and corrected what REACHABLE means: not "under the wall" — these walls
+# to 2160s and corrected what REACHABLE means: not "under the wall" — these walls
 # wrap the combined build+execution pass while the per-test ceiling starts at
 # test-process start — but "under the wall by more than the pass takes to reach
-# the test". The BASE release wall two lines up clears 2520s by 2880s, against a
+# the test". The BASE release wall two lines up clears 2160s by 3240s, against a
 # measured 580s for that release pass's own heavy-only build, so the base wall
 # reaches it unaided and this block is not what makes it reachable. Do not keep
 # this block on a rationale that no longer holds, and do not delete it on the
@@ -2895,15 +2895,20 @@ add_test_passes() {
     #    the full restatement and the figures. Offline is NOT the only role that runs
     #    the heavy filterset: background does too, and does not get this tier. That
     #    sentence used to name the gap this tier left open; since task 7552 re-sized
-    #    the per-test ceiling to 2520s — which background's own 60m debug wall clears
-    #    by 1080s, more than the 1078.7s that pass was measured to take to reach a
-    #    heavy test — it names why background is FINE without the tier, and the
-    #    accepted residual it used to imply is retired. That headroom is a
-    #    two-sample max, not a structural guarantee; DA6 says what would re-open it. Which wall binds which role, and how the ceiling
-    #    is derived, are normative in docs/prds/offline-deep-test-lane.md DA6.
+    #    the per-test ceiling to 2160s — which background's own 60m debug wall clears
+    #    by 1440s, comfortably more than the 1078.7s that pass was measured to take
+    #    to reach a heavy test — it names why background is FINE without the tier,
+    #    and the accepted residual it used to imply is retired. That budget is a
+    #    two-sample max on a warm target, not a structural guarantee, which is why
+    #    the ceiling sits a step below the largest the bound allows rather than at
+    #    it; DA6 says what would re-open it. Which wall binds which role, and how
+    #    the ceiling is derived, are normative in
+    #    docs/prds/offline-deep-test-lane.md DA6.
     #    T14-T17 mechanise offline's rendering and T18-BG background's;
-    #    test_nextest_slow_priority.sh Assertion L mechanises wall > ceiling for
-    #    every heavy-running role with every operand derived from a file.
+    #    test_nextest_slow_priority.sh Assertion L mechanises the reachability
+    #    predicate — `wall - ceiling > start-offset budget`, NOT the bare
+    #    `wall > ceiling` an earlier revision of this line claimed — for every
+    #    heavy-running role, with every operand but that budget derived from a file.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh
     # (Test 17 — debug pass, Test 17b — release pass; T1/T2/T8/T9 knob behavior) — keep in sync.
     local _profile _rel
