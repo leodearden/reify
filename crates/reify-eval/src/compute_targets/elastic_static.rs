@@ -9124,6 +9124,131 @@ mod tests {
         );
     }
 
+    /// step-7 RED (task #7019 review [reviewer_comprehensive], regression at
+    /// `elastic_static.rs:4941`): PRD `dimension-checked-readers.md` decision 2
+    /// — "**`Undef` in => `Undef` out, quietly.** `Acceptance::Undefined` keeps
+    /// its existing quiet degradation. Undef inputs are expected transient
+    /// state during solver iteration; only *defined-but-wrong* values are
+    /// rejected" — and acceptance row B6: "quiet degradation, **no**
+    /// diagnostic, exit 0". `arg_acceptance.rs`'s own `FieldAcceptance` rustdoc
+    /// restates it: "an `Undef` field is a value that has not resolved yet,
+    /// not a mistake. Only `Rejected` is a fault." Invariant I2 does not save
+    /// today's post-step-3 behaviour: its subject is a *present* — present and
+    /// DEFINED — value, and decision 2 carves `Undef` out as its own quiet
+    /// lane.
+    ///
+    /// Pre-diff, `*slot = dimensionless_component(e).unwrap_or(0.0);` turned a
+    /// `Value::Undef` direction component into a quiet `0.0`. Post-step-3, the
+    /// same input goes `Value::Undef` → `accept_arg` → `Acceptance::Undefined`
+    /// (the FIRST match arm) → `spec_component`'s catch-all `_` arm →
+    /// `Err(ExpectedScalar)` → `?` → `extract_loads` `Err` →
+    /// `gate_or_fail!(..., "loads")` → `ComputeOutcome::Failed` with an
+    /// `error`-severity diagnostic — the whole elastic-static solve now
+    /// hard-fails on a transient unresolved value. This is a regression, not a
+    /// hardening.
+    ///
+    /// Four legs, all asserting `Ok` — today ALL FOUR fail with `Err`.
+    #[test]
+    fn extract_loads_undef_direction_component_degrades_quietly() {
+        // (a) PointLoad, all-Undef-bearing direction: the pre-diff outcome
+        // exactly — the Undef component reads 0.0, the direction collapses to
+        // zero, and the load contributes nothing.
+        let dir_a = Value::Vector(vec![Value::Real(0.0), Value::Undef, Value::Real(0.0)]);
+        let loads_a = Value::List(vec![point_load_with_direction_value(800.0, dir_a)]);
+        let res_a = extract_loads(&loads_a, 0.0);
+        assert!(
+            res_a.is_ok(),
+            "an Undef direction component is transient unresolved solver \
+             state (PRD decision 2), not a defined-but-wrong value — it must \
+             degrade quietly to 0.0 per-component, not hard-fail the whole \
+             solve; got: {:?}",
+            res_a
+        );
+        let ([fx, fy, fz], _, _) = res_a.unwrap();
+        assert!(
+            fx.abs() < 1e-9 && fy.abs() < 1e-9 && fz.abs() < 1e-9,
+            "all-Undef-bearing direction [0, Undef, 0] must collapse to a \
+             zero direction and contribute nothing, got [{fx}, {fy}, {fz}]"
+        );
+
+        // (b) PointLoad, MIXED direction — the case where "restore pre-diff"
+        // and "skip the load" diverge, so it is pinned deliberately rather
+        // than left to fall out. This is a deliberate exact-preservation of
+        // pre-diff semantics under decision 2's operative clause ("keeps its
+        // EXISTING quiet degradation"); whether a partially-Undef direction
+        // should instead suppress the whole load is a genuinely open
+        // question this task does not answer (follow-up filed).
+        let dir_b = Value::Vector(vec![Value::Real(1.0), Value::Undef, Value::Real(0.0)]);
+        let loads_b = Value::List(vec![point_load_with_direction_value(800.0, dir_b)]);
+        let res_b = extract_loads(&loads_b, 0.0);
+        assert!(
+            res_b.is_ok(),
+            "a MIXED direction with one Undef component must still degrade \
+             quietly per-component rather than fail the whole load, got: {:?}",
+            res_b
+        );
+        let ([fx, fy, fz], _, _) = res_b.unwrap();
+        assert!(
+            (fx - 800.0).abs() < 1e-9 && fy.abs() < 1e-9 && fz.abs() < 1e-9,
+            "mixed direction [1, Undef, 0] with force 800 must give \
+             tip_force=[800, 0, 0] — the Undef component alone reads 0.0 — \
+             got [{fx}, {fy}, {fz}]"
+        );
+
+        // (c) Gravity: both consumers must be covered, because
+        // read_direction_or_neg_z is ?-threaded at both the PointLoad arm and
+        // the Gravity arm of extract_loads.
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let gravity_fields: PersistentMap<String, Value> = [
+            ("magnitude".to_string(), Value::Real(9.81)),
+            (
+                "direction".to_string(),
+                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Undef]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let gravity = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "Gravity".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields: gravity_fields,
+        }));
+        let res_c = extract_loads(&Value::List(vec![gravity]), 7850.0);
+        assert!(
+            res_c.is_ok(),
+            "a Gravity direction with an Undef component must also degrade \
+             quietly — read_direction_or_neg_z is ?-threaded at both the \
+             PointLoad and Gravity arms of extract_loads, got: {:?}",
+            res_c
+        );
+        let (_, _, [bx, by, bz]) = res_c.unwrap();
+        assert!(
+            bx.abs() < 1e-9 && by.abs() < 1e-9 && bz.abs() < 1e-9,
+            "all-Undef-bearing Gravity direction [0, 0, Undef] must give \
+             body_force=[0, 0, 0], got [{bx}, {by}, {bz}]"
+        );
+
+        // (d) Value::List spelling — repeats leg (a) with Value::List instead
+        // of Value::Vector, since the reader accepts both deliberately and
+        // Rust-constructed fixtures legitimately build a List.
+        let dir_d = Value::List(vec![Value::Real(0.0), Value::Undef, Value::Real(0.0)]);
+        let loads_d = Value::List(vec![point_load_with_direction_value(800.0, dir_d)]);
+        let res_d = extract_loads(&loads_d, 0.0);
+        assert!(
+            res_d.is_ok(),
+            "the Value::List spelling of an all-Undef-bearing direction must \
+             degrade quietly exactly like the Value::Vector spelling, got: {:?}",
+            res_d
+        );
+        let ([fx, fy, fz], _, _) = res_d.unwrap();
+        assert!(
+            fx.abs() < 1e-9 && fy.abs() < 1e-9 && fz.abs() < 1e-9,
+            "List-spelled all-Undef-bearing direction [0, Undef, 0] must \
+             collapse to a zero direction, got [{fx}, {fy}, {fz}]"
+        );
+    }
+
     // ── task 5905: `direction` retyped to Vector3<Dimensionless> ─────────────
 
     /// Build a `PointLoad` whose `direction` field is the supplied `Value`
@@ -11346,6 +11471,36 @@ mod tests {
             Ok([1.0, 2.0, 3.0]),
             "Scalar{{DIMENSIONLESS}}/Real/Int axis components must still read — \
              a future over-tightening to bare Real only would be a regression"
+        );
+    }
+
+    /// step-7 characterization lock (task #7019 review [reviewer_comprehensive]):
+    /// `extract_vec3_si` must keep TODAY's treatment of an Undef component —
+    /// `Err(ExpectedScalar)` — even though step-8 gives `read_direction_or_neg_z`
+    /// a different, quiet-degradation policy for the identical `Value::Undef`
+    /// input. This PASSES today and must keep passing.
+    ///
+    /// Why this is a deliberate ASYMMETRY rather than an inconsistency: PRD
+    /// decision 2 would arguably want quiet degradation here too, but that is
+    /// PRE-EXISTING behaviour (not a regression #7019 introduced), has no test
+    /// coverage to justify a change, and no charter in this task — and on the
+    /// MaterialFrame path an `Err` already becomes an Undef cell downstream
+    /// (`engine_build.rs:10328`/`:10530` match `Err(_)` and discard), so the
+    /// observable end state is already "Undef in, Undef out". Without this
+    /// lock, step-8's three-way `ComponentRead` refactor could silently widen
+    /// quiet degradation into the MaterialFrame/aabb readers too — a behaviour
+    /// change this task has no charter for. A follow-up is filed to consider
+    /// widening it deliberately, with its own test coverage.
+    #[test]
+    fn extract_vec3_si_treats_an_undef_component_as_a_shape_error() {
+        let with_undef = Value::Vector(vec![Value::Undef, Value::Real(0.0), Value::Real(0.0)]);
+        let res = extract_vec3_si(&with_undef);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "an Undef axis component must still report Err(ExpectedScalar), \
+             unchanged from today — read_direction_or_neg_z is the only \
+             reader in this file that gains quiet Undef degradation, got: {:?}",
+            res
         );
     }
 
