@@ -56,11 +56,15 @@
 //!
 //! REDUNDANT ENUMERATION: the write-tool set is read from TWO independent
 //! textual shapes — the `"reify_*" =>` dispatch arms and the `ToolDef`
-//! registry advertising the same names — which must agree, so an arm the
-//! scanner cannot read reds as a set DIFFERENCE rather than vanishing from
-//! the sweep, whatever made it unreadable. Residual, stated rather than
-//! papered over: a drop stays silent if BOTH enumerations miss the SAME tool,
-//! and the registry-side non-vacuity floor is what catches them reaching zero
+//! registry advertising the same names. They must agree in ONE direction —
+//! every name the registry advertises appears in the dispatch scan — so an
+//! arm the scanner cannot read reds as a set DIFFERENCE rather than
+//! vanishing from the sweep, whatever made it unreadable. The converse is
+//! deliberately NOT checked: a tool dispatched with no registry entry is
+//! still swept for routing by the arm scan, so it is an advertising defect
+//! rather than an INV-GUI-2 hole. Residual, stated rather than papered over:
+//! a drop stays silent if BOTH enumerations miss the SAME tool, and the
+//! registry-side non-vacuity floor is what catches them reaching zero
 //! together.
 //!
 //! POSTURE: default-ASSERT, `REIFY_INV_GUI_2_BYPASS=1` as break-glass — same
@@ -524,13 +528,16 @@ fn char_literal_end(raw: &[u8], at: usize) -> Option<usize> {
 /// cannot open one. Raw strings (`r"…"`, `r#"…"#`), which `debug_server.rs`
 /// does not use, are still not special-cased.
 ///
-/// KNOWN SPOT COST: this is the third hand-rolled Rust source scanner in the
-/// repo, beside `crates/reify-eval/tests/version_id_discipline_gate.rs` and
-/// `crates/reify-builtins/tests/common/seed_name_scan.rs`, each with its own
-/// separately-documented blind spots — which is how the literal hole this fn
-/// now closes survived here while `seed_name_scan.rs` already handled it.
-/// Extracting the shared primitives spans three crates and so is not this
-/// task's to make; filed as a follow-up.
+/// KNOWN SPOT COST: this is the third hand-rolled Rust source scanner among
+/// the arch gates, beside
+/// `crates/reify-eval/tests/version_id_discipline_gate.rs` and
+/// `crates/reify-builtins/tests/common/seed_name_scan.rs` — with
+/// `crates/reify-audit/src/pdoccover.rs` a fourth outside them — each with
+/// its own separately-documented blind spots, which is how the literal hole
+/// this fn now closes survived here while `seed_name_scan.rs` already
+/// handled it. Extraction spans crates this task holds no locks for; filed
+/// as #7615, whose target `reify-test-support` is already a dev-dependency
+/// of reify-gui and reify-eval and already hosts gate helpers.
 fn blank_noncode(source: &str, blank_literals: bool) -> String {
     let bytes = source.as_bytes();
     let mut out = String::with_capacity(source.len());

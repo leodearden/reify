@@ -107,26 +107,31 @@ That claim is enforced mechanically, not merely written down here:
 parses the `reify_*` dispatch arms out of `debug_server.rs` — so a sixth write
 tool is picked up automatically and must route or go red — and checks each
 handler for a seam, following at most one delegation hop (which is what
-`reify_open_file` needs). The arm set is cross-checked for equality against
-the names the `ToolDef` registry advertises, a second independent enumeration
-of the same set, so a tool whose arm the scanner cannot read reds as
-unenumerated instead of vanishing from the sweep; adding a write tool means
-adding BOTH the registry entry and the dispatch arm, as §1 already requires.
-It also asserts the converse, that every fn named
-`*_and_refresh_baseline` actually reaches `compute_delta`, so the check rests
-on behaviour rather than on a naming convention. The gate ASSERTS by default;
+`reify_open_file` needs). Every name the `ToolDef` registry advertises must
+appear in that arm set, a second independent enumeration of the same set, so
+a tool whose arm the scanner cannot read reds as unenumerated instead of
+vanishing from the sweep; adding a write tool means adding BOTH the registry
+entry and the dispatch arm, as §1 already requires. Only that direction is
+checked — a tool dispatched with no registry entry is still swept for routing
+by the arm scan, so it is an advertising defect rather than an INV-GUI-2 hole.
+It separately asserts that every fn named `*_and_refresh_baseline` actually
+reaches `compute_delta`, so the routing check rests on behaviour rather than
+on a naming convention. The gate ASSERTS by default;
 `REIFY_INV_GUI_2_BYPASS=1` is the break-glass that downgrades it to a warning.
 
 Two properties of that scan are worth knowing before editing `debug_server.rs`
 around the write tools. First, every behavioural check reads a view of the
 source with comments AND string-literal contents blanked, so naming a seam in
 a doc comment, a tracing message or a `json!` field does not satisfy it — only
-a call does. Second, the private-emit check follows the same one delegation
-hop the seam check does, so an emit added to a helper a handler delegates to
-(`open_path_into_engine`, say) is swept as if it were in the handler. What it
-sweeps FOR is a grammar — the `PRIVATE_EMIT_IDENTIFIERS` token set plus any
-`.emit(` call — of which `event_bus::emit_typed` and `delta_to_events` are the
-arms a library module can reach today. An emission shape named by no token in
+a call does. Nor does naming one in CODE without calling it: a fn item parked
+in a binding or a handler table refreshes no baseline, so both the handler and
+the one hop it follows are matched on a call site, `seam(`. Second, the
+private-emit check follows the same one delegation hop the seam check does,
+so an emit added to a helper a handler delegates to (`open_path_into_engine`,
+say) is swept as if it were in the handler. What it sweeps FOR is a grammar —
+the `PRIVATE_EMIT_IDENTIFIERS` token set plus any `.emit(` call — of which
+`event_bus::emit_typed` and `delta_to_events` are the arms a library module
+can reach today. An emission shape named by no token in
 that set, or one a hop further out, is beyond the scan, which is why the "do
 not add one" below is written as a rule rather than left to the gate.
 
