@@ -9216,6 +9216,36 @@ mod tests {
         );
     }
 
+    /// [reviewer_comprehensive] test-coverage (task #7019): the sibling
+    /// REJECT case to the dimensioned-Scalar test above — a DEFINED,
+    /// non-numeric direction component inside an otherwise correctly-shaped
+    /// 3-element direction must also be rejected, not just a wrong-dimension
+    /// Scalar. This pins the OTHER side of the boundary
+    /// `read_direction_or_neg_z` draws between a present-but-unreadable
+    /// component (`Err`) and a mis-SHAPED whole `direction` field (the
+    /// documented `-Z` fallback, pinned by
+    /// `extract_loads_malformed_direction_defaults_to_neg_z`'s own
+    /// `Value::String` leg) — that leg's `Value::String` replaces the WHOLE
+    /// `direction` field, while this one plants it as one of three elements.
+    #[test]
+    fn extract_loads_rejects_a_non_numeric_direction_component() {
+        let dir = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::String("up".to_string()),
+            Value::Real(0.0),
+        ]);
+        let loads = Value::List(vec![point_load_with_direction_value(800.0, dir)]);
+        let res = extract_loads(&loads, 0.0);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a non-numeric direction \
+             component inside an otherwise correctly-shaped 3-element \
+             direction — distinct from a mis-shaped WHOLE direction field, \
+             which keeps the documented -Z fallback instead; got: {:?}",
+            res
+        );
+    }
+
     /// step-7 RED (task #7019 review [reviewer_comprehensive], regression at
     /// `elastic_static.rs:4941`): PRD `dimension-checked-readers.md` decision 2
     /// — "**`Undef` in => `Undef` out, quietly.** `Acceptance::Undefined` keeps
