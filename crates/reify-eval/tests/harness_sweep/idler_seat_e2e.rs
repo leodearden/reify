@@ -815,15 +815,29 @@ fn assert_idler_constraints_ok<'a>(
 ///     per side, and it would forfeit the change's defining virtue that nothing
 ///     outside the seat moves.
 ///
-/// (e) **printer.ri states (b) and (d) itself**, pinned by the CELLS each
-///     compiled constraint expression reads rather than by a constraint merely
-///     being present — otherwise swapping either for any other
-///     `IdlerPulley`-scoped constraint leaves this green while the message goes
-///     on describing the clearance rule. The two are PARTITIONED and observed
-///     separately: both read `mouth_w`, so the discriminator is the other datum
-///     (`tendon_dia` for the clearance, `sheave_w` for the shoulder). Note the
-///     capstan gate's `sub_cell_reads` `IndexAccess` technique does NOT apply
-///     here — these are intra-structure reads, which compile to plain
+/// (e) **printer.ri states (b), (d) and the bore clearance itself**, pinned by
+///     the CELLS each compiled constraint expression reads rather than by a
+///     constraint merely being present — otherwise swapping any of them for
+///     another `IdlerPulley`-scoped constraint leaves this green while the
+///     message goes on describing the clearance rule. All three are
+///     PARTITIONED and observed separately, each by the datum that tells it
+///     apart: `tendon_dia` for the clearance and `sheave_w` for the shoulder
+///     (both read `mouth_w`, so that cell cannot be the discriminator), and
+///     `brg_r` against `seat_c`/`groove_r` for the bore.
+///
+///     The bore-clearance pin is here for a different reason from the other
+///     two. It has no arithmetic claim above it, because this change only
+///     RE-SPELLED it — `sheave_r - groove_half > brg_r` became `seat_c -
+///     groove_r > brg_r`, the same seat bottom read off the true arc — and it
+///     had no other observer at all: `assert_idler_constraints_ok` sees only
+///     that it is Satisfied, `idler_copies_stay_in_lockstep` only that both
+///     files declare the same NUMBER of constraints, and
+///     `idler_sheave_mesh_has_the_declared_seat` reads the seat bottom against
+///     `sheave_r - tendon_dia/2` rather than against the bore. Measured:
+///     deleting it from BOTH copies left all five gates in this module green.
+///
+///     Note the capstan gate's `sub_cell_reads` `IndexAccess` technique does
+///     NOT apply here — these are intra-structure reads, which compile to plain
 ///     `ValueRef`s that [`reify_ir::CompiledExpr::collect_value_refs`] reports
 ///     directly.
 ///
@@ -941,8 +955,10 @@ fn idler_seat_clears_the_tendon() {
             })
             .collect();
 
-    // Both read `mouth_w`, so the OTHER datum is what tells them apart — which is
-    // what makes each individually observable rather than the pair jointly.
+    // One filter per constraint, each keyed on the datum that tells it apart —
+    // which is what makes each individually observable rather than the group
+    // jointly. Clearance and shoulder both read `mouth_w`, so for those two it is
+    // the other operand that discriminates.
     let clearance: Vec<_> = declared
         .iter()
         .filter(|(_, r)| r.contains("mouth_w") && r.contains("tendon_dia"))
@@ -950,6 +966,12 @@ fn idler_seat_clears_the_tendon() {
     let shoulder: Vec<_> = declared
         .iter()
         .filter(|(_, r)| r.contains("mouth_w") && r.contains("sheave_w"))
+        .collect();
+    // The bore clearance has no arithmetic claim above it and no other observer
+    // at all — see the assertion below for why, and for what was measured.
+    let bore: Vec<_> = declared
+        .iter()
+        .filter(|(_, r)| r.contains("seat_c") && r.contains("groove_r") && r.contains("brg_r"))
         .collect();
     assert_eq!(
         clearance.len(),
@@ -972,10 +994,31 @@ fn idler_seat_clears_the_tendon() {
          {IDLER_ENTITY} constraint and the cells it reads: {declared:#?}",
         shoulder.len(),
     );
-    assert_ne!(
-        clearance[0].0, shoulder[0].0,
-        "the clearance and shoulder constraints must be two DISTINCT constraints, \
-         not one expression matching both filters: {declared:#?}"
+    assert_eq!(
+        bore.len(),
+        1,
+        "{PRINTER_RI} must state the bore clearance off the TRUE seat bottom as \
+         its OWN constraint, reading `seat_c` and `groove_r` against `brg_r` — \
+         found {} such. This change re-spelled that constraint (it read \
+         `sheave_r - groove_half > brg_r` before the arc centre moved), and \
+         nothing else here observes it: the satisfaction filter sees only that it \
+         holds, the lockstep gate only that the two files declare the same NUMBER \
+         of constraints, and the mesh gate reads the seat bottom against \
+         `sheave_r - tendon_dia/2`, never against the bore. Without this pin, \
+         deleting the constraint from both copies leaves every gate in this \
+         module green — measured. Every {IDLER_ENTITY} constraint and the cells it \
+         reads: {declared:#?}",
+        bore.len(),
+    );
+    let distinct: HashSet<&ConstraintNodeId> = [clearance[0].0, shoulder[0].0, bore[0].0]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "the clearance, shoulder and bore-clearance constraints must be three \
+         DISTINCT constraints, not one expression matching several of the filters \
+         above: {declared:#?}"
     );
 
     // …and all of them hold, strictly, on this surface.
