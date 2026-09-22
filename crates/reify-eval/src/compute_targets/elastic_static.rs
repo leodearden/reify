@@ -5013,11 +5013,12 @@ fn read_direction_or_neg_z(direction: Option<&Value>) -> Result<[f64; 3], FeaVal
         Some(Value::Vector(elems) | Value::List(elems)) if elems.len() == 3 => {
             let mut d = [0.0f64; 3];
             for (slot, component) in d.iter_mut().zip(elems.iter()) {
-                *slot = match dimensionless_component(component, "read_direction_or_neg_z component") {
-                    ComponentRead::Accepted(x) => x,
-                    ComponentRead::Undefined => 0.0,
-                    ComponentRead::Rejected(err) => return Err(err),
-                };
+                *slot =
+                    match dimensionless_component(component, "read_direction_or_neg_z component") {
+                        ComponentRead::Accepted(x) => x,
+                        ComponentRead::Undefined => 0.0,
+                        ComponentRead::Rejected(err) => return Err(err),
+                    };
             }
             Ok(d)
         }
@@ -9180,7 +9181,10 @@ mod tests {
         assert!(
             matches!(
                 res,
-                Err(FeaValueShapeError::WrongDimension { expected: "Real", .. })
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Real",
+                    ..
+                })
             ),
             "expected Err(WrongDimension {{ expected: \"Real\", .. }}) for a \
              PRESENT, correctly-shaped direction component carrying a unit — \
@@ -11258,7 +11262,10 @@ mod tests {
         assert!(
             matches!(
                 res,
-                Err(FeaValueShapeError::WrongDimension { expected: "Length", .. })
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Length",
+                    ..
+                })
             ),
             "expected Err(WrongDimension {{ expected: \"Length\", .. }}) for a \
              Point3<Length> corner with a MASS-dimensioned component, got: \
@@ -11539,7 +11546,10 @@ mod tests {
         assert!(
             matches!(
                 res,
-                Err(FeaValueShapeError::WrongDimension { expected: "Real", .. })
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Real",
+                    ..
+                })
             ),
             "expected Err(WrongDimension {{ expected: \"Real\", .. }}) for a \
              LENGTH-dimensioned axis component instead of silently \
@@ -12564,7 +12574,10 @@ mod tests {
         assert!(
             matches!(
                 res,
-                Err(FeaValueShapeError::WrongDimension { expected: "Real", .. })
+                Err(FeaValueShapeError::WrongDimension {
+                    expected: "Real",
+                    ..
+                })
             ),
             "a LENGTH-dimensioned axis component must be rejected with \
              WrongDimension {{ expected: \"Real\", .. }}, not silently \
