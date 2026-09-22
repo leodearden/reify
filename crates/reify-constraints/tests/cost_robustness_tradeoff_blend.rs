@@ -234,6 +234,126 @@ fn lambda_half_strictly_between_anchors() {
     );
 }
 
+// ── γ seed-invariance at a BOUNDARY optimum (task #6465 item 1) ───────────
+//
+// A blend whose argmin sits AT a constraint boundary was MEASURED to return
+// the SEED rather than the boundary, on the PRODUCTION `AutoParam` shape
+// (`bounds: None`). The three anchor tests above miss this because
+// `base_problem` hands the solver explicit `bounds: Some((1mm, 5mm))`, which
+// makes `effective_bounds` a mm-scale box; production autos get
+// `default_bounds_for(Length) = [1µm, 10m]` instead, and a floor-free
+// penalty solve whose optimum sits infinitesimally past a strict bound drifts
+// outside it, trips `solve_core_with_sd_tolerance`'s initially-feasible
+// fallback, and reports the initial point verbatim.
+
+/// `base_problem`'s constraints and objective on the PRODUCTION auto shape
+/// (`bounds: None`), with the Nelder-Mead SEED under the caller's control.
+///
+/// `seed_si_m` is threaded through `current_values`, which is the sanctioned —
+/// and the only — way for a test to move the seed: `extract_initial_point`'s
+/// arm 1 is "the current value, when present and numeric", and it outranks
+/// every other arm. With `seed_si_m = None` the seed is DERIVED instead (arm 3,
+/// the constraint-derived box's midpoint) and is unreachable from here, which
+/// is why `None` is one of the cases under test rather than an omission.
+///
+/// `free: true` deliberately: this fixture measures the BLEND's answer, not
+/// `verify_uniqueness`' verdict, so `finalise_uniqueness` must stay out of the
+/// way. The strict-auto verdict is the subject of the next section.
+fn seeded_free_problem(
+    t_id: &ValueCellId,
+    lambda: f64,
+    seed_si_m: Option<f64>,
+) -> ResolutionProblem {
+    let mut current_values = ValueMap::new();
+    if let Some(seed) = seed_si_m {
+        current_values.insert(
+            t_id.clone(),
+            Value::Scalar {
+                si_value: seed,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+    }
+    ResolutionProblem {
+        dependent_cells: Vec::new(),
+        auto_params: vec![AutoParam {
+            id: t_id.clone(),
+            param_type: Type::Scalar { dimension: DimensionVector::LENGTH },
+            bounds: None,
+            free: true,
+        }],
+        constraints: vec![
+            (constraint_id("CostRobustnessTradeoff", 0), gt_expr(t_id, 0.001)),
+            (constraint_id("CostRobustnessTradeoff", 1), lt_expr(t_id, 0.004)),
+        ],
+        current_values,
+        objective: Some(ObjectiveSet::cost_robustness_tradeoff(
+            money_expr_x_per_mm(t_id),
+            lambda,
+        )),
+        functions: vec![].into(),
+    }
+}
+
+/// Both ANCHOR λ values resolve the same point from every seed, on the
+/// production `bounds: None` shape — and at λ=1 that point is the TRUE lower
+/// constraint boundary (1mm), PRD §8.1's floor-free λ=1 contract.
+///
+/// Assertion (b) is what stops (a) being satisfiable by a solver that is merely
+/// consistently WRONG: seed-invariance alone is satisfied by any fixed point,
+/// including the 2.5mm centre or the 10m default ceiling.
+///
+/// λ=1 is the arm that regressed: MEASURED on the linear `5 USD × (t/1mm)` cost
+/// over `1mm < t < 4mm`, it returned 2.5mm / 1.5mm / 2.0mm / 3.5mm for the four
+/// seeds below — exactly the seed each time. λ=0 is GREEN on arrival and is
+/// here deliberately, as a regression guard: the centrality anchor has a strict
+/// INTERIOR maximum, never reaches the drift fallback, and must not be
+/// disturbed by making the cost anchor boundary-aware.
+///
+/// λ ∈ (0,1) is deliberately EXCLUDED, and not as an oversight. On this LINEAR
+/// cost both normalised blend terms equal `(t − 1mm)/1.5mm` over the lower half
+/// of the bracket, so the λ=0.5 blend is identically zero on [1mm, 2.5mm]: its
+/// argmin is a SET, not a point, and no seed-invariance assertion is
+/// satisfiable there without a tie-break policy. See
+/// `default_bounded_strict_autos`' "Known, ACCEPTED gap" section.
+#[test]
+fn gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    // Three explicit seeds spanning the bracket plus the DERIVED seed (`None`).
+    // None of the three coincides with the λ=1 target (1mm) or the λ=0 target
+    // (2.5mm), so agreement cannot come from a seed/target coincidence.
+    let seeds = [None, Some(0.0015), Some(0.002), Some(0.0035)];
+
+    for lambda in [1.0_f64, 0.0] {
+        let resolved: Vec<f64> = seeds
+            .iter()
+            .map(|seed| solve_t(&seeded_free_problem(&t_id, lambda, *seed), &t_id))
+            .collect();
+
+        let first = resolved[0];
+        for (seed, t_si) in seeds.iter().zip(&resolved) {
+            assert!(
+                (t_si - first).abs() < ANCHOR_TOL_M,
+                "λ={lambda}: the blend's answer must not depend on the seed, but seed \
+                 {seed:?} resolved t = {t_si:.6e} m against {first:.6e} m for the derived \
+                 seed. All seeds: {resolved:?}"
+            );
+        }
+
+        if lambda == 1.0 {
+            for (seed, t_si) in seeds.iter().zip(&resolved) {
+                assert!(
+                    (t_si - 0.001).abs() < ANCHOR_TOL_M,
+                    "λ=1 must reach the TRUE constraint boundary (1mm, floor-free — PRD \
+                     §8.1) on the production `bounds: None` shape, not just the \
+                     explicit-bounds shape `lambda_one_reaches_true_boundary_floor_free` \
+                     covers; seed {seed:?} resolved t = {t_si:.6e} m"
+                );
+            }
+        }
+    }
+}
+
 // ── γ + STRICT auto (task #5711 amendment 2) ──────────────────────────────
 //
 // COVERAGE GAP, verified before writing these: γ + a STRICT auto had ZERO
