@@ -1174,4 +1174,119 @@ mod tests {
             }
         }
     }
+
+    /// Classifying the cause (task #7021 ITEM 2) fixes the `detail` FRAGMENT,
+    /// but the body wrapped around it was still wrong for the new cause on two
+    /// counts: it told the reader that "every other instance of {T} whose inputs
+    /// differ declines the same way", and it attributed the decline to #6592
+    /// (per-instance dispatch under constructor overrides). #6592 is live and
+    /// stays the right cite for a genuine divergence; it is no remedy at all for
+    /// an input the gate could not see.
+    ///
+    /// This drives the PURE assembler rather than
+    /// [`report_optimized_instance_decline`]: the reporter's other two filters
+    /// (registered-target, per-template-cell dedupe) are gates over a `Snapshot`
+    /// and a diagnostics vec, already covered end to end in
+    /// `tests/compute_dispatch_registry.rs`, and hand-minting a `ComputeNodeData`
+    /// here would test them a second time to say nothing about the text.
+    #[test]
+    fn decline_message_does_not_attribute_a_visibility_miss_to_a_constructor_override() {
+        let key = "@optimized target \"test::asym\" on AsymLike.r:";
+        let site = DeclineSite {
+            scoped_entity: "Asm.beam",
+            member: "r",
+            child_template: "AsymLike",
+        };
+
+        // A GENUINE DIVERGENCE keeps every part of today's message. This is the
+        // case the wording was always correct for — #6662's `Outer3.b` fixture
+        // exercises it end to end — so the fix must not dilute it.
+        let differ_detail = "input AsymLike.x differs from the template's (Int(10) vs Int(3))";
+        let message = decline_message(
+            key,
+            site,
+            &DeclineCause::InputsDiffer {
+                detail: differ_detail.to_string(),
+            },
+        )
+        .expect("a genuine input divergence is reported");
+        assert!(
+            message.contains("#6592"),
+            "a real constructor override must keep pointing at the task that \
+             tracks per-instance dispatch: {message}"
+        );
+        assert!(
+            message.contains("inputs differ"),
+            "the divergence body must keep saying what it always correctly \
+             said: {message}"
+        );
+        assert!(
+            message.contains(differ_detail),
+            "the detail names the input that diverged and must ride through \
+             verbatim: {message}"
+        );
+        assert!(
+            message.starts_with(key),
+            "THE DEDUPE-KEY INVARIANT: the key is an undelimited-prefix scan \
+             over already-emitted diagnostics, so every reported message must \
+             begin with it literally — see \
+             `instance_scope_optimized_decline_dedupe_is_per_cell_not_per_prefix`: \
+             {message}"
+        );
+
+        // A VISIBILITY MISS is reported too — staying silent would reintroduce
+        // exactly the silence #6662 exists to remove, since the instance still
+        // gets the degraded `.ri` sentinel — but under its own clause.
+        let visibility_detail = "input AsymLike.x is not visible at instance scope";
+        let message = decline_message(
+            key,
+            site,
+            &DeclineCause::InputNotComparable {
+                detail: visibility_detail.to_string(),
+            },
+        )
+        .expect("a visibility miss still degrades the instance and is reported");
+        assert!(
+            !message.contains("#6592"),
+            "#6592 tracks per-instance dispatch under constructor overrides, \
+             which is not the remedy for an input the gate could not see: {message}"
+        );
+        assert!(
+            !message.contains("differ"),
+            "nothing was compared — one side does not exist — so no part of \
+             this message may suggest the inputs differ: {message}"
+        );
+        assert!(
+            message.contains(visibility_detail),
+            "the detail names the input and the scope it is missing from, and \
+             must ride through verbatim: {message}"
+        );
+        assert!(
+            message.contains("cannot compare"),
+            "the reader needs to be told the gate DECLINED WITHOUT COMPARING, \
+             so they look at projection rather than hunting for an override: \
+             {message}"
+        );
+        assert!(
+            message.contains("identical"),
+            "the honest statement is that the two values may well be the same \
+             and reuse would likely have been sound: {message}"
+        );
+        assert!(
+            message.starts_with(key),
+            "THE DEDUPE-KEY INVARIANT holds for EVERY reported cause: a \
+             cause-specific body is exactly the edit that could quietly break \
+             the prefix property: {message}"
+        );
+
+        // The third cause keeps today's silence: neither of the two readings in
+        // its doc has an honest message to print.
+        assert_eq!(
+            decline_message(key, site, &DeclineCause::NoTemplateValue),
+            None,
+            "the absent-output cause has nothing honest to say — template scope \
+             has either already surfaced its own error for the cell or never ran \
+             at all"
+        );
+    }
 }
