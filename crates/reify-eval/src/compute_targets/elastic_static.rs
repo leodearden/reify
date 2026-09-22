@@ -10965,7 +10965,7 @@ mod tests {
     fn extract_point3_si_rejects_wrong_arity() {
         let one_component = Value::Point(vec![Value::Scalar {
             si_value: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
+            dimension: DimensionVector::LENGTH,
         }]);
         let res = extract_point3_si(&one_component);
         assert!(
@@ -10981,7 +10981,10 @@ mod tests {
     /// per-component check, not `ExpectedList`.
     #[test]
     fn extract_point3_si_rejects_non_scalar_component() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
         let mixed = Value::Point(vec![scalar(1.0), Value::Real(2.0), scalar(3.0)]);
         let res = extract_point3_si(&mixed);
         assert!(
@@ -10997,9 +11000,48 @@ mod tests {
     /// error paths above.
     #[test]
     fn extract_point3_si_accepts_point() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
+    }
+
+    /// step-4 RED (task #7019): `extract_point3_si` reads `aabb_min`/`aabb_max`
+    /// at a `Point3<Length>` position (:4180), but `dimensioned_component`
+    /// (plumbed in step-3, not yet narrowed) still accepts ANY dimensioned
+    /// `Value::Scalar` regardless of which dimension it carries — so a
+    /// MASS-dimensioned corner is silently read as SI metres. These corners
+    /// feed `reify_fdm::AxisAlignedBox` and drive `classify_point`'s
+    /// wall/skin/infill zone assignment, so a wrong-dimension corner
+    /// silently mis-zones the whole part. Narrowed to `length_spec()` in
+    /// step-5, which is what turns this `Err` from a fluke of "not a
+    /// Scalar" into a real dimension check.
+    #[test]
+    fn extract_point3_si_rejects_a_wrong_dimension_component() {
+        let len = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let wrong_dimension = Value::Point(vec![
+            len(1.0),
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+            len(3.0),
+        ]);
+        let res = extract_point3_si(&wrong_dimension);
+        assert!(
+            res.is_err(),
+            "expected Err for a Point3<Length> corner with a MASS-dimensioned \
+             component, got: {:?} — aabb_min/aabb_max corners feed \
+             reify_fdm::AxisAlignedBox and drive classify_point's \
+             wall/skin/infill zone assignment, so a wrong-dimension corner \
+             silently mis-zones the whole part",
+            res
+        );
     }
 
     /// step-1 RED (task #5082, D4): `extract_zone_process_params` must
@@ -11144,7 +11186,10 @@ mod tests {
     /// must update this test deliberately.
     #[test]
     fn extract_point3_si_ignores_trailing_components_past_three() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0), scalar(4.0)]);
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
     }
