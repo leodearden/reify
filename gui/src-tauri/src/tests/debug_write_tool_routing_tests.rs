@@ -854,6 +854,53 @@ fn a_private_emit_through_the_event_bus_wrapper_is_flagged() {
     );
 }
 
+/// The NON-VACUITY FLOOR for the private-emit half, as a POSITIVE CONTROL.
+///
+/// Every other real-file assertion here is preceded by a floor — a registry
+/// count, a seam count, a registry-vs-arm set difference. This one was not,
+/// and it is precisely the one that went vacuous: its grammar named only
+/// symbols no library module could reach, so "the real file has no private
+/// emit" was true of every possible file. A count floor cannot help where the
+/// correct answer is zero, so the file is MUTATED instead and the sweep must
+/// notice — the in-suite form of the mutation a reviewer otherwise has to run
+/// by hand. This closes the class, not the one instance.
+#[test]
+fn the_private_emit_sweep_fires_on_the_real_file_when_mutated() {
+    let private_emits = |source: &str| -> Vec<Bypass> {
+        write_tool_bypasses(source)
+            .into_iter()
+            .filter(|b| b.kind == BypassKind::PrivateEmit)
+            .collect()
+    };
+    let source = debug_server_source();
+
+    // The control and its negative are read together: a sweep that fires on
+    // the mutant says nothing unless it stays silent on the original.
+    assert_eq!(private_emits(&source), vec![]);
+
+    // The target is READ from the dispatch scan rather than hardcoded, so the
+    // control follows a rename instead of silently ceasing to mutate anything.
+    let (tool, handler) = dispatch_arms(&strip_comments(&source))
+        .into_iter()
+        .next()
+        .expect("debug_server.rs advertises no `reify_*` dispatch arm to mutate");
+    let mutated = splice_into_fn_body(
+        &source,
+        &handler,
+        "    crate::event_bus::emit_typed(&state.app, \"state-delta\", &delta).ok();",
+    )
+    .expect("the positive control failed to splice — an unmutated copy would pass vacuously");
+
+    assert_eq!(
+        private_emits(&mutated),
+        vec![Bypass {
+            tool,
+            handler,
+            kind: BypassKind::PrivateEmit,
+        }],
+    );
+}
+
 #[test]
 fn every_refresh_baseline_seam_actually_refreshes() {
     assert_eq!(
