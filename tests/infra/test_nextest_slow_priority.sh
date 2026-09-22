@@ -12,7 +12,7 @@
 # temp config consumed by nextest. Task 6485 added the tiering guards J/K/L.
 #
 # THREE TIERS of ceiling now live in that file: default 1200s, gate-resident
-# 1800s, heavy 3240s (task 7552; 43200s before it). What each tier is for, which
+# 1800s, heavy 2520s (task 7552; 43200s before it). What each tier is for, which
 # wall binds which role,
 # and why the background residual is accepted: docs/prds/offline-deep-test-lane.md
 # DA6 — the normative copy. This file MECHANISES that decision; it does not
@@ -383,7 +383,7 @@ assert "tensegrity_t0a priority (${P_T0A:-unset}) > determinism priority (${P_DE
 #
 # All five of these blocks used to carry terminate-after = 15 (1800s). Task 6485
 # split them: the four HEAVY binaries moved to the heavy ceiling
-# (terminate-after = 27 since task 7552; 360 before it), while
+# (terminate-after = 21 since task 7552; 360 before it), while
 # representation_within_assertion is
 # GATE-RESIDENT — it still runs on the merge gate, so it keeps 1800s, strictly
 # under the 3600s pass-level wall. Pinning each tier's value separately here is
@@ -399,20 +399,20 @@ ST_REPR="$(_slow_terminate_for reify-eval representation_within_assertion)"
 ST_ANAL="$(_slow_terminate_for reify-solver-elastic analytical_validation)"
 ST_DET="$(_slow_terminate_for reify-solver-elastic determinism)"
 
-assert "nextest.toml: tensegrity_t0a override has slow-timeout terminate-after = 27 (heavy tier, 3240s)" \
-    test "${ST_T0A:-}" = "27"
+assert "nextest.toml: tensegrity_t0a override has slow-timeout terminate-after = 21 (heavy tier, 2520s)" \
+    test "${ST_T0A:-}" = "21"
 
-assert "nextest.toml: fea_diagnostics_e2e override has slow-timeout terminate-after = 27 (heavy tier, 3240s)" \
-    test "${ST_FEA:-}" = "27"
+assert "nextest.toml: fea_diagnostics_e2e override has slow-timeout terminate-after = 21 (heavy tier, 2520s)" \
+    test "${ST_FEA:-}" = "21"
 
 assert "nextest.toml: representation_within_assertion override has slow-timeout terminate-after = 15 (gate-resident tier, 1800s)" \
     test "${ST_REPR:-}" = "15"
 
-assert "nextest.toml: analytical_validation override has slow-timeout terminate-after = 27 (heavy tier, 3240s)" \
-    test "${ST_ANAL:-}" = "27"
+assert "nextest.toml: analytical_validation override has slow-timeout terminate-after = 21 (heavy tier, 2520s)" \
+    test "${ST_ANAL:-}" = "21"
 
-assert "nextest.toml: determinism override has slow-timeout terminate-after = 27 (heavy tier, 3240s)" \
-    test "${ST_DET:-}" = "27"
+assert "nextest.toml: determinism override has slow-timeout terminate-after = 21 (heavy tier, 2520s)" \
+    test "${ST_DET:-}" = "21"
 
 # ---------------------------------------------------------------------------
 # Assertion G (task 5141): gen-nextest-config.sh preserves each heavy-tier
@@ -432,20 +432,20 @@ _GST_DET="$(_slow_terminate_for_file "$_TMP_CFG_ST" reify-solver-elastic determi
 
 rm -f "$_TMP_CFG_ST"
 
-assert "gen-nextest-config.sh: tensegrity_t0a slow-timeout terminate-after = 27 preserved in generated config" \
-    test "${_GST_T0A:-}" = "27"
+assert "gen-nextest-config.sh: tensegrity_t0a slow-timeout terminate-after = 21 preserved in generated config" \
+    test "${_GST_T0A:-}" = "21"
 
-assert "gen-nextest-config.sh: fea_diagnostics_e2e slow-timeout terminate-after = 27 preserved in generated config" \
-    test "${_GST_FEA:-}" = "27"
+assert "gen-nextest-config.sh: fea_diagnostics_e2e slow-timeout terminate-after = 21 preserved in generated config" \
+    test "${_GST_FEA:-}" = "21"
 
 assert "gen-nextest-config.sh: representation_within_assertion slow-timeout terminate-after = 15 preserved in generated config" \
     test "${_GST_REPR:-}" = "15"
 
-assert "gen-nextest-config.sh: analytical_validation slow-timeout terminate-after = 27 preserved in generated config" \
-    test "${_GST_ANAL:-}" = "27"
+assert "gen-nextest-config.sh: analytical_validation slow-timeout terminate-after = 21 preserved in generated config" \
+    test "${_GST_ANAL:-}" = "21"
 
-assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 27 preserved in generated config" \
-    test "${_GST_DET:-}" = "27"
+assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 21 preserved in generated config" \
+    test "${_GST_DET:-}" = "21"
 
 # ---------------------------------------------------------------------------
 # Assertion H (task 5141; amended — reviewer test-quality finding): 2-tier
@@ -674,13 +674,18 @@ _slow_ceiling_for_filter() {
     return 0
 }
 
-# The heavy per-test ceiling: 3240s = 120s x 27 (task 7552; was 43200s).
+# The heavy per-test ceiling: 2520s = 120s x 21 (task 7552; was 3240s within the
+# same task, and 43200s before it).
 # Basis, in one line: it is the largest multiple of the 120s period at or below
-# 90% of the TIGHTEST wall any heavy-running role imposes (background's 3600s
-# debug wall), and it clears 3x the measured per-test max. Derivation, the
-# measurement it rests on and the alternatives rejected for it are normative in
+# `binding wall MINUS start-offset budget` for the tightest heavy-running role
+# (background, 3600s - 1078.7s), and it clears 3x the measured per-test max in
+# BOTH profiles. The `0.9 x wall` rule this constant carried for one commit is
+# SUPERSEDED: it subtracted a fixed 10% where the quantity that actually has to
+# be subtracted is the time the pass takes to reach the test, which is not a
+# fraction of the wall and is measured, not assumed. Derivation, the measurement
+# it rests on and the alternatives rejected for it are normative in
 # docs/prds/offline-deep-test-lane.md DA6 — do not restate them here.
-HEAVY_CEILING_SECONDS=3240
+HEAVY_CEILING_SECONDS=2520
 
 # The START-OFFSET BUDGET: worst-case seconds from the `cargo nextest run`
 # invocation to a heavy test's PROCESS start (task 7552 amendment).
@@ -1078,7 +1083,7 @@ assert "K: the two classes PARTITION the file — every enumerated slow-timeout 
 #
 # NEWLY LOAD-BEARING (task 7552). Until this task the two tiers were 24x apart
 # (43200s vs 1800s) and could not plausibly collide, so nothing asserted the
-# order. At 3240s they are within 2x, and the next re-tune in either direction
+# order. At 2520s they are within 1.4x, and the next re-tune in either direction
 # could flatten `heavy` into `gate-resident` — or invert them — while every other
 # assertion here stayed green, because K classifies by FILTER and each tier's
 # value is only ever compared against its own class.
