@@ -474,6 +474,79 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
         .any(|n| n.output_value_cells.contains(template_cell))
 }
 
+/// WHERE a decline happened, in the three strings its message names: the
+/// instance-scope cell (`{scoped_entity}.{member}`) and the child template whose
+/// dispatched value could not be reused.
+///
+/// Grouped by value rather than passed as three loose `&str`s so
+/// [`decline_message`]'s arity stays readable and two same-typed strings cannot
+/// be transposed silently at the call site.
+#[derive(Clone, Copy)]
+struct DeclineSite<'a> {
+    scoped_entity: &'a str,
+    member: &'a str,
+    child_template: &'a str,
+}
+
+/// The decline report's TEXT, separated from the gates that decide whether to
+/// emit it: `None` for the cause with nothing honest to print, otherwise the
+/// whole message.
+///
+/// Pure, so the thing under test is the thing that varies — no `Snapshot` and no
+/// hand-minted `ComputeNodeData`, which belong to
+/// [`report_optimized_instance_decline`]'s other two filters and are covered end
+/// to end in `tests/compute_dispatch_registry.rs`.
+///
+/// `key` is a literal PREFIX of every message returned here. That prefix IS the
+/// dedupe mechanism (see the caller's doc), and a cause-specific body is exactly
+/// the edit that could quietly break it, so
+/// `decline_message_does_not_attribute_a_visibility_miss_to_a_constructor_override`
+/// pins the property for both reported causes.
+///
+/// The two reported causes get DIFFERENT clauses because they send the reader to
+/// different places:
+///
+/// * [`DeclineCause::InputsDiffer`] — a constructor override, virtually always.
+///   Look at the override; #6592 tracks per-instance dispatch under one.
+/// * [`DeclineCause::InputNotComparable`] — the input is invisible at one of the
+///   two scopes. Look at projection, not at overrides, and the honest statement
+///   is that nothing was compared at all. Deliberately carries no `#NNNN`: there
+///   is no live task for widening instance-scope projection, and this module's
+///   own precedent (the `tkt_0RTGTE246DRBM0719KQEJWWPYP` note below) is to state
+///   the fact rather than mint a cite that resolves to nothing.
+fn decline_message(key: &str, site: DeclineSite<'_>, cause: &DeclineCause) -> Option<String> {
+    let DeclineSite {
+        scoped_entity,
+        member,
+        child_template,
+    } = site;
+    // Shared across both reported causes, so the key prefix and the
+    // what-was-lost sentence are spelled once and cannot drift per cause.
+    let lede = |detail: &str| {
+        format!(
+            "{key} instance scope {scoped_entity}.{member} cannot reuse the \
+             template's dispatched value ({detail}) — falling back to \
+             body-inlining. Reported once per template cell."
+        )
+    };
+    match cause {
+        DeclineCause::InputsDiffer { detail } => Some(format!(
+            "{} Every other instance of {child_template} whose inputs differ \
+             declines the same way (per-instance dispatch under constructor \
+             overrides is tracked by #6592).",
+            lede(detail)
+        )),
+        DeclineCause::InputNotComparable { detail } => Some(format!(
+            "{} This is a VISIBILITY miss, not a value mismatch: the input is \
+             absent at one of the two scopes, so the gate cannot compare the two \
+             values and declines rather than guessing — they may well be \
+             identical, in which case reuse would have been sound.",
+            lede(detail)
+        )),
+        DeclineCause::NoTemplateValue => None,
+    }
+}
+
 /// Report an instance-scope `@optimized` reuse DECLINE — once per authoring
 /// fact, and only when declining actually costs something.
 ///
@@ -485,10 +558,14 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 ///
 /// Three filters:
 ///
-/// * CAUSE GATE. Only [`DeclineCause::InputsDiffer`] is reported; see
-///   [`DeclineCause::NoTemplateValue`] for why its sibling has nothing honest
-///   to say. Filtering on the structural cause rather than on the presence of a
-///   text-matching Error keeps this independent of any other site's wording.
+/// * CAUSE GATE. TWO causes are reported — [`DeclineCause::InputsDiffer`] and
+///   [`DeclineCause::InputNotComparable`] — each under its own clause, because
+///   one sends the reader to a constructor override and the other to
+///   projection. [`decline_message`] owns that text and returns `None` for the
+///   third cause; see [`DeclineCause::NoTemplateValue`] for why it has nothing
+///   honest to say. Filtering on the structural cause rather than on the
+///   presence of a text-matching Error keeps this independent of any other
+///   site's wording.
 /// * REGISTERED-TARGET GATE. Without it the warning fired, with actively
 ///   misleading text, in the plain `reify check` shape — which registers NO
 ///   trampolines — for every sub carrying a constructor override on a param an
@@ -523,6 +600,12 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 ///   needs no side table. Guarded by
 ///   `instance_scope_optimized_decline_dedupe_is_per_cell_not_per_prefix`.
 ///
+///   THE KEY IS CAUSE-INDEPENDENT, by design. Two instances of one template
+///   cell that decline for DIFFERENT causes are still ONE authoring fact about
+///   ONE cell, and still report once — whichever fires first. Folding the cause
+///   into the key would reintroduce, for the mixed case, exactly the
+///   N-warnings-for-one-fact shape this filter exists to remove.
+///
 ///   The prefix scan is a stand-in for the structured form the house rule asks
 ///   for (match on `DiagnosticCode`, not on message substrings): keying it on a
 ///   `DiagnosticCode::OptimizedInstanceReuseDeclined` needs a variant added to
@@ -548,13 +631,26 @@ pub(super) fn report_optimized_instance_decline(
     target: &str,
     cause: &DeclineCause,
 ) {
-    let DeclineCause::InputsDiffer { detail } = cause else {
-        return;
-    };
+    // Built before the three filters rather than as one of them: the message and
+    // the dedupe scan must share ONE spelling of the key, since the scan works
+    // only because the key is a literal prefix of the message.
     let key = format!(
         "@optimized target {:?} on {}.{}:",
         target, child_template.name, member
     );
+    // CAUSE GATE, still first and still O(1) in the two scans below: a cause
+    // with no honest message reaches neither of them.
+    let Some(message) = decline_message(
+        &key,
+        DeclineSite {
+            scoped_entity,
+            member,
+            child_template: &child_template.name,
+        },
+        cause,
+    ) else {
+        return;
+    };
     // Dedupe BEFORE the graph scan: both are pure predicates, so the emitted
     // set is identical either way, but this ordering keeps the already-reported
     // case off the unbounded `compute_nodes` walk entirely.
@@ -565,14 +661,7 @@ pub(super) fn report_optimized_instance_decline(
     if !template_cell_was_dispatched(snapshot, &template_cell) {
         return;
     }
-    diagnostics.push(Diagnostic::warning(format!(
-        "{key} instance scope {scoped_entity}.{member} cannot reuse the \
-         template's dispatched value ({detail}) — falling back to body-inlining. \
-         Reported once per template cell: every other instance of {} whose \
-         inputs differ declines the same way (per-instance dispatch under \
-         constructor overrides is tracked by #6592).",
-        child_template.name,
-    )));
+    diagnostics.push(Diagnostic::warning(message));
 }
 
 #[cfg(test)]
