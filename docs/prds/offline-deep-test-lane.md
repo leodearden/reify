@@ -183,7 +183,8 @@ and **auditable** — the drift-guard lists exactly what is deferred.
   the latency/cost of running the heavy set on every local land was never the zero-attribution argument
   anyway. Recorded here so the next reader does not cite a premise that has since changed. Whether DA5
   is still the right call on its remaining grounds is a question for its owner, not for the task that
-  changed the number.
+  changed the number; §10 carries it as an open question so it is findable from the index of what is
+  still open, not only from here.
   **Accepted residual:** a heavy failure on a locally-landed commit yields a fix task rather than
   blocking the land.
   The default is expressed as `${REIFY_GATE_EXCLUDE_HEAVY:-1}`, not a bare `1`: DA5 settles what
@@ -572,3 +573,16 @@ leaf), per the user directive to "make the flip immediate."
 - **Precise warm-gate seconds saved post-LPT.** A Phase-0-style warm `DF_VERIFY_ROLE=merge` timing
   once the partition exists quantifies the win; not required to ship Part A (premise confirmed
   structurally in §1).
+- **Does DA5's `scripts/land.sh` heavy carve-out still earn its keep, now that its diagnosability
+  premise is gone?** Raised by task 7552 (2026-09-22) and deliberately NOT re-decided by it: DA5 is a
+  ratified human ruling and only its owner may move it. DA5's recorded trade was local-land
+  DIAGNOSABILITY over pre-merge-blocking local-land COVERAGE, and the diagnosability half is now
+  false — DA6's ceiling is 2160s against this path's own 3600s debug wall, so a heavy hang on a
+  carve-out-free local land is terminated by name rather than degrading to the `timeout` exit-124
+  zero-attribution shape the trade was built to avoid. The full correction is inline in DA5; this
+  entry exists so the question is findable from the index of what is still open, not only from the
+  body of the decision it changed. What survives is a pure coverage-vs-latency call: keep the
+  carve-out and let the offline lane's ~2-minute SHA-based poll backstop pick the commit up, or drop
+  it and pay the full heavy set on every local land to get the coverage pre-merge-blocking. Either
+  branch is a default flip, not new mechanism — the knob is already
+  `${REIFY_GATE_EXCLUDE_HEAVY:-1}`. Nothing is blocked while this sits open.
