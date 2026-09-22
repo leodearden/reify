@@ -832,15 +832,44 @@ fn set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_re
     }
 }
 
-/// Assert `result.values[cell]` is a `len`-element list in which NO element is
-/// `Undef`, and return the backing realization ids in order. `ctx` labels the
-/// call site in panic messages.
-fn assert_live_handle_list(
+/// One element of a geometry-list cell that is backed by REAL kernel geometry.
+///
+/// Constructible only through [`live_geometry_list`], which refuses any element
+/// whose `kernel_handle` is `None` — so holding one of these IS the evidence
+/// that a kernel handle was present. The kernel handle id itself is checked and
+/// then dropped: it is ephemeral and session-scoped, and no assertion here
+/// compares ids across rebuilds.
+#[derive(Clone, Debug)]
+struct LiveGeometryHandle {
+    realization_ref: RealizationNodeId,
+    upstream_values_hash: [u8; 32],
+}
+
+/// The live handles backing a `len`-element geometry-list cell in
+/// `result.values`, in order. `ctx` labels the call site in panic messages.
+///
+/// THE `kernel_handle: Some(_)` CHECK IS THE POINT (review esc-5385-20).
+/// `kernel_handle` is the ONLY discriminator between the two producers of a
+/// `Value::GeometryHandle`: the kernel-backed hydration path
+/// (`post_process_geometry_handle_cells` / `hydrate_geometry_handles_into_values`)
+/// writes `Some(id)`, while `mint_symbolic_geometry_handles_into_values` writes
+/// `None` and recomputes `upstream_values_hash` from the CURRENT params —
+/// deliberately byte-identical to what the build path would produce. So a
+/// symbolic refill after the all-or-nothing regroup DROPPED the list satisfies
+/// every other assertion available here: the cell is a list, no element is
+/// `Undef`, the elements are distinct realizations, and the hashes changed
+/// across an `edit_param`. Without this check these tests — the only
+/// `MockGeometryKernel`-backed witnesses in this file — cannot tell real
+/// geometry from a placeholder, which is the whole claim they exist to pin.
+///
+/// Single walk for both consumers so the check cannot be enforced at one call
+/// site and forgotten at the other.
+fn live_geometry_list(
     result: &reify_eval::TessellateResult,
     cell: &ValueCellId,
     len: usize,
     ctx: &str,
-) -> Vec<RealizationNodeId> {
+) -> Vec<LiveGeometryHandle> {
     let value = result
         .values
         .get(cell)
@@ -853,49 +882,65 @@ fn assert_live_handle_list(
         len,
         "{ctx}: `{cell}` should have {len} elements; got: {items:?}",
     );
-    let mut refs = Vec::new();
-    for (k, item) in items.iter().enumerate() {
-        assert!(
-            !item.is_undef(),
-            "{ctx}: `{cell}[{k}]` is Undef — a realized geometry list regressed to \
-             unresolved.\nfull value: {items:?}",
-        );
-        match item {
+    items
+        .iter()
+        .enumerate()
+        .map(|(k, item)| match item {
             Value::GeometryHandle {
-                realization_ref, ..
-            } => refs.push(realization_ref.clone()),
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle: Some(_),
+            } => LiveGeometryHandle {
+                realization_ref: realization_ref.clone(),
+                upstream_values_hash: *upstream_values_hash,
+            },
+            Value::GeometryHandle {
+                realization_ref,
+                kernel_handle: None,
+                ..
+            } => panic!(
+                "{ctx}: `{cell}[{k}]` is a SYMBOLIC handle (kernel_handle: None) for \
+                 realization {realization_ref:?} — no kernel geometry backs it, so the \
+                 list only looks realized. A dropped list refilled by \
+                 `mint_symbolic_geometry_handles_into_values` lands here.\n\
+                 full value: {items:?}",
+            ),
+            Value::Undef => panic!(
+                "{ctx}: `{cell}[{k}]` is Undef — a realized geometry list regressed to \
+                 unresolved.\nfull value: {items:?}",
+            ),
             other => panic!("{ctx}: `{cell}[{k}]` should be a GeometryHandle; got: {other:?}"),
-        }
-    }
-    refs
+        })
+        .collect()
 }
 
-/// The per-element `upstream_values_hash` of a geometry-list cell, in order.
-/// Distinguishes "re-realized from the current params" from "served stale".
+/// The backing realization ids of a live `len`-element geometry-list cell, in
+/// order. See [`live_geometry_list`] for what "live" is checked to mean.
+fn assert_live_handle_list(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<RealizationNodeId> {
+    live_geometry_list(result, cell, len, ctx)
+        .into_iter()
+        .map(|h| h.realization_ref)
+        .collect()
+}
+
+/// The per-element `upstream_values_hash` of a live geometry-list cell, in
+/// order. Distinguishes "re-realized from the current params" from "served
+/// stale" — but only once [`live_geometry_list`] has ruled out the symbolic
+/// mint, which recomputes a byte-identical hash with no kernel geometry behind
+/// it and would otherwise read as a refresh.
 fn geometry_list_upstream_hashes(
     result: &reify_eval::TessellateResult,
     cell: &ValueCellId,
     len: usize,
     ctx: &str,
 ) -> Vec<[u8; 32]> {
-    let value = result
-        .values
-        .get(cell)
-        .unwrap_or_else(|| panic!("{ctx}: no value cell `{cell}` in the result"));
-    let Value::List(items) = value else {
-        panic!("{ctx}: `{cell}` should be a List; got: {value:?}");
-    };
-    assert_eq!(items.len(), len, "{ctx}: `{cell}` should have {len} elements");
-    items
-        .iter()
-        .enumerate()
-        .map(|(k, item)| match item {
-            Value::GeometryHandle {
-                upstream_values_hash,
-                ..
-            } => *upstream_values_hash,
-            other => panic!("{ctx}: `{cell}[{k}]` should be a GeometryHandle; got: {other:?}"),
-        })
+    live_geometry_list(result, cell, len, ctx)
+        .into_iter()
+        .map(|h| h.upstream_values_hash)
         .collect()
 }
-
