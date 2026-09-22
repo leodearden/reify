@@ -4,11 +4,10 @@
 //! Both hand-rolled the same two things: a `\b` word-boundary match (the crate
 //! takes no `regex` dep, per `f-infra-design.md` §12) and an inline
 //! `<token> — <reason>` marker grammar. Before task #6036 each had its own
-//! copy, so a boundary-semantics fix — such as the char-stepped retry that
-//! stopped a multibyte registry entry from panicking PDOCCOVER on ~8MB of
-//! chunk prose — reached exactly one detector and had to be rediscovered in
-//! the next. They share one implementation here so such a fix reaches both at
-//! once.
+//! copy, so a boundary-semantics fix reached exactly one detector and had to
+//! be rediscovered in the next. They share one implementation here so such a
+//! fix reaches both at once, and the boundary and UTF-8 contract those fixes
+//! settled has one statement, on [`contains_word`].
 //!
 //! What this module deliberately does NOT own is argued on
 //! [`allow_marker_body`]: two sibling marker readers resemble this one and are
@@ -19,8 +18,8 @@
 
 /// `true` when `b` is an ASCII word byte (`[A-Za-z0-9_]`) — the single
 /// alphabet for every hand-rolled `\b` word-boundary check in this crate's
-/// scanners, so `union` is never satisfied by `disunion` / `union_all` /
-/// `reunion` and `done` is never satisfied by `abandoned` / `undone`.
+/// scanners. What that alphabet buys each of them is argued on
+/// [`contains_word`].
 ///
 /// A byte predicate over arbitrary UTF-8: every non-ASCII byte reads as a
 /// boundary, which is what lets the callers do byte-offset arithmetic over
@@ -33,6 +32,12 @@ pub(crate) fn is_word_byte(b: u8) -> bool {
 /// BOTH sides — a hand-rolled `\b<needle>\b` over [`is_word_byte`]'s
 /// alphabet. An empty `needle` never matches; it would otherwise match at
 /// every position.
+///
+/// BOTH boundaries matter, and each consumer has its own corpus reason.
+/// `union`, `union_all` and `intersection` are all real registry entries, so
+/// a one-sided match would let `union_all`'s documentation silently vouch for
+/// `union` and under-report PDOCCOVER's coverage; PTODO's terminal-token lane
+/// needs `done` never to be satisfied by `abandoned` or `undone`.
 ///
 /// Case-SENSITIVE. A caller needing case-insensitive matching pre-lowercases
 /// `haystack` and passes a lowercase ASCII `needle` — which is what PTODO's
@@ -79,6 +84,13 @@ pub(crate) fn contains_word(haystack: &str, needle: &str) -> bool {
 /// Byte offset of a word-boundary-delimited `token` in `line`, or `None` when
 /// the line carries no such occurrence.
 ///
+/// An empty `token` never matches, the same answer [`contains_word`] gives an
+/// empty needle: it would otherwise report offset 0 on every line, and
+/// [`allow_marker_body`] would hand the caller a whole unmarked line as a
+/// well-formed reason. Every caller passes a non-empty `const` today, so this
+/// is the module's two matchers agreeing on the degenerate case rather than a
+/// live defect.
+///
 /// Left-boundary only — the caller decides what, if anything, may follow, so
 /// this is a hand-rolled `\b<token>` rather than a whole-word match. That is
 /// what keeps a token from being matched as the tail of a longer word
@@ -95,6 +107,9 @@ pub(crate) fn contains_word(haystack: &str, needle: &str) -> bool {
 /// from INSIDE it (one char in) so that overlapping occurrences are still
 /// considered, and only a step landing mid-occurrence can land mid-char.
 pub(crate) fn find_word_boundary_token(line: &str, token: &str) -> Option<usize> {
+    if token.is_empty() {
+        return None;
+    }
     let bytes = line.as_bytes();
     let mut start = 0;
     loop {
@@ -179,9 +194,8 @@ mod tests {
         );
     }
 
-    /// Both sides matter. `union`, `union_all` and `intersection` are all real
-    /// registry entries, so a one-sided match would let `union_all`'s
-    /// documentation silently vouch for `union` and under-report coverage.
+    /// Pins the both-boundaries half of [`contains_word`]'s contract over the
+    /// registry entries that motivate it.
     #[test]
     fn contains_word_requires_both_boundaries() {
         assert!(
@@ -240,13 +254,8 @@ mod tests {
         );
     }
 
-    /// The boundary-rejected retry must step by a whole CHARACTER.
-    ///
-    /// `units.rs` is a *units* file, so a non-ASCII registry entry (`"µm"`,
-    /// `"°C"`) is entirely plausible; one such entry plus one non-boundary
-    /// occurrence anywhere in ~8MB of chunk prose used to turn the whole
-    /// detector into a `byte index is not a char boundary` panic — a
-    /// fail-safe-by-contract scanner taken down by corpus content.
+    /// Panic regression for the char-stepped retry — see [`contains_word`]'s
+    /// doc for the UTF-8 contract and the incident behind it.
     #[test]
     fn contains_word_retry_is_char_stepped_not_byte_stepped() {
         // First occurrence is boundary-rejected (`a` on its left), so the
@@ -293,6 +302,25 @@ mod tests {
             Some(22),
             "the glued occurrence is skipped, not treated as the answer",
         );
+        // The same skip across a MULTIBYTE token, which is what makes the
+        // whole-token byte step load-bearing rather than incidental: the
+        // rejected `aµm` is stepped over to the byte AFTER it (a char
+        // boundary), where a one-byte step would resume inside `µ` and panic.
+        assert_eq!(
+            find_word_boundary_token("aµm µm", "µm"),
+            Some(5),
+            "a rejected multibyte occurrence is stepped over, not into",
+        );
+    }
+
+    /// An empty token would otherwise report offset 0 on every line, so
+    /// [`allow_marker_body`] would read any line as a well-formed marker whose
+    /// reason is the whole line. Same answer as
+    /// `contains_word_empty_needle_never_matches`.
+    #[test]
+    fn find_word_boundary_token_empty_token_never_matches() {
+        assert_eq!(find_word_boundary_token("// pdoccover:allow — x", ""), None);
+        assert_eq!(allow_marker_body("an ordinary line of prose", ""), None);
     }
 
     /// One optional separator, in any of the three spellings a marker is

@@ -952,8 +952,7 @@ fn declaration_position_idents(code: &str) -> Vec<&str> {
 /// left-boundary-checked: the byte before the token must not be a word byte,
 /// so `// doccover:allow — x` does NOT match `pdoccover:allow`… and neither
 /// does any other suffix collision.
-// G-allow: consumed in-module by extract_registries/chunk_call_mentions and by unit tests; pub so the token-level tests below and downstream callers can exercise this detector's marker directly.
-pub fn allow_marker_reason(line: &str) -> Option<&str> {
+fn allow_marker_reason(line: &str) -> Option<&str> {
     allow_marker_body(line, ALLOW_TOKEN)
 }
 
@@ -962,19 +961,12 @@ pub fn allow_marker_reason(line: &str) -> Option<&str> {
 /// `chunk_sources` are pre-read `(path, content)` pairs so the matcher stays
 /// pure and unit-testable without disk access.
 ///
-/// Matching is [`crate::scan_util::contains_word`]'s hand-rolled
-/// `\b<name>\b`, and BOTH boundaries matter: `union`, `union_all` and
-/// `intersection` are all real registry entries, so a one-sided match would
-/// let `union_all`'s documentation silently vouch for `union` and under-report
-/// coverage. It is case-sensitive, which is what this lane wants — Reify
-/// builtin names are snake_case and a prose `Union` is not the builtin.
-///
-/// Neither argument is assumed ASCII, and that is load-bearing here rather
-/// than defensive: `content` is chunk prose (`§`, `→`, em dashes) and `name`
-/// is whatever a `*_NAMES` registry holds, which for a units registry is
-/// routinely `µm` or `°C`. The shared matcher's char-stepped retry is what
-/// keeps a boundary-rejected multibyte occurrence anywhere in the ~8MB corpus
-/// from panicking a detector whose contract is to skip bad input fail-safe.
+/// Matching is [`crate::scan_util::contains_word`]'s; see its doc for the
+/// boundary alphabet, the case-sensitivity and the UTF-8 contract. This lane
+/// is where each of the three is exercised rather than assumed: `content` is
+/// chunk prose (`§`, `→`, em dashes), `name` is whatever a `*_NAMES` registry
+/// holds — for a units registry, routinely `µm` or `°C` — and the names are
+/// snake_case builtins, so a prose `Union` must not vouch for `union`.
 ///
 /// Deliberately format-agnostic: no markdown parser, no heading/fence/table
 /// awareness. A name mentioned anywhere in any chunk — code span, fence,
@@ -2359,8 +2351,12 @@ mod tests {
     }
 
     /// A reasonless marker (bare, or a separator with a blank body) yields
-    /// `None` — which is what makes `allow-missing-reason` fall out naturally,
-    /// mirroring `ptodo::g_allow_marker_body`'s blank-body contract.
+    /// `None` — which is what makes `allow-missing-reason` fall out naturally.
+    ///
+    /// The blank-body rejection is `scan_util::allow_marker_body`'s own
+    /// contract, and PTODO's G-allow grammar deliberately does NOT share it:
+    /// `scan_util`'s `g_allow_grammar_deliberately_diverges_from_shared_marker_body`
+    /// measures `// G-allow: -` keeping its body there and losing it here.
     #[test]
     fn allow_marker_reason_none_for_blank_body() {
         for line in [

@@ -416,28 +416,17 @@ impl AuditContext<'_> {
     /// Contents of tracked file `path` (root-relative), or `None` when it
     /// cannot be read.
     ///
-    /// The tracked-file read for PTODO, PDSSENTINEL and PDOCCOVER, which each
-    /// inlined it separately before task #6036. Only ENUMERATION is a git
-    /// seam — those detectors take path membership from `git.ls_files()` and
-    /// then read the working tree directly through here, so a path that is
-    /// tracked but absent, unreadable, a directory, or not valid UTF-8 is
-    /// SKIPPED fail-safe: no finding, no panic. That matters because the
-    /// callers are scanners run over the whole repo, where one unreadable
-    /// file must not be able to take the detector — or the verify gate it
-    /// runs in — down.
+    /// The tracked-file read for PTODO, PDSSENTINEL and PDOCCOVER. Only
+    /// ENUMERATION is a git seam — those detectors take path membership from
+    /// `git.ls_files()` and then read the working tree directly through here,
+    /// so a path that is tracked but absent, unreadable, a directory, or not
+    /// valid UTF-8 is SKIPPED fail-safe: no finding, no panic. That matters
+    /// because the callers are scanners run over the whole repo, where one
+    /// unreadable file must not be able to take the detector — or the verify
+    /// gate it runs in — down.
     ///
-    /// Three of the crate's five such reads, not all five: `pdiag.rs` still
-    /// hand-rolls this same `read_to_string(project_root.join(..))` twice, in
-    /// its census sweep and in its baseline read. Both are behaviour-identical
-    /// to this method and belong here; they sit outside the lock set of the
-    /// hoist that created it, so converging them (and refreshing the two
-    /// comments there that still cross-reference `ptodo.rs::check`'s
-    /// since-removed `read_to_string` arm) is follow-up work rather than a
-    /// second contract. A reader auditing fail-safe posture must look there
-    /// too until then.
-    ///
-    /// `pub(crate)` because every caller is in-crate; a refactor is no reason
-    /// to widen the crate's public API.
+    /// Not every such read in the crate: `pdiag.rs` hand-rolls two more, and
+    /// converging them is #7740.
     pub(crate) fn read_relative(&self, path: &str) -> Option<String> {
         std::fs::read_to_string(self.project_root.join(path)).ok()
     }
