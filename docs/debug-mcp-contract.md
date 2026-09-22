@@ -123,9 +123,12 @@ source with comments AND string-literal contents blanked, so naming a seam in
 a doc comment, a tracing message or a `json!` field does not satisfy it — only
 a call does. Second, the private-emit check follows the same one delegation
 hop the seam check does, so an emit added to a helper a handler delegates to
-(`open_path_into_engine`, say) is swept as if it were in the handler. A hop
-further than that is beyond any depth-capped scan, which is why the "do not
-add one" below is written as a rule rather than left to the gate.
+(`open_path_into_engine`, say) is swept as if it were in the handler. What it
+sweeps FOR is a grammar — the `PRIVATE_EMIT_IDENTIFIERS` token set plus any
+`.emit(` call — of which `event_bus::emit_typed` and `delta_to_events` are the
+arms a library module can reach today. An emission shape named by no token in
+that set, or one a hop further out, is beyond the scan, which is why the "do
+not add one" below is written as a rule rather than left to the gate.
 
 **Coverage boundary — the AI/MCP entry point only.** INV-GUI-2 spans every
 engine-mutation entry point, but this is the only one with a structural guard.

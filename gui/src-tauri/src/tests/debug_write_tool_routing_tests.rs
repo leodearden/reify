@@ -1,7 +1,20 @@
 //! INV-GUI-2 (`docs/invariants.md`) structural gate for the AI/MCP entry
 //! point: every `reify_*` write tool reaches the delta baseline through one
-//! of the two shared `*_and_refresh_baseline` seams, never through a private
-//! emit of its own.
+//! of the two shared `*_and_refresh_baseline` seams, and none emits state
+//! alongside it.
+//!
+//! The emit half spans a GRAMMAR, not the whole property, so read its reach
+//! literally: a handler — or a helper it delegates to, one hop away — that
+//! names any of [`PRIVATE_EMIT_IDENTIFIERS`] or makes a `.emit(` call. Two
+//! residuals follow, both stated rather than papered over. An emit further
+//! than one hop is out of reach of any depth-capped scan and is governed by
+//! point (b) on `write_on_engine_and_refresh_baseline` ("Do NOT add a second
+//! emit path here or in any caller") rather than by this gate. And an
+//! emission shape named by none of those tokens is invisible, which is how
+//! the half went vacuous once already — so its real-file assertion carries a
+//! spliced POSITIVE CONTROL
+//! ([`the_private_emit_sweep_fires_on_the_real_file_when_mutated`]) rather
+//! than resting on an empty result meaning what it appears to.
 //!
 //! The claim is stated in prose — and NOT restated here — at point (a) on
 //! `write_on_engine_and_refresh_baseline` in `gui/src-tauri/src/debug_server.rs`

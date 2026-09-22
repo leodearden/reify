@@ -193,6 +193,16 @@ async fn handle_reify_set_parameter(
 /// `write_on_engine_and_refresh_baseline` forbids in as many words: "Do NOT
 /// add a second emit path here or in any caller".
 ///
+/// FORWARD-LOOKING, like `DELEGATED_PRIVATE_EMIT_SOURCE` below: both shapes
+/// it writes are unrealizable in `debug_server.rs` today — `emit_delta` is
+/// private to the `reify-gui` BINARY, and `state.app` presumes an `AppHandle`
+/// field `DebugServerState` (`engine`, `selection`, `debug_bridge`,
+/// `last_state`) does not have. Deliberately NOT rewritten to a realizable
+/// shape: no emit shape at all is realizable until that field exists, so a
+/// rewrite would pin fiction, whereas this pins the grammar for the day
+/// someone adds it and writes the direct call. `EVENT_BUS_PRIVATE_EMIT_SOURCE`
+/// carries the arm that CAN fire against today's library.
+///
 /// Consumed by `no_write_tool_handler_emits_privately`.
 pub(super) const PRIVATE_EMIT_SOURCE: &str = r#"
 async fn dispatch_tool(
@@ -232,6 +242,10 @@ async fn handle_reify_update_source(
 /// the one tool the whole delegation machinery exists for had its entire
 /// emission behaviour outside the sweep: an `app.emit(…)` added to
 /// `open_path_into_engine` left the gate green.
+///
+/// The HOP is what this fixture pins, and that is live today. The `.emit(`
+/// shape it hops to is forward-looking for the reason given on
+/// `PRIVATE_EMIT_SOURCE` above.
 ///
 /// Consumed by `a_private_emit_in_the_delegated_helper_is_flagged`.
 pub(super) const DELEGATED_PRIVATE_EMIT_SOURCE: &str = r#"
