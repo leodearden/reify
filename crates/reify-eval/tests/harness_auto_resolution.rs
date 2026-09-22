@@ -24,14 +24,9 @@
 //! second `harness_<subsystem2>.rs`". The auto-binding cluster is the natural seam: all
 //! seven files exercise one subsystem, none of them is referenced by `use crate::…` from
 //! any module that stays behind, and none of them consumes the `common/differential.rs`
-//! include. That last property is what fixed which side of the seam the external charge
-//! landed on: as of #6760 the include's sole consumer was
-//! `flat_sort_kahn_core_delegation`, which stayed in `harness_engine`, so the 2185-line
-//! external stayed attributed THERE rather than being duplicated into this second unit.
-//! Task #7654 later relocated that consumer to `harness_cache` — which already declared
-//! the include — so the charge now sits there and `harness_engine` attributes none. This
-//! seam is unaffected either way; the original reasoning is recorded because it is what
-//! made drawing the boundary around the `auto_*` cluster free of external-line cost.
+//! include, so the split duplicated none of that include's external lines into this
+//! second unit. (The include's one `harness_engine` consumer,
+//! `flat_sort_kahn_core_delegation`, has since moved to `harness_cache`, #7654.)
 //!
 //! Layout-only — no `#[test]` fn is added or removed. Each former file is included as a
 //! stem-named module so its `<file>::<test>` module path (and thus every

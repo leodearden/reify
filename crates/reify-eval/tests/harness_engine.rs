@@ -19,34 +19,24 @@
 //! `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
 //! `harness_engine/` subdir.
 //!
-//! # What is NOT here, and why
+//! # What is NOT here
 //!
-//! This unit has been split three times, always by `tests/infra/test_harness_kloc_cap.sh`
-//! rule (a), which resolves an over-cap or near-cap harness by SPLITTING and never by
-//! raising the cap (precedent #5620):
+//! `tests/infra/test_harness_kloc_cap.sh` rule (a) relieves a harness approaching its cap
+//! by splitting it, never by raising the cap. These left this unit that way:
+//!   - the `auto_*` cluster, for `harness_auto_resolution.rs` (#6760; that root's header
+//!     records the seam);
+//!   - the `m8_`/`m9_` milestone acceptance corpora, for
+//!     `harness_milestone_integration.rs` (#7654);
+//!   - `flat_sort_kahn_core_delegation`, this unit's one consumer of the shared
+//!     `common/differential.rs` harness, for `harness_cache.rs`, which already declares
+//!     that include (#7654).
 //!
-//!   - The `auto_*` cluster EVAL-3 also consolidates is the sibling unit
-//!     `harness_auto_resolution.rs`, not a module here. Folding all four clusters into one
-//!     root measured 20363 lines against the 20000-line cap, so #6760 drew that seam; see
-//!     that root's header for it.
-//!   - The `m8_`/`m9_` milestone ACCEPTANCE corpora left for
-//!     `harness_milestone_integration.rs` in #7654, at which point this unit measured
-//!     18002 = 90.0% of the cap with `module_lines` dominating. §3 W1 / §5 C1 group by
-//!     subsystem module PREFIX, and `m8_`/`m9_` was already a cluster this header named
-//!     as distinct from `engine_`, so that is the seam the PRD's own principle picked.
-//!     Those modules drove `examples/*.ri` corpora through the full public pipeline; what
-//!     stays here pins engine-level entry points against constructed inputs.
-//!   - `flat_sort_kahn_core_delegation` left for `harness_cache` in the same task. It was
-//!     the sole consumer of the shared `common/differential.rs` harness in this unit, so
-//!     relocating it took that entire 2190-line external charge off this root at the cost
-//!     of zero new external lines anywhere: harness_cache already declares the include
-//!     and owns the rest of the differential cluster.
-//!
-//! This unit consequently includes NOTHING from outside its own module directory — no
-//! `#[path]` below escapes `harness_engine/`, so its `external_lines`/`external_files`
-//! attribution reads `0 0`. That is compiler-enforced rather than conventional: with no
-//! `mod differential;` at this root, a `use crate::differential` added under
-//! `harness_engine/` fails to build instead of silently re-attaching 2190 lines.
+//! No `#[path]` below escapes `harness_engine/`, so this unit carries no external lines.
+//! That is a measured property, not a guarded one — re-check it with
+//! `harness_layout_unit_lines`, whose `external_lines`/`external_files` read `0 0` while
+//! it holds. The compiler enforces only the narrower fact that, with no
+//! `mod differential;` at this root, a submodule's `use crate::differential` fails to
+//! build.
 //!
 //! No path fixups were needed for the files EVAL-3 moved here: every path-sensitive
 //! construct in them is either `env!("CARGO_MANIFEST_DIR")`-anchored (crate-root

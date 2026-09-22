@@ -21,9 +21,7 @@
 //! their own `#[path = "common/differential.rs"] mod differential;`, so the same source
 //! was compiled four times. One shared copy removes 3 of those 4 duplicate compilations
 //! of `differential.rs` with no behavioral difference: differential.rs declares 0
-//! `#[test]` fns, so collapsing the copies cannot change the nextest test count. The
-//! fifth, `flat_sort_kahn_core_delegation`, arrived from `harness_engine` in task #7654
-//! and reaches the declaration below without adding a sixth compilation.
+//! `#[test]` fns, so collapsing the copies cannot change the nextest test count.
 //! Submodules reach it via `use crate::differential::{…}`. No extra `#![allow]` is needed
 //! at this root — differential.rs carries its own `#![allow(dead_code)]`.
 //!
@@ -36,27 +34,16 @@
 //! DONE — `common/differential.rs`, by far the largest member of `tests/common/`, is now
 //! declared once per compile unit instead of once per includer. Inside this unit that is
 //! 4 copies collapsed to the 1 declaration below, which is where nearly all of the
-//! available duplicated-compilation payload lived.
+//! available duplicated-compilation payload lived. Task #7654 then retired
+//! `harness_engine`'s separate copy by moving that unit's one consumer of it,
+//! `flat_sort_kahn_core_delegation`, into this unit, which already declared the include.
 //!
-//! DONE SINCE, and NOT by the mechanism this section originally ruled out. The clause
-//! here used to say `differential.rs` was still compiled separately into BOTH
-//! `harness_engine` and `harness_selective_demand`, that no `#[path]` bookkeeping could
-//! fix it, and that removing either compilation meant merging whole units — which the
-//! PRD §7 cap forbids. The first half is now retired, and the reasoning was too narrow:
-//! task #7654 removed harness_engine's copy by relocating its sole CONSUMER,
-//! `flat_sort_kahn_core_delegation`, into this unit. No units were merged and no lines
-//! were duplicated, because this root already declared the include — which is also why
-//! `harness_engine` now attributes `0` external lines.
-//!
-//! NOT DONE — `harness_selective_demand` still compiles its own copy, and the relocation
-//! trick does not extend to it. Its copy serves SIX consumers (`selective_demand_alpha`,
-//! `_beta`, `_cone_structural_edit`, `_epsilon`, `_gamma`, `_redemand_staleness`) — a
-//! whole subsystem rather than one stray module — so moving them here would be merging
-//! two units by another name, which is exactly what the cap forbids. The underlying
-//! constraint is unchanged: each integration-test root is its own crate, so a module
-//! cannot be shared across binaries; only the set of modules assigned to a root can move.
-//! Re-measure with `tests/infra/test_harness_kloc_cap.sh` rather than trusting a number
-//! pinned here.
+//! NOT DONE — `harness_selective_demand` still compiles its own copy, for the
+//! `selective_demand_*` modules that consume it. Each integration-test root is its own
+//! crate, so a module cannot be shared across binaries; only the set of modules assigned
+//! to a root can move. Those consumers are a whole subsystem with its own root, not one
+//! stray module, so moving them here would be a subsystem re-grouping decision (PRD §3
+//! W1 / §5 C1 group tests by subsystem), not a line-accounting one.
 //!
 //! NOT DONE — the `mod common;` half of the BONUS is untouched. Its includers are left
 //! standalone, each for a reason that consolidating would violate:

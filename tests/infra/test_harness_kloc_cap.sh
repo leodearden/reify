@@ -351,47 +351,24 @@ CAP_LINES=20000
 # below), so an ARRIVING unit is red while a unit LEAVING the set is free.
 WARN_PCT=90
 
-# Units currently between the WARN line and the cap. EMPTY -- no live unit sits
-# in the warn band, which is the healthy end state this tier was built to reach
-# and which Sections 4c and 5c both name as the success condition. The array
-# stays DECLARED rather than deleted so Section 5d's `${_KLOC_WARN_KNOWN[@]+...}`
-# expansion and the `${#_KLOC_WARN_KNOWN[@]}` render beneath it keep working
-# under `set -u`.
+# Units currently between the WARN line and the cap: a SHRINKING ratchet, in the
+# same spirit as harness-layout-baseline.manifest. A unit may LEAVE this list
+# freely (that is progress and must never turn the gate red), but a unit
+# ARRIVING is red until it is added here IN THE SAME DIFF that pushes it over
+# the line -- the "surface the squeeze before it breaks" signal task #6121 added
+# the WARN tier for. Section 5d enforces that against the live tree, and also
+# reds a row whose file left the disk; Section 4c pins the same rule against
+# hermetic fixtures, so an empty list leaves it enforced rather than vacuous.
 #
-# A SHRINKING ratchet, in the same spirit as harness-layout-baseline.manifest: a
-# unit may LEAVE this list freely (that is progress and must never turn the gate
-# red), but a unit ARRIVING must be added deliberately IN THE SAME DIFF -- which
-# is exactly the "surface the squeeze before it breaks" signal task #6121 added
-# the WARN tier for. Section 5d enforces the subset direction and reports the
-# prune direction the subset check is blind to: an advisory `PRUNE:` note for a
-# row that stopped WARNing, and a RED for a row whose file left the disk.
+# A row added here MUST carry a live `#NNNN` cite to the split that will retire
+# it -- rule (a)'s split, never a CAP_LINES bump -- and must be re-justified or
+# dropped once that cite reaches a terminal state. The cite is load-bearing:
+# departure is free and the stale-row PRUNE note is advisory, so nothing else in
+# this guard will nag about a listed row again.
 #
-# THE CITE IS LOAD-BEARING, not decoration. Departure is free and the stale-row
-# PRUNE note is advisory, so once a row is listed NOTHING in this guard will ever
-# nag about it again: absent a live pointer to the work it defers, a listed unit
-# sits just under the line until it breaks the cap -- precisely the
-# innocent-author ambush the WARN tier exists to prevent. So a row added here
-# MUST carry a live `#NNNN` cite to the split that will retire it, and when that
-# cite reaches a terminal state the row must be re-justified or dropped, not
-# silently re-inherited. A bare `#NNNN` in prose is the repo's citation form and
-# does not itself create a PTODO marker; what the ptodo fingerprint ratchet reds
-# is an UNBACKED tracked-elsewhere CLAIM, which is why an earlier draft of the
-# WARN_PCT comment above was rejected. With zero rows there is nothing here to
-# cite and nothing to claim, so the rule is stated prospectively -- for the next
-# author who has to add one -- rather than demonstrated by an example row.
-#
-# The deferred work a row cites is always rule (a)'s SPLIT, never a CAP_LINES
-# bump: #6121 split harness_fea_solver_e2e out of the warn band, #7040 split
-# harness_syntax, and #6760 split harness_engine's first crossing. A row here is
-# a deferral of that split, never an exemption from it.
-#
-# Kept in-script rather than promoted to a new manifest file because this guard
-# already carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via
-# the shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
-# needed -- and emptying the array is not an argument for moving it, since the
-# rule is pinned by code, not by its live rows. Section 4c drives the subset
-# classifier against hermetic fixture repos precisely so that an empty live set
-# leaves the rule enforced rather than vacuous.
+# Empty is the healthy end state. The array stays DECLARED because Section 5d
+# expands it under `set -u`, and lives in-script beside CAP_LINES and WARN_PCT
+# rather than in a manifest file.
 _KLOC_WARN_KNOWN=()
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
@@ -2226,22 +2203,19 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # leaving 16118 = 104 root + 15623 module (36 files) + 391 external (80.6%) and
 # a new 3378-line unit (70 root + 3308 module + 0 external, 16.9%).
 #
-# WHICH unit is currently tightest is deliberately NOT recorded here. Two earlier
-# drafts of this paragraph named one in the present tense and both were falsified
-# within weeks, so the standing ruling is to state the INVARIANT and not a count
-# that drifts: the tightest live unit is whatever `harness_layout_unit_lines`
-# reports the largest `total` for, every unit above WARN_PCT must be an
-# acknowledged member of _KLOC_WARN_KNOWN (Section 5d's subset ratchet), and the
-# remedy for a unit approaching the cap is always rule (a)'s SPLIT. Re-measure
-# rather than reading a number off this comment; the dated figures above are
-# labelled as readings at named commits and are history, not current state.
-#
 # Every figure in this paragraph is a LIVE `harness_layout_unit_lines` reading:
 # the pre-split one taken at this branch's base (bf5b91d9de), the rest at the
 # amendment commit. They run ~160 lines above the projections task #6121's plan
 # quoted (19265 / 15951) because that plan measured an earlier base and main
 # has since added a 43rd module file to the dir — the split's ~3.3 kLOC delta is
 # unaffected, only the absolute totals moved.
+#
+# The tightest live unit is whatever `harness_layout_unit_lines` reports the
+# largest `total` for: re-measure rather than reading one off this comment,
+# whose figures above are dated readings, not current state. Every unit above
+# WARN_PCT must be an acknowledged member of _KLOC_WARN_KNOWN (Section 5d's
+# subset ratchet), and the remedy for a unit approaching the cap is always rule
+# (a)'s SPLIT.
 
 # ===========================================================================
 # Section 5c: live non-vacuity of the EXTERNAL attribution — the out-of-module-
