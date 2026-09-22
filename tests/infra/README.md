@@ -387,18 +387,13 @@ not targets for the tree.
 
 ## Whole-tree gates and unattended writers of `main`
 
-Two dark-factory jobs, the nightly legibility trickle and the census, commit
-machine-written files straight to `main` through the hook-gated
-`--scope staged` path, unattended, so the `run_all.sh` pool first meets their
-content at the next unrelated merge.  A pool gate that scans inert paths
-(`docs/**`, `*.md`, `*.yaml`) repo-wide must therefore exclude the
-machine-written confusion corpus, `docs/legibility/confusion-codebook.yaml`:
-mention, not use (branch `task/7784-codebook-exempt` for the cited-test-path
-gate, #7788 for the canonical-path gate).  It also needs a `--scope staged`
-selector beside `select_cheap_ptodo_gate` (#6817; branch
-`task/7785-staged-cited-gate` for the cited gate), so an in-charter mention is
-refused at its own commit.  Rationale, evidence and the writers' side of the
-contract: [`docs/legibility/landing-contract.md`](../../docs/legibility/landing-contract.md).
+Dark-factory's legibility jobs commit machine-written files straight to `main`,
+unattended, so a `run_all.sh` pool gate that scans inert paths repo-wide must
+exclude the machine-written confusion corpus
+(`docs/legibility/confusion-codebook.yaml`) and needs a `--scope staged`
+selector.  Why, and the existing instances:
+[`docs/legibility/landing-contract.md`](../../docs/legibility/landing-contract.md)
+§3; when to re-check them: §5.
 
 ## Files
 
