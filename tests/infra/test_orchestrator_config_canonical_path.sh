@@ -65,9 +65,9 @@ echo "--- (B) no legacy top-level config reference remains ---"
 # legacy_config_ref_exclusions — the pathspecs the scan skips, one per line.
 legacy_config_ref_exclusions() {
     printf '%s\n' ':(exclude)tests/infra/test_orchestrator_config_canonical_path.sh'
-    # Dark-factory's machine-written agent-confusion corpus: mention, not use, as
-    # in #7784; the filename records what confused an agent, and nothing reads it.
-    # No baseline heals a red here. Ruling: docs/legibility/landing-contract.md
+    # Mention, not use: dark-factory's machine-written agent-confusion corpus records
+    # the filename as what confused an agent, and nothing reads it. No baseline heals
+    # a red here. Same ruling as cited test paths: docs/legibility/landing-contract.md
     printf '%s\n' ':(exclude)docs/legibility/confusion-codebook.yaml'
 }
 
