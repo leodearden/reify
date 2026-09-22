@@ -44,6 +44,13 @@
 scripts/verify.sh    tests/infra/test_verify_*.sh
 scripts/prd-capability-check.py    tests/infra/test_prd_capability_check.sh
 scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
+# Task 7044 (Gap 4, folded in from a 5738 review follow-up): the suite's
+# assertions live in the .py; the thin .sh wrapper above only closes
+# run_all.sh's test_*.sh DISCOVERY hole, not this map's exact-path SELECTION
+# one. Mirrors the scripts/lib_lane_lock.sh -> test_lane_lock_probe.py/.sh
+# pair at the bottom of this file. Without this row a --scope branch diff
+# touching only the .py selects no infra test at all.
+tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_report.sh
 
 # Warm-lane CoW pool scripts — edits route to the end-to-end integration gate.
 # Note: this is a load-bearing verify-pipeline file (see CLAUDE.md); editing it
@@ -486,6 +493,18 @@ scripts/git-rerere-guard.sh    tests/infra/test_git_rerere_guard.sh
 # scripts/setup-dev.sh already has an OCCT row).
 scripts/setup-dev.sh           tests/infra/test_git_rerere_guard.sh
 
+# Task 7044 (Gap 2, follow-up from task 6920): test_jcodemunch_index_units.sh's
+# Block G ("setup-dev.sh wiring") asserts structurally on scripts/setup-dev.sh
+# that it invokes scripts/install-jcodemunch-index-units.sh (G1, a bare
+# `grep -q` that does not require the call to be uncommented), non-fatally
+# (G2), and OUTSIDE the REIFY_PROVISION_WARM_LANES block so index freshness is
+# unconditional (G3). The actual call site is setup-dev.sh:591; :283-287 is
+# the warm-lane installer's own call site, cited by G2's comment only as a
+# style precedent for the if/then-ok/else-warn shape. Without this row a
+# task-scope verify that edits only setup-dev.sh's jcodemunch-index-units
+# install-wiring selects zero infra poles for that block.
+scripts/setup-dev.sh           tests/infra/test_jcodemunch_index_units.sh
+
 # Task 5629 (esc-5392-1): these four artifacts JOINTLY decide whether the
 # compiled libtree_sitter_reify.a matches the tree being verified —
 # build.rs declares which inputs cargo watches and attests what it compiled,
@@ -586,3 +605,42 @@ scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_sizing_lifecycle.sh
 # one. Without this row a --scope branch diff touching only the assertions selects
 # no infra test at all.
 tests/infra/test_lane_lock_probe.py    tests/infra/test_lane_lock_probe.sh
+
+# Task 7044 (Gap 1, discovered while planning task 6889): the worktree
+# core.hooksPath re-pinning helper had no row anywhere in this map, so a
+# task-scope verify whose diff touched ONLY scripts/setup-main-gate-worktree-config.sh
+# never selected the suite that exists to guard it — including that suite's
+# (wiring) block at :283-284, which asserts separately on scripts/setup-dev.sh
+# (see the row immediately below for that half of the gap).
+scripts/setup-main-gate-worktree-config.sh    tests/infra/test_main_gate_worktree_config.sh
+# ...and setup-dev.sh itself, for the identical reason: the suite's (wiring)
+# block asserts ON THAT FILE (test_main_gate_worktree_config.sh:283-284) that
+# it carries an uncommented call to setup-main-gate-worktree-config.sh.
+# Without this row a task-scope verify that edits only setup-dev.sh —
+# dropping or commenting out the call site — never selects the suite that
+# would catch it. Mirrors the scripts/setup-dev.sh -> test_git_rerere_guard.sh
+# row above (same wiring-assert shape); setup-dev.sh already carries OCCT,
+# host-global-unit-pinning, git-rerere-guard and jcodemunch-index-units rows.
+scripts/setup-dev.sh                          tests/infra/test_main_gate_worktree_config.sh
+
+# Task 7044 (Gap 3): task 7630's GUI vitest worker->host RPC-hardening runner.
+# scripts/gui-vitest-run.sh already routes to the full --scope all gate via
+# scripts/verify-pipeline-paths.txt (task 7630), but that only fires the
+# expensive gate — it does not select the fast, hermetic, `pool`-classified
+# fail-fast pole. Mirrors scripts/check-manifold-deps.sh -> test_occt_deps_preflight.sh
+# above, the same full-gate-plus-selective-row pattern.
+scripts/gui-vitest-run.sh    tests/infra/test_gui_vitest_rpc_hardening.sh
+# The suite also asserts statically on two further artifacts, neither of which
+# routes to the full gate via scripts/verify-pipeline-paths.txt (measured:
+# requires-full-gate exits 1 for both), so an edit to either selected no
+# fail-fast pole AND forced no full-gate route. Closes the gap
+# scripts/verify-pipeline-paths.txt's "COMPLEMENTARY REGISTRATION STILL
+# MISSING" note (7630 amendment pass) flags:
+#   - gui/vitest.config.ts: Section A2 pins that the file cites no false
+#     source ('verify.sh:328') and still gates isVerifyLane on DF_VERIFY_ROLE
+#     (test_gui_vitest_rpc_hardening.sh:72,75).
+#   - gui/vitest-worker-rpc-flake-reporter.ts: pinned at :111, the
+#     WORKER_RPC_FLAKE_ARTIFACT constant literal must match the path the rest
+#     of the suite reads the flake report from.
+gui/vitest.config.ts                       tests/infra/test_gui_vitest_rpc_hardening.sh
+gui/vitest-worker-rpc-flake-reporter.ts    tests/infra/test_gui_vitest_rpc_hardening.sh

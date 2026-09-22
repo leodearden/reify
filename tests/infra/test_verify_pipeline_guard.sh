@@ -848,9 +848,25 @@ assert_exit "INCIDENT SIGNAL: tests/infra/test_anything.py is load-bearing (exit
 # than beside the synthetic-map GLOB-CLAUSE case in Pair C, because that case
 # needs an injected map to discriminate a glob hit from a row hit, whereas this
 # one is about the `.py` widening and belongs with the cases that motivate it.
-# The queried path has no map row, so only the glob clause can answer 0.
-assert_exit "GLOB-CLAUSE: is-registered agrees about tests/infra/test_flake_density_report.py (exit 0) -- BOTH arms widened" 0 \
-    run_guard is-registered tests/infra/test_flake_density_report.py
+# DISCRIMINATING only if the queried path carries NO
+# verify-pipeline-infra-tests.txt map row: is-registered tries (i) the static
+# set, (ii) this shared glob, (iii) an exact match against the map's
+# registry_keys, in that order (verify-pipeline-guard.sh :845, :853, :859) --
+# a path WITH a row answers exit 0 from clause (iii) regardless of what the
+# glob matches, so a one-arm revert of the `.py` widening would go
+# undetected. Not hypothetical: this case queried
+# tests/infra/test_flake_density_report.py until task 7044 registered that
+# exact path as a map row (Arm 1's own selection-gap fix) and silently
+# hollowed this case out. Re-pointed at the synthetic
+# tests/infra/test_anything.py -- the same literal (n) already uses on the
+# requires-full-gate arm -- so the no-row precondition is structural (a path
+# naming no artifact can never acquire a row) rather than a contingent fact
+# about today's map that a future registration task could quietly re-break.
+# MEASURED: narrow _INFRA_GLOB_ERE at :296 to `^tests/infra/[^/]*\.sh$` and
+# re-run -- this case reds (exit 1) because clause (iii) has nothing to fall
+# back on for this path.
+assert_exit "GLOB-CLAUSE: is-registered agrees about tests/infra/test_anything.py (exit 0) -- BOTH arms widened, and no map row can mask a one-arm revert" 0 \
+    run_guard is-registered tests/infra/test_anything.py
 
 # (p) PRECISION, the single-directory anchor survives the alternation edit. The
 # `[^/]*` component must keep applying to `.py` exactly as it does to `.sh`.
