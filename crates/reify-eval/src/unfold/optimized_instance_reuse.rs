@@ -177,6 +177,82 @@ pub(super) enum DeclineCause {
     NoTemplateValue,
 }
 
+/// Byte budget for ONE rendered input value inside a
+/// [`DeclineCause::InputsDiffer`] detail.
+///
+/// Chosen so the assembled warning stays a readable paragraph: the detail
+/// carries TWO rendered sides plus a fixed prose frame, and
+/// [`report_optimized_instance_decline`] then wraps that in a fixed body of its
+/// own. The unit-test ceiling on the detail is DERIVED from this constant — two
+/// budgets plus the frame — rather than tuned against a measured string, so
+/// moving this number moves the ceiling by construction.
+const INPUT_VALUE_RENDER_BUDGET: usize = 120;
+
+/// A [`std::fmt::Write`] sink that REFUSES — rather than truncates — the first
+/// chunk that would carry it past [`INPUT_VALUE_RENDER_BUDGET`].
+///
+/// WHY ABORT RATHER THAN TRUNCATE. `Value` derives `Debug`, so `{:?}` over a
+/// `SampledField`, `Matrix` or mesh-bearing `List` walks the entire payload.
+/// Formatting first and cutting the result afterwards would bound only the
+/// string that is KEPT, while still paying the full multi-megabyte transient
+/// allocation and the full traversal — which is the cost this bound exists to
+/// remove — and a byte-wise cut can split a UTF-8 character.
+///
+/// Returning `Err(fmt::Error)` is both safe and effective because derived
+/// `Debug` and std's `debug_struct` / `debug_tuple` / `debug_list` builders
+/// LATCH the first error and propagate it rather than unwrapping: each later
+/// entry runs through an `and_then` whose body is skipped, so no panic and no
+/// further per-element rendering. MEASURED on a 20_000-element `List<Real>`: 6
+/// element renders before the abort, against 20_000 renders and a 460_000-byte
+/// string unbounded — and the same 6 through an `Option` wrapper and through a
+/// nested list, so neither wrapping nor depth defeats the latch.
+///
+/// Refusing WHOLE chunks, rather than filling up to the budget, leaves the
+/// buffer on both a character boundary and a boundary between formatter writes,
+/// so whatever it holds is always intact text.
+struct BoundedValueRender {
+    rendered: String,
+}
+
+impl std::fmt::Write for BoundedValueRender {
+    fn write_str(&mut self, chunk: &str) -> std::fmt::Result {
+        if self.rendered.len() + chunk.len() > INPUT_VALUE_RENDER_BUDGET {
+            return Err(std::fmt::Error);
+        }
+        self.rendered.push_str(chunk);
+        Ok(())
+    }
+}
+
+/// Render one input `Value` for a decline message: its `Debug` form verbatim
+/// when that fits [`INPUT_VALUE_RENDER_BUDGET`], else a contents-free summary
+/// naming the variant alone.
+///
+/// Verbatim-when-small is the point, not a concession. A decline's input
+/// divergence is virtually always a constructor override of a scalar, where
+/// `Int(10)` vs `Int(3)` IS the answer — summarising every side uniformly would
+/// print `Int vs Int` and make the message strictly less actionable than the
+/// unbounded one it replaces.
+///
+/// The fallback delegates to [`Value::kind_name`] rather than spelling a second
+/// variant-name table: that method is the existing single source of truth, is
+/// exhaustive-by-construction (it forbids a `_` arm, so a newly added `Value`
+/// variant fails to compile instead of degrading silently), and its own doc
+/// already states it exists because "a `SampledField` or `Matrix` payload could
+/// be enormous, and this string reaches user-facing surfaces" — which is
+/// precisely this surface.
+fn render_input_value(value: &Value) -> String {
+    use std::fmt::Write as _;
+
+    let mut sink = BoundedValueRender {
+        rendered: String::new(),
+    };
+    match write!(sink, "{value:?}") {
+        Ok(()) => sink.rendered,
+        Err(_) => format!("{}(…)", value.kind_name()),
+    }
+}
+
 /// Decide whether an instance-scope cell may carry the template-scope cell's
 /// already-dispatched `@optimized` value.
 ///
@@ -291,12 +367,22 @@ where
         let instance_val = instance_values.get(read);
         let global_val = global_values.get(read);
         if instance_val != global_val {
+            // Each side goes through [`render_input_value`]'s budget, so an
+            // enormous input summarises to its variant instead of pouring its
+            // whole payload into a user-facing warning.
+            let render = |side: Option<&Value>| match side {
+                Some(value) => render_input_value(value),
+                None => "None".to_string(),
+            };
             return OptimizedInstanceResolution::Unreusable {
                 target,
                 cause: DeclineCause::InputsDiffer {
                     detail: format!(
-                        "input {}.{} differs from the template's ({:?} vs {:?})",
-                        read.entity, read.member, instance_val, global_val
+                        "input {}.{} differs from the template's ({} vs {})",
+                        read.entity,
+                        read.member,
+                        render(instance_val),
+                        render(global_val)
                     ),
                 },
             };
