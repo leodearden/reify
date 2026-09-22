@@ -1,30 +1,8 @@
 // datum_units_eta_controls.ri — CLI eval fixture: the POSITIVE CONTROL for
-// units-length η (task 6591).
-//
-// The dimensioned construction-datum path must be entirely undisturbed by the
-// gate. This is the INSEPARABLE half of the end-to-end assertion: without it,
-// every rejection row in datum_units_eta_bare.ri would be satisfied perfectly by
-// a gate that rejected EVERYTHING.
-//
-// `reify eval` exits 0 and prints the output measured against the real
-// target/debug/reify binary and reproduced in cli_eval_datum_units.rs:
-//   axis(point(0.001 m, 0.002 m, 0.003 m), vec(0, 0, 1))
-//   plane(point(0.001 m, 0.002 m, 0.003 m), vec(0, 0, 1))
-//   frame(point(0.004 m, 0.005 m, 0.006 m), [1, 0, 0, 0]q)
-//   plane(point(0 m, 0 m, 0.008 m), vec(0, 0, 1))
-//   plane(point(0 m, 0 m, 0.005 m), vec(0, 0, 1))
-//
-// Every coordinate is DISTINCT and NON-ZERO wherever the builtin carries one
-// through. An all-zeros control cannot tell a correct implementation from a
-// hardcoded one (the lesson task 5746's review round 1 recorded), and these
-// constructors are exactly the kind that could pass such a control while
-// dropping or transposing a coordinate: `axis_through` and `plane_through` clone
-// their first point VERBATIM, `frame_at` clones its origin, and `offset` adds
-// delta along the normal — 5mm + 3mm = 8mm, a sum no single input spells.
-//
-// The rows also show the SCOPE LOCK (decision D3): the synthesized normals and
-// directions stay dimensionless (`vec(0, 0, 1)`) beside all-LENGTH origins, and
-// `frame_at` still takes its x/z from bare `self.x` / `self.z` Directions.
+// units-length η (task 6591). Read only by
+// `eval_dimensioned_datum_constructors_exit_0_and_print_length_origins` in
+// crates/reify-cli/tests/harness_cli/cli_eval_datum_units.rs, whose doc carries
+// the rationale for the distinct non-zero coordinates and pins the printed forms.
 //
 // Declares its module explicitly, matching its sibling fixtures.
 

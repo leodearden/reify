@@ -157,6 +157,13 @@ fn eval_dimensioned_datums_exit_0_and_print_length_origins() {
 /// point of asserting at this altitude — a `Value::Undef` prints `undef` and
 /// exits 0, so without the classifier arm the gate is invisible to the author.
 ///
+/// The fixture carries η rows ONLY, so the exit-code assertion below measures
+/// exactly that flip. It used to also carry the δ-reachability control, whose
+/// `mirror` row emits its own `Severity::Error` and so forced a nonzero exit on
+/// its own — over-determining the one assertion this test exists for. That
+/// control now has its own fixture, read by
+/// `eval_deltas_consumer_gate_stays_reachable_through_frame3` below.
+///
 /// One CONTIGUOUS anchor per builtin (name + argument + expected + got). A
 /// POINT/ORIGIN operand is named as the WHOLE parameter rather than per
 /// coordinate: the decoder both the gate and the classifier read has already
@@ -233,9 +240,13 @@ fn eval_bare_datum_constructors_exit_nonzero_with_units_errors() {
 /// shape, `mirror(box(...), self.xy_plane)` reporting "expected a Plane value,
 /// got undef" inline while the let-bound form resolves. It is filed as
 /// follow-up work as task #7765 (spawned from this one); the fixture already
-/// carries the call, so when that lands only this assertion changes — to the
-/// real stderr anchor
+/// carries the call, so when that lands only the two assertions below change —
+/// both flipping onto the real stderr anchor
 /// `frame_at: o argument expects Length, got Int`.
+///
+/// Both halves are asserted, so the gap is a RATCHET rather than a doc-comment
+/// record: the absence anchor below fails the day #7765 closes it, which is what
+/// forces this test to be rewritten instead of silently outliving its name.
 #[test]
 fn eval_bare_frame_at_gate_fires_but_its_diagnostic_is_not_reachable() {
     let path = common::fixture_path("datum_units_eta_bare.ri");
@@ -243,15 +254,26 @@ fn eval_bare_frame_at_gate_fires_but_its_diagnostic_is_not_reachable() {
 
     assert!(
         stdout.contains("DatumUnitsEtaBare.f = undef"),
-        "frame_at's LENGTH gate must still FIRE on a bare origin, even though its          diagnostic cannot reach stderr;
-stdout: {stdout}
-stderr: {stderr}"
+        "frame_at's LENGTH gate must still FIRE on a bare origin, even though its \
+         diagnostic cannot reach stderr;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("frame_at: o argument expects Length"),
+        "frame_at's diagnostic reached stderr, so task #7765 (the inline \
+         `self.<datum>` argument short-circuit) has closed the gap this test is \
+         named for — assert the anchor positively now, and retire the name, the \
+         doc above and the `frame_at is DELIBERATELY ABSENT` note in the sibling \
+         test;\nstderr: {stderr}"
     );
 }
 
-/// The δ-REACHABILITY control, carried by the same fixture: task δ's
-/// CONSUMER-side gate stays live and reachable from real `.ri` source after all
-/// five producers above are gated.
+/// The δ-REACHABILITY control: task δ's CONSUMER-side gate stays live and
+/// reachable from real `.ri` source after all five producers above are gated.
+///
+/// It has its OWN fixture rather than riding on `datum_units_eta_bare.ri`,
+/// because its `mirror` row emits a `Severity::Error` of its own and so
+/// over-determined that fixture's exit-code assertion — the one flip the η rows
+/// exist to prove.
 ///
 /// Task ε recorded, in two places, that these five are "exactly the producers
 /// that keep δ's consumer gate live and reachable from real `.ri` source" — so
@@ -268,8 +290,8 @@ stderr: {stderr}"
 /// `frame3`, this assertion fails loudly and D4's second end must be revisited
 /// deliberately.
 #[test]
-fn eval_bare_datum_fixture_keeps_deltas_consumer_gate_reachable() {
-    let path = common::fixture_path("datum_units_eta_bare.ri");
+fn eval_deltas_consumer_gate_stays_reachable_through_frame3() {
+    let path = common::fixture_path("datum_units_delta_reachability.ri");
     let (_, stdout, stderr) = common::run_subcommand("eval", &path);
 
     assert!(

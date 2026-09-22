@@ -1,68 +1,13 @@
 // datum_units_eta_bare.ri — CLI eval fixture: every BARE construction-datum
-// POSITION operand is rejected.
+// POSITION operand is rejected (units-length η, task 6591). Read by
+// `eval_bare_datum_constructors_exit_nonzero_with_units_errors` and
+// `eval_bare_frame_at_gate_fires_but_its_diagnostic_is_not_reachable` in
+// crates/reify-cli/tests/harness_cli/cli_eval_datum_units.rs, whose docs carry
+// the rationale for every row below.
 //
-// units-length η (task 6591). The five construction-datum constructors enforced
-// dimension AGREEMENT among their position operands, never LENGTH, so a wholly
-// bare call built a bare-origin datum and exited 0. Each `let` below MEASURED
-// exactly that against target/debug/reify before the gate landed:
-//
-//   axis_through(point3(0,0,0), point3(0,0,1)) -> axis(point(0, 0, 0), vec(0, 0, 1))
-//   plane_through(...)                         -> plane(point(0, 0, 0), vec(0, 0, 1))
-//   frame_at(point3(0,0,0), self.x, self.z)    -> frame(point(0, 0, 0), [1,0,0,0]q)
-//   midplane(bp, bp)                           -> plane(point(0, 0, 0), vec(0, 0, 1))
-//   offset(plane_xy(5mm), 2.0)                 -> undef, SILENTLY, at exit 0
-//
-// `offset` is the sharp one and is R12-class rather than merely ungated: with a
-// BARE plane it MEASURED as `plane(point(0, 0, 2), …)`, i.e. the dimensionless
-// `2` was silently reinterpreted as 2 METRES. The LENGTH-plane form written here
-// was already `undef` via the agreement compare — but silently, at exit 0, so
-// what this row pins is the DIAGNOSABLE rejection, not the rejection.
-//
-// Each now emits the shared coded units Error on stderr and `reify eval` exits
-// NONZERO: the diagnostic is Severity::Error (C1(iv)), which the CLI's pure
-// Severity::Error fold turns into a failing exit code. A `Value::Undef` on its
-// own prints `undef` and exits 0, so the Error is the whole user-observable
-// signal.
-//
-// `self.x` / `self.z` are the only `.ri` route to a `Value::Direction`; there is
-// no free-function Direction constructor. They are well-formed here on purpose —
-// `frame_at`'s x/z slots stay UNGATED (decision D3: a unit vector legitimately
-// has bare components), so the only thing its row can be rejecting is `o`.
-//
-// `frame_at`'s row is the ONE that does not reach stderr, and the cause is the
-// evaluator rather than the gate: an INLINE `self.<datum>` projection is still
-// `Undef` during the pass that emits post-`Undef` builtin diagnostics, so the
-// call short-circuits on an undef ARGUMENT before its builtin is dispatched. The
-// gate still fires — the cell IS `undef`, which is what this fixture's CLI row
-// asserts — but the message is lost. Let-binding the projections is not a
-// workaround: MEASURED, it breaks the SUCCESS path too. The gap is not an η
-// artifact (task δ's `mirror(box(...), self.xy_plane)` shows the same shape) and
-// is filed as task #7765. Keep this call here: when that lands, only the
-// assertion changes.
-//
-// `bp` is `frame3(...).xy_plane`. Once this gate lands, `frame3` is the ONLY
-// remaining `.ri` route to a bare-origin Plane: it validates that its origin is
-// a 3-component `Value::Point` and never its dimension, and `Frame.xy_plane`
-// clones that origin verbatim. Closing it is task #7625 (Transform/Frame
-// CONSTRUCTOR arms), not this one.
-//
-// The `mirror` row is the δ-REACHABILITY CONTROL, and it is the reason `bp` is
-// built from `frame3` rather than hand-waved. Task ε recorded that these five
-// constructors are "exactly the producers that keep δ's consumer gate live and
-// reachable from real `.ri` source" — so gating them looks, on its face, like it
-// retires one of decision D4's two ends. It does not, and this row is the
-// RUNTIME PROOF rather than a prose claim: δ's consumer-side `decode_plane` gate
-// still fires, naming `ox`, through `frame3`'s ungated origin. The day #7625
-// gates `frame3`, this row fails loudly and D4's second end must be revisited
-// deliberately — which is exactly what a measurement recorded only in a doc
-// comment could not do for us.
-//
-// Lives in tests/fixtures/ (NOT examples/) since it intentionally fails.
-//
-// Declares its module explicitly: without it, `reify eval` also emits
-// W_MODULE_DECL_MISSING ("expected `module datum_units_eta_bare`"), which would
-// re-supply anchor substrings for free and weaken every assertion in
-// cli_eval_datum_units.rs (the trap task 6155 documented).
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally fails, and
+// declares its module explicitly so no W_MODULE_DECL_MISSING warning re-supplies
+// anchor substrings for free (the trap task 6155 documented).
 
 module datum_units_eta_bare
 
@@ -74,6 +19,4 @@ structure def DatumUnitsEtaBare {
     let f = frame_at(point3(0, 0, 0), self.x, self.z)
     let o = offset(plane_xy(5mm), 2.0)
     let m = midplane(bp, bp)
-
-    let d = mirror(box(10mm, 10mm, 10mm), bp)
 }

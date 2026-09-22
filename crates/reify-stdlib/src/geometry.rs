@@ -1311,10 +1311,9 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
 ///
 /// `frame3`'s ungated origin is therefore the REMAINING residual, and closing it
 /// is task #7625 (the Transform/Frame CONSTRUCTOR arms), not this family's.
-/// `crates/reify-cli/tests/fixtures/datum_units_eta_bare.ri` carries that
-/// measurement as an executable row rather than leaving it here as prose, so the
-/// day #7625 lands it fails loudly and this paragraph must be revisited
-/// deliberately.
+/// `crates/reify-cli/tests/fixtures/datum_units_delta_reachability.ri` carries
+/// that measurement as an executable row, so the day #7625 lands it fails loudly
+/// and this paragraph must be revisited deliberately.
 fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
