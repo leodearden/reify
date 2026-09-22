@@ -321,12 +321,41 @@ fn reaches_a_seam(code: &str, name: &str) -> bool {
     within_one_hop(code, name, names_a_seam)
 }
 
+/// The emission surface a write-tool handler must not reach into: naming any
+/// of these is a second emission path running alongside the shared seam.
+///
+/// One point of truth for the grammar, with each entry carrying its own
+/// reachability against today's `debug_server.rs`, so a reader learns which
+/// arms can actually fire from the tokens themselves. None of the three has
+/// any textual occurrence in that file today, so the set is a widening of
+/// what the gate catches and not of what it reds on.
+const PRIVATE_EMIT_IDENTIFIERS: [&str; 3] = [
+    // The library's sanctioned `pub fn` wrapper (`crate::event_bus`), whose
+    // own header steers callers to it. LIVE, and the likeliest shape.
+    "emit_typed",
+    // The library-side delta-to-events conversion `emit_delta` is built on
+    // (`for (name, payload) in delta_to_events(delta)`). LIVE, and it catches
+    // a hand-rolled emit loop even when the emit call itself sits past the
+    // one-hop cap.
+    "delta_to_events",
+    // Private to the `reify-gui` BINARY, while this file is a `pub mod` of
+    // the LIBRARY — so NOT reachable today. Kept: it fires the day that fn is
+    // hoisted.
+    "emit_delta",
+];
+
 /// True when the top-level fn `name` emits state itself rather than leaving
-/// emission to the shared seam — an `emit_delta` identifier, or any `.emit(`
-/// call — in its own body or in one it delegates to.
+/// emission to the shared seam — it names one of [`PRIVATE_EMIT_IDENTIFIERS`]
+/// or makes any `.emit(` call — in its own body or in one it delegates to,
+/// following the SAME one hop [`reaches_a_seam`] does.
+///
+/// The `.emit(` arm is FORWARD-LOOKING: it needs an `Emitter` value in scope,
+/// and `DebugServerState` (fields `engine`, `selection`, `debug_bridge`,
+/// `last_state`) cannot supply one until an `AppHandle` is added to it.
 fn emits_privately(code: &str, name: &str) -> bool {
     within_one_hop(code, name, |body, _| {
-        identifiers(body).any(|id| id == "emit_delta") || body.contains(".emit(")
+        identifiers(body).any(|id| PRIVATE_EMIT_IDENTIFIERS.contains(&id))
+            || body.contains(".emit(")
     })
 }
 
