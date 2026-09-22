@@ -67,68 +67,32 @@
 //! pin in `idler_seat_keeps_the_rope_on_the_pitch_circle`, which is anchored to
 //! printer.ri's tree alone.
 //!
-//! # The measured kernel-free surface of printer.ri (task #6135, pre-2)
+//! # The kernel-free surface of printer.ri, and its two Error populations
 //!
-//! **Everything in this section was measured on the file as it stood BEFORE
-//! this task's step 2**, which is what sized the loader's error handling; the
-//! counts are therefore a pre-change record and NOT a claim about the file
-//! today. The live counts are [`IDLER_CELLS`] (fourteen cells, the inventory
-//! the lockstep gate enforces) and whatever `assert_idler_constraints_ok`
-//! demands (five constraints) — those are executable and cannot drift.
+//! What SIZED this module's loader was a measurement of the file as it stood
+//! before the seat moved — cell and constraint counts, the pre-change seat
+//! figures, the bit-identity of `DriveTendons.r_pitch` and
+//! `IdlerPulley.sheave_r`. That record is #6135's, in the task record, and
+//! deliberately not restated here: it is a pre-change snapshot, so a copy of it
+//! in this file would ship already drifted, and everything it would claim about
+//! the file TODAY is instead asserted executably — [`IDLER_CELLS`] for what the
+//! structure computes, `idler_seat_clears_the_tendon`'s read-set pins for what
+//! it constrains.
 //!
-//! printer.ri parsed with 0 errors, and `IdlerPulley`'s eleven cells (then;
-//! fourteen now) and `DriveTendons.r_pitch` all resolved off the bare template
-//! — printer.ri instantiates `IdlerPulley` 31 times but task 4147 drops
-//! parameter overrides, so the bare-template form is the one to read.
-//! `DriveTendons.r_pitch` and `IdlerPulley.sheave_r` both measure
-//! 0.018000000000000002 m: BIT-IDENTICAL, because `36mm / 2` and `18mm` are
-//! the same IEEE-754 double. `IdlerPulley`'s three constraints (then; five now)
-//! were all `Satisfied`, out of 406 file-wide across 29 entities.
+//! What is NOT a measurement but the loader's own contract: **the file emits
+//! Error-severity diagnostics in TWO populations, and they are allowlisted
+//! ASYMMETRICALLY.** [`PRINTER_VOLUME_UNRESOLVED`] is held as an exact identity
+//! set in BOTH directions, because `volume()` is a geometry consumer and its
+//! unresolvability on this surface is a PERMANENT property of it.
+//! [`PRINTER_ENUM_PATH_UNRESOLVED`] is held as a CEILING — tolerated, never
+//! required — because it is a pre-existing compiler/stdlib gap, and a gate that
+//! held it exactly would demand that a bug stay unfixed. Treating them alike
+//! would lose one or the other; each constant's own doc carries its half of the
+//! argument.
 //!
-//! Pre-change `IdlerPulley` figures, for the delta claims the gates below
-//! make: rim 18.000 mm, seat bottom 15.000 mm, seat opening at the rim
-//! 6.000 mm, sheave width 10.000 mm.
-//!
-//! **The file emits Error-severity diagnostics in TWO populations, and they
-//! are allowlisted asymmetrically.** That asymmetry is the measurement's real
-//! finding; a single blanket filter would have hidden both, and treating them
-//! alike would make this gate demand that a bug stay unfixed.
-//!
-//! 1. **Six `EvalUnresolved` at the CHECK stage** — `AFrame.vol_body` and the
-//!    five `ToolDock.pen_*` cells, every one of them a `volume()` consumer.
-//!    This is the exact analogue of
-//!    [`super::capstan_groove_e2e`]'s `VOLUME_UNRESOLVED_CELLS`: `volume()` is
-//!    a geometry-consumer builtin resolvable only on the build()/tessellate()
-//!    path, so these are a PERMANENT property of the kernel-free surface.
-//!    Allowlisted as an exact identity set, both directions — a missing entry
-//!    means the cell was dropped or renamed.
-//!
-//! 2. **Eleven `UnresolvedName` at the COMPILE stage** — qualified
-//!    enum-variant paths (`Finish.Satin`, `ElementOrder.P2`, `ShellForce.Off`)
-//!    across eight cells: `CFRP_Rolled_Tube.appearance`,
-//!    `HomogenisedPanel.appearance`, `GantryFea.{r_static, opts_cant,
-//!    opts_ss}` and `AFrame.{opts_field, r_pil, mc}`. These are a PRE-EXISTING
-//!    compiler/stdlib gap on main, not something this task introduced: the
-//!    enum-name scope is built from the module's own `enum_defs`
-//!    (`crates/reify-compiler/src/entity.rs`), and printer.ri is a single file
-//!    that never imports the modules defining these three enums. Nothing in
-//!    the repo observes them today — the one existing test that compiles
-//!    printer.ri counts *infer warnings* only
-//!    (`orientation_constructor_typing_tests::real_printer_ri_emits_zero_infer_warnings`).
-//!    So they are allowlisted as a CEILING rather than an expectation: these
-//!    cells MAY raise it and the loader tolerates them, but none is required
-//!    to. Fixing the gap therefore makes this gate greener, never redder —
-//!    which is the whole reason population 2 is not held to population 1's
-//!    exact-identity rule. Filed as an observation; none of the eight cells is
-//!    in `IdlerPulley` or `DriveTendons`, so none touches this gate's subject.
-//!
-//! Both populations are recognised by CELL IDENTITY, never by message text —
-//! the prose belongs to another crate and a rewording of it must not reroute a
-//! diagnostic. Population 1 resolves the label span through the compiled
-//! module's value cells exactly as the capstan gate does. Population 2 needs
-//! one refinement: its label sits on an expression INSIDE a cell rather than on
-//! the cell itself, so the identity is the smallest value cell whose span
-//! CONTAINS the label's. Both are computed against the same compilation the
+//! Both are recognised by CELL IDENTITY, never by message text — the prose
+//! belongs to another crate, and a rewording of it must not reroute a
+//! diagnostic — and both tables are built from the same compilation the
 //! diagnostics came from, so neither hard-codes a byte offset and edits to this
 //! file's own `IdlerPulley` cannot shift them.
 
@@ -400,9 +364,14 @@ fn idler_cell_of(values: &ValueMap, file: &str, cell: &str, dim: Option<Dimensio
 /// [`entity_cell`] fixed to [`IDLER_ENTITY`] on printer.ri's surface — the
 /// majority of this module's reads.
 ///
-/// printer.ri instantiates `IdlerPulley` 31 times, but task 4147 drops
-/// parameter overrides through a `sub`, so the BARE TEMPLATE is the form to
-/// read and every instance carries these same numbers.
+/// The BARE TEMPLATE is what this reads, and what every gate in this module
+/// reads. printer.ri instantiates `IdlerPulley` 31 times, and four of those
+/// sites DO override `sheave_od` (`IdlerPulley(sheave_od: r_pitch * 2)`, in
+/// `CarriageIdlers`) — they carry the template's numbers today only because
+/// #4147 drops a parameter override dropped through a `sub`. When #4147 lands
+/// they will not, and those four instances will want a read of their own: the
+/// derivation here is parametric, so the identities should still hold
+/// symbolically, but nothing in this module would observe it if they did not.
 fn idler_cell(cell: &str, expected_dim: DimensionVector) -> f64 {
     entity_cell(
         &printer_checked().values,
