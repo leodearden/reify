@@ -12,7 +12,8 @@
 # temp config consumed by nextest. Task 6485 added the tiering guards J/K/L.
 #
 # THREE TIERS of ceiling now live in that file: default 1200s, gate-resident
-# 1800s, heavy 43200s/12h. What each tier is for, which wall binds which role,
+# 1800s, heavy 3240s (task 7552; 43200s before it). What each tier is for, which
+# wall binds which role,
 # and why the background residual is accepted: docs/prds/offline-deep-test-lane.md
 # DA6 — the normative copy. This file MECHANISES that decision; it does not
 # restate it, and a claim about the tiers that is only written down here is
@@ -40,12 +41,12 @@
 #
 # TIERING / COMPLETENESS (task 6485):
 #   J. Every atom of REIFY_HEAVY_NEXTEST_FILTER has its own override block at the
-#      43200s (12h) heavy ceiling. Heavy membership is DERIVED from
+#      heavy ceiling. Heavy membership is DERIVED from
 #      scripts/heavy-test-filter-lib.sh, never restated here, so a 9th atom added
 #      to the lib fails immediately with no edit to this file. J-gen pins the same
 #      ceilings through gen-nextest-config.sh; J-neg is its non-vacuity self-check.
 #   K. TOTAL CLASSIFICATION — every slow-timeout override in the file classifies
-#      as exactly one of heavy (=> 43200s) or gate-resident (=> 1800s, under the
+#      as exactly one of heavy (=> HEAVY_CEILING_SECONDS) or gate-resident (=> 1800s, under the
 #      3600s gate wall), and the two classes PARTITION the file. A block matching
 #      neither RED-lights until a human classifies it; a deleted allowlisted block
 #      fails too. The gate-resident allowlist lives in THIS FILE, deliberately not
@@ -381,15 +382,16 @@ assert "tensegrity_t0a priority (${P_T0A:-unset}) > determinism priority (${P_DE
 # slow-timeout/terminate-after values, BY TIER.
 #
 # All five of these blocks used to carry terminate-after = 15 (1800s). Task 6485
-# split them: the four HEAVY binaries moved to the 12h offline ceiling
-# (terminate-after = 360), while representation_within_assertion is
+# split them: the four HEAVY binaries moved to the heavy ceiling
+# (terminate-after = 27 since task 7552; 360 before it), while
+# representation_within_assertion is
 # GATE-RESIDENT — it still runs on the merge gate, so it keeps 1800s, strictly
 # under the 3600s pass-level wall. Pinning each tier's value separately here is
 # what makes a block silently changing tier fail; Assertion K enforces that the
 # two tiers exhaust every slow-timeout override in the file.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Assertion F (task 5141, retargeted 6485): heavy blocks at terminate-after = 360, gate-resident at 15 ---"
+echo "--- Assertion F (task 5141, retargeted 6485/7552): heavy blocks at terminate-after = 27, gate-resident at 15 ---"
 
 ST_T0A="$(_slow_terminate_for reify-eval tensegrity_t0a)"
 ST_FEA="$(_slow_terminate_for reify-eval-fea-tests fea_diagnostics_e2e)"
@@ -397,20 +399,20 @@ ST_REPR="$(_slow_terminate_for reify-eval representation_within_assertion)"
 ST_ANAL="$(_slow_terminate_for reify-solver-elastic analytical_validation)"
 ST_DET="$(_slow_terminate_for reify-solver-elastic determinism)"
 
-assert "nextest.toml: tensegrity_t0a override has slow-timeout terminate-after = 360 (heavy tier, 12h)" \
-    test "${ST_T0A:-}" = "360"
+assert "nextest.toml: tensegrity_t0a override has slow-timeout terminate-after = 27 (heavy tier, 3240s)" \
+    test "${ST_T0A:-}" = "27"
 
-assert "nextest.toml: fea_diagnostics_e2e override has slow-timeout terminate-after = 360 (heavy tier, 12h)" \
-    test "${ST_FEA:-}" = "360"
+assert "nextest.toml: fea_diagnostics_e2e override has slow-timeout terminate-after = 27 (heavy tier, 3240s)" \
+    test "${ST_FEA:-}" = "27"
 
 assert "nextest.toml: representation_within_assertion override has slow-timeout terminate-after = 15 (gate-resident tier, 1800s)" \
     test "${ST_REPR:-}" = "15"
 
-assert "nextest.toml: analytical_validation override has slow-timeout terminate-after = 360 (heavy tier, 12h)" \
-    test "${ST_ANAL:-}" = "360"
+assert "nextest.toml: analytical_validation override has slow-timeout terminate-after = 27 (heavy tier, 3240s)" \
+    test "${ST_ANAL:-}" = "27"
 
-assert "nextest.toml: determinism override has slow-timeout terminate-after = 360 (heavy tier, 12h)" \
-    test "${ST_DET:-}" = "360"
+assert "nextest.toml: determinism override has slow-timeout terminate-after = 27 (heavy tier, 3240s)" \
+    test "${ST_DET:-}" = "27"
 
 # ---------------------------------------------------------------------------
 # Assertion G (task 5141): gen-nextest-config.sh preserves each heavy-tier
@@ -418,7 +420,7 @@ assert "nextest.toml: determinism override has slow-timeout terminate-after = 36
 # generator only runs sed on the occt max-threads line, never cargo/nextest).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Assertion G (task 5141, retargeted 6485): gen-nextest-config.sh preserves each tier's slow-timeout ---"
+echo "--- Assertion G (task 5141, retargeted 6485/7552): gen-nextest-config.sh preserves each tier's slow-timeout ---"
 
 _TMP_CFG_ST="$(REIFY_OCCT_NEXTEST_MAX_THREADS=24 bash "$GEN_CFG")"
 
@@ -430,20 +432,20 @@ _GST_DET="$(_slow_terminate_for_file "$_TMP_CFG_ST" reify-solver-elastic determi
 
 rm -f "$_TMP_CFG_ST"
 
-assert "gen-nextest-config.sh: tensegrity_t0a slow-timeout terminate-after = 360 preserved in generated config" \
-    test "${_GST_T0A:-}" = "360"
+assert "gen-nextest-config.sh: tensegrity_t0a slow-timeout terminate-after = 27 preserved in generated config" \
+    test "${_GST_T0A:-}" = "27"
 
-assert "gen-nextest-config.sh: fea_diagnostics_e2e slow-timeout terminate-after = 360 preserved in generated config" \
-    test "${_GST_FEA:-}" = "360"
+assert "gen-nextest-config.sh: fea_diagnostics_e2e slow-timeout terminate-after = 27 preserved in generated config" \
+    test "${_GST_FEA:-}" = "27"
 
 assert "gen-nextest-config.sh: representation_within_assertion slow-timeout terminate-after = 15 preserved in generated config" \
     test "${_GST_REPR:-}" = "15"
 
-assert "gen-nextest-config.sh: analytical_validation slow-timeout terminate-after = 360 preserved in generated config" \
-    test "${_GST_ANAL:-}" = "360"
+assert "gen-nextest-config.sh: analytical_validation slow-timeout terminate-after = 27 preserved in generated config" \
+    test "${_GST_ANAL:-}" = "27"
 
-assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 360 preserved in generated config" \
-    test "${_GST_DET:-}" = "360"
+assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 27 preserved in generated config" \
+    test "${_GST_DET:-}" = "27"
 
 # ---------------------------------------------------------------------------
 # Assertion H (task 5141; amended — reviewer test-quality finding): 2-tier
@@ -573,7 +575,7 @@ rm -f "$_CO_CFG"
 
 # ===========================================================================
 # Assertion J (task 6485): every heavy-filter member carries its own
-# slow-timeout override at the 12h offline ceiling.
+# slow-timeout override at the heavy ceiling.
 #
 # Heavy membership is DERIVED from scripts/heavy-test-filter-lib.sh rather than
 # restated here. That is the point of the guard: heavy membership already has
@@ -672,8 +674,13 @@ _slow_ceiling_for_filter() {
     return 0
 }
 
-# The 12h (43200s = 120s x 360) offline per-test ceiling.
-HEAVY_CEILING_SECONDS=43200
+# The heavy per-test ceiling: 3240s = 120s x 27 (task 7552; was 43200s).
+# Basis, in one line: it is the largest multiple of the 120s period at or below
+# 90% of the TIGHTEST wall any heavy-running role imposes (background's 3600s
+# debug wall), and it clears 3x the measured per-test max. Derivation, the
+# measurement it rests on and the alternatives rejected for it are normative in
+# docs/prds/offline-deep-test-lane.md DA6 — do not restate them here.
+HEAVY_CEILING_SECONDS=3240
 
 # ---------------------------------------------------------------------------
 # Parse the heavy atoms out of the single source of truth. Split the
@@ -716,7 +723,7 @@ _heavy_ceilings_ok() {
 _heavy_ceilings_reject() { ! _heavy_ceilings_ok "$1"; }
 
 echo ""
-echo "--- Assertion J (task 6485): every heavy-filter atom has a 12h (${HEAVY_CEILING_SECONDS}s) override block ---"
+echo "--- Assertion J (task 6485): every heavy-filter atom has a ${HEAVY_CEILING_SECONDS}s heavy-tier override block ---"
 
 # Non-vacuity floor for the PARSE itself. Deliberately '>= 1', not '== 8': a
 # 9th atom added to the lib must fail in the per-atom checks below (naming the
@@ -727,7 +734,7 @@ assert "heavy-filter lib parsed into at least one atom (guard is non-vacuous)" \
 
 for _atom in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
     _got="$(_slow_ceiling_for_filter "$NEXTEST_TOML" "$_atom")"
-    assert "nextest.toml: heavy atom [${_atom}] has an override block at the ${HEAVY_CEILING_SECONDS}s (12h) ceiling (got '${_got:-<no block>}')" \
+    assert "nextest.toml: heavy atom [${_atom}] has an override block at the ${HEAVY_CEILING_SECONDS}s heavy ceiling (got '${_got:-<no block>}')" \
         test "${_got:-}" = "$HEAVY_CEILING_SECONDS"
 done
 
@@ -739,7 +746,7 @@ done
 # slow-timeout lines today; this pins that they never start to.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Assertion J-gen (task 6485): gen-nextest-config.sh preserves every heavy 12h ceiling ---"
+echo "--- Assertion J-gen (task 6485): gen-nextest-config.sh preserves every heavy ceiling ---"
 
 _TMP_CFG_J="$(REIFY_OCCT_NEXTEST_MAX_THREADS=24 bash "$GEN_CFG")"
 
@@ -828,7 +835,7 @@ rm -rf "$_J_FIX"
 # exactly one of two classes, so a block can neither appear nor vanish unnoticed.
 #
 #   heavy          — its filter is one of the atoms parsed from
-#                    REIFY_HEAVY_NEXTEST_FILTER => ceiling must be 43200s (12h).
+#                    REIFY_HEAVY_NEXTEST_FILTER => ceiling must be HEAVY_CEILING_SECONDS.
 #   gate-resident  — its filter is in GATE_RESIDENT_FILTERS below => ceiling must
 #                    be 1800s, and strictly under the 3600s gate wall.
 #
@@ -1035,6 +1042,38 @@ assert "K: solve_elastic_static_body_e2e (task 7339's contention-headroom overri
 assert "K: the two classes PARTITION the file — every enumerated slow-timeout override is consumed by exactly one class" \
     _classify_overrides_ok "$NEXTEST_TOML"
 
+# ---------------------------------------------------------------------------
+# K-tier: the two tiers must stay ORDERED — every heavy ceiling strictly exceeds
+# every gate-resident ceiling. Both operands are read out of .config/nextest.toml
+# through _slow_ceiling_for_filter, never from this script's own constants, which
+# would be a literal compared against itself.
+#
+# NEWLY LOAD-BEARING (task 7552). Until this task the two tiers were 24x apart
+# (43200s vs 1800s) and could not plausibly collide, so nothing asserted the
+# order. At 3240s they are within 2x, and the next re-tune in either direction
+# could flatten `heavy` into `gate-resident` — or invert them — while every other
+# assertion here stayed green, because K classifies by FILTER and each tier's
+# value is only ever compared against its own class.
+# ---------------------------------------------------------------------------
+_MIN_HEAVY_CEIL=""
+for _a in ${HEAVY_ATOMS+"${HEAVY_ATOMS[@]}"}; do
+    _c="$(_slow_ceiling_for_filter "$NEXTEST_TOML" "$_a")"
+    [ -n "$_c" ] || continue
+    if [ -z "$_MIN_HEAVY_CEIL" ] || [ "$_c" -lt "$_MIN_HEAVY_CEIL" ]; then _MIN_HEAVY_CEIL="$_c"; fi
+done
+_MAX_GR_CEIL=""
+for _g in ${GATE_RESIDENT_FILTERS+"${GATE_RESIDENT_FILTERS[@]}"}; do
+    _c="$(_slow_ceiling_for_filter "$NEXTEST_TOML" "$_g")"
+    [ -n "$_c" ] || continue
+    if [ -z "$_MAX_GR_CEIL" ] || [ "$_c" -gt "$_MAX_GR_CEIL" ]; then _MAX_GR_CEIL="$_c"; fi
+done
+
+assert "K-tier: both tier ceilings extracted from .config/nextest.toml (heavy min '${_MIN_HEAVY_CEIL:-<none>}', gate-resident max '${_MAX_GR_CEIL:-<none>}') — the ordering below compares two file-derived numbers" \
+    bash -c '[ -n "$1" ] && [ -n "$2" ]' _ "${_MIN_HEAVY_CEIL:-}" "${_MAX_GR_CEIL:-}"
+
+assert "K-tier: the smallest HEAVY ceiling (${_MIN_HEAVY_CEIL:-?}s) strictly exceeds the largest GATE-RESIDENT ceiling (${_MAX_GR_CEIL:-?}s) — heavy must remain a strictly higher tier, not merely a differently-named one" \
+    test "${_MIN_HEAVY_CEIL:-0}" -gt "${_MAX_GR_CEIL:-0}"
+
 # ===========================================================================
 # Assertion L (task 6485): REACHABILITY — every role that actually runs heavy
 # members either REACHES the heavy per-test ceiling or is an explicitly
@@ -1084,9 +1123,12 @@ assert "K: the two classes PARTITION the file — every enumerated slow-timeout 
 # role leaves the heavy-running set, this entry goes stale and RED-lights —
 # forcing the allowlist entry and the config's residual note to be retired
 # together instead of one outliving the other.
-L_RESIDUAL_ROLES=(
-    background
-)
+# EMPTY since task 7552, deliberately and not by omission: the heavy ceiling was
+# re-sized BELOW the tightest heavy-running wall, so `background` — the one entry
+# this array ever carried — became REACHABLE and its entry was retired together
+# with the config's residual note, exactly as the paragraph above prescribes.
+# A future role that cannot reach the ceiling still lands here.
+L_RESIDUAL_ROLES=()
 
 # (The wall extractors — _debug_wall_secs_for_file, _base_release_wall_secs_for_file,
 # _offline_wall_secs_for_file and the release-scope window they share — are
@@ -1200,7 +1242,8 @@ _role_profile_for_file() {
 # load-bearing joint. That mapping is a CONSEQUENCE of verify.sh's role-based
 # PROFILE defaults, one `||` away from changing: had offline's branch flipped to
 # PROFILE="both" (the same one-line shape merge and background already have), it
-# would run a debug pass under the 60m wall with a 12h ceiling — the exact
+# would run a debug pass under the 60m wall against a ceiling sized for the 13h
+# release wall — the exact
 # unreachable-ceiling shape L exists to prevent — while a hardcoded map went on
 # comparing against the 13h release wall and reported REACHABLE. A false green on
 # L's core invariant, covered by nothing else. Fixture (viii) pins it.
@@ -1331,6 +1374,27 @@ _role_classification_ok() {
 
 _role_classification_reject() { ! _role_classification_ok "$1" "$2"; }
 
+# ---------------------------------------------------------------------------
+# _role_classification_ok_with_residuals "<role...>" <nextest.toml> <verify.sh>
+# — the same checker with the residual allowlist REPLACED for the duration of
+# one call. bash's dynamic scoping makes the local shadow the global that
+# _role_class and _role_classification_ok read, so no parameter has to be
+# threaded through either.
+#
+# This exists because the live allowlist is EMPTY (task 7552) and a checker
+# whose residual branch is never entered is a checker whose residual branch is
+# untested. The synthetic-role fixtures below drive that branch without
+# re-introducing a live residual.
+# ---------------------------------------------------------------------------
+_role_classification_ok_with_residuals() {
+    local _roles="$1" _toml="$2" _vsh="$3"
+    local -a L_RESIDUAL_ROLES=()
+    read -r -a L_RESIDUAL_ROLES <<< "$_roles"
+    _role_classification_ok "$_toml" "$_vsh"
+}
+
+_role_classification_reject_with_residuals() { ! _role_classification_ok_with_residuals "$@"; }
+
 # _files_differ <a> <b> — non-vacuity of a seeded fixture: a sed/awk anchor that
 # stopped matching would otherwise produce a copy identical to the original and
 # a rejection test that silently tests nothing.
@@ -1435,8 +1499,8 @@ slow-timeout = { period = "120s", terminate-after = 99 }
 EXTRA
 
 # (ii) a gate-resident block bumped to the heavy ceiling (the silent-promotion
-#      shape: it would then run on the gate with an unreachable 12h ceiling).
-awk -v want="$_GR_FIRST" -v q="'" '
+#      shape: it would then run on the gate carrying the heavy tier's ceiling).
+awk -v want="$_GR_FIRST" -v q="'" -v heavy="${ST_T0A:-}" '
     /^\[\[/ { hit = 0 }
     $0 ~ "^[[:space:]]*filter[[:space:]]*=" {
         hit = 0
@@ -1446,7 +1510,7 @@ awk -v want="$_GR_FIRST" -v q="'" '
         }
     }
     hit && /^[[:space:]]*slow-timeout[[:space:]]*=/ {
-        sub(/terminate-after[[:space:]]*=[[:space:]]*[0-9]+/, "terminate-after = 360")
+        sub(/terminate-after[[:space:]]*=[[:space:]]*[0-9]+/, "terminate-after = " heavy)
         hit = 0
     }
     { print }
@@ -1469,43 +1533,121 @@ awk -v want="$_GR_FIRST" -v q="'" '
     END { flush() }
 ' "$NEXTEST_TOML" > "$_KL_FIX/gr-deleted.toml"
 
-# (iv) a verify.sh whose heavy-exclusion guard ALSO names `background`: the role
-#      stops running heavy members, so its L_RESIDUAL_ROLES entry is stale and
-#      the allowlist must be retired with the config's residual note. This is the
-#      fixture that makes the guard self-cleaning rather than merely tolerant.
-sed 's/\[ "\$DF_VERIFY_ROLE" = "merge" \]; }/[ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; }/' \
-    "$VERIFY_SH" > "$_KL_FIX/verify-bg-excluded.sh"
+# ---------------------------------------------------------------------------
+# THE SYNTHETIC-RESIDUAL SCAFFOLD (task 7552), on which fixtures (iv), (v),
+# (vii) and (viii) are built.
+#
+# WHY IT HAD TO EXIST. Before this task `background` was a LIVE residual and the
+# heavy ceiling (43200s) exceeded every wall verify.sh defines, so those four
+# fixtures could produce a gap just by re-pointing a role at an existing wall.
+# At the re-sized ceiling the relation inverts: every wall in verify.sh strictly
+# EXCEEDS the ceiling, so no such re-pointing produces a gap and all four would
+# pass BY VACUITY — silently deleting the residual machinery's negative coverage
+# at the exact moment that machinery has no live user left to exercise it.
+#
+# WHAT IT IS. A verify.sh copy with three mutations, none of which is the thing
+# any fixture is testing:
+#   1. it accepts a synthetic role, which no real deployment ever sets;
+#   2. it drops `background` from the heavy-running set, so the synthetic role is
+#      the only role whose classification is under test (background has the
+#      tightest wall, so leaving it in would make it the gap in every fixture and
+#      every rejection would be attributable to the scaffold instead of the seed);
+#   3. it narrows the DEBUG wall below the ceiling, which is what makes a gap
+#      EXPRESSIBLE at all — the synthetic role inherits the base PROFILE, so this
+#      is the wall that binds it.
+# Paired with a nextest.toml copy naming the synthetic role in the ACCEPTED
+# RESIDUAL paragraph, and an allowlist supplied per-call rather than globally.
+#
+# The scaffold ALONE is asserted to classify cleanly (the control below), so
+# every rejection that follows is attributable to the ONE further mutation its
+# fixture adds.
+# ---------------------------------------------------------------------------
+_SYNTH_ROLE=synthetic
+_SYNTH_DEBUG_WALL_M=30
 
-# (v) a nextest.toml with `background` struck from the ACCEPTED RESIDUAL
-#     paragraph: the allowlist here and the prose there must agree, so a residual
-#     cannot be carried in the test alone.
-awk -v anchor="$RESIDUAL_PAR_ANCHOR" '
-    $0 ~ anchor { par = 1 }
-    par && !/^#/ { par = 0 }
-    par { gsub(/background/, "REDACTED") }
-    { print }
-' "$NEXTEST_TOML" > "$_KL_FIX/no-residual-note.toml"
+# _seed_exclude_role <src> <dst> <role> — extend verify.sh's _GATE_HEAVY_EXCLUDE
+# guard to also cover <role>. Windowed to that guard's own `_GATE_HEAVY_EXCLUDE=""`
+# .. `fi` block, exactly as _heavy_excluded_roles_for_file windows its parse: the
+# `[ "$DF_VERIFY_ROLE" = "<role>" ]; }` shape also occurs on the PROFILE-default
+# and scope-guard lines, which an unwindowed substitution would corrupt.
+_seed_exclude_role() {
+    sed '/^_GATE_HEAVY_EXCLUDE=""$/,/^fi$/ s/\(\[ "\$DF_VERIFY_ROLE" = "[a-z_]*" \]\); }/\1 || [ "$DF_VERIFY_ROLE" = "'"$3"'" ]; }/' \
+        "$1" > "$2"
+}
 
-# (vi) a verify.sh whose offline release default drops BELOW the heavy ceiling:
-#      offline is then neither reachable nor allowlisted, i.e. an unrecorded gap.
-sed 's/_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]\+h/_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 6h/' \
-    "$VERIFY_SH" > "$_KL_FIX/verify-6h.sh"
+# _seed_accept_role <src> <dst> <role> — add <role> to the `want a|b|c` spec in
+# verify.sh's unknown-role error, the one place the accepted role set is written.
+_seed_accept_role() {
+    sed '/unknown DF_VERIFY_ROLE/ s/(want \([a-z|]*\))/(want \1|'"$3"')/' "$1" > "$2"
+}
 
-# (vii) a verify.sh that accepts a new `experimental` role with no exclusion and
-#       no wall model: the newcomer shape, which must not be absorbed silently.
-sed '/unknown DF_VERIFY_ROLE/ s/(want \([a-z|]*\))/(want \1|experimental)/' \
-    "$VERIFY_SH" > "$_KL_FIX/verify-extra-role.sh"
+# _seed_narrow_debug_wall <src> <dst> <minutes> — drop the DEBUG pass wall below
+# the heavy ceiling. Anchored at column 0 on the unconditional assignment, the
+# same anchor _debug_wall_secs_for_file reads, so the seed and the extractor
+# cannot drift apart. The trailing space after the knob name keeps this off the
+# `_RELEASE` knob's line.
+_seed_narrow_debug_wall() {
+    sed 's/^\(_VERIFY_TEST_TIMEOUT="\$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT \)[0-9]\+m/\1'"$3"'m/' \
+        "$1" > "$2"
+}
 
-# (viii) a verify.sh whose OFFLINE branch of the role-based PROFILE default
-#        forces `both` instead of `release` — one `||` away from the shape merge
-#        and background already have. Offline then also runs a DEBUG pass, so the
-#        60m debug wall becomes its binding one and the 12h ceiling is out of
-#        reach, with the 13h release wall left intact to look reassuring. This is
-#        the fixture that makes _role_wall_secs' profile DERIVATION load-bearing:
-#        against the literal role=>wall map it replaced, this file classified
-#        offline REACHABLE and nothing went red.
+# _seed_document_residual <src> <dst> <role> — name <role> inside the config's
+# ACCEPTED RESIDUAL paragraph, immediately after the shared anchor line so the
+# insertion lands inside the contiguous comment block _residual_role_documented
+# scans.
+_seed_document_residual() {
+    awk -v anchor="$RESIDUAL_PAR_ANCHOR" -v role="$3" '
+        { print }
+        !done && $0 ~ anchor { print "#   " role " — synthetic fixture role (tests/infra only)"; done = 1 }
+    ' "$1" > "$2"
+}
+
+# The scaffold itself: accept + exclude-background + narrow-debug-wall, then the
+# matching config copy that documents the synthetic residual.
+_seed_accept_role "$VERIFY_SH" "$_KL_FIX/verify-synth-a.sh" "$_SYNTH_ROLE"
+_seed_exclude_role "$_KL_FIX/verify-synth-a.sh" "$_KL_FIX/verify-synth-b.sh" background
+_seed_narrow_debug_wall "$_KL_FIX/verify-synth-b.sh" "$_KL_FIX/verify-synth.sh" "$_SYNTH_DEBUG_WALL_M"
+_seed_document_residual "$NEXTEST_TOML" "$_KL_FIX/synth.toml" "$_SYNTH_ROLE"
+
+# (iv) the scaffold's verify.sh with the SYNTHETIC role ALSO excluded: it stops
+#      running heavy members, so its allowlist entry is stale and must be retired
+#      with the config's residual note. This is the fixture that makes the guard
+#      self-cleaning rather than merely tolerant — the direction that forced THIS
+#      task to retire `background`'s entry and the config's note together.
+_seed_exclude_role "$_KL_FIX/verify-synth.sh" "$_KL_FIX/verify-synth-excluded.sh" "$_SYNTH_ROLE"
+
+# (v) is the scaffold's verify.sh paired with the REAL .config/nextest.toml,
+#     which does NOT name the synthetic role in its residual paragraph: the
+#     allowlist here and the prose there must agree, so a residual cannot be
+#     carried in the test alone. No extra seed file — the disagreement IS the
+#     pairing, and $_KL_FIX/synth.toml is its non-vacuity witness.
+
+# (vi) a verify.sh whose DEBUG wall drops below the heavy ceiling, against the
+#      real config and the real (empty) allowlist: `background` runs both
+#      profiles, so that wall becomes its binding one and it is then neither
+#      reachable nor allowlisted — an unrecorded gap. This is the live shape
+#      after task 7552: the ceiling is sized UNDER the debug wall, so the debug
+#      wall is the operand a future re-tune can invalidate it with. (Before this
+#      task the same fixture seeded the OFFLINE RELEASE wall down to 6h; at a
+#      3240s ceiling no whole-hour release wall is small enough to express a gap,
+#      and the release walls are no longer what the ceiling is sized against.)
+_seed_narrow_debug_wall "$VERIFY_SH" "$_KL_FIX/verify-narrow-debug.sh" "$_SYNTH_DEBUG_WALL_M"
+
+# (vii) the scaffold plus a further `experimental` role with no exclusion, no
+#       allowlist entry and no residual note: the newcomer shape, which must not
+#       be absorbed silently.
+_seed_accept_role "$_KL_FIX/verify-synth.sh" "$_KL_FIX/verify-synth-extra-role.sh" experimental
+
+# (viii) the scaffold plus an OFFLINE branch of the role-based PROFILE default
+#        that forces `both` instead of `release` — one `||` away from the shape
+#        merge and background already have. Offline then also runs a DEBUG pass,
+#        so the scaffold's narrowed debug wall becomes its binding one and the
+#        ceiling is out of reach, with the 13h release wall left intact to look
+#        reassuring. This is the fixture that makes _role_wall_secs' profile
+#        DERIVATION load-bearing: against the literal role=>wall map it replaced,
+#        this file classified offline REACHABLE and nothing went red.
 sed 's/^\([[:space:]]*\)PROFILE="release"$/\1PROFILE="both"/' \
-    "$VERIFY_SH" > "$_KL_FIX/verify-offline-both.sh"
+    "$_KL_FIX/verify-synth.sh" > "$_KL_FIX/verify-synth-offline-both.sh"
 
 # (ix) an unclassified override authored slow-timeout BEFORE filter. TOML imposes
 #      no key order, so this is a legal way to write the (i) fixture — and the
@@ -1539,35 +1681,46 @@ assert "K-neg (ii): classifier REJECTS a gate-resident block silently promoted t
 assert "K-neg (iii): classifier REJECTS a nextest.toml with an allowlisted gate-resident block deleted" \
     _classify_overrides_reject "$_KL_FIX/gr-deleted.toml"
 
-assert "L-neg (iv) fixture is non-vacuous — the background-exclusion seed really changed scripts/verify.sh" \
-    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-bg-excluded.sh"
+assert "L-neg scaffold is non-vacuous — the synthetic-role seeds really changed scripts/verify.sh" \
+    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-synth.sh"
 
-assert "L-neg (iv): classifier REJECTS a verify.sh whose exclusion guard covers 'background' while the residual allowlist still claims it runs heavy members" \
-    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-bg-excluded.sh"
+assert "L-neg scaffold is non-vacuous — the residual-note seed really changed .config/nextest.toml" \
+    _files_differ "$NEXTEST_TOML" "$_KL_FIX/synth.toml"
 
-assert "L-neg (v) fixture is non-vacuous — the residual-note seed really changed .config/nextest.toml" \
-    _files_differ "$NEXTEST_TOML" "$_KL_FIX/no-residual-note.toml"
+# The positive control for the whole scaffold. Without it every rejection below
+# could be an artifact of the three scaffold mutations rather than of the one
+# mutation its fixture adds — and this is also the ONLY assertion that drives
+# _role_class's RESIDUAL branch, which has no live user since the allowlist
+# emptied.
+assert "L-neg scaffold control: the scaffold ALONE classifies — the synthetic role is allowlisted AND documented AND genuinely below its wall (the RESIDUAL branch), and every other heavy-running role reaches the ceiling" \
+    _role_classification_ok_with_residuals "$_SYNTH_ROLE" "$_KL_FIX/synth.toml" "$_KL_FIX/verify-synth.sh"
 
-assert "L-neg (v): classifier REJECTS a nextest.toml with 'background' struck from the ACCEPTED RESIDUAL paragraph (allowlist and prose must agree)" \
-    _role_classification_reject "$_KL_FIX/no-residual-note.toml" "$VERIFY_SH"
+assert "L-neg (iv) fixture is non-vacuous — the synthetic-role exclusion seed really changed the scaffold's verify.sh" \
+    _files_differ "$_KL_FIX/verify-synth.sh" "$_KL_FIX/verify-synth-excluded.sh"
 
-assert "L-neg (vi) fixture is non-vacuous — the 6h seed really changed scripts/verify.sh" \
-    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-6h.sh"
+assert "L-neg (iv): classifier REJECTS a verify.sh whose exclusion guard covers the allowlisted residual role while the allowlist still claims it runs heavy members (the self-cleaning direction: allowlist entry and config note must retire together)" \
+    _role_classification_reject_with_residuals "$_SYNTH_ROLE" "$_KL_FIX/synth.toml" "$_KL_FIX/verify-synth-excluded.sh"
 
-assert "L-neg (vi): classifier REJECTS a verify.sh whose offline wall (6h) no longer exceeds the ${HEAVY_CEILING_SECONDS}s heavy ceiling, leaving offline an unrecorded gap" \
-    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-6h.sh"
+assert "L-neg (v): classifier REJECTS the real .config/nextest.toml — which does NOT name the synthetic role in its ACCEPTED RESIDUAL paragraph — against an allowlist that does (allowlist and prose must agree; a residual cannot be carried in the test alone)" \
+    _role_classification_reject_with_residuals "$_SYNTH_ROLE" "$NEXTEST_TOML" "$_KL_FIX/verify-synth.sh"
 
-assert "L-neg (vii) fixture is non-vacuous — the extra-role seed really changed scripts/verify.sh" \
-    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-extra-role.sh"
+assert "L-neg (vi) fixture is non-vacuous — the narrowed-debug-wall seed really changed scripts/verify.sh" \
+    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-narrow-debug.sh"
 
-assert "L-neg (vii): classifier REJECTS a verify.sh that accepts a new unexcluded role, so a newcomer cannot inherit the residual by silence" \
-    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-extra-role.sh"
+assert "L-neg (vi): classifier REJECTS a verify.sh whose DEBUG wall (${_SYNTH_DEBUG_WALL_M}m) no longer exceeds the ${HEAVY_CEILING_SECONDS}s heavy ceiling — the wall the ceiling is SIZED under, leaving the both-profile roles an unrecorded gap" \
+    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-narrow-debug.sh"
 
-assert "L-neg (viii) fixture is non-vacuous — the offline-forces-both seed really changed scripts/verify.sh" \
-    _files_differ "$VERIFY_SH" "$_KL_FIX/verify-offline-both.sh"
+assert "L-neg (vii) fixture is non-vacuous — the extra-role seed really changed the scaffold's verify.sh" \
+    _files_differ "$_KL_FIX/verify-synth.sh" "$_KL_FIX/verify-synth-extra-role.sh"
+
+assert "L-neg (vii): classifier REJECTS a verify.sh that accepts a new unexcluded role, so a newcomer cannot inherit another role's residual by silence" \
+    _role_classification_reject_with_residuals "$_SYNTH_ROLE" "$_KL_FIX/synth.toml" "$_KL_FIX/verify-synth-extra-role.sh"
+
+assert "L-neg (viii) fixture is non-vacuous — the offline-forces-both seed really changed the scaffold's verify.sh" \
+    _files_differ "$_KL_FIX/verify-synth.sh" "$_KL_FIX/verify-synth-offline-both.sh"
 
 assert "L-neg (viii): classifier REJECTS a verify.sh whose offline branch forces PROFILE=both — offline then runs a debug pass under the tighter wall, so its binding wall is DERIVED as that wall and the ceiling is unreachable, however long the release wall stays" \
-    _role_classification_reject "$NEXTEST_TOML" "$_KL_FIX/verify-offline-both.sh"
+    _role_classification_reject_with_residuals "$_SYNTH_ROLE" "$_KL_FIX/synth.toml" "$_KL_FIX/verify-synth-offline-both.sh"
 
 assert "K-neg (ix) fixture is non-vacuous — the reordered-keys seed really changed .config/nextest.toml" \
     _files_differ "$NEXTEST_TOML" "$_KL_FIX/reordered.toml"
