@@ -405,24 +405,30 @@ fn strict_problem(t_id: &ValueCellId, lambda: f64, upper: Option<f64>) -> Resolu
 /// (`1mm < t < 4mm`) must solve `unique: true` under γ, for EVERY λ.
 ///
 /// Asserted across λ ∈ {0.0, 0.5, 1.0} rather than one value: MEASURED, all
-/// three regress identically, and λ=1 regressing is what identifies the
+/// three regressed identically, and λ=1 regressing is what identified the
 /// mechanism. At λ=1 the blend is a positive-affine transform of cost alone, so
-/// "λ<1 pulls the blend off the min-cost point" cannot explain it; the real
-/// cause is that `solve_cost_robustness_tradeoff` is SEED-DEPENDENT by
-/// construction (all three of its solves share one deterministic seed for
-/// reproducibility, never seed-invariance, and a floor-free cost-minimise whose
-/// optimum sits infinitesimally past the boundary hits
-/// `solve_core_with_sd_tolerance`'s drift-fallback and returns THE SEED). A
-/// perturbation-based uniqueness check therefore compares f(seed_A) against
-/// f(seed_B) for a seed-dependent f — structurally inapplicable on this path.
+/// "λ<1 pulls the blend off the min-cost point" cannot explain it; the cause is
+/// that `solve_cost_robustness_tradeoff` is not SEED-INVARIANT (all three of its
+/// solves share one deterministic seed for reproducibility, never
+/// seed-invariance). A perturbation-based uniqueness check therefore compares
+/// f(seed_A) against f(seed_B) for an f that is not, there, a function of the
+/// model — structurally inapplicable on this path.
 ///
-/// RED today: all three λ return `Infeasible` carrying
+/// NARROWED by task #6465: the specific mechanism this doc used to cite — a
+/// floor-free cost-minimise drifting past the boundary into
+/// `solve_core_with_sd_tolerance`'s drift-fallback, which then returned THE SEED
+/// — is fixed; see
+/// `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`. What
+/// survives is the FLAT-blend case, where the argmin is a SET and the seed picks
+/// a member of it; that is still not a perturbation question, so the ruling this
+/// paragraph supports is unchanged.
+///
+/// RED when written: all three λ returned `Infeasible` carrying
 /// `ConstraintNonUnique` ("strict auto parameter resolution is not uniquely
-/// determined"). On main all three return `Solved { unique: true }` with
-/// t = 2.5mm.
-///
-/// The assertion pins the Solved/unique/in-bracket CONTRACT rather than 2.5mm
-/// exactly: the precise point is a blend/seed artifact, not a PRD invariant.
+/// determined"); on main all three returned `Solved { unique: true }` with
+/// t = 2.5mm. RE-MEASURED after #6465: λ=0 and λ=0.5 resolve 2.5mm, λ=1 resolves
+/// 1.000mm — the λ=1 point MOVED, which is exactly why the assertion below pins
+/// the Solved/unique/in-bracket CONTRACT and not a point value.
 #[test]
 fn gamma_strict_auto_two_sided_bracket_is_solved() {
     let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
@@ -906,22 +912,25 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
 ///   it, `t` lands in the abstention set, and the missing upper side stops
 ///   counting as evidence. Every λ now reports `Solved { unique: true }`.
 ///
-/// MEASURED at the same commit as this test, and this is the safety loss:
-/// λ=0 resolves `t = 10.0 m` — literally `default_bounds_for(Length)`'s ceiling,
-/// a value pinned by a solver-internal default the user never authored, for a
-/// mm-scale part. λ=0.5 and λ=1 resolve `t = 1.1 mm` (cost pulls to the lower
-/// bound). That is the SAME regression class `gamma_strict_auto_one_sided_
-/// stays_non_unique` exists to block — a loud error becoming a silent 10 m —
-/// reached through the abstention door rather than through a blanket
-/// `return true`.
+/// RE-MEASURED after task #6465 (the earlier figures were λ=0.5 and λ=1 both at
+/// 1.1mm, taken before γ got its strict-inclusive clamp box), and this is the
+/// safety loss: λ=0 resolves `t = 10.0 m` — literally
+/// `default_bounds_for(Length)`'s ceiling, a value pinned by a solver-internal
+/// default the user never authored, for a mm-scale part. λ=0.5 resolves
+/// `t = 1.328859 mm` and λ=1 resolves `t = 1.000 mm` exactly (cost pulls to the
+/// lower bound, which the γ clamp box now reaches). That is the SAME regression
+/// class `gamma_strict_auto_one_sided_stays_non_unique` exists to block — a loud
+/// error becoming a silent 10 m — reached through the abstention door rather
+/// than through a blanket abstention.
 ///
 /// It is accepted rather than fixed because the alternative direction of error
 /// is worse: reading a blind spot as evidence was measured to REJECT valid,
 /// bounded models (the three `..._is_not_non_unique` fixtures above). Narrowing
 /// it means teaching `derive_from_expr` the missing shapes — coefficient forms
 /// first, which would close this exact fixture — not tightening the abstention
-/// test. Tracked as task #6465 (γ quality: seed-invariance, or a precise
-/// diagnostic for default-bounds-determined γ models). Do not re-file.
+/// test. That standing ground is the whole record: task #6465 closed WITHOUT
+/// closing this, so its citation was removed rather than left to become an
+/// orphaned cite, and no successor number is invented in its place.
 ///
 /// A CHARACTERISATION test: it asserts today's behaviour, not desired
 /// behaviour. If a future change makes this error again, that is progress —

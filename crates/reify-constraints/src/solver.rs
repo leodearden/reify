@@ -2217,10 +2217,16 @@ enum Determinedness {
 /// (`tests/cost_robustness_tradeoff_blend.rs`) PINS this gap as measured
 /// behaviour rather than leaving it inferred. Deciding it the other way is a
 /// §11.6 policy change for γ, and belongs in a task that can re-measure the
-/// whole γ fixture set — not in a local tightening here. Already tracked:
-/// task #6465 ("make the blend seed-invariant, or give under-determined γ
-/// models a precise diagnostic"), filed by #5711's architect for exactly this
-/// class of γ quality question. Do not re-file.
+/// whole γ fixture set — not in a local tightening here.
+///
+/// The gap stands on its own measured ground, with no tracker to go stale
+/// against: with a LINEAR cost the two normalised blend terms COINCIDE over part
+/// of the bracket — measured, both equal `(t − 1mm)/1.5mm` on the lower half of
+/// `1mm < t < 4mm`, so the λ=0.5 blend is identically zero on [1mm, 2.5mm] —
+/// and an argmin that is a SET admits no seed-invariant answer at all without a
+/// TIE-BREAK POLICY. Choosing one is a §11.6 policy decision, not a local fix.
+/// (Task #6465 closed WITHOUT closing this, so its citation was removed rather
+/// than left to become an orphaned cite.)
 ///
 /// Free params are exempt: they carry no §11.6 obligation at all, and
 /// [`finalise_uniqueness`] only reaches `verify_uniqueness` when at least one
@@ -3954,19 +3960,28 @@ fn score_solution(
 /// or coupled bounds) from masquerading as an unbounded side (esc-5711-3).
 ///
 /// **Why the perturbation machinery is STRUCTURALLY INAPPLICABLE here.**
-/// [`solve_cost_robustness_tradeoff`] is SEED-DEPENDENT BY CONSTRUCTION — its
-/// own doc records that all three of its solves share the SAME deterministic
-/// `initial` seed "so the whole dispatch stays reproducible", which is
-/// reproducibility for a FIXED seed, never seed-invariance. Concretely, a
-/// floor-free pure-cost minimise's true optimum sits an infinitesimal distance
-/// PAST the constraint boundary (the penalty has zero slope at its own root),
-/// so [`solve_core_with_sd_tolerance`]'s "optimizer drifted infeasible → fall
-/// back to the initially-feasible seed" safety net returns THE SEED ITSELF, and
-/// re-seeding therefore MOVES the answer. (Independently corroborated in
-/// tracked source: `examples/cost_robustness_tradeoff.ri` documents exactly this
-/// drift-fallback-returns-the-seed behaviour.) A perturbation check compares
-/// f(seed_A) against f(seed_B) for a seed-dependent f, so every verdict it
-/// yields is an artifact of the ANCHOR, not evidence about the model.
+/// [`solve_cost_robustness_tradeoff`] is NOT SEED-INVARIANT — its own doc
+/// records that all three of its solves share the SAME deterministic `initial`
+/// seed "so the whole dispatch stays reproducible", which is reproducibility for
+/// a FIXED seed, never seed-invariance.
+///
+/// NARROWED by task #6465. The mechanism this paragraph used to give — a
+/// floor-free pure-cost minimise drifting past the constraint boundary into
+/// [`solve_core_with_sd_tolerance`]'s "fall back to the initially-feasible seed"
+/// safety net, so the dispatch returned THE SEED — no longer holds: the γ regime
+/// now clamps into a constraint-derived box with strict bounds included, and
+/// that case is seed-invariant (measured: λ=1 resolves the 1mm bound from every
+/// seed on the production `bounds: None` shape,
+/// `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`).
+///
+/// What REMAINS, and what still grounds this branch: where the blend is FLAT
+/// over a sub-interval its argmin is a SET, not a point, so which member of that
+/// set comes back is decided by the seed and by nothing in the model. A
+/// perturbation check then compares f(seed_A) against f(seed_B) for an f that is
+/// not a function of the model there, so the verdict is an artifact of the
+/// ANCHOR. The RULING below is unchanged and does not weaken with the mechanism:
+/// a flat blend is not a perturbation question either — re-anchoring cannot
+/// distinguish "the model determines this value" from "the seed does".
 ///
 /// **The rule that replaces it.** §11.6 test (2) asks whether the value is
 /// uniquely optimal under the applicable objective; for γ that objective is the
@@ -4098,10 +4113,10 @@ fn verify_uniqueness(
     }
 
     // #5711 amendment 2: the γ `cost_robustness_tradeoff` path answers §11.6
-    // WITHOUT a re-solve. `solve_cost_robustness_tradeoff` is SEED-DEPENDENT by
-    // construction, so the perturbation machinery below is structurally
-    // inapplicable there — see this function's doc for the measured ruling and
-    // the A/B evidence table. Positioned deliberately: AFTER the
+    // WITHOUT a re-solve. `solve_cost_robustness_tradeoff` is not seed-invariant
+    // where its blend is FLAT over a sub-interval (its argmin is a SET there), so
+    // the perturbation machinery below is structurally inapplicable — see this
+    // function's doc for the measured ruling and the A/B evidence table. Positioned deliberately: AFTER the
     // missing/non-numeric guard above, so γ keeps `solutions_agree`'s
     // loud-not-silent contract, and BEFORE the re-solve, so the inapplicable
     // solve never runs.
@@ -5994,9 +6009,10 @@ mod tests {
     // `default_bounded_strict_autos` is the pure evidence function behind the γ
     // (`cost_robustness_tradeoff`) branch of `verify_uniqueness`. The
     // perturbation machinery is STRUCTURALLY INAPPLICABLE on that path —
-    // `solve_cost_robustness_tradeoff` is seed-dependent by construction, so a
-    // perturbation check compares f(seed_A) against f(seed_B) for a
-    // seed-dependent f — but PRD
+    // `solve_cost_robustness_tradeoff` is not seed-invariant where its blend is
+    // FLAT over a sub-interval, so a perturbation check compares f(seed_A)
+    // against f(seed_B) for an f that is not a function of the model there — but
+    // PRD
     // docs/reify-implementation-architecture.md §11.6 still needs an
     // answer. Test (2) ("uniquely optimal under the applicable objective") is
     // answered WITHOUT any solve: if every strict auto's interval is bounded on
