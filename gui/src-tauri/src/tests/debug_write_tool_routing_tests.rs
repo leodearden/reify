@@ -16,6 +16,13 @@
 //! ([`the_private_emit_sweep_fires_on_the_real_file_when_mutated`]) rather
 //! than resting on an empty result meaning what it appears to.
 //!
+//! Both halves read CALLS, not mentions: a seam or a delegate named as a
+//! value, in dead code or in an unreachable branch, refreshes nothing and so
+//! satisfies nothing ([`seam_named_but_never_called_does_not_count`]). The
+//! emit grammar above is the deliberate exception — it matches an
+//! identifier's mere occurrence, because there over-reporting is the safe
+//! margin.
+//!
 //! The claim is stated in prose — and NOT restated here — at point (a) on
 //! `write_on_engine_and_refresh_baseline` in `gui/src-tauri/src/debug_server.rs`
 //! and in `docs/debug-mcp-contract.md`'s "Two seams, ONE stated exception".
@@ -73,8 +80,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::debug_write_tool_routing_fixtures::{
     ADVERTISED_BUT_UNDISPATCHED_SOURCE, ARM_SHAPES_SOURCE, BYPASSING_SOURCE,
     COMMENT_ONLY_MENTION_SOURCE, COMPLIANT_SOURCE, DELEGATED_PRIVATE_EMIT_SOURCE,
-    EVENT_BUS_PRIVATE_EMIT_SOURCE, INLINE_ARM_SOURCE, LYING_SEAM_SOURCE, PRIVATE_EMIT_SOURCE,
-    STRING_ONLY_MENTION_SOURCE,
+    EVENT_BUS_PRIVATE_EMIT_SOURCE, INLINE_ARM_SOURCE, LYING_SEAM_SOURCE,
+    NAMED_NOT_CALLED_SEAM_SOURCE, PRIVATE_EMIT_SOURCE, STRING_ONLY_MENTION_SOURCE,
 };
 
 /// One way a `reify_*` write tool can break INV-GUI-2.
@@ -120,7 +127,7 @@ struct Bypass {
 /// NEITHER half of the gate.
 ///
 /// Retained approximation, in the module's fail-closed direction: the handler
-/// is the FIRST `identifier(` call in the arm, so a block arm that calls
+/// is the FIRST call ([`call_identifiers`]) in the arm, so a block arm that calls
 /// something else first (a guard, a `Box::pin`) resolves to the wrong fn and
 /// false-POSITIVES. Red, never silently green.
 fn dispatch_arms(code: &str) -> Vec<(String, String)> {
@@ -171,7 +178,7 @@ fn arm_pattern(trimmed: &str) -> Option<(Vec<String>, &str)> {
 /// catch-all, or a closing brace, so a block arm containing no call can never
 /// run on and mis-attribute the NEXT arm's handler to this tool.
 fn arm_handler(after_arrow: &str, following: &[&str]) -> Option<String> {
-    if let Some(handler) = first_call_identifier(after_arrow) {
+    if let Some(handler) = call_identifiers(after_arrow).next() {
         return Some(handler.to_string());
     }
     for line in following {
@@ -179,29 +186,37 @@ fn arm_handler(after_arrow: &str, following: &[&str]) -> Option<String> {
         if trimmed.starts_with('"') || trimmed.starts_with("_ =>") || trimmed.starts_with('}') {
             return None;
         }
-        if let Some(handler) = first_call_identifier(line) {
+        if let Some(handler) = call_identifiers(line).next() {
             return Some(handler.to_string());
         }
     }
     None
 }
 
-/// The first `identifier(` call in `text`, if any.
-fn first_call_identifier(text: &str) -> Option<&str> {
+/// Every identifier in `text` that appears in CALL position — a maximal
+/// `[A-Za-z0-9_]+` run immediately followed by `(`, in source order.
+///
+/// This is what distinguishes INVOKING a fn from merely naming one, and
+/// `debug_server.rs`'s seam and hop checks both rest on the difference: a
+/// seam named as a value, in dead code or in an unreachable branch runs no
+/// refresh, so it must not satisfy a check about where state reaches the
+/// baseline. A method call (`state.push_gui_state(`) yields its method name,
+/// which the callers above treat as a candidate top-level fn — the same
+/// approximation the whole module makes, and in its fail-closed direction.
+fn call_identifiers(text: &str) -> impl Iterator<Item = &str> {
     let mut ident_start: Option<usize> = None;
-    for (i, c) in text.char_indices() {
+    text.char_indices().filter_map(move |(i, c)| {
         if c.is_alphanumeric() || c == '_' {
             ident_start.get_or_insert(i);
-        } else {
-            if c == '('
-                && let Some(start) = ident_start
-            {
-                return Some(&text[start..i]);
-            }
-            ident_start = None;
+            return None;
         }
-    }
-    None
+        let call = (c == '(')
+            .then_some(ident_start)
+            .flatten()
+            .map(|start| &text[start..i]);
+        ident_start = None;
+        call
+    })
 }
 
 /// Names every `reify_*` tool the `ToolDef` registry ADVERTISES, in source
@@ -350,14 +365,15 @@ fn splice_into_fn_body(source: &str, fn_name: &str, stmt: &str) -> Option<String
     Some(format!("{head}\n{stmt}{tail}"))
 }
 
-/// True when `body` names any identifier ending in `_and_refresh_baseline`
-/// other than `own_name` (a fn's own signature line is part of its body).
-fn names_a_seam(body: &str, own_name: &str) -> bool {
-    identifiers(body).any(|id| id.ends_with("_and_refresh_baseline") && id != own_name)
+/// True when `body` CALLS an fn whose name ends in `_and_refresh_baseline`,
+/// other than `own_name` — a fn's own signature line is part of its body, and
+/// `fn foo(` is call-shaped.
+fn calls_a_seam(body: &str, own_name: &str) -> bool {
+    call_identifiers(body).any(|id| id.ends_with("_and_refresh_baseline") && id != own_name)
 }
 
-/// True when top-level fn `name`'s own body satisfies `holds`, or a resolvable
-/// top-level callee's body does exactly ONE delegation hop away.
+/// True when top-level fn `name`'s own body satisfies `holds`, or the body of
+/// a top-level fn it CALLS does, exactly ONE delegation hop away.
 ///
 /// One hop is exactly what `reify_open_file` needs — `handle_reify_open_file`
 /// delegates its entire body to `open_path_into_engine`, which is where both
@@ -373,6 +389,12 @@ fn names_a_seam(body: &str, own_name: &str) -> bool {
 /// of any depth-capped scan, and `write_on_engine_and_refresh_baseline`'s
 /// point (b) prose ("Do NOT add a second emit path here or in any caller") is
 /// what covers it.
+///
+/// A hop is a CALL ([`call_identifiers`]), not a mention, so a callee reached
+/// only as a fn VALUE — passed to a combinator, parked in a handler table —
+/// is not one. That residual splits the same way: fail-CLOSED for the seam
+/// check (the indirection reds, and a human looks), fail-OPEN for the emit
+/// check, where it joins the depth cap above under the same point (b) prose.
 fn within_one_hop(index: &FnIndex, name: &str, holds: impl Fn(&str, &str) -> bool) -> bool {
     let Some(body) = index.body(name) else {
         return false;
@@ -381,7 +403,7 @@ fn within_one_hop(index: &FnIndex, name: &str, holds: impl Fn(&str, &str) -> boo
         // DEDUPED first: a body names the same callee many times, and each
         // duplicate would otherwise re-probe the index and re-run `holds`
         // over the same hop body.
-        || identifiers(body)
+        || call_identifiers(body)
             .filter(|callee| *callee != name)
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -390,7 +412,7 @@ fn within_one_hop(index: &FnIndex, name: &str, holds: impl Fn(&str, &str) -> boo
 
 /// True when the top-level fn `name` reaches a `*_and_refresh_baseline` seam.
 fn reaches_a_seam(index: &FnIndex, name: &str) -> bool {
-    within_one_hop(index, name, names_a_seam)
+    within_one_hop(index, name, calls_a_seam)
 }
 
 /// The emission surface a write-tool handler must not reach into: naming any
@@ -424,6 +446,12 @@ const PRIVATE_EMIT_IDENTIFIERS: [&str; 3] = [
 /// The `.emit(` arm is FORWARD-LOOKING: it needs an `Emitter` value in scope,
 /// and `DebugServerState` (fields `engine`, `selection`, `debug_bridge`,
 /// `last_state`) cannot supply one until an `AppHandle` is added to it.
+///
+/// Deliberately matched on OCCURRENCE where [`calls_a_seam`] matches a call:
+/// the two want opposite margins. A seam merely named refreshes nothing, so
+/// counting it is fail-OPEN; an emission identifier merely named — handed to
+/// a combinator, stored for later — still reaches the emission surface, so
+/// counting it only over-reports, which is this half's safe direction.
 fn emits_privately(index: &FnIndex, name: &str) -> bool {
     within_one_hop(index, name, |body, _| {
         identifiers(body).any(|id| PRIVATE_EMIT_IDENTIFIERS.contains(&id))
@@ -606,14 +634,14 @@ fn unrefreshing_seams(source: &str) -> Vec<String> {
     let refreshes = |name: &str| {
         index
             .body(name)
-            .is_some_and(|body| identifiers(body).any(|id| id == "compute_delta"))
+            .is_some_and(|body| call_identifiers(body).any(|id| id == "compute_delta"))
     };
     let mut liars: Vec<String> = seam_fns(&code)
         .into_iter()
         .filter(|name| {
             !refreshes(name)
                 && !index.body(name).is_some_and(|body| {
-                    identifiers(body).any(|id| {
+                    call_identifiers(body).any(|id| {
                         id != *name && id.ends_with("_and_refresh_baseline") && refreshes(id)
                     })
                 })
@@ -818,6 +846,32 @@ fn the_string_scan_survives_slashes_and_escapes() {
     assert_eq!(prose_free.len(), url.len());
     assert!(prose_free.contains(".emit("));
     assert!(!prose_free.contains("http"));
+}
+
+/// The seam check matches a CALL, not a mention. A seam named as a fn VALUE
+/// never runs, and neither does a delegate named the same way — so neither
+/// refreshes a baseline, and neither may satisfy the check. Until this, any
+/// identifier OCCURRENCE in code did, which left `docs/debug-mcp-contract.md`'s
+/// "only a call does" claiming more than the gate delivered, in the fail-OPEN
+/// direction. (The comment/string half of that claim was already enforced, by
+/// [`blank_noncode`].)
+#[test]
+fn seam_named_but_never_called_does_not_count() {
+    assert_eq!(
+        write_tool_bypasses(NAMED_NOT_CALLED_SEAM_SOURCE),
+        vec![
+            Bypass {
+                tool: "reify_export".to_string(),
+                handler: "handle_reify_export".to_string(),
+                kind: BypassKind::NoBaselineRefresh,
+            },
+            Bypass {
+                tool: "reify_save_file".to_string(),
+                handler: "handle_reify_save_file".to_string(),
+                kind: BypassKind::NoBaselineRefresh,
+            },
+        ],
+    );
 }
 
 #[test]

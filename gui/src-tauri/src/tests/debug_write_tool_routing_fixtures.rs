@@ -378,6 +378,63 @@ pub async fn reify_export_on_engine_and_refresh_baseline(
 }
 "#;
 
+/// Two handlers that bypass their seam while NAMING one in code — the shape
+/// a raw identifier match greens, in both directions the checker traces:
+///
+/// - `handle_reify_save_file` names the seam itself as a fn VALUE. Naming is
+///   not calling, and an uncalled seam refreshes no baseline.
+/// - `handle_reify_export` names a DELEGATE that does call a seam. Nor is
+///   that a hop: the delegate never runs, so its seam is not this handler's.
+///
+/// `docs/debug-mcp-contract.md` states the rule as "only a call does"; this
+/// is what makes that true of the code rather than only of the prose. The
+/// shapes are ordinary — a fn item kept for a planned migration, a handler
+/// table — and both were false GREENS, the direction this module must never
+/// have.
+///
+/// Consumed by `seam_named_but_never_called_does_not_count`.
+pub(super) const NAMED_NOT_CALLED_SEAM_SOURCE: &str = r#"
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_export" => handle_reify_export(state, params).await,
+        "reify_save_file" => handle_reify_save_file(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+
+async fn handle_reify_save_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let path = reify_save_file_params(&params)?;
+    let _seam: SeamFn = open_source_into_engine_and_refresh_baseline;
+    let gs = run_on_engine(&state.engine, move |s| s.save_to(&path)).await?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
+    Ok(reify_save_file_envelope(&path))
+}
+
+async fn handle_reify_export(state: &DebugServerState, params: Value) -> Result<Value, String> {
+    let (format, output_path) = reify_export_params(&params)?;
+    let _delegate: OpenFn = open_path_into_engine;
+    let gs = run_on_engine(&state.engine, move |s| s.export(&format, &output_path)).await?;
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
+    Ok(reify_export_envelope(&output_path))
+}
+
+async fn open_path_into_engine(
+    state: &DebugServerState,
+    raw_path: &str,
+) -> Result<(Value, String), String> {
+    let path = canonicalize_open_path(raw_path)?;
+    let gui_state =
+        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
+            .await?;
+    let frontend = push_gui_state(&state.debug_bridge, &gui_state, None).await?;
+    Ok((frontend, gui_state.source.clone()))
+}
+"#;
+
 /// A fixture whose `ToolDef` registry advertises BOTH `reify_alpha` and
 /// `reify_beta` while `dispatch_tool` carries a literal arm for `reify_alpha`
 /// only — `reify_beta` falls through to the `_ =>` frontend-delegation
