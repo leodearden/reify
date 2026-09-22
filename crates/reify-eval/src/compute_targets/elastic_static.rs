@@ -4997,24 +4997,17 @@ fn extract_density(val: &Value) -> f64 {
 /// unreadable middle component to `0.0` would silently delete the load's
 /// entire direction, which is strictly worse than the unit-strip it replaces.
 ///
-/// A `Value::Undef` component is a THIRD class, distinct from both of the
-/// above (task #7019 review [reviewer_comprehensive], fixing a regression the
-/// initial `Result`-ification introduced): PRD decision 2 / acceptance row B6
-/// — an unresolved component is expected transient solver state, not a
-/// mistake, and degrades quietly to `0.0` per-component, with no diagnostic,
-/// exit 0. It does NOT take the `Err` path above (that is for *defined*
-/// values only) and does NOT take the shape-level fallback below (the
-/// `direction` field is present and correctly shaped; only one component is
-/// unresolved).
-///
-/// The `_ => [0.0, 0.0, -1.0]` fallback for genuinely malformed input is a
-/// separate, intentional forward-compatibility contract, pinned by
-/// `extract_loads_malformed_direction_defaults_to_neg_z`. This draws the
-/// boundary between the failure classes documented at this reader: an absent
-/// or mis-SHAPED `direction` (not 3 elements, not a Vector/List at all) keeps
-/// this documented fallback (decision 3, "Absent != wrong"); a PRESENT,
-/// DEFINED component that fails to read is a rejection (I2); a PRESENT,
-/// UNDEFINED component degrades quietly (decision 2).
+/// This reader draws THREE failure classes, each with its own outcome: an
+/// absent or mis-SHAPED `direction` (not 3 elements, not a Vector/List at
+/// all) keeps the `_ => [0.0, 0.0, -1.0]` fallback below — a separate,
+/// intentional forward-compatibility contract pinned by
+/// `extract_loads_malformed_direction_defaults_to_neg_z` (decision 3,
+/// "Absent != wrong"); a PRESENT, DEFINED component that fails to read is
+/// the `Err` above (invariant I2); a PRESENT but `Value::Undef` component —
+/// a THIRD class, distinct from both — degrades quietly to `0.0`
+/// per-component instead (decision 2). See [`ComponentRead`]'s doc for why
+/// that Undef policy belongs to this reader rather than to
+/// `dimensionless_component`/`spec_component`.
 fn read_direction_or_neg_z(direction: Option<&Value>) -> Result<[f64; 3], FeaValueShapeError> {
     match direction {
         Some(Value::Vector(elems) | Value::List(elems)) if elems.len() == 3 => {
@@ -9157,20 +9150,20 @@ mod tests {
         assert!((fz).abs() < 1e-9, "expected fz≈0, got {fz}");
     }
 
-    /// step-2 RED (task #7019, PRD invariant I2 — "no coercion: a reader
-    /// never substitutes a default, a `0.0` floor, or a `1.0` sentinel for a
-    /// *present* value", `docs/prds/v0_6/dimension-checked-readers.md:483-485`):
-    /// a PRESENT, correctly-SHAPED `direction` component that carries a unit
-    /// must be rejected, not silently coerced.
+    /// PRD invariant I2 ("no coercion: a reader never substitutes a
+    /// default, a `0.0` floor, or a `1.0` sentinel for a *present* value",
+    /// `dimension-checked-readers.md`) applied to a PRESENT,
+    /// correctly-SHAPED `direction` component that carries a unit: it must
+    /// be rejected, not silently coerced.
     ///
-    /// This two-stage wrongness is why step-3 cannot land the MaterialFrame
-    /// axis gate and this fix separately: TODAY the unit is silently
-    /// stripped and `fy == -800.0` (the LENGTH Scalar's SI magnitude read as
-    /// the bare component). If `dimensionless_component`'s gate landed
-    /// WITHOUT also Result-ifying `read_direction_or_neg_z`'s
-    /// `.unwrap_or(0.0)`, this same input would instead give `fy == 0.0` —
-    /// the whole load direction silently deleted, which is strictly worse
-    /// than the unit strip it replaces.
+    /// Why the MaterialFrame axis gate and this fix had to land in one
+    /// commit: gating `dimensionless_component` alone, without also
+    /// Result-ifying `read_direction_or_neg_z`'s old `.unwrap_or(0.0)`,
+    /// would have turned a unit-strip (this component's SI magnitude read
+    /// as the bare component, `fy == -800.0`) into something strictly
+    /// worse — the stale `.unwrap_or` would have coerced the now-rejected
+    /// component to `0.0`, silently deleting the whole load direction
+    /// instead of just stripping a unit from one axis.
     #[test]
     fn extract_loads_rejects_a_dimensioned_direction_component() {
         let dir = Value::Vector(vec![
@@ -9231,30 +9224,23 @@ mod tests {
         );
     }
 
-    /// step-7 RED (task #7019 review [reviewer_comprehensive], regression at
-    /// `elastic_static.rs:4941`): PRD `dimension-checked-readers.md` decision 2
-    /// — "**`Undef` in => `Undef` out, quietly.** `Acceptance::Undefined` keeps
-    /// its existing quiet degradation. Undef inputs are expected transient
-    /// state during solver iteration; only *defined-but-wrong* values are
-    /// rejected" — and acceptance row B6: "quiet degradation, **no**
-    /// diagnostic, exit 0". `arg_acceptance.rs`'s own `FieldAcceptance` rustdoc
-    /// restates it: "an `Undef` field is a value that has not resolved yet,
-    /// not a mistake. Only `Rejected` is a fault." Invariant I2 does not save
-    /// today's post-step-3 behaviour: its subject is a *present* — present and
-    /// DEFINED — value, and decision 2 carves `Undef` out as its own quiet
-    /// lane.
+    /// Regression guard (task #7019 review [reviewer_comprehensive]) for a
+    /// bug in an earlier version of `read_direction_or_neg_z`: folding
+    /// `Acceptance::Undefined` into the `Rejected` handling turned a
+    /// `Value::Undef` direction component into `Err(ExpectedScalar)`,
+    /// hard-failing the whole solve via `extract_loads` → `gate_or_fail!`
+    /// instead of degrading quietly. PRD `dimension-checked-readers.md`
+    /// decision 2 — "`Undef` in => `Undef` out, quietly" — and acceptance
+    /// row B6 forbid that: an unresolved component is expected transient
+    /// solver state, not a mistake, and only a *defined-but-wrong* value is
+    /// a fault. See [`ComponentRead`]'s doc for the fix (Undef surfaced to
+    /// the caller rather than folded away) and
+    /// `extract_vec3_si_treats_an_undef_component_as_a_shape_error` for the
+    /// sibling characterization lock on the OTHER reader's (deliberately
+    /// different) policy.
     ///
-    /// Pre-diff, `*slot = dimensionless_component(e).unwrap_or(0.0);` turned a
-    /// `Value::Undef` direction component into a quiet `0.0`. Post-step-3, the
-    /// same input goes `Value::Undef` → `accept_arg` → `Acceptance::Undefined`
-    /// (the FIRST match arm) → `spec_component`'s catch-all `_` arm →
-    /// `Err(ExpectedScalar)` → `?` → `extract_loads` `Err` →
-    /// `gate_or_fail!(..., "loads")` → `ComputeOutcome::Failed` with an
-    /// `error`-severity diagnostic — the whole elastic-static solve now
-    /// hard-fails on a transient unresolved value. This is a regression, not a
-    /// hardening.
-    ///
-    /// Four legs, all asserting `Ok` — today ALL FOUR fail with `Err`.
+    /// Four legs, covering both `PointLoad` and `Gravity` and both the
+    /// `Value::Vector` and `Value::List` direction spellings.
     #[test]
     fn extract_loads_undef_direction_component_degrades_quietly() {
         // (a) PointLoad, all-Undef-bearing direction: the pre-diff outcome
@@ -11244,16 +11230,16 @@ mod tests {
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
     }
 
-    /// step-4 RED (task #7019): `extract_point3_si` reads `aabb_min`/`aabb_max`
-    /// at a `Point3<Length>` position (:4180), but `dimensioned_component`
-    /// (plumbed in step-3, not yet narrowed) still accepts ANY dimensioned
-    /// `Value::Scalar` regardless of which dimension it carries — so a
-    /// MASS-dimensioned corner is silently read as SI metres. These corners
-    /// feed `reify_fdm::AxisAlignedBox` and drive `classify_point`'s
-    /// wall/skin/infill zone assignment, so a wrong-dimension corner
-    /// silently mis-zones the whole part. Narrowed to `length_spec()` in
-    /// step-5, which is what turns this `Err` from a fluke of "not a
-    /// Scalar" into a real dimension check.
+    /// `extract_point3_si` reads `aabb_min`/`aabb_max` at a `Point3<Length>`
+    /// position; [`dimensioned_component`] narrows to `length_spec()`, so a
+    /// MASS-dimensioned corner is rejected instead of having its SI
+    /// magnitude silently read as metres. These corners feed
+    /// `reify_fdm::AxisAlignedBox` and drive `classify_point`'s
+    /// wall/skin/infill zone assignment, so a wrong-dimension corner would
+    /// otherwise silently mis-zone the whole part. The assertion below pins
+    /// `WrongDimension` specifically, which is what makes this a real
+    /// dimension check rather than a fluke `ExpectedScalar` ("not a Scalar
+    /// at all").
     #[test]
     fn extract_point3_si_rejects_a_wrong_dimension_component() {
         let len = |v: f64| Value::Scalar {
@@ -11519,27 +11505,26 @@ mod tests {
         assert_eq!(extract_vec3_si(&vector), Ok([1.0, 2.0, 3.0]));
     }
 
-    /// step-1 RED (task #7019, PRD `dimension-checked-readers.md` Leg B):
-    /// `extract_vec3_si` must reject a MaterialFrame axis component that
-    /// carries a dimension other than DIMENSIONLESS, instead of silently
-    /// reinterpreting its SI magnitude as the bare axis component. Asserts
-    /// BOTH sides of the two-sided contract in one test, the way
-    /// `tensegrity_crack::crack_dimensionless_scalar`'s rustdoc states it.
+    /// PRD `dimension-checked-readers.md` Leg B: `extract_vec3_si` rejects a
+    /// MaterialFrame axis component that carries a dimension other than
+    /// DIMENSIONLESS, instead of silently reinterpreting its SI magnitude as
+    /// the bare axis component. Asserts BOTH sides of the two-sided contract
+    /// in one test, the way `tensegrity_crack::crack_dimensionless_scalar`'s
+    /// rustdoc states it.
     ///
-    /// REJECT half: today this returns `Ok([1.0, 0.0, 0.0])`, silently
-    /// reading 1 metre as the bare component 1.0. Nothing on the
-    /// `extract_vec3_si` → `AnisotropicMaterial::from_law` → `rotate_voigt`
-    /// path normalises the frame (see the FENCE test
+    /// REJECT half: without the gate this would return `Ok([1.0, 0.0,
+    /// 0.0])`, silently reading 1 metre as the bare component 1.0. Nothing
+    /// on the `extract_vec3_si` → `AnisotropicMaterial::from_law` →
+    /// `rotate_voigt` path normalises the frame (see the FENCE test
     /// `material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global`
     /// below) and `D_global` is homogeneous of degree 4 in the frame's
     /// entries, so a 1mm-spelled "unit" axis would silently rescale the
     /// stiffness by 1e-12 with no diagnostic.
     ///
-    /// ACCEPT half (characterization lock, passes today and must keep
-    /// passing): a `Value::Vector` of `Scalar{DIMENSIONLESS}`/`Real`/`Int`
-    /// components still reads `Ok([1.0, 2.0, 3.0])` — a future
-    /// over-tightening to "bare Real only" would be a regression, not a
-    /// hardening (PRD Leg B side 1).
+    /// ACCEPT half (characterization lock): a `Value::Vector` of
+    /// `Scalar{DIMENSIONLESS}`/`Real`/`Int` components still reads
+    /// `Ok([1.0, 2.0, 3.0])` — a future over-tightening to "bare Real only"
+    /// would be a regression, not a hardening (PRD Leg B side 1).
     #[test]
     fn extract_vec3_si_rejects_a_dimensioned_axis_component() {
         let dimensioned = Value::Vector(vec![

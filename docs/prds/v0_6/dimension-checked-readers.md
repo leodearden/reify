@@ -246,8 +246,8 @@ positive/negative lists are in the leaf bodies):
   to `rotate_voigt` path normalises the frame, and `D_global` is homogeneous of degree
   4 in its entries, so orthonormality remains a real but UNENFORCED precondition,
   pinned as such by the FENCE test
-  `material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global`
-  (`elastic_static.rs:12341`). Lesson, generalisable beyond this one position class: a
+  `material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global`.
+  Lesson, generalisable beyond this one position class: a
   position class is "already strict" only if the gating helper's call sites cover
   *every* reader at that class, not merely because one helper for that shape exists
   somewhere in the workspace.
