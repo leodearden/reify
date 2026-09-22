@@ -239,8 +239,9 @@ pub fn form_find_anchored(
 /// above, govern the surfaces fixed point's STOP CRITERION only, via
 /// [`free_equilibrium_residual_relative`]. `solve_reduced`'s own post-solve
 /// singularity guard is a separate, pre-existing, mixed absolute/relative
-/// test that is not itself proven gauge-invariant — see that function's doc,
-/// which is shared by the (already gauge-covariant) line-only path too.
+/// test that is not itself proven gauge-invariant — see
+/// [`is_singular_reduced_solve`]'s doc; that guard is shared by the (already
+/// gauge-covariant) line-only path too.
 const SURFACE_EQUILIBRIUM_REL_TOL: f64 = 1e-11;
 
 /// Iteration cap for the cotangent fixed point. The Picard iteration converges
@@ -466,18 +467,11 @@ fn assemble_d(
 /// Solve the reduced anchored system `D_ff X_f = −D_fa X_a` once for the given
 /// (already-assembled) `D` and geometry, scattering the solved free rows back
 /// into a full node vector. The partition → faer partial-pivot LU → non-finite +
-/// scaled-residual guard is the landed line-solve core, extracted verbatim so
-/// the line and surface entries share it (the surface entry calls it once per
-/// fixed-point iteration). Returns [`FormFindError::SingularReducedStiffness`]
-/// when the reduced system is rank-deficient.
-///
-/// SCOPE: the post-solve guard below — `residual_inf > 1e-6 * (1.0 +
-/// rhs_scale)` — is a MIXED absolute/relative test, so unlike
-/// [`free_equilibrium_residual_relative`]'s stop criterion its effective
-/// strictness varies with a uniform `(q, σ) → (λq, λσ)` rescale (the additive
-/// `1.0` does not scale). Task 6119 made the surfaces fixed point's STOP
-/// criterion gauge-invariant and left this pre-existing guard unchanged, so a
-/// marginal input could still take a different branch at two gauges.
+/// scaled-residual guard ([`is_singular_reduced_solve`]) is the landed
+/// line-solve core, extracted so the line and surface entries share it (the
+/// surface entry calls it once per fixed-point iteration). Returns
+/// [`FormFindError::SingularReducedStiffness`] when the reduced system is
+/// rank-deficient.
 fn solve_reduced(
     d: &Mat<f64>,
     nodes: &[[f64; 3]],
@@ -502,9 +496,6 @@ fn solve_reduced(
         }
     }
 
-    // Retain the unmodified RHS — `solve_in_place` overwrites `rhs` with the
-    // solution, but the post-solve residual check below needs the original.
-    let rhs_orig = rhs.clone();
     let plu = dff.partial_piv_lu();
     plu.solve_in_place(&mut rhs);
 
@@ -515,27 +506,54 @@ fn solve_reduced(
         out_nodes[gi] = [rhs[(fi, 0)], rhs[(fi, 1)], rhs[(fi, 2)]];
     }
 
-    // Post-solve guard: a singular / disconnected D_ff makes the LU solve
-    // produce a non-finite or non-equilibrium result — surface
-    // SingularReducedStiffness rather than NaNs / a silently wrong geometry.
-    let any_nonfinite = out_nodes.iter().any(|p| p.iter().any(|c| !c.is_finite()));
-    let mut residual_inf = 0.0_f64;
-    let mut rhs_scale = 0.0_f64;
-    for fi in 0..nf {
-        for axis in 0..3 {
-            let mut row_dot = 0.0;
-            for fj in 0..nf {
-                row_dot += dff[(fi, fj)] * rhs[(fj, axis)];
-            }
-            residual_inf = residual_inf.max((row_dot - rhs_orig[(fi, axis)]).abs());
-            rhs_scale = rhs_scale.max(rhs_orig[(fi, axis)].abs());
-        }
-    }
-    if any_nonfinite || residual_inf > 1e-6 * (1.0 + rhs_scale) {
+    if is_singular_reduced_solve(d, &out_nodes, free_indices) {
         return Err(FormFindError::SingularReducedStiffness);
     }
 
     Ok(out_nodes)
+}
+
+/// Post-solve guard for [`solve_reduced`]: true when the solved geometry must
+/// be rejected as [`FormFindError::SingularReducedStiffness`]. A singular /
+/// disconnected `D_ff` makes the LU solve produce a non-finite or
+/// non-equilibrium result, which must surface as a diagnostic rather than NaNs
+/// or a silently wrong geometry. The residual is `D_ff·x_f − b` with
+/// `b = −D_fa·x_a`, read off the free rows of `d` at `solved` (anchors are the
+/// complement of `free_indices` and keep their input coordinates there).
+///
+/// SCOPE: the residual test — `residual_inf > 1e-6 * (1.0 + rhs_scale)` — is a
+/// MIXED absolute/relative test, so unlike
+/// [`free_equilibrium_residual_relative`]'s stop criterion its effective
+/// strictness varies with a uniform `(q, σ) → (λq, λσ)` rescale (the additive
+/// `1.0` does not scale). Task 6119 made the surfaces fixed point's STOP
+/// criterion gauge-invariant and left this pre-existing guard unchanged, so a
+/// marginal input could still take a different branch at two gauges.
+#[allow(clippy::needless_range_loop)]
+fn is_singular_reduced_solve(d: &Mat<f64>, solved: &[[f64; 3]], free_indices: &[usize]) -> bool {
+    let n = solved.len();
+    let any_nonfinite = solved.iter().any(|p| p.iter().any(|c| !c.is_finite()));
+    let mut is_free = vec![false; n];
+    for &i in free_indices {
+        is_free[i] = true;
+    }
+    let mut residual_inf = 0.0_f64;
+    let mut rhs_scale = 0.0_f64;
+    for &i in free_indices {
+        for axis in 0..3 {
+            let mut lhs = 0.0;
+            let mut rhs = 0.0;
+            for j in 0..n {
+                if is_free[j] {
+                    lhs += d[(i, j)] * solved[j][axis];
+                } else {
+                    rhs -= d[(i, j)] * solved[j][axis];
+                }
+            }
+            residual_inf = residual_inf.max((lhs - rhs).abs());
+            rhs_scale = rhs_scale.max(rhs.abs());
+        }
+    }
+    any_nonfinite || residual_inf > 1e-6 * (1.0 + rhs_scale)
 }
 
 /// Free-node equilibrium residual `‖(D·x)_free‖∞ / (1+scale) / d_scale` — the
