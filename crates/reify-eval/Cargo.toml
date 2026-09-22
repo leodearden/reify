@@ -7,12 +7,11 @@ description = "Engine facade and evaluation loop for Reify"
 
 [dependencies]
 reify-ast.workspace = true
-# Task 7245: the persistent compute cache serialises a `PersistedDiagnostic`
-# wire mirror carrying `code: Option<DiagnosticCode>`, whose Serialize/Deserialize
-# derives are `#[cfg_attr(feature = "serde", ...)]`-gated in reify-core. Declared
-# here rather than relying on feature unification from reify-lsp/reify-mcp, which
-# would break under `cargo check -p reify-eval`. Same form as
-# crates/reify-lsp/Cargo.toml:10 and crates/reify-mcp/Cargo.toml:9.
+# Task 7245: the persistent compute cache persists `DiagnosticCode` by its serde
+# name (src/persistent_cache.rs), and reify-core gates those derives behind its
+# `serde` feature. Declared here, in the same form reify-lsp and reify-mcp use,
+# rather than relying on feature unification from them, which would break under
+# `cargo check -p reify-eval`.
 reify-core = { workspace = true, features = ["serde"] }
 reify-config.workspace = true
 reify-ir.workspace = true
@@ -59,11 +58,8 @@ bincode.workspace = true
 bytemuck.workspace = true
 inventory.workspace = true
 serde = { workspace = true, features = ["derive"] }
-# Task 7245: `PersistedDiagnostic` persists `DiagnosticCode` as its stable serde
-# NAME rather than bincode's positional variant index (see
-# src/persistent_cache.rs). serde_json is the codec that reaches that name —
-# `DiagnosticCode` has no mnemonic/`FromStr` round-trip. Production code, so a
-# normal dep.
+# Task 7245: the codec that reaches `DiagnosticCode`'s stable serde name for the
+# persistent cache; `DiagnosticCode` has no mnemonic/`FromStr` round-trip.
 serde_json.workspace = true
 tracing.workspace = true
 xxhash-rust = { workspace = true }

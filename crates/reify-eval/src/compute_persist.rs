@@ -549,8 +549,8 @@ mod tests {
     /// (1) Persistent WRITE: after a Completed `solver::elastic_static` dispatch
     /// with a non-zero `cache_key` and a configured cache dir, a `.bin` file
     /// appears at `entry_bin_path(cache_dir, ENGINE_VERSION_HASH, "{cache_key}")`
-    /// and `read_entry::<ElasticResult>` round-trips with a matching
-    /// `max_von_mises`.
+    /// and `read_entry::<WithDiagnostics<ElasticResult>>` round-trips with a
+    /// matching `max_von_mises`.
     ///
     /// Fails to compile until step-6 adds `set_persistent_cache_dir` +
     /// `cache_key` param to `run_compute_dispatch`.
@@ -1757,17 +1757,10 @@ mod tests {
         // a `DiagnosticLabel` whenever the span is `Some`.
         //
         // Why this path is persisted at all: `UnderConstrained` is NOT an error
-        // (`FeaFailure::is_error`, crates/reify-solver-elastic/src/diagnostics.rs
-        // lists only SingularStiffness / LoadOnInterior / SelectorNoMatch), so
-        // the solve completes and the entry IS written.
+        // (`FeaFailure::is_error` lists only SingularStiffness / LoadOnInterior
+        // / SelectorNoMatch), so the solve completes and the entry IS written.
         //
-        // The warm serve replays it WITHOUT the label: the persistent key is
-        // span-invariant by design, so the same entry serves two source layouts
-        // with identical FEA inputs, and a replayed span would anchor into
-        // unrelated text (see `persistent_cache::PersistedDiagnostic`'s "Why
-        // labels are not carried"). Nothing an author reads is lost — the label
-        // message here is `failure.message()`, verbatim the diagnostic's own
-        // `message`, which IS replayed.
+        // Why the label is not replayed: see `PersistedDiagnostic`.
         let diag = crate::compute_targets::fea_diagnostics::fea_diagnostic_to_core(
             &reify_solver_elastic::FeaFailure::UnderConstrained { support_count: 2 },
             Some(reify_core::SourceSpan::new(41, 57)),

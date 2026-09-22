@@ -161,7 +161,7 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 ///   cold-recomputed once. Note that [`ENGINE_VERSION_HASH`] would NOT have
 ///   invalidated these entries on its own — its contributor set covers the
 ///   solver sources, not this module.
-/// - **3** (task 7245 review fix) — [`PersistedDiagnostic`], the element type
+/// - **3** (task 7245 review fix) — `PersistedDiagnostic`, the element type
 ///   inside that block, is itself reshaped: `code` is now the stable serde
 ///   variant NAME rather than bincode's positional variant index, and `labels`
 ///   and `candidates` are carried. Same migration mechanism as v1 → v2, and it
@@ -171,10 +171,10 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 ///   would be served by a reader whose element shape has changed. Pinned by
 ///   `v2_entry_reads_as_clean_miss`.
 /// - **4** (task 7245 second review fix) — `labels` is REMOVED from
-///   [`PersistedDiagnostic`] again, this time for a correctness reason rather
+///   `PersistedDiagnostic` again, this time for a correctness reason rather
 ///   than the audit-of-producers premise that v3 rightly rejected: a label
 ///   carries absolute byte offsets into a source text that this cache's key
-///   does not identify. See [`PersistedDiagnostic`]'s "Why labels are not
+///   does not identify. See `PersistedDiagnostic`'s "Why `labels` are not
 ///   carried". Same migration mechanism as the two bumps above.
 pub const ENTRY_FORMAT_VERSION: u32 = 4;
 
@@ -759,97 +759,44 @@ impl PersistentlyCacheable for BucklingResultCache {
 ///
 /// A mirror rather than a serde derive on `Diagnostic` itself: `Diagnostic` is
 /// `#[non_exhaustive]` and carries no serde impls, and this cache must own its
-/// wire format independently of that type's evolution.
+/// wire format independently of that type's evolution. reify-shell-extract's
+/// `DiagnosticOnDisk` is not reused because it drops `code`, which LSP,
+/// `--json` output and this cache's acceptance tests key off.
 ///
-/// # Carried fields
-///
-/// Four of `Diagnostic`'s five fields are carried: `severity`, `message`,
-/// `code` and `candidates`. `labels` is deliberately NOT — see below.
-///
-/// `code` is the field the sibling mirror `DiagnosticOnDisk` in
-/// `crates/reify-shell-extract/src/result.rs:407` deliberately drops, which is
-/// why that mirror cannot be reused as-is: downstream consumers (LSP, `--json`
-/// output) and this cache's acceptance tests key off `DiagnosticCode`, not
-/// message substrings.
-///
-/// `candidates` has no producer on the persisted path today, and is carried
-/// anyway: it is source-independent, so persisting it costs nothing and leaves
-/// no audit-dependent premise in the wire format.
+/// `severity`, `message`, `code` and `candidates` are carried; `labels` is
+/// not. A field `Diagnostic` gains upstream takes its builder default here
+/// until this mirror is extended.
 ///
 /// # Why `labels` are not carried
 ///
-/// A `DiagnosticLabel` anchors a message to a [`reify_core::SourceSpan`] —
-/// absolute byte offsets into one specific source text. This cache's key does
-/// not identify that text. `Value::content_hash` excludes the `@@source_span`
-/// overlay by design (`crates/reify-ir/src/value.rs`'s
-/// `source_span_excluded_from_identity`: "source location must never perturb
-/// the persistent cache key"), and `compute_cache_key` composes only
-/// `ValueCellNode.content_hash` plus `options_hash` — `CompiledExpr` carries no
-/// span at all. So two evaluations with identical FEA inputs and DIFFERENT
-/// source layouts share one key.
-///
-/// Replaying a persisted span across that boundary is a silent wrong-data path:
-/// insert a comment line above a support declaration, or copy the design into a
-/// second `.ri` file with a different preamble, and the warm serve anchors the
-/// label at offsets belonging to the OLD text. `crates/reify-cli/src/mcp_context.rs`
-/// feeds `label.span` straight into `reify_core::byte_offset_to_line_col`, whose
-/// `debug_assert!(offset <= source.len())` panics the debug GUI/MCP binary when
-/// the new file is shorter, and silently highlights an unrelated region in
-/// release.
-///
-/// A warm serve therefore replays an UNANCHORED diagnostic: strictly less
-/// precise than the cold one, never mis-pointing. The label message is not lost
-/// information in practice — `fea_diagnostic_to_core`
-/// (`compute_targets/fea_diagnostics.rs`) builds the label with
-/// `failure.message()`, verbatim the same string as the diagnostic's own
-/// `message`, which IS carried. Downstream sees `labels.is_empty()`, the same
-/// "no user-file location" shape it already handles for uncoded diagnostics.
-///
-/// Re-anchoring instead of dropping would need the span re-derived from the
-/// live `value_inputs` at each dispatch site; that is per-emitter work and is
-/// not generically recoverable from the persisted label, so it is deliberately
-/// out of scope here. Pinned by
-/// `with_diagnostics_round_trip_drops_labels_and_keeps_candidates`.
-///
-/// `Diagnostic` is `#[non_exhaustive]`, so this is a claim about today's five
-/// fields — a sixth added upstream would silently take its builder default
-/// here. This doc plus that test are the tripwire.
-///
-/// `severity` is an explicit `u8` discriminant (not `Severity`'s serde derive)
-/// so a corrupt byte is rejected loudly by [`severity_from_u8`] instead of
-/// deserialising into some default.
+/// A label anchors its message to a [`reify_core::SourceSpan`]: absolute byte
+/// offsets into one source text. This cache's key does not identify that text
+/// — `Value::content_hash` excludes the `@@source_span` overlay by design, and
+/// `compute_cache_key` sees no spans — so two source layouts with identical
+/// FEA inputs share one entry. A replayed span would anchor into the wrong
+/// text, and `byte_offset_to_line_col` `debug_assert!`-panics when that text
+/// is the shorter one. A warm serve therefore replays an UNANCHORED
+/// diagnostic: less precise than the cold one, never mis-pointing. The label's
+/// text survives in practice, because `fea_diagnostic_to_core` labels with the
+/// diagnostic's own `message`.
 ///
 /// # Why `code` is persisted as a NAME
 ///
-/// bincode encodes a derived enum POSITIONALLY, as a u32 variant index; it
-/// never consults `rename_all`, so riding `DiagnosticCode`'s PascalCase serde
-/// derive directly would put a bare index on the wire. `DiagnosticCode` is
-/// grouped by category, so a new code is realistically INSERTED mid-enum — and
-/// nothing invalidates existing entries when that happens:
-/// [`ENTRY_FORMAT_VERSION`] does not move on an enum edit, and
-/// `crates/reify-core/src/diagnostics.rs` is deliberately NOT in
-/// `CONTRIBUTORS_RELATIVE` (engine_hash_algo.rs:101, as this module already
-/// notes above). Every cached entry would then silently re-read as its
-/// NEIGHBOURING code.
-///
-/// Persisting the stable serde name (via [`code_to_wire_name`] /
-/// [`code_from_wire_name`]) makes an insertion a non-event. A rename or a
-/// removal degrades to `None` rather than to a wrong variant. Pinned by
-/// `persisted_diagnostic_code_is_encoded_by_name_not_variant_index` and
-/// `unrecognised_code_name_decodes_to_none`.
+/// bincode encodes an enum as its positional variant index. `DiagnosticCode`
+/// is grouped by category, so new codes are inserted mid-enum, and nothing
+/// invalidates cached entries when that happens: [`ENTRY_FORMAT_VERSION`] does
+/// not move, and reify-core is not in `CONTRIBUTORS_RELATIVE`, so neither does
+/// [`ENGINE_VERSION_HASH`]. An index would silently re-read every entry as its
+/// neighbouring code; a name makes an insertion a non-event and degrades a
+/// rename or removal to `None`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct PersistedDiagnostic {
-    /// 0 = `Severity::Info`, 1 = `Severity::Warning`, 2 = `Severity::Error`.
-    /// Unknown discriminants on read are rejected with `InvalidData`.
+    /// Encoded by [`severity_to_u8`]; an unknown byte is rejected loudly by
+    /// [`severity_from_u8`] rather than deserialised into a default.
     severity: u8,
     message: String,
-    /// The code's stable serde variant name (PascalCase), never its positional
-    /// index. `None` covers both "uncoded" and "a name this build no longer
-    /// knows" — see the type docs.
+    /// The stable serde variant name, never the positional index.
     code: Option<String>,
-    /// No `labels`: a label's `SourceSpan` is only meaningful against the
-    /// source text it was computed from, and this cache's key is
-    /// span-invariant. See the type docs.
     candidates: Vec<String>,
 }
 
@@ -991,23 +938,22 @@ fn encode_diagnostics_block(diagnostics: &[reify_core::Diagnostic]) -> Vec<u8> {
 ///
 /// The diagnostics block is written BEFORE `V`'s body, never appended after
 /// it. `ElasticResult`'s body ends with a CONDITIONAL probe-byte tail:
-/// `read_aposteriori_tail` (reify-compute-contract/src/elastic_result.rs:408)
-/// does a greedy `r.read(&mut probe)` and treats `probe_n == 0` as "no tail".
+/// reify-compute-contract's `read_aposteriori_tail` does a greedy
+/// `r.read(&mut probe)` and treats `probe_n == 0` as "no tail".
 /// For the very common entry with `aposteriori: None` AND a non-empty
 /// diagnostics list, a suffix would have that read swallow the block's first
 /// byte and decode it as an aposteriori discriminant — a silent wrong-data
 /// path, the worst failure mode for a cache. A prefix is fully self-delimiting
-/// and cannot interact with any `V`'s internal greedy tails. Pinned by
-/// `with_diagnostics_prefix_survives_absent_aposteriori_tail`.
+/// and cannot interact with any `V`'s internal greedy tails.
 ///
-/// A prefix is not backward-readable, which is why [`ENTRY_FORMAT_VERSION`] is
-/// 2: `verify_format_version` runs BEFORE the body decode, so every v1 entry
-/// becomes a clean miss and a one-time cold recompute.
+/// A prefix is not backward-readable, so introducing this envelope bumped
+/// [`ENTRY_FORMAT_VERSION`] (see its version history): `verify_format_version`
+/// runs BEFORE the body decode, so every pre-envelope entry becomes a clean
+/// miss and a one-time cold recompute.
 #[derive(Debug, Clone)]
 pub struct WithDiagnostics<V> {
-    /// Diagnostics emitted by the solve that produced `value`, replayed
-    /// verbatim on a warm serve — every field of every diagnostic, see
-    /// [`PersistedDiagnostic`].
+    /// Diagnostics emitted by the solve that produced `value`, replayed on a
+    /// warm serve without their source labels (see `PersistedDiagnostic`).
     pub diagnostics: Vec<reify_core::Diagnostic>,
     /// The persisted result payload.
     pub value: V,
@@ -3244,22 +3190,8 @@ version = "9.9.9"
         // versioning; these two consts are intentionally distinct namespaces
         // (entry-header layout vs. body encoding).
         //
-        // v1 → v2 (task 7245): the body gained a length-framed diagnostics
-        // prefix ahead of the `PersistentlyCacheable` body, so v1 entries are
-        // not readable and must be rejected before the body decode is attempted.
-        //
-        // v2 → v3 (task 7245 review fix): `PersistedDiagnostic` itself was
-        // reshaped — `code` became a stable serde variant NAME instead of
-        // bincode's positional variant index, and `labels` / `candidates` are
-        // now carried — so a v2-era entry in a developer or CI cache dir is no
-        // longer decodable under this reader.
-        //
-        // v3 → v4 (task 7245 second review fix): `labels` came back OUT. A
-        // label's `SourceSpan` is absolute byte offsets into one source text,
-        // and this cache's key is span-invariant by design, so a replayed label
-        // can anchor into unrelated source — see `PersistedDiagnostic`'s "Why
-        // labels are not carried". A v3-era entry must therefore not be decoded
-        // by this reader either.
+        // What each bump changed is recorded once, in the version history on
+        // `ENTRY_FORMAT_VERSION` itself; extend it there with the bump.
         assert_eq!(ENTRY_FORMAT_VERSION, 4);
     }
 
@@ -5581,14 +5513,6 @@ version = "9.9.9"
     }
 
     // ── PersistedDiagnostic wire-mirror tests (task 7245) ─────────────────────
-    //
-    // The mirror is the piece that lets a warm on-disk serve replay the
-    // solver diagnostics a cold serve emitted. It follows the proven
-    // `DiagnosticOnDisk` idiom in crates/reify-shell-extract/src/result.rs:407
-    // (explicit u8 severity discriminant, `InvalidData` on an unknown byte)
-    // but EXTENDS it with `code`, which that mirror deliberately drops —
-    // `DiagnosticCode` is what this task's acceptance is stated in terms of
-    // (`W_SHELL_TOO_THICK`) and what LSP / `--json` consumers key off.
 
     /// The canonical too-thick warning, shaped exactly as the solver emits it
     /// (`Diagnostic::warning(..).with_code(..)`, no labels, no candidates) —
@@ -5677,15 +5601,6 @@ version = "9.9.9"
 
     #[test]
     fn persisted_diagnostic_code_is_encoded_by_name_not_variant_index() {
-        // `DiagnosticCode` is grouped by category, so a new code is realistically
-        // INSERTED mid-enum — and nothing invalidates existing entries when that
-        // happens (`ENTRY_FORMAT_VERSION` does not move on an enum edit, and
-        // crates/reify-core/src/diagnostics.rs is deliberately absent from
-        // `CONTRIBUTORS_RELATIVE`). A positional encoding would therefore have
-        // every already-cached entry silently re-read as its NEIGHBOURING code.
-        // Persisting the stable serde name is what makes an insertion a
-        // non-event; the name appearing verbatim in the bytes is the whole
-        // invariant.
         let block = encode_diagnostics_block(&[reify_core::Diagnostic::warning("m")
             .with_code(reify_core::DiagnosticCode::ShellTooThick)]);
         assert!(
@@ -5697,12 +5612,6 @@ version = "9.9.9"
 
     #[test]
     fn unrecognised_code_name_decodes_to_none() {
-        // The other half of a name-based wire format: a name this build does not
-        // know (a code renamed or removed upstream, or an entry written by a
-        // newer engine) must degrade to `None` with severity and message intact.
-        // Never an `Err` — rejecting the entry would throw away a still-valid
-        // cached solve — and never a neighbouring variant, which is exactly what
-        // a positional encoding would silently produce.
         let from_the_future = PersistedDiagnostic {
             severity: 1,
             message: "written by a newer engine".to_string(),
@@ -5750,11 +5659,6 @@ version = "9.9.9"
     }
 
     // ── WithDiagnostics<V> envelope tests (task 7245) ─────────────────────────
-    //
-    // The envelope is what makes diagnostics replayable for EVERY persistable
-    // target rather than per-record. It is generic over `V: PersistentlyCacheable`
-    // and drops straight into the existing `write_entry` / `read_entry`
-    // machinery with only a turbofish change at the compute_persist call sites.
 
     /// `make_sample_result` with the task-#4942 aposteriori tail PRESENT, so the
     /// round-trip covers a body whose full tail chain is written.
@@ -5834,16 +5738,7 @@ version = "9.9.9"
 
     #[test]
     fn with_diagnostics_prefix_survives_absent_aposteriori_tail() {
-        // THE prefix-ordering regression. `ElasticResult`'s body ends with a
-        // CONDITIONAL probe-byte tail: `read_aposteriori_tail`
-        // (reify-compute-contract/src/elastic_result.rs:408) greedily `read`s
-        // one byte and treats `probe_n == 0` as "no tail". If the diagnostics
-        // block were appended as a SUFFIX, an entry with `aposteriori: None`
-        // plus a non-empty diagnostics list would have that greedy read swallow
-        // the block's first byte and decode it as an aposteriori discriminant —
-        // a silent wrong-data path. Writing the block as a PREFIX makes it
-        // fully self-delimiting and unable to interact with any `V`'s internal
-        // greedy tails.
+        // THE prefix-ordering regression; see `WithDiagnostics`'s wire layout.
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let eng = "abcdef0123456789abcdef0123456789";
@@ -5883,7 +5778,7 @@ version = "9.9.9"
 
     #[test]
     fn with_diagnostics_header_byte_size_matches_uncompressed_body() {
-        // Forwarding pin for (d): `solve_time_ms` passes through to `V`, and
+        // Forwarding pin: `solve_time_ms` passes through to `V`, and
         // `uncompressed_byte_size` accounts for the diagnostics prefix so
         // `CacheEntryHeader.byte_size` stays the true uncompressed body length —
         // the invariant held by
@@ -5934,20 +5829,8 @@ version = "9.9.9"
 
     #[test]
     fn with_diagnostics_round_trip_drops_labels_and_keeps_candidates() {
-        // The two halves of the mirror's contract, pinned together because they
-        // are decided by the SAME question — is this field meaningful without
-        // the source text the cache key does not identify?
-        //
-        // `candidates` is: it is a list of symbol names, so it round-trips.
-        //
-        // `labels` is not: a label anchors a message to absolute byte offsets,
-        // and `compute_cache_key` is span-invariant by design (reify-ir's
-        // `source_span_excluded_from_identity`). Two source layouts with
-        // identical FEA inputs share one entry, so a replayed span can point at
-        // unrelated text — and `mcp_context` feeds it to
-        // `byte_offset_to_line_col`, whose `debug_assert` panics a debug
-        // GUI/MCP binary when the newer file is shorter. A warm serve replays
-        // an unanchored diagnostic instead: less precise, never wrong.
+        // Both halves turn on one question — is the field meaningful without
+        // the source text the key does not identify? See `PersistedDiagnostic`.
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let eng = "abcdef0123456789abcdef0123456789";
