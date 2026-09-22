@@ -751,4 +751,118 @@ mod tests {
             }
         }
     }
+
+    /// ITEM 1 of task #7021. The [`DeclineCause::InputsDiffer`] detail reaches a
+    /// user-facing warning, and `Value` derives `Debug` — so a `SampledField`,
+    /// `Matrix` or mesh-bearing `List` input renders its WHOLE payload into the
+    /// message, paying a multi-megabyte transient allocation and a full `Debug`
+    /// traversal to print something no reader can use.
+    ///
+    /// Two arms, because the bound is only half the contract:
+    ///
+    /// * (a) THE BOUND — an enormous value must leave the detail short, while
+    ///   still naming the read cell and the elided value's VARIANT. The bound is
+    ///   met by SUMMARISING, not by dropping the identification the reader needs
+    ///   in order to find the input that diverged.
+    /// * (b) THE COMPANION — a small scalar override, which is the dominant real
+    ///   case, must still print its payload verbatim. Without this arm, (a) would
+    ///   be satisfiable by printing variant names only, and `Int vs Int` is
+    ///   strictly less actionable than the message this task set out to improve.
+    ///
+    /// The gate is type-blind (a raw `ValueMap` lookup plus `Value` equality), so
+    /// the maps are hand-built here exactly as
+    /// `resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref`
+    /// hand-mints its `GeometryHandle`s — the declaration's type is not what the
+    /// comparison reads.
+    #[test]
+    fn input_divergence_detail_is_bounded_for_an_enormous_value() {
+        let source = r#"
+            @optimized("test::bounded")
+            fn bounded_opt(xs : List<Real>) -> Int {
+                7
+            }
+
+            structure BoundedLike {
+                param xs : List<Real> = [1.0]
+                let r = bounded_opt(xs)
+            }
+        "#;
+        let module = reify_test_support::compile_source_with_stdlib(source);
+        let errors = reify_test_support::collect_errors(&module.diagnostics);
+        assert!(errors.is_empty(), "fixture must compile clean: {errors:?}");
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == "BoundedLike")
+            .expect("BoundedLike template");
+        let expr = reify_test_support::get_let_expr_in(&module, "BoundedLike", "r");
+        let names = OptimizedNameIndex::new(&module.functions);
+
+        // The read cell is `BoundedLike.xs`; the template OUTPUT cell is present
+        // in `global_values` so the READ LOOP is what decides, not the
+        // absent-output branch.
+        let declining_detail = |instance: Value, global: Value| -> String {
+            let mut instance_values = ValueMap::new();
+            instance_values.insert(ValueCellId::new("BoundedLike", "xs"), instance);
+            let mut global_values = ValueMap::new();
+            global_values.insert(ValueCellId::new("BoundedLike", "xs"), global);
+            global_values.insert(ValueCellId::new("BoundedLike", "r"), Value::Int(777));
+            match resolve_optimized_instance_cell(
+                expr,
+                &names,
+                template,
+                "r",
+                || extract_dependency_trace(expr).reads,
+                &instance_values,
+                &global_values,
+            ) {
+                OptimizedInstanceResolution::Unreusable {
+                    cause: DeclineCause::InputsDiffer { detail },
+                    ..
+                } => detail,
+                OptimizedInstanceResolution::Unreusable { cause, .. } => {
+                    panic!("two present-and-unequal inputs must decline as InputsDiffer: {cause:?}")
+                }
+                OptimizedInstanceResolution::Reuse(v) => {
+                    panic!("unequal inputs must not reuse the template's value ({v:?})")
+                }
+                OptimizedInstanceResolution::NotOptimized => {
+                    panic!("`bounded_opt` carries @optimized; the probe must see it")
+                }
+            }
+        };
+
+        // (a) THE BOUND. A 20_000-element list of long-decimal reals renders to
+        // hundreds of KB under a bare `{:?}`.
+        let enormous = Value::List(vec![Value::Real(1.234_567_890_123_4); 20_000]);
+        let detail = declining_detail(enormous, Value::List(vec![Value::Real(1.0)]));
+        assert!(
+            detail.chars().count() <= 400,
+            "the InputsDiffer detail must stay a readable fragment: the ceiling is \
+             TWO per-side render budgets plus the fixed prose between them, so it \
+             holds by construction rather than by tuning. Got {} chars: {:.200}…",
+            detail.chars().count(),
+            detail
+        );
+        assert!(
+            detail.contains("BoundedLike.xs"),
+            "the bound must not cost the reader the identity of the input that \
+             diverged — the detail is the only place the read cell is named: {detail}"
+        );
+        assert!(
+            detail.contains("List"),
+            "an elided payload must still name its VARIANT, so the reader knows \
+             what kind of value was too large to print: {detail}"
+        );
+
+        // (b) THE COMPANION. The small constructor-override case must keep
+        // printing both payloads verbatim.
+        let detail = declining_detail(Value::Int(10), Value::Int(3));
+        assert!(
+            detail.contains("Int(10)") && detail.contains("Int(3)"),
+            "a small scalar override is the dominant real case and must render \
+             verbatim on both sides; summarising it to `Int vs Int` would be \
+             strictly less actionable than the unbounded message: {detail}"
+        );
+    }
 }
