@@ -832,10 +832,23 @@ fn severity_from_u8(b: u8) -> io::Result<reify_core::Severity> {
 /// The name is `DiagnosticCode`'s own serde identifier, so it stays in
 /// lock-step with the PascalCase wire format reify-core already test-pins for
 /// LSP and `--json` consumers, with no second table to rot.
+///
+/// A code that does not serialise to a plain name (a data-carrying variant,
+/// say) is persisted uncoded, the same bounded degradation
+/// [`code_from_wire_name`] applies on read — and, like it, never silently.
 fn code_to_wire_name(c: reify_core::DiagnosticCode) -> Option<String> {
-    serde_json::to_value(c)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
+    match serde_json::to_value(c) {
+        Ok(serde_json::Value::String(name)) => Some(name),
+        other => {
+            tracing::warn!(
+                code = ?c,
+                encoded = ?other,
+                "DiagnosticCode does not serialise to a plain name; \
+                 persisting the diagnostic without a code"
+            );
+            None
+        }
+    }
 }
 
 /// Decode an on-disk code name, degrading to `None` when this build does not
