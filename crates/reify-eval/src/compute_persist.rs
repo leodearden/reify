@@ -1345,6 +1345,10 @@ mod tests {
         )
     }
 
+    /// A solver target name paired with a builder for the result `Value` that
+    /// target's bridge reader expects.
+    type SolverTargetFixture = (&'static str, fn() -> Value);
+
     /// The persist bridge must replay a diagnostic of ANY severity on EVERY
     /// solver target, verbatim in every field a consumer can key off.
     ///
@@ -1359,7 +1363,7 @@ mod tests {
     fn persist_bridge_replays_every_severity_on_every_solver_target() {
         use reify_core::Severity;
 
-        let targets: [(&str, fn() -> Value); 2] = [
+        let targets: [SolverTargetFixture; 2] = [
             ("solver::elastic_static", elastic_static_cache_value),
             ("solver::buckling", buckling_cache_value),
         ];
@@ -1573,7 +1577,7 @@ mod tests {
     ) {
         let tmp = tempfile::TempDir::new().unwrap();
         // Derived from the target so the two callers cannot collide on a name.
-        let cell = ValueCellId::new("T", &format!("r_cp22_{}", target.replace("::", "_")));
+        let cell = ValueCellId::new("T", format!("r_cp22_{}", target.replace("::", "_")));
         let c_id = ComputeNodeId::new("T", 220);
 
         let before = invocations.load(Ordering::SeqCst);
