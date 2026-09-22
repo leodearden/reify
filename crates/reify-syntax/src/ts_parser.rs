@@ -17,11 +17,14 @@ use fault_diagnosis::{
 
 /// Check a child node for errors before lowering it. If the node has errors,
 /// push a parse error and return None. Otherwise, evaluate the lowering expression.
+///
+/// The `invalid <label>: ` prefix is followed by a BOUNDED excerpt of the child's source
+/// text (see [`Lowering::snippet`] — INV-SF-7, task #5392), never the raw node text.
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
         if $child.is_error() || $child.has_error() {
             $self.push_error(
-                format!("invalid {}: {}", $label, $self.node_text($child)),
+                format!("invalid {}: {}", $label, $self.snippet($child)),
                 $self.span($child),
             );
             None
