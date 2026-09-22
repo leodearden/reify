@@ -23,7 +23,9 @@
 # `dark-factory-orchestrator.yaml`, so it is excluded too — this guard stays
 # green whether the symlink is later deleted or retained. This test file's
 # own body necessarily contains the pattern (to search for it), so it
-# excludes itself via a `:(exclude)` pathspec.
+# excludes itself via a `:(exclude)` pathspec — as it does
+# docs/legibility/confusion-codebook.yaml, which only quotes the filename as
+# what confused an agent.
 
 set -euo pipefail
 
@@ -63,6 +65,10 @@ echo "--- (B) no legacy top-level config reference remains ---"
 # legacy_config_ref_exclusions — the pathspecs the scan skips, one per line.
 legacy_config_ref_exclusions() {
     printf '%s\n' ':(exclude)tests/infra/test_orchestrator_config_canonical_path.sh'
+    # Dark-factory's machine-written agent-confusion corpus: mention, not use, as
+    # in #7784; the filename records what confused an agent, and nothing reads it.
+    # No baseline heals a red here. Ruling: docs/legibility/landing-contract.md
+    printf '%s\n' ':(exclude)docs/legibility/confusion-codebook.yaml'
 }
 
 # legacy_config_refs <root> — print `file:line:text` for every tracked line
