@@ -345,10 +345,13 @@ at the merge gate; debug skips it for per-task speed"), and this pass passes no
 `--run-ignored`. Its per-test costs are therefore release-only figures and stay
 in the release table above.
 
-Debug per-test durations, one row per heavy test, slowest first (the 30 tests
-whose max is under 3 s are omitted — every one is a `tensegrity_t0a`,
+Debug per-test durations, slowest first. This table is a TRUNCATION, not a full
+listing: 15 of the 43 rows are shown and the other 28 — every test whose max is
+below 3.0 s — are omitted. Every omitted one is a `tensegrity_t0a`,
 `fea_diagnostics_e2e`, `buckling_smoke` or sub-second `analytical_validation`
-test, and the full list is recoverable from the same logs):
+test, and the full list is recoverable from the same logs. (15 + 28 = 43; an
+earlier caption said 30 omitted and claimed one row per heavy test, which no
+reader could reconcile against the 43 above it.)
 
 | Test (`atom testname`) | run 1 (s) | run 2 (s) | max (s) |
 |---|---:|---:|---:|

@@ -70,6 +70,18 @@ lock_depth: 10
 # (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting exit-124,
 # add verify_cold_command_timeout_secs >= 7200.
 #
+# CORRECTION (task 7552): strike that "NB" and the advice after it. There is no cold
+# default of 5400 for THIS project. verify_cold_command_timeout_secs is set nowhere in
+# this file (only in comments), and dark-factory declares it `float | None` with default
+# None at both module and top level — so it has no framework default either, and any
+# 5400 is a value from some OTHER project's own config rather than something reify
+# inherits. Reify's cold cascade is unset at every level and therefore resolves to this
+# warm 7200s value: cold and warm are the SAME number here. "Add
+# verify_cold_command_timeout_secs >= 7200" is consequently moot — it would set the
+# budget to what it already is. This matters beyond tidiness because the reachability
+# argument recorded below sits under 7200s, and an operator who believed cold verifies
+# were capped at 5400 would be sizing against a wall that does not exist.
+#
 # THIS KEY IS ALSO THE OUTER WALL FOR THE role=background MAIN-TIP SWEEP
 # (task 7552). `run_main_tip_sweep` calls `run_full_verification(..., role='background')`,
 # which is the NON-merge branch of `_resolve_verify_timeout`: `is_merge_verify`
