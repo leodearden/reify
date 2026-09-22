@@ -1139,9 +1139,10 @@ fn worst_unmet_floor_term(
 /// `underivable_empty_box_keeps_the_region_empty_wording`.
 ///
 /// RECURSION is exactly one level deep BY CONSTRUCTION, not by a counter: rung 2
-/// passes `apply_robustness_floor = false`, so `floor_applied` is false inside
-/// that solve and [`floor_infeasible_diagnostic`] — the only caller — is
-/// structurally unreachable there.
+/// runs under [`SolveRegime::FeasibilityWitness`], which synthesises no margin,
+/// so `floor_applied` is false inside that solve and
+/// [`floor_infeasible_diagnostic`] — the only caller — is structurally
+/// unreachable there.
 fn constraints_witness(
     problem: &ResolutionProblem,
     target: &[(ConstraintNodeId, CompiledExpr)],
@@ -1203,7 +1204,7 @@ fn constraints_witness(
         &feasibility_problem,
         &seed,
         sd_tolerance,
-        /* apply_robustness_floor = */ false,
+        SolveRegime::FeasibilityWitness,
         dispatch,
     );
     let SolveResult::Solved { values, .. } = result else {
@@ -1409,7 +1410,7 @@ fn floor_infeasible_diagnostic(
 // and reported a false `RobustnessFloorInfeasible`.
 //
 // These helpers recover a usable box from the inequality constraints themselves.
-// Two consumers, with different obligations:
+// Three consumers, with different obligations:
 //
 //   - the SEED box, derived from `problem.constraints` with `include_strict = true`
 //     (a start point may sit anywhere, so every inequality contributes);
@@ -1421,6 +1422,13 @@ fn floor_infeasible_diagnostic(
 //     nothing in the case above: `synthesise_floor_constraints` emits its slack
 //     constraints as `Ge`, and the floored bound is strictly interior to the
 //     original `>`/`>=` bound by construction, so the clamp still gets it.
+//   - the γ CLAMP box (task #6465), under [`SolveRegime::TradeoffBlend`] only,
+//     with `include_strict = true`.  γ is floor-free by PRD §2.4/§8.1, so there
+//     is no strictly-interior floored bound for the rule above to fall back on —
+//     and γ does not want one: PRD §8.1's λ=1 answer IS the value on the strict
+//     bound.  This is a THIRD named case, not a widening of the second; see
+//     `SolveRegime::TradeoffBlend`'s variant doc and the `bounds` match arm in
+//     `solve_core_with_sd_tolerance`.
 //
 // The clamp is load-bearing, not just the seed.  Minimising `q + PENALTY_WEIGHT ·
 // (1.02 − q)²` places the penalty method's unconstrained minimiser ~5e-7 BELOW the
@@ -1847,8 +1855,9 @@ fn compose_interval(
 /// with the param's [`effective_bounds`] and falling back to those bounds
 /// wholesale when the composition is degenerate.
 ///
-/// `include_strict = false` for the CLAMP box, `true` for SEED boxes — see the
-/// section comment above for why the distinction is load-bearing.
+/// `include_strict = false` for the general CLAMP box, `true` for SEED boxes and
+/// for the γ [`SolveRegime::TradeoffBlend`] clamp box — see the section comment
+/// above for all three consumers and why the distinction is load-bearing.
 fn resolve_bounds(
     auto_params: &[AutoParam],
     intervals: &[DerivedInterval],
@@ -2645,6 +2654,53 @@ const UNIQUENESS_REL_TOL: f64 = 1e-6;
 /// Absolute tolerance for uniqueness comparison between two solutions.
 const UNIQUENESS_ABS_TOL: f64 = 1e-10;
 
+/// Which solve REGIME [`solve_core_with_sd_tolerance`] is running under.
+///
+/// Replaces the `apply_robustness_floor: bool` this function took through task
+/// #5711. The flag governed TWO axes — margin synthesis and clamp-box policy —
+/// and γ's arrival made them diverge: the tradeoff blend needs the floor OFF
+/// and a constraint-derived clamp ON, a pair no boolean can express. A second
+/// flag would have left `floor && tradeoff` representable in the type and
+/// forbidden by the code; the three variants below are the three combinations
+/// that actually occur, and they are chosen WHOLE at every call site.
+#[derive(Clone, Copy, Debug)]
+enum SolveRegime {
+    /// The default path: [`solve_core`] and therefore every ordinary solve.
+    ///
+    /// - MARGIN: synthesises the α robustness floor (task #4789) when the
+    ///   objective is Money-dimensioned.
+    /// - CLAMP: the constraint-derived box with `include_strict = false` when
+    ///   that synthesis fired, else `effective_bounds` — see the gate comment
+    ///   at the `bounds` binding for why a floor-free solve keeps the raw
+    ///   default box (esc-5618-1).
+    RobustnessFloor,
+    /// The γ `cost_robustness_tradeoff` blend's three sub-solves (task #4791):
+    /// the pure-cost anchor, the Chebyshev-centre robustness anchor, and the
+    /// normalised blend itself.
+    ///
+    /// - MARGIN: none. The tradeoff form REPLACES the α floor rather than
+    ///   composing with it (PRD §2.4/§8.1), so `effective_constraints ==
+    ///   problem.constraints` under this regime.
+    /// - CLAMP: the constraint-derived box with `include_strict = true`.
+    ///   Landing exactly ON a strict bound is this regime's CONTRACT, not a
+    ///   violation of it — PRD §8.1's λ=1 answer is the TRUE constraint
+    ///   boundary, floor-free. See the `bounds` match arm for the soundness
+    ///   half of the argument.
+    TradeoffBlend,
+    /// [`constraints_witness`]' rung-2 probe: one floor-free, objective-free
+    /// re-solve looking for a concrete feasible point.
+    ///
+    /// - MARGIN: none — its `target` constraint set already carries whatever
+    ///   floor the caller wants witnessed, so synthesising a second one would
+    ///   floor the floor.
+    /// - CLAMP: `effective_bounds`. The probe's whole job is to report where a
+    ///   search actually lands, and a derived clamp box would let it answer
+    ///   from the derivation instead — which this function's own doc rules out
+    ///   ("the return is deliberately a WITNESS ... never an inference from a
+    ///   derived box").
+    FeasibilityWitness,
+}
+
 /// Core solve logic: runs Nelder-Mead from a given initial point using
 /// `NM_SD_TOLERANCE` for the simplex termination criterion.
 ///
@@ -2670,7 +2726,7 @@ fn solve_core_with_sd_tolerance(
     problem: &ResolutionProblem,
     initial: &[f64],
     sd_tolerance: f64,
-    apply_robustness_floor: bool,
+    regime: SolveRegime,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> (SolveResult, SolveMeta) {
     // ── Robustness floor (task #4789 α) ──────────────────────────────────────
@@ -2685,12 +2741,12 @@ fn solve_core_with_sd_tolerance(
     // check, so the initially_feasible fallback (L965 in original; below) does
     // NOT mask the infeasibility by falling back to Solved.
     //
-    // Gate on `problem.objective` money-ness AND `apply_robustness_floor` (task γ
-    // #4791: the cost_robustness_tradeoff two-anchor blend passes `false` for all
-    // of its floor-free sub-solves — the tradeoff form REPLACES the floor rather
-    // than composing with it, PRD §2.4/§8.1).  NOT the synthetic centrality
-    // objective, which is built later and is never Money.  When Money AND
-    // apply_robustness_floor:
+    // Gate on `problem.objective` money-ness AND [`SolveRegime::RobustnessFloor`]
+    // (task γ #4791: the cost_robustness_tradeoff two-anchor blend runs all three
+    // of its sub-solves under `TradeoffBlend` — the tradeoff form REPLACES the
+    // floor rather than composing with it, PRD §2.4/§8.1).  NOT the synthetic
+    // centrality objective, which is built later and is never Money.  When Money
+    // AND `RobustnessFloor`:
     //   effective_constraints = problem.constraints ++ floor_constraints
     // Otherwise:
     //   effective_constraints = problem.constraints (bit-identical clone)
@@ -2712,7 +2768,9 @@ fn solve_core_with_sd_tolerance(
 
     let mut effective_constraints: Vec<(ConstraintNodeId, CompiledExpr)> =
         problem.constraints.clone();
-    let floor_applied = if apply_robustness_floor && let Some(obj) = &problem.objective {
+    let floor_applied = if matches!(regime, SolveRegime::RobustnessFloor)
+        && let Some(obj) = &problem.objective
+    {
         if objective_is_money(obj) {
             synthesise_floor_constraints(
                 &problem.constraints,
@@ -2775,7 +2833,11 @@ fn solve_core_with_sd_tolerance(
     // fallback behaviour this fixture exists to cover.  That, together with the
     // semantics rationale above, is the standing reason the gate stays; neither
     // ground depends on the other, and #5711 leaves no open coupling between them.
-    let bounds = if floor_applied {
+    //
+    // The `include_strict` choice is per-REGIME, and the derivation itself is
+    // shared: deriving separately per arm is what would let the two clamp boxes
+    // drift apart, exactly as `derived_seed_box`'s doc warns for the seed pair.
+    let derived_clamp_box = |include_strict: bool| {
         resolve_bounds(
             &problem.auto_params,
             &derive_param_intervals(
@@ -2786,10 +2848,45 @@ fn solve_core_with_sd_tolerance(
                 &problem.functions,
                 dispatch,
             ),
-            false,
+            include_strict,
         )
-    } else {
-        problem.auto_params.iter().map(effective_bounds).collect()
+    };
+    let bounds = match regime {
+        // Unchanged from #5618: the FLOORED window, strict bounds excluded.
+        SolveRegime::RobustnessFloor if floor_applied => derived_clamp_box(false),
+
+        // γ (task #6465): the constraint-derived box WITH strict bounds.
+        //
+        // SOUNDNESS — the derived box is an OUTER approximation of the feasible
+        // region, so clamping into it can never exclude a feasible point.
+        // `constant_operand_value` rejects any far operand whose value refs
+        // `varies_with_solve`, so every derived bound is a genuine INVARIANT of
+        // the problem; that function's own "One policy for all four consumers"
+        // doc already names the CLAMP box as one of the two consumers requiring
+        // exactly this property, and this is the third such consumer.
+        //
+        // CONTRACT — `include_strict = true` here is not a relaxation of the
+        // general rule above it ("a clamp target must never be a value at which
+        // the strict comparison is violated"), which stands for every other
+        // regime. A value landing exactly on a strict `>` bound IS PRD §8.1's
+        // stated λ=1 answer: pure-cost, floor-free minimisation reaches the TRUE
+        // constraint boundary. `lambda_one_reaches_true_boundary_floor_free`
+        // already asserted that for an explicit-`AutoParam.bounds` shape; this
+        // arm is what makes it hold on the production `bounds: None` shape,
+        // where `effective_bounds` degrades to `default_bounds_for(Length) =
+        // [1µm, 10m]` and the penalty minimiser's finite undershoot past the
+        // strict bound had nothing to snap it back — so `final_max_residual`
+        // exceeded `FEASIBILITY_THRESHOLD`, the `initially_feasible` fallback
+        // below fired, and the blend reported THE SEED. Pinned by
+        // `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`.
+        SolveRegime::TradeoffBlend => derived_clamp_box(true),
+
+        // No derived clamp: the floor-free general path (the esc-5618-1 gate
+        // above) and the witness probe, whose doc rules out answering from a
+        // derived box at all.
+        SolveRegime::RobustnessFloor | SolveRegime::FeasibilityWitness => {
+            problem.auto_params.iter().map(effective_bounds).collect()
+        }
     };
 
     // `trial_values` is used in two places — (1) the feasibility check
@@ -3072,16 +3169,22 @@ fn solve_core_with_sd_tolerance(
 /// decoupling was reverted once connector-internal autos were pinned at the
 /// eval layer — see [`verify_uniqueness`]).
 ///
-/// Always applies the α robustness floor (`apply_robustness_floor = true`) —
-/// the default, unchanged-behaviour path. The γ cost_robustness_tradeoff blend
-/// (task #4791) bypasses this wrapper and calls [`solve_core_with_sd_tolerance`]
-/// directly with `false` for its floor-free anchor/final sub-solves.
+/// Runs under [`SolveRegime::RobustnessFloor`] — the default,
+/// unchanged-behaviour path. The γ cost_robustness_tradeoff blend (task #4791)
+/// bypasses this wrapper and calls [`solve_core_with_sd_tolerance`] directly
+/// under [`SolveRegime::TradeoffBlend`] for its three floor-free sub-solves.
 fn solve_core(
     problem: &ResolutionProblem,
     initial: &[f64],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> (SolveResult, SolveMeta) {
-    solve_core_with_sd_tolerance(problem, initial, NM_SD_TOLERANCE, true, dispatch)
+    solve_core_with_sd_tolerance(
+        problem,
+        initial,
+        NM_SD_TOLERANCE,
+        SolveRegime::RobustnessFloor,
+        dispatch,
+    )
 }
 
 /// At or below this, an anchor pair's range on a given blend axis (cost or
@@ -3240,7 +3343,13 @@ fn solve_cost_robustness_tradeoff(
         ..problem.clone()
     };
     let (cost_result, cost_meta) =
-        solve_core_with_sd_tolerance(&cost_problem, initial, NM_SD_TOLERANCE, false, dispatch);
+        solve_core_with_sd_tolerance(
+            &cost_problem,
+            initial,
+            NM_SD_TOLERANCE,
+            SolveRegime::TradeoffBlend,
+            dispatch,
+        );
     // `cost_unique` is carried into BOTH degenerate-fallback returns below
     // instead of hardcoding `true` — the cost anchor's own uniqueness
     // determination (real for a strict auto, `false` for `auto(free)`, see
@@ -3271,7 +3380,13 @@ fn solve_cost_robustness_tradeoff(
         ..problem.clone()
     };
     let (rob_result, _rob_meta) =
-        solve_core_with_sd_tolerance(&rob_problem, initial, NM_SD_TOLERANCE, false, dispatch);
+        solve_core_with_sd_tolerance(
+            &rob_problem,
+            initial,
+            NM_SD_TOLERANCE,
+            SolveRegime::TradeoffBlend,
+            dispatch,
+        );
     let x_rob = match rob_result {
         SolveResult::Solved { values, .. } => values,
         _ => {
@@ -3360,7 +3475,13 @@ fn solve_cost_robustness_tradeoff(
         objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, blend)),
         ..problem.clone()
     };
-    solve_core_with_sd_tolerance(&blend_problem, initial, NM_SD_TOLERANCE, false, dispatch)
+    solve_core_with_sd_tolerance(
+        &blend_problem,
+        initial,
+        NM_SD_TOLERANCE,
+        SolveRegime::TradeoffBlend,
+        dispatch,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -4310,7 +4431,7 @@ impl DimensionalSolver {
         // Run the EXISTING solve_core (Money robustness floor + centrality
         // synth + drift fallback all inherited unchanged, since this loop
         // calls the SAME function `solve_with_meta` uses for the
-        // single-start path — task #4789 α's `apply_robustness_floor = true`
+        // single-start path — task #4789 α's [`SolveRegime::RobustnessFloor`]
         // is therefore inherited per start, not re-implemented here) once per
         // deterministic seed from `multistart_points`; score each Solved
         // candidate against the USER objective (I3/I4), exactly as the
