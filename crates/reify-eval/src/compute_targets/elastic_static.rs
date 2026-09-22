@@ -4392,17 +4392,23 @@ fn spec_component(
 /// genuinely missing dimension, so it must fail (task #5080's contract, pinned
 /// by `extract_point3_si_rejects_non_scalar_component`).
 ///
-/// PLUMBING ONLY as of task #7019 step-3: behaviour is byte-identical to
-/// before this task — any dimensioned `Value::Scalar` still reads, regardless
-/// of which dimension it carries. Narrowed to `length_spec()` in step-5.
+/// Task #7019: a thin adapter over `reify_ir::arg_acceptance::length_spec`,
+/// the single definition of this acceptance set (`Scalar{LENGTH}` only —
+/// unlike [`dimensionless_component`]'s position, a bare `Real`/`Int` here
+/// stays rejected, per PRD `dimension-checked-readers.md` invariant I3,
+/// "strict equality"). A `Value::Scalar` carrying any dimension OTHER than
+/// LENGTH (e.g. a MASS-dimensioned corner) is now rejected too, instead of
+/// having its SI magnitude reinterpreted as metres.
+///
+/// This reader and [`dimensionless_component`] stay distinct functions: they
+/// differ only in which `ArgSpec` they pass to [`spec_component`] — the
+/// acceptance RULE is shared, the expectation is per-position, which is the
+/// orthogonal axis of variability `extract_scalar_triple`'s `component`
+/// parameter already isolates.
 fn dimensioned_component(v: &Value, context: &'static str) -> Result<f64, FeaValueShapeError> {
-    match v {
-        Value::Scalar { si_value, .. } => Ok(*si_value),
-        _ => Err(FeaValueShapeError::ExpectedScalar {
-            context,
-            got: format!("{v:?}"),
-        }),
-    }
+    use crate::arg_acceptance::length_spec;
+
+    spec_component(v, &length_spec(), context)
 }
 
 /// Per-component reader for a DIMENSIONLESS triple — `MaterialFrame`'s three
@@ -4430,6 +4436,13 @@ fn dimensionless_component(v: &Value, context: &'static str) -> Result<f64, FeaV
 /// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
 ///
 /// Used to parse `aabb_min` and `aabb_max` from the AsPrintedZones lambda.
+/// Those corners are `Point3<Length>`: a bare `Value::Real`/`Value::Int`
+/// component is a genuinely missing dimension and is rejected (task #5080),
+/// and (task #7019) a `Value::Scalar` carrying any dimension OTHER than
+/// LENGTH is now rejected too, instead of having its SI magnitude
+/// reinterpreted as metres — see [`dimensioned_component`], a thin adapter
+/// over the canonical `reify_ir::arg_acceptance::length_spec` (PRD
+/// `dimension-checked-readers.md` invariant I3, "strict equality").
 fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
     let comps = match val {
         Value::Point(v) => v,
@@ -10379,10 +10392,15 @@ mod tests {
     /// Targets the local `cos_threshold` guard, the third branch this
     /// function owns directly. Elements 0..2 are well-formed so the leaf
     /// extractors ahead of it succeed via `?` first, proving the error
-    /// comes from this check and not an earlier one.
+    /// comes from this check and not an earlier one. `point` is LENGTH-
+    /// dimensioned (task #7019 fixture-honesty fix, same pattern as
+    /// `extract_point3_si_accepts_point`): `aabb_min`/`aabb_max` are
+    /// `Point3<Length>`, and since `dimensioned_component` was narrowed to
+    /// `length_spec()`, a DIMENSIONLESS scalar here would now be rejected by
+    /// the leaf extractor before reaching the guard this test targets.
     #[test]
     fn classify_material_as_printed_zones_rejects_non_real_cos_threshold() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         let params = Value::List(vec![
             Value::Real(2.0),
