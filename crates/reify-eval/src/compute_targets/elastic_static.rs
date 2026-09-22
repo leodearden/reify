@@ -11092,6 +11092,61 @@ mod tests {
         assert_eq!(extract_vec3_si(&vector), Ok([1.0, 2.0, 3.0]));
     }
 
+    /// step-1 RED (task #7019, PRD `dimension-checked-readers.md` Leg B):
+    /// `extract_vec3_si` must reject a MaterialFrame axis component that
+    /// carries a dimension other than DIMENSIONLESS, instead of silently
+    /// reinterpreting its SI magnitude as the bare axis component. Asserts
+    /// BOTH sides of the two-sided contract in one test, the way
+    /// `tensegrity_crack::crack_dimensionless_scalar`'s rustdoc states it.
+    ///
+    /// REJECT half: today this returns `Ok([1.0, 0.0, 0.0])`, silently
+    /// reading 1 metre as the bare component 1.0. Nothing on the
+    /// `extract_vec3_si` → `AnisotropicMaterial::from_law` → `rotate_voigt`
+    /// path normalises the frame (see the FENCE test
+    /// `material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global`
+    /// below) and `D_global` is homogeneous of degree 4 in the frame's
+    /// entries, so a 1mm-spelled "unit" axis would silently rescale the
+    /// stiffness by 1e-12 with no diagnostic.
+    ///
+    /// ACCEPT half (characterization lock, passes today and must keep
+    /// passing): a `Value::Vector` of `Scalar{DIMENSIONLESS}`/`Real`/`Int`
+    /// components still reads `Ok([1.0, 2.0, 3.0])` — a future
+    /// over-tightening to "bare Real only" would be a regression, not a
+    /// hardening (PRD Leg B side 1).
+    #[test]
+    fn extract_vec3_si_rejects_a_dimensioned_axis_component() {
+        let dimensioned = Value::Vector(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let res = extract_vec3_si(&dimensioned);
+        assert!(
+            res.is_err(),
+            "expected Err for a LENGTH-dimensioned axis component instead of \
+             silently reinterpreting its SI magnitude as the bare component — \
+             nothing normalises the frame afterward and D_global is homogeneous \
+             of degree 4 in its entries, so a 1mm-spelled axis would silently \
+             rescale the stiffness by 1e-12; got: {:?}",
+            res
+        );
+
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let legit = Value::Vector(vec![scalar(1.0), Value::Real(2.0), Value::Int(3)]);
+        assert_eq!(
+            extract_vec3_si(&legit),
+            Ok([1.0, 2.0, 3.0]),
+            "Scalar{{DIMENSIONLESS}}/Real/Int axis components must still read — \
+             a future over-tightening to bare Real only would be a regression"
+        );
+    }
+
     // ── task 5081 (PRD compute-fea-hardening D3): Result-ify extract_material
     // (isotropic material scalar/real field extraction) — mirrors D2's
     // RED-plus-characterization-lock pattern. ─────────────────────────────
@@ -11988,14 +12043,23 @@ mod tests {
 
     /// Task 5848 retypes `MaterialFrame`'s three axes from `Vector3<Length>`
     /// to `Vector3<Dimensionless>`, so the DSL spelling moves from
-    /// `vec3(0m, 1m, 0m)` to `vec3(0, 1, 0)`. Every numeric `Value` spelling a
-    /// component can arrive as must therefore yield a BITWISE identical
-    /// `D_global` — the retype moves the declaration, not the solve.
+    /// `vec3(0m, 1m, 0m)` to `vec3(0, 1, 0)`. Every LEGITIMATE numeric
+    /// `Value` spelling a component can arrive as must therefore yield a
+    /// BITWISE identical `D_global` — the retype moves the declaration, not
+    /// the solve.
     ///
     /// The basis for exactness is NOT normalisation (there is none — see the
-    /// fence below). It is that the per-component reader takes the same f64
-    /// out of `Scalar { si_value: 1.0 }`, `Real(1.0)` and `Int(1)`, so the
-    /// identical numbers reach `rotate_voigt`'s `T`.
+    /// fence below). It is that `dimensionless_component` (task #7019) now
+    /// accepts exactly `reify_ir::arg_acceptance::dimensionless_spec`'s
+    /// `Real | Int | Scalar{DIMENSIONLESS}` acceptance set, and reads the
+    /// same f64 out of `Scalar { si_value: 1.0, dimension: DIMENSIONLESS }`,
+    /// `Real(1.0)` and `Int(1)`, so the identical numbers reach
+    /// `rotate_voigt`'s `T`. A `Scalar` carrying any OTHER dimension — e.g.
+    /// the LENGTH spelling this test used as its baseline before #7019 — is
+    /// no longer among the legitimate spellings and is rejected instead
+    /// (`extract_vec3_si_rejects_a_dimensioned_axis_component` above pins
+    /// the rejection; `material_frame_axes_reject_a_length_spelled_component`
+    /// below pins it through this test's own `d_global_under_frame` seam).
     ///
     /// The `Int` leg is the load-bearing one: an integer `.ri` literal
     /// compiles to `Value::Int`, so `vec3(0, 1, 0)` — the natural dimensionless
@@ -12004,25 +12068,56 @@ mod tests {
     #[test]
     fn material_frame_axes_read_identically_across_numeric_spellings() {
         let (x, y, z) = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
-        let as_length: fn(f64) -> Value = |v| Value::Scalar {
+        let as_dimensionless: fn(f64) -> Value = |v| Value::Scalar {
             si_value: v,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let as_real: fn(f64) -> Value = Value::Real;
         let as_int: fn(f64) -> Value = |v| Value::Int(v as i64);
 
-        let baseline = d_global_under_frame(x, y, z, as_length);
+        let baseline = d_global_under_frame(x, y, z, as_dimensionless);
         assert_eq!(
             d_global_under_frame(x, y, z, as_real),
             baseline,
             "Real-spelled axis components must give a bitwise-identical D_global \
-             to the former Length spelling"
+             to the Scalar{{DIMENSIONLESS}} spelling"
         );
         assert_eq!(
             d_global_under_frame(x, y, z, as_int),
             baseline,
             "Int-spelled axis components (what `vec3(0, 1, 0)` compiles to) must \
-             give a bitwise-identical D_global to the former Length spelling"
+             give a bitwise-identical D_global to the Scalar{{DIMENSIONLESS}} spelling"
+        );
+    }
+
+    /// step-1(c) RED companion to the retarget above (task #7019): a
+    /// LENGTH-spelled axis component — the baseline this test group used
+    /// before #7019 — must now FAIL to read. `d_global_under_frame`
+    /// `.expect()`s the read (see its own doc comment), so this asserts
+    /// through `anisotropic_material_from_value` directly — the same seam
+    /// `d_global_under_frame` calls — so the `Err` is observable instead of
+    /// panicking the test.
+    #[test]
+    fn material_frame_axes_reject_a_length_spelled_component() {
+        let as_length: fn(f64) -> Value = |v| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), anisotropic_ortho_law()),
+            (
+                "frame".to_string(),
+                frame_with_axes([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], as_length),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        assert!(
+            res.is_err(),
+            "a LENGTH-dimensioned axis component must be rejected, not silently \
+             reinterpreted as a bare dimensionless component, got: {:?}",
+            res
         );
     }
 
