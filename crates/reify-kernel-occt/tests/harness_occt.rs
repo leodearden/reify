@@ -31,8 +31,8 @@
 //! `crate::common` use here fails to build. See `harness_occt_measurement.rs`'s header for the
 //! other side of the seam and why the consumers were the side that moved.
 //!
-//! cfg retention: of the 40 modules that remain here, 34 carry a crate-level
-//! `#![cfg(has_occt)]`, 2 carry `#![cfg(all(has_occt, feature = "test-fixtures"))]`
+//! cfg retention: every module here carries a crate-level `#![cfg(has_occt)]` unless named
+//! otherwise in this paragraph; 2 carry `#![cfg(all(has_occt, feature = "test-fixtures"))]`
 //! (conformance_integration, curve_curvature_integration), and 1 carries
 //! `#![cfg(all(has_occt, feature = "mesh-morph"))]` (projector_impl). These inner attributes
 //! are retained VERBATIM on the moved submodules rather than hoisted to an outer `#[cfg]` on
@@ -70,6 +70,8 @@ mod extrude_with_history_integration;
 mod fuse_all_integration;
 #[path = "harness_occt/geo_equiv.rs"]
 mod geo_equiv;
+#[path = "harness_occt/gtransform_tessellation_ordering_integration.rs"]
+mod gtransform_tessellation_ordering_integration;
 #[path = "harness_occt/half_space_integration.rs"]
 mod half_space_integration;
 #[path = "harness_occt/helix_sweep_integration.rs"]
