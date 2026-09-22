@@ -209,9 +209,12 @@ pub(super) enum DeclineCause {
 /// Chosen so the assembled warning stays a readable paragraph: the detail
 /// carries TWO rendered sides plus a fixed prose frame, and
 /// [`report_optimized_instance_decline`] then wraps that in a fixed body of its
-/// own. The unit-test ceiling on the detail is DERIVED from this constant — two
-/// budgets plus the frame — rather than tuned against a measured string, so
-/// moving this number moves the ceiling by construction.
+/// own. `input_divergence_detail_is_bounded_for_an_enormous_value` computes its
+/// ceiling as `2 * INPUT_VALUE_RENDER_BUDGET + frame`, with the frame MEASURED
+/// from that same code path rather than spelled as a literal — so moving this
+/// number moves the ceiling, and that test's near-budget arm (two sides that
+/// each render verbatim just under the budget) keeps the ceiling from going
+/// vacuously slack when it moves.
 const INPUT_VALUE_RENDER_BUDGET: usize = 120;
 
 /// A [`std::fmt::Write`] sink that REFUSES — rather than truncates — the first
@@ -562,10 +565,11 @@ fn decline_message(key: &str, site: DeclineSite<'_>, cause: &DeclineCause) -> Op
 ///   [`DeclineCause::InputNotComparable`] — each under its own clause, because
 ///   one sends the reader to a constructor override and the other to
 ///   projection. [`decline_message`] owns that text and returns `None` for the
-///   third cause; see [`DeclineCause::NoTemplateValue`] for why it has nothing
-///   honest to say. Filtering on the structural cause rather than on the
-///   presence of a text-matching Error keeps this independent of any other
-///   site's wording.
+///   third cause, and is invoked BEHIND the dedupe scan so its body assembly is
+///   not paid per entry (see COST below); see
+///   [`DeclineCause::NoTemplateValue`] for why it has nothing honest to say.
+///   Filtering on the structural cause rather than on the presence of a
+///   text-matching Error keeps this independent of any other site's wording.
 /// * REGISTERED-TARGET GATE. Without it the warning fired, with actively
 ///   misleading text, in the plain `reify check` shape — which registers NO
 ///   trampolines — for every sub carrying a constructor override on a param an
@@ -618,10 +622,15 @@ fn decline_message(key: &str, site: DeclineSite<'_>, cause: &DeclineCause) -> Op
 ///   scanned vec short — but it does NOT bound how many times that vec is
 ///   scanned: in the very shape the dedupe was added for (a keyed collection
 ///   `sub` where every element declines) this function is still entered once
-///   per element. The dedupe scan is therefore ordered FIRST, so a repeat entry
-///   costs one `starts_with` walk of a short vec and never touches
-///   [`template_cell_was_dispatched`]'s unbounded `compute_nodes` walk. Making
-///   the repeat case O(1) needs a memo owned by `engine_eval.rs` — #7267.
+///   per element. The dedupe scan is therefore ordered FIRST of the three, so a
+///   repeat entry costs one `starts_with` walk of a short vec and reaches
+///   NEITHER [`template_cell_was_dispatched`]'s unbounded `compute_nodes` walk
+///   nor [`decline_message`]'s body assembly — the cheapest predicate of the
+///   three sits behind it precisely because that assembly is the expensive part
+///   of entering the cause gate, not the match. Only `key` is built ahead of
+///   every filter, because the scan needs it and it must share ONE spelling
+///   with the message. Making the repeat case O(1) needs a memo owned by
+///   `engine_eval.rs` — #7267.
 pub(super) fn report_optimized_instance_decline(
     diagnostics: &mut Vec<Diagnostic>,
     snapshot: &Snapshot,
@@ -638,8 +647,17 @@ pub(super) fn report_optimized_instance_decline(
         "@optimized target {:?} on {}.{}:",
         target, child_template.name, member
     );
-    // CAUSE GATE, still first and still O(1) in the two scans below: a cause
-    // with no honest message reaches neither of them.
+    // DEDUPE FIRST. All three filters are pure predicates, so the emitted set is
+    // identical whatever the order; the order is chosen by what each filter
+    // COSTS the entries it rejects. The repeat is the entry this function sees
+    // most (see COST above), and rejecting it here costs one `starts_with` walk
+    // of a short vec — no message assembly, and no `compute_nodes` walk.
+    if diagnostics.iter().any(|d| d.message.starts_with(&key)) {
+        return;
+    }
+    // CAUSE GATE. Behind the dedupe so the ~400-byte body is assembled once per
+    // REPORTED fact rather than once per entry, and ahead of the graph walk so a
+    // cause with no honest message never pays for it.
     let Some(message) = decline_message(
         &key,
         DeclineSite {
@@ -651,12 +669,6 @@ pub(super) fn report_optimized_instance_decline(
     ) else {
         return;
     };
-    // Dedupe BEFORE the graph scan: both are pure predicates, so the emitted
-    // set is identical either way, but this ordering keeps the already-reported
-    // case off the unbounded `compute_nodes` walk entirely.
-    if diagnostics.iter().any(|d| d.message.starts_with(&key)) {
-        return;
-    }
     let template_cell = ValueCellId::new(&child_template.name, member);
     if !template_cell_was_dispatched(snapshot, &template_cell) {
         return;
@@ -1061,15 +1073,28 @@ mod tests {
             }
         };
 
+        // THE CEILING, derived rather than tuned. The frame — the detail's fixed
+        // prose plus this fixture's read-cell name — is MEASURED from the same
+        // code path using two renders of known width, so it tracks the format
+        // string automatically and the ceiling moves with
+        // `INPUT_VALUE_RENDER_BUDGET` and with nothing else.
+        let framed = declining_detail(Value::Int(1), Value::Int(2));
+        let frame = framed.chars().count() - "Int(1)".len() - "Int(2)".len();
+        let ceiling = 2 * INPUT_VALUE_RENDER_BUDGET + frame;
+
         // (a) THE BOUND. A 20_000-element list of long-decimal reals renders to
-        // hundreds of KB under a bare `{:?}`.
+        // hundreds of KB under a bare `{:?}`. The OTHER side is an `Int` — the
+        // gate is type-blind, so this is still present-and-unequal — and that is
+        // what makes the `List(…)` assertion below discriminating: the only
+        // operand that can contribute the word `List` is the elided one.
         let enormous = Value::List(vec![Value::Real(1.234_567_890_123_4); 20_000]);
-        let detail = declining_detail(enormous, Value::List(vec![Value::Real(1.0)]));
+        let detail = declining_detail(enormous, Value::Int(1));
         assert!(
-            detail.chars().count() <= 400,
-            "the InputsDiffer detail must stay a readable fragment: the ceiling is \
-             TWO per-side render budgets plus the fixed prose between them, so it \
-             holds by construction rather than by tuning. Got {} chars: {:.200}…",
+            detail.chars().count() <= ceiling,
+            "the InputsDiffer detail must stay a readable fragment: the ceiling \
+             is TWO per-side render budgets plus the measured frame between them \
+             ({ceiling} chars), so it tracks INPUT_VALUE_RENDER_BUDGET by \
+             construction rather than by tuning. Got {} chars: {:.200}…",
             detail.chars().count(),
             detail
         );
@@ -1079,9 +1104,36 @@ mod tests {
              diverged — the detail is the only place the read cell is named: {detail}"
         );
         assert!(
-            detail.contains("List"),
-            "an elided payload must still name its VARIANT, so the reader knows \
-             what kind of value was too large to print: {detail}"
+            detail.contains("List(…)"),
+            "an elided payload must still name its VARIANT — and the `(…)` \
+             spelling is produced ONLY by `render_input_value`'s \
+             `Value::kind_name` fallback, never by a verbatim `Debug`, so this \
+             pins the delegation rather than merely the presence of the word: \
+             {detail}"
+        );
+
+        // (b) THE CEILING IS REACHABLE. Without this the bound above would pass
+        // at any budget, because the enormous side always takes the ~8-byte
+        // abort-fallback: raising `INPUT_VALUE_RENDER_BUDGET` would lift the
+        // ceiling while the measured detail stood still. Two sides that each
+        // render VERBATIM just under the budget close that direction — ten
+        // `Real(1.0)`s render to 116 bytes, and an eleventh would overflow 120
+        // and take the fallback instead.
+        let near_budget = |x: f64| Value::List(vec![Value::Real(x); 10]);
+        let detail = declining_detail(near_budget(1.0), near_budget(2.0));
+        let used = detail.chars().count();
+        assert!(
+            !detail.contains('…'),
+            "both sides must FIT the budget for this arm to exercise the ceiling; \
+             an ellipsis means the fixture overflowed and the arm proves nothing: \
+             {detail}"
+        );
+        assert!(
+            used <= ceiling && used * 20 >= ceiling * 19,
+            "this arm must land within the ceiling AND within 5% of it: its whole \
+             job is to show the ceiling is reachable, so a ceiling made slack by \
+             moving INPUT_VALUE_RENDER_BUDGET without the renders following must \
+             not pass it. Got {used} of {ceiling}: {detail}"
         );
 
         // (b) THE COMPANION. The small constructor-override case must keep
@@ -1291,7 +1343,7 @@ mod tests {
         // case the wording was always correct for — #6662's `Outer3.b` fixture
         // exercises it end to end — so the fix must not dilute it.
         let differ_detail = "input AsymLike.x differs from the template's (Int(10) vs Int(3))";
-        let message = decline_message(
+        let differ_message = decline_message(
             key,
             site,
             &DeclineCause::InputsDiffer {
@@ -1300,34 +1352,34 @@ mod tests {
         )
         .expect("a genuine input divergence is reported");
         assert!(
-            message.contains("#6592"),
+            differ_message.contains("#6592"),
             "a real constructor override must keep pointing at the task that \
-             tracks per-instance dispatch: {message}"
+             tracks per-instance dispatch: {differ_message}"
         );
         assert!(
-            message.contains("inputs differ"),
+            differ_message.contains("inputs differ"),
             "the divergence body must keep saying what it always correctly \
-             said: {message}"
+             said: {differ_message}"
         );
         assert!(
-            message.contains(differ_detail),
+            differ_message.contains(differ_detail),
             "the detail names the input that diverged and must ride through \
-             verbatim: {message}"
+             verbatim: {differ_message}"
         );
         assert!(
-            message.starts_with(key),
+            differ_message.starts_with(key),
             "THE DEDUPE-KEY INVARIANT: the key is an undelimited-prefix scan \
              over already-emitted diagnostics, so every reported message must \
              begin with it literally — see \
              `instance_scope_optimized_decline_dedupe_is_per_cell_not_per_prefix`: \
-             {message}"
+             {differ_message}"
         );
 
         // A VISIBILITY MISS is reported too — staying silent would reintroduce
         // exactly the silence #6662 exists to remove, since the instance still
         // gets the degraded `.ri` sentinel — but under its own clause.
         let visibility_detail = "input AsymLike.x is not visible at instance scope";
-        let message = decline_message(
+        let visibility_message = decline_message(
             key,
             site,
             &DeclineCause::InputNotComparable {
@@ -1336,36 +1388,38 @@ mod tests {
         )
         .expect("a visibility miss still degrades the instance and is reported");
         assert!(
-            !message.contains("#6592"),
+            !visibility_message.contains("#6592"),
             "#6592 tracks per-instance dispatch under constructor overrides, \
-             which is not the remedy for an input the gate could not see: {message}"
+             which is not the remedy for an input the gate could not see: \
+             {visibility_message}"
         );
         assert!(
-            !message.contains("differ"),
+            !visibility_message.contains("differ"),
             "nothing was compared — one side does not exist — so no part of \
-             this message may suggest the inputs differ: {message}"
+             this message may suggest the inputs differ: {visibility_message}"
         );
         assert!(
-            message.contains(visibility_detail),
+            visibility_message.contains(visibility_detail),
             "the detail names the input and the scope it is missing from, and \
-             must ride through verbatim: {message}"
+             must ride through verbatim: {visibility_message}"
         );
         assert!(
-            message.contains("cannot compare"),
-            "the reader needs to be told the gate DECLINED WITHOUT COMPARING, \
-             so they look at projection rather than hunting for an override: \
-             {message}"
-        );
-        assert!(
-            message.contains("identical"),
-            "the honest statement is that the two values may well be the same \
-             and reuse would likely have been sound: {message}"
-        );
-        assert!(
-            message.starts_with(key),
+            visibility_message.starts_with(key),
             "THE DEDUPE-KEY INVARIANT holds for EVERY reported cause: a \
              cause-specific body is exactly the edit that could quietly break \
-             the prefix property: {message}"
+             the prefix property: {visibility_message}"
+        );
+
+        // The POSITIVE signal, stated structurally. The two causes send the
+        // reader to different places, so they must not reach them with the same
+        // body — which is what the negative pins above are protecting. Pinning
+        // that as an inequality rather than as chosen words ("cannot compare",
+        // "identical") means a rewording that preserves the distinction does not
+        // red this test, while collapsing the two clauses into one still does.
+        assert_ne!(
+            differ_message, visibility_message,
+            "a divergence and a visibility miss are different facts about the \
+             cell and must not be reported with identical prose"
         );
 
         // The third cause keeps today's silence: neither of the two readings in
