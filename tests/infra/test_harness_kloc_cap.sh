@@ -1904,15 +1904,18 @@ assert "4b: at cap=10000 the 19000-line unit emits no WARN line" \
 # end state.
 #
 # Fixtures are synthetic SCAN TRANSCRIPTS (not scans): the classifier's input is
-# text plus a root dir, so there is nothing to gain from generating 19000-line
-# files here — Section 4b already owns the line->WARN half of the contract, and
-# these cases are about what happens AFTER a WARN line exists.
+# text plus a root dir, and Section 4b already owns the line->WARN half of the
+# contract. The one exception is the EMITTER SEAM case, which runs the real
+# driver once so that `_s4c_warn` — the hand-written WARN line every other case
+# here is built from — is pinned to the grammar the detector actually emits,
+# rather than trusted to still match it.
 # ===========================================================================
 echo ""
 echo "--- Section 4c: WARN-set shrinking ratchet (hermetic) ---"
 
 # A synthetic repo root: two harness files that EXIST, and one path deliberately
-# never created (the DEAD case).
+# never created (the DEAD case). The EMITTER SEAM case adds a third, over-warn
+# unit beside them.
 _s4c_root="$(mktemp -d)"; _TMPDIRS+=("$_s4c_root")
 mkdir -p "$_s4c_root/crates/synthcrate/tests"
 : > "$_s4c_root/crates/synthcrate/tests/harness_a.rs"
@@ -1939,6 +1942,33 @@ _s4c_run() {
 _s4c_rows_are() {
     test "$(_warn_ratchet_rows "$_s4c_out" "$1")" = "$2"
 }
+
+# --- EMITTER SEAM. `_s4c_warn` is a COPY of the detector's WARN grammar, and
+# every case below is built from it. If the copy drifted from the emitter — a
+# field renamed or reordered there, Section 4b's regexes updated to match, this
+# helper not — those cases would stay green against a line the detector no
+# longer emits while Section 5d misread the real one. So drive the SAME driver
+# whose output Section 5d classifies over a real over-warn unit laid out as
+# crates/<crate>/tests/, and pin both halves of the seam: the copy is
+# byte-identical to what was emitted, and the classifier reads the emitted
+# transcript (PASS/SUMMARY lines included) as it reads the copy. ---
+_s4c_emit_row="crates/synthcrate/tests/harness_emitted.rs"
+awk 'BEGIN { for (i = 0; i < 19000; i++) print "// x" }' > "$_s4c_root/$_s4c_emit_row"
+_s4c_emit_baseline="$(mktemp)"; _TMPDIRS+=("$_s4c_emit_baseline")
+_s4c_scan="$(run_harness_layout_scan "$_s4c_emit_baseline" 20000 \
+    "synthcrate:$_s4c_root/crates/synthcrate/tests" 2>/dev/null)" || true
+_s4c_emitted_warn="$(printf '%s\n' "$_s4c_scan" | grep -E '^HARNESS_KLOC_CAP WARN ' || true)"
+assert "4c: EMITTER SEAM — _s4c_warn is byte-identical to the WARN line the real driver emits for the same unit" \
+    test "$_s4c_emitted_warn" = "$(_s4c_warn "$_s4c_root/$_s4c_emit_row")"
+_s4c_run
+assert "4c: EMITTER SEAM — the classifier counts and parses exactly the one emitted WARN (EMITTED 1, PARSED 1)" \
+    test "$(_warn_ratchet_rows "$_s4c_out" EMITTED)/$(_warn_ratchet_rows "$_s4c_out" PARSED)" = "1/1"
+assert "4c: EMITTER SEAM — the emitted file= normalises to the repo-relative row and is UNKNOWN, gating (rc 1)" \
+    bash -c 'test "$1" = "$2" && test "$3" -eq 1' _ \
+        "$(_warn_ratchet_rows "$_s4c_out" UNKNOWN)" "$_s4c_emit_row" "$_s4c_rc"
+_s4c_run "$_s4c_emit_row"
+assert "4c: EMITTER SEAM — acknowledging that repo-relative row silences the emitted WARN (rc 0)" \
+    test "$_s4c_rc" -eq 0
 
 # --- (i) a live WARN absent from the known set is RED ---
 _s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_a")"
