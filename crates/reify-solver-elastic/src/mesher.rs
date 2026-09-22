@@ -445,7 +445,7 @@ pub fn ring_self_intersects_2d(ring: &[[f64; 2]]) -> Option<(usize, usize)> {
 /// [`mesh_swept_profile_2d`] rejects a boundary as
 /// [`Mesh2dError::DegenerateBoundary`] when the absolute
 /// [`ring_signed_area_2d`] of its outer ring, or of any hole, is below this
-/// value. 1e-14 m² is the area of a 0.1 µm square: a ring enclosing less is
+/// value. The value is the area of a 0.1 µm square: a ring enclosing less is
 /// effectively a line segment, not a region.
 ///
 /// It is `pub` and re-exported at the crate root beside
