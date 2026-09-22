@@ -68,6 +68,8 @@
 //! against lives in the sibling `debug_write_tool_routing_fixtures`; that
 //! module's header says why it is split out.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::debug_write_tool_routing_fixtures::{
     ADVERTISED_BUT_UNDISPATCHED_SOURCE, ARM_SHAPES_SOURCE, BYPASSING_SOURCE,
     COMMENT_ONLY_MENTION_SOURCE, COMPLIANT_SOURCE, DELEGATED_PRIVATE_EMIT_SOURCE,
@@ -266,41 +268,63 @@ fn parse_fn_name(trimmed: &str) -> Option<&str> {
     (end > 0).then(|| &rest[..end])
 }
 
-/// Returns the source slice of the TOP-LEVEL fn named `name`, from its
-/// signature line through the closing brace.
-fn fn_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
-    let span = fn_span(source, name)?;
-    Some(&source[span.0..span.1])
+/// Every TOP-LEVEL fn in ONE source view, by name — built in a single walk so
+/// the repeated lookups [`within_one_hop`] makes cost a map probe each.
+///
+/// Built once per view rather than rescanned per lookup because the naive
+/// shape is O(identifiers x lines): every candidate callee in a handler body
+/// re-walked all 5000-odd lines of `debug_server.rs`, which made this module
+/// the slowest thing in reify-gui's unit suite — on a gate whose whole
+/// argument for being ungated is that it runs in the per-commit
+/// `--scope staged` path.
+///
+/// A fn's span runs from its signature line through the next line that is
+/// exactly `}` in column 0. That terminator is sound for `debug_server.rs`,
+/// which indents every nested block, so no inner brace can reach column 0; a
+/// top-level fn's own closing brace is the first that does. A file violating
+/// that convention truncates the body early, which loses seam matches and
+/// therefore false-POSITIVES — red, never silently green.
+struct FnIndex<'a> {
+    source: &'a str,
+    spans: BTreeMap<&'a str, (usize, usize)>,
 }
 
-/// The `(start, end)` byte offsets of the TOP-LEVEL fn named `name` — what
-/// [`fn_body`] slices, and what [`splice_into_fn_body`] edits inside.
-///
-/// The terminator is the next line that is exactly `}` in column 0. That is
-/// sound for `debug_server.rs`, which indents every nested block, so no inner
-/// brace can reach column 0; a top-level fn's own closing brace is the first
-/// that does. A file violating that convention truncates the body early,
-/// which loses seam matches and therefore false-POSITIVES — red, never
-/// silently green.
-fn fn_span(source: &str, name: &str) -> Option<(usize, usize)> {
-    let mut start: Option<usize> = None;
-    let mut offset = 0usize;
-    for line in source.split_inclusive('\n') {
-        match start {
-            None => {
-                if parse_fn_name(line.trim_end()) == Some(name) {
-                    start = Some(offset);
+impl<'a> FnIndex<'a> {
+    fn build(source: &'a str) -> Self {
+        let mut spans: BTreeMap<&'a str, (usize, usize)> = BTreeMap::new();
+        // Signatures seen but not yet closed. One `}` closes ALL of them,
+        // which is exactly what each fn independently finding "the first
+        // column-0 `}` after my own signature" comes to; a name seen twice
+        // keeps its FIRST definition for the same reason.
+        let mut open: Vec<(&'a str, usize)> = Vec::new();
+        let mut offset = 0usize;
+        for line in source.split_inclusive('\n') {
+            if let Some(name) = parse_fn_name(line.trim_end()) {
+                open.push((name, offset));
+            } else if line.trim_end() == "}" {
+                let end = offset + line.len();
+                for (name, start) in open.drain(..) {
+                    spans.entry(name).or_insert((start, end));
                 }
             }
-            Some(begin) => {
-                if line.trim_end() == "}" {
-                    return Some((begin, offset + line.len()));
-                }
-            }
+            offset += line.len();
         }
-        offset += line.len();
+        Self { source, spans }
     }
-    None
+
+    /// The `(start, end)` byte offsets of the fn named `name` — what
+    /// [`FnIndex::body`] slices, and what [`splice_into_fn_body`] edits
+    /// inside.
+    fn span(&self, name: &str) -> Option<(usize, usize)> {
+        self.spans.get(name).copied()
+    }
+
+    /// The source slice of the fn named `name`, from its signature line
+    /// through the closing brace.
+    fn body(&self, name: &str) -> Option<&'a str> {
+        let (start, end) = self.span(name)?;
+        Some(&self.source[start..end])
+    }
 }
 
 /// `source` with `stmt` spliced in as the first statement of the TOP-LEVEL fn
@@ -314,13 +338,13 @@ fn fn_span(source: &str, name: &str) -> Option<(usize, usize)> {
 /// happen is the same false GREEN one level up that the control exists to
 /// retire.
 ///
-/// The fn is located by [`fn_span`] — the same walk the gate itself runs on,
+/// The fn is located by [`FnIndex`] — the same walk the gate itself runs on,
 /// so the control cannot drift onto a different notion of "top-level fn" than
 /// the checks it is the floor for. The insertion point is the first `{` in
 /// that span, which opens the body: a multi-line signature puts it several
 /// lines below the `fn` keyword.
 fn splice_into_fn_body(source: &str, fn_name: &str, stmt: &str) -> Option<String> {
-    let (start, end) = fn_span(source, fn_name)?;
+    let (start, end) = FnIndex::build(source).span(fn_name)?;
     let open = start + source[start..end].find('{')?;
     let (head, tail) = source.split_at(open + 1);
     Some(format!("{head}\n{stmt}{tail}"))
@@ -349,19 +373,24 @@ fn names_a_seam(body: &str, own_name: &str) -> bool {
 /// of any depth-capped scan, and `write_on_engine_and_refresh_baseline`'s
 /// point (b) prose ("Do NOT add a second emit path here or in any caller") is
 /// what covers it.
-fn within_one_hop(code: &str, name: &str, holds: impl Fn(&str, &str) -> bool) -> bool {
-    let Some(body) = fn_body(code, name) else {
+fn within_one_hop(index: &FnIndex, name: &str, holds: impl Fn(&str, &str) -> bool) -> bool {
+    let Some(body) = index.body(name) else {
         return false;
     };
     holds(body, name)
+        // DEDUPED first: a body names the same callee many times, and each
+        // duplicate would otherwise re-probe the index and re-run `holds`
+        // over the same hop body.
         || identifiers(body)
             .filter(|callee| *callee != name)
-            .any(|callee| fn_body(code, callee).is_some_and(|hop| holds(hop, callee)))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .any(|callee| index.body(callee).is_some_and(|hop| holds(hop, callee)))
 }
 
 /// True when the top-level fn `name` reaches a `*_and_refresh_baseline` seam.
-fn reaches_a_seam(code: &str, name: &str) -> bool {
-    within_one_hop(code, name, names_a_seam)
+fn reaches_a_seam(index: &FnIndex, name: &str) -> bool {
+    within_one_hop(index, name, names_a_seam)
 }
 
 /// The emission surface a write-tool handler must not reach into: naming any
@@ -395,8 +424,8 @@ const PRIVATE_EMIT_IDENTIFIERS: [&str; 3] = [
 /// The `.emit(` arm is FORWARD-LOOKING: it needs an `Emitter` value in scope,
 /// and `DebugServerState` (fields `engine`, `selection`, `debug_bridge`,
 /// `last_state`) cannot supply one until an `AppHandle` is added to it.
-fn emits_privately(code: &str, name: &str) -> bool {
-    within_one_hop(code, name, |body, _| {
+fn emits_privately(index: &FnIndex, name: &str) -> bool {
+    within_one_hop(index, name, |body, _| {
         identifiers(body).any(|id| PRIVATE_EMIT_IDENTIFIERS.contains(&id))
             || body.contains(".emit(")
     })
@@ -410,7 +439,7 @@ fn identifiers(text: &str) -> impl Iterator<Item = &str> {
 
 /// Appends `span` to `out` as an equal-length run of ASCII spaces, keeping
 /// newlines, so byte offsets, line count and line lengths all survive
-/// unchanged — `fn_body`'s column-0 `}` sentinel therefore still means the
+/// unchanged — [`FnIndex`]'s column-0 `}` sentinel therefore still means the
 /// same thing in a blanked view as in the source.
 fn push_blanked(out: &mut String, span: &str) {
     for c in span.chars() {
@@ -548,7 +577,7 @@ fn strip_comments(source: &str) -> String {
 /// comment, a tracing message, a `json!` field) can never read as a call.
 ///
 /// Both views are equal-length blankings of the same bytes, so an offset means
-/// the same thing in either and [`fn_body`] slices line up across them.
+/// the same thing in either and [`FnIndex`] spans line up across them.
 fn strip_prose(source: &str) -> String {
     blank_noncode(source, true)
 }
@@ -573,14 +602,17 @@ fn seam_fns(code: &str) -> Vec<&str> {
 /// `*_and_refresh_baseline` fn in the same source that does.
 fn unrefreshing_seams(source: &str) -> Vec<String> {
     let code = strip_prose(source);
+    let index = FnIndex::build(&code);
     let refreshes = |name: &str| {
-        fn_body(&code, name).is_some_and(|body| identifiers(body).any(|id| id == "compute_delta"))
+        index
+            .body(name)
+            .is_some_and(|body| identifiers(body).any(|id| id == "compute_delta"))
     };
     let mut liars: Vec<String> = seam_fns(&code)
         .into_iter()
         .filter(|name| {
             !refreshes(name)
-                && !fn_body(&code, name).is_some_and(|body| {
+                && !index.body(name).is_some_and(|body| {
                     identifiers(body).any(|id| {
                         id != *name && id.ends_with("_and_refresh_baseline") && refreshes(id)
                     })
@@ -600,21 +632,21 @@ fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
     // must not see them at all.
     let code = strip_comments(source);
     let prose_free = strip_prose(source);
+    let index = FnIndex::build(&prose_free);
     let mut bypasses: Vec<Bypass> = dispatch_arms(&code)
         .into_iter()
         .flat_map(|(tool, handler)| {
             // RESOLUTION IS NOT NAME-MATCHING: a handler that is not a
             // top-level fn of this file is reported as unresolved, not
             // mislabelled as one that skips the seam.
-            let kinds = match fn_body(&prose_free, &handler) {
+            let kinds = match index.body(&handler) {
                 None => vec![BypassKind::UnresolvedHandler],
                 // The two defects are INDEPENDENT: a handler can route
                 // correctly and still emit privately, and collapsing them
                 // would hide one.
                 Some(_) => [
-                    (!reaches_a_seam(&prose_free, &handler))
-                        .then_some(BypassKind::NoBaselineRefresh),
-                    emits_privately(&prose_free, &handler).then_some(BypassKind::PrivateEmit),
+                    (!reaches_a_seam(&index, &handler)).then_some(BypassKind::NoBaselineRefresh),
+                    emits_privately(&index, &handler).then_some(BypassKind::PrivateEmit),
                 ]
                 .into_iter()
                 .flatten()
@@ -768,7 +800,7 @@ fn the_string_scan_survives_slashes_and_escapes() {
 "#;
     assert!(strip_comments(lifetime).contains(".emit("));
 
-    // Blanking is equal-LENGTH, which is what lets `fn_body` slice one view
+    // Blanking is equal-LENGTH, which is what lets `FnIndex` slice one view
     // with offsets found in another: the comment's text is gone, the code
     // around it is untouched, and every byte offset still means what it did.
     let commented = r#"fn a() {
@@ -841,6 +873,11 @@ fn every_debug_write_tool_routes_through_the_delta_choke_point() {
     }
 }
 
+/// The private-emit half's fixture claim. The REAL-file half of it is
+/// asserted once, in
+/// [`the_private_emit_sweep_fires_on_the_real_file_when_mutated`], where it is
+/// read together with the positive control that keeps it from passing
+/// vacuously.
 #[test]
 fn no_write_tool_handler_emits_privately() {
     assert_eq!(
@@ -851,17 +888,6 @@ fn no_write_tool_handler_emits_privately() {
             kind: BypassKind::PrivateEmit,
         }],
     );
-
-    // The real file is clean, and is only clean because prose is blanked
-    // first: its ONLY textual `emit_delta` occurrences are the shared
-    // INV-GUI-2 rationale banner above the two seams and point (b) on
-    // `write_on_engine_and_refresh_baseline`, both comments, so a checker
-    // reading raw text would false-positive right here.
-    let private_emits: Vec<Bypass> = write_tool_bypasses(&debug_server_source())
-        .into_iter()
-        .filter(|b| b.kind == BypassKind::PrivateEmit)
-        .collect();
-    assert_eq!(private_emits, vec![]);
 }
 
 /// The private-emit sweep follows the SAME one delegation hop the seam sweep
@@ -918,7 +944,15 @@ fn the_private_emit_sweep_fires_on_the_real_file_when_mutated() {
     let source = debug_server_source();
 
     // The control and its negative are read together: a sweep that fires on
-    // the mutant says nothing unless it stays silent on the original.
+    // the mutant says nothing unless it stays silent on the original. This is
+    // the ONLY place the real-file negative is asserted — a second copy of it
+    // bought no claim and a whole extra sweep of a 5000-line file.
+    //
+    // That negative is only clean because prose is blanked first: the file's
+    // ONLY textual `emit_delta` occurrences are the shared INV-GUI-2
+    // rationale banner above the two seams and point (b) on
+    // `write_on_engine_and_refresh_baseline`, both comments, so a checker
+    // reading raw text would false-positive right here.
     assert_eq!(private_emits(&source), vec![]);
 
     // The target is READ from the dispatch scan rather than hardcoded, so the
@@ -1017,12 +1051,13 @@ fn the_break_glass_knob_downgrades_a_real_bypass_to_a_warn() {
 /// Line numbers were replaced by symbol anchors because names survive edits —
 /// but only while they are still names, so this pins them rather than leaving
 /// a drift-resistance gate resting on unchecked pointers. It doubles as a
-/// non-vacuity check on [`fn_body`]: every anchor below is resolved with the
+/// non-vacuity check on [`FnIndex`]: every anchor below is resolved with the
 /// same primitive the gate itself runs on.
 #[test]
 fn every_anchor_this_module_cites_still_exists() {
     let source = debug_server_source();
     let code = strip_comments(&source);
+    let index = FnIndex::build(&code);
 
     let missing: Vec<&str> = [
         "tool_defs",
@@ -1033,13 +1068,13 @@ fn every_anchor_this_module_cites_still_exists() {
         "write_on_engine_and_refresh_baseline",
     ]
     .into_iter()
-    .filter(|name| fn_body(&code, name).is_none())
+    .filter(|name| index.body(name).is_none())
     .collect();
     assert_eq!(
         missing,
         Vec::<&str>::new(),
         "this module's prose cites top-level fn(s) `debug_server.rs` no longer defines — \
-         re-point the prose at whatever replaced them (or `fn_body` has stopped resolving)"
+         re-point the prose at whatever replaced them (or `FnIndex` has stopped resolving)"
     );
 }
 
