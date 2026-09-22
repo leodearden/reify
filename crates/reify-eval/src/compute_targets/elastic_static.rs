@@ -5013,11 +5013,11 @@ fn read_direction_or_neg_z(direction: Option<&Value>) -> Result<[f64; 3], FeaVal
     match direction {
         Some(Value::Vector(elems) | Value::List(elems)) if elems.len() == 3 => {
             let mut d = [0.0f64; 3];
-            for (slot, e) in d.iter_mut().zip(elems.iter()) {
-                *slot = match dimensionless_component(e, "read_direction_or_neg_z component") {
+            for (slot, component) in d.iter_mut().zip(elems.iter()) {
+                *slot = match dimensionless_component(component, "read_direction_or_neg_z component") {
                     ComponentRead::Accepted(x) => x,
                     ComponentRead::Undefined => 0.0,
-                    ComponentRead::Rejected(e) => return Err(e),
+                    ComponentRead::Rejected(err) => return Err(err),
                 };
             }
             Ok(d)
