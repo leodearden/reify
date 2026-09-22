@@ -69,13 +69,71 @@ lock_depth: 10
 # excluded from this budget, so WAIT can safely flip to unlimited (task 4838). NB the cold default
 # (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting exit-124,
 # add verify_cold_command_timeout_secs >= 7200.
+#
+# CORRECTION (task 7552): strike that "NB" and the advice after it. There is no cold
+# default of 5400 for THIS project. verify_cold_command_timeout_secs is set nowhere in
+# this file (only in comments), and dark-factory declares it `float | None` with default
+# None at both module and top level — so it has no framework default either, and any
+# 5400 is a value from some OTHER project's own config rather than something reify
+# inherits. Reify's cold cascade is unset at every level and therefore resolves to this
+# warm 7200s value: cold and warm are the SAME number here. "Add
+# verify_cold_command_timeout_secs >= 7200" is consequently moot — it would set the
+# budget to what it already is. This matters beyond tidiness because the reachability
+# argument recorded below sits under 7200s, and an operator who believed cold verifies
+# were capped at 5400 would be sizing against a wall that does not exist.
+#
+# THIS KEY IS ALSO THE OUTER WALL FOR THE role=background MAIN-TIP SWEEP
+# (task 7552). `run_main_tip_sweep` calls `run_full_verification(..., role='background')`,
+# which is the NON-merge branch of `_resolve_verify_timeout`: `is_merge_verify`
+# is passed True only alongside role='merge', so merge_verify_cold_command_timeout_secs
+# below never applies to the sweep, and the cold cascade falls through to this
+# warm value because no verify_cold_command_timeout_secs is set at any level.
+# Warm or cold, the sweep's whole `--profile both --scope all` run is bounded
+# HERE.
+#
+# WHAT THAT BOUNDS, AND WHAT IT DOES NOT MODEL. Like the merge wall below, this
+# is an expected-duration bound, not a sum of inner per-step GNU-`timeout`
+# ceilings; there is no margin arithmetic here to defend. What it DOES decide is
+# a cross-file relationship worth recording at the key that creates it: because
+# the sweep runs `--profile both --scope all` and is outside verify.sh's
+# `task|merge` heavy-exclusion, it runs all 8 members of
+# REIFY_HEAVY_NEXTEST_FILTER. As of task 7552 the per-test heavy ceiling in
+# reify's .config/nextest.toml (2160s) is sized to be REACHABLE under verify.sh's
+# 60m debug wall on this path, so a hung heavy test is SIGTERM'd BY NAME there
+# rather than degrading to a bare exit 124 attributing nothing.
+#
+# REACHABLE IN THE EXACT SENSE, since the loose reading of it is what produced
+# the first, wrong re-size within that same task: verify.sh's 60m wraps the
+# combined BUILD+execution pass while the per-test ceiling starts counting at
+# test-process start, so the ceiling has to sit under the wall by more than the
+# pass takes to reach the test — 1440s of headroom against a measured 1078.7s,
+# not merely 2160 < 3600. That 1078.7s is a two-sample max measured on a WARM
+# target/, so it under-states what a freshly-seeded cold lane pays; the ceiling
+# therefore sits one 120s step BELOW the largest the bound allows, keeping ~33%
+# margin rather than the 1.3s that the top of the window left. Evidence-backed
+# with margin, then — still not a structural guarantee.
+#
+# AND THIS KEY IS WHY THE ALTERNATIVE REMEDY IS IMPOSSIBLE. Role-scoping
+# verify.sh's INNER walls above ~3600s for background — the obvious-looking way
+# to make a large per-test ceiling reachable instead — is INERT unless this outer
+# wall is also raised past that ceiling, which would let one hung heavy test
+# stall the cadence sweep for the full window. That is the outcome the remedy was
+# rejected for. Argument and derivation are normative in ONE place:
+# reify's docs/prds/offline-deep-test-lane.md DA6. Do not restate them here.
+# NOTE the relationship runs the other way from the merge wall's: there the inner
+# budgets are the thing being protected FROM this wall; here this wall is what
+# caps how large an inner per-test ceiling can usefully be.
 verify_command_timeout_secs: 7200
 # merge_verify_cold_command_timeout_secs (task #5383; sibling task #5382 delivers the
 # RELEASE inner nextest budget REIFY_VERIFY_TEST_TIMEOUT_RELEASE=90m in scripts/verify.sh
 # and deliberately does NOT lift verify_command_timeout_secs above — that key bounds only
-# the non-merge path, which verify.sh runs --profile debug, so no non-merge path runs the
-# debug+release passes cold together): the merge path (DF_VERIFY_ROLE=merge) is NOT bounded
-# by verify_command_timeout_secs above.
+# the non-merge path, whose TASK role verify.sh runs --profile debug): the merge path
+# (DF_VERIFY_ROLE=merge) is NOT bounded by verify_command_timeout_secs above.
+# CORRECTION (task 7552): this parenthesis used to read "so no non-merge path runs the
+# debug+release passes cold together". That is false — role=background is non-merge and
+# forces --profile both. The conclusion it supported is unaffected (the merge path is still
+# bounded by the key below, not the one above), but the background sweep DOES run both
+# passes under verify_command_timeout_secs; see that key's own comment.
 # dark-factory orchestrator/src/orchestrator/verify.py's
 # `_resolve_verify_timeout` resolves the cold merge-verify OUTER wall via a
 # cascade whose FIRST branch returns this key when set (the is_merge_verify
