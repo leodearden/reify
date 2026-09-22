@@ -21,8 +21,7 @@
 
 // ── Production code (task #3428 step-6 / step-8) ─────────────────────────────
 
-/// Return `true` if `target` is in the persistent-cache write/lookup
-/// allowlist.
+/// The persistent-cache write/lookup allowlist.
 ///
 /// Listed targets: `"solver::elastic_static"` (task #3428),
 /// `"solver::buckling"` (task #3459), and `"shell-extract::extract"`
@@ -30,11 +29,15 @@
 /// superset of [`crate::significance_filter::is_opted_in`]'s allowlist
 /// (`{elastic_static, buckling}`); `"shell-extract::extract"` is persistable
 /// but NOT significance-opted-in.
+pub(crate) const PERSISTABLE_TARGETS: [&str; 3] = [
+    "solver::elastic_static",
+    "solver::buckling",
+    "shell-extract::extract",
+];
+
+/// Return `true` if `target` is in [`PERSISTABLE_TARGETS`].
 pub(crate) fn is_persistable_target(target: &str) -> bool {
-    matches!(
-        target,
-        "solver::elastic_static" | "solver::buckling" | "shell-extract::extract"
-    )
+    PERSISTABLE_TARGETS.contains(&target)
 }
 
 /// Look up a prior result from the on-disk cache and reconstruct both the
@@ -1306,7 +1309,7 @@ mod tests {
     // The bridge is the round trip that decides whether a warm serve can replay
     // what the cold solve said. The table below pins it as TARGET-AGNOSTIC and
     // SEVERITY-GENERIC at once: the `WithDiagnostics` envelope is generic over
-    // both, so neither a solver target nor a severity may be special-cased.
+    // both, so neither a persistable target nor a severity may be special-cased.
 
     /// A persistable solver diagnostic of `severity`, shaped the way a solver
     /// emits one: a coded message, a machine-readable candidate list, no labels.
@@ -1345,28 +1348,57 @@ mod tests {
         )
     }
 
-    /// A solver target name paired with a builder for the result `Value` that
-    /// target's bridge reader expects.
-    type SolverTargetFixture = (&'static str, fn() -> Value);
+    /// A `shell-extract::extract` result `Value` in the shape the bridge's
+    /// `value_to_shell_extraction_result` reader expects: the empty mesh, which
+    /// `ShellExtractionResult::new` admits.
+    fn shell_extract_cache_value() -> Value {
+        let empty = reify_shell_extract::ShellExtractionResult::new(
+            reify_shell_extract::MidSurfaceMesh {
+                vertices: vec![],
+                triangles: vec![],
+                thickness: vec![],
+            },
+            reify_shell_extract::SegmentationResult {
+                regions: vec![],
+                vertex_labels: vec![],
+                triangle_labels: vec![],
+            },
+            reify_shell_extract::MidSurfaceAttributes::default(),
+            0,
+            vec![],
+        )
+        .expect("an empty mesh satisfies the length invariant");
+        crate::shell_extract_compute::shell_extraction_result_to_value(&empty)
+    }
+
+    /// A persistable target name paired with a builder for the result `Value`
+    /// that target's bridge reader expects.
+    type PersistableTargetFixture = (&'static str, fn() -> Value);
 
     /// The persist bridge must replay a diagnostic of ANY severity on EVERY
-    /// solver target, verbatim in every field a consumer can key off.
+    /// persistable target, verbatim in every field a consumer can key off.
     ///
     /// Why a table rather than one fixture per case: "regardless of severity" is
     /// an invariant of the bridge, not a property of whichever diagnostic a test
     /// author happened to pick. Pinning the whole cross product makes a
     /// severity-conditional regression — a `.filter(|d| d.severity !=
     /// Severity::Error)` slipped into `persistent_write`, say — impossible to
-    /// land green. The Warning-only coverage this test replaces permitted
-    /// exactly that.
+    /// land green. Each target is a row because each has its own
+    /// `persistent_lookup`/`persistent_write` arm.
     #[test]
-    fn persist_bridge_replays_every_severity_on_every_solver_target() {
+    fn persist_bridge_replays_every_severity_on_every_persistable_target() {
         use reify_core::Severity;
 
-        let targets: [SolverTargetFixture; 2] = [
+        let targets: [PersistableTargetFixture; 3] = [
             ("solver::elastic_static", elastic_static_cache_value),
             ("solver::buckling", buckling_cache_value),
+            ("shell-extract::extract", shell_extract_cache_value),
         ];
+        assert_eq!(
+            targets.map(|(target, _)| target).as_slice(),
+            super::PERSISTABLE_TARGETS.as_slice(),
+            "every persistable target needs a row in this table, in allowlist order",
+        );
         let severities = [Severity::Info, Severity::Warning, Severity::Error];
 
         // ONE cache dir for every cell, so each cell's KEY is what selects its
