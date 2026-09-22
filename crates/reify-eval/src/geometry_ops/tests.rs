@@ -33869,21 +33869,22 @@
     //
     // Every degenerate case above has a signed area of EXACTLY 0.0 (collinear,
     // identical, 2-point), and the smallest accepted ring above has area 5e-5.
-    // That leaves the whole open interval (0, 1e-4) passing the suite unchanged
-    // — so an accidental widening of the constant to, say, 1e-6, which would
-    // start silently rejecting legitimately small profiles, would ship green.
+    // So without the two tests below, the gate's behaviour on every area
+    // strictly between those two is unconstrained — including whether it
+    // consults the threshold at all.
     //
-    // Two DIFFERENT guards close that, and it is worth being precise about
-    // which does what, because the obvious reading is wrong. The two boundary
-    // tests below derive their rings FROM the constant (0.5x and 2x), so they
-    // MOVE WITH IT: they do NOT catch a retune on their own. What they pin is
-    // that the gate honours whatever value the constant holds, with the right
-    // sense and scale — verified by mutation: widening the comparison to
-    // `< TOLERANCE * 4.0` fails the 2x test, and halving the shoelace result
-    // fails the 0.5x test. The ABSOLUTE magnitude is pinned separately, by
-    // `degenerate_ring_area_tolerance_matches_mesher_gate`, which compares
-    // against the mesher's own literal — also verified by mutation: setting the
-    // constant to 1e-6 fails exactly that test and no other.
+    // They derive their rings FROM the constant (0.5x and 2x), so they MOVE
+    // WITH IT. What they pin is that the gate honours the constant's value with
+    // the right sense and scale — verified by mutation: widening the comparison
+    // to `< TOLERANCE * 4.0` fails the 2x test, and narrowing it to
+    // `< TOLERANCE * 0.25` fails the 0.5x test.
+    //
+    // The constant is not this crate's. It is `reify_solver_elastic`'s
+    // `pub const`, the binding `validate_boundary` compares against, so parity
+    // with the mesher is structural, and the mesher's own
+    // `validate_boundary_*_area_tolerance` tests pin both of its call sites.
+    // Its numeric value is deliberately pinned nowhere: a retune is an edit to
+    // that one declaration and moves both gates together.
 
     /// Helper: coordinate args for a right triangle with the requested shoelace
     /// signed area, in SI m².

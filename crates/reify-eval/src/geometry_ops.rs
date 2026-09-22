@@ -9,6 +9,7 @@ use reify_core::Diagnostic;
 use reify_ir::{
     CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, KernelId, ValueMap,
 };
+use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 
 use crate::eval_ctx_with_meta;
 
@@ -5329,34 +5330,6 @@ fn profile_circle(
     Ok(reify_ir::GeometryOp::CircleProfile { radius })
 }
 
-/// Degenerate-ring tolerance, in SI square metres.
-///
-/// NOT an independently-chosen tolerance: this is the same value
-/// `validate_boundary` already applies to the sampled outer ring (and to each
-/// hole) in `reify-solver-elastic/src/mesher.rs`, on the same SI-metre
-/// coordinates. Keeping the two equal is what makes the build-time check a
-/// strict pre-image of the existing downstream gate — a ring this check accepts
-/// can still fail later for other reasons, but a ring it rejects would
-/// certainly have failed there.
-///
-/// It is a local `const` only because the mesher's copy is still an INLINE
-/// `1e-14` literal inside a private `fn`, so there is nothing to import. Its
-/// companion [`reify_solver_elastic::ring_signed_area_2d`] no longer has that
-/// problem — task 5218 promoted it to `pub` and re-exported it at the crate
-/// root, which is why the shoelace formula itself is imported here rather than
-/// copied. Lifting the threshold to a `pub const` beside it would let this
-/// declaration go the same way.
-///
-/// That equality is load-bearing, so it is asserted in code rather than only in
-/// prose: `degenerate_ring_area_tolerance_matches_mesher_gate` (this module's
-/// tests) reads the mesher source and fails if the two values diverge.
-/// Complementary but NOT a substitute — they derive their rings from this
-/// constant and so move with it — are the two boundary tests
-/// `..._area_just_below_tolerance_returns_err` /
-/// `..._area_just_above_tolerance_returns_ok`, which pin that the gate honours
-/// whatever value this holds, with the correct sense and scale.
-const DEGENERATE_RING_AREA_TOLERANCE: f64 = 1e-14;
-
 fn profile_polygon(
     kind: &reify_compiler::ProfileKind,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -5411,12 +5384,14 @@ fn profile_polygon(
     // does so more than once is a separate defect, caught by the sweep that
     // follows.
     //
-    // The shoelace formula is the SHARED one — `reify_solver_elastic`'s
-    // crate-root `ring_signed_area_2d`, the very function `validate_boundary`
-    // calls — not a local re-derivation, so "pre-image" is a structural fact
-    // about one function rather than a claim about two copies staying in step.
-    // (`sweep_classifier.rs` already calls it, so this adds no new dependency
-    // edge.) Only the TOLERANCE is still duplicated; see the const's doc.
+    // Both the shoelace formula and the threshold are SHARED:
+    // `reify_solver_elastic`'s crate-root `ring_signed_area_2d` and
+    // `DEGENERATE_RING_AREA_TOLERANCE`, exactly what `validate_boundary` applies
+    // to each ring before meshing. So this gate is a strict PRE-IMAGE of that
+    // one by construction: a ring rejected here would certainly have been
+    // rejected there, while one accepted here can still fail downstream for
+    // other reasons. (`sweep_classifier.rs` already uses that crate, so this
+    // adds no new dependency edge.)
     //
     // No separate `points.len() < 3` arity guard: `ring_signed_area_2d` returns
     // exactly 0.0 for any ring of fewer than 3 points, and `0.0 <` the
