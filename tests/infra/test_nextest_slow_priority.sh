@@ -1924,4 +1924,52 @@ assert "L-neg control: the same role classifier ACCEPTS the real nextest.toml + 
 
 rm -rf "$_KL_FIX"
 
+# ---------------------------------------------------------------------------
+# Assertion M (task 7664): FORBIDDEN-PHRASE SWEEP over the WHOLE file.
+#
+# Assertions K and L check STRUCTURE (classification, reachability) by reading
+# their own comment block and the ACCEPTED RESIDUAL paragraph — neither one
+# looks anywhere else in .config/nextest.toml. That left a copy of the retired
+# claim "no gate path runs heavy members" unguarded when it resurfaced
+# verbatim in the tensegrity_t0a block (introduced by task 6485, corrected in
+# the [profile.default] header by that same task, and only caught in the
+# tensegrity_t0a block by hand during task 7552's step-11 — not by any
+# assertion in this suite). docs/prds/offline-deep-test-lane.md:185-187 names
+# the pattern: six copies of one argument is how a claim survives after it has
+# become false. This assertion is the guard that was missing: it scans the
+# ENTIRE file, so a seventh copy cannot reappear silently anywhere in it.
+#
+# EXEMPT: the line that legitimately QUOTES the phrase in order to NEGATE it
+# (the [profile.default] header's own "'No gate path runs heavy members' is
+# FALSE" correction) — that copy IS the correction, not a recurrence.  Matched
+# on the quote-and-negate SHAPE ("is FALSE" on the same line), not a line
+# number, since line numbers in this file move on every edit.
+# ---------------------------------------------------------------------------
+FORBIDDEN_HEAVY_GATE_PHRASE='no gate path runs heavy members'
+
+_no_forbidden_phrase() {
+    local file="$1" phrase="$2" hits
+    hits="$(grep -in -- "$phrase" "$file" | grep -viE 'is FALSE')"
+    [ -z "$hits" ]
+}
+_forbidden_phrase_present() { ! _no_forbidden_phrase "$@"; }
+
+echo ""
+echo "--- Assertion M (task 7664): '${FORBIDDEN_HEAVY_GATE_PHRASE}' does not survive anywhere but its own correction ---"
+
+_M_FIX="$(mktemp -d)"
+cp "$NEXTEST_TOML" "$_M_FIX/recurrence.toml"
+printf '\n# %s\n' "$FORBIDDEN_HEAVY_GATE_PHRASE" >> "$_M_FIX/recurrence.toml"
+
+assert "M-neg fixture is non-vacuous — the recurrence seed really changed .config/nextest.toml" \
+    _files_differ "$NEXTEST_TOML" "$_M_FIX/recurrence.toml"
+
+assert "M-neg: checker REJECTS a file carrying an unqualified (non-negating) copy of the forbidden phrase" \
+    _forbidden_phrase_present "$_M_FIX/recurrence.toml" "$FORBIDDEN_HEAVY_GATE_PHRASE"
+
+rm -rf "$_M_FIX"
+
+assert "M: no live (non-negating) copy of '${FORBIDDEN_HEAVY_GATE_PHRASE}' anywhere in .config/nextest.toml" \
+    _no_forbidden_phrase "$NEXTEST_TOML" "$FORBIDDEN_HEAVY_GATE_PHRASE"
+
 test_summary
