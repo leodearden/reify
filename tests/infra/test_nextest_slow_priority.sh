@@ -382,16 +382,24 @@ assert "tensegrity_t0a priority (${P_T0A:-unset}) > determinism priority (${P_DE
 # slow-timeout/terminate-after values, BY TIER.
 #
 # All five of these blocks used to carry terminate-after = 15 (1800s). Task 6485
-# split them: the four HEAVY binaries moved to the heavy ceiling
-# (terminate-after = 21 since task 7552; 360 before it), while
-# representation_within_assertion is
+# split them: the four HEAVY binaries moved to the heavy ceiling (re-sized twice
+# within task 7552; 360 before it), while representation_within_assertion is
 # GATE-RESIDENT — it still runs on the merge gate, so it keeps 1800s, strictly
 # under the 3600s pass-level wall. Pinning each tier's value separately here is
 # what makes a block silently changing tier fail; Assertion K enforces that the
 # two tiers exhaust every slow-timeout override in the file.
+#
+# THE BANNER CARRIES NO TIER VALUE, deliberately. It used to, and it drifted: it
+# still announced `terminate-after = 27` after the assertions below had been
+# re-pointed at 21, so an agent triaging a red F would have grepped the config
+# for a number that appears nowhere in it and concluded the tier had been
+# removed rather than re-sized. Each value now has exactly one home in this
+# assertion — the literal in the `test`, with its seconds spelled out in the
+# description on the line directly above it, where a wrong number is adjacent to
+# the thing it is wrong about (heuristic 11).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Assertion F (task 5141, retargeted 6485/7552): heavy blocks at terminate-after = 27, gate-resident at 15 ---"
+echo "--- Assertion F (task 5141, retargeted 6485/7552): each tier's terminate-after, pinned per block ---"
 
 ST_T0A="$(_slow_terminate_for reify-eval tensegrity_t0a)"
 ST_FEA="$(_slow_terminate_for reify-eval-fea-tests fea_diagnostics_e2e)"
@@ -1349,29 +1357,43 @@ _max_heavy_ceiling_for_file() {
 }
 
 # ---------------------------------------------------------------------------
-# _residual_role_documented <nextest.toml> <role> — true iff <role> is named
-# inside the ACCEPTED RESIDUAL paragraph of the [profile.default] header comment.
-# The paragraph runs from its opener to the end of that contiguous comment block,
-# so a `#`-separated continuation still counts.
+# _residual_role_documented <nextest.toml> <role> — true iff the ACCEPTED
+# RESIDUAL paragraph of the [profile.default] header comment carries an ENTRY
+# LINE for <role>: `#   <role> — <reason>`. The paragraph runs from its opener to
+# the end of that contiguous comment block, so a `#`-separated continuation still
+# counts.
 #
 # Requiring the prose AND the allowlist to agree is what stops a residual from
 # being allowlisted silently in this test file alone: the gap has to be readable
 # by someone opening the config with no knowledge that this guard exists.
 #
-# The opener anchor is a SHARED constant, not a literal repeated in the seeding
-# fixture below. Reworded punctuation after `ACCEPTED RESIDUAL` once broke this
-# match; had the fixture carried its own copy of the anchor it would have stopped
-# seeding at the same moment the checker stopped checking, and the pair would
-# have gone quietly vacuous together instead of going red.
+# WHY AN ENTRY LINE AND NOT A WORD MATCH (task 7552 amendment; heuristic 12 —
+# structured data rather than a meaningful string). This checker used to match
+# the role name ANYWHERE in the paragraph, so the paragraph's own RETIRED-PATH
+# HISTORY satisfied it: the live config says "ACCEPTED RESIDUAL — NONE" and then
+# names `background` while explaining that its gap CLOSED, and a word match read
+# that sentence as a record that the gap is OPEN. The two-sided contract was
+# therefore already half-satisfied by a sentence asserting the opposite, and the
+# next role to become unreachable could have been allowlisted here and gone green
+# with nobody touching the config at all. An entry line is a declaration and a
+# sentence is not; prose about a closed path no longer votes.
+#
+# Both the opener anchor and the entry separator are SHARED constants, not
+# literals repeated in the seeding fixture below. Reworded punctuation after
+# `ACCEPTED RESIDUAL` once broke this match; had the fixture carried its own copy
+# it would have stopped seeding at the same moment the checker stopped checking,
+# and the pair would have gone quietly vacuous together instead of going red.
+# `--` is accepted alongside the em dash so an ASCII-typed entry still registers.
 # ---------------------------------------------------------------------------
 RESIDUAL_PAR_ANCHOR='^#[[:space:]]*ACCEPTED RESIDUAL'
+RESIDUAL_ENTRY_SEP='—'
 
 _residual_role_documented() {
     local file="$1" role="$2"
-    awk -v role="$role" -v anchor="$RESIDUAL_PAR_ANCHOR" '
+    awk -v role="$role" -v anchor="$RESIDUAL_PAR_ANCHOR" -v sep="$RESIDUAL_ENTRY_SEP" '
         $0 ~ anchor { par = 1 }
         par && !/^#/ { par = 0 }
-        par && $0 ~ ("(^|[^a-z])" role "([^a-z]|$)") { found = 1 }
+        par && $0 ~ ("^#[[:space:]]+" role "[[:space:]]+(" sep "|--)[[:space:]]") { found = 1 }
         END { exit(found ? 0 : 1) }
     ' "$file"
 }
@@ -1459,6 +1481,9 @@ _role_classification_reject_with_residuals() { ! _role_classification_ok_with_re
 # stopped matching would otherwise produce a copy identical to the original and
 # a rejection test that silently tests nothing.
 _files_differ() { ! cmp -s "$1" "$2"; }
+# Negation wrapper: `assert` runs "$@" directly, so a leading `!` cannot be
+# passed as the command word.
+_residual_role_undocumented() { ! _residual_role_documented "$1" "$2"; }
 
 echo ""
 echo "--- Assertion L (task 6485): every heavy-running role reaches the ceiling or is an enumerated residual ---"
@@ -1679,14 +1704,17 @@ _seed_heavy_ceiling() {
     ' - "$src" > "$dst"
 }
 
-# _seed_document_residual <src> <dst> <role> — name <role> inside the config's
-# ACCEPTED RESIDUAL paragraph, immediately after the shared anchor line so the
-# insertion lands inside the contiguous comment block _residual_role_documented
-# scans.
+# _seed_document_residual <src> <dst> <role> — give <role> an ENTRY LINE inside
+# the config's ACCEPTED RESIDUAL paragraph, immediately after the shared anchor
+# line so the insertion lands inside the contiguous comment block
+# _residual_role_documented scans. Both the anchor and the separator come from
+# that checker's own constants, so the seed cannot drift into a shape the checker
+# no longer recognises — the failure mode that would make every fixture below
+# pass vacuously rather than red.
 _seed_document_residual() {
-    awk -v anchor="$RESIDUAL_PAR_ANCHOR" -v role="$3" '
+    awk -v anchor="$RESIDUAL_PAR_ANCHOR" -v sep="$RESIDUAL_ENTRY_SEP" -v role="$3" '
         { print }
-        !done && $0 ~ anchor { print "#   " role " — synthetic fixture role (tests/infra only)"; done = 1 }
+        !done && $0 ~ anchor { print "#   " role " " sep " synthetic fixture role (tests/infra only)"; done = 1 }
     ' "$1" > "$2"
 }
 
@@ -1816,6 +1844,22 @@ assert "L-neg (iv): classifier REJECTS a verify.sh whose exclusion guard covers 
 
 assert "L-neg (v): classifier REJECTS the real .config/nextest.toml — which does NOT name the synthetic role in its ACCEPTED RESIDUAL paragraph — against an allowlist that does (allowlist and prose must agree; a residual cannot be carried in the test alone)" \
     _role_classification_reject_with_residuals "$_SYNTH_ROLE" "$NEXTEST_TOML" "$_KL_FIX/verify-synth.sh"
+
+# (v-b) the amendment to (v), and the one shape (v) cannot express because it
+#       uses a role the config has never heard of. A RETIRED path is still
+#       DISCUSSED in that paragraph by name: the live config says "ACCEPTED
+#       RESIDUAL — NONE" and then names `background` while explaining that its
+#       gap CLOSED. Under the superseded word match that sentence COUNTED, so
+#       half of the two-sided contract was already satisfied for `background` by
+#       prose asserting the opposite, and re-adding it to the allowlist alone
+#       would have gone green with the config untouched. The pair below is the
+#       discriminator: the same checker, the same paragraph, one file with an
+#       entry line and one with only prose.
+assert "L-neg (v-b): PROSE naming a role inside the ACCEPTED RESIDUAL paragraph does NOT document it — the real .config/nextest.toml names 'background' there while recording that its gap closed, and only a '#   <role> — <reason>' ENTRY LINE may stand in for a live residual" \
+    _residual_role_undocumented "$NEXTEST_TOML" background
+
+assert "L-neg (v-b) positive control: the SAME checker DOES accept an entry line — the seeded synthetic residual in the fixture config (so the rejection above is about the shape of the mention, not a checker that rejects everything)" \
+    _residual_role_documented "$_KL_FIX/synth.toml" "$_SYNTH_ROLE"
 
 assert "L-neg (vi) fixture is non-vacuous — the narrowed-debug-wall seed really changed scripts/verify.sh" \
     _files_differ "$VERIFY_SH" "$_KL_FIX/verify-narrow-debug.sh"

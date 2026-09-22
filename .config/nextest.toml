@@ -98,7 +98,16 @@ occt = { max-threads = 24 }
 # The CONTRACT survives the list, and is the live instruction for a future
 # residual: a role is allowed to be unreachable only if it is named BOTH in this
 # paragraph and in that test's L_RESIDUAL_ROLES allowlist, and L reds when either
-# outlives the other. Name such a role here, in this paragraph, by role name.
+# outlives the other.
+#
+# RECORD SUCH A ROLE AS AN ENTRY LINE, in this paragraph, in exactly this shape:
+#   <role> — <why its wall cannot reach the ceiling>
+# The guard matches that SHAPE, not the role name anywhere in the paragraph, and
+# the difference is load-bearing rather than stylistic. The sentence above names
+# `background` in the course of saying its gap CLOSED; under a word match that
+# sentence counted as a residual record, so the paragraph could have gone on
+# reading "NONE" while the guard believed the gap was written down here. Prose
+# about a retired path stays readable above and votes on nothing.
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
 
