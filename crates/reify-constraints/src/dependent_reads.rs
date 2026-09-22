@@ -213,6 +213,28 @@ pub(crate) fn dependent_cell_auto_reads(
     out
 }
 
+/// The autos `refs` reaches THROUGH dependent cells, borrowed from
+/// `auto_reads`.
+///
+/// `auto_reads` is already transitive, so one pass closes the set. The result
+/// may hold duplicates and ids `refs` already contains; every consumer
+/// tolerates both. D1/B2 IDENTITY: an empty `auto_reads` — what
+/// [`dependent_cell_auto_reads`] returns for an empty `dependent_cells` —
+/// reaches nothing, so every ref set, union edge and `referenced_params` list
+/// downstream stays exactly the direct-only one.
+pub(crate) fn reach_of<'m>(
+    refs: &HashSet<ValueCellId>,
+    auto_reads: &'m HashMap<ValueCellId, HashSet<ValueCellId>>,
+) -> Vec<&'m ValueCellId> {
+    if auto_reads.is_empty() {
+        return Vec::new();
+    }
+    refs.iter()
+        .filter_map(|id| auto_reads.get(id))
+        .flatten()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

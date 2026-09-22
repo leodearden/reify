@@ -1995,8 +1995,8 @@ fn seed_box_from_intervals(
 /// and the γ path reports `ConstraintNonUnique` — the same class of §11.6 false
 /// negative #6146 removed, in the mirror direction.
 ///
-/// Widening it is NOT a doc-sized change: `decompose::expand_refs_through_dependent_cells`
-/// exists and would supply the reach, but it needs the cycle-tainted treatment
+/// Widening it is NOT a doc-sized change: `dependent_reads::reach_of` exists
+/// and would supply the reach, but it needs the cycle-tainted treatment
 /// [`DerivationCtx::varies_with_solve`] encodes, and growing this set moves
 /// models from erroring to `Solved` — a §11.6 verdict change that wants its own
 /// regression sweep rather than a ride-along. Tracked as task #7727.

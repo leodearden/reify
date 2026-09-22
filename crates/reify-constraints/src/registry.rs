@@ -3,7 +3,7 @@
 //! Combines classification + decomposition to dispatch sub-problems
 //! to domain-specific solvers.
 
-use crate::decompose::SubProblem;
+use crate::decompose::{ExpandedObjectiveRefs, SubProblem};
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver,
@@ -152,50 +152,29 @@ fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
         &problem.auto_params,
     );
 
-    // Collect value-refs from ALL objective terms for objective-aware
-    // decomposition. Single-term `ObjectiveSet`s reduce to the prior
-    // single-expr ref set bit-identically (PRD §6.2 invariant I2).
-    //
-    // RETAINED, not discarded (task #5467 amendment): the expansion's reach
-    // delta is handed to the decomposition below so it need not re-derive the
-    // identical set. See the `obj_reach` note at that call.
-    let mut obj_reach: Vec<ValueCellId> = Vec::new();
-    let obj_refs: Option<std::collections::HashSet<ValueCellId>> =
-        problem.objective.as_ref().map(|obj: &ObjectiveSet| {
-            let mut refs = std::collections::HashSet::new();
-            for term in &obj.terms {
-                crate::dependent_reads::collect_value_refs(&term.expr, &mut refs);
-            }
-            // Expand through `dependent_cells` (task #5720): a ref to a derived
-            // cell also means every auto that cell transitively drives.
-            // Delegated to decompose.rs' ONE expansion body (task #5467 layer 2)
-            // rather than hand-rolled here — the same helper the decomposition's
-            // own constraint and objective sides use, so the three cannot drift
-            // out of lock-step (G7).
-            // This expansion exists for the FIRST-MATCH LOOKUP below, not for
-            // `decompose_into_components_with_reads` — that function widens
-            // `objective_refs` itself and never needed a pre-expanded input.
-            // Handing it the already-widened set is behaviourally free (the
-            // expansion is idempotent), but it is not COST-free: re-deriving the
-            // delta there re-clones every reached id, two `String` allocations
-            // apiece. So the delta is kept here and passed down instead of
-            // dropped on the floor.
-            obj_reach = crate::decompose::expand_refs_through_dependent_cells(
-                &mut refs,
-                &dependent_auto_reads,
-            );
-            refs
-        });
+    // Value-refs from ALL objective terms, expanded through `dependent_cells`
+    // (task #5720): a ref to a derived cell also names every auto that cell
+    // transitively drives. Single-term `ObjectiveSet`s reduce to the prior
+    // single-expr ref set bit-identically (PRD §6.2 invariant I2). The
+    // decomposition's objective union and the first-match scan below both read
+    // this ONE expansion.
+    let objective = problem.objective.as_ref().map(|obj: &ObjectiveSet| {
+        let mut refs = std::collections::HashSet::new();
+        for term in &obj.terms {
+            crate::dependent_reads::collect_value_refs(&term.expr, &mut refs);
+        }
+        ExpandedObjectiveRefs::expand(refs, &dependent_auto_reads)
+    });
 
     // Decompose into connected components. Decomposition FOLLOWS
-    // `dependent_cells`: because `obj_refs` above was expanded through them, an
-    // objective that reads a derived cell unions every auto that cell
+    // `dependent_cells`: because the objective above was expanded through them,
+    // an objective that reads a derived cell unions every auto that cell
     // transitively drives into ONE component, and the first-match lookup below
     // therefore resolves for real.
     //
     // Why the expansion is load-bearing (task #5720): the canonical joint-drive
     // shape (task #5189 β) is an objective that reads a bare derived cell and NO
-    // auto directly, so the unexpanded `obj_refs` held no auto ids at all. The
+    // auto directly, so its unexpanded refs held no auto ids at all. The
     // objective-union step filters to auto indices, would get an empty set, and
     // would union nothing — two autos coupled only through that cell would land
     // in separate components, and the lookup below would fall through to the
@@ -209,21 +188,14 @@ fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
     // all and being skipped. `_with_reads` is called directly with the map built
     // once above — the 4-arg `decompose_into_components` wrapper would rebuild
     // it, a second transitive walk on the solve hot path.
-    //
-    // `obj_reach` is the delta the pre-expansion above already computed and
-    // already folded into `obj_refs`; passing it spares the objective-union step
-    // a second full `dependent_cell_reach_delta` walk over the same map. It is
-    // empty (and the parameter inert) whenever there is no objective or no
-    // dependent cell — the D1/B2 identity path.
     let components = crate::decompose::decompose_into_components_with_reads(
         &problem.auto_params,
         &problem.constraints,
-        obj_refs.as_ref(),
-        Some(&obj_reach),
+        objective.as_ref(),
         &dependent_auto_reads,
     );
 
-    let Some(refs) = obj_refs else {
+    let Some(objective) = objective else {
         return DecompositionPrelude {
             components,
             consumption: ObjectiveConsumption::NoObjective,
@@ -241,7 +213,7 @@ fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
         };
     }
 
-    // The objective-component first-match scan, over the EXPANDED `refs`.
+    // The objective-component first-match scan, over the EXPANDED refs.
     // Because the decomposition unions all objective-referenced params —
     // including the ones reached only through a dependent cell — they are
     // guaranteed to land in a single component, so first-match always finds the
@@ -252,7 +224,7 @@ fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
     // it is the shape the `FallbackComponentZero` arm below still exists for.
     let matched = components
         .iter()
-        .position(|comp| refs.iter().any(|r| comp.auto_params.contains(r)));
+        .position(|comp| objective.reaches_any(&comp.auto_params));
 
     let consumption = match matched {
         Some(component) => ObjectiveConsumption::Consumed { component },
@@ -474,8 +446,7 @@ impl SolverRegistry {
             problem.auto_params.iter().map(|ap| (&ap.id, ap)).collect();
 
         // Determine which component gets the objective (if any) — `Some(_)`
-        // exactly when an objective is declared, matching the previous
-        // `obj_refs.as_ref().map(..)` shape byte-for-byte.
+        // exactly when an objective is declared.
         let objective_component = match consumption {
             ObjectiveConsumption::Consumed { component } => Some(component),
             // Objective references no auto params in any component →
@@ -607,10 +578,11 @@ impl SolverRegistry {
             //   STRUCTURALLY IMPOSSIBLE rather than merely unlikely, and it also
             //   bounds the per-trial fold cost by the component's own cells
             //   instead of the whole model's list.
-            // - The `obj_refs` expansion above is what makes the filter SAFE for
-            //   the objective-bearing component: it guarantees every auto the
-            //   objective transitively drives lands in ONE component, so every
-            //   cell the objective reads survives the subset test there.
+            // - The objective's expansion (`ExpandedObjectiveRefs`) is what
+            //   makes the filter SAFE for the objective-bearing component: it
+            //   guarantees every auto the objective transitively drives lands in
+            //   ONE component, so every cell the objective reads survives the
+            //   subset test there.
             //   `build_scoring_values` and the lexicographic ε-band anchor below
             //   therefore still score a COMPLETE map.  Landing the filter without
             //   the expansion would drop objective-relevant cells from an
@@ -636,8 +608,8 @@ impl SolverRegistry {
             // # SCOPE of "structurally impossible" — now BOTH ref sides
             //
             // When task #5720 landed the filter, the expansion was applied to
-            // `obj_refs` ONLY: `decompose_into_components` still unioned a
-            // CONSTRAINT's autos purely SYNTACTICALLY, so a constraint that
+            // the objective's refs ONLY: `decompose_into_components` still
+            // unioned a CONSTRAINT's autos purely SYNTACTICALLY, so a constraint that
             // reached a second auto only THROUGH a derived cell —
             // `a + side >= K` where `side = SIDE_COEFF*c` — split `a` and `c`
             // into separate components.  The union step saw only the syntactic
@@ -648,8 +620,8 @@ impl SolverRegistry {
             //
             // LAYER 2 (task #5467 / PRD2 α) CLOSES that gap: the constraint
             // side is expanded through `dependent_auto_reads` by the SAME
-            // `expand_refs_through_dependent_cells` body (decompose.rs), so
-            // `a + side >= K` now unions `a` and `c` into ONE component, `side`
+            // `dependent_reads::reach_of` body, so `a + side >= K` now unions
+            // `a` and `c` into ONE component, `side`
             // is a subset of that component's autos, and the filter RETAINS it.
             // The stale-silent-read failure mode is therefore gone, and the
             // guarantee above is no longer scoped to fold-and-objective reads:
@@ -1593,7 +1565,7 @@ mod objective_consumption_tests {
     /// builds a component that genuinely carries the objective.
     ///
     /// `solve_inner` routes this as consumed — it expands `{s}` to `{s, a}` via
-    /// `expand_refs_through_dependent_cells` before its `objective_component`
+    /// `ExpandedObjectiveRefs::expand` before its `objective_component`
     /// lookup, finds component 0, and attaches the cost there. The classifier
     /// matched only the objective's DIRECT refs, so it answered
     /// `FallbackComponentZero`: the fact contradicted the routing, which is

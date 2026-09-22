@@ -4,7 +4,7 @@
 //! union-find to identify independent sub-problems.
 
 use crate::classifier::ConstraintClassifier;
-use crate::dependent_reads::{collect_value_refs, dependent_cell_auto_reads};
+use crate::dependent_reads::{collect_value_refs, dependent_cell_auto_reads, reach_of};
 use reify_core::{ConstraintNodeId, ValueCellId};
 use reify_ir::{AutoParam, CompiledExpr, ConstraintDomain};
 use std::collections::{HashMap, HashSet};
@@ -61,64 +61,33 @@ impl UnionFind {
     }
 }
 
-/// Fold each ref's TRANSITIVE auto reads into `refs`, in place.
+/// An objective's value-refs, ALREADY widened through `dependent_cells`: a ref
+/// to a derived cell also names every auto that cell transitively drives.
 ///
-/// This is the ONE expansion body shared by the constraint side and the
-/// objective side of the decomposition, and by `SolverRegistry::solve_inner`'s
-/// `objective_component` lookup (task #5467 / PRD2 α, layer 2). A ref to a
-/// derived cell also means every auto that cell transitively drives, so a
-/// constraint reading only `let s = a + b` must be seen to reference `a` and
-/// `b`. `auto_reads` is already transitive, so ONE pass closes the set — the
-/// expansion is idempotent and may safely be applied to an already-expanded
-/// set.
-///
-/// D1/B2 IDENTITY is structural, not incidental: an empty `auto_reads` (which
-/// is exactly what `dependent_cell_auto_reads` returns for an empty
-/// `dependent_cells`) inserts nothing, so every downstream ref set, union edge
-/// and `referenced_params` list is byte-identical to the pre-α behaviour.
-///
-/// Returns the ids the expansion REACHED — i.e. exactly the autos that were
-/// invisible to the caller's own syntactic walk. The constraint side needs that
-/// delta (and not just the widened set) to widen the DOMAIN classification the
-/// same way it widens the connectivity; returning it from here keeps that a
-/// by-product of the ONE expansion body instead of a second, drifting walk (G7).
-/// The list may contain ids the caller already held — re-reaching an already
-/// present auto is a no-op for both consumers. Callers that only want the
-/// widened set may drop the return value.
-pub(crate) fn expand_refs_through_dependent_cells(
-    refs: &mut HashSet<ValueCellId>,
-    auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
-) -> Vec<ValueCellId> {
-    let reached = dependent_cell_reach_delta(refs, auto_reads);
-    refs.extend(reached.iter().cloned());
-    reached
+/// [`ExpandedObjectiveRefs::expand`] is the only constructor, so an unexpanded
+/// objective cannot reach the decomposition — the shape that split autos
+/// coupled only through a derived cell into separate components (task #5720).
+pub(crate) struct ExpandedObjectiveRefs {
+    refs: HashSet<ValueCellId>,
 }
 
-/// The REACH half of [`expand_refs_through_dependent_cells`], without the
-/// in-place widening: the autos `refs` reaches only THROUGH a dependent cell.
-///
-/// Split out so a caller that needs nothing but the delta — the objective-union
-/// step of [`decompose_into_components_with_reads`], which only ever maps the
-/// widened set down to auto-param INDICES — can skip cloning the whole ref set
-/// just to widen a copy of it. Both callers share this ONE body, so the two
-/// cannot drift out of lock-step (G7), which is the property the single
-/// expansion body exists to hold.
-///
-/// `auto_reads` is already transitive, so one pass closes the set, and the
-/// result may contain duplicates (and ids the caller already holds) — every
-/// consumer is duplicate-tolerant (`HashSet::extend`, `UnionFind::union`,
-/// `widen_domain`).
-pub(crate) fn dependent_cell_reach_delta(
-    refs: &HashSet<ValueCellId>,
-    auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
-) -> Vec<ValueCellId> {
-    if auto_reads.is_empty() {
-        return Vec::new();
+impl ExpandedObjectiveRefs {
+    pub(crate) fn expand(
+        mut refs: HashSet<ValueCellId>,
+        auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
+    ) -> Self {
+        for id in reach_of(&refs, auto_reads) {
+            if !refs.contains(id) {
+                refs.insert(id.clone());
+            }
+        }
+        Self { refs }
     }
-    refs.iter()
-        .filter_map(|id| auto_reads.get(id))
-        .flat_map(|autos| autos.iter().cloned())
-        .collect()
+
+    /// Does the objective reach any of `autos`, directly or through a cell?
+    pub(crate) fn reaches_any(&self, autos: &HashSet<ValueCellId>) -> bool {
+        self.refs.iter().any(|r| autos.contains(r))
+    }
 }
 
 /// The domain flag a bare auto param contributes when it was reached only
@@ -150,8 +119,7 @@ pub(crate) fn dependent_cell_reach_delta(
 /// point: the routing decision and the enumeration capability are now the same
 /// fact, so a new rejection in `build_variable_domain` re-routes in the same
 /// commit (the same G7 no-lockstep-duplication argument
-/// `fold_dependent_cells` and `expand_refs_through_dependent_cells` already
-/// make).
+/// `fold_dependent_cells` and `dependent_reads::reach_of` already make).
 ///
 /// # Why the non-`None` answers are the auto's OWN domain, not a blanket flag
 ///
@@ -397,11 +365,12 @@ fn widen_domain(a: ConstraintDomain, b: ConstraintDomain) -> ConstraintDomain {
 /// was skipped entirely and the decomposition came back EMPTY, which
 /// `solve_inner` reads as "all auto params are unconstrained".
 ///
-/// This is a thin wrapper: it builds the transitive map and delegates. Callers
-/// that ALREADY hold the map (notably `SolverRegistry::solve_inner`, which
-/// needs it for its per-component fold filter and its `objective_component`
-/// lookup) should call [`decompose_into_components_with_reads`] directly rather
-/// than pay for a second walk on the solve hot path.
+/// This is a thin wrapper: it builds the transitive map, expands the objective
+/// through it, and delegates. Callers that ALREADY hold the map (notably
+/// `SolverRegistry::solve_inner`, which needs it for its per-component fold
+/// filter and its `objective_component` lookup) should call
+/// [`decompose_into_components_with_reads`] directly rather than pay for a
+/// second walk on the solve hot path.
 pub fn decompose_into_components(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
@@ -409,13 +378,9 @@ pub fn decompose_into_components(
     dependent_cells: &[(ValueCellId, CompiledExpr)],
 ) -> Vec<SubProblem> {
     let auto_reads = dependent_cell_auto_reads(dependent_cells, auto_params);
-    decompose_into_components_with_reads(
-        auto_params,
-        constraints,
-        objective_refs,
-        None,
-        &auto_reads,
-    )
+    let objective =
+        objective_refs.map(|refs| ExpandedObjectiveRefs::expand(refs.clone(), &auto_reads));
+    decompose_into_components_with_reads(auto_params, constraints, objective.as_ref(), &auto_reads)
 }
 
 /// [`decompose_into_components`] over an ALREADY-BUILT
@@ -451,31 +416,13 @@ pub fn decompose_into_components(
 /// `CrossDomain` (or rejected with a diagnostic) instead of dropped — larger
 /// than a doc correction and outside task #5467's lock set.
 ///
-/// # `objective_refs` is expanded HERE — unless the caller already did it
-///
-/// Callers may pass their RAW objective ref set and let this function widen it
-/// through `auto_reads`, so pre-expanding is never required for the
-/// decomposition's sake. `SolverRegistry::solve_inner` pre-expands anyway,
-/// because its own `objective_component` first-match lookup needs the widened
-/// set.
-///
-/// `objective_reach` is how such a caller AVOIDS PAYING TWICE (task #5467
-/// amendment): it is the reach delta `objective_refs` gets through
-/// `auto_reads`, when the caller has already computed it — typically as the
-/// return value of [`expand_refs_through_dependent_cells`], in which case it is
-/// also already folded into `objective_refs`. `None` means "not computed;
-/// compute it here". Re-deriving it instead is not the "handful of hash lookups
-/// that find nothing new" this comment used to claim: every dependent-cell id
-/// is still present in the widened `refs` (the expansion only ADDS), so the
-/// second pass re-clones the WHOLE delta — |delta| `ValueCellId` allocations,
-/// each two `String`s. Behaviourally the two are interchangeable (`UnionFind`
-/// is idempotent and the chain below tolerates duplicates), so the parameter is
-/// a pure cost knob.
+/// `objective` is already widened through the same `auto_reads` — an
+/// [`ExpandedObjectiveRefs`] cannot be built any other way — so its autos are
+/// unioned as given.
 pub(crate) fn decompose_into_components_with_reads(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
-    objective_refs: Option<&HashSet<ValueCellId>>,
-    objective_reach: Option<&[ValueCellId]>,
+    objective: Option<&ExpandedObjectiveRefs>,
     auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
 ) -> Vec<SubProblem> {
     if constraints.is_empty() {
@@ -501,7 +448,7 @@ pub(crate) fn decompose_into_components_with_reads(
     // `constraints` slice — are invariant across the loop below, so the answer
     // is a pure function of the param INDEX. Without this cache the probe runs
     // once per (constraint × dependent cell read × auto behind it): C × K × A
-    // calls, and `dependent_cell_reach_delta` explicitly may return DUPLICATES,
+    // calls, and `reach_of` explicitly may return DUPLICATES,
     // so even a single constraint can probe one auto repeatedly. Each call
     // delegates to `cpsat::can_enumerate` → `build_variable_domain`, whose
     // `Type::Enum` arm walks EVERY expression tree in `constraints` — making
@@ -530,16 +477,18 @@ pub(crate) fn decompose_into_components_with_reads(
         collect_value_refs(expr, &mut refs);
         // LAYER 2 (task #5467 / PRD2 α): a constraint that reads a derived
         // cell references every auto that cell transitively drives. With an
-        // empty `auto_reads` this inserts nothing and the ref set — hence the
-        // union edges and `referenced_params` below — is byte-identical to
-        // pre-α.
-        let reached = expand_refs_through_dependent_cells(&mut refs, auto_reads);
+        // empty `auto_reads` nothing is reached, so the union edges and
+        // `referenced_params` below are exactly pre-α's.
+        let reached = reach_of(&refs, auto_reads);
 
         // Filter to only auto params
-        let referenced: Vec<usize> = refs
+        let mut referenced: Vec<usize> = refs
             .iter()
+            .chain(reached.iter().copied())
             .filter_map(|id| param_index.get(id).copied())
             .collect();
+        referenced.sort_unstable();
+        referenced.dedup();
 
         if referenced.is_empty() {
             // Constraint doesn't reference any auto param → skip
@@ -571,10 +520,10 @@ pub(crate) fn decompose_into_components_with_reads(
         // `None`, so both spellings fall back to `DimensionalSolver` and
         // production routing is unchanged today.
         //
-        // SCOPE of the fold: only the EXPANSION'S OWN reach (`reached`), never
-        // the whole widened `refs` set. `reached` is NOT disjoint from the
-        // syntactically-visible autos, though — `expand_refs_through_dependent_cells`
-        // derives it from each derived cell's TRANSITIVE auto set, which may
+        // SCOPE of the fold: only the reach (`reached`), never the syntactic
+        // `refs`. `reached` is NOT disjoint from the syntactically-visible
+        // autos, though — `reach_of` derives it from each derived cell's
+        // TRANSITIVE auto set, which may
         // contain an auto the constraint also references directly and whose
         // type the classifier therefore already folded in. That overlap is
         // harmless rather than merely tolerated: `widen_domain` is idempotent on
@@ -597,13 +546,14 @@ pub(crate) fn decompose_into_components_with_reads(
         // D1/B2 IDENTITY: an empty `auto_reads` returns an empty `reached`, so
         // this loop never runs and the domain is bit-identical to pre-α.
         let mut domain = ConstraintClassifier::classify(expr);
-        for id in &reached {
-            if let Some(&pi) = param_index.get(id) {
-                let verdict = *auto_domain[pi]
-                    .get_or_insert_with(|| domain_of_auto(&auto_params[pi], constraints));
-                if let Some(d) = verdict {
-                    domain = widen_domain(domain, d);
-                }
+        let reached_params = reached
+            .iter()
+            .filter_map(|id| param_index.get(*id).copied());
+        for pi in reached_params {
+            let verdict = *auto_domain[pi]
+                .get_or_insert_with(|| domain_of_auto(&auto_params[pi], constraints));
+            if let Some(d) = verdict {
+                domain = widen_domain(domain, d);
             }
         }
 
@@ -614,51 +564,19 @@ pub(crate) fn decompose_into_components_with_reads(
         });
     }
 
-    // If objective value-refs are provided (pre-collected from all terms),
-    // union all auto params they reference. This ensures all objective-referenced
-    // params land in the same component, even if the constraints alone don't
-    // connect them. Single-term reduces to prior single-expr behavior identically.
-    if let Some(refs) = objective_refs {
-        // The OBJECTIVE-side twin of the constraint expansion above. Leaving
-        // this direct-only while constraint refs go transitive would be a G7
-        // half-fix: the same union-find would receive transitive edges from one
-        // source and one-hop edges from the other.
-        //
-        // Consumes the reach DELTA directly instead of materialising a widened
-        // clone of `refs` (task #5467 amendment). The union step's only use for
-        // the widened set is mapping it down to auto-param INDICES, and
-        // `UnionFind::union` is idempotent, so chaining the delta onto the
-        // borrowed original is equivalent and allocates ONE `Vec<ValueCellId>`
-        // instead of a whole `HashSet` clone. The old `Cow::Borrowed` fast path
-        // was never taken from `SolverRegistry::solve_inner`, whose `auto_reads`
-        // is non-empty exactly when the clone was most expensive; an empty
-        // `auto_reads` now yields an empty delta and allocates nothing either
-        // way, so the D1/B2 path is still zero-cost.
-        //
-        // And when the caller ALREADY computed that delta — `solve_inner` does,
-        // to widen `refs` for its own `objective_component` lookup — it hands it
-        // over rather than making this side re-clone the whole thing (see
-        // `objective_reach` in the fn doc). `computed` exists only to own the
-        // fallback `Vec` for the borrow below.
-        let computed;
-        let reached: &[ValueCellId] = match objective_reach {
-            Some(delta) => delta,
-            None => {
-                computed = dependent_cell_reach_delta(refs, auto_reads);
-                &computed
-            }
-        };
-
-        let obj_param_indices: Vec<usize> = refs
+    // Union every auto param the objective reaches (its refs from all terms,
+    // already widened through `auto_reads`, the transitive twin of the
+    // constraint side above), so they all land in the same component even if
+    // the constraints alone don't connect them. Single-term reduces to prior
+    // single-expr behavior identically.
+    if let Some(objective) = objective {
+        let obj_param_indices: Vec<usize> = objective
+            .refs
             .iter()
-            .chain(reached.iter())
             .filter_map(|id| param_index.get(id).copied())
             .collect();
-
-        if !obj_param_indices.is_empty() {
-            for i in 1..obj_param_indices.len() {
-                uf.union(obj_param_indices[0], obj_param_indices[i]);
-            }
+        for i in 1..obj_param_indices.len() {
+            uf.union(obj_param_indices[0], obj_param_indices[i]);
         }
     }
 
