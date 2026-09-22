@@ -3256,6 +3256,241 @@ fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
     );
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// CTOR_CONFORMANCE_REJECTION_FIXTURES — the third table, and why it is a third
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// δ (#5306) committed five `.ri` under `tests/prd-gate/fixtures/` whose WHOLE
+// CONTENT is a ctor-conformance violation: they are the PRD's §7 boundary-row
+// rejection signals, and `tests/infra/test_prd_gate_struct_ctor_conformance.sh`
+// asserts that `reify check` exits 1 on each. They are tracked, so the corpus
+// sweep finds them; they are knob-governed and name a ctor argument, so
+// `disposition_of` puts them IN SCOPE; and no waiver table names them, so before
+// this table every one resolved `Unattributed` — the generator reported five
+// UNEXPLAINED sites, telling the artifact's reader to go fix the very fixtures
+// whose violation IS the deliverable.
+//
+// That is the same failure `Disposition::NotApplicable` was minted for, one axis
+// over, and it takes a fourth arm rather than a fifth reading of an existing
+// one: these sites ARE in scope (unlike `NotApplicable`) and nobody will ever
+// retire them (unlike `Deferred`). The four dispositions map one-to-one onto
+// four DIFFERENT reader actions, which is the property that makes the artifact
+// worth reading at all.
+
+/// The first [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] entry that carries a param,
+/// or `None` when the table holds none.
+///
+/// Borrowed rather than copied, for the reason
+/// `render_survey_resolves_each_site_disposition_from_the_tables` states: a key
+/// spelled a second time here would stale the moment a fixture is renamed, and
+/// draining the table is a legitimate end state that must not red the gate.
+fn first_rejection_entry_with_param() -> Option<&'static (&'static str, Option<&'static str>, &'static str)>
+{
+    CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .find(|(_, param, _)| param.is_some())
+}
+
+/// A listed `(file, param)` resolves [`Disposition::IntendedRejection`], and an
+/// UNLISTED param in the SAME file still resolves [`Disposition::Unattributed`].
+///
+/// Both halves are load-bearing and the second is the non-vacuity guard: keyed on
+/// the file alone this table would be a `SKIP_SET` by another name, silencing
+/// every future ctor-conformance diagnostic a rejection fixture grows. A fixture
+/// that acquires a SECOND, unintended violation must still be reported.
+#[test]
+fn intended_rejection_claims_the_listed_param_and_not_its_neighbours() {
+    let Some(&(file, param, _)) = first_rejection_entry_with_param() else {
+        println!("skipped: CTOR_CONFORMANCE_REJECTION_FIXTURES holds no param-keyed entry");
+        return;
+    };
+    let param = param.expect("first_rejection_entry_with_param only yields Some");
+
+    let listed = synth_site(file, 1, "Widget", param, Owner::Unknown);
+    assert_eq!(
+        disposition_of(&listed),
+        Disposition::IntendedRejection,
+        "a listed (file, param) must resolve IntendedRejection: {file} :: param '{param}'"
+    );
+
+    // A param no entry can name, asserted rather than assumed so this half cannot
+    // go vacuous if the sentinel is ever added to the table.
+    const UNLISTED: &str = "a_param_no_rejection_fixture_declares";
+    assert!(
+        !CTOR_CONFORMANCE_REJECTION_FIXTURES
+            .iter()
+            .any(|(f, p, _)| *f == file && *p == Some(UNLISTED)),
+        "the sentinel param must stay absent from the table, or this guard proves nothing"
+    );
+    let neighbour = synth_site(file, 2, "Widget", UNLISTED, Owner::Unknown);
+    assert_eq!(
+        disposition_of(&neighbour),
+        Disposition::Unattributed,
+        "an UNLISTED param in a listed file must stay actionable — keyed on the file \
+         alone this table would be a SKIP_SET, and a rejection fixture that grows a \
+         SECOND, unintended violation would be silently swallowed"
+    );
+}
+
+/// A listed fixture whose diagnostic recovers NO param still resolves
+/// [`Disposition::IntendedRejection`].
+///
+/// This pins the LOOKUP ORDER inside [`disposition_of`], not merely a table row.
+/// ε's `E_CTOR_ARITY` wording names a def and a count because there is no single
+/// argument to name, so `site.field` is `None` and the `let … else` param
+/// early-return fires. Placed after it, the rejection lookup could never reach
+/// `struct_ctor_conformance_over_arity.ri` — which is exactly how that fixture
+/// was stranded as an UNEXPLAINED site with `param '—'`.
+#[test]
+fn intended_rejection_reaches_a_site_whose_wording_names_no_argument() {
+    let Some(&(file, _, _)) = CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .find(|(_, param, _)| param.is_none())
+    else {
+        println!("skipped: CTOR_CONFORMANCE_REJECTION_FIXTURES holds no param-less entry");
+        return;
+    };
+
+    let mut site = synth_site(file, 1, "Widget", "ignored", Owner::Unknown);
+    site.field = None;
+    site.code = "CtorArity".to_owned();
+    site.message = format!("{CTOR_ARITY_PREFIX}Widget() expects at most 1 argument, got 2");
+    assert!(
+        names_a_ctor_argument(&site),
+        "the arity wording must stay IN SCOPE, or this test would pass off NotApplicable"
+    );
+
+    assert_eq!(
+        disposition_of(&site),
+        Disposition::IntendedRejection,
+        "a param-less listed site must resolve IntendedRejection, which requires the \
+         rejection lookup to precede the `site.field` early return: {file}"
+    );
+}
+
+/// [`Disposition::IntendedRejection`]'s artifact cell reads distinctly from every
+/// other disposition, and names no owner.
+///
+/// The cell is the whole interface to a reader consuming the artifact one row at
+/// a time. Reading like `NotApplicable` would tell them the site is out of scope
+/// when it is in scope; naming a task would send them hunting for work that does
+/// not exist, because nothing retires these fixtures short of the survey module's
+/// own deletion.
+#[test]
+fn intended_rejection_cell_is_distinct_and_names_no_owner() {
+    let cell = Disposition::IntendedRejection.label();
+    let deferred = Disposition::Deferred {
+        owning_task: "#5847",
+        why: "an owning task's reason",
+    }
+    .label();
+
+    assert_ne!(cell, Disposition::NotApplicable.label());
+    assert_ne!(cell, Disposition::Unattributed.label());
+    assert_ne!(cell, deferred);
+    assert!(
+        !cell.contains('#'),
+        "the IntendedRejection cell must name no task — there is nothing to retire, so a \
+         cite would send the reader hunting for work that does not exist. Got: {cell:?}"
+    );
+}
+
+/// Every [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] entry names a file that exists
+/// and is a `.ri`.
+///
+/// Mirrors `ctor_conformance_corpus_residual_entries_name_existing_ri_files`, and
+/// for the same reason: it separates a MIS-TYPED path from a DELETED fixture,
+/// which otherwise surface identically inside the `#[ignore]`d generator.
+#[test]
+fn ctor_conformance_rejection_fixtures_name_existing_ri_files() {
+    for (path, param, _why) in CTOR_CONFORMANCE_REJECTION_FIXTURES {
+        assert!(
+            path.ends_with(".ri"),
+            "CTOR_CONFORMANCE_REJECTION_FIXTURES entry '{path}' (param {param:?}) is not a \
+             `.ri` path"
+        );
+        let full = std::path::Path::new(WORKSPACE_ROOT).join(path);
+        assert!(
+            full.exists(),
+            "CTOR_CONFORMANCE_REJECTION_FIXTURES entry '{path}' (param {param:?}) does not \
+             exist under {WORKSPACE_ROOT}"
+        );
+    }
+}
+
+/// [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] describes sites DISJOINT from both
+/// waiver tables.
+///
+/// Three sibling tables, not a merge. A site in two of them would make the
+/// resolver pick a winner between "nobody will ever retire this" and "a live task
+/// owns retiring this" — opposite claims about the same row.
+#[test]
+fn ctor_conformance_rejection_fixtures_are_disjoint_from_both_waiver_tables() {
+    let overlap: Vec<String> = CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .filter(|(path, param, _)| {
+            CTOR_CONFORMANCE_CORPUS_RESIDUAL
+                .iter()
+                .any(|(rp, rparam, _, _)| rp == *path && Some(*rparam) == *param)
+                || reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT
+                    .iter()
+                    .any(|entry| debt_entry_describes(entry, path, *param))
+        })
+        .map(|(path, param, _)| format!("  {path} :: param {param:?}"))
+        .collect();
+
+    assert!(
+        overlap.is_empty(),
+        "these site(s) are described by CTOR_CONFORMANCE_REJECTION_FIXTURES AND by a waiver \
+         table:\n{}\n\n\
+         Pick one. A rejection fixture is never retired and names no owner; a waiver entry \
+         is retired by the task that owns it. A site cannot be both.",
+        overlap.join("\n"),
+    );
+}
+
+/// THE ANTI-SKIP_SET INVARIANT: every
+/// [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] file is named by a probe in the
+/// committed CLI probe-set.
+///
+/// This is what keeps the table from becoming a place to hide an inconvenient
+/// site. A file may be declared an intended rejection ONLY if a committed probe
+/// independently asserts that it DOES reject — so every entry is backed by a gate
+/// that reds if the rejection stops happening, and an entry can never silence a
+/// site nothing else is watching.
+///
+/// A containment check over the probe-set's raw text, not a parse: the only
+/// question asked is whether the path appears, and a JSON model of the probe-set
+/// here would be a second copy of the schema `prd-capability-check.py` owns.
+#[test]
+fn every_rejection_fixture_is_asserted_by_a_committed_cli_probe() {
+    let probe_set = std::path::Path::new(WORKSPACE_ROOT).join(REJECTION_PROBE_SET_REL);
+    let text = std::fs::read_to_string(&probe_set).unwrap_or_else(|e| {
+        panic!(
+            "CTOR_CONFORMANCE_REJECTION_FIXTURES is only sound while its probe-set exists: \
+             cannot read {}: {e}",
+            probe_set.display()
+        )
+    });
+
+    let unwatched: Vec<&str> = CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .map(|(path, _, _)| *path)
+        .filter(|path| !text.contains(*path))
+        .collect();
+
+    assert!(
+        unwatched.is_empty(),
+        "these CTOR_CONFORMANCE_REJECTION_FIXTURES entries are named by NO probe in \
+         {REJECTION_PROBE_SET_REL}:\n  {}\n\n\
+         An entry declares `reify check` rejects this file ON PURPOSE. Without a probe \
+         asserting the rejection, the declaration is unbacked and the table degrades into \
+         a place to hide a site nobody is watching. Add the probe, or remove the entry and \
+         fix the site.",
+        unwatched.join("\n  "),
+    );
+}
+
 /// Every [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry says WHY it is deferred.
 ///
 /// The owner cite says who retires the site; the `why` says what would break if
