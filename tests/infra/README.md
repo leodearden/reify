@@ -28,6 +28,38 @@ failure surfaces at that first gate entry, far from this README. The
 executable bit is *not* required: every runner path invokes the file via
 `bash <file>`.
 
+### Python members need a `.sh` wrapper — `test_*.py` is NOT discovered
+
+Discovery matches **`test_*.sh` only**. A `test_<name>.py` dropped in this
+directory matches no glob, takes no manifest row, and is **never executed** —
+it reads as coverage while asserting nothing, and no gate will tell you.
+(`scripts/test_legibility_reify_config.py` is the live casualty: no wrapper, no
+runner, red today.)
+
+New infra tests are nevertheless authored in **Python** — see
+[the migration policy](../../docs/notes/infra-test-bash-to-python-migration-policy.md)
+for the rule, the evidence, and why pytest is never used. A Python member runs
+via a thin `test_<name>.sh` wrapper:
+
+```bash
+assert "python3 is available" command -v python3
+assert "test_<name>.py exits 0" python3 "$SCRIPT_DIR/test_<name>.py"
+```
+
+**The wrapper is the discovered file and the wrapper is what takes the
+`run-all-classification.manifest` row** — not the `.py`. Copy any of
+`test_sn_gate.sh`, `test_prd_capability_check.sh`,
+`test_prd_decompose_verify.sh` or `test_reify_overlap_detector.sh`.
+
+One thing a `.py` still drops out from under, `.sh`-scoped by construction:
+the wall-clock upper-bound ratchet (`test_no_new_wallclock_upper_bounds.sh`),
+task #7445. The deadline-capable-suite derivation
+(`test_slot_timeout_marker.sh` Sections F and G) no longer does — since task
+#7626 it follows a delegating wrapper into its `.py` sibling and reads the
+two together, so a ported member keeps its roster place and its
+non-vacuity check. Making `test_*.py` discovery native — which would retire
+this wrapper idiom — is task #7445.
+
 ## Shared test helpers
 
 All test files (except `test_tree_sitter_pipeline.sh`, see below) source
@@ -98,17 +130,88 @@ tells the guard to skip it.  The reason should cite WHY the wall-clock
 magnitude is load-safe (exit code, marker, etc.) so the exemption is
 auditable.
 
-**Current blessed survivors** (as of task #5257):
+**Current blessed survivors** (as of task #6247):
 - `test_occt_flock_gate.sh` Tests 14 & 22: exit-75 + stderr pattern (`_ELAPSED*` operand)
 - `test_find_uses_smoke_runner.sh` ARM A liveness guard: rc!=0 + the `E2E_SMOKE_LAUNCHER_DEATH phase=readiness` marker (`_t4_elapsed` operand). Since task #5596 this assert runs once per e2e smoke runner (six in total), all sharing that one operand name and annotation.
-- `test_lane_x_flock.sh` flock-timing guard (`_ELAPSED18_MS` operand)
+- `test_mesh_count_parity_smoke_runner.sh` liveness guard: rc!=0 + the launcher-death message (`_mcp_elapsed` operand)
 
-These four retain their `wallclock:allow` escapes: each carries a real
-`elapsed` / `ELAPSED` / `_MS` time-measurement signal and is still (correctly)
-flagged.  The six `nextest` / `occt` config-constant `-lt 3600` pass-level
-ceilings that task #5257 de-annotated are **not** survivors — after the
-condition-(3) tightening they carry no time-measurement signal and pass
-un-flagged without an escape.
+Each retains its `wallclock:allow` escape: each carries a real `elapsed` /
+`ELAPSED` time-measurement signal and is still (correctly) flagged.  The six
+`nextest` / `occt` config-constant `-lt 3600` pass-level ceilings that task
+#5257 de-annotated are **not** survivors — after the condition-(3) tightening
+they carry no time-measurement signal and pass un-flagged without an escape.
+
+Task #6247 removed `test_lane_x_flock.sh`'s `_ELAPSED18_MS` flock-timing
+ceiling, which used to be the fourth entry: Test 18 now reads concurrency off
+an interval log instead of off the clock, so it needs no escape.
+
+**Nothing enforces this list** — the guard reads only the inline tokens, so the
+list is refreshed BY HAND whenever an escape is added or removed.  `grep -rn
+'wallclock:allow' tests/infra/*.sh` is the authority; this list exists to record
+*why* each survivor is blessed, which the token alone cannot say.
+
+## Bare holder-grace sleep guard (`holder-sleep:allow`)
+
+`test_no_bare_holder_sleep_grace.sh` is the sibling static guard (task #6247,
+PRD `infra-test-wallclock-deflake.md` D4).  Where the wall-clock guard flags an
+*assertion* that reads the clock, this one flags a *fixed sleep standing in for
+a barrier* — the idiom `sleep 0.2  # give holder time to acquire`.
+
+That sleep guesses at a duration on both sides at once.  It can be **outrun**:
+the holder is not holding yet, the code under test takes the uncontended path,
+and the assertions about contention pass vacuously or fail for the wrong reason.
+Where the holder is itself self-timed it can also be **overrun**: the grace eats
+into the hold, so the contention window shrinks below what the assertions need.
+`slot_holder_handshake_lib.sh` closes the first side with a causal barrier
+(`holder_wait_until_held`, `holder_wait_for_marker`) and the second with a
+test-released holder (`holder_spawn_gated` / `holder_release`).
+
+A `sleep <number>` statement is flagged iff it carries no `holder-sleep:allow`
+token and either:
+
+1. **lexeme** — its own inline comment, or the comment line directly above it,
+   names what it is waiting for (`holder`, `grace`, `give ... time to`,
+   `let ... acquire`).  The comment is the admission: the author knew what the
+   causal event was and slept for a guessed interval instead of waiting for it.
+2. **structural** — it falls within three lines after a backgrounded `flock -x`
+   holder spawn with no loop keyword in between, which catches the same idiom
+   stripped of its comment.
+
+**A barrier's own poll loop is legal and is not flagged.**  A poll loop sleeps
+between probes by construction; clause 1 needs an admission in a comment and
+clause 2 exempts any window containing `while` / `until` / `done`, so every
+barrier implementation — including `slot_holder_handshake_lib.sh`'s own — passes
+un-flagged.  A self-timed holder body such as `( flock -x 9; sleep 45 )` is also
+never a candidate: there the sleep is the HOLD, not a grace.
+
+### Opting out: `holder-sleep:allow`
+
+Annotate a deliberate survivor on the sleep line, or on the comment directly
+above it:
+
+```bash
+sleep 0.3  # holder-sleep:allow — one-sided: the check below can only
+           # false-FAIL, never false-pass, since the holder holds until killed
+```
+
+The reason should say why the fixed interval cannot produce a false PASS, so
+the exemption is auditable.
+
+**Current blessed survivors** (as of task #6247):
+- `test_jobserver_balancer.sh` Block 19b: a kernel-reap grace after `kill -9`,
+  not a holder handshake at all — nothing holds a lock across it.  It matches
+  clause 1 on the lone word *grace*, which is exactly the lexeme over-reach the
+  escape exists for.
+- `test_seed_warm_lane.sh` H5d and H9: the settle before each "not done yet"
+  check.  Those checks are one-sided — the holder genuinely holds the lane lock
+  until the test kills it, so an outrun settle can only false-FAIL, never
+  false-pass.  Converting them to a real `holder_wait_until_held` barrier is the
+  better fix, but it is a behavioural change rather than an annotation and is
+  filed as a follow-up.
+
+**Nothing enforces this list**, for the same reason as `wallclock:allow` above:
+`grep -rn 'holder-sleep:allow' tests/infra/*.sh` is the authority, and this
+list is refreshed BY HAND whenever an escape is added or removed.
 
 ## Opt-in soak: seed lane-lock release (`REIFY_RUN_SEED_LANE_LOCK_SOAK`)
 
@@ -211,12 +314,86 @@ held-after-exit rates are **not repeated here** — same reason as the soak
 section above: they live in the `LANE-LOCK RELEASE CONTRACT` block at the flock
 acquire in `scripts/seed-warm-lane.sh`.
 
+## Cited test-path resolution (`cited-test-path-baseline.manifest`)
+
+`test_cited_test_paths_resolve.sh` guards a single contract: **prose that
+names a `crates/<crate>/tests/**/*.rs` file must name a path that still
+resolves.**  The `harness_<subsystem>/` consolidation moved test units
+wholesale, and every doc comment, `.ri` prose block, corpus fixture and README
+citing a moved unit went stale at once — commit `276d32f025` was a 123-file
+manual cleanup with no gate behind it, so the next consolidation would reopen
+the same hole.  This gate closes the root cause.
+
+Derivation lives **only** in `cited-test-path-lib.sh`, which both the gate and
+the baseline generator source.  The scan is **extension-agnostic by
+construction** — there is no allowlist, just `git grep` over every tracked
+file — because the stale citations measured when the gate was written spanned
+8 extensions across `crates/`, `examples/`, `docs/`, `tests/`,
+`tree-sitter-reify/`, `gui/` and `.claude/`.
+
+### What is flagged
+
+A cited path is reported when it is **not** a tracked file **and** its
+basename resolves to some other tracked path under the **same crate's** tests
+tree — i.e. the citation is *repointable*.  The record carries the suggested
+target; when a basename resolves to more than one candidate the record is
+marked `ambiguous:<N>` and lists them all, rather than guessing one.
+
+**Scope limit, stated rather than left to inference:** a citation whose
+basename resolves to *nothing* is **not** reported.  That covers a genuinely
+DELETED test and synthetic fixture paths such as `crates/foo/tests/bar.rs`.
+Repointing those is impossible and a guessed target would be noise, so they
+are out of charter.  This gate does **not** tell you every citation is live —
+only that no citation is stale *in the repointable sense*.
+
+### Fingerprint grammar
+
+Baseline rows are `<containing-file> :: <cited-path>`.  Line numbers **and**
+the suggested target are deliberately erased, so moving a citation within its
+file — or a later change to where its basename resolves — does not spuriously
+red the ratchet.  Same shape as `crates/reify-audit/ptodo-baseline.txt`.
+
+### Regenerating the baseline
+
+```bash
+bash tests/infra/test_cited_test_paths_resolve.sh --emit-baseline \
+    > tests/infra/cited-test-path-baseline.manifest
+```
+
+`--list` prints the live scan records (file, cited path, verdict, target)
+human-readably without touching the manifest.
+
+### The ratchet is ONE-DIRECTIONAL
+
+The gate asserts `live ⊆ baseline` and nothing more.  Rows may be removed
+freely as citations are repointed, and **removing a row never reds the gate** —
+the manifest is a *shrinking grandfather list*, not a lockstep mirror of the
+tree.  The converse (`comm -13`) is deliberately absent for the reason
+`test_reify_audit_ptodo.sh` records for ptodo: asserting it turns every
+citation fix into a red build, punishing exactly the cleanup the gate exists
+to encourage.  The accepted cost is that a grandfathered row may sit in the
+baseline indefinitely, with no forcing function to drain it.
+
+### Two independent signals
+
+The gate reports a **ratchet** and a **vacuity floor** as two separate
+asserts, never collapsed into one.  `comm -23` can only ever say "no NEW
+fingerprints", and the empty set is a subset of everything — so a regex typo
+or a wrong repo root would leave the ratchet permanently and invisibly green.
+The floor observes the **corpus** (index units and citation occurrences), never
+the findings and never the baseline, and fails if the scan collapses toward
+zero.  Its bounds are conservative lower bounds on *the instrument working*,
+not targets for the tree.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `run_all.sh` | Discovery runner — runs all `test_*.sh` files |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
+| `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
+| `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |
+| `test_cited_test_paths_resolve.sh` | Regression guard: prose citing a `crates/*/tests/**.rs` path that no longer resolves |
 | `test_flock_detached_fork_guard.sh` | Regression guard: a locally-opened flock FD held across a detached `&` fork with no `flock -u` release |
 | `test_no_new_wallclock_upper_bounds.sh` | Regression guard: static-grep for new wall-clock upper-bound asserts |
 | `test_npm_ci_hardening.sh` | Tests npm ci guard conventions in dark-factory-orchestrator.yaml |

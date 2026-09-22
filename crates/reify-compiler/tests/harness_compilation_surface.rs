@@ -20,10 +20,19 @@
 //! an unused one would both bill 363 external lines against the cap and trip an
 //! unused-module warning. CMP-2 had to amend exactly such a stray include out of
 //! harness_geometry_solver (2d479616b2).
+//!
+//! `unresolved_function_corpus_sweep` (task #5371) joined later, on subsystem rather
+//! than batch: it compiles every committed `.ri` under the corpus roots and asserts
+//! none calls a name the compiler does not know. That is the same question
+//! `examples_smoke` and `ctor_conformance_corpus_survey` ask of the same corpus, so
+//! it belongs beside them. It reads no `common` helper, so the 0-`external_lines`
+//! property above still holds.
 #[path = "harness_compilation_surface/compile_api_tests.rs"]
 mod compile_api_tests;
 #[path = "harness_compilation_surface/compile_builder_smoke_tests.rs"]
 mod compile_builder_smoke_tests;
+#[path = "harness_compilation_surface/ctor_conformance_corpus_survey.rs"]
+mod ctor_conformance_corpus_survey;
 #[path = "harness_compilation_surface/doc_propagation_tests.rs"]
 mod doc_propagation_tests;
 #[path = "harness_compilation_surface/examples_smoke.rs"]
@@ -38,3 +47,5 @@ mod pragma_compile_tests;
 mod purpose_compile_tests;
 #[path = "harness_compilation_surface/test_marker_compile_tests.rs"]
 mod test_marker_compile_tests;
+#[path = "harness_compilation_surface/unresolved_function_corpus_sweep.rs"]
+mod unresolved_function_corpus_sweep;

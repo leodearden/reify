@@ -45,6 +45,11 @@
 #   Remove a crate when all such tests are removed.
 #   The infra test will fail (blocking CI) if this list drifts from the grep-derived set.
 
+# hosts the release-only sibling
+# `fold_keeps_the_trial_scalar_on_the_production_path_in_release`, which pins the
+# fold's skip-and-preserve contract THROUGH `build_trial_values` in the profile the
+# merge gate reaches via `--profile both` (task 5721, JOINT-DRIVE β follow-up)
+reify-constraints
 reify-eval
 # hosts the migrated release-only modal/buckling e2e (task 4937, Lever P)
 reify-eval-fea-tests

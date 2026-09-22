@@ -237,6 +237,7 @@ impl TopologyTemplateBuilder {
             id: RealizationNodeId::new(entity, index),
             name: None,
             is_aux: false,
+            is_query_only: false,
             list_binding: None,
             operations,
             // Sentinel (0, 0): builder-constructed RealizationDecls have no originating
@@ -261,6 +262,7 @@ impl TopologyTemplateBuilder {
             id: RealizationNodeId::new(entity, index),
             name: Some(name.into()),
             is_aux: false,
+            is_query_only: false,
             list_binding: None,
             operations,
             // Sentinel (0, 0): builder-constructed RealizationDecls have no originating

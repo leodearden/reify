@@ -113,16 +113,75 @@ fn constraint_data_serializes_with_expected_fields() {
     let c = ConstraintData {
         node_id: "Bracket.0".to_string(),
         expression: "thickness > 2mm".to_string(),
-        status: "Satisfied".to_string(),
+        status: "satisfied".to_string(),
         label: None,
         parameter_ids: vec!["Bracket.thickness".to_string()],
     };
     let v = serde_json::to_value(&c).unwrap();
     assert_eq!(v["node_id"], json!("Bracket.0"));
     assert_eq!(v["expression"], json!("thickness > 2mm"));
-    assert_eq!(v["status"], json!("Satisfied"));
+    assert_eq!(v["status"], json!("satisfied"));
     assert!(v["label"].is_null());
     assert_eq!(v["parameter_ids"].as_array().unwrap().len(), 1);
+}
+
+/// The producer half of the `ConstraintData.status` wire pin (task 6723). The
+/// contract is documented on that field in `types.rs`; the consumer half is
+/// `gui/src/__tests__/constraintVerdictParity.test.ts`.
+///
+/// What is load-bearing here is WHAT gets driven: the REAL
+/// `engine::build_constraints`, over a synthetic `CheckResult` (the kernel-free
+/// harness from `engine_tests.rs::build_constraints_sorts_constraints_by_node_id`).
+/// Hand-building a `ConstraintData` — as the field-shape test above deliberately
+/// does — would pin the literal this test typed rather than the token the engine
+/// emits, which is exactly the failure mode being closed.
+#[test]
+fn constraint_data_status_wire_tokens_are_lowercase() {
+    use crate::engine::build_constraints;
+    use reify_core::{ConstraintNodeId, ModulePath};
+    use reify_eval::{CheckResult, ConstraintCheckEntry};
+    use reify_ir::{Satisfaction, ValueMap};
+    use reify_test_support::CompiledModuleBuilder;
+
+    // Empty module: the template lookup misses, so expression/parameter_ids
+    // default and only the status mapping is under test.
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("t")).build();
+
+    let expected: [(Satisfaction, &str); 3] = [
+        (Satisfaction::Satisfied, "satisfied"),
+        (Satisfaction::Violated, "violated"),
+        (Satisfaction::Indeterminate, "indeterminate"),
+    ];
+
+    for (satisfaction, token) in expected {
+        let check = CheckResult {
+            values: ValueMap::new(),
+            constraint_results: vec![ConstraintCheckEntry {
+                id: ConstraintNodeId::new("T", 0),
+                label: None,
+                satisfaction,
+            }],
+            diagnostics: vec![],
+            resolved_params: std::collections::HashMap::new(),
+            structured_detail: vec![],
+        };
+
+        let built = build_constraints(&compiled, &check);
+        assert_eq!(
+            built.len(),
+            1,
+            "build_constraints must return one ConstraintData per check entry"
+        );
+
+        let v = serde_json::to_value(&built[0]).unwrap();
+        assert_eq!(
+            v["status"],
+            json!(token),
+            "wire contract: Satisfaction::{satisfaction:?} must serialize as {token:?} — \
+             see ConstraintData.status in types.rs for the frontend consumers that \
+             compare against this exact string."
+        );
+    }
 }
 
 #[test]
@@ -3368,7 +3427,7 @@ fn value_data_dimension_and_si_value_serialize_and_round_trip() {
         cell_id: "Tank.capacity".to_string(),
         name: "capacity".to_string(),
         value: "7045002.24".to_string(),
-        unit: "mm\u{00B3}".to_string(),
+        unit: "mm^3".to_string(),
         determinacy: "determined".to_string(),
         entity_path: "Tank".to_string(),
         kind: "Let".to_string(),

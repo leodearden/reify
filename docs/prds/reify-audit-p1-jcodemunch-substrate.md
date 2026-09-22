@@ -168,6 +168,6 @@ The §10 NO-decision quarantines the **jcodemunch-dependent, FP-unvalidated advi
 | FP validation | None performed | Hand-triage of all 83 live TODO records on 2026-06-11 |
 | Accuracy concern | Unproven; §4-d flags as advisory | Validated; violation model is exact (structural grammar) |
 | Alert-fatigue risk | High (mirroring P2/P5 pre-validation noise) | None — zero violations in clean tree (empty baseline) |
-| jcodemunch dependency | Yes — degrades to exit 125 when serve is down | No — liveness lane degrades gracefully (stderr breadcrumb only) |
+| jcodemunch dependency | Yes — findings exist only while the substrate does: with the serve unreachable the binary fail-softs to `NoopJCodemunchOps` (4109) and all three degrade to **zero findings** with a stderr breadcrumb (P2/P5 unaffected) | No — liveness lane degrades gracefully (stderr breadcrumb only) |
 
 Therefore PTODO **joins the no-`--pattern` default sweep at Medium severity** as of task ε (#4557), per `docs/prds/reify-audit-ptodo-detector.md` §6.5 (cross-PRD amends row, §10 table). The existing §10 unit-test guards (`pdead_and_puntested_not_in_default_sweep`, `player_not_in_default_sweep`) are unchanged; a parallel `ptodo_in_default_sweep` test in `bin/reify-audit.rs` pins PTODO's membership in the opposite direction.

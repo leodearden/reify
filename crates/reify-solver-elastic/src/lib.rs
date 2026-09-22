@@ -63,6 +63,13 @@
 //!     // Task 3000: per-probe target_accuracy contract + lazy-refinement timing contract
 //!     probe_target_accuracy, RefineTrigger, should_run_refinement,
 //!     NEAR_BOUNDARY_TARGET_ACCURACY, FAR_FROM_BOUNDARY_TARGET_ACCURACY,
+//!     // Task 7452 (PRD docs/prds/v0_6/goal-oriented-error-estimation.md leaf
+//!     // β): goal-oriented error estimation — QoI functionals, their dual
+//!     // loads, the dual-solve seam, the dual-weighted indicator, and the
+//!     // QoI channel on the adaptive seam.
+//!     P1TetMeshRef, QuantityOfInterest, QoiKind, QoiError,
+//!     LocalDisplacementQoi, LocalNormalStressQoi, solve_dual_cg,
+//!     DualWeightedIndicator, compute_dual_weighted_indicator, QoiEstimate,
 //! };
 //!
 //! let _: TetP1 = TetP1;
@@ -516,6 +523,10 @@ pub mod constitutive;
 pub mod eigensolve;
 pub mod elements;
 pub mod error_estimator;
+// Task 7452/β: goal-oriented (dual-weighted) error estimation — bounded linear
+// functionals of the displacement field and their dual loads. PRD
+// docs/prds/v0_6/goal-oriented-error-estimation.md §5.1/§5.3, §6 C2–C6.
+pub mod qoi;
 // Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
 pub mod form_find;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
@@ -560,7 +571,7 @@ pub mod warm_state;
 // docs/prds/v0_4/a-posteriori-error-estimation.md Task decomposition #2.
 pub mod adaptive;
 pub use adaptive::{
-    AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA,
+    AdaptiveEstimate, AdaptiveProblem, BudgetReason, ConvergenceStatus, DORFLER_THETA, QoiEstimate,
     RefinementBudget, STALL_MIN_RELATIVE_DROP, dorfler_size_hints, is_stalled, mark_dorfler,
     refine_marked_elements, run_adaptive_refinement,
 };
@@ -663,12 +674,22 @@ pub use shell_solve::{FlatPlateShellSolve, solve_flat_plate_shell};
 // Task 2996: Z-Z error indicator — kernel-layer a-posteriori error estimator.
 // PRD: docs/prds/v0_4/a-posteriori-error-estimation.md, Task decomposition #1.
 pub use error_estimator::{ZzIndicator, compute_zz_indicator};
+// Task 7452/β: goal-oriented error estimation — dual-weighted per-element
+// indicator. PRD: docs/prds/v0_6/goal-oriented-error-estimation.md §5.4, §6 C3/C5.
+pub use error_estimator::{DualWeightedIndicator, compute_dual_weighted_indicator};
+// Task 7452/β: goal-oriented error estimation — quantity-of-interest surface.
+// PRD: docs/prds/v0_6/goal-oriented-error-estimation.md §5.1, §6 C2–C6.
+pub use qoi::{
+    LocalDisplacementQoi, LocalNormalStressQoi, P1TetMeshRef, QoiError, QoiKind,
+    QuantityOfInterest, solve_dual_cg,
+};
 // Task 3451: buckling eigensolver kernel — shift-invert Lanczos + dense fallback.
 // Task 3882: generic shift-invert Lanczos over arbitrary SPD operator pairs.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §5 / §13 phase 2 task β.
 pub use eigensolve::{
-    EigenSolverOptions, EigenSolverResult, MetricOp, SparseMetricOp, SparseStiffnessOp,
-    StiffnessOp, lanczos_shift_invert, solve_eigen_dense, solve_eigen_shift_invert,
+    EigenSolverOptions, EigenSolverResult, MetricOp, ShiftInvertFailure, SparseFactorRef,
+    SparseMetricOp, SparseStiffnessOp, StiffnessOp, lanczos_shift_invert, solve_eigen_dense,
+    solve_eigen_shift_invert, try_solve_eigen_shift_invert,
 };
 // Task 3453: buckling-kernel orchestrator — pre-stress → K_g → eigensolve → mode-shape.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task δ.
@@ -736,6 +757,33 @@ pub use sweep::{
 // is enforced by the orchestrator, not by the projector itself. External
 // callers cannot misuse it with a short slice.
 pub use volume_refine::{RefineError, refine_with_size_field};
+// Task 4909: the two gmsh symbols this crate's own PUBLIC refine signatures
+// require. `refine_with_size_field` and `adaptive::refine_marked_elements`
+// both take `&MeshingOptions`, and the Gmsh-only local-refine path has to be
+// runtime-gated on availability — yet neither symbol was re-exported, so no
+// downstream crate could construct the argument or gate on presence without
+// naming `reify_kernel_gmsh` itself. This closes that pre-existing API gap.
+//
+// It is also the seam by which `reify-eval` reaches gmsh availability WITHOUT
+// naming `reify_kernel_gmsh::*`, honouring the task-4743 gmsh-build-free
+// posture recorded in `reify-eval/Cargo.toml` (gmsh is a DEV-dep there, and
+// referencing one of its symbols from a non-gmsh test binary pulls in its
+// `inventory::submit!` and breaks OCCT-only registry-size assertions).
+// `reify-solver-elastic` is a NORMAL dep of reify-eval and already normal-deps
+// `reify-kernel-gmsh`, so routing through here changes no linkage.
+//
+// Deliberately exactly two symbols: the surface must stay what the public
+// signatures and the runtime gate require, not a general re-export of the
+// gmsh crate.
+pub use reify_kernel_gmsh::{GMSH_AVAILABLE, MeshingOptions};
+// Task 4909: the free-face boundary extractor. `refine_with_size_field` and
+// `adaptive::refine_marked_elements` both require the closed surface their
+// volume mesh was meshed from; on the realized (`body : Solid`) path that
+// surface is not carried by the realization handle, so it is reconstructed
+// from the tet mesh itself. See `volume_refine::boundary_surface_mesh` for
+// why the volume mesh is the *right* source and not merely the available one
+// (it makes the nearest-vertex size transfer a distance-0 identity).
+pub use volume_refine::boundary_surface_mesh;
 // Task 3868: κ — additive joint-stiffness kernel.
 // PRD compliant-joints-flexures.md §7.2: each spring-loaded joint contributes
 // K[dof,dof] += k to the global stiffness matrix; empty contributions → rigid

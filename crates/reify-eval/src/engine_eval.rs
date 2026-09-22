@@ -1,7 +1,7 @@
 // Split from lib.rs (task 2032) — eval methods.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic;
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,7 +23,9 @@ use reify_ir::{
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
-use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_commit::{
+    CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result, commit_cell_result_at,
+};
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace, take_trace};
@@ -276,8 +278,15 @@ pub(crate) fn compute_value_input_for_ref(
 
 /// task γ / #4954 regression guard: downgrade SYMBOLIC (not-yet-kernel-backed)
 /// `Value::GeometryHandle`s to `Value::Undef` before probing
-/// `build_compute_realization_inputs` at the two `@optimized` dispatch sites
-/// (primary and mirror).
+/// `build_compute_realization_inputs`.
+///
+/// Three call sites, and they must stay consistent — every path that feeds
+/// `build_compute_realization_inputs` goes through this downgrade:
+///   1. the primary `@optimized` dispatch site,
+///   2. its mirror, and
+///   3. `Engine::redispatch_geometry_consuming_compute_nodes` (task #5951 —
+///      the site that used to pass RAW `arg_values`; see the failure mode
+///      spelled out below, which that omission caused for real).
 ///
 /// Once γ gave top-level geometry lets a first-class value cell, the R3d
 /// in-walk mint (`Engine::mint_symbolic_geometry_handle_for_cell`, task
@@ -299,12 +308,31 @@ pub(crate) fn compute_value_input_for_ref(
 /// (task #4726) candidate gate (`realization_inputs.is_empty()`), permanently
 /// stranding the node's degraded (`lambda=Undef`) first-dispatch result.
 ///
+/// Call site 3 is pinned by
+/// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs` in
+/// `reify-eval/tests/harness_engine/redispatch_template_order_regression.rs`,
+/// on the MIXED-arg shape (one hydrated geometry arg, one still symbolic) —
+/// the shape where nothing else in that pass keeps a content-free
+/// `realization_ref` out of `realization_inputs`. Reverting this downgrade at
+/// that call site reddens exactly that test.
+///
+/// Task #5951 measured exactly that stranding through call site 3. The
+/// redispatch runs once per template (`engine_build.rs`, inside `build()`'s
+/// `for (t_idx, template)` loop) and scans ALL compute nodes on every call, so
+/// any template declared AHEAD of a geometry-consuming one triggers a pass
+/// while that consumer's body is still symbolic. Passing raw `arg_values` there
+/// wrote a content-free `realization_inputs`, tripped the one-shot
+/// `is_empty()` latch, and the later — correct, post-hydration — pass for the
+/// consumer's own template was skipped forever. Silently: the `ReprKind::BRep`
+/// arm of `project_realization_read_handle` is identity-only by design (PRD
+/// §4 D1) and emits no diagnostic.
+///
 /// Only the probe fed to `build_compute_realization_inputs` is downgraded;
 /// the raw `arg_values` passed to `run_compute_dispatch`/`persistent_cache_key`
 /// is untouched, so the compute trampoline still sees the real arg shape
 /// (`body_aabb` etc. degrade gracefully via `.first()` on an empty handles
 /// slice — no panic).
-fn realization_probe_args(arg_values: &[Value]) -> Vec<Value> {
+pub(crate) fn realization_probe_args(arg_values: &[Value]) -> Vec<Value> {
     arg_values
         .iter()
         .map(|v| match v {
@@ -437,6 +465,120 @@ fn record_eval_completed(
         kind: EventKind::Completed { outcome },
         version,
         payload: Some(EventPayload::Duration(start.elapsed())),
+    });
+}
+
+/// Records the journal `Started` event for a let-loop sub-path that emits its
+/// own terminal `Completed`/`Failed` event WITHOUT routing through
+/// `commit_cell_result`.
+///
+/// task #5238: both let evaluators (`evaluate_params_and_lets_unified`'s Let
+/// arm and `evaluate_let_bindings`) used to emit one shared
+/// `Started(payload: None)` at the TOP of the loop body, covering every exit.
+/// Migrating the main success-path commit onto `commit_cell_result` — which
+/// emits its own `Started(Custom(<provenance slug>))` — meant that shared
+/// event had to go, or it would be the FIRST `Started` observed for the cell
+/// and would mask the migrated commit's slug (§2.6).
+///
+/// Deleting it outright, however, would leave every OTHER exit from the loop
+/// body emitting a terminal event with no paired `Started` — silently breaking
+/// the Started→Completed/Failed pairing those paths had always guaranteed, and
+/// contradicting the pre-eval Pending gate's own rationale ("emit
+/// `Completed { Unchanged }` so the journal still records the visit", arch
+/// §7.2/§9.2). So each such sub-path records its `Started` LAZILY here,
+/// immediately before its terminal event and stamped with the loop body's
+/// already-captured `start` instant, preserving both the pairing AND the
+/// original `Started` timestamp. Every one of these sub-paths `continue`s, so
+/// it is mutually exclusive with the migrated commit: still exactly one
+/// `Started` per cell per pass, as before.
+fn record_subpath_started(
+    journal: &mut crate::journal::EventJournal,
+    node_id: NodeId,
+    version: VersionId,
+    start: Instant,
+) {
+    journal.record(EvalEvent {
+        timestamp: start,
+        node_id,
+        kind: EventKind::Started,
+        version,
+        payload: None,
+    });
+}
+
+/// The shared pre-migration direct four-leg write for an `eval_cached`
+/// preserve-freshness re-serve that may have to carry a stored
+/// `DeterminacyState` no `DeterminacyRule` can express
+/// (`DeterminacyRule::preserving` returns `None` — i.e. `Auto`/`Provisional`),
+/// and so cannot route through `commit_cell_result`.
+///
+/// Two callers, both inside `Engine::eval_cached`:
+///
+/// 1. The **Auto-cell pre-seed re-serve** (`cell.kind.is_auto()` cache-reuse
+///    block), which is unmigrated precisely BECAUSE it must preserve a stored
+///    `(Value::Undef, DeterminacyState::Auto)` — the site cell_commit.rs's
+///    "Determinacy dimension — OPEN" gap names. It calls this unconditionally.
+/// 2. The migrated **Param/Let re-serves**, as the GRACEFUL-DEGRADATION fallback
+///    when `DeterminacyRule::preserving` returns `None`.
+///
+/// Keeping (1) as a second, byte-identical inline copy is exactly the
+/// hand-sync drift `commit_cell_result` was introduced to eliminate, so both
+/// callers share this one body (#5238 review amendment). Its behaviour —
+/// including `Auto` preservation across all four legs — is pinned directly by
+/// `reserve_preserving_determinacy_direct_tests` at the tail of this file,
+/// which matters because the `debug_assert!` guarding caller (2) fires before
+/// its `None` arm can run in a debug build.
+///
+/// task #5238: the Param and Let re-serves normally route through
+/// `commit_cell_result`, which derives the committed determinacy from a
+/// `DeterminacyRule` and so cannot express `Auto`/`Provisional` (see
+/// cell_commit.rs's "Determinacy dimension — OPEN" gap). Those states are not
+/// reachable at either re-serve today — `Auto` is written only for cells whose
+/// `kind.is_auto()`, which are pre-seeded and re-served by their own
+/// (unmigrated) block, and `Provisional` is never constructed on the eval path.
+/// But the migration replaced a TOTAL operation (the old code passed
+/// `entry.result` through verbatim, so any stored state round-tripped), and
+/// this changeset already had to fix one false "this determinacy is
+/// unreachable" premise (see `let_reserve_preserves_undetermined_determinacy`).
+/// Aborting the whole evaluation via `unreachable!()` on a state that merely
+/// SHOULDN'T occur — e.g. a stale entry surviving an auto→param cell-kind
+/// change on the same `ValueCellId` under a persistent engine — would turn a
+/// benign re-serve into a hard panic, so the re-serves `debug_assert!` (loud in
+/// debug) and fall back here (correct in release) instead.
+///
+/// Writes the same four legs by hand, carrying `det` through VERBATIM:
+/// values, snapshot, `record_evaluation_with_freshness` (preserving the
+/// entry's own freshness), and a bare `EventKind::CacheHit` journal event —
+/// exactly the shape this site had before the migration.
+#[allow(clippy::too_many_arguments)]
+fn reserve_preserving_determinacy_direct(
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    cache: &mut crate::cache::CacheStore,
+    journal: &mut crate::journal::EventJournal,
+    cell_id: ValueCellId,
+    val: Value,
+    det: DeterminacyState,
+    trace: DependencyTrace,
+    version: VersionId,
+    freshness: Freshness,
+) {
+    let node_id = NodeId::Value(cell_id.clone());
+    snapshot_values.insert(cell_id.clone(), (val.clone(), det));
+    values.insert(cell_id, val.clone());
+    cache.record_evaluation_with_freshness(
+        node_id.clone(),
+        CachedResult::Value(val, det),
+        version,
+        trace,
+        freshness,
+    );
+    journal.record(EvalEvent {
+        timestamp: Instant::now(),
+        node_id,
+        kind: EventKind::CacheHit,
+        version,
+        payload: None,
     });
 }
 
@@ -2577,6 +2719,243 @@ fn build_dependent_cells(
         }
     }
     out
+}
+
+/// The auto params `objective` can actually move — the runtime half of DIC γ
+/// (task #5417, PRD `docs/prds/v0_6/declared-intent-consumption-accounting.md`
+/// §3).
+///
+/// Closes the objective's own `ValueRef`s over `dependent_cells` and intersects
+/// the result with `auto_params`. `dependent_cells` is [`build_dependent_cells`]'
+/// already-materialised output, carried on `ResolutionProblem`; this function
+/// **reads** it and never re-derives connectivity (the task's explicit G7
+/// no-lockstep-duplication constraint). Because that list already encodes
+/// let-indirection, a let-indirected objective reads as transitively consumed
+/// here whichever order this PRD and PRD 2 (tasks 5396 / 5467-5474) land in.
+///
+/// **Deliberately under-approximate.** The closure follows only entries the
+/// objective can actually reach, never the whole list —`build_dependent_cells`
+/// is seeded from the constraints *and* the objective, so its output holds cells
+/// the objective never reads. `E_OBJECTIVE_UNCONSUMED` fires when this set is
+/// non-empty, so over-reaching would invent unconsumed autos and raise an Error
+/// on a healthy scope; under-reaching only makes the diagnostic quieter, which
+/// is the safe direction (PRD §3 decision 5).
+///
+/// Returns a `BTreeSet` so the rendered diagnostic is order-stable (PRD §3
+/// decision 8).
+fn objective_auto_reach(
+    objective: &ObjectiveSet,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    auto_params: &[AutoParam],
+) -> BTreeSet<ValueCellId> {
+    let autos: HashSet<&ValueCellId> = auto_params.iter().map(|p| &p.id).collect();
+    // `dependent_cells` may legitimately hold more than one entry per id (stage
+    // (g) emits instance-path aliases beside the template-keyed original), so
+    // the closure follows every match rather than the first.
+    let mut by_id: HashMap<&ValueCellId, Vec<&CompiledExpr>> = HashMap::new();
+    for (id, expr) in dependent_cells {
+        by_id.entry(id).or_default().push(expr);
+    }
+
+    let mut reached: BTreeSet<ValueCellId> = BTreeSet::new();
+    let mut seen: HashSet<ValueCellId> = HashSet::new();
+    let mut pending: Vec<ValueCellId> = objective
+        .terms
+        .iter()
+        .flat_map(|term| crate::deps::extract_value_deps(&term.expr))
+        .collect();
+
+    // `seen` — not `reached` — is the revisit guard: intermediate lets are
+    // traversed but never reported, so guarding on `reached` would walk a
+    // let-only cycle forever.
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if autos.contains(&id) {
+            reached.insert(id.clone());
+        }
+        if let Some(exprs) = by_id.get(&id) {
+            for expr in exprs {
+                pending.extend(crate::deps::extract_value_deps(expr));
+            }
+        }
+    }
+
+    reached
+}
+
+/// Render the sense shared by an objective set's terms, for a diagnostic
+/// message. Falls back to the neutral word when a set mixes senses.
+///
+/// Mirrors `reify_compiler`'s `objective_sense_word` (the compile half's
+/// `E_OBJECTIVE_INERT` renderer) so the two halves of DIC γ say `minimize` /
+/// `maximize` the same way. That function is private to its crate, and this is
+/// a two-arm word choice rather than a contract, so the duplication carries no
+/// drift risk worth a shared crate.
+fn objective_sense_word(objective: &ObjectiveSet) -> &'static str {
+    let mut senses = objective.terms.iter().map(|t| t.sense);
+    match senses.next() {
+        Some(first) if senses.all(|s| s == first) => match first {
+            ObjectiveSense::Minimize => "minimize",
+            ObjectiveSense::Maximize => "maximize",
+        },
+        _ => "objective",
+    }
+}
+
+/// Render `E_OBJECTIVE_UNCONSUMED` — the runtime half of DIC γ (task #5417,
+/// PRD `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3/§4.2).
+///
+/// ONE diagnostic per objective declaration, naming the FULL `unconsumed` set —
+/// never one per component, per auto, or per trial. That is the #5014
+/// collateral-observability aggregation rule, and it is why this is a function
+/// over the whole set rather than a per-id push at the call site.
+///
+/// **Extracted deliberately.** The single-scope (`eval`) and merged-cluster
+/// (`dispatch_merged_cluster_solve`) paths both call it, following the same
+/// extract-once discipline as [`merged_cluster_left_unresolved_warning`], so
+/// the two sites provably cannot drift apart in wording.
+fn objective_unconsumed_diagnostic(
+    scope: &str,
+    objective: &ObjectiveSet,
+    unconsumed: &BTreeSet<ValueCellId>,
+) -> Diagnostic {
+    let sense = objective_sense_word(objective);
+    // `unconsumed` is a BTreeSet, so this list is order-stable across runs
+    // (PRD §3 decision 8).
+    let cells = unconsumed
+        .iter()
+        .map(|id| format!("`{id}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (noun, verb) = if unconsumed.len() == 1 {
+        ("auto param", "was")
+    } else {
+        ("auto params", "were")
+    };
+
+    Diagnostic::error(format!(
+        "E_OBJECTIVE_UNCONSUMED: the `{sense}` declared in `{scope}` reached the \
+         solver but no component consumed it — the {noun} {cells} it governs {verb} \
+         left unsolved, so the declaration had no effect on this run. Add a \
+         constraint relating {cells} to the rest of the scope so the decomposition \
+         builds a component for the objective to attach to, or remove the objective."
+    ))
+    .with_code(DiagnosticCode::ObjectiveUnconsumed)
+}
+
+/// The full `E_OBJECTIVE_UNCONSUMED` gate: `Some(diagnostic)` exactly when this
+/// scope declared an objective that the solver silently discarded.
+///
+/// Shared verbatim by the single-scope (`eval`) and merged-cluster
+/// (`dispatch_merged_cluster_solve`) emission sites so the *decision*, not just
+/// the wording, is one source.
+///
+/// All five conditions are necessary:
+///
+/// 0. `solve_succeeded` — the solve this scope just ran reported
+///    [`SolveResult::Solved`]. γ's claim is *the solve succeeded and your
+///    `minimize` was silently dropped*; on `Infeasible` / `NoProgress` that
+///    claim is unwarranted, because the objective was not consumed for the
+///    trivial reason that nothing was solved at all. Three faults at once on
+///    the failure arms: the Error is a FALSE POSITIVE (the remedy asks for
+///    constraints relating the cell "to the rest of the scope" that the source
+///    already declares), it DOUBLE-REPORTS on top of the failing solve's own
+///    diagnostic, and on `NoProgress` it ESCALATES that diagnostic from warning
+///    to Error on a model whose behaviour never changed. The gate lives here,
+///    once, rather than at the two call sites, so neither can drift from it.
+/// 1. `declared.is_some()` — a **user-declared** objective. A synthesised
+///    Chebyshev-centre scope has `template.objective == None` at compile time
+///    (it is recorded in `centrality_synthesized_scopes` instead), so this is
+///    the exact structural test for task 4013's exemption: γ reports *declared*
+///    intent the engine dropped, and there is no declaration to drop here.
+/// 2. [`reify_constraints::objective_consumption`] says zero components took the
+///    objective. Calling the registry's own classifier — rather than
+///    re-deriving the verdict — is what makes the reported fact and the
+///    routing that produced it one source (G7).
+///    Only two of the three drop verdicts are listed. The third,
+///    `NoAutoParams`, is the COMPILE half's case and is structurally
+///    unreachable here: the registry returns it exactly when
+///    `problem.auto_params` is empty, and with an empty auto set condition 3
+///    below intersects to nothing and stops the gate anyway. Listing it would
+///    read as live coverage of a drop site this function can never report.
+/// 3. The objective actually reaches an auto param ([`objective_auto_reach`]).
+///    An objective that reaches none is the *compile* half's business
+///    (`E_OBJECTIVE_INERT`), and firing here too would double-report it.
+/// 4. At least one reached auto is still unbound. This is the **O2
+///    vacuous-healthy** rule: connector-pinned autos are already partitioned out
+///    of `problem.auto_params` upstream, and solver-bound autos land in
+///    `resolved_params`, so an instantiation whose every objective-reachable
+///    auto is concretely bound this run stays quiet without a parallel ledger.
+///    It is still load-bearing on the merged path, where a `FallbackComponentZero`
+///    verdict coexists with a write-back that binds every reached auto
+///    (`examples/whole_model_joint_drive.ri` is the in-tree case). It is NO
+///    LONGER the *sole* thing keeping a healthy model quiet, on two counts: a
+///    let-indirected objective over a solved auto now classifies `Consumed` —
+///    the registry expands the objective's refs through `dependent_cells` before
+///    the first-match scan (task #5417 step-18) — so condition 2 stops it first;
+///    and a scope whose solve failed is stopped by condition 0 above.
+///
+/// `bound_this_run` is the scope's `resolved_params` map. An `Undef` entry does
+/// not count as bound — the solver can write one for an auto it failed to pin,
+/// and treating that as success would silence the very case γ exists to report.
+///
+/// `solve_succeeded` is MEASURED, not assumed, to leave every intended positive
+/// intact: the PRD's B7 fixture (`dic_min_unconstrained.ri`) and the merged
+/// zero-component fixture both reach their drop site reporting `Solved` — the
+/// registry's `components.is_empty()` early exit returns
+/// `SolveResult::Solved { values: {}, unique: true }` — so a strict `Solved`
+/// gate costs neither of them.
+fn objective_unconsumed_finding(
+    scope: &str,
+    declared: Option<&ObjectiveSet>,
+    problem: &ResolutionProblem,
+    bound_this_run: &HashMap<ValueCellId, Value>,
+    solve_succeeded: bool,
+) -> Option<Diagnostic> {
+    // (0) the solve succeeded. A failed solve dropped the objective because it
+    // dropped everything, and it already reported that itself.
+    if !solve_succeeded {
+        return None;
+    }
+
+    // (1) user-declared only.
+    declared?;
+
+    // (2) the registry dropped it, at one of the two drop sites this half owns.
+    let consumption = reify_constraints::objective_consumption(problem);
+    if !matches!(
+        consumption,
+        reify_constraints::ObjectiveConsumption::NoComponents
+            | reify_constraints::ObjectiveConsumption::FallbackComponentZero
+    ) {
+        return None;
+    }
+
+    // The effective objective the solver actually saw — which is what
+    // `objective_consumption` just classified. It can differ from `declared`
+    // under §6.1 objective inheritance; reach must follow the one that was
+    // dropped.
+    let objective = problem.objective.as_ref()?;
+
+    // (3) it reaches a real solver variable.
+    let reach = objective_auto_reach(objective, &problem.dependent_cells, &problem.auto_params);
+
+    // (4) at least one of those is still unbound.
+    let unconsumed: BTreeSet<ValueCellId> = reach
+        .into_iter()
+        .filter(|id| {
+            !bound_this_run
+                .get(id)
+                .is_some_and(|v| !matches!(v, Value::Undef))
+        })
+        .collect();
+    if unconsumed.is_empty() {
+        return None;
+    }
+
+    Some(objective_unconsumed_diagnostic(scope, objective, &unconsumed))
 }
 
 /// Structure name → its SINGLE non-collection instance path, for the
@@ -5900,6 +6279,14 @@ impl Engine {
                         (solver.solve_with_dispatch(&problem, Some(&dispatcher)), None)
                     };
 
+                // DIC γ gate condition (0) (task #5417 step-20): the outcome
+                // must be captured HERE because the match below CONSUMES
+                // `solve_result`, and the emission site is deliberately after
+                // the match (condition (4) needs the `resolved_params` the
+                // `Solved` arm writes). `matches!` binds nothing, so it reads
+                // the place without moving it.
+                let solve_succeeded = matches!(solve_result, SolveResult::Solved { .. });
+
                 match solve_result {
                     SolveResult::Solved {
                         values: solver_values,
@@ -6134,6 +6521,40 @@ impl Engine {
                         ))
                         .with_code(DiagnosticCode::SolverOptimalityUnproven),
                     );
+                }
+
+                // DIC γ (task #5417): surface E_OBJECTIVE_UNCONSUMED when this
+                // scope declared an objective the registry then dropped.
+                //
+                // Placed here — after the `match solve_result` — for two
+                // reasons: `resolved_params` has by now absorbed everything
+                // this scope's solve bound (condition 4 needs that), and this
+                // is the one point every solve outcome (Solved / Infeasible /
+                // NoProgress) converges on, so ONE emission site serves all
+                // three. Its sibling #4804 warning above shares the position
+                // for the same reason.
+                //
+                // Converging here does NOT mean the report ignores the outcome:
+                // `solve_succeeded`, captured above the match because the match
+                // consumes `solve_result`, is gate condition (0) — a failed
+                // solve stays quiet (task #5417 step-20, review round 1
+                // finding 2). The gate itself lives in
+                // `objective_unconsumed_finding` so the merged site inherits it
+                // rather than repeating it.
+                //
+                // The zero-constraint fixture the PRD measured
+                // (`dic_min_unconstrained.ri`) DOES reach here: an auto exists,
+                // so `build_solver_problem` returns Some and the solver is
+                // called; it is the *decomposition* that builds no component,
+                // which is precisely what `objective_consumption` reports.
+                if let Some(diag) = objective_unconsumed_finding(
+                    &template.name,
+                    template.objective.as_ref(),
+                    &problem,
+                    &resolved_params,
+                    solve_succeeded,
+                ) {
+                    diagnostics.push(diag);
                 }
             }
         }
@@ -7277,6 +7698,10 @@ impl Engine {
             cluster.scopes,
         );
 
+        // DIC γ gate condition (0) (task #5417 step-20) — captured before the
+        // match consumes `solve_result`, exactly as the single-scope site does.
+        let solve_succeeded = matches!(solve_result, SolveResult::Solved { .. });
+
         match solve_result {
             SolveResult::Solved {
                 values: solver_values,
@@ -7548,6 +7973,67 @@ impl Engine {
                 .with_code(DiagnosticCode::SolverOptimalityUnproven),
             );
         }
+
+        // DIC γ (task #5417): the MERGED-CLUSTER arm of
+        // `E_OBJECTIVE_UNCONSUMED`, calling the SAME
+        // `objective_unconsumed_finding` the single-scope site calls. Sharing
+        // the function — not just the wording, the whole four-condition
+        // decision — is what makes the two sites provably unable to drift, and
+        // what makes that function's doc comment ("the single-scope (`eval`)
+        // and merged-cluster (`dispatch_merged_cluster_solve`) paths both call
+        // it") true in-tree rather than aspirational.
+        //
+        // PLACEMENT mirrors its sibling #4804 warning immediately above, for
+        // the same two reasons: it is after the `match solve_result`, so every
+        // outcome (Solved / Infeasible / NoProgress) converges here, and
+        // `resolved_params` has by now absorbed the merged write-back that gate
+        // condition (4) reads. The outcome still gates the report —
+        // `solve_succeeded` is captured above the match and passed as condition
+        // (0) — but the DECISION is the shared function's, not this site's.
+        //
+        // `problem.objective.as_ref()` is SAFE as `declared` — i.e. it cannot
+        // resurrect the task-4013 synthetic-centrality case condition (1)
+        // exists to exempt. `build_merged_solver_problem` folds the merged
+        // objective EXCLUSIVELY from `governance: &[GoverningObjective]`, which
+        // `governing_objective` populates only from an own `template.objective`
+        // or a §6.1-inherited container objective; a synthesised Chebyshev
+        // centre never lands there (it is tracked in
+        // `centrality_synthesized_scopes`). So a merged objective is
+        // user-declared by construction.
+        //
+        // The scope label is recomputed here rather than reused: the
+        // `merged_scope_label` built for `SnapshotProvenance` is declared
+        // INSIDE the `Solved` arm and is out of scope after the match. This is
+        // the same `cluster.scopes` → `module.templates[i].name` join that
+        // `merged_cluster_left_unresolved_warning`'s caller builds, so a
+        // merged report names every member, never an arbitrary anchor (#5014).
+        //
+        // NOT MIRRORED ONTO THE WARM PATHS, deliberately.
+        // `dispatch_merged_cluster_solve_cached` calls plain `.solve()` and
+        // never `solve_ranked` — cold-only objective reporting is an accepted
+        // #5118 design decision recorded there — and the warm per-template arm
+        // maintains no `resolved_params` map at all, so gate condition (4) has
+        // no warm-side source to read. Mirroring warm would be a NEW precedent
+        // rather than parity, and the PRD never mentions `eval_cached`.
+        //
+        // No double-reporting: `eval()`'s per-template loop `continue`s on
+        // every scope that belongs to a `MergedSolve` cluster (both the
+        // already-dispatched and the first-member branches), so a cluster
+        // member never also reaches the single-scope emission site.
+        let merged_scopes: Vec<&str> = cluster
+            .scopes
+            .iter()
+            .map(|&member_idx| module.templates[member_idx].name.as_str())
+            .collect();
+        if let Some(diag) = objective_unconsumed_finding(
+            &merged_scopes.join(", "),
+            problem.objective.as_ref(),
+            &problem,
+            resolved_params,
+            solve_succeeded,
+        ) {
+            diagnostics.push(diag);
+        }
     }
 
     /// Evaluate a compiled module with caching and early cutoff.
@@ -7706,16 +8192,29 @@ impl Engine {
                     // Preserve existing freshness (Failed/Pending) — see the
                     // analogous let-cell block comment for rationale (arch §7.1/§9.2).
                     //
-                    // task γ (#5053) deferral note: this commit (and its Param/Let
-                    // siblings below, at ~@6183/@6355) calls
-                    // `record_evaluation_with_freshness` directly rather than
-                    // `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
-                    // always writes `Freshness::Final` and has no path to a preserved
-                    // (carried-over) freshness value — see cell_commit.rs's module doc,
-                    // "Known scope gaps" — so a genuinely preserve-freshness commit like
-                    // this one cannot be represented by `commit_cell_result` as currently
-                    // shaped. Left unmigrated pending a preserve/propagating `CacheLeg`
-                    // variant (PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4).
+                    // task #5238: this Auto-cell pre-seed re-serve stays UNMIGRATED. Its
+                    // sibling Param and Let cache-reuse re-serves further down this same
+                    // function ARE now migrated onto commit_cell_result via
+                    // CacheLeg::RecordWithFreshness (which routes to
+                    // record_evaluation_with_freshness, carrying the entry's freshness
+                    // forward). This one cannot be: it can preserve a stored
+                    // DeterminacyState::Auto (the Auto pre-seed writes (Undef, Auto)), and
+                    // DeterminacyRule — from which commit_cell_result derives determinacy —
+                    // resolves only to Determined or Undetermined, never Auto (nor
+                    // Provisional); `DeterminacyRule::preserving` returns None for both.
+                    // Migrating it would require extending DeterminacyRule with an
+                    // Auto-preserving variant, a determinacy-dimension change orthogonal to
+                    // this task's freshness scope. See cell_commit.rs "Known scope gaps" +
+                    // PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4/§7.2.
+                    //
+                    // It DOES share the write itself with its migrated siblings: the
+                    // four-leg direct write below is `reserve_preserving_determinacy_direct`,
+                    // the same helper the Param/Let re-serves degrade to when
+                    // `DeterminacyRule::preserving` returns None. Keeping a second,
+                    // byte-identical inline copy here would reintroduce exactly the
+                    // hand-sync drift risk commit_cell_result exists to remove — and this
+                    // block is the very site the helper's doc names as the reason
+                    // Auto/Provisional are inexpressible.
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
@@ -7723,28 +8222,23 @@ impl Engine {
                     {
                         let val = val.clone();
                         let preserved_freshness = entry.freshness.clone();
-                        snapshot_values.insert(cell.id.clone(), (val.clone(), det));
-                        values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
-                        let result = entry.result.clone();
                         // μ (#5062): replay this clean-served cell's stored
                         // per-cell diagnostics (last use of `entry` before the
                         // &mut record below).
                         diagnostics.extend(entry.diagnostics.iter().cloned());
-                        self.cache.record_evaluation_with_freshness(
-                            node_id.clone(),
-                            result,
-                            version,
+                        reserve_preserving_determinacy_direct(
+                            &mut values,
+                            &mut snapshot_values,
+                            &mut self.cache,
+                            &mut self.journal,
+                            cell.id.clone(),
+                            val,
+                            det,
                             trace,
+                            version,
                             preserved_freshness,
                         );
-                        self.journal.record(EvalEvent {
-                            timestamp: Instant::now(),
-                            node_id,
-                            kind: EventKind::CacheHit,
-                            version,
-                            payload: None,
-                        });
                         stats.cache_hits += 1;
                         continue;
                     }
@@ -7926,39 +8420,82 @@ impl Engine {
                             // Cache-reuse: not dirty + entry exists (no override).
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
                             //
-                            // task γ (#5053) deferral note: unmigrated preserve-freshness
-                            // commit — see the Auto-cell pre-seed block's comment above
-                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
-                            // gaps" + PRD §2.4); identical reasoning applies here.
+                            // task #5238: migrated onto commit_cell_result. The preserve-
+                            // freshness re-serve now routes its four-leg commit through the
+                            // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
+                            // the entry's own freshness forward verbatim (still
+                            // record_evaluation_with_freshness under the hood) and emitting a
+                            // typed Started/Completed pair carrying the `cached-reuse`
+                            // provenance slug in place of the prior bare CacheHit — the sole
+                            // observable delta, since value/determinacy/cache-content/freshness
+                            // are all preserved. See cell_commit.rs "Known scope gaps"
+                            // (Freshness dimension — CLOSED) + PRD §2.4/§7.2. (The Auto-cell
+                            // pre-seed re-serve above stays unmigrated — see its own note.)
                             if !self.param_overrides.contains_key(&cell.id)
                                 && !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
                             {
+                                // Reproduce the stored `det` EXACTLY:
+                                // DeterminacyRule::preserving picks the rule that resolves
+                                // value-INDEPENDENTLY to `det`, so the committed `(val, det)` —
+                                // hence entry.result — byte-matches, keeping
+                                // record_evaluation_with_freshness on its content-hash
+                                // early-cutoff path (the only branch that preserves the entry's
+                                // pending_cause/diagnostics) so the preserved freshness is
+                                // carried, not reset.
                                 let val = val.clone();
                                 let preserved_freshness = entry.freshness.clone();
-                                snapshot_values.insert(cell.id.clone(), (val.clone(), det));
-                                values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
-                                let result = entry.result.clone();
                                 // μ (#5062): replay this clean-served cell's
                                 // stored per-cell diagnostics (last use of
                                 // `entry` before the &mut record below).
                                 diagnostics.extend(entry.diagnostics.iter().cloned());
-                                self.cache.record_evaluation_with_freshness(
-                                    node_id.clone(),
-                                    result,
-                                    version,
-                                    trace,
-                                    preserved_freshness,
+                                let rule = DeterminacyRule::preserving(det);
+                                // Auto/Provisional are not expressible by any DeterminacyRule
+                                // and cannot reach a plain Param cache entry here (Auto is
+                                // written only for `kind.is_auto()` cells, pre-seeded and
+                                // re-served by their own block above; Provisional is never
+                                // constructed on the eval path). Assert that loudly in debug,
+                                // but DEGRADE rather than abort in release — the pre-migration
+                                // code passed entry.result through verbatim and was total, and
+                                // an unexpected stored state must not panic the whole eval.
+                                debug_assert!(
+                                    rule.is_some(),
+                                    "param re-serve determinacy is never Auto/Provisional, got \
+                                     {det:?}"
                                 );
-                                self.journal.record(EvalEvent {
-                                    timestamp: Instant::now(),
-                                    node_id,
-                                    kind: EventKind::CacheHit,
-                                    version,
-                                    payload: None,
-                                });
+                                match rule {
+                                    Some(rule) => {
+                                        commit_cell_result(
+                                            CommitLegs {
+                                                values: &mut values,
+                                                snapshot_values: &mut snapshot_values,
+                                                cache: &mut self.cache,
+                                                journal: &mut self.journal,
+                                            },
+                                            cell.id.clone(),
+                                            val,
+                                            rule,
+                                            TraceSource::CachedReuse,
+                                            trace,
+                                            version,
+                                            CacheLeg::RecordWithFreshness(preserved_freshness),
+                                        );
+                                    }
+                                    None => reserve_preserving_determinacy_direct(
+                                        &mut values,
+                                        &mut snapshot_values,
+                                        &mut self.cache,
+                                        &mut self.journal,
+                                        cell.id.clone(),
+                                        val,
+                                        det,
+                                        trace,
+                                        version,
+                                        preserved_freshness,
+                                    ),
+                                }
                                 stats.cache_hits += 1;
                                 continue;
                             }
@@ -8120,38 +8657,86 @@ impl Engine {
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
                             // See the detailed rationale in the old second-pass let-cell block.
                             //
-                            // task γ (#5053) deferral note: unmigrated preserve-freshness
-                            // commit — see the Auto-cell pre-seed block's comment above
-                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
-                            // gaps" + PRD §2.4); identical reasoning applies here.
+                            // task #5238: migrated onto commit_cell_result. The preserve-
+                            // freshness re-serve now routes its four-leg commit through the
+                            // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
+                            // the entry's own freshness forward verbatim (still
+                            // record_evaluation_with_freshness under the hood) and emitting a
+                            // typed Started/Completed pair carrying the `cached-reuse`
+                            // provenance slug in place of the prior bare CacheHit — the sole
+                            // observable delta, since value/determinacy/cache-content/freshness
+                            // are all preserved. See cell_commit.rs "Known scope gaps"
+                            // (Freshness dimension — CLOSED) + PRD §2.4/§7.2.
                             if !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
                             {
+                                // Reproduce the stored `det` EXACTLY — see the sibling Param
+                                // re-serve's note above for why byte-matching entry.result is
+                                // load-bearing (it keeps record_evaluation_with_freshness on its
+                                // content-hash early-cutoff branch, the only one that preserves
+                                // pending_cause/diagnostics).
+                                //
+                                // Undetermined is genuinely reachable here: the main let
+                                // evaluators do stamp UnconditionalDetermined, but they are not
+                                // the only Let commit paths. `reeval_cone_cell` — reached from
+                                // the R3e (#4907) post-mint re-eval pass at the tail of
+                                // `evaluate_let_bindings` — commits with
+                                // DeterminacyRule::DeriveFromValue, so a consumer let that
+                                // still evaluates to Value::Undef (e.g. a kernel-less
+                                // `single(faces_by_normal(..))` selector) lands in the cache as
+                                // (Undef, Undetermined) and is re-served through this block on
+                                // the next eval_cached. Hard-coding UnconditionalDetermined here
+                                // silently UPGRADED such an entry to Determined — see
+                                // `let_reserve_preserves_undetermined_determinacy` in
+                                // tests/engine_eval_commit_migration.rs.
                                 let val = val.clone();
                                 let preserved_freshness = entry.freshness.clone();
-                                snapshot_values.insert(cell.id.clone(), (val.clone(), det));
-                                values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
-                                let result = entry.result.clone();
                                 // μ (#5062): replay this clean-served cell's
                                 // stored per-cell diagnostics (last use of
                                 // `entry` before the &mut record below).
                                 diagnostics.extend(entry.diagnostics.iter().cloned());
-                                self.cache.record_evaluation_with_freshness(
-                                    node_id.clone(),
-                                    result,
-                                    version,
-                                    trace,
-                                    preserved_freshness,
+                                let rule = DeterminacyRule::preserving(det);
+                                // Auto/Provisional: same structural argument (and same
+                                // debug-loud / release-degrade policy) as the sibling Param
+                                // re-serve above.
+                                debug_assert!(
+                                    rule.is_some(),
+                                    "let re-serve determinacy is never Auto/Provisional, got \
+                                     {det:?}"
                                 );
-                                self.journal.record(EvalEvent {
-                                    timestamp: Instant::now(),
-                                    node_id,
-                                    kind: EventKind::CacheHit,
-                                    version,
-                                    payload: None,
-                                });
+                                match rule {
+                                    Some(rule) => {
+                                        commit_cell_result(
+                                            CommitLegs {
+                                                values: &mut values,
+                                                snapshot_values: &mut snapshot_values,
+                                                cache: &mut self.cache,
+                                                journal: &mut self.journal,
+                                            },
+                                            cell.id.clone(),
+                                            val,
+                                            rule,
+                                            TraceSource::CachedReuse,
+                                            trace,
+                                            version,
+                                            CacheLeg::RecordWithFreshness(preserved_freshness),
+                                        );
+                                    }
+                                    None => reserve_preserving_determinacy_direct(
+                                        &mut values,
+                                        &mut snapshot_values,
+                                        &mut self.cache,
+                                        &mut self.journal,
+                                        cell.id.clone(),
+                                        val,
+                                        det,
+                                        trace,
+                                        version,
+                                        preserved_freshness,
+                                    ),
+                                }
                                 stats.cache_hits += 1;
                                 continue;
                             }
@@ -8239,14 +8824,23 @@ impl Engine {
                                 DeterminacyRule::UnconditionalDetermined,
                                 // `CachedServe` denotes eval_cached-PASS provenance, not a cache
                                 // hit: this is the cache-MISS arm (`stats.cache_misses` above) —
-                                // a cold eval within the cached-serve pass. The genuine cache-hit
-                                // reuse arm (~@6399) does NOT route through commit_cell_result
-                                // (it is the deferred preserve-freshness path), so this slug has a
-                                // single emitter and never collides; a §2.6 divergence audit that
-                                // keys on it reads "produced by the eval_cached pass". Kept as
-                                // CachedServe (not ColdEval) per the frozen γ plan — the test that
-                                // pins the "cached-serve" slug lives in the sibling test module,
-                                // outside this amendment's edit scope.
+                                // a cold eval within the cached-serve pass. Kept as CachedServe
+                                // (not ColdEval) per the frozen γ plan; `TraceSource::as_str`
+                                // declares these strings stable once shipped.
+                                //
+                                // task #5238: `cached-serve` identifies THIS arm uniquely. The
+                                // two migrated preserve-freshness re-serves earlier in this
+                                // function stamp the distinct `TraceSource::CachedReuse`
+                                // (`cached-reuse`) instead, precisely so a §2.6 divergence
+                                // audit can separate a re-serve from a miss FROM THE JOURNAL
+                                // ALONE — neither the commit's `CacheLeg` (consumed inside
+                                // commit_cell_result, never recorded) nor `stats.cache_hits`/
+                                // `cache_misses` (per-pass, not per-node) is reachable from a
+                                // journal event.
+                                //
+                                // Still true: the Auto-cell pre-seed re-serve does NOT route
+                                // through commit_cell_result and emits no slug at all — see its
+                                // own note for why it stays unmigrated.
                                 TraceSource::CachedServe,
                                 trace,
                                 version,
@@ -9536,19 +10130,24 @@ impl Engine {
     /// The subsequent passes (guarded groups, sub-component elaboration,
     /// post-solver evaluate_let_bindings) are UNCHANGED.
     ///
-    /// task γ (#5053) deferral note: the Let arm's three
-    /// `record_evaluation_propagating_freshness` commits (compute-dispatch
-    /// Failed, panic-recovery, and the main success path) are NOT migrated
-    /// onto `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
-    /// always writes `Freshness::Final` and has no path to the derived,
-    /// input-propagated freshness this function computes per arch §7.2 — see
-    /// cell_commit.rs's module doc, "Known scope gaps". Left unmigrated
-    /// pending a propagating `CacheLeg` variant (PRD
-    /// docs/prds/v0_6/eval-cell-commit-substrate.md §2.4). The Param arm
-    /// above is unaffected (it uses plain `record_evaluation`, Final-only,
-    /// already representable — though still unmigrated in this
-    /// characterization-only task, whose declared scope is the named site
-    /// inventory, not every Final-representable call site).
+    /// task #5238: the Let arm's MAIN success-path commit is now migrated onto
+    /// `commit_cell_result` (task α, cell_commit.rs) via the freshness-carrying
+    /// `CacheLeg::RecordPropagating { still_refining: false }` variant, which
+    /// routes to `record_evaluation_propagating_freshness` (deriving the arch
+    /// §7.2 input-propagated freshness) — closing the γ (#5053) freshness scope
+    /// gap for this evaluator. The two remaining
+    /// `record_evaluation_propagating_freshness` commits — the compute-dispatch
+    /// Failed path and the panic-recovery path — stay unmigrated: they journal
+    /// `EventKind::Failed` (not the Started/Completed pair commit_cell_result
+    /// emits), skip the values/snapshot legs, and call `mark_failed` (which
+    /// immediately overwrites the just-propagated freshness with
+    /// `Failed{error}`, so no freshness fidelity is lost), a commit shape
+    /// commit_cell_result structurally cannot represent — see the per-site
+    /// notes at those failure paths (impl-6) and cell_commit.rs's module doc,
+    /// "Known scope gaps". Those and the Let arm's other non-migrated exits
+    /// keep their Started→terminal pairing via `record_subpath_started`. The
+    /// Param arm above uses plain `record_evaluation` (Final-only) and is
+    /// likewise unmigrated (out of this task's named-site scope).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_params_and_lets_unified(
         &mut self,
@@ -9782,14 +10381,28 @@ impl Engine {
                         None => continue, // Should not happen (excluded above).
                     };
 
+                    // task #5238: the main success-path commit below is now
+                    // routed through `commit_cell_result`, which emits its OWN
+                    // Started(Custom slug)+Completed pair. No SHARED
+                    // Started(payload:None) is emitted here — it would be the
+                    // FIRST Started observed for the cell and would mask the
+                    // migrated commit's `cold-eval` provenance slug (§2.6).
+                    //
+                    // The sibling sub-paths in this arm (pre-eval Pending gate,
+                    // @optimized Final-gate reuse, the three compute-dispatch
+                    // outcomes, and the panic-recovery path) emit
+                    // Completed/Failed directly and are deliberately left
+                    // unmigrated (see the deferral note on this fn and impl-6) —
+                    // but each records its OWN paired `Started` lazily via
+                    // `record_subpath_started`, stamped with the `start` captured
+                    // below, so the Started→Completed/Failed pairing every path
+                    // used to guarantee is preserved. Each such path `continue`s,
+                    // so exactly one `Started` is still emitted per cell per pass.
+                    //
+                    // The migrated commit is stamped with the same `start` (via
+                    // `commit_cell_result_at`), so every exit from this arm reports
+                    // the same full-resolution `Duration` semantic.
                     let start = Instant::now();
-                    self.journal.record(EvalEvent {
-                        timestamp: start,
-                        node_id: node_id.clone(),
-                        kind: EventKind::Started,
-                        version: VersionId(version_id),
-                        payload: None,
-                    });
 
                     // Snapshot test-instrumentation panic-injection state
                     #[cfg(any(test, feature = "test-instrumentation"))]
@@ -9815,6 +10428,15 @@ impl Engine {
                                 &node_id,
                                 "sorted_combined",
                                 "combined_traces",
+                            );
+                            // task #5238: lazily paired `Started` — see
+                            // `record_subpath_started` for why the shared pre-eval
+                            // `Started` moved here from the top of the loop body.
+                            record_subpath_started(
+                                &mut self.journal,
+                                node_id.clone(),
+                                VersionId(version_id),
+                                start,
                             );
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
@@ -9868,6 +10490,15 @@ impl Engine {
                                         &node_id,
                                         "sorted_combined",
                                         "combined_traces",
+                                    );
+                                    // task #5238: lazily paired `Started` — see
+                                    // `record_subpath_started` for why the shared pre-eval
+                                    // `Started` moved here from the top of the loop body.
+                                    record_subpath_started(
+                                        &mut self.journal,
+                                        node_id.clone(),
+                                        VersionId(version_id),
+                                        start,
                                     );
                                     self.journal.record(EvalEvent {
                                         timestamp: Instant::now(),
@@ -10017,6 +10648,15 @@ impl Engine {
                                         {
                                             n.running = None;
                                         }
+                                        // task #5238: lazily paired `Started` — see
+                                        // `record_subpath_started` for why the shared pre-eval
+                                        // `Started` moved here from the top of the loop body.
+                                        record_subpath_started(
+                                            &mut self.journal,
+                                            node_id.clone(),
+                                            VersionId(version_id),
+                                            start,
+                                        );
                                         self.journal.record(EvalEvent {
                                             timestamp: Instant::now(),
                                             node_id,
@@ -10038,6 +10678,15 @@ impl Engine {
                                             &node_id,
                                             "sorted_combined",
                                             "combined_traces",
+                                        );
+                                        // task #5238: lazily paired `Started` — see
+                                        // `record_subpath_started` for why the shared pre-eval
+                                        // `Started` moved here from the top of the loop body.
+                                        record_subpath_started(
+                                            &mut self.journal,
+                                            node_id.clone(),
+                                            VersionId(version_id),
+                                            start,
                                         );
                                         self.journal.record(EvalEvent {
                                             timestamp: Instant::now(),
@@ -10068,6 +10717,14 @@ impl Engine {
                                             "sorted_combined",
                                             "combined_traces",
                                         );
+                                        // task #5238: NOT migrated onto commit_cell_result — this
+                                        // failure path journals EventKind::Failed (not the
+                                        // Started/Completed pair the primitive emits), writes no
+                                        // values/snapshot leg, and calls mark_failed, a shape
+                                        // commit_cell_result cannot represent. The freshness
+                                        // propagated here is immediately overwritten by the following
+                                        // mark_failed (-> Failed { error }), so this direct call loses
+                                        // no fidelity.
                                         self.cache.record_evaluation_propagating_freshness(
                                             node_id.clone(),
                                             CachedResult::Value(
@@ -10079,6 +10736,15 @@ impl Engine {
                                             false,
                                         );
                                         let _ = self.cache.mark_failed(&node_id, error.clone());
+                                        // task #5238: lazily paired `Started` — see
+                                        // `record_subpath_started` for why the shared pre-eval
+                                        // `Started` moved here from the top of the loop body.
+                                        record_subpath_started(
+                                            &mut self.journal,
+                                            node_id.clone(),
+                                            VersionId(version_id),
+                                            start,
+                                        );
                                         self.journal.record(EvalEvent {
                                             timestamp: Instant::now(),
                                             node_id: node_id.clone(),
@@ -10090,13 +10756,18 @@ impl Engine {
                                     }
                                 }
                             } else {
-                                // Unregistered @optimized target: emit Error, fall through
-                                // to body-inlining.
-                                diagnostics.push(Diagnostic::error(format!(
-                                    "@optimized target {:?}: no registered compute trampoline \
-                                     (falling back to body-inlining)",
-                                    target
-                                )));
+                                // Unregistered @optimized target: emit the SOFT-site
+                                // diagnostic, then fall through to body-inlining.
+                                // Task 5311: Warning when this engine's compute
+                                // registry is entirely EMPTY (a declared
+                                // trampoline-free posture, e.g. `reify check` /
+                                // reify-lsp), Error otherwise (a driver that
+                                // registered some trampolines is genuinely missing
+                                // this one). Wording, code AND that emptiness
+                                // predicate all live in the constructor — see
+                                // `Engine::soft_no_trampoline_diagnostic`; this
+                                // site deliberately spells none of them.
+                                diagnostics.push(self.soft_no_trampoline_diagnostic(&target));
                             }
                         }
                     }
@@ -10132,6 +10803,13 @@ impl Engine {
                                 "sorted_combined",
                                 "combined_traces",
                             );
+                            // task #5238: NOT migrated onto commit_cell_result — this failure
+                            // path journals EventKind::Failed (not the Started/Completed pair the
+                            // primitive emits), writes no values/snapshot leg, and calls
+                            // mark_failed, a shape commit_cell_result cannot represent. The
+                            // freshness propagated here is immediately overwritten by the
+                            // following mark_failed (-> Failed { error }), so this direct call
+                            // loses no fidelity.
                             self.cache.record_evaluation_propagating_freshness(
                                 node_id.clone(),
                                 CachedResult::Value(Value::Undef, DeterminacyState::Determined),
@@ -10140,6 +10818,15 @@ impl Engine {
                                 false,
                             );
                             let _ = self.cache.mark_failed(&node_id, error.clone());
+                            // task #5238: lazily paired `Started` — see
+                            // `record_subpath_started` for why the shared pre-eval
+                            // `Started` moved here from the top of the loop body.
+                            record_subpath_started(
+                                &mut self.journal,
+                                node_id.clone(),
+                                VersionId(version_id),
+                                start,
+                            );
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id: node_id.clone(),
@@ -10179,35 +10866,53 @@ impl Engine {
                     if was_undef && !matches!(val, Value::Undef) {
                         minted_in_walk.insert(cell_id.clone());
                     }
-                    values.insert(cell_id.clone(), val.clone());
-                    snapshot
-                        .values
-                        .insert(cell_id.clone(), (val.clone(), DeterminacyState::Determined));
-
-                    let trace = take_trace(
+                    let dep_trace = take_trace(
                         &mut combined_traces,
                         &node_id,
                         "sorted_combined",
                         "combined_traces",
                     );
-                    let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                    let outcome = self.cache.record_evaluation_propagating_freshness(
-                        node_id.clone(),
-                        cached_result,
+                    // task #5238: migrated onto commit_cell_result — writes the
+                    // values/snapshot/cache/journal legs atomically (INV-EVAL-1)
+                    // and routes the cache leg through
+                    // `record_evaluation_propagating_freshness` (arch §7.2 derived
+                    // freshness) via `CacheLeg::RecordPropagating`. `still_refining:
+                    // false` + `UnconditionalDetermined` byte-match the pre-migration
+                    // `record_evaluation_propagating_freshness(val, Determined, false)`,
+                    // so value/determinacy/freshness are all preserved; the added
+                    // `cold-eval` Started slug is the only observable delta.
+                    // `&mut *values` reborrows the &mut param (this commit is inside
+                    // the topo loop; `values` is reused by later iterations and by
+                    // `re_eval_consumers_of_in_walk_mints` after the loop).
+                    //
+                    // `commit_cell_result_at(start, ..)`, not the plain
+                    // `commit_cell_result`: `start` is the loop body's own Instant,
+                    // captured before this cell's evaluation, so the emitted
+                    // Started/Completed pair brackets the FULL resolution — the same
+                    // Duration semantic `record_eval_completed` documents and every
+                    // non-migrated sibling sub-path in this arm still uses. See
+                    // `commit_cell_result_at`'s doc (#5238 amendment).
+                    commit_cell_result_at(
+                        start,
+                        CommitLegs {
+                            values: &mut *values,
+                            snapshot_values: &mut snapshot.values,
+                            cache: &mut self.cache,
+                            journal: &mut self.journal,
+                        },
+                        cell_id.clone(),
+                        val,
+                        DeterminacyRule::UnconditionalDetermined,
+                        TraceSource::ColdEval,
+                        dep_trace,
                         VersionId(version_id),
-                        trace,
-                        false,
+                        CacheLeg::RecordPropagating {
+                            still_refining: false,
+                        },
                     );
                     // μ (#5062): store this cell's eval-time diagnostics delta
                     // for replay on future cache-hit clean serves (empty clears).
                     self.store_cell_replay_diagnostics(&node_id, runtime_sink, diag_mark);
-                    self.journal.record(EvalEvent {
-                        timestamp: Instant::now(),
-                        node_id,
-                        kind: EventKind::Completed { outcome },
-                        version: VersionId(version_id),
-                        payload: Some(EventPayload::Duration(start.elapsed())),
-                    });
                 }
 
                 _ => {} // Auto cells pre-seeded above; no other kinds expected.
@@ -10562,16 +11267,21 @@ impl Engine {
     /// journal events and cache entries. Used by both the initial eval()
     /// pass and the post-resolution re-evaluation pass.
     ///
-    /// task γ (#5053) deferral note: this function's three
-    /// `record_evaluation_propagating_freshness` commits (compute-dispatch
-    /// Failed, panic-recovery, and the main success path) are NOT migrated
-    /// onto `commit_cell_result` (task α, cell_commit.rs) — same reasoning as
-    /// `evaluate_params_and_lets_unified`'s Let arm: `CacheLeg::Record` always
-    /// writes `Freshness::Final` and cannot represent the derived,
-    /// input-propagated freshness this function computes per arch §7.2 (see
-    /// cell_commit.rs's module doc, "Known scope gaps"). Left unmigrated
-    /// pending a propagating `CacheLeg` variant (PRD
-    /// docs/prds/v0_6/eval-cell-commit-substrate.md §2.4).
+    /// task #5238: this function's MAIN success-path commit is now migrated onto
+    /// `commit_cell_result` (task α, cell_commit.rs) via the freshness-carrying
+    /// `CacheLeg::RecordPropagating { still_refining: false }` variant, which
+    /// routes to `record_evaluation_propagating_freshness` (deriving the arch
+    /// §7.2 input-propagated freshness) — closing the γ (#5053) freshness scope
+    /// gap for this evaluator. The two remaining
+    /// `record_evaluation_propagating_freshness` commits — the compute-dispatch
+    /// Failed path and the panic-recovery path — stay unmigrated: they journal
+    /// `EventKind::Failed` (not the Started/Completed pair commit_cell_result
+    /// emits), skip the values/snapshot legs, and call `mark_failed` (which
+    /// immediately overwrites the just-propagated freshness with
+    /// `Failed{error}`, so no freshness fidelity is lost), a commit shape
+    /// commit_cell_result structurally cannot represent — see the per-site
+    /// notes at those failure paths (impl-6) and cell_commit.rs's module doc,
+    /// "Known scope gaps".
     #[allow(clippy::too_many_arguments)]
     fn evaluate_let_bindings(
         &mut self,
@@ -10609,14 +11319,29 @@ impl Engine {
                 }
             };
 
+            // task #5238: the main success-path commit below is now routed
+            // through `commit_cell_result`, which emits its OWN
+            // Started(Custom slug)+Completed pair. No SHARED Started(payload:None)
+            // is emitted here — it would be the FIRST Started observed for the
+            // cell and would mask the migrated commit's `cold-eval` provenance
+            // slug (§2.6).
+            //
+            // The sibling sub-paths in this loop body (pre-eval Pending gate,
+            // @optimized Final-gate reuse, the three compute-dispatch outcomes,
+            // and the panic-recovery path) emit Completed/Failed directly and are
+            // deliberately left unmigrated (see the deferral note on this fn and
+            // impl-6) — but each records its OWN paired `Started` lazily via
+            // `record_subpath_started`, stamped with the `start` captured below,
+            // so the Started→Completed/Failed pairing every path used to
+            // guarantee is preserved (the arch §7.2/§9.2 gate's rationale below —
+            // "so the journal still records the visit" — depends on it). Each such
+            // path `continue`s, so exactly one `Started` is still emitted per cell
+            // per pass.
+            //
+            // The migrated commit is stamped with the same `start` (via
+            // `commit_cell_result_at`), so every exit from this loop body reports
+            // the same full-resolution `Duration` semantic.
             let start = Instant::now();
-            self.journal.record(EvalEvent {
-                timestamp: start,
-                node_id: node_id.clone(),
-                kind: EventKind::Started,
-                version: VersionId(version_id),
-                payload: None,
-            });
 
             // Snapshot test-instrumentation panic-injection state for this cell
             // so the closure does not need to borrow `self`. The field and
@@ -10682,6 +11407,15 @@ impl Engine {
                     // entry's `dependency_trace` is preserved (stable
                     // structure invariant during incremental re-eval).
                     let _ = take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
+                    // task #5238: lazily paired `Started` — see
+                    // `record_subpath_started` for why the shared pre-eval
+                    // `Started` moved here from the top of the loop body.
+                    record_subpath_started(
+                        &mut self.journal,
+                        node_id.clone(),
+                        VersionId(version_id),
+                        start,
+                    );
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id: node_id.clone(),
@@ -10747,6 +11481,15 @@ impl Engine {
                             snapshot.values.insert(cell_id.clone(), (cached_val, det));
                             let _trace =
                                 take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
+                            // task #5238: lazily paired `Started` — see
+                            // `record_subpath_started` for why the shared pre-eval
+                            // `Started` moved here from the top of the loop body.
+                            record_subpath_started(
+                                &mut self.journal,
+                                node_id.clone(),
+                                VersionId(version_id),
+                                start,
+                            );
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
@@ -11006,6 +11749,15 @@ impl Engine {
                                 if let Some(n) = snapshot.graph.get_compute_node_mut(&c_id) {
                                     n.running = None;
                                 }
+                                // task #5238: lazily paired `Started` — see
+                                // `record_subpath_started` for why the shared pre-eval
+                                // `Started` moved here from the top of the loop body.
+                                record_subpath_started(
+                                    &mut self.journal,
+                                    node_id.clone(),
+                                    VersionId(version_id),
+                                    start,
+                                );
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -11041,6 +11793,15 @@ impl Engine {
                                 );
                                 // Journal a non-Changed event: the dispatch was
                                 // attempted but did not produce a new value.
+                                // task #5238: lazily paired `Started` — see
+                                // `record_subpath_started` for why the shared pre-eval
+                                // `Started` moved here from the top of the loop body.
+                                record_subpath_started(
+                                    &mut self.journal,
+                                    node_id.clone(),
+                                    VersionId(version_id),
+                                    start,
+                                );
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -11081,6 +11842,13 @@ impl Engine {
                                     "sorted_lets",
                                     "let_traces",
                                 );
+                                // task #5238: NOT migrated onto commit_cell_result — this failure
+                                // path journals EventKind::Failed (not the Started/Completed pair
+                                // the primitive emits), writes no values/snapshot leg, and calls
+                                // mark_failed, a shape commit_cell_result cannot represent. The
+                                // freshness propagated here is immediately overwritten by the
+                                // following mark_failed (-> Failed { error }), so this direct call
+                                // loses no fidelity.
                                 self.cache.record_evaluation_propagating_freshness(
                                     node_id.clone(),
                                     CachedResult::Value(Value::Undef, DeterminacyState::Determined),
@@ -11089,6 +11857,15 @@ impl Engine {
                                     false,
                                 );
                                 let _ = self.cache.mark_failed(&node_id, error.clone());
+                                // task #5238: lazily paired `Started` — see
+                                // `record_subpath_started` for why the shared pre-eval
+                                // `Started` moved here from the top of the loop body.
+                                record_subpath_started(
+                                    &mut self.journal,
+                                    node_id.clone(),
+                                    VersionId(version_id),
+                                    start,
+                                );
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id: node_id.clone(),
@@ -11100,14 +11877,22 @@ impl Engine {
                             }
                         }
                     } else {
-                        // Unregistered target (PRD §9 Q1, task γ): emit Error
-                        // diagnostic, then fall through to body-inlining.
-                        // Release-hard-error is deferred to slice η.
-                        diagnostics.push(Diagnostic::error(format!(
-                            "@optimized target {:?}: no registered compute trampoline \
-                             (falling back to body-inlining)",
-                            target
-                        )));
+                        // Unregistered target (PRD §9 Q1, task γ): emit the
+                        // SOFT-site diagnostic, then fall through to
+                        // body-inlining.
+                        // Task 5311: Warning when this engine's compute registry
+                        // is entirely EMPTY (a declared trampoline-free posture,
+                        // e.g. `reify check` / reify-lsp), Error otherwise (a
+                        // driver that registered some trampolines is genuinely
+                        // missing this one). Wording, code AND that emptiness
+                        // predicate all live in the constructor — see
+                        // `Engine::soft_no_trampoline_diagnostic`; this site
+                        // deliberately spells none of them.
+                        // The release-hard-error variant remains open in
+                        // docs/prds/v0_3/compute-node-contract.md §9 OQ-1
+                        // ("body-inline in debug, hard error in release"); no
+                        // task tracks it today.
+                        diagnostics.push(self.soft_no_trampoline_diagnostic(&target));
                     }
                 }
             }
@@ -11159,6 +11944,12 @@ impl Engine {
                     // the entry exists; mark_failed then overrides freshness
                     // to Failed { error }.
                     let trace = take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
+                    // task #5238: NOT migrated onto commit_cell_result — this failure path
+                    // journals EventKind::Failed (not the Started/Completed pair the
+                    // primitive emits), writes no values/snapshot leg, and calls mark_failed
+                    // (see the stub-Undef note just above), a shape commit_cell_result cannot
+                    // represent. The freshness propagated here is immediately overwritten by
+                    // the following mark_failed (-> Failed { error }), so no fidelity is lost.
                     self.cache.record_evaluation_propagating_freshness(
                         node_id.clone(),
                         CachedResult::Value(Value::Undef, DeterminacyState::Determined),
@@ -11167,6 +11958,15 @@ impl Engine {
                         false,
                     );
                     let _ = self.cache.mark_failed(&node_id, error.clone());
+                    // task #5238: lazily paired `Started` — see
+                    // `record_subpath_started` for why the shared pre-eval
+                    // `Started` moved here from the top of the loop body.
+                    record_subpath_started(
+                        &mut self.journal,
+                        node_id.clone(),
+                        VersionId(version_id),
+                        start,
+                    );
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id: node_id.clone(),
@@ -11177,28 +11977,46 @@ impl Engine {
                     continue;
                 }
             };
-            values.insert(cell_id.clone(), val.clone());
-
-            snapshot
-                .values
-                .insert(cell_id.clone(), (val.clone(), DeterminacyState::Determined));
-
-            // sorted_lets and let_traces are built from the same key set, so remove() cannot fail.
+            // task #5238: migrated onto commit_cell_result — writes the
+            // values/snapshot/cache/journal legs atomically (INV-EVAL-1) and
+            // routes the cache leg through
+            // `record_evaluation_propagating_freshness` (arch §7.2 derived,
+            // input-propagated freshness) via `CacheLeg::RecordPropagating`.
+            // `still_refining: false` + `UnconditionalDetermined` byte-match the
+            // pre-migration `record_evaluation_propagating_freshness(val,
+            // Determined, false)`, so value/determinacy/freshness are all
+            // preserved; the added `cold-eval` Started slug is the only
+            // observable delta. Uses the freshly-computed `trace` (not the old
+            // cached trace) so derivation is keyed off the current reads;
+            // sorted_lets and let_traces share a key set, so take_trace cannot
+            // fail. `&mut *values` reborrows the &mut param (reused by later
+            // iterations of this loop).
+            //
+            // `commit_cell_result_at(start, ..)`, not the plain
+            // `commit_cell_result`: `start` is this loop body's own Instant,
+            // captured before the cell's evaluation, so the emitted
+            // Started/Completed pair brackets the FULL resolution — the same
+            // Duration semantic `record_eval_completed` documents and every
+            // sibling sub-path in this loop body still uses. See
+            // `commit_cell_result_at`'s doc (#5238 amendment).
             let trace = take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
-            let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-            // Arch §7.2 propagation rule (docs/reify-implementation-architecture.md lines 730-749):
-            // output freshness = derive(still_refining=false, input_freshnesses, generation=version_id).
-            // Uses the freshly-computed `trace` (not the old cached trace) so derivation is
-            // always keyed off the current reads.  `still_refining=false` is the only valid
-            // value today — no progressive nodes exist yet (that is PRD task 4+ scope).
-            // `generation` is derived from `VersionId(version_id).0` inside the method per §7.1
-            // (single source of truth — no need to pass both `VersionId` and bare `u64`).
-            let outcome = self.cache.record_evaluation_propagating_freshness(
-                node_id.clone(),
-                cached_result,
-                VersionId(version_id),
+            commit_cell_result_at(
+                start,
+                CommitLegs {
+                    values: &mut *values,
+                    snapshot_values: &mut snapshot.values,
+                    cache: &mut self.cache,
+                    journal: &mut self.journal,
+                },
+                cell_id.clone(),
+                val,
+                DeterminacyRule::UnconditionalDetermined,
+                TraceSource::ColdEval,
                 trace,
-                false,
+                VersionId(version_id),
+                CacheLeg::RecordPropagating {
+                    still_refining: false,
+                },
             );
 
             // μ (#5062): store this cell's eval-time diagnostics delta for
@@ -11206,14 +12024,6 @@ impl Engine {
             // stale replay content). Read from runtime_sink only — post-pass
             // detector diagnostics never land here, keeping the classes disjoint.
             self.store_cell_replay_diagnostics(&node_id, runtime_sink, diag_mark);
-
-            self.journal.record(EvalEvent {
-                timestamp: Instant::now(),
-                node_id,
-                kind: EventKind::Completed { outcome },
-                version: VersionId(version_id),
-                payload: Some(EventPayload::Duration(start.elapsed())),
-            });
         }
     }
 
@@ -13245,6 +14055,1223 @@ mod dependent_cells_admissibility_tests {
             diagnostics.is_empty(),
             "this shape is admissible — no cycle, one instance path; got \
              {diagnostics:?}",
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// task #5238 test-3: evaluate_let_bindings main let commit provenance + freshness
+//
+// In-crate direct-call escape hatch — the plan-sanctioned pattern for a private
+// Engine evaluator, mirroring `reeval_cone_cell_provenance_and_determinacy_tests`
+// above. Reaching `evaluate_let_bindings` through a full cold `engine.eval()`
+// requires a module WITH a sub-component (`Engine::eval`'s sub-component
+// elaboration pass, gated on `!template.sub_components.is_empty()`), and even
+// then the now-migrated
+// `evaluate_params_and_lets_unified` (#5238 impl-2) emits its OWN first
+// `Started(Custom "cold-eval")` event for the same let cell, so
+// `started_payload`'s first-match semantics could not isolate
+// `evaluate_let_bindings`' own commit. Calling `evaluate_let_bindings` directly
+// on a pre-seeded two-cell module (param `a` + let `b = a * 2.0`) makes its
+// `Started` event the SOLE one recorded for `b`, giving a clean RED signal.
+// ─────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod evaluate_let_bindings_provenance_and_freshness_tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use reify_core::{Diagnostic, ModulePath, Type, ValueCellId};
+    use reify_ir::{BinOp, DeterminacyState, Freshness, Value, ValueMap};
+
+    use crate::Engine;
+    use crate::cache::NodeId;
+    use crate::journal::{EventKind, EventPayload};
+    use crate::snapshot::Snapshot;
+    use reify_test_support::builders::{binop, literal, value_ref_typed};
+    use reify_test_support::mocks::MockConstraintChecker;
+    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+
+    /// First `Started`-event `Custom` slug for `id` (mirrors the integration
+    /// file's `started_payload` helper): `None` if there is no `Started` event
+    /// for `id` or if its payload isn't `Custom` — today's un-migrated
+    /// `payload: None` baseline.
+    fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
+        let node_id = NodeId::Value(id.clone());
+        let events = engine.journal().events_for_node(&node_id);
+        let started = events
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Started))?;
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => Some(slug.clone()),
+            _ => None,
+        }
+    }
+
+    /// The 2-cell synthetic module — param `a` = `Real(5.0)`, let `b = a * 2.0`
+    /// — mirroring `freshness_propagation.rs`'s `two_cell_module`.
+    fn two_cell_module() -> reify_compiler::CompiledModule {
+        let e = "T";
+        CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new(e)
+                    .param(
+                        e,
+                        "a",
+                        Type::dimensionless_scalar(),
+                        Some(literal(Value::Real(5.0))),
+                    )
+                    .let_binding(
+                        e,
+                        "b",
+                        Type::dimensionless_scalar(),
+                        binop(
+                            BinOp::Mul,
+                            value_ref_typed(e, "a", Type::dimensionless_scalar()),
+                            literal(Value::Real(2.0)),
+                        ),
+                    )
+                    .build(),
+            )
+            .build()
+    }
+
+    /// RED: `evaluate_let_bindings`' main let commit provenance + freshness
+    /// preserved.
+    ///
+    /// RED today: `evaluate_let_bindings`' main let commit emits its `Started`
+    /// journal event with `payload: None` (from the shared pre-eval `Started`
+    /// at the top of its loop body) and writes the cache leg via a direct
+    /// `record_evaluation_propagating_freshness(val, Determined, false)` call,
+    /// so `started_payload(&engine, &b)` is `None`, not `Some("cold-eval")`.
+    /// GREEN after impl-3 migrates the commit onto `commit_cell_result` with
+    /// `TraceSource::ColdEval` + `CacheLeg::RecordPropagating { still_refining:
+    /// false }` (removing the superseded manual `Started(None)`/`Completed` pair
+    /// so `commit_cell_result`'s `Started` is the sole one observed).
+    ///
+    /// Characterization guards (must stay green BEFORE and after — the migration
+    /// is behaviour-preserving in the value/determinacy/freshness dimensions):
+    /// `b` = `(Real(10.0), Determined)` (`a`=`Real(5.0)` × `2.0`;
+    /// `UnconditionalDetermined` hard-codes `Determined`) and `b`'s cache
+    /// freshness stays `Freshness::Final` (all-`Final` inputs — an absent `a`
+    /// reads as `Final` per `freshness()`'s default-Final-on-absent contract —
+    /// with `still_refining: false` derive `Final`).
+    #[test]
+    fn evaluate_let_bindings_main_let_provenance_and_freshness() {
+        let module = two_cell_module();
+        let template = &module.templates[0];
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut snapshot = Snapshot::from_compiled_module(&module);
+
+        let e = "T";
+        let a_id = ValueCellId::new(e, "a");
+        let b_id = ValueCellId::new(e, "b");
+
+        // Pre-seed param `a` (Final) into BOTH maps: `evaluate_let_bindings`
+        // reads `a`'s value from `values` (`eval_ctx_with_meta`) and its
+        // determinacy from `snapshot.values` (`with_determinacy`).
+        // `detect_let_cycle` only collects Let cells, so `a` (a Param) is never
+        // evaluated in this pass — it must already be present. `a`'s cache
+        // freshness is left absent (reads as `Final` by default), so `b`'s
+        // derived output freshness is `Final`.
+        let mut values = ValueMap::new();
+        values.insert(a_id.clone(), Value::Real(5.0));
+        snapshot
+            .values
+            .insert(a_id.clone(), (Value::Real(5.0), DeterminacyState::Determined));
+
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> = Vec::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.evaluate_let_bindings(
+            template,
+            &mut values,
+            &mut snapshot,
+            1,
+            &[],
+            &meta_map,
+            &mut diagnostics,
+            &mut structured_detail,
+            &runtime_sink,
+        );
+
+        eprintln!("b started_payload = {:?}", started_payload(&engine, &b_id));
+        eprintln!("b snapshot value = {:?}", snapshot.values.get(&b_id));
+        eprintln!(
+            "b freshness = {:?}",
+            engine.cache_store().freshness(&NodeId::Value(b_id.clone()))
+        );
+        eprintln!("diagnostics = {:?}", diagnostics);
+
+        // (1) Provenance — RED today (the main let path's Started payload is None).
+        assert_eq!(
+            started_payload(&engine, &b_id),
+            Some("cold-eval".to_string()),
+            "evaluate_let_bindings' main let commit should carry the 'cold-eval' \
+             TraceSource slug once migrated onto commit_cell_result"
+        );
+
+        // (2) Value + determinacy preserved (characterization guard — green throughout).
+        assert_eq!(
+            snapshot.values.get(&b_id),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "b = a * 2.0 = Real(10.0), Determined (UnconditionalDetermined) — \
+             preserved across the RecordPropagating migration"
+        );
+
+        // (3) Freshness preserved (characterization guard — green throughout).
+        assert_eq!(
+            engine.cache_store().freshness(&NodeId::Value(b_id.clone())),
+            Freshness::Final,
+            "b's cache freshness must stay Final (all-Final inputs, \
+             still_refining=false derive Final) — preserved across the \
+             RecordPropagating migration"
+        );
+    }
+
+    /// Asserts that `id`'s journal events strictly ALTERNATE `Started` →
+    /// terminal (`Completed` | `Failed`), starting with `Started`. In-crate
+    /// mirror of `assert_started_terminal_pairing` in
+    /// `tests/engine_eval_commit_migration.rs` — duplicated rather than shared
+    /// because an integration test's helpers are not reachable from the crate.
+    fn assert_started_terminal_pairing(engine: &Engine, id: &ValueCellId, label: &str) {
+        let node_id = NodeId::Value(id.clone());
+        let events = engine.journal().events_for_node(&node_id);
+        let shape: Vec<&'static str> = events
+            .iter()
+            .filter_map(|e| match e.kind {
+                EventKind::Started => Some("Started"),
+                EventKind::Completed { .. } => Some("Completed"),
+                EventKind::Failed { .. } => Some("Failed"),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !shape.is_empty(),
+            "{label}: expected at least one Started/terminal journal event"
+        );
+        for (i, kind) in shape.iter().enumerate() {
+            assert_eq!(
+                *kind == "Started",
+                i % 2 == 0,
+                "{label}: journal events must alternate Started -> terminal, \
+                 starting with Started; got {shape:?} (offending index {i})"
+            );
+        }
+        assert_eq!(
+            shape.len() % 2,
+            0,
+            "{label}: every Started must have a paired terminal event; got {shape:?}"
+        );
+    }
+
+    /// Drives `evaluate_let_bindings` directly on the two-cell module,
+    /// pre-seeding param `a` into both maps exactly as
+    /// `evaluate_let_bindings_main_let_provenance_and_freshness` does.
+    fn run_evaluate_let_bindings(
+        engine: &mut Engine,
+        module: &reify_compiler::CompiledModule,
+        snapshot: &mut Snapshot,
+        version_id: u64,
+    ) {
+        let template = &module.templates[0];
+        let a_id = ValueCellId::new("T", "a");
+
+        let mut values = ValueMap::new();
+        values.insert(a_id.clone(), Value::Real(5.0));
+        snapshot
+            .values
+            .insert(a_id, (Value::Real(5.0), DeterminacyState::Determined));
+
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> = Vec::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.evaluate_let_bindings(
+            template,
+            &mut values,
+            snapshot,
+            version_id,
+            &[],
+            &meta_map,
+            &mut diagnostics,
+            &mut structured_detail,
+            &runtime_sink,
+        );
+    }
+
+    /// REGRESSION (#5238 review amendment, test-coverage). The integration-level
+    /// `non_migrated_let_subpaths_emit_paired_started_events` drives its fixture
+    /// through `engine.eval()`, which — with no sub-components and no solver
+    /// resolution — reaches only `evaluate_params_and_lets_unified`.
+    /// `evaluate_let_bindings` is called ONLY from the sub-component elaboration
+    /// pass and the two post-solver resolution passes, so ITS six
+    /// `record_subpath_started` insertions were entirely unpinned: deleting any
+    /// one of them kept the suite green.
+    ///
+    /// This closes that hole via the direct-call harness above, covering both
+    /// sub-paths reachable on the two-cell module:
+    ///   - the arch §9.1 panic-recovery `EventKind::Failed` path (pass 2, with
+    ///     `set_panic_on_eval` injected on the let);
+    ///   - the arch §7.2/§9.2 pre-eval Pending gate's `Completed { Unchanged }`
+    ///     (pass 3, with `a`'s cache entry poisoned to `Freshness::Failed` so the
+    ///     let's derived input freshness is `Pending`, and its own entry — present
+    ///     since pass 1 — accepts `mark_pending_with_cause`).
+    ///
+    /// Pass 1 (cold, all-Final) establishes the paired baseline via the migrated
+    /// `commit_cell_result_at` commit. Asserting strict alternation across ALL
+    /// passes is what makes this non-vacuous: a missing later `Started` shows up
+    /// as two consecutive terminal events.
+    ///
+    /// STILL UNCOVERED (stated rather than implied): 2 of `evaluate_let_bindings`'
+    /// 6 `record_subpath_started` insertions are pinned here — the pre-eval
+    /// Pending gate and the panic-recovery `Failed` path. The other 4 all sit
+    /// inside the `@optimized` compute-node branch (the Final-gate reuse, plus
+    /// the Ok / `Cancelled` / `Failed` dispatch outcomes) and need a fixture with
+    /// an `@optimized` let AND a registered compute trampoline, which this
+    /// two-cell direct-call harness deliberately does not build. Same 2-of-6
+    /// shape as the integration-level test covering the sibling evaluator.
+    #[test]
+    fn evaluate_let_bindings_non_migrated_subpaths_emit_paired_started_events() {
+        let module = two_cell_module();
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut snapshot = Snapshot::from_compiled_module(&module);
+
+        let a_id = ValueCellId::new("T", "a");
+        let b_id = ValueCellId::new("T", "b");
+        let a_node = NodeId::Value(a_id.clone());
+        let b_node = NodeId::Value(b_id.clone());
+
+        // Pass 1 — cold: `b` commits through commit_cell_result_at, which emits
+        // its own Started(cold-eval)/Completed pair.
+        run_evaluate_let_bindings(&mut engine, &module, &mut snapshot, 1);
+        assert_started_terminal_pairing(&engine, &b_id, "pass 1 (cold commit)");
+        let after_pass1 = engine.journal().events_for_node(&b_node).len();
+
+        // Pass 2 — panic-recovery Failed path.
+        engine.set_panic_on_eval(b_id.clone());
+        run_evaluate_let_bindings(&mut engine, &module, &mut snapshot, 2);
+        assert_started_terminal_pairing(&engine, &b_id, "pass 2 (panic recovery)");
+        let after_pass2 = engine.journal().events_for_node(&b_node).len();
+        assert!(
+            after_pass2 > after_pass1,
+            "non-vacuity: pass 2 must add journal events for b \
+             ({after_pass1} -> {after_pass2})"
+        );
+        assert!(
+            engine
+                .journal()
+                .events_for_node(&b_node)
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::Failed { .. })),
+            "pass 2 must have taken the panic-recovery Failed path"
+        );
+
+        // Pass 3 — pre-eval Pending gate. Withdraw the panic injection, then
+        // poison `a`'s cache entry so `b`'s derived input freshness is Pending
+        // (§9.2 carve-out: Failed input -> Pending output). `b`'s own entry
+        // exists, so `mark_pending_with_cause` succeeds and the gate quiets the
+        // cell with `Completed { Unchanged }` instead of evaluating it.
+        engine.clear_panic_on_eval();
+        let poison = reify_ir::ErrorRef::new("poisoned");
+        engine.cache_store_mut().record_evaluation(
+            a_node.clone(),
+            crate::cache::CachedResult::Value(Value::Real(5.0), DeterminacyState::Determined),
+            reify_core::VersionId(3),
+            crate::deps::DependencyTrace::default(),
+        );
+        assert!(
+            engine.cache_store_mut().mark_failed(&a_node, poison.clone()),
+            "sanity: a's cache entry must exist so mark_failed can poison it"
+        );
+        assert_eq!(
+            engine.cache_store().freshness(&a_node),
+            Freshness::Failed { error: poison },
+            "sanity: a is Failed before pass 3"
+        );
+
+        run_evaluate_let_bindings(&mut engine, &module, &mut snapshot, 3);
+        assert_started_terminal_pairing(&engine, &b_id, "pass 3 (pre-eval Pending gate)");
+        let after_pass3 = engine.journal().events_for_node(&b_node).len();
+        assert!(
+            after_pass3 > after_pass2,
+            "non-vacuity: pass 3 must add journal events for b \
+             ({after_pass2} -> {after_pass3})"
+        );
+        assert!(
+            matches!(
+                engine.cache_store().freshness(&b_node),
+                Freshness::Pending { .. }
+            ),
+            "pass 3 must have taken the pre-eval Pending gate (b's freshness \
+             should be Pending, got {:?})",
+            engine.cache_store().freshness(&b_node)
+        );
+    }
+}
+
+/// Task 5311 — SOFT emission site TWO (`evaluate_let_bindings`), both severity
+/// arms, driven DIRECTLY.
+///
+/// The e2e pair in `tests/compute_dispatch_registry.rs` covers the OTHER SOFT
+/// site: `engine.eval(&compiled)` on a plain `param` + `let` module reaches
+/// `evaluate_params_and_lets_unified`, not this one. `evaluate_let_bindings` is
+/// reached from `eval()` only for a template with sub-components or on the
+/// post-resolution re-eval pass, and from `dispatch_merged_cluster_solve` — so
+/// without these two tests the identical empty-registry predicate at this site
+/// would be pinned by nothing, and an edit that dropped it or inverted its
+/// polarity here would pass the whole suite.
+///
+/// Calling the private method directly (as
+/// `evaluate_let_bindings_provenance_and_freshness_tests` above does) exercises
+/// the site in isolation, without depending on which caller happens to route
+/// there or on a second diagnostic arriving from the sibling site.
+#[cfg(test)]
+mod evaluate_let_bindings_trampoline_severity_tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use reify_core::{Diagnostic, DiagnosticCode, Severity, ValueCellId};
+    use reify_ir::{DeterminacyState, OpaqueState, Value, ValueMap};
+
+    use crate::Engine;
+    use crate::engine_compute::{ComputeFn, ComputeOutcome};
+    use crate::graph::CancellationHandle;
+    use crate::snapshot::Snapshot;
+    use reify_compute_contract::RealizationReadHandle;
+    use reify_test_support::mocks::MockConstraintChecker;
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    /// Unregistered anywhere in the workspace, and outside
+    /// `register_production_compute_fns`' 19-target bundle, so no
+    /// duplicate-target panic can collide with it.
+    const UNREGISTERED_TARGET: &str = "test::let_site_never_registered";
+
+    /// A DIFFERENT target, registered only to make `fns.is_empty()` false while
+    /// `UNREGISTERED_TARGET` itself stays unregistered — the `reify eval` /
+    /// `reify build` posture in miniature.
+    const NONEMPTY_REGISTRY_PROBE: &str = "test::let_site_registry_nonempty_probe";
+
+    const SOURCE: &str = r#"
+@optimized("test::let_site_never_registered")
+fn let_site_probe(x: Int) -> Int {
+    x
+}
+
+structure LetSiteProbe {
+    param input: Int = 42
+    let result = let_site_probe(input)
+}
+"#;
+
+    fn probe_fn(
+        value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Completed {
+            result: value_inputs.first().cloned().unwrap_or(Value::Undef),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![],
+            structured_detail: vec![],
+        }
+    }
+
+    /// Drive `evaluate_let_bindings` once over the `SOURCE` template and return
+    /// the diagnostics it pushed. `input` is pre-seeded into BOTH maps because
+    /// `detect_let_cycle` collects only Let cells, so the Param is never
+    /// evaluated in this pass.
+    fn drive_let_site(engine: &mut Engine) -> Vec<Diagnostic> {
+        let module = parse_and_compile_with_stdlib(SOURCE);
+        let template = &module.templates[0];
+        let mut snapshot = Snapshot::from_compiled_module(&module);
+
+        let input_id = ValueCellId::new("LetSiteProbe", "input");
+        let mut values = ValueMap::new();
+        values.insert(input_id.clone(), Value::Int(42));
+        snapshot
+            .values
+            .insert(input_id, (Value::Int(42), DeterminacyState::Determined));
+
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> = Vec::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.evaluate_let_bindings(
+            template,
+            &mut values,
+            &mut snapshot,
+            1,
+            &module.functions,
+            &meta_map,
+            &mut diagnostics,
+            &mut structured_detail,
+            &runtime_sink,
+        );
+
+        // Non-vacuity: if the @optimized lowering ever stops recognising this
+        // shape, every assertion below would pass on an empty vec.
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains(UNREGISTERED_TARGET)),
+            "evaluate_let_bindings must have reached the unregistered-@optimized \
+             SOFT site and named {UNREGISTERED_TARGET}; got: {diagnostics:?}"
+        );
+        diagnostics
+    }
+
+    /// EMPTY registry ⇒ `Severity::Warning`, coded. This is `reify check`'s and
+    /// `reify-lsp`'s posture: no trampolines registered at all, so a missing one
+    /// is the declared posture rather than a defect.
+    #[test]
+    fn evaluate_let_bindings_unregistered_target_warns_on_an_empty_registry() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let diagnostics = drive_let_site(&mut engine);
+
+        let diag = diagnostics
+            .iter()
+            .find(|d| d.message.contains(UNREGISTERED_TARGET))
+            .expect("checked by drive_let_site");
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "an entirely empty compute registry must downgrade this SOFT site \
+             exactly as it downgrades evaluate_params_and_lets_unified; got: {diag:?}"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::NoRegisteredComputeTrampoline),
+            "the code names the cause and survives the severity flip; got: {diag:?}"
+        );
+        assert!(
+            diag.message.contains("falling back to body-inlining"),
+            "this is a SOFT site: the fallback clause is what it goes on to do; \
+             got: {diag:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.message.contains(UNREGISTERED_TARGET)),
+            "no Error-severity copy may survive beside the Warning — that pair is \
+             the loud/silent mismatch task 5311 closes; got: {diagnostics:?}"
+        );
+    }
+
+    /// NON-EMPTY registry ⇒ `Severity::Error`, same code. This is `reify eval`'s
+    /// and `reify build`'s posture: a driver that registered SOME trampolines and
+    /// is still missing THIS one is a genuine defect, and the diagnostic must
+    /// keep gating their exit codes. The mandatory twin of the test above —
+    /// without it, the downgrade there would be indistinguishable from an
+    /// unconditional one.
+    #[test]
+    fn evaluate_let_bindings_unregistered_target_stays_an_error_on_a_nonempty_registry() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(NONEMPTY_REGISTRY_PROBE, probe_fn as ComputeFn);
+
+        let diagnostics = drive_let_site(&mut engine);
+
+        let diag = diagnostics
+            .iter()
+            .find(|d| d.message.contains(UNREGISTERED_TARGET))
+            .expect("checked by drive_let_site");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "one unrelated registered trampoline is enough to make this a defect \
+             rather than a posture; got: {diag:?}"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::NoRegisteredComputeTrampoline),
+            "the code is identical on both arms by design; got: {diag:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reserve_preserving_determinacy_direct_tests {
+    use super::reserve_preserving_determinacy_direct;
+
+    use reify_core::{ValueCellId, VersionId};
+    use reify_ir::{DeterminacyState, ErrorRef, Freshness, PersistentMap, Value, ValueMap};
+
+    use crate::cache::{CacheStore, CachedResult, NodeId};
+    use crate::deps::DependencyTrace;
+    use crate::journal::{EventJournal, EventKind};
+
+    /// #5238 review amendment (test-coverage). `reserve_preserving_determinacy_direct`
+    /// is the shared four-leg direct write used by the `eval_cached` Auto-cell
+    /// pre-seed re-serve AND as the graceful-degradation fallback at the two
+    /// migrated Param/Let re-serves when `DeterminacyRule::preserving` returns
+    /// `None`. That fallback arm is unreachable in a debug build (the preceding
+    /// `debug_assert!` fires first) and the whole workspace tests in debug, so the
+    /// helper's BODY needs a direct unit test — otherwise the only executable
+    /// proof it writes the four legs correctly, and preserves a determinacy
+    /// `DeterminacyRule` cannot express, would be release-only.
+    ///
+    /// Exercises the exact case the fallback exists for: `DeterminacyState::Auto`
+    /// (inexpressible by any `DeterminacyRule` — see cell_commit.rs's
+    /// "Determinacy dimension — OPEN" gap) carried through VERBATIM, alongside a
+    /// non-`Final` injected freshness.
+    #[test]
+    fn direct_reserve_writes_four_legs_preserving_auto_and_freshness() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+
+        let cell_id = ValueCellId::new("S", "auto_cell");
+        let node_id = NodeId::Value(cell_id.clone());
+        let injected = Freshness::Failed {
+            error: ErrorRef::new("injected"),
+        };
+
+        reserve_preserving_determinacy_direct(
+            &mut values,
+            &mut snapshot_values,
+            &mut cache,
+            &mut journal,
+            cell_id.clone(),
+            Value::Undef,
+            DeterminacyState::Auto,
+            DependencyTrace::default(),
+            VersionId(7),
+            injected.clone(),
+        );
+
+        // Leg 1 — values.
+        assert_eq!(
+            values.get(&cell_id),
+            Some(&Value::Undef),
+            "values leg must carry the re-served value"
+        );
+
+        // Leg 2 — snapshot, carrying `Auto` VERBATIM (this is the whole point:
+        // routing through a DeterminacyRule would rewrite it to
+        // Determined/Undetermined).
+        assert_eq!(
+            snapshot_values.get(&cell_id),
+            Some(&(Value::Undef, DeterminacyState::Auto)),
+            "snapshot leg must preserve the stored Auto determinacy verbatim"
+        );
+
+        // Leg 3 — cache: same (value, determinacy) pair, and the supplied
+        // freshness written through `record_evaluation_with_freshness`.
+        let entry = cache
+            .get(&node_id)
+            .expect("the direct re-serve must write a cache entry");
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Undef);
+                assert_eq!(
+                    *d,
+                    DeterminacyState::Auto,
+                    "cache leg must preserve Auto verbatim"
+                );
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+        assert_eq!(
+            entry.freshness, injected,
+            "the direct re-serve must carry the entry's own freshness forward, \
+             not reset it to Final"
+        );
+
+        // Leg 4 — journal: exactly the pre-migration bare `CacheHit` shape (NOT
+        // commit_cell_result's Started/Completed pair — this site is deliberately
+        // unmigrated, see the helper's doc).
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            1,
+            "expected exactly one journal event (bare CacheHit), got {events:?}"
+        );
+        assert!(
+            matches!(events[0].kind, EventKind::CacheHit),
+            "the direct re-serve journals a bare CacheHit, got {:?}",
+            events[0].kind
+        );
+        assert!(
+            events[0].payload.is_none(),
+            "the bare CacheHit carries no payload, got {:?}",
+            events[0].payload
+        );
+    }
+}
+
+#[cfg(test)]
+mod objective_auto_reach_tests {
+    //! Unit tests for `objective_auto_reach` — the runtime half of DIC γ
+    //! (task #5417, PRD
+    //! `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3).
+    //!
+    //! The question: *which solver variables can this objective actually move?*
+    //! `E_OBJECTIVE_UNCONSUMED` fires when the answer is non-empty and no solver
+    //! component consumed the objective, so the reach must be **under**
+    //! -approximated. Over-reaching would invent unconsumed autos and turn a
+    //! healthy scope into an Error; under-reaching only makes the diagnostic
+    //! quieter, which is the safe failure mode (PRD §3 decision 5).
+    //!
+    //! The reach is computed over `ResolutionProblem.dependent_cells` — the
+    //! already-materialised output of [`build_dependent_cells`] — and never
+    //! re-derives connectivity (the task's explicit G7 no-lockstep-duplication
+    //! constraint). That is also what makes γ order-independent w.r.t. PRD 2
+    //! (tasks 5396 / 5467-5474): `dependent_cells` already encodes
+    //! let-indirection, so a let-indirected objective reads as transitively
+    //! consumed whichever order the two PRDs land in.
+    //!
+    //! Kept as its own module rather than folded into
+    //! `dependent_cells_admissibility_tests` to match this file's
+    //! one-module-per-concern convention; it is still an in-file unit test, not
+    //! a new test binary.
+    //!
+    //! Written RED in step-7: `objective_auto_reach` is introduced in step-8.
+    use std::collections::BTreeSet;
+
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet};
+    use reify_test_support::{binop, literal, mm, value_ref};
+
+    use super::objective_auto_reach;
+
+    // ── builders ────────────────────────────────────────────────────────────
+
+    fn id(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    fn auto_param(entity: &str, member: &str) -> AutoParam {
+        AutoParam {
+            id: id(entity, member),
+            param_type: Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+            bounds: None,
+            free: true,
+        }
+    }
+
+    fn minimize(expr: CompiledExpr) -> ObjectiveSet {
+        ObjectiveSet::single(ObjectiveSense::Minimize, expr)
+    }
+
+    /// `<entity>.<member> = <expr>`, one entry of the `dependent_cells` list.
+    fn dep(entity: &str, member: &str, expr: CompiledExpr) -> (ValueCellId, CompiledExpr) {
+        (id(entity, member), expr)
+    }
+
+    fn reached(set: &BTreeSet<ValueCellId>) -> Vec<ValueCellId> {
+        set.iter().cloned().collect()
+    }
+
+    // ── (1) the direct case ─────────────────────────────────────────────────
+
+    /// `minimize a` where `a` is an auto param: the objective moves `a` with no
+    /// indirection at all.
+    #[test]
+    fn objective_referencing_an_auto_directly_reaches_it() {
+        let objective = minimize(value_ref("S", "a"));
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &[], &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a")],
+            "a direct reference is the base case of the closure"
+        );
+    }
+
+    // ── (2)+(3) let-indirection, one hop and many ───────────────────────────
+
+    /// `minimize v` where `let v = a * 2` and `a` is auto. `v` is not itself a
+    /// solver variable, but the objective still moves one — through the entry
+    /// `build_dependent_cells` already materialised for `v`.
+    ///
+    /// This is the case that makes γ safe to land in either order relative to
+    /// PRD 2: if the reach stopped at `v`, a perfectly well-posed let-indirected
+    /// objective would be reported unconsumed.
+    #[test]
+    fn objective_reaching_an_auto_through_one_dependent_cell_sees_it() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [dep(
+            "S",
+            "v",
+            binop(BinOp::Mul, value_ref("S", "a"), literal(mm(2.0))),
+        )];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a")],
+            "one hop of let-indirection must not hide the auto"
+        );
+    }
+
+    /// `minimize w`, `let w = v + 1`, `let v = a`. The closure must not stop at
+    /// depth 1.
+    #[test]
+    fn objective_reaching_an_auto_through_chained_dependent_cells_sees_it() {
+        let objective = minimize(value_ref("S", "w"));
+        let cells = [
+            dep("S", "v", value_ref("S", "a")),
+            dep(
+                "S",
+                "w",
+                binop(BinOp::Add, value_ref("S", "v"), literal(mm(1.0))),
+            ),
+        ];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a")],
+            "the closure must be transitive across chained dependent_cells"
+        );
+    }
+
+    // ── (4) nothing to reach ────────────────────────────────────────────────
+
+    /// `minimize k` where `k` is a concrete cell and the scope's only auto is
+    /// `a`, which the objective never reads. Empty reach ⇒ the runtime rule stays
+    /// silent (the *compile* rule owns this shape: `E_OBJECTIVE_INERT`).
+    #[test]
+    fn objective_over_a_concrete_cell_reaches_nothing() {
+        let objective = minimize(value_ref("S", "k"));
+        let cells = [dep("S", "k", literal(mm(3.0)))];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert!(
+            got.is_empty(),
+            "an objective that reads no auto reaches none; got {got:?}"
+        );
+    }
+
+    // ── (5) the anti-over-reach guard ───────────────────────────────────────
+
+    /// `build_dependent_cells` is seeded from the constraints **and** the
+    /// objective, so its output holds cells the objective never reads. Closing
+    /// over the whole list instead of over what the objective actually reaches
+    /// would invent unconsumed autos — an Error on a healthy scope.
+    ///
+    /// Fixture: the objective reads `v` (→ auto `a`); a *constraint*-seeded entry
+    /// `c` reads auto `b`, which nothing in the objective's cone touches.
+    #[test]
+    fn autos_reachable_only_from_constraint_seeded_entries_are_excluded() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [
+            dep("S", "v", value_ref("S", "a")),
+            // Present in dependent_cells because a CONSTRAINT reads it — the
+            // objective's cone never touches it.
+            dep("S", "c", value_ref("S", "b")),
+        ];
+        let autos = [auto_param("S", "a"), auto_param("S", "b")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a")],
+            "the reach must be the objective's own cone, not the whole \
+             dependent_cells list; got {got:?}"
+        );
+    }
+
+    /// A cell in `dependent_cells` that is not an auto param contributes its
+    /// reads but is not itself reported — only solver variables count.
+    #[test]
+    fn intermediate_non_auto_cells_are_not_reported() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [dep("S", "v", value_ref("S", "a"))];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert!(
+            !got.contains(&id("S", "v")),
+            "`v` is a let, not a solver variable; got {got:?}"
+        );
+    }
+
+    // ── multi-term objectives ───────────────────────────────────────────────
+
+    /// A multi-term `ObjectiveSet` is seeded from every term, so the reach is the
+    /// union — not just the first term's cone.
+    #[test]
+    fn every_objective_term_seeds_the_reach() {
+        let objective = ObjectiveSet {
+            terms: vec![
+                reify_ir::ObjectiveTerm::new(ObjectiveSense::Minimize, value_ref("S", "a")),
+                reify_ir::ObjectiveTerm::new(ObjectiveSense::Maximize, value_ref("S", "b")),
+            ],
+            combination: reify_ir::ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        };
+        let autos = [auto_param("S", "a"), auto_param("S", "b")];
+
+        let got = objective_auto_reach(&objective, &[], &autos);
+        assert_eq!(reached(&got), vec![id("S", "a"), id("S", "b")]);
+    }
+
+    // ── (6) determinism ─────────────────────────────────────────────────────
+
+    /// The reach is a `BTreeSet`, so iteration is sorted regardless of the order
+    /// the objective happens to name the autos in or the order `dependent_cells`
+    /// stores them. Diagnostic text must not vary run to run (PRD §3 decision 8).
+    #[test]
+    fn reach_iterates_in_sorted_order_and_is_deterministic() {
+        let objective = minimize(binop(
+            BinOp::Add,
+            value_ref("S", "z"),
+            binop(BinOp::Add, value_ref("S", "m"), value_ref("S", "b")),
+        ));
+        let autos = [
+            auto_param("S", "z"),
+            auto_param("S", "m"),
+            auto_param("S", "b"),
+        ];
+
+        let first = objective_auto_reach(&objective, &[], &autos);
+        assert_eq!(
+            reached(&first),
+            vec![id("S", "b"), id("S", "m"), id("S", "z")],
+            "sorted, not source-order"
+        );
+
+        let second = objective_auto_reach(&objective, &[], &autos);
+        assert_eq!(first, second, "the function is pure");
+    }
+
+    /// A cyclic pair inside `dependent_cells` must not spin the closure forever.
+    /// `build_dependent_cells` drops genuine cycles, but the helper owns its own
+    /// termination rather than trusting an upstream invariant.
+    #[test]
+    fn a_cycle_in_dependent_cells_terminates() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [
+            dep("S", "v", value_ref("S", "w")),
+            dep("S", "w", binop(BinOp::Add, value_ref("S", "v"), value_ref("S", "a"))),
+        ];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(reached(&got), vec![id("S", "a")]);
+    }
+    /// `dependent_cells` may hold MORE THAN ONE entry per id — stage (g) of
+    /// `build_dependent_cells` emits instance-path aliases beside the
+    /// template-keyed original — and the closure must follow every one.
+    ///
+    /// The two entries for `S.v` reach different autos here, so a first-match
+    /// map (`HashMap<&ValueCellId, &CompiledExpr>` instead of the `Vec`) finds
+    /// exactly one of them and the other auto silently drops out of the
+    /// reported set. No other fixture in this module has a duplicate id, so
+    /// this is the only thing pinning the documented behaviour.
+    #[test]
+    fn every_entry_for_a_repeated_dependent_cell_id_is_followed() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [
+            dep("S", "v", value_ref("S", "a")),
+            dep("S", "v", value_ref("S", "b")),
+        ];
+        let autos = [auto_param("S", "a"), auto_param("S", "b")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a"), id("S", "b")],
+            "collapsing the duplicate entries to a first match loses one auto"
+        );
+    }
+}
+
+#[cfg(test)]
+mod objective_unconsumed_gate_tests {
+    //! Unit tests for the `E_OBJECTIVE_UNCONSUMED` gate — DIC γ's runtime
+    //! decision (task #5417, PRD
+    //! `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3/§4.2).
+    //!
+    //! The e2e suite (`reify-eval/tests/harness_engine/objective_consumption_e2e.rs`)
+    //! drives the gate through a real solve, which is the right level for "does
+    //! this model report". It cannot reach the gate's individual conditions
+    //! independently, though: a source fixture fixes all five at once, and
+    //! several combinations — a `declared` objective that DIFFERS from the one
+    //! the solver saw, an `Undef` write-back — are not constructible from
+    //! source at all. Those are what this module pins.
+    //!
+    //! `ResolutionProblem` is hand-built, the same idiom
+    //! `reify-constraints`' own registry tests use.
+    use std::collections::HashMap;
+
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_ir::{
+        AutoParam, CompiledExpr, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolutionProblem,
+        Value, ValueMap,
+    };
+    use reify_test_support::{literal, value_ref};
+
+    use super::{objective_sense_word, objective_unconsumed_finding};
+
+    // ── builders ────────────────────────────────────────────────────────────
+
+    fn id(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    fn auto_param(entity: &str, member: &str) -> AutoParam {
+        AutoParam {
+            id: id(entity, member),
+            param_type: Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+            bounds: None,
+            free: true,
+        }
+    }
+
+    fn minimize(expr: CompiledExpr) -> ObjectiveSet {
+        ObjectiveSet::single(ObjectiveSense::Minimize, expr)
+    }
+
+    /// A problem with autos and NO constraints: the decomposition builds no
+    /// component, so the registry drops the objective (`NoComponents`) — the
+    /// `dic_min_unconstrained.ri` shape, and the cheapest way to put the gate
+    /// past condition 2.
+    fn dropped_objective_problem(objective: Option<ObjectiveSet>) -> ResolutionProblem {
+        ResolutionProblem {
+            auto_params: vec![auto_param("S", "a"), auto_param("S", "b")],
+            constraints: Vec::new(),
+            current_values: ValueMap::new(),
+            objective,
+            functions: vec![].into(),
+            dependent_cells: Vec::new(),
+        }
+    }
+
+    fn nothing_bound() -> HashMap<ValueCellId, Value> {
+        HashMap::new()
+    }
+
+    // ── the baseline positive ───────────────────────────────────────────────
+
+    /// The case the rule exists for: the solve succeeded, the objective reaches
+    /// a real auto, no component took it, and the auto is still unbound.
+    #[test]
+    fn a_dropped_objective_over_an_unbound_auto_is_reported() {
+        let objective = minimize(value_ref("S", "a"));
+        let diagnostic = objective_unconsumed_finding(
+            "S",
+            Some(&objective),
+            &dropped_objective_problem(Some(objective.clone())),
+            &nothing_bound(),
+            true,
+        )
+        .expect("a dropped objective over an unbound auto must be reported");
+
+        assert_eq!(
+            diagnostic.code,
+            Some(reify_core::DiagnosticCode::ObjectiveUnconsumed)
+        );
+        assert!(
+            diagnostic.message.contains("`S.a`"),
+            "the message must name the auto that was left unsolved, got: {:?}",
+            diagnostic.message
+        );
+    }
+
+    // ── condition 0: the solve must have succeeded ──────────────────────────
+
+    /// Same problem, failed solve: γ's claim is "the solve succeeded and your
+    /// `minimize` was silently dropped", and on a failed solve that is both
+    /// untrue and a second Error on top of the solve's own report.
+    #[test]
+    fn a_failed_solve_reports_nothing() {
+        let objective = minimize(value_ref("S", "a"));
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                Some(&objective),
+                &dropped_objective_problem(Some(objective.clone())),
+                &nothing_bound(),
+                false,
+            )
+            .is_none()
+        );
+    }
+
+    // ── condition 1: the objective must be USER-DECLARED ────────────────────
+
+    /// A scope that declared nothing — the synthesised Chebyshev-centre shape
+    /// (task 4013) — has no declared intent to report as discarded, even though
+    /// the solver really did drop the objective it was given.
+    #[test]
+    fn an_undeclared_objective_reports_nothing() {
+        let objective = minimize(value_ref("S", "a"));
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                None,
+                &dropped_objective_problem(Some(objective)),
+                &nothing_bound(),
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    // ── §6.1: reach follows the objective the SOLVER saw ────────────────────
+
+    /// `declared` and `problem.objective` can differ — under §6.1 objective
+    /// inheritance the scope declares one thing and the solver is handed
+    /// another — and the reported cells must come from the one that was
+    /// actually dropped.
+    ///
+    /// Not constructible from source at this granularity, which is why it lives
+    /// here: the fixture would have to be a whole inheriting scope, and the
+    /// assertion would no longer isolate which objective the reach followed.
+    #[test]
+    fn the_reach_follows_the_objective_the_solver_saw() {
+        let declared = minimize(value_ref("S", "b"));
+        let effective = minimize(value_ref("S", "a"));
+
+        let diagnostic = objective_unconsumed_finding(
+            "S",
+            Some(&declared),
+            &dropped_objective_problem(Some(effective)),
+            &nothing_bound(),
+            true,
+        )
+        .expect("the effective objective was dropped over an unbound auto");
+
+        assert!(
+            diagnostic.message.contains("`S.a`") && !diagnostic.message.contains("`S.b`"),
+            "the cells must come from the objective the solver saw, got: {:?}",
+            diagnostic.message
+        );
+    }
+
+    // ── condition 3: an objective that reaches no auto is the compile half's ─
+
+    /// `minimize 1mm` reaches no solver variable at all. That is
+    /// `E_OBJECTIVE_INERT`'s business, and reporting it here too would
+    /// double-report the same source line under two codes.
+    #[test]
+    fn an_objective_reaching_no_auto_reports_nothing() {
+        let objective = minimize(literal(Value::Real(1.0)));
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                Some(&objective),
+                &dropped_objective_problem(Some(objective.clone())),
+                &nothing_bound(),
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    // ── condition 4: the O2 vacuous-healthy rule ────────────────────────────
+
+    /// Every auto the objective reaches is concretely bound this run, so there
+    /// is nothing left to optimise and saying so would be noise on a healthy
+    /// model.
+    #[test]
+    fn an_objective_whose_every_reached_auto_is_bound_reports_nothing() {
+        let objective = minimize(value_ref("S", "a"));
+        let bound = HashMap::from([(id("S", "a"), Value::Real(4.0))]);
+
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                Some(&objective),
+                &dropped_objective_problem(Some(objective.clone())),
+                &bound,
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    /// An `Undef` write-back is NOT a binding. The solver writes one for an
+    /// auto it failed to pin, so counting it as bound would silence the very
+    /// case γ exists to report.
+    #[test]
+    fn an_undef_write_back_does_not_count_as_bound() {
+        let objective = minimize(value_ref("S", "a"));
+        let bound = HashMap::from([(id("S", "a"), Value::Undef)]);
+
+        assert!(
+            objective_unconsumed_finding(
+                "S",
+                Some(&objective),
+                &dropped_objective_problem(Some(objective.clone())),
+                &bound,
+                true,
+            )
+            .is_some(),
+            "an `Undef` entry is the solver saying it could not pin the auto"
+        );
+    }
+
+    /// The PARTIAL case: one reached auto bound, one not. The remainder keeps
+    /// the diagnostic alive, and only the unbound cell is named.
+    #[test]
+    fn only_the_still_unbound_reached_autos_are_named() {
+        let mut objective = minimize(value_ref("S", "a"));
+        objective
+            .terms
+            .push(ObjectiveTerm::new(ObjectiveSense::Minimize, value_ref("S", "b")));
+        let bound = HashMap::from([(id("S", "a"), Value::Real(4.0))]);
+
+        let diagnostic = objective_unconsumed_finding(
+            "S",
+            Some(&objective),
+            &dropped_objective_problem(Some(objective.clone())),
+            &bound,
+            true,
+        )
+        .expect("`S.b` is still unbound, so the objective had no effect on it");
+
+        assert!(
+            diagnostic.message.contains("`S.b`") && !diagnostic.message.contains("`S.a`"),
+            "only the unbound remainder may be named, got: {:?}",
+            diagnostic.message
+        );
+    }
+
+    // ── rendering: the sense word ───────────────────────────────────────────
+
+    /// `maximize` and the mixed-sense fallback, neither of which any fixture in
+    /// this crate reaches. Mirrors the same case in `reify-compiler`'s
+    /// `inert_objective_tests`, which is what keeps the two halves of DIC γ
+    /// saying the same word.
+    #[test]
+    fn the_sense_word_follows_the_terms() {
+        let mut mixed = minimize(literal(Value::Real(1.0)));
+        mixed
+            .terms
+            .push(ObjectiveTerm::new(ObjectiveSense::Maximize, literal(Value::Real(2.0))));
+
+        assert_eq!(objective_sense_word(&minimize(literal(Value::Real(1.0)))), "minimize");
+        assert_eq!(
+            objective_sense_word(&ObjectiveSet::single(
+                ObjectiveSense::Maximize,
+                literal(Value::Real(1.0))
+            )),
+            "maximize"
+        );
+        assert_eq!(
+            objective_sense_word(&mixed),
+            "objective",
+            "a set whose terms disagree has no one sense to name"
         );
     }
 }

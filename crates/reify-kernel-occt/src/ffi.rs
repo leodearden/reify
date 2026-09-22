@@ -57,6 +57,27 @@ pub mod ffi {
         m33: f64,
     }
 
+    /// A shape's volume together with which arm produced it.
+    ///
+    /// `volume` is bit-identical to what `query_volume` returns: both entry
+    /// points delegate to the single arm-selection site `compute_volume_arm`.
+    ///
+    /// `tessellation_fallback` is `true` iff OCCT's exact volume integral
+    /// returned bitwise 0.0 for a shape whose `ShapeType()` is <=
+    /// `TopAbs_SOLID`, so the tessellation arm produced the number instead.
+    /// Read that NARROWLY: on OCCT 7.8 every shape measured to reach the arm is
+    /// a face-less compound, for which the tessellation arm also iterates zero
+    /// faces and returns 0.0. So `true` today means "this shape has no
+    /// measurable volume, and the rest of the mass-property family is returning
+    /// its degenerate default" — NOT "an approximate number was substituted for
+    /// an exact one". `false` is the good path, mirroring
+    /// `ExportStepResult::ap242_fell_back`.
+    #[derive(Debug)]
+    struct VolumeMeasurement {
+        volume: f64,
+        tessellation_fallback: bool,
+    }
+
     /// Topology-map cache build counts for an OcctShape.
     ///
     /// Each counter is 0 on a fresh shape and increments to 1 on the first
@@ -220,6 +241,24 @@ pub mod ffi {
         fn make_half_space(px: f64, py: f64, pz: f64, nx: f64, ny: f64, nz: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Boolean operations ---
+
+        /// Fuse / cut / intersect two shapes.
+        ///
+        /// The returned shape is NORMALIZED, not the raw
+        /// `BRepAlgoAPI_*::Shape()`: BRepAlgoAPI always wraps its answer in a
+        /// bare `TopoDS_COMPOUND`, which fails the SOLID|COMPSOLID|SHELL guard
+        /// in `is_watertight`/`is_closed` and defeats
+        /// `BRepExtrema_DistShapeShape`'s inner-solution test in
+        /// `query_distance`/`min_clearance`. All three ops route through the
+        /// shared `normalize_boolean_result`, which tightens the wrapper to the
+        /// topology-preserving type the result actually is — one solid → bare
+        /// SOLID, several → COMPSOLID, none → the compound untouched
+        /// (task 7054).
+        ///
+        /// Consequence for the Rust side: stamp the stored `BRepKind` via
+        /// `brep_kind_of_shape` (which reads `shape_type_name`), never a
+        /// hardcoded `BRepKind::Solid` — a disjoint fuse really is a
+        /// multi-body COMPSOLID.
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_cut(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_common(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -531,6 +570,15 @@ pub mod ffi {
             dy: f64,
             dz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Rotate `shape` about the axis `(ax, ay, az)` through the origin.
+        ///
+        /// **Angular unit contract** (INV-AD-4; #6184): `angle_rad` is SI
+        /// RADIANS and crosses this bridge UNSCALED — the C++ side hands it
+        /// straight to `gp_Trsf::SetRotation`, which takes radians too, so no
+        /// layer converts. Lengths cross unscaled here as well (model space is
+        /// SI metres); the x1000 the STEP writer applies is an EXPORT-time
+        /// rescale, not a bridge-time one. Same contract on
+        /// `rotate_around_shape` and `make_revolve`/`make_revolve_with_history`.
         fn rotate_shape(
             shape: &OcctShape,
             ax: f64,
@@ -545,6 +593,9 @@ pub mod ffi {
             cy: f64,
             cz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Rotate `shape` about the axis `(ax, ay, az)` through the pivot
+        /// point `(px, py, pz)`. `angle_rad` is SI radians, unscaled — see
+        /// `rotate_shape` above for the contract (#6184).
         fn rotate_around_shape(
             shape: &OcctShape,
             px: f64,
@@ -670,6 +721,12 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Draft ---
+        /// Apply a draft angle to every draftable face, relative to the
+        /// neutral plane taken from `plane_shape`'s first planar face.
+        ///
+        /// `angle_rad` is SI radians, unscaled — consumed by
+        /// `BRepOffsetAPI_DraftAngle::Add`, which takes radians. See
+        /// `rotate_shape` above for the contract (INV-AD-4; #6184).
         fn draft_shape(
             shape: &OcctShape,
             angle_rad: f64,
@@ -679,6 +736,9 @@ pub mod ffi {
         /// Apply `BRepOffsetAPI_DraftAngle` to the curated face subset
         /// identified by 0-based canonical-order face indices. Requires
         /// non-empty `face_indices`; the all-faces path uses `draft_shape`.
+        ///
+        /// `angle_rad` is SI radians, unscaled, exactly as in `draft_shape` —
+        /// see `rotate_shape` above for the contract (INV-AD-4; #6184).
         fn draft_faces_shape(
             shape: &OcctShape,
             angle_rad: f64,
@@ -688,6 +748,11 @@ pub mod ffi {
 
         // --- Thicken / Shell / Offset Solid ---
         fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
+        /// Offset a surface (open face/shell) by `distance` along its normal via
+        /// `BRepOffsetAPI_MakeOffsetShape` in Skin mode (offset_surface θ).
+        /// Positive `distance` offsets along the face's +normal. Errs when
+        /// `distance` is ~0 or the result is degenerate/invalid.
+        fn make_offset_surface(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
         fn zone_slab_shape(face: &OcctShape, width: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(
@@ -755,6 +820,19 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Curve constructors ---
+        /// Build a circular arc wire of `radius` centred at `(cx, cy, cz)` on
+        /// the axis `(ax, ay, az)`.
+        ///
+        /// `start_angle`/`end_angle` are SI radians, unscaled: the C++ side
+        /// passes them to `BRepBuilderAPI_MakeEdge(circle, U1, U2)` as the
+        /// CURVE PARAMETERS of a `Geom_Circle`, and that parameter space is
+        /// radians by OCCT's parameterisation (a full circle is `2*PI`). The
+        /// suffix-free names deliberately spell the same as the compiler-minted
+        /// cross-crate string key (`compile_curve_op` emits it positionally,
+        /// `curve_arc` looks it up by name) and the published `arc(...)`
+        /// signature — an agreed spelling, not an unstated convention. See
+        /// `GeometryOp::Arc` in `reify-ir` for why the suffix is declined, and
+        /// `rotate_shape` above for the contract (INV-AD-4; #6184).
         fn make_arc_wire(
             cx: f64,
             cy: f64,
@@ -766,6 +844,12 @@ pub mod ffi {
             ay: f64,
             az: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Build a helix wire. Takes NO angle: `radius`, `pitch` and `height`
+        /// are all lengths and the turn count is the dimensionless
+        /// `height / pitch`, so no angular value crosses this bridge
+        /// (INV-AD-4). The only angle is C++-internal — the
+        /// `(height/pitch) * 2*PI` u-parameter extent on the cylindrical
+        /// surface, radians. See `GeometryOp::Helix` in `reify-ir` (#6521).
         fn make_helix_wire(radius: f64, pitch: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         /// Build a polyline wire from N >= 2 points (flat 3*N coord slice).
         /// Produces N-1 line edges.  Stable kernel FFI primitive: polygon-face
@@ -830,6 +914,10 @@ pub mod ffi {
             dz: f64,
             both: bool,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Revolve `profile` about the axis through `(ox, oy, oz)` with
+        /// direction `(ax, ay, az)`. `angle_rad` is SI radians, unscaled (a
+        /// full revolution is `2*PI`) — see `rotate_shape` for the contract
+        /// (#6184).
         fn make_revolve(
             profile: &OcctShape,
             ox: f64,
@@ -863,6 +951,10 @@ pub mod ffi {
 
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
+        /// `query_volume`'s number plus which arm produced it. Shares one
+        /// arm-selection site with `query_volume`, so `.volume` is bit-identical
+        /// to `query_volume(shape)` for the same shape.
+        fn query_volume_measurement(shape: &OcctShape) -> Result<VolumeMeasurement>;
         fn query_area(shape: &OcctShape) -> Result<f64>;
         fn query_edge_length(shape: &OcctShape) -> Result<f64>;
         /// Unit tangent of `shape` (must be a TopoDS_Edge) sampled at the
@@ -1153,10 +1245,16 @@ pub mod ffi {
 
         /// Return the canonical name of `shape`'s top-level TopAbs shape type
         /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-        /// "Vertex", or "Shape"). Lets `OcctKernel::fuse_all` classify a
-        /// single-pass fuse result — SOLID (overlapping), COMPSOLID (disjoint),
-        /// or the sole input's kind (identity) — into the right BRepKind
-        /// instead of assuming Solid (task 5213 amendment).
+        /// "Vertex", or "Shape"). Backs `brep_kind_of_shape`, the ONE classifier
+        /// every boolean path uses to stamp the right `BRepKind` instead of
+        /// assuming Solid:
+        ///   - `OcctKernel::fuse_all` — SOLID (overlapping), COMPSOLID
+        ///     (disjoint), or the sole input's kind (identity), task 5213;
+        ///   - all six binary boolean arms — the three plain
+        ///     `Union`/`Difference`/`Intersection` arms of `execute` and the
+        ///     three `boolean_*_with_history` variants, task 7054. Since every
+        ///     boolean result is normalized, a disjoint fuse really is a
+        ///     multi-body COMPSOLID and the old hardcoded Solid was a lie.
         fn shape_type_name(shape: &OcctShape) -> Result<String>;
 
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
@@ -1233,6 +1331,14 @@ pub mod ffi {
 
         /// Three faces sharing one edge → non-manifold compound.
         fn make_nonmanifold_compound_for_test() -> Result<UniquePtr<OcctShape>>;
+
+        /// EMPTY `TopoDS_Compound` (no children) → the simplest member of
+        /// the face-less-compound class that takes `compute_volume_arm`'s
+        /// tessellation fallback. The class boundary, the measured values and
+        /// why `make_nonmanifold_compound_for_test` cannot serve here live in
+        /// ONE place: the canonical note on this fixture's definition in
+        /// occt_wrapper.cpp. Production `make_compound` refuses empty input.
+        fn make_empty_compound_for_test() -> Result<UniquePtr<OcctShape>>;
 
         /// 10×10×10 mm box missing one face → open shell inside a solid.
         fn make_malformed_solid_for_test() -> Result<UniquePtr<OcctShape>>;

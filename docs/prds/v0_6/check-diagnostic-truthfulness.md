@@ -246,9 +246,9 @@ would be a regression, and inventory for others, before D3 ships.**
 `cmd_check` deliberately never registers compute trampolines (:448-474 doc comment —
 FEA stays Indeterminate under check by design, `reify build`/`reify eval` are the FEA
 gate). But the diagnostic this produces — `"@optimized target {:?}: no registered
-compute trampoline (falling back to body-inlining)"`, emitted at four call sites
-(`crates/reify-eval/src/engine_compute.rs`:654, `engine_eval.rs`:9113 and :10124,
-`engine_admin.rs`:1535) — is unconditionally `Severity::Error` and **code-less**
+compute trampoline (falling back to body-inlining)"` is emitted at only TWO of the
+four sites reporting a missing trampoline (RULING 2026-09-01 below supersedes this
+paragraph's site inventory) — at all four it is `Severity::Error` and **code-less**
 today. Per INV-SF-2's corollary ("a diagnostic *expected* on a healthy path is by
 definition not Error-severity — demote or recode it; never exempt it from the
 gate") the fix is **not** a `check`-side allowlist (that would itself be the
@@ -272,6 +272,125 @@ genuine defect signal (correctly gates as-is). This is the brief's explicit
 "BLAST RADIUS MUST BE MEASURED, not estimated" instruction for cause 3 — the
 trampoline diagnostic is the *one* case named in the brief/research doc, not
 asserted to be the only one.
+
+### RULING 2026-09-01 (Leo) — mint-site and predicate-site are SEPARATE; the four sites are not alike
+
+D4 above conflates *where the `DiagnosticCode` is minted* with *where the
+`fns.is_empty()` severity predicate applies* ("Same touch points … at zero extra
+site cost"), and its four-site list is wrong twice over: the line numbers have
+drifted, and only two of the four emit the `(falling back to body-inlining)`
+clause. Corrected inventory, measured on main 2026-09-01 — **resolve by symbol,
+these numbers drift**:
+
+| Site | Shape | Message |
+|---|---|---|
+| `engine_eval.rs`:~10417 (`evaluate_params_and_lets_unified`, gate ~:10172) | **SOFT** — push the diagnostic, fall through to body-inlining | carries `(falling back to body-inlining)` |
+| `engine_eval.rs`:~11534 (`evaluate_let_bindings`, gate ~:11157) | **SOFT** — same | carries the clause |
+| `engine_admin.rs`:~1674 (`dispatch_compute_node`) | **HARD** — `Err(vec![…])`, nothing falls back | clause deliberately omitted (see ~:1666-1672) |
+| `engine_compute.rs`:~653 (`run_compute_dispatch`) | **HARD** — `Err(DispatchError::Failed)` | clause deliberately omitted |
+
+**RULED (Q1 — scope).** Mint `DiagnosticCode::NoRegisteredComputeTrampoline` at
+**all four** sites — INV-SF-6, and it finally delivers the "clean, named"
+diagnostic `docs/prds/v0_3/compute-node-contract.md`:189 asked for and never got.
+Apply the `fns.is_empty()` ⇒ `Severity::Warning` predicate at the **two SOFT
+sites only**. The two HARD sites keep `Severity::Error` unconditionally, with
+rustdoc recording why.
+
+Why this is right on the merits, not merely because a test would otherwise break:
+
+1. **At both HARD sites `fns.is_empty()` can never be true in production.**
+   `dispatch_compute_node` has ZERO non-test callers workspace-wide (measured).
+   `run_compute_dispatch`'s `None` arm is reached only via
+   `insert_shell_extract_upstream`, which sits *inside* the
+   `compute_dispatch("solver::elastic_static").is_some()` branch — so the registry
+   is non-empty by construction. Applying the predicate there changes zero
+   user-observable behaviour; it only flips a unit-test expectation.
+2. **It would break a documented API contract.** `dispatch_compute_node`'s rustdoc
+   promises its `Err` arm carries "at least one `Severity::Error` diagnostic". An
+   `Err` carrying only a Warning is incoherent, and is silently swallowed by
+   `build`/`eval`'s `has_error_diagnostic` exit gate.
+3. **House precedent is the split, not the sweep.** `hex_wedge_mesh_diagnostic`
+   (`crates/reify-core/src/diagnostics.rs`:~4354-4408) conditions severity on a
+   posture flag, PRESERVES the `DiagnosticCode` across the flip, and applies the
+   flip to 3 of 5 outcomes with the other two explicitly exempt.
+4. **This PRD's own user-observable signal (below) is deliverable from the two
+   SOFT sites alone** — they are the only sites `reify check` can reach.
+
+**RULED (Q2 — predicate shape).** Keep `self.compute_registry.fns.is_empty()`. It
+is a proxy for "this driver declines compute entirely", and it is correct for every
+driver today and after #6693. An explicit `Engine` posture flag (the
+`MeshContractMode` house pattern) is the honest long-term shape but needs
+cross-crate plumbing into `reify-cli`, `reify-lsp` and `gui/src-tauri`, outside α's
+declared file set — that belongs to the driver-contract work, not to α.
+
+**RULED (Q3 — severity).** `Warning`, per INV-SF-1 ("conservative degradation must
+leave a trace"). Three regimes already coexist for this underlying condition and
+none is disturbed: `Error` at eval/dispatch, LSP `INFORMATION` for its *separate*
+`fea-not-evaluated` constraint hint (`crates/reify-lsp/src/diagnostics.rs`:~445-455,
+5 locks), and no diagnostic at all at the pure-expression layer
+(`crates/reify-expr/src/lib.rs`:~10292).
+
+**RULED (Q4 — the signal must be flip-proof against #6693).** Leo's 2026-08-26
+driver-contract ruling 2 (`docs/notes/driver-contract-matrix-draft.md`) gives
+`reify check` the FEA trampolines; #6693 delivers it, pending behind
+#6653/#6689/#6692. Post-flip `check`'s registry is NON-empty, so
+`examples/fea_pressure_smoke.ri` stops emitting the line at all and α's signal
+becomes unmeasurable on it. **α's regression fixture must therefore declare an
+`@optimized` target that is NOT in `register_production_compute_fns`'s bundle**, so
+the `check` ⇒ `warning:` / `eval`+`build` ⇒ `error:` contrast stays measurable
+before and after #6693. No dependency edge onto #6693 is wired: α is a root in two
+PRD DAGs, and #5404's burn-down would otherwise park behind the whole
+solver-parity chain. The predicate is correct in both worlds, and the LSP — whose
+trampoline-free posture stays ratified (INV-FEA-1) — remains a live production
+consumer of the Warning arm after the flip.
+
+**Locks this deliberately supersedes — α changes these, and only these:**
+
+- `crates/reify-eval/tests/compute_dispatch_registry.rs`
+  `e2e_unregistered_optimized_target_emits_diagnostic_and_inlines` (~:307) — uses
+  `make_simple_engine()` (empty registry) and evals through the SOFT site
+  (execution-probed 2026-09-01), so it flips to `Severity::Warning`. This is an
+  honest supersession, not a weakening: its `Severity::Error` assertion pins
+  current behaviour, not a contract — `compute-node-contract.md`:189, the row its
+  docstring cites, asks for a *named* diagnostic and `Freshness::Failed` and says
+  nothing about severity (and today's soft path does not mark Failed either). α
+  MUST keep asserting *diagnostic emitted / target named / body-inlined / no
+  ComputeNode inserted*, AND add a twin on a NON-empty-registry engine that still
+  asserts `Severity::Error`. Without that twin the update IS a silent weakening.
+- `crates/reify-eval/tests/compute_dispatch_registry.rs`
+  `dispatch_compute_node_unregistered_target_returns_error_diagnostic` (~:188) —
+  **UNCHANGED**. It lands on the HARD `engine_admin` site (execution-probed) and
+  goes on guarding the `Err`-carries-an-`Error` contract.
+
+**Blast radius, measured 2026-09-01 — do not re-derive.** Severity is asserted in
+exactly TWO places workspace-wide (both named above). About ten further tests key
+on the message TEXT `"no registered compute trampoline"` and are severity-blind,
+so they stay green — `no_stale_undef_invariant_gate.rs` (`TRAMPOLINE_MISSING`,
+~:1106/:1219/:2309/:2324/:2337), `test_runner.rs`:~272, `cli_build_fea.rs`:~49/:93.
+**Changing the wording breaks ten tests; changing the severity breaks two — keep
+the message wording byte-identical.** Both severity locks run in the merge gate
+(neither is in `REIFY_GATE_EXCLUDE_HEAVY`'s heavy set). The CLI side was
+deliberately left unlocked against this change:
+`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`:~153-155 already records that
+"the severity downgrade is an engine-side concern out of this CLI task's scope".
+
+**Two loose ends α owns in the same diff:**
+
+- `engine_eval.rs`:~11533's `// Release-hard-error is deferred to slice η` names
+  `compute-node-contract.md` §9 OQ-1 ("body-inline in debug, hard error in
+  release"), which NO task tracks and whose Greek-letter alias would not survive
+  PTODO grammar. Delete it, or give it a live `#NNNN` cite.
+- `engine_compute.rs`:~625-631's "unreachable from production code" claim is FALSE
+  (point 1 above): the arm is reachable on a partially-registered engine — the
+  task-5578 signature. Correct the comment.
+
+**Downstream, unchanged by this ruling.** #5403's seeded
+`CHECK_ERROR_EXIT_ALLOWLIST` entry #1
+(`MessageContains("no registered compute trampoline")`, disposition `Demote`, cite
+`#5311`) is exactly what this retires and #5404 burns; #5403's requirement that
+`eval`/`build` keep gating on this `Error` is preserved by the non-empty arm.
+
+*Provenance: esc-5311-3 (member esc-5311-2), task 5311; ruled by Leo 2026-09-01.*
 
 ## Contract: diagnostic collection & exit-code semantics
 
@@ -347,18 +466,32 @@ independent of each other, γ hard-depends on both, ε is a docs leaf that depen
 
 - **α — Severity/code hygiene for the compute-trampoline-fallback diagnostic + a
   measured inventory of any other expected-on-a-healthy-check-path Error site.**
-  Files: `crates/reify-eval/src/engine_compute.rs` (:654),
-  `crates/reify-eval/src/engine_eval.rs` (:9113, :10124),
-  `crates/reify-eval/src/engine_admin.rs` (:1535), `crates/reify-core/src/diagnostics.rs`
-  (new `DiagnosticCode::NoRegisteredComputeTrampoline` variant, additive —
-  `#[non_exhaustive]`, no `VARIANT_COUNT` backstop on this enum to update). Condition
+  Files — **resolve every anchor by symbol; the line numbers this PRD was written
+  with have all drifted, and D4's "RULING 2026-09-01" block scopes each edit**:
+  `crates/reify-eval/src/engine_eval.rs` (`evaluate_params_and_lets_unified` and
+  `evaluate_let_bindings` — the two SOFT sites: `DiagnosticCode` **and** the
+  `is_empty()` severity predicate); `crates/reify-eval/src/engine_admin.rs`
+  (`dispatch_compute_node`) and `crates/reify-eval/src/engine_compute.rs`
+  (`run_compute_dispatch`) — the two HARD sites: `DiagnosticCode` **only**,
+  `Severity::Error` stays unconditional, with rustdoc recording why;
+  `crates/reify-core/src/diagnostics.rs` (new
+  `DiagnosticCode::NoRegisteredComputeTrampoline` variant, additive —
+  `#[non_exhaustive]`, no `VARIANT_COUNT` backstop, no exhaustive `match`, and no
+  code table or string mapping to update anywhere in the workspace, measured
+  2026-09-01); `crates/reify-eval/tests/compute_dispatch_registry.rs` (supersede
+  `e2e_unregistered_optimized_target_emits_diagnostic_and_inlines` and ADD its
+  non-empty-registry twin; `dispatch_compute_node_unregistered_target_returns_error_diagnostic`
+  is unchanged). Condition
   severity on `self.compute_registry.fns.is_empty()` per D4. Grep-inventory other
   `Diagnostic::error` construction sites reachable via `check()`; fix any found in
   the same diff if the count is small (≤ a couple), else name a follow-up task
-  explicitly (do not silently drop them). **Signal:** an existing FEA-`@optimized`
-  fixture under `reify check` now prints `warning:` (not `error:`) for the
-  trampoline-fallback line, unchanged `error:` for the same line under `reify
-  eval`/`reify build` on a module with a genuinely-uncovered target (regression
+  explicitly (do not silently drop them). **Signal:** a regression fixture whose
+  `@optimized` target is deliberately OUTSIDE `register_production_compute_fns`'s
+  bundle prints `warning:` (not `error:`) for the trampoline-fallback line under
+  `reify check`, and `error:` for that same line under `reify eval`/`reify build`
+  — a contrast that stays measurable after #6693 gives `check` the FEA
+  trampolines. **Do NOT reuse `examples/fea_pressure_smoke.ri`**: its line
+  disappears entirely post-flip (see the RULING block). (Regression
   test, new — extends `crates/reify-cli/tests/harness_cli/cli_check.rs`, an
   *existing* gate-resident integration-test file, so no new nextest-partition /
   wallclock / `run-all-classification.manifest` registration is triggered — the
@@ -469,10 +602,12 @@ gate-resident file) does not fire here, rather than asserting N/A generically.
 
 ## Open questions (tactical, not decided in this session)
 
-1. **Exact `DiagnosticCode` variant name** for the compute-trampoline-fallback
-   diagnostic (`NoRegisteredComputeTrampoline` proposed in D4/leaf α). Cosmetic;
-   decide at α's implementation time, consistent with existing naming
-   (`GdtIllegalModifier`, `TraitNotImplemented` style).
+1. ~~**Exact `DiagnosticCode` variant name**~~ — **RULED 2026-09-01**:
+   `NoRegisteredComputeTrampoline`, minted at all four sites. Note
+   `docs/prds/v0_3/compute-node-contract.md`:189 named this diagnostic
+   `UnknownComputeTarget` and it was never minted; the v0.6 name wins because it
+   matches the message text the ~10 severity-blind text-matching tests key on.
+   See D4's "RULING 2026-09-01" block for the full scope ruling.
 2. **Whether α's inventory finds more than the one known code-less/expected-Error
    site.** If it finds a handful more, fix them in α's own diff (stated default); if
    it finds many, α should stop and file a named follow-up rather than silently

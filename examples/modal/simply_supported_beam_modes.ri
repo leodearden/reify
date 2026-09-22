@@ -18,7 +18,7 @@
 // This fixture runs at `element_order: ElementOrder.P2` (second-order, 10-node
 // quadratic tets — task 4066). P2 shape functions resolve bending curvature and
 // remove the P1 constant-strain bending lock (f ∝ √K, which biases P1 high), so
-// the integration test at `crates/reify-eval/tests/modal_analysis_e2e.rs` asserts
+// the integration test at `crates/reify-eval-fea-tests/tests/modal_analysis_e2e.rs` asserts
 // ALL THREE bending modes (f₁/f₂/f₃) are within 2% of their analytic (nπ)²
 // values — the bending-lock-free P2 band, replacing the prior looser P1 10%/12%
 // bands (higher P1 modes locked harder per PRD §9.1; P2 resolves all three
@@ -32,17 +32,25 @@
 //
 // Type-coercion notes — identical to cantilever_beam_modes.ri:
 //   - FEAMaterialInput(material: mat) → mi.material (ElasticMaterial coercion).
-//   - boundary_conditions accepts the List<FixedSupport> value for its
+//   - boundary_conditions accepts the List<PinnedSupport> value for its
 //     List<Support> param (structure ctors do not type-check args).
 //
 // Boundary conditions:
 //   A simply-supported beam is PINNED at BOTH end faces (x_min and x_max) in the
-//   bending direction — encoded as TWO `FixedSupport`s. The trampoline (step-18)
-//   interprets the two-support `boundary_conditions` list as the pin-pin
-//   configuration: pin both end faces in z plus minimal axial/lateral anchors to
-//   remove rigid-body translation without over-constraining rotation (so the
-//   modes match the (nπ)² simply-supported family, NOT fixed-fixed). This is the
-//   discriminator from the cantilever fixture's single-support clamp.
+//   bending direction — encoded as TWO `PinnedSupport`s, because the structure
+//   is pinned. The trampoline realizes a pinned end face as the transverse (z)
+//   DOF only, and — with BOTH end faces pinned — adds the minimal axial/lateral
+//   anchors that remove rigid-body translation without over-constraining
+//   rotation, so the modes match the (nπ)² simply-supported family, NOT
+//   fixed-fixed.
+//
+//   HISTORY (task 6663): these were `FixedSupport`s, and the trampoline used to
+//   discriminate on the target face NAMES alone — two supports naming both end
+//   faces meant pin-pin regardless of kind. That threw the support KIND away, so
+//   a genuinely clamped-clamped beam silently got the pinned-pinned answer. The
+//   realization is now per-face and kind-aware, and this fixture spells the kind
+//   it actually means. The e2e's 2% analytic bands are unchanged and are the
+//   guard that the pin-pin numbers are bit-preserved across that change.
 
 structure SimplySupportedBeamModes {
     // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
@@ -58,10 +66,12 @@ structure SimplySupportedBeamModes {
     // compile-time type ElasticMaterial (matching the fn param type).
     let mi = FEAMaterialInput(material: material)
 
-    // Simply-supported: pin BOTH end faces (x_min and x_max). Two FixedSupports
-    // signal the pin-pin configuration to the trampoline (step-18).
-    let pin_min = FixedSupport(target: "x_min")
-    let pin_max = FixedSupport(target: "x_max")
+    // Simply-supported: pin BOTH end faces (x_min and x_max). These are
+    // PinnedSupports because the structure is pinned — the trampoline reads the
+    // support KIND per face (task 6663), so a FixedSupport here would mean a
+    // genuinely clamped end and a ~2.27x higher fundamental.
+    let pin_min = PinnedSupport(target: "x_min")
+    let pin_max = PinnedSupport(target: "x_max")
 
     // Modal options: extract the first 3 modes, undamped, bending in z, at
     // element_order = ElementOrder.P2 — the P2-tet path that resolves bending
@@ -69,16 +79,15 @@ structure SimplySupportedBeamModes {
     // = vec3(0,0,1) is the dimensionless unit excitation direction (the slender
     // bending direction).
     //
-    // IMPORTANT — argument binding is POSITIONAL (the `name:` labels are
-    // cosmetic; the parser strips them and binds each value to the param in
-    // ModalOptions' DECLARATION order — see ts_parser.rs lower_call_argument).
-    // `element_order` is the LAST declared param, so every preceding param must
-    // be supplied here in order to reach it: a partial keyword-style call would
-    // silently bind `element_order`'s value to an earlier param and leave the
-    // real `element_order` at its `ElementOrder.P1` default (the P1 bending lock
-    // would never lift). sigma / tol / max_iters are therefore spelled out at
-    // their ModalOptions defaults (0.0 / 1e-9 / 200) so the trailing
-    // reference_direction and element_order land in the right slots.
+    // Ctor args bind BY NAME (task 4522), so a MISSPELLED label is the hazard
+    // here: the typo'd arg never claims `element_order`, which then falls back
+    // to its `ElementOrder.P1` default and quietly reinstates the bending lock
+    // this fixture exists to avoid. Every param is written out — sigma / tol /
+    // max_iters at their ModalOptions defaults (0.0 / 1e-9 / 200) — purely so
+    // a typo stays visible under review. What the compiler does with the
+    // typo'd arg, and how loudly it says so, are deliberately NOT restated
+    // here; both are pinned in
+    // `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
     // n_modes = 8 (not 3): this beam is wide (b=10mm) and thin (h=2mm), so the
     // lateral Y-bending family is ≈ (b/h) = 5× stiffer in frequency than the
     // vertical Z-bending family. The first lateral mode (≈ 5·f₁,z ≈ 579 Hz) lands
@@ -111,7 +120,7 @@ structure SimplySupportedBeamModes {
     // BETWEEN vertical modes 2 (≈ 463 Hz) and 3 (≈ 1043 Hz), so raw index 2 is the
     // lateral mode, not vertical mode 3. The rigorous per-mode 2% accuracy gate
     // over the three vertical (Z-dominant) modes is therefore applied in the e2e
-    // (crates/reify-eval/tests/modal_analysis_e2e.rs) by eigenvector dominant-axis
+    // (crates/reify-eval-fea-tests/tests/modal_analysis_e2e.rs) by eigenvector dominant-axis
     // classification over result.modes — exactly as the kernel gate
     // crates/reify-solver-elastic/tests/modal_benchmarks.rs does (task 4066). The
     // generous n_modes = 8 above guarantees ≥3 vertical modes are in the spectrum.

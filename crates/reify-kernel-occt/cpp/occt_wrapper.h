@@ -82,6 +82,7 @@ struct TessResult;
 struct ExportStepResult;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
+struct VolumeMeasurement;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
 struct RevolveSynthesisPostSortResult;
 /// Returned by `face_analytic_datum` / `edge_analytic_datum` (geometric-relations ε);
@@ -192,6 +193,18 @@ rust::String shape_type_name(const OcctShape& shape);
 
 // --- Boolean operations ---
 
+/// Fuse / cut / intersect two shapes.
+///
+/// The stored result is NORMALIZED, not the raw `BRepAlgoAPI_*::Shape()`:
+/// BRepAlgoAPI always wraps its answer in a bare `TopoDS_COMPOUND`, which fails
+/// the SOLID|COMPSOLID|SHELL guard in `is_watertight`/`is_closed` and defeats
+/// `BRepExtrema_DistShapeShape`'s inner-solution test in
+/// `query_distance`/`min_clearance`. All three ops route through the shared
+/// `normalize_boolean_result` (occt_wrapper.cpp), which tightens the wrapper to
+/// the topology-preserving type the result actually is — one solid → bare
+/// SOLID, several → COMPSOLID, none → the compound untouched (task 7054).
+/// Callers must therefore classify the stored repr from the real shape (see
+/// `shape_type_name`) rather than assuming Solid.
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
@@ -798,6 +811,22 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
 
 std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance);
 
+/// Offset a single open face by `distance` along its normal using
+/// `BRepOffsetAPI_MakeOffsetShape` in Skin (surface) mode, producing a fresh
+/// parallel surface (offset_surface θ). Positive `distance` offsets along the
+/// face's +normal. Throws (surfaced as `Err`) when `distance` is ~0 or the
+/// result is degenerate/invalid.
+///
+/// Caller (`OcctKernel::execute`) registers the result as `BRepKind::Face`,
+/// which assumes a single-face input -- true for every current DSL surface
+/// producer (rectangle/circle/ellipse/nurbs_surface profiles). Skin mode
+/// also accepts a multi-face shell, but a shell input would offset to a
+/// shell result and the caller-side `BRepKind::Face` tag would then be
+/// inaccurate; there is no shell-valued surface producer today, so this is
+/// latent. Revisit (classify the result's actual TopoDS shape type, or
+/// reject shell input) if one is ever added.
+std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance);
+
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
 
 std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width);
@@ -1011,6 +1040,12 @@ Point3 wire_start_point(const OcctShape& wire);
 // --- Queries ---
 
 double query_volume(const OcctShape& shape);
+
+/// `query_volume`'s number plus which arm produced it. Both functions delegate
+/// to the same `compute_volume_arm` helper, so the returned `volume` is
+/// bit-identical to `query_volume(shape)` and the two can never disagree about
+/// which arm ran. Throws std::runtime_error on null/empty topology.
+VolumeMeasurement query_volume_measurement(const OcctShape& shape);
 double query_area(const OcctShape& shape);
 Point3 query_centroid(const OcctShape& shape);
 
@@ -1499,6 +1534,15 @@ bool shape_is_null(const OcctShape& shape);
 /// Build three planar faces sharing a common edge, assembled into a compound.
 /// The shared edge has 3 incident faces, making the compound non-manifold.
 std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test();
+
+/// Build an EMPTY `TopoDS_Compound` (a compound with no children) — the
+/// simplest member of the face-less-compound class that takes
+/// `compute_volume_arm`'s tessellation fallback. The measured detail, the class
+/// boundary, and why `make_nonmanifold_compound_for_test()` cannot serve here
+/// live in ONE place: the canonical note on this fixture's definition in
+/// occt_wrapper.cpp. Production `make_compound` rejects empty input, hence this
+/// fixture.
+std::unique_ptr<OcctShape> make_empty_compound_for_test();
 
 /// Build a 10×10×10 mm box with one face removed, wrapped in a solid.
 /// The resulting open shell causes BRepCheck_Analyzer::IsValid() to return false.

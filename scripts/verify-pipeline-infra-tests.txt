@@ -24,12 +24,26 @@
 #   Add a row when a new verify-pipeline artifact gains infra drift-guards.
 #   The infra-test-glob is self-maintaining for additions: a future test_verify_*.sh
 #   is auto-covered without needing a map edit.
+#   A row here is a FIRST-CLASS registration, not a lesser one (task 6857):
+#   `bash scripts/verify-pipeline-guard.sh is-registered <path>` exits 0 for any
+#   active-row KEY below, and that is the predicate
+#   tests/infra/test_verify_pipeline_guard.sh's ANTI-DRIFT sweep asserts — so a
+#   row here satisfies the sweep on its own, with no scripts/doc-sync-paths.txt
+#   entry and no full --scope all gate. Prefer it whenever an edit should select
+#   the artifact's guarding test rather than route the whole diff to that gate.
+#   That query is NOT a registry-membership oracle, though: it also answers 0
+#   for the guard's static load-bearing set and for ANY tests/infra/*.sh path,
+#   so an exit 0 does not imply a row below. Matched sets: the is-registered
+#   entry in scripts/verify-pipeline-guard.sh's header.
+#   ACTIVE-ROW RULE, mirrored by both consumers: BOTH fields must be non-empty.
+#   A one-field row selects no test, so it registers nothing.
 #
 # Example (add future rows below):
 # scripts/land.sh    tests/infra/test_land_*.sh
 
 scripts/verify.sh    tests/infra/test_verify_*.sh
 scripts/prd-capability-check.py    tests/infra/test_prd_capability_check.sh
+scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
 
 # Warm-lane CoW pool scripts — edits route to the end-to-end integration gate.
 # Note: this is a load-bearing verify-pipeline file (see CLAUDE.md); editing it
@@ -42,6 +56,21 @@ scripts/seed-warm-lane.sh            tests/infra/test_warm_lane_pool.sh
 # intra-run-serial classification of test_reify_audit_ptodo.sh /
 # test_tree_sitter_pipeline.sh silently rests on.
 scripts/seed-warm-lane.sh            tests/infra/test_target_per_lane_independence.sh
+# Task 6889: the SUT's OWN suite. Measured gap — tests/infra/test_seed_warm_lane.sh
+# had no row anywhere in this map, so editing scripts/seed-warm-lane.sh selected
+# the two rows above but never the 5500-line suite that actually exercises the
+# script end to end (its stdout contract, its mode gating, its post-conditions).
+# Same one-artifact-multiple-rows pattern already used for this artifact above.
+scripts/seed-warm-lane.sh            tests/infra/test_seed_warm_lane.sh
+# ...and test_git_rerere_guard.sh, because that suite's (wiring-lane) block
+# asserts ON THIS FILE: that it carries an uncommented call to the guard, and
+# that the subcommand is `arm` (a bare `check` would report the drift while
+# leaving the fleet armed). Without this row a task-scope verify that edits only
+# seed-warm-lane.sh — dropping or commenting out the invocation, which is exactly
+# how the guard becomes dead code — never selects the suite that would catch it.
+# Mirrors the scripts/setup-dev.sh -> test_git_rerere_guard.sh row below, which
+# exists for the identical reason at developer-setup cadence.
+scripts/seed-warm-lane.sh            tests/infra/test_git_rerere_guard.sh
 scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
 # Task 5981: refresh-warm-base.sh's OWN suite also guards its provenance WIP
 # refusal path (Block I). The row above maps the artifact only to the pool
@@ -184,6 +213,22 @@ scripts/verify.sh                                 tests/infra/test_infra_classif
 .config/nextest.toml                 tests/infra/test_verify_offline_partition.sh
 scripts/heavy-test-filter-lib.sh     tests/infra/test_verify_offline_partition.sh
 
+# Task 6485: the slow-timeout tiering guard over .config/nextest.toml.
+# Closes a MEASURED gap -- tests/infra/test_nextest_slow_priority.sh had no row
+# anywhere, so a task-scope edit to the nextest overrides never selected the very
+# guard that covers them. It is NOT reachable via the
+# `scripts/verify.sh -> tests/infra/test_verify_*.sh` glob row above: that glob
+# matches on basename, and this one does not start with `test_verify_`, which is
+# why the explicit scripts/verify.sh row below is required rather than redundant.
+#
+# All three rows are load-bearing after task 6485: the guard DERIVES the heavy set
+# by sourcing scripts/heavy-test-filter-lib.sh (Assertions J/K) and EXTRACTS the
+# offline release wall from scripts/verify.sh (Assertion L), so an edit to either
+# can break it -- not merely an edit to the config it checks.
+.config/nextest.toml                 tests/infra/test_nextest_slow_priority.sh
+scripts/heavy-test-filter-lib.sh     tests/infra/test_nextest_slow_priority.sh
+scripts/verify.sh                    tests/infra/test_nextest_slow_priority.sh
+
 # Task 4955 doc-sync drift guard: operational docs cross-referenced by
 # tests/infra doc-sync checks (scripts/doc-sync-paths.txt) get their citing
 # infra test run as a fail-fast pole in any task-scope verify that edits
@@ -235,11 +280,6 @@ hooks/main-gate-lib.sh               tests/infra/test_stash_guard.sh
 # both as fail-fast poles when the lib is edited on a task-scope verify.
 # Mirrors the run-all-classification-lib.sh rows above.
 tests/infra/run_all_ambient_isolation_lib.sh    tests/infra/test_run_all_ambient_isolation*.sh
-
-# Task 5321: the read-only closure-staleness sweep. Mirrors the
-# scripts/warm-lane-audit.sh row above — a task-scope verify runs the sweep's
-# hermetic suite whenever the SUT changes.
-scripts/deterministic-gate-closure-staleness-sweep.sh    tests/infra/test_deterministic_gate_closure_staleness_sweep.sh
 
 # Task 5076: the INV-FEA-1 compute-trampoline delegation gate. Same
 # one-artifact-multiple-rows pattern as check-infra-classification-manifest.sh
@@ -313,6 +353,68 @@ scripts/check-manifold-deps.sh          tests/infra/test_occt_deps_preflight.sh
 crates/reify-build-utils/src/lib.rs     tests/infra/test_occt_deps_preflight.sh
 scripts/setup-dev.sh                    tests/infra/test_occt_deps_preflight.sh
 
+# Task 5888: the host-global systemd unit ExecStart pinning guard. The suite's
+# Part B EXTRACTS install_build_services() out of scripts/setup-dev.sh and runs
+# it in a sandboxed HOME, and its B5b/B5c cases assert statically ON THAT FILE
+# (no uncommented ExecStart=${repo_dir}/scripts/jobserver-* row; the five
+# per-worktree call sites still $(dirname "${BASH_SOURCE[0]}")-relative). Both
+# the artifact under test and the file the static pins read are setup-dev.sh,
+# so without this row a task-scope verify that edits ONLY setup-dev.sh — the
+# exact diff that reverts the pin, or over-pins a per-worktree call site —
+# selects zero infra poles: scripts/setup-dev.sh is NOT in
+# scripts/verify-pipeline-paths.txt (`verify-pipeline-guard.sh
+# requires-full-gate scripts/setup-dev.sh` -> exit 1), so such a diff does not
+# force the full --scope all gate either. Multiple rows per artifact are the
+# established pattern — setup-dev.sh already carries the OCCT row above.
+# The suite is `pool`-classified and hermetic (mktemp git fixtures, a recording
+# systemctl shim, sandboxed HOME; ~4s measured 2026-09-03 with Parts A-C, up
+# from ~2s when only Parts A-B existed), so it is safe to run inline in the
+# selective-infra block, which has no serialization machinery.
+# scripts/lib_main_checkout.sh is the resolver the generator sources; a
+# resolver-only edit is the other half of the same contract (Part A).
+scripts/setup-dev.sh                    tests/infra/test_host_global_unit_pinning.sh
+scripts/lib_main_checkout.sh            tests/infra/test_host_global_unit_pinning.sh
+
+# Task 6864: the SECOND host-global unit generator, install_boot_unit() in
+# scripts/setup-agent-cache-redirect.sh, migrated onto the same shared resolver.
+# 5888 did not cover this pairing: before these rows
+# `verify-pipeline-guard.sh is-registered scripts/setup-agent-cache-redirect.sh`
+# exited 1, and so did `requires-full-gate` on it (the script is NOT in
+# scripts/verify-pipeline-paths.txt) — so a task-scope verify whose diff touched
+# ONLY that script selected zero infra poles AND did not route to the full
+# --scope all gate. Exactly the hole the 5888 rows above closed for setup-dev.sh.
+#   row 1  the script's own suite — the regression matrix for everything the
+#          migration had to leave untouched (the REIFY_MAIN_CHECKOUT override
+#          path, the fallback and its warn, the no-bus fail-open, --seed-only's
+#          zero-sudo contract), plus the H8d canary on the source line itself.
+#   row 2  test_host_global_unit_pinning.sh Part C sed-EXTRACTS install_boot_unit()
+#          out of that same file, so an edit to the script changes the artifact
+#          under test there too — the one-artifact-multiple-rows pattern
+#          setup-dev.sh already uses for its OCCT and pinning rows. This is the
+#          row that carries the migration's actual CONTRACT: Part C is the only
+#          coverage in the repo that runs the resolver with REIFY_MAIN_CHECKOUT
+#          UNSET, and so the only thing that reds on a silent revert.
+#
+# DELIBERATELY NO `scripts/lib_main_checkout.sh -> test_agent_cache_redirect.sh`
+# ROW, though the migration does create that coupling. That suite cannot detect
+# a resolver regression: every behavioural case in its Block H pins
+# REIFY_MAIN_CHECKOUT explicitly (run_redirect hardcodes it), so layer 1 of
+# reify_main_checkout short-circuits the derivation and no run there observes
+# it — its only lib-touching assertion is H8f, a `test -f && test -r` existence
+# check. The coupling is already carried by the
+# `scripts/lib_main_checkout.sh -> tests/infra/test_host_global_unit_pinning.sh`
+# row in the 5888 block above, which now selects Part C as well as Part A. A
+# third row would buy an existence check for ~12s of wall clock on every
+# resolver edit, while READING as though it closed the coupling.
+#
+# test_agent_cache_redirect.sh is `pool`-classified and hermetic (a fake $HOME
+# with synthetic cargo/npm trees, PATH-stubbed sudo/systemctl, mktemp cache root
+# and tmpfiles dir; ~12s measured over three runs 2026-09-03 — the slowest pole
+# in this block, but still cheap enough to run inline in the selective-infra
+# block, which has no serialization machinery).
+scripts/setup-agent-cache-redirect.sh   tests/infra/test_agent_cache_redirect.sh
+scripts/setup-agent-cache-redirect.sh   tests/infra/test_host_global_unit_pinning.sh
+
 # Task 6758 (spec-conformance leaf α): the sc-anchor substrate for
 # docs/reify-language-spec.md — the opaque, randomly-minted paragraph-level
 # cite targets the conformance suite quantifies over, their tombstone sidecar,
@@ -346,3 +448,141 @@ docs/reify-language-spec.tombstones  tests/infra/test_spec_anchor_lint.sh
 docs/notes/spec-anchor-contract.md   tests/infra/test_spec_anchor_lint.sh
 scripts/spec-anchor-lint.sh          tests/infra/test_spec_anchor_lint.sh
 tests/infra/test_spec_anchor_lint.sh tests/infra/test_spec_anchor_lint.sh
+
+# Task 6427: tests/infra/govtest_slice_reaper_lib.sh (the private per-run
+# systemd-slice lifecycle lib, task 6386) had NO row here, so a task-scope
+# --scope branch edit to the lib alone selected zero infra tests and its
+# guards never ran on the branch -- coverage was recovered only incidentally
+# at merge, because 6386's own diff also touches test_cpu_governed_exec_hostexcl.sh
+# (itself full-gate load-bearing), not because of anything in this map. A
+# future task touching only the lib would land with its guards unrun. The
+# row below routes it to its own dedicated hermetic guard.
+#
+# Deliberately NOT also routed to test_cpu_load_governance.sh, its other
+# consumer: that test is host-exclusive (run-all-classification.manifest:60)
+# and burns real CPU BY DEFAULT, whereas this map's selective-infra emitter
+# (scripts/verify.sh:2908-2912) execs selected tests inline with no
+# serialization, no Lane-X flock and only a 10m timeout, concurrently with
+# every other lane on the shared host -- none of run_all.sh's host-exclusive
+# safeguards apply here. The lib's wiring into that consumer is already
+# proven hermetically and sub-second by Block F of
+# tests/infra/test_govtest_slice_reaper.sh (~line 714, driving it under
+# REIFY_GOVTEST_TEST_MODE=1 + REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1), which the
+# row below already selects.
+tests/infra/govtest_slice_reaper_lib.sh    tests/infra/test_govtest_slice_reaper.sh
+
+# Task 5870: the git rerere guard (shared .git/rr-cache is a COMMON path across
+# every warm lane, so one lane's resolution can be auto-applied and auto-staged
+# into another's merge). Mirrors the scripts/warm-lane-audit.sh row above — a
+# task-scope verify runs the guard's hermetic suite whenever the SUT changes.
+scripts/git-rerere-guard.sh    tests/infra/test_git_rerere_guard.sh
+# ...and setup-dev.sh, because the suite's (wiring) block asserts ON THAT FILE:
+# that it carries an uncommented call to the guard, and that the subcommand is
+# `arm` (a bare `check` would report the drift while leaving the fleet armed).
+# Without this row a task-scope verify that edits only setup-dev.sh — dropping or
+# commenting out the invocation, which is exactly how the guard becomes dead code
+# — never selects the suite that would catch it. Multiple rows per artifact are
+# the established pattern (scripts/warm-lane-audit.sh appears twice above, and
+# scripts/setup-dev.sh already has an OCCT row).
+scripts/setup-dev.sh           tests/infra/test_git_rerere_guard.sh
+
+# Task 5629 (esc-5392-1): these four artifacts JOINTLY decide whether the
+# compiled libtree_sitter_reify.a matches the tree being verified —
+# build.rs declares which inputs cargo watches and attests what it compiled,
+# scanner.c is a compiled input, and the two scripts regenerate and then
+# force/assert freshness. An edit to any one of them can silently reintroduce
+# the defect this task fixed (a scanner.c change watched by nothing, hence
+# never recompiled and never under test), so each must pull in its own guard
+# on a task-scope verify. Four rows for one test because this file's header
+# notes the GLOB is self-maintaining for new TESTS, not for new ARTIFACTS —
+# same one-artifact-per-row pattern as scripts/seed-warm-lane.sh and
+# scripts/lib_live_refs.sh above.
+tree-sitter-reify/build.rs           tests/infra/test_tree_sitter_pipeline.sh
+tree-sitter-reify/src/scanner.c      tests/infra/test_tree_sitter_pipeline.sh
+scripts/tree-sitter-generate.sh      tests/infra/test_tree_sitter_pipeline.sh
+scripts/tree-sitter-freshness.sh     tests/infra/test_tree_sitter_pipeline.sh
+
+# Task 7139: the reify-audit binary-freshness guard library and the pre-done
+# hook wrapper that consumes it. NEITHER had a row here, so on the task role
+# (DF_VERIFY_ROLE != merge && != background) a diff touching only these two
+# scripts selected ZERO infra poles — both suites run only at the merge/
+# background tier, wholesale inside tests/infra/run_all.sh. That made the
+# guard's own RED/GREEN cycle unobservable in an implementer's verify, on a
+# script whose failure mode is a project-wide done-flip outage.
+#
+# Same surgical-registration rationale as the verify-pipeline-guard.sh rows
+# above: scripts/verify-pipeline-guard.sh's is-registered counts this map,
+# while requires-full-gate deliberately does not — so these rows make both
+# scripts first-class registered artifacts (satisfying test_verify_pipeline_
+# guard.sh's ANTI-DRIFT sweep) WITHOUT forcing `--scope all` on future edits.
+# Do NOT add either path to scripts/verify-pipeline-paths.txt.
+#
+# Both suites are hermetic (mktemp fixtures, `touch -t` staling, heredoc PATH
+# shims for cargo/curl/reify-audit; no cargo build, no network) and already
+# carry `pool` rows in tests/infra/run-all-classification.manifest, so they
+# are cheap enough for the selective-infra block's inline, unserialized exec.
+scripts/reify-audit-freshness.sh        tests/infra/test_reify_audit_freshness.sh
+scripts/reify-audit-predone-wrapper.sh  tests/infra/test_reify_audit_predone_wrapper.sh
+
+# Task 7236: the snapshot-filter sidecar the wrapper above shells out to. Same
+# hole, one file over -- it had NO row here EITHER, and unlike the two rows
+# above it is not full-gate routed on its own (measured at 7236:
+# `verify-pipeline-guard.sh requires-full-gate scripts/reify-audit-snapshot-
+# filter.jq` -> 1 AND `is-registered` -> 1, i.e. registered by no route at
+# all). So a .jq-only diff selected ZERO infra poles, leaving the filter's own
+# guard -- test_reify_audit_predone_wrapper.sh Check 5f, which pins that ONE
+# unparseable updatedAt degrades per-row instead of aborting the whole
+# snapshot -- unrunnable on the very file it guards.
+#
+# Same surgical-registration rationale as the 7139 rows above, and the same
+# caution: do NOT add this path to scripts/verify-pipeline-paths.txt. A row
+# here is already a first-class registration (it satisfies test_verify_
+# pipeline_guard.sh's ANTI-DRIFT sweep) WITHOUT forcing `--scope all` on every
+# future edit to a one-line jq filter. The suite is the same hermetic,
+# seconds-long, `pool`-classified one row 513 selects.
+scripts/reify-audit-snapshot-filter.jq  tests/infra/test_reify_audit_predone_wrapper.sh
+
+# Task 7244: the read-only task-branch provenance sweep (which in-flight
+# branches carry commits or files belonging to another task). Mirrors the
+# scripts/deterministic-gate-closure-staleness-sweep.sh row above — same
+# hermetic, `pool`-classified, seconds-long suite, selected as a fail-fast pole
+# whenever the SUT changes.
+scripts/task-branch-contamination-sweep.sh    tests/infra/test_task_branch_contamination_sweep.sh
+
+# Task 7244: scripts/lib_task_citation.sh is the SINGLE copy of the "this commit
+# message cites task N" grammar (its header records, arm by arm, where it agrees
+# with dark-factory's DEFAULT_COMMIT_CITATION_PATTERN), so it needs a row per
+# CONSUMER — the one-artifact-multiple-rows pattern scripts/seed-warm-lane.sh and
+# scripts/warm-lane-audit.sh already use. Its own unit suite plus BOTH consumers'
+# suites, each of which load-bears the lib: a lib-only diff that selected only
+# the lib's unit tests would leave the consumers' classification contracts
+# unrun on the very edit that can break them (esc-7244-16's grammar change
+# moved 81 live degenerate verdicts and the sweep's census at once).
+scripts/lib_task_citation.sh    tests/infra/test_lib_task_citation.sh
+scripts/lib_task_citation.sh    tests/infra/test_warm_lane_degenerate_ref.sh
+scripts/lib_task_citation.sh    tests/infra/test_task_branch_contamination_sweep.sh
+
+# Task 5738: scripts/lib_lane_lock.sh is the SINGLE tri-state warm-lane lock
+# probe (IDLE/BUSY/UNMEASURABLE), shared by scripts/warm-lane-audit.sh and
+# scripts/warm-lane-lock-guard.sh. It owns the measurement; each caller owns
+# its own fail direction on UNMEASURABLE, and those two directions are
+# deliberately OPPOSITE (guard fails open, audit fails closed). So it needs a
+# row per CONSUMER — the same one-artifact-multiple-rows pattern
+# scripts/lib_task_citation.sh uses above. A lib-only diff that selected only
+# the lib's unit suite would leave BOTH mapping contracts unrun on the very
+# edit that can break either of them.
+scripts/lib_lane_lock.sh    tests/infra/test_lane_lock_probe.sh
+scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_audit.sh
+scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_lock_guard.sh
+# ...and a THIRD suite load-bears it transitively: test_warm_lane_sizing_lifecycle.sh
+# drives scripts/warm-lane-audit.sh end to end and asserts on the probe's own
+# verdicts (`HEADROOM live=3` at B2, `live=1` at B19), so a lib-only diff that
+# omitted this row would leave those assertions unrun on the very edit that can
+# move them.
+scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_sizing_lifecycle.sh
+# The lib's assertions live in a .py, and this map is keyed on EXACT changed-path
+# equality with no auto-run-a-changed-infra-test fallback. The thin .sh wrapper
+# closes run_all.sh's `test_*.sh` DISCOVERY hole; it does not close this SELECTION
+# one. Without this row a --scope branch diff touching only the assertions selects
+# no infra test at all.
+tests/infra/test_lane_lock_probe.py    tests/infra/test_lane_lock_probe.sh

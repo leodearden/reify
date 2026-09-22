@@ -1446,26 +1446,43 @@ echo "--- (b10): still emitted for --scope branch when the change is under gui/s
 [ -f "$SCRIPT_DIR/copy_list_preflight_lib.sh" ] || { echo "ERROR: copy_list_preflight_lib.sh not found at $SCRIPT_DIR/copy_list_preflight_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
 
+# _make_plan_fixture <dir> — build a hermetic throwaway repo that can run
+# `verify.sh --print-plan` without a cargo workspace, and leave it on a `main`
+# branch whose base commit holds exactly the scripts verify.sh sources.
+#
+# ONE copy of the bootstrap, called by all three fixtures below (b10's BR_FIX,
+# b13's ST_FIX, b15's IN_FIX) — they differ only in what they stage or commit on
+# TOP of this base, which stays at each call site. SPOT: the `.sh` half of the
+# copy list is drift-guarded by assert_source_closure_copied, but the DATA
+# dependencies (occt-touching-crates.txt, release-sensitive-crates.txt,
+# .config/nextest.toml) are not, so a new one added to verify.sh in three places
+# would fail opaquely in whichever copy was missed.
+_make_plan_fixture() {
+    local _dir="$1" _f
+    mkdir -p "$_dir/scripts" "$_dir/.config"
+    for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
+              release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
+              lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
+              lib_git_env_scrub.sh \
+              gen-nextest-config.sh heavy-test-filter-lib.sh; do
+        cp "$REPO_ROOT/scripts/$_f" "$_dir/scripts/$_f"
+    done
+    cp "$REPO_ROOT/.config/nextest.toml" "$_dir/.config/nextest.toml"
+    chmod +x "$_dir/scripts/verify.sh"
+    # Preflight: fail loudly if verify.sh's TRANSITIVE source closure gained a lib
+    # that this copy list misses — otherwise the callers' 2>/dev/null swallows it
+    # and their assertions fail opaquely (task #5154).
+    assert_source_closure_copied "$REPO_ROOT/scripts" "$_dir/scripts" verify.sh || return 1
+    git -C "$_dir" init -q
+    git -C "$_dir" config user.email test@invalid.local
+    git -C "$_dir" config user.name test
+    git -C "$_dir" add scripts .config
+    git -C "$_dir" commit -q -m base
+    git -C "$_dir" branch -M main
+}
+
 BR_FIX="$DET_TMP/branch-fixture"
-mkdir -p "$BR_FIX/scripts" "$BR_FIX/.config"
-for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
-          release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
-          lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
-          gen-nextest-config.sh heavy-test-filter-lib.sh; do
-    cp "$REPO_ROOT/scripts/$_f" "$BR_FIX/scripts/$_f"
-done
-cp "$REPO_ROOT/.config/nextest.toml" "$BR_FIX/.config/nextest.toml"
-chmod +x "$BR_FIX/scripts/verify.sh"
-# Preflight: fail loudly if verify.sh's TRANSITIVE source closure gained a lib
-# that this copy list misses — otherwise the 2>/dev/null below swallows it and
-# the branch assertion fails opaquely (task #5154).
-assert_source_closure_copied "$REPO_ROOT/scripts" "$BR_FIX/scripts" verify.sh || exit 1
-git -C "$BR_FIX" init -q
-git -C "$BR_FIX" config user.email test@invalid.local
-git -C "$BR_FIX" config user.name test
-git -C "$BR_FIX" add scripts .config
-git -C "$BR_FIX" commit -q -m base
-git -C "$BR_FIX" branch -M main
+_make_plan_fixture "$BR_FIX" || exit 1
 git -C "$BR_FIX" checkout -q -b task-branch
 mkdir -p "$BR_FIX/gui/src-tauri/src"
 printf 'fn main() {}\n' > "$BR_FIX/gui/src-tauri/src/engine.rs"
@@ -1567,29 +1584,14 @@ assert "b11: still emitted EXACTLY ONCE, not once per affected crate (got $N_MAN
 echo ""
 echo "--- (b13): narrowed on --scope staged (no --narrow) as well as --scope branch ---"
 
-# ST_FIX — a SECOND hermetic throwaway repo, built with b10's idiom.  BR_FIX is
-# deliberately NOT reused: its change is COMMITTED on task-branch, so its staged
-# diff is empty.  `--scope staged` reads `git diff --cached`, and an empty staged
+# ST_FIX — a SECOND hermetic throwaway repo, from the shared _make_plan_fixture
+# bootstrap.  BR_FIX is deliberately NOT reused: its change is COMMITTED on
+# task-branch, so its staged diff is empty.  `--scope staged` reads `git diff --cached`, and an empty staged
 # diff yields RUN_RUST=0 and zero test passes, which would make every assertion
 # below vacuously green.  The reify-doc file is therefore left in the INDEX,
 # uncommitted.
 ST_FIX="$DET_TMP/staged-fixture"
-mkdir -p "$ST_FIX/scripts" "$ST_FIX/.config"
-for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
-          release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
-          lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
-          gen-nextest-config.sh heavy-test-filter-lib.sh; do
-    cp "$REPO_ROOT/scripts/$_f" "$ST_FIX/scripts/$_f"
-done
-cp "$REPO_ROOT/.config/nextest.toml" "$ST_FIX/.config/nextest.toml"
-chmod +x "$ST_FIX/scripts/verify.sh"
-assert_source_closure_copied "$REPO_ROOT/scripts" "$ST_FIX/scripts" verify.sh || exit 1
-git -C "$ST_FIX" init -q
-git -C "$ST_FIX" config user.email test@invalid.local
-git -C "$ST_FIX" config user.name test
-git -C "$ST_FIX" add scripts .config
-git -C "$ST_FIX" commit -q -m base
-git -C "$ST_FIX" branch -M main
+_make_plan_fixture "$ST_FIX" || exit 1
 # STAGED, never committed — this is what `git diff --cached` must see.
 mkdir -p "$ST_FIX/crates/reify-doc/src"
 printf 'pub fn touched() {}\n' > "$ST_FIX/crates/reify-doc/src/lib.rs"
@@ -1690,8 +1692,8 @@ N_STAGED="$(_gui_pass_count "$P_N_STAGED")"
 assert "b14: closure unavailable (ALL sentinel) on --scope staged still emits — C5 fail-wide (got $N_STAGED)" \
     test "$N_STAGED" -eq 1
 # The count alone cannot tell "the closure was COMPUTED and came back ALL" apart
-# from "the closure was never computed on this tier at all": both take arm 2 and
-# both yield 1.  Every other staged case here is driven through
+# from "the closure was never computed on this tier at all": both take verify.sh's
+# FAIL-WIDE arm and both yield 1.  Every other staged case here is driven through
 # REIFY_AFFECTED_CRATES_OVERRIDE, which short-circuits the
 # CHANGED_FILES_RAW -> affected_crates() branch entirely, so this is the ONLY
 # capture that exercises that wiring on the staged tier — an implementation that
@@ -1707,8 +1709,8 @@ assert "b14: the staged closure is actually COMPUTED (header carries closure=ALL
 
 # Glob-bearing override: the split is an UNQUOTED expansion, so with pathname
 # expansion live `*` expands against the fixture CWD into its directory entries
-# (`crates scripts`) rather than collapsing — neither is reify-gui, so arm 3
-# silently narrowed the pass AWAY.  Measured at 0 emitted passes with
+# (`crates scripts`) rather than collapsing — neither is reify-gui, so the
+# MEMBERSHIP arm silently narrowed the pass AWAY.  Measured at 0 emitted passes with
 # `closure=*` in the header before the `set -f` + crate-name-grammar guard.  A
 # malformed knob must fail WIDE on this shape exactly as it does on "   ".
 P_G_STAGED=""
@@ -1720,7 +1722,10 @@ assert "b14: a glob-bearing affected-crates override fails WIDE, never globs aga
     test "$G_STAGED" -eq 1
 
 # A token that cannot BE a cargo package name (here a path fragment) means the
-# knob is malformed, not that the closure excludes reify-gui — arm 2, not arm 3.
+# knob is malformed, not that the closure excludes reify-gui — verify.sh's
+# FAIL-WIDE arm, not its MEMBERSHIP one.  (Arms are cited by NAME, never by
+# ordinal: this suite's ordinals went stale once when task 6268 inserted
+# COMPUTED-EMPTY ahead of the membership test.)
 P_P_STAGED=""
 _staged_gui_plan P_P_STAGED 'crates/reify-doc'
 assert "b14: path-fragment override staged-scope plan capture is complete" \
@@ -1734,6 +1739,82 @@ assert "b14: scope=all plan capture is complete" \
 A_DOC="$(_gui_pass_count "$P_A_DOC")"
 assert "b14: the merge gate (scope=all) emits it unconditionally, even under a reify-doc-only override (got $A_DOC)" \
     test "$A_DOC" -eq 1
+
+# -- (b15): a COMPUTED-EMPTY closure narrows the pass away ---------------------
+# b14's fail-wide family covers every closure the run could NOT derive.  This is
+# the opposite shape and the one b14 deliberately cannot reach: a closure the run
+# DID derive, from this run's own changed-file list, which came back holding no
+# crate at all.  A tests/infra-only diff is that shape and is extremely common
+# here — affected-crates-lib.sh maps tests/infra/* to no crate, while
+# decide_scope's conservative `*)` catch-all still sets RUN_RUST=1 — so before
+# task 6268 it paid the `--features gui` tauri + webkit2gtk + OCCT
+# feature-unification link (20m42s cold / ~137s warm, shared with no other pass)
+# for a diff whose closure provably contains zero crates.
+#
+# IN_FIX — a THIRD hermetic throwaway repo, from the shared _make_plan_fixture
+# bootstrap, then finished with b13's ST_FIX idiom for the same reason: the
+# changed file is left in the INDEX, never committed, so `git diff --cached` is
+# non-empty and no assertion below can go vacuously green.
+# The staged path is deliberately `tests/infra/foo.sh` and NOT a `test_*.sh`
+# name — that keeps it clear of the run-all classification-manifest drift guard,
+# which is a plan LINE and so never executes under --print-plan, but which a
+# future reader should not have to re-derive.
+#
+# The capture runs with NO REIFY_AFFECTED_CRATES_OVERRIDE (`env -u`, b14's
+# discipline): an override is a substitute for the derivation and never carries
+# the from-diff licence, so this is the only way to reach a genuinely
+# COMPUTED-EMPTY closure.  It never shells out to `cargo metadata` — the
+# tests/infra-only file list short-circuits at affected_crates()'s
+# `${#direct[@]} -eq 0` early return, BEFORE _reverse_closure — which is exactly
+# why the shape is reproducible in this workspace-less fixture.
+echo ""
+echo "--- (b15): a COMPUTED-EMPTY affected-crate closure narrows the pass away ---"
+
+IN_FIX="$DET_TMP/infra-only-fixture"
+_make_plan_fixture "$IN_FIX" || exit 1
+# STAGED, never committed — what `git diff --cached` must see.
+mkdir -p "$IN_FIX/tests/infra"
+printf '#!/usr/bin/env bash\necho placeholder\n' > "$IN_FIX/tests/infra/foo.sh"
+git -C "$IN_FIX" add tests
+
+P_IN_STAGED=""
+capture_print_plan P_IN_STAGED "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    env -u REIFY_AFFECTED_CRATES_OVERRIDE \
+    bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+    _ "$IN_FIX" || true
+
+assert "b15: computed-empty staged-scope plan capture is complete" \
+    plan_capture_complete "$P_IN_STAGED"
+
+# Anti-vacuity positive control, doubling as the decision that the OTHER passes
+# do NOT follow: a computed-empty closure keeps NARROW_ACTIVE=0, so cargo check /
+# clippy / the workspace nextest pass stay at --workspace.  Its presence also
+# proves RUN_RUST=1, i.e. that test passes were emitted at all — without it a
+# gui-feature count of 0 would be satisfied by a fixture that produced no test
+# passes whatsoever.
+assert "b15: the computed-empty staged plan is a real full-workspace plan (carries 'cargo clippy --workspace')" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "cargo clippy --workspace"' _ "$P_IN_STAGED"
+
+# The DISCRIMINATING assertion, and the reason the narrowing header needs a
+# from-diff field at all: no count assertion can tell "the closure was computed
+# and came back EMPTY" apart from "the closure was never computed on this tier",
+# because both leave `closure=` empty.  That is the same vacuity b14's
+# `affected= closure=ALL` header assertion closes for the ALL case — without
+# this, a b15 count of 0 would be satisfied by an implementation that simply
+# stopped computing the closure on the staged tier.  Asserting the exact tail
+# also pins the APPEND-ONLY shape of the header (test_verify_scope.sh greps
+# `NARROW_ACTIVE=0 affected=ALL` unanchored and plan_capture_lib.sh matches
+# `NARROW_ACTIVE=([0-9]+)`; both survive a trailing append, neither survives a
+# reordering).
+assert "b15: the staged closure is COMPUTED and EMPTY (header carries closure= with the from-diff licence)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "NARROW_ACTIVE=0 affected= closure= from_diff=1"' _ "$P_IN_STAGED"
+
+# The headline.  A closure the run derived from its own diff and which holds no
+# crate at all proves reify-gui is unaffected, so the feature-unification link
+# must not be paid — the mirror of b13's S_DOC, reached without an override.
+IN_STAGED="$(_gui_pass_count "$P_IN_STAGED")"
+assert "b15: a COMPUTED-EMPTY closure on --scope staged does NOT emit the gui-feature pass (got $IN_STAGED)" \
+    test "$IN_STAGED" -eq 0
 
 # -- (b12): --test-threads reaches the gui-feature pass ------------------------
 # `verify.sh --test-threads=N` caps test-execution parallelism.  The cargo-test
