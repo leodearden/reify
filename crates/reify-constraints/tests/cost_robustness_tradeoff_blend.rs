@@ -465,8 +465,8 @@ fn gamma_strict_auto_two_sided_bracket_is_solved() {
 ///
 /// This test is GREEN today and must STAY green — its already-green status is
 /// DELIBERATE, not accidental. It is the guard that stops a future maintainer
-/// "simplifying" `strict_autos_constraint_bracketed` into a blanket
-/// `return true` for γ: that was MEASURED on the prd-gate fixture above to
+/// "simplifying" `default_bounded_strict_autos` into a blanket
+/// empty result for γ: that was MEASURED on the prd-gate fixture above to
 /// convert an existing loud `error: strict auto parameter resolution is not
 /// uniquely determined` into a silent `thickness = 10 m` — 10 m being
 /// `default_bounds_for(Length)`'s ceiling, i.e. a value pinned by a
@@ -629,7 +629,7 @@ fn gamma_default_bounds_determined_diagnostic_names_the_missing_bound() {
 
 // ── γ + a bound the DERIVATION cannot read (task #5711, esc-5711-3) ───────
 //
-// `strict_autos_constraint_bracketed` reads its evidence out of
+// `default_bounded_strict_autos` reads its evidence out of
 // `derive_param_intervals`, which recognises only three syntactic shapes
 // (`p OP c`, `p - k OP c`, `k - p OP c`) on `Ge`/`Gt`/`Le`/`Lt` with a
 // CONSTANT, auto-free far operand. Every other legitimate way to bound a
@@ -814,7 +814,7 @@ fn gamma_strict_autos_coupled_bound_is_not_non_unique() {
     assert_not_non_unique(&problem, "coupled multi-param bound");
 }
 
-/// The KNOWN, ACCEPTED gap in `strict_autos_constraint_bracketed`: a γ blend
+/// The KNOWN, ACCEPTED gap in `default_bounded_strict_autos`: a γ blend
 /// that is FLAT with respect to a bracketed strict auto still reports
 /// `unique: true`.
 ///
@@ -829,7 +829,7 @@ fn gamma_strict_autos_coupled_bound_is_not_non_unique() {
 /// The non-γ path gives the OPPOSITE verdict for the analogous shape
 /// (`solver.rs`'s `flat_objective_over_inequality_bracket_reports_non_unique`,
 /// via `classify_uniqueness`'s tie arm). That divergence is accepted, not
-/// overlooked — see `strict_autos_constraint_bracketed`'s "Known, ACCEPTED gap"
+/// overlooked — see `default_bounded_strict_autos`' "Known, ACCEPTED gap"
 /// section for the reasoning (the widening is monotone: γ reported
 /// `ConstraintNonUnique` for EVERY strict auto before #5711 amendment 2, so no
 /// previously-`Solved` model changes verdict).
@@ -862,7 +862,7 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
                 unique,
                 "ACCEPTED GAP: the γ predicate decides §11.6 test (2) from constraint \
                  bracketing alone, so a blend that is flat in `u` still reports unique. \
-                 If this flipped deliberately, update `strict_autos_constraint_bracketed`'s \
+                 If this flipped deliberately, update `default_bounded_strict_autos`' \
                  \"Known, ACCEPTED gap\" section rather than just this assertion"
             );
             let u_si = values
@@ -888,8 +888,8 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
 /// `params_in_underivable_constraints` is deliberately general: a strict auto
 /// mentioned by ANY constraint the derivation cannot read abstains, including
 /// one whose missing side really is `default_bounds_for`'s. The unit tests
-/// pin the set-building half and `strict_autos_constraint_bracketed_abstains_
-/// for_underivable_param` pins the predicate, but nothing pinned the COMPOSED
+/// pin the set-building half and `default_bounded_strict_autos_abstains_for_
+/// underivable_param` pins the evidence function, but nothing pinned the COMPOSED
 /// verdict for a model that is genuinely unbounded on a side AND carries one
 /// unreadable conjunct. This is that model.
 ///

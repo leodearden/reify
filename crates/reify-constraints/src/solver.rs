@@ -1952,9 +1952,8 @@ fn seed_box_from_intervals(
 ///   [`constant_operand_value`] rejects a far side naming the auto.
 ///
 /// Those `None`s are derivation BLIND SPOTS, not evidence that the user left a
-/// side unbounded — the distinction [`strict_autos_constraint_bracketed`] needs
-/// in order to reserve its `false` verdict for params positively confirmed
-/// unbounded.
+/// side unbounded — the distinction [`default_bounded_strict_autos`] needs in
+/// order to reserve an ENTRY for params positively confirmed unbounded.
 ///
 /// ACCEPTED CONSEQUENCE (review, robustness): because the rule is general, a γ
 /// model carrying ONE unreadable constraint abstains for every strict auto that
@@ -2064,61 +2063,140 @@ fn collect_underivable_in_leaf(
     }
 }
 
-/// Is EVERY strict (`!p.free`) auto param's derived interval bounded on BOTH
-/// sides by the user's own constraints?
+/// One strict auto param whose resolved value was fixed on at least one side by
+/// a bound the MODEL never authored — [`effective_bounds`]' fallback to
+/// [`default_bounds_for`].
 ///
-/// Pure predicate — no solve, no I/O, no mutation. Answers PRD
+/// INVARIANT: at least one of `default_lo` / `default_hi` is `Some`. Enforced at
+/// construction — [`DefaultBoundedParam::new`] returns `None` for a param the
+/// user's constraints bounded on both sides, so a value of this type is always
+/// evidence of something. There is deliberately NO separate `side`
+/// discriminant: the side IS which options are `Some`, so there is nothing that
+/// can disagree with itself (heuristic 11, SPOT).
+///
+/// The values are the bounds the SOLVE ACTUALLY USED, read from
+/// [`effective_bounds`] rather than from [`default_bounds_for`] directly, so a
+/// rendered message can never claim a number the solve did not work with.
+#[derive(Debug)]
+struct DefaultBoundedParam {
+    id: ValueCellId,
+    default_lo: Option<f64>,
+    default_hi: Option<f64>,
+}
+
+impl DefaultBoundedParam {
+    /// `Some` when `interval` leaves at least one side of `param` unbounded;
+    /// `None` when the user's constraints supplied both sides.
+    fn new(param: &AutoParam, interval: &DerivedInterval) -> Option<Self> {
+        let (lo, hi) = effective_bounds(param);
+        let default_lo = interval.lo.is_none().then_some(lo);
+        let default_hi = interval.hi.is_none().then_some(hi);
+        (default_lo.is_some() || default_hi.is_some()).then(|| Self {
+            id: param.id.clone(),
+            default_lo,
+            default_hi,
+        })
+    }
+
+    /// The user-facing clause naming this param, each side no constraint
+    /// bounded, and the solver-internal bound used there.
+    ///
+    /// ONE rendering path for one, two or both sides — the invariant above makes
+    /// `sides` non-empty, so there is no empty-list case to special-case.
+    fn clause(&self) -> String {
+        let mut sides = Vec::with_capacity(2);
+        if let Some(lo) = self.default_lo {
+            sides.push(format!("below (solver default {lo})"));
+        }
+        if let Some(hi) = self.default_hi {
+            sides.push(format!("above (solver default {hi})"));
+        }
+        format!("no constraint bounds `{}` {}", self.id, sides.join(" or "))
+    }
+}
+
+/// [`verify_uniqueness`]' verdict, carrying the EVIDENCE it was reached on.
+///
+/// Was a `bool`, which is why [`finalise_uniqueness`] could emit only one
+/// generic sentence for three different causes: the γ branch measures exactly
+/// which side of each strict auto's interval came from [`default_bounds_for`]
+/// and then threw it away. The verdict and its grounds are now one value, so
+/// they cannot disagree (heuristic 10).
+#[derive(Debug)]
+enum Determinedness {
+    /// §11.6 is satisfied, or cannot be shown to be violated.
+    Determined,
+    /// Every listed param is bounded on a side only by a solver-internal
+    /// default — genuine non-determinedness, with the measurement to prove it.
+    ///
+    /// Reachable ONLY from the γ `cost_robustness_tradeoff` branch, which is the
+    /// only route that computes per-param evidence. That is a statement about
+    /// where the evidence comes from, not a general capability: the perturbation
+    /// path answers §11.6 by re-solving, and a re-solve disagreeing says nothing
+    /// about WHICH bound was responsible.
+    DefaultBoundsDetermined(Vec<DefaultBoundedParam>),
+    /// Non-determinedness with no per-param evidence: the perturbation re-solve
+    /// disagreed, or the missing/non-numeric solved-value guard fired.
+    NotDetermined,
+}
+
+/// WHICH strict (`!p.free`) auto params have a side that NO user constraint
+/// bounded — i.e. a side supplied by [`default_bounds_for`] instead?
+///
+/// EMPTY ⇒ every strict auto is bracketed on both sides by the user's own
+/// model. Pure function — no solve, no I/O, no mutation. Answers PRD
 /// `docs/reify-implementation-architecture.md` §11.6 test (2) ("uniquely
 /// optimal under the applicable objective") for the γ `cost_robustness_tradeoff`
 /// path, where the perturbation machinery `verify_uniqueness` normally uses is
 /// structurally inapplicable (see that function's doc for the measured ruling).
 ///
-/// - Both sides constraint-derived ⇒ the objective's argmin is taken over an
-///   interval the USER authored, so the resolved value is fixed by the user's
-///   model: well-determined.
+/// - Both sides constraint-derived ⇒ NO entry. The objective's argmin is taken
+///   over an interval the USER authored, so the resolved value is fixed by the
+///   user's model: well-determined.
 /// - A side missing AND the param mentioned in no constraint the derivation
-///   failed to read ⇒ that side is supplied by [`default_bounds_for`], a
-///   solver-internal default the user never wrote, so the resolved value is
-///   DEFAULT-BOUNDS-determined rather than model-determined: exactly the
-///   non-determinedness §11.6 exists to catch.
-/// - A side missing but the param present in `underivable` ⇒ ABSTAIN, counting
-///   the param as bracketed (esc-5711-3). The `None` there is a derivation
-///   BLIND SPOT, not evidence about the user's model. Everything outside
-///   [`derive_from_side`]'s three recognised shapes is invisible to
-///   [`derive_param_intervals`] — `Eq`, coefficient, nonlinear, coupled, `Or`,
-///   sum and dispatch-backed predicates among them, as EXAMPLES rather than a
-///   taxonomy (see [`params_in_underivable_constraints`] for the general rule).
-///   Letting one masquerade as "the user did not bound this side" converts
-///   a valid, bounded γ model into a user-facing `error: strict auto parameter
-///   resolution is not uniquely determined`. MEASURED before the fix, on this
-///   branch: γ + `1mm<x<4mm ∧ y>1mm ∧ y < 5mm - x` reported
-///   `ConstraintNonUnique` even though the region is bounded (x>1mm ⇒ y<4mm)
-///   and the plain-`Minimize` path accepted the IDENTICAL constraints. `false`
-///   is thereby reserved for params the derivation POSITIVELY confirms are
-///   constraint-unbounded on a side.
+///   failed to read ⇒ an ENTRY carrying that side's bound. The side is supplied
+///   by [`default_bounds_for`], a solver-internal default the user never wrote,
+///   so the resolved value is DEFAULT-BOUNDS-determined rather than
+///   model-determined: exactly the non-determinedness §11.6 exists to catch.
+///   Returning the bound rather than a bare `false` is what lets
+///   [`finalise_uniqueness`] name the measured cause (task #6465 item 2).
+/// - A side missing but the param present in `underivable` ⇒ ABSTAIN, omitting
+///   the param (esc-5711-3). The `None` there is a derivation BLIND SPOT, not
+///   evidence about the user's model. Everything outside [`derive_from_side`]'s
+///   three recognised shapes is invisible to [`derive_param_intervals`] — `Eq`,
+///   coefficient, nonlinear, coupled, `Or`, sum and dispatch-backed predicates
+///   among them, as EXAMPLES rather than a taxonomy (see
+///   [`params_in_underivable_constraints`] for the general rule). Letting one
+///   masquerade as "the user did not bound this side" converts a valid, bounded
+///   γ model into a user-facing `error: strict auto parameter resolution is not
+///   uniquely determined`. MEASURED before the fix, on this branch: γ +
+///   `1mm<x<4mm ∧ y>1mm ∧ y < 5mm - x` reported `ConstraintNonUnique` even
+///   though the region is bounded (x>1mm ⇒ y<4mm) and the plain-`Minimize` path
+///   accepted the IDENTICAL constraints. An ENTRY is thereby reserved for params
+///   the derivation POSITIVELY confirms are constraint-unbounded on a side.
 ///
 /// Abstention is checked per-param against a MISSING SIDE, not against "no
 /// interval data at all": in the coupled example above `x` has a readable
 /// lower bound and only its upper side is opaque, so an all-or-nothing
 /// abstention test would still have errored on it.
 ///
-/// MONOTONE in `underivable`: growing that set can only move a param from "not
-/// bracketed" to "abstain", never the reverse, so the verdict can only go
-/// `false` → `true`. `verify_uniqueness` RELIES on this — it evaluates the
-/// predicate against an empty set first and only builds the (per-conjunct,
-/// eval-heavy) evidence set if that first answer is `false`. Keep the
-/// `underivable.contains(&i) || …` shape; a rule that let the evidence set
-/// REMOVE a bracketing would silently break that short-circuit.
-/// `strict_autos_constraint_bracketed_abstains_for_underivable_param` pins both
+/// MONOTONE in `underivable`: growing that set can only move a param from
+/// "reported" to "abstained", never the reverse, so the returned list can only
+/// SHRINK. `verify_uniqueness` RELIES on this — it evaluates against an empty
+/// set first and only builds the (per-conjunct, eval-heavy) evidence set if that
+/// first answer is NON-EMPTY. Keep the `underivable` filter AHEAD of the
+/// per-param evidence step; a rule that let the evidence set ADD an entry would
+/// silently break that short-circuit.
+/// `default_bounded_strict_autos_abstains_for_underivable_param` pins both
 /// directions on one fixture.
 ///
 /// # Known, ACCEPTED gap: a blend that is FLAT over the bracket
 ///
-/// This predicate answers §11.6 test (2) from the CONSTRAINTS alone; it never
+/// This function answers §11.6 test (2) from the CONSTRAINTS alone; it never
 /// evaluates the objective. That is exact only when the blend actually has a
 /// unique argmin over the derived interval. When the γ cost expression does not
 /// reference a bracketed strict auto (or ties across its interval) the argmin is
-/// a SET, not a point, and this reports `true` — where the non-γ path's
+/// a SET, not a point, and this reports NO entry — where the non-γ path's
 /// [`classify_uniqueness`] tie arm deliberately reports `NonUnique` for the
 /// analogous flat objective (`flat_objective_over_inequality_bracket_reports_non_unique`).
 /// The two paths therefore give opposite verdicts on the same §11.6 question,
@@ -2150,21 +2228,20 @@ fn collect_underivable_in_leaf(
 ///
 /// PRECEDENCE for a strict param whose index has no corresponding `intervals`
 /// entry (a length mismatch — always a caller bug): ABSTENTION WINS. The
-/// `underivable.contains(&i) ||` short-circuit is evaluated BEFORE the
-/// `intervals.get(i)` lookup, so such a param reads as BRACKETED when it is in
-/// the abstention set, and as NOT bracketed — [`solutions_agree`]'s
-/// loud-not-silent contract, rather than silently defaulting to "bracketed" —
-/// only when it is not. That is deliberate and not merely incidental to the
-/// short-circuit: an index the caller never derived an interval for is
-/// evidence about the CALLER, never evidence that the user left a side
-/// unbounded, so it must not override an explicit abstention. In
+/// `underivable` filter runs BEFORE the `intervals.get(i)` lookup, so such a
+/// param is OMITTED when it is in the abstention set, and REPORTED (both sides
+/// default-bounded — [`solutions_agree`]'s loud-not-silent contract, rather than
+/// silently reading as bracketed) only when it is not. That is deliberate and
+/// not merely incidental to the filter order: an index the caller never derived
+/// an interval for is evidence about the CALLER, never evidence that the user
+/// left a side unbounded, so it must not override an explicit abstention. In
 /// `verify_uniqueness`'s two-phase evaluation the loud reading is the one that
 /// governs the first (empty-`underivable`) call, which is what keeps the bug
 /// reachable at all rather than masked by an abstention that has not been
 /// computed yet.
-/// `strict_autos_constraint_bracketed_index_beyond_intervals_returns_false`
-/// pins the loud half and
-/// `strict_autos_constraint_bracketed_abstention_outranks_missing_interval`
+/// `default_bounded_strict_autos_index_beyond_intervals_is_reported` pins the
+/// loud half and
+/// `default_bounded_strict_autos_abstention_outranks_missing_interval`
 /// the abstaining half.
 ///
 /// Bound STRICTNESS is deliberately irrelevant — a `>`/`<` bound supplies its
@@ -2175,22 +2252,23 @@ fn collect_underivable_in_leaf(
 /// Takes `intervals` rather than deriving them, so the caller can pass
 /// [`derive_param_intervals`]' RAW output: composing through [`resolve_bounds`]
 /// (as [`derived_seed_box`] does) substitutes [`effective_bounds`] for a missing
-/// side and would erase exactly the `None`s this predicate keys on.
-fn strict_autos_constraint_bracketed(
+/// side and would erase exactly the `None`s this function keys on.
+fn default_bounded_strict_autos(
     auto_params: &[AutoParam],
     intervals: &[DerivedInterval],
     underivable: &HashSet<usize>,
-) -> bool {
+) -> Vec<DefaultBoundedParam> {
     auto_params
         .iter()
         .enumerate()
         .filter(|(_, p)| !p.free)
-        .all(|(i, _)| {
-            underivable.contains(&i)
-                || intervals
-                    .get(i)
-                    .is_some_and(|iv| iv.lo.is_some() && iv.hi.is_some())
+        .filter(|(i, _)| !underivable.contains(i))
+        .filter_map(|(i, p)| {
+            // A missing `intervals` entry is read as "no side derived", which is
+            // the loud half of the PRECEDENCE rule above.
+            DefaultBoundedParam::new(p, &intervals.get(i).copied().unwrap_or_default())
         })
+        .collect()
 }
 
 /// Build a default Chebyshev-centre (max-min slack) objective for a continuous scope
@@ -3869,9 +3947,9 @@ fn score_solution(
 /// # The γ `cost_robustness_tradeoff` path (task #5711 amendment 2)
 ///
 /// When `problem.objective` carries the γ `cost_robustness_tradeoff` marker
-/// (task #4791) this function does not perturb at all: it returns
-/// [`strict_autos_constraint_bracketed`] directly, before the re-solve below,
-/// with [`params_in_underivable_constraints`] supplying the abstention
+/// (task #4791) this function does not perturb at all: it reports
+/// [`default_bounded_strict_autos`]' evidence directly, before the re-solve
+/// below, with [`params_in_underivable_constraints`] supplying the abstention
 /// evidence that keeps a derivation blind spot (`Eq`, coefficient, nonlinear
 /// or coupled bounds) from masquerading as an unbounded side (esc-5711-3).
 ///
@@ -3981,7 +4059,7 @@ fn verify_uniqueness(
     problem: &ResolutionProblem,
     solved_values: &HashMap<ValueCellId, Value>,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> bool {
+) -> Determinedness {
     // Derive the constraint intervals ONCE for this call (review suggestion 1).
     // Two consumers below need them and they used to be derived separately for
     // each: `derive_param_intervals` walks every constraint and calls
@@ -4016,7 +4094,7 @@ fn verify_uniqueness(
             missing.len(),
             missing
         );
-        return false;
+        return Determinedness::NotDetermined;
     }
 
     // #5711 amendment 2: the γ `cost_robustness_tradeoff` path answers §11.6
@@ -4050,33 +4128,37 @@ fn verify_uniqueness(
         // `derive_from_expr`, and through it `eval_expr`, once per leaf
         // conjunct) is skipped entirely. That is the common case: the γ models
         // this branch exists to keep green.
-        let bracketed = strict_autos_constraint_bracketed(
-            &problem.auto_params,
-            &intervals,
-            &HashSet::new(),
-        ) || strict_autos_constraint_bracketed(
-            &problem.auto_params,
-            &intervals,
-            &params_in_underivable_constraints(
+        let mut default_bounded =
+            default_bounded_strict_autos(&problem.auto_params, &intervals, &HashSet::new());
+        if !default_bounded.is_empty() {
+            default_bounded = default_bounded_strict_autos(
                 &problem.auto_params,
-                &problem.constraints,
-                &problem.dependent_cells,
-                &problem.current_values,
-                &problem.functions,
-                dispatch,
-            ),
-        );
+                &intervals,
+                &params_in_underivable_constraints(
+                    &problem.auto_params,
+                    &problem.constraints,
+                    &problem.dependent_cells,
+                    &problem.current_values,
+                    &problem.functions,
+                    dispatch,
+                ),
+            );
+        }
         // debug!, deliberately NOT warn!: solver_tracing.rs's
         // `normal_solve_emits_zero_warns` expectation and step-4's exact-WARN-count
         // assertion must both stay untouched by this branch.
         tracing::debug!(
-            bracketed,
+            default_bounded = default_bounded.len(),
             "uniqueness check: cost_robustness_tradeoff objective — deciding by \
              constraint-bracketing of the strict autos rather than by perturbation \
              (the γ dispatch is seed-dependent, so a re-solve from a different anchor \
              measures the anchor, not the model)"
         );
-        return bracketed;
+        return if default_bounded.is_empty() {
+            Determinedness::Determined
+        } else {
+            Determinedness::DefaultBoundsDetermined(default_bounded)
+        };
     }
 
     tracing::debug!(
@@ -4119,7 +4201,7 @@ fn verify_uniqueness(
                 score_solution(problem, solved_values, dispatch)
                     .zip(score_solution(problem, &perturbed_values, dispatch))
             }) {
-                UniquenessVerdict::Unique => true,
+                UniquenessVerdict::Unique => Determinedness::Determined,
                 UniquenessVerdict::IncumbentSuboptimal {
                     incumbent: incumbent_score,
                     perturbed: perturbed_score,
@@ -4167,16 +4249,16 @@ fn verify_uniqueness(
                          suppressing (cannot prove non-unique) rather than reporting \
                          ConstraintNonUnique, since the incumbent was never the argmin"
                     );
-                    true
+                    Determinedness::Determined
                 }
-                UniquenessVerdict::NonUnique => false,
+                UniquenessVerdict::NonUnique => Determinedness::NotDetermined,
             }
         }
         _ => {
             // If the perturbed solve fails (Infeasible/NoProgress), we can't
             // prove non-uniqueness — conservatively assume unique.
             tracing::debug!("uniqueness check: perturbed solve did not converge; assuming unique");
-            true
+            Determinedness::Determined
         }
     }
 }
@@ -4220,16 +4302,22 @@ fn finalise_uniqueness(
     // Check if any param requires uniqueness verification (strict auto)
     let has_strict = problem.auto_params.iter().any(|p| !p.free);
     if has_strict {
-        if verify_uniqueness(problem, &values, dispatch) {
-            SolveResult::Solved {
+        match verify_uniqueness(problem, &values, dispatch) {
+            Determinedness::Determined => SolveResult::Solved {
                 values,
                 unique: true,
-            }
-        } else {
+            },
             // Strict auto params require a unique solution. The
-            // perturbation-based check found a different solution,
-            // indicating the problem is underdetermined.
-            SolveResult::Infeasible {
+            // perturbation-based check found a different solution (or could not
+            // read the solved values at all), indicating the problem is
+            // underdetermined. NO per-param evidence was measured on this path,
+            // so the sentence says only what was established — and stays
+            // BYTE-IDENTICAL: four non-γ tests substring-match it
+            // (`reify-eval/tests/resolution.rs`,
+            // `auto_binding_sites_remaining_resolution.rs`,
+            // `auto_sub_override_resolution.rs`) and the
+            // solution-set-completeness capability manifest greps for it.
+            Determinedness::NotDetermined => SolveResult::Infeasible {
                 diagnostics: vec![
                     reify_core::Diagnostic::error(
                         "strict auto parameter resolution is not uniquely \
@@ -4238,7 +4326,34 @@ fn finalise_uniqueness(
                     )
                     .with_code(DiagnosticCode::ConstraintNonUnique),
                 ],
-            }
+            },
+            // The γ branch DID measure a cause, so report it: which param,
+            // which side no constraint bounded, the bound the solve fell back
+            // to, and the fix (task #6465 item 2). The `not uniquely
+            // determined` diagnosis phrase is shared with the arm above, so the
+            // diagnosis is ONE phrase rather than two dialects.
+            //
+            // `reify_core::Diagnostic` has no note/help channel (measured: no
+            // `notes`/`help`/`with_note`/`with_help` anywhere in the workspace)
+            // and its `candidates` field carries a bare-FQN-only invariant, so
+            // the cause belongs in `message`. Aggregation is not a second code
+            // path: one clause per param, joined.
+            Determinedness::DefaultBoundsDetermined(evidence) => SolveResult::Infeasible {
+                diagnostics: vec![
+                    reify_core::Diagnostic::error(format!(
+                        "strict auto parameter resolution is not uniquely determined: \
+                         {}. A value bounded only by a solver-internal default is not \
+                         determined by the model — add the missing constraint \
+                         bound(s), or use auto(free) for exploration",
+                        evidence
+                            .iter()
+                            .map(DefaultBoundedParam::clause)
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ))
+                    .with_code(DiagnosticCode::ConstraintNonUnique),
+                ],
+            },
         }
     } else {
         // All params are free — skip uniqueness verification entirely.
@@ -4610,8 +4725,8 @@ mod tests {
     ///    the `message` field and ignores all structured fields — see
     ///    `crates/reify-test-support/src/tracing_support.rs`).
     ///
-    /// Returns the `unique` flag so each call site can assert the verdict with its own
-    /// descriptive message, consistent with the named-local style of the sibling tests.
+    /// Returns the [`Determinedness`] verdict so each call site can assert it with its
+    /// own descriptive message, consistent with the named-local style of the sibling tests.
     ///
     /// See the section comment below (above `verify_uniqueness_aggregates_warn_for_multiple_missing_params`)
     /// for the early-return coverage rationale (solve_core and solutions_agree are NOT
@@ -4620,13 +4735,13 @@ mod tests {
         problem: &ResolutionProblem,
         solved_values: &std::collections::HashMap<reify_core::ValueCellId, reify_ir::Value>,
         expected_warn_substrings: &[&str],
-    ) -> bool {
+    ) -> super::Determinedness {
         use reify_test_support::warn_capturing_subscriber;
 
         use super::verify_uniqueness;
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        let unique = tracing::subscriber::with_default(subscriber, || {
+        let verdict = tracing::subscriber::with_default(subscriber, || {
             verify_uniqueness(problem, solved_values, None)
         });
 
@@ -4658,7 +4773,7 @@ mod tests {
              (via the {{}} placeholder in the format-string body); messages: {msgs:?}"
         );
 
-        unique
+        verdict
     }
 
     // ---- end verify_uniqueness test helpers ----
@@ -4851,14 +4966,15 @@ mod tests {
         // Empty solved_values: both params are missing → both hit the None branch
         let solved_values: HashMap<ValueCellId, reify_ir::Value> = HashMap::new();
 
-        let unique = assert_verify_uniqueness_aggregated_warn(
+        let verdict = assert_verify_uniqueness_aggregated_warn(
             &problem,
             &solved_values,
             &["Part.x", "Part.y"],
         );
         assert!(
-            !unique,
-            "expected verify_uniqueness to return false when both params are missing"
+            matches!(verdict, super::Determinedness::NotDetermined),
+            "expected NotDetermined (the evidence-free verdict) when both params are \
+             missing; got {verdict:?}"
         );
     }
 
@@ -4914,13 +5030,14 @@ mod tests {
         let warn_count = std::sync::Arc::clone(&counters[&tracing::Level::WARN]);
         let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
 
-        let unique = tracing::subscriber::with_default(subscriber, || {
+        let verdict = tracing::subscriber::with_default(subscriber, || {
             verify_uniqueness(&problem, &solved_values, None)
         });
 
         assert!(
-            !unique,
-            "verify_uniqueness must return false when param is missing from solved_values"
+            matches!(verdict, super::Determinedness::NotDetermined),
+            "verify_uniqueness must return NotDetermined when param is missing from \
+             solved_values; got {verdict:?}"
         );
 
         let warn_n = warn_count.load(Ordering::Acquire);
@@ -4991,13 +5108,14 @@ mod tests {
         let warn_count = std::sync::Arc::clone(&counters[&tracing::Level::WARN]);
         let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
 
-        let unique = tracing::subscriber::with_default(subscriber, || {
+        let verdict = tracing::subscriber::with_default(subscriber, || {
             verify_uniqueness(&problem, &solved_values, None)
         });
 
         assert!(
-            !unique,
-            "verify_uniqueness must return false when param value is non-numeric"
+            matches!(verdict, super::Determinedness::NotDetermined),
+            "verify_uniqueness must return NotDetermined when param value is \
+             non-numeric; got {verdict:?}"
         );
 
         let warn_n = warn_count.load(Ordering::Acquire);
@@ -5871,9 +5989,9 @@ mod tests {
 
     // ---- end classify_uniqueness tests ----
 
-    // ---- strict_autos_constraint_bracketed tests (task #5711, amendment 2) ----
+    // ---- default_bounded_strict_autos tests (task #5711, amendment 2) ----
     //
-    // `strict_autos_constraint_bracketed` is the pure predicate behind the γ
+    // `default_bounded_strict_autos` is the pure evidence function behind the γ
     // (`cost_robustness_tradeoff`) branch of `verify_uniqueness`. The
     // perturbation machinery is STRUCTURALLY INAPPLICABLE on that path —
     // `solve_cost_robustness_tradeoff` is seed-dependent by construction, so a
@@ -5886,9 +6004,16 @@ mod tests {
     // the user's model and the value is well-determined; if a side is missing,
     // that side comes from `default_bounds_for` — a solver-internal default the
     // user never authored — so the resolved value is default-bounds-determined,
-    // which is genuine non-determinedness.
+    // which is genuine non-determinedness. Task #6465 turned the bool into the
+    // EVIDENCE, so each negative fixture below now asserts WHICH side was found
+    // missing and WHICH bound the solve would fall back to, not just that
+    // something was wrong.
     //
-    // The predicate is PURE: no solve, no I/O, no mutation. These fixtures
+    // `default_bounds_for(Length)` is `(1e-6, 10.0)` and every fixture here uses
+    // the production `bounds: None` shape, so those are the two numbers the
+    // assertions quote.
+    //
+    // The function is PURE: no solve, no I/O, no mutation. These fixtures
     // therefore build `DerivedInterval` values directly rather than routing
     // through `derive_param_intervals`.
 
@@ -5907,10 +6032,10 @@ mod tests {
     }
 
     #[test]
-    fn strict_autos_constraint_bracketed_two_sided_returns_true() {
+    fn default_bounded_strict_autos_two_sided_is_empty() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         let params = vec![bracketed_test_param("t", false)];
         // `1mm < t < 4mm` — both sides supplied by the user's constraints.
@@ -5919,16 +6044,17 @@ mod tests {
         iv.push_hi(0.004, true);
 
         assert!(
-            strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
-            "a strict auto bracketed on BOTH sides is constraint-determined"
+            default_bounded_strict_autos(&params, &[iv], &HashSet::new()).is_empty(),
+            "a strict auto bracketed on BOTH sides is constraint-determined, so there \
+             is no default-bounds evidence to report"
         );
     }
 
     #[test]
-    fn strict_autos_constraint_bracketed_missing_hi_returns_false() {
+    fn default_bounded_strict_autos_missing_hi_reports_the_upper_default() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         let params = vec![bracketed_test_param("t", false)];
         // The one-sided `t > 1mm` shape (tests/prd-gate/fixtures/
@@ -5937,52 +6063,64 @@ mod tests {
         let mut iv = DerivedInterval::default();
         iv.push_lo(0.001, true);
 
-        assert!(
-            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
-            "a missing upper side means the value is default-bounds-determined, not \
-             model-determined"
+        let evidence = default_bounded_strict_autos(&params, &[iv], &HashSet::new());
+        assert_eq!(evidence.len(), 1, "expected one reported param, got {evidence:?}");
+        assert_eq!(evidence[0].id.to_string(), "Part.t");
+        assert_eq!(
+            (evidence[0].default_lo, evidence[0].default_hi),
+            (None, Some(10.0)),
+            "the model supplied the LOWER side, so only the upper is default-bounded — \
+             and the reported bound is the 10 m ceiling the solve actually used"
         );
     }
 
     #[test]
-    fn strict_autos_constraint_bracketed_missing_lo_returns_false() {
+    fn default_bounded_strict_autos_missing_lo_reports_the_lower_default() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         let params = vec![bracketed_test_param("t", false)];
         let mut iv = DerivedInterval::default();
         iv.push_hi(0.004, true);
 
-        assert!(
-            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
-            "a missing lower side is symmetric with a missing upper side"
+        let evidence = default_bounded_strict_autos(&params, &[iv], &HashSet::new());
+        assert_eq!(evidence.len(), 1, "expected one reported param, got {evidence:?}");
+        assert_eq!(
+            (evidence[0].default_lo, evidence[0].default_hi),
+            (Some(1e-6), None),
+            "a missing lower side is symmetric with a missing upper side, and the SIDE \
+             reported must be the one the model left open"
         );
     }
 
     #[test]
-    fn strict_autos_constraint_bracketed_unbounded_returns_false() {
+    fn default_bounded_strict_autos_unbounded_reports_both_defaults() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         let params = vec![bracketed_test_param("t", false)];
 
-        assert!(
-            !strict_autos_constraint_bracketed(
-                &params,
-                &[DerivedInterval::default()],
-                &HashSet::new()
-            ),
-            "a strict auto with NEITHER side constrained is entirely default-bounds-determined"
+        let evidence = default_bounded_strict_autos(
+            &params,
+            &[DerivedInterval::default()],
+            &HashSet::new(),
+        );
+        assert_eq!(evidence.len(), 1, "expected one reported param, got {evidence:?}");
+        assert_eq!(
+            (evidence[0].default_lo, evidence[0].default_hi),
+            (Some(1e-6), Some(10.0)),
+            "a strict auto with NEITHER side constrained is entirely \
+             default-bounds-determined, so BOTH sides are reported"
         );
     }
 
     #[test]
-    fn strict_autos_constraint_bracketed_free_params_are_exempt() {
+    fn default_bounded_strict_autos_free_params_are_exempt() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         // A bracketed STRICT param alongside an entirely unbracketed FREE one.
         let params = vec![
@@ -5994,22 +6132,23 @@ mod tests {
         bracketed.push_hi(0.004, true);
 
         assert!(
-            strict_autos_constraint_bracketed(
+            default_bounded_strict_autos(
                 &params,
                 &[bracketed, DerivedInterval::default()],
                 &HashSet::new()
-            ),
+            )
+            .is_empty(),
             "free params carry no §11.6 obligation (finalise_uniqueness only calls \
              verify_uniqueness when at least one param is strict), so an unbracketed free \
-             param must not veto the verdict"
+             param must not appear in the evidence"
         );
     }
 
     #[test]
-    fn strict_autos_constraint_bracketed_no_strict_params_is_vacuously_true() {
+    fn default_bounded_strict_autos_no_strict_params_is_vacuously_empty() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         let params = vec![
             bracketed_test_param("t", true),
@@ -6017,20 +6156,22 @@ mod tests {
         ];
 
         assert!(
-            strict_autos_constraint_bracketed(
+            default_bounded_strict_autos(
                 &params,
                 &[DerivedInterval::default(), DerivedInterval::default()],
                 &HashSet::new()
-            ),
-            "with no strict params the §11.6 obligation is vacuous and the predicate holds"
+            )
+            .is_empty(),
+            "with no strict params the §11.6 obligation is vacuous and there is nothing \
+             to report"
         );
     }
 
     #[test]
-    fn strict_autos_constraint_bracketed_index_beyond_intervals_returns_false() {
+    fn default_bounded_strict_autos_index_beyond_intervals_is_reported() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         // Two params, ONE interval — a length mismatch is a bug in the caller.
         let params = vec![
@@ -6041,25 +6182,36 @@ mod tests {
         iv.push_lo(0.001, true);
         iv.push_hi(0.004, true);
 
-        assert!(
-            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
-            "a strict param with no corresponding interval must read as NOT bracketed — \
-             preserving solutions_agree's loud-not-silent contract rather than silently \
-             defaulting to 'bracketed'"
+        let evidence = default_bounded_strict_autos(&params, &[iv], &HashSet::new());
+        assert_eq!(
+            evidence.len(),
+            1,
+            "only the interval-less param is reported; `t` is bracketed. got {evidence:?}"
+        );
+        assert_eq!(
+            (
+                evidence[0].id.to_string(),
+                evidence[0].default_lo,
+                evidence[0].default_hi,
+            ),
+            ("Part.u".to_string(), Some(1e-6), Some(10.0)),
+            "a strict param with no corresponding interval must be REPORTED on both \
+             sides — preserving solutions_agree's loud-not-silent contract rather than \
+             silently reading as bracketed"
         );
     }
 
     /// The PRECEDENCE between the two "no positive bracketing evidence" inputs:
     /// a param that is BOTH beyond the `intervals` slice AND in the abstention
-    /// set reads as bracketed, because `underivable.contains(&i)` short-circuits
-    /// before the `intervals.get(i)` lookup. Pins the half of
-    /// `strict_autos_constraint_bracketed`'s doc that the missing-entry test
+    /// set is OMITTED, because the `underivable` filter runs before the
+    /// `intervals.get(i)` lookup. Pins the half of
+    /// `default_bounded_strict_autos`' doc that the missing-entry test
     /// above does not reach — the two together are the whole contract.
     #[test]
-    fn strict_autos_constraint_bracketed_abstention_outranks_missing_interval() {
+    fn default_bounded_strict_autos_abstention_outranks_missing_interval() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         // Two params, ONE interval: index 1 has no entry at all.
         let params = vec![
@@ -6071,26 +6223,27 @@ mod tests {
         iv.push_hi(0.004, true);
 
         assert!(
-            strict_autos_constraint_bracketed(&params, &[iv], &HashSet::from([1])),
+            default_bounded_strict_autos(&params, &[iv], &HashSet::from([1])).is_empty(),
             "abstention must outrank a missing `intervals` entry — the `underivable` \
-             check short-circuits before the `intervals.get(i)` lookup"
+             filter runs before the `intervals.get(i)` lookup"
         );
-        assert!(
-            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
-            "without that abstention the SAME missing entry must read as NOT bracketed \
+        assert_eq!(
+            default_bounded_strict_autos(&params, &[iv], &HashSet::new()).len(),
+            1,
+            "without that abstention the SAME missing entry must be REPORTED \
              (the loud-not-silent half)"
         );
     }
 
     #[test]
-    fn strict_autos_constraint_bracketed_strict_bounds_still_count() {
+    fn default_bounded_strict_autos_strict_bounds_still_count() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         let params = vec![bracketed_test_param("t", false)];
         // BOTH sides strict (`>` / `<`) — mirroring `derived_seed_box`'s
-        // `include_strict = true`. The question this predicate answers is "did
+        // `include_strict = true`. The question this function answers is "did
         // the USER's constraints supply this side", NOT "is it a legal clamp
         // target", so bound strictness is irrelevant.
         let strict_both = DerivedInterval {
@@ -6104,11 +6257,12 @@ mod tests {
         };
 
         assert!(
-            strict_autos_constraint_bracketed(&params, &[strict_both], &HashSet::new()),
+            default_bounded_strict_autos(&params, &[strict_both], &HashSet::new()).is_empty(),
             "a strict (`>`/`<`) bound still SUPPLIES that side"
         );
         assert!(
-            strict_autos_constraint_bracketed(&params, &[non_strict_both], &HashSet::new()),
+            default_bounded_strict_autos(&params, &[non_strict_both], &HashSet::new())
+                .is_empty(),
             "a non-strict (`>=`/`<=`) bound must give the same verdict as a strict one"
         );
     }
@@ -6416,15 +6570,15 @@ mod tests {
         );
     }
 
-    /// The predicate ABSTAINS (reads as bracketed) for a strict param whose
-    /// missing side is attributable to an unreadable constraint — and only
-    /// then. Same fixture, empty evidence set ⇒ still `false`, which is what
-    /// keeps `gamma_strict_auto_one_sided_stays_non_unique` green.
+    /// The function ABSTAINS (omits the param) for a strict param whose missing
+    /// side is attributable to an unreadable constraint — and only then. Same
+    /// fixture, empty abstention set ⇒ still REPORTED, which is what keeps
+    /// `gamma_strict_auto_one_sided_stays_non_unique` green.
     #[test]
-    fn strict_autos_constraint_bracketed_abstains_for_underivable_param() {
+    fn default_bounded_strict_autos_abstains_for_underivable_param() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         let params = vec![bracketed_test_param("t", false)];
         // Lower side readable (`t > 1mm`); upper side opaque.
@@ -6432,12 +6586,13 @@ mod tests {
         iv.push_lo(0.001, true);
 
         assert!(
-            strict_autos_constraint_bracketed(&params, &[iv], &HashSet::from([0])),
+            default_bounded_strict_autos(&params, &[iv], &HashSet::from([0])).is_empty(),
             "a missing side traceable to a constraint the derivation could not READ must \
              abstain, not report non-determinedness"
         );
-        assert!(
-            !strict_autos_constraint_bracketed(&params, &[iv], &HashSet::new()),
+        assert_eq!(
+            default_bounded_strict_autos(&params, &[iv], &HashSet::new()).len(),
+            1,
             "with no unreadable-constraint evidence the SAME interval must still report \
              default-bounds-determined"
         );
@@ -6447,10 +6602,10 @@ mod tests {
     /// data at all": one abstaining param must not excuse a sibling the
     /// derivation positively confirms is one-sided.
     #[test]
-    fn strict_autos_constraint_bracketed_abstention_does_not_leak_across_params() {
+    fn default_bounded_strict_autos_abstention_does_not_leak_across_params() {
         use std::collections::HashSet;
 
-        use super::{DerivedInterval, strict_autos_constraint_bracketed};
+        use super::{DerivedInterval, default_bounded_strict_autos};
 
         let params = vec![
             bracketed_test_param("t", false),
@@ -6459,13 +6614,13 @@ mod tests {
         let mut one_sided = DerivedInterval::default();
         one_sided.push_lo(0.001, true);
 
-        assert!(
-            !strict_autos_constraint_bracketed(
-                &params,
-                &[one_sided, one_sided],
-                &HashSet::from([0]),
-            ),
-            "param 1 has no unreadable-constraint evidence, so the verdict must stay false"
+        let evidence =
+            default_bounded_strict_autos(&params, &[one_sided, one_sided], &HashSet::from([0]));
+        assert_eq!(
+            evidence.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
+            vec!["Part.u".to_string()],
+            "param 1 has no unreadable-constraint evidence, so it must still be \
+             reported — and param 0's abstention must not put IT in the list"
         );
     }
 
@@ -6500,11 +6655,10 @@ mod tests {
     /// counts it as bracketed.
     ///
     /// The direction is MONOTONE, which is the test's actual point: the fix can
-    /// only GROW the abstention set, and `strict_autos_constraint_bracketed` is
+    /// only GROW the abstention set, and `default_bounded_strict_autos` is
     /// documented monotone in it ("growing that set can only move a param from
-    /// 'not bracketed' to 'abstain', never the reverse"). So no previously-
-    /// `Solved` γ model can newly fail — the verdict moves `false → true` or
-    /// not at all.
+    /// 'reported' to 'abstained', never the reverse"). So no previously-
+    /// `Solved` γ model can newly fail — the evidence list can only SHRINK.
     ///
     /// SCOPE: that argument covers the γ branch ONLY. The non-γ path reuses the
     /// same `intervals` through `seed_box_from_intervals` to build its
@@ -6591,21 +6745,22 @@ mod tests {
              a readable side and withheld it"
         );
         assert!(
-            super::strict_autos_constraint_bracketed(&params, &intervals, &underivable),
+            super::default_bounded_strict_autos(&params, &intervals, &underivable).is_empty(),
             "`a` abstains, so the γ path reports the model determined rather than \
              erroring on the strength of a bound the user never wrote"
         );
-        assert!(
-            !super::strict_autos_constraint_bracketed(&params, &intervals, &HashSet::new()),
-            "MONOTONICITY, the point of this fixture: the empty-evidence call \
-             `verify_uniqueness` makes FIRST still reports not-bracketed, so the \
-             new verdict comes only from GROWING the abstention set. A larger set \
-             can move a param `not bracketed` → `abstain` and never the reverse, \
-             so no previously-`Solved` γ model can newly fail"
+        assert_eq!(
+            super::default_bounded_strict_autos(&params, &intervals, &HashSet::new()).len(),
+            1,
+            "MONOTONICITY, the point of this fixture: the empty-abstention call \
+             `verify_uniqueness` makes FIRST still REPORTS `a`, so the new verdict \
+             comes only from GROWING the abstention set. A larger set can move a \
+             param `reported` → `abstained` and never the reverse, so no \
+             previously-`Solved` γ model can newly fail"
         );
     }
 
-    // ---- end strict_autos_constraint_bracketed tests ----
+    // ---- end default_bounded_strict_autos tests ----
 
     #[test]
     fn single_param_feasibility() {
@@ -9552,13 +9707,14 @@ mod tests {
         // distinguishes it: 0 today (inert `_ =>` arm, DEBUG-only), 1 after
         // step-5 (explicit IncumbentSuboptimal suppression warning).
         let (subscriber, capture) = warn_capturing_subscriber();
-        let unique = tracing::subscriber::with_default(subscriber, || {
+        let verdict = tracing::subscriber::with_default(subscriber, || {
             verify_uniqueness(&problem, &solved, None)
         });
         assert!(
-            unique,
-            "verify_uniqueness must return true for this incumbent both before and after \
-             step-5 (the public verdict is unchanged — only the INTERNAL mechanism differs)"
+            matches!(verdict, super::Determinedness::Determined),
+            "verify_uniqueness must report Determined for this incumbent both before and \
+             after step-5 (the public verdict is unchanged — only the INTERNAL mechanism \
+             differs); got {verdict:?}"
         );
         capture.assert_count_and_any_message_contains(1, "IncumbentSuboptimal");
 
