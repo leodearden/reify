@@ -165,12 +165,16 @@
 #                                  merge_verify_cold_command_timeout_secs (task 5383) in
 #                                  dark-factory-orchestrator.yaml — that key's comment
 #                                  block is the single source for the relationship.
-#                                  ROLE-SCOPED (task 6485): under DF_VERIFY_ROLE=offline
-#                                  the default is 13h (46800s), not 90m, so that
-#                                  .config/nextest.toml's 12h heavy per-test ceiling is
-#                                  REACHABLE and a hung heavy test is killed BY NAME.
-#                                  An explicit valid value still wins verbatim under
-#                                  either role. Rationale: PRD offline-deep-test-lane DA6.
+#                                  ROLE-SCOPED (task 6485, re-justified 7552): under
+#                                  DF_VERIFY_ROLE=offline the default is 13h (46800s),
+#                                  not 90m. It exists for WHOLE-RUN headroom on that
+#                                  lane's `--run-ignored all` release pass, NOT — since
+#                                  task 7552 — to make .config/nextest.toml's heavy
+#                                  per-test ceiling reachable: that ceiling is now
+#                                  smaller than the 90m base wall, which reaches it
+#                                  unaided. An explicit valid value still wins verbatim
+#                                  under either role. Rationale: PRD
+#                                  offline-deep-test-lane DA6.
 #   REIFY_VERIFY_PREBUILD_TIMEOUT — outer timeout for the merge-path RELEASE
 #                                  pre-builds (`cargo build --release -p reify-audit`
 #                                  and `-p reify-cli`). Default 45m. These run ONLY on
@@ -452,14 +456,33 @@ _resolve_timeout_knob() {
 # REIFY_VERIFY_TEST_TIMEOUT_RELEASE (90m) — see add_test_passes for the derivation.
 _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
 _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
-# OFFLINE role: re-resolve the RELEASE budget with a 13h default (task 6485), so
-# .config/nextest.toml's 12h heavy per-test ceiling is REACHABLE and a hung heavy
-# test is SIGTERM'd BY NAME before this outer wall can fire exit 124 attributing
-# nothing. 13h never binds in practice; it exists only to make the per-test
-# ceiling the binding bound. Why the tiers are what they are:
-# docs/prds/offline-deep-test-lane.md DA6. Pinned by test_occt_flock_gate.sh
-# T14-T17 and by test_nextest_slow_priority.sh Assertion L, which DERIVES this
-# wall and the role it is scoped to from the block below.
+# OFFLINE role: re-resolve the RELEASE budget with a 13h default (task 6485;
+# RE-JUSTIFIED, not removed, by task 7552).
+#
+# WHAT THIS WALL IS NOT FOR, ANY MORE. Until task 7552 the stated reason was that
+# .config/nextest.toml's heavy per-test ceiling (then 43200s) had to be REACHABLE,
+# i.e. strictly under this wall, so a hung heavy test is SIGTERM'd BY NAME rather
+# than degrading to exit 124 attributing nothing. Task 7552 re-sized that ceiling
+# to 3240s, which is below the 90m BASE release wall two lines up — so the base
+# wall already makes it reachable and that reason is gone. Do not keep this block
+# on a rationale that no longer holds, and do not delete it on the strength of
+# that either: it has a second basis, below, that was never the stated one.
+#
+# WHAT IT IS FOR: whole-run headroom for the offline lane's release pass, which is
+# the only pass that runs the heavy filterset with `--run-ignored all` — the two
+# convergence studies included. Recorded offline sub-runs reach 2625s against the
+# 5400s base wall, barely 2x, and heavy membership has grown from 6 atoms to 8
+# since the lane was designed. (Task 7552's own two timed runs of that pass came
+# in at 770s and 671s wall-clock, but against a PRE-BUILT target: they bound the
+# execution cost, not the cold build the lane really pays, so they are a floor
+# under the 2625s figure rather than a replacement for it —
+# docs/notes/heavy-test-per-test-duration-measurement.md.) This is a WHOLE-RUN
+# budget; it says nothing about any single test.
+#
+# Pinned by test_occt_flock_gate.sh T14-T17 (rendering; T18 pins that the scoping
+# still does not leak to background) and by test_nextest_slow_priority.sh
+# Assertion L, which DERIVES this wall and the role it is scoped to from the
+# block below.
 #
 # Three things here are load-bearing and will otherwise be "simplified" away:
 #   - The 90m line above is preserved VERBATIM rather than folded into one
@@ -474,8 +497,10 @@ _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_
 #     duplicated WARNING on malformed input; a loud duplicate beats a silent
 #     wrong budget. T16 pins it.
 #   - Only the RELEASE wall is scoped, because offline forces PROFILE=release; a
-#     debug pass happens only under an explicit --profile, a manual invocation on
-#     which the ceiling is unreachable (DA6's accepted residual).
+#     debug pass happens only under an explicit --profile. That manual invocation
+#     used to be one of DA6's accepted residuals — its 60m debug wall sat under
+#     the old ceiling — and stopped being one when task 7552 re-sized the ceiling
+#     below that wall. There is no residual left to scope a debug wall for.
 # DF_VERIFY_ROLE is env-only (no CLI flag), so it is readable this early.
 if [ "${DF_VERIFY_ROLE:-task}" = "offline" ]; then
     _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 13h)"
@@ -2857,16 +2882,20 @@ add_test_passes() {
     #    model, and why the inner ceilings are not summed against it. Do not restate
     #    its arithmetic here; it drifted once already (esc-5382-1 amendment review).
     #    tests/infra/test_occt_flock_gate.sh T10 mechanises that relationship.
-    #    OFFLINE TIER (task 6485): under DF_VERIFY_ROLE=offline this budget is 13h
-    #    (46800s) instead, so that the 12h (43200s) per-test ceiling
-    #    .config/nextest.toml gives the 8 heavy members is REACHABLE — a wall that
-    #    does not strictly exceed the ceiling degrades a hang to a bare exit 124
-    #    with zero per-test attribution (the task 4877/4878 shape). Offline is NOT
-    #    the only role that runs the heavy filterset (background does too, and does
-    #    not get this tier); which wall binds which role, and the accepted residual
-    #    that follows, are normative in docs/prds/offline-deep-test-lane.md DA6.
-    #    T14-T17 mechanise the rendering; test_nextest_slow_priority.sh Assertion L
-    #    mechanises wall > ceiling with every operand derived from a file.
+    #    OFFLINE TIER (task 6485; re-justified task 7552): under DF_VERIFY_ROLE=offline
+    #    this budget is 13h (46800s) instead. Its basis is now WHOLE-RUN headroom for
+    #    that lane's `--run-ignored all` release pass, NOT per-test-ceiling
+    #    reachability — see the re-resolution block near the top of this file for
+    #    the full restatement and the figures. Offline is NOT the only role that runs
+    #    the heavy filterset: background does too, and does not get this tier. That
+    #    sentence used to name the gap this tier left open; since task 7552 re-sized
+    #    the per-test ceiling to 3240s — under background's own 60m debug wall — it
+    #    names why background is FINE without the tier, and the accepted residual it
+    #    used to imply is retired. Which wall binds which role, and how the ceiling
+    #    is derived, are normative in docs/prds/offline-deep-test-lane.md DA6.
+    #    T14-T17 mechanise offline's rendering and T18 background's;
+    #    test_nextest_slow_priority.sh Assertion L mechanises wall > ceiling for
+    #    every heavy-running role with every operand derived from a file.
     # NOTE: outer timeouts asserted in tests/infra/test_occt_flock_gate.sh
     # (Test 17 — debug pass, Test 17b — release pass; T1/T2/T8/T9 knob behavior) — keep in sync.
     local _profile _rel
