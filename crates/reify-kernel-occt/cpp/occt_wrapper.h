@@ -80,6 +80,14 @@ struct Point3;
 struct BBox;
 struct TessResult;
 struct ExportStepResult;
+/// Returned by `export_step_with_injected_fault_for_test` (#6344); defined by
+/// the cxx bridge (ffi.rs).
+struct StepGuardProbeResult;
+/// Taken by the two #6344 fixture hooks; defined by the cxx bridge (ffi.rs),
+/// which is where each value's meaning is documented. Declared opaquely
+/// (underlying type spelled as cxx generates it) because the generated header
+/// includes THIS one before it defines the enum.
+enum class StepGuardFault : ::std::uint8_t;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 struct VolumeMeasurement;
@@ -1610,6 +1618,63 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
     const OcctShape& shape,
     double ax, double ay, double az, double angle_rad,
     double dx, double dy, double dz
+);
+
+/// Run the FULL `export_step` body — same mutex, same `wrap_occt_call("export_step")`
+/// label, same guard — after injecting exactly one fault into the transferred
+/// STEP model, and return the plane-angle audit counts alongside the file text.
+///
+/// WHY THIS EXISTS: the guard's failure arms are unreachable from ordinary
+/// inputs, so injection is the only way to show it ever fires. The argument in
+/// full is on the `StepGuardFault` enum (declared in `src/ffi.rs`, generated
+/// into this language too), which is also where it stays current.
+///
+/// `fault` selects the corruption, applied inside the export mutex and after
+/// the shape has been transferred. Each value names the defect it models and
+/// the guard arm it reaches on the `StepGuardFault` variant itself (declared in
+/// `src/ffi.rs`, generated into both languages); how it is injected is
+/// `apply_step_guard_fault` in `occt_wrapper.cpp`.
+///
+/// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) when
+/// the fault cannot be injected into this fixture — a fixture with nothing to
+/// corrupt would otherwise make a negative test pass vacuously — and, of
+/// course, on a guard REFUSAL, which is the production behaviour these tests
+/// exist to pin. `StepGuardProbeResult::refusal` is therefore always empty
+/// here; use `step_guard_probe_for_test` to read a refusal's counts.
+StepGuardProbeResult export_step_with_injected_fault_for_test(
+    const OcctShape& shape,
+    rust::Str schema,
+    StepGuardFault fault
+);
+
+/// The same injected export, REPORTING the guard's finding instead of throwing
+/// it (#6344). Test-only. It differs from
+/// `export_step_with_injected_fault_for_test` in its `StepGuardDisposition`
+/// and in nothing else; what that word covers is on the enum itself, in
+/// `occt_wrapper.cpp`.
+///
+/// WHY IT EXISTS. On the refusing path the audit counts are reachable only as
+/// digits embedded in an English diagnostic, so every negative test had to
+/// hand-roll a scanner over the message — the meaningful-strings shape the
+/// house heuristics forbid, and fragile in a way that mattered (a scanner
+/// keyed on the first `"contexts="` in the text silently changes meaning when
+/// a line is prepended). This entry point hands the same numbers back as
+/// `u32` fields.
+///
+/// CONTRACT. `refusal` is empty iff the export was accepted. When it is
+/// non-empty NO file was written and `content` is empty, so this reports a
+/// refusal without weakening it into a warning; and the text is byte-identical
+/// to what the refusing hook throws minus its `"export_step: "` prefix,
+/// because both render it from one `step_export_guard_refusal` call. A test
+/// asserting that equality is what keeps the two dispositions from drifting.
+///
+/// Still THROWS for a fault that could not be injected: that is a fixture
+/// defect, not a finding about the model, and reporting it as a refusal would
+/// let a fixture with nothing to corrupt read as a guard hit.
+StepGuardProbeResult step_guard_probe_for_test(
+    const OcctShape& shape,
+    rust::Str schema,
+    StepGuardFault fault
 );
 
 // --- Export ---

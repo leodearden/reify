@@ -100,6 +100,13 @@ pub fn boolean_pass_count() -> u64 {
 #[cfg(has_occt)]
 pub use ffi::ffi::RevolveSynthesisPostSortResult;
 
+// Same re-export rationale for the #6344 STEP plane-angle guard seam: the
+// `export_step_with_injected_fault_for_test` wrapper below returns the probe
+// result and takes the fault by value, so integration tests must be able to
+// name both.
+#[cfg(has_occt)]
+pub use ffi::ffi::{StepGuardFault, StepGuardProbeResult};
+
 /// Re-exported so callers can name [`OcctKernel::volume_measurement`]'s return
 /// type without reaching into the private bridge module.
 #[cfg(has_occt)]
@@ -4854,6 +4861,77 @@ impl OcctKernel {
 /// real isolation comes from the cfg gate above.
 #[cfg(all(has_occt, feature = "test-fixtures"))]
 impl OcctKernel {
+    /// Run the FULL production STEP export — same mutex, same
+    /// `wrap_occt_call("export_step")` label, same INV-AD-4 plane-angle
+    /// refusal guard — with exactly one fault injected into the transferred
+    /// STEP model, returning the guard's audit counts alongside the file text.
+    ///
+    /// This is the ONLY way to reach the guard's failure arms; why no real
+    /// input can, and what each fault corrupts, are both on
+    /// [`StepGuardFault`].
+    ///
+    /// # Errors
+    ///
+    /// - `ExportError::InvalidHandle` — if the handle is unknown.
+    /// - `ExportError::FormatError` — the guard REFUSED the export (the
+    ///   interesting case), or the fault could not be injected into this
+    ///   fixture. Both surface with the production `"export_step: "`
+    ///   attribution, so a test asserting refusal text is asserting exactly
+    ///   what a user would see.
+    #[doc(hidden)]
+    pub fn export_step_with_injected_fault_for_test(
+        &self,
+        handle: GeometryHandleId,
+        schema: &str,
+        fault: StepGuardFault,
+    ) -> Result<StepGuardProbeResult, ExportError> {
+        let shape = self
+            .get_shape(handle)
+            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        ffi::ffi::export_step_with_injected_fault_for_test(shape, schema, fault)
+            .map_err(|e| ExportError::FormatError(e.to_string()))
+    }
+
+    /// The same injected export, REPORTING the guard's finding in
+    /// [`StepGuardProbeResult::refusal`] instead of returning `Err`.
+    ///
+    /// It differs from `export_step_with_injected_fault_for_test` in its
+    /// `StepGuardDisposition` and in nothing else; what that word covers is on
+    /// the enum itself, in `cpp/occt_wrapper.cpp`.
+    ///
+    /// WHY BOTH EXIST. The refusing hook is the only place the production
+    /// behaviour is observable — a guard violation must surface as
+    /// `ExportError::FormatError` with Reify's own attribution. But on that
+    /// path the audit counts are reachable only as digits inside an English
+    /// sentence, so every negative test had to scan the message for them. This
+    /// one hands the same numbers back as `u32` fields; a test uses both and
+    /// asserts the two texts agree.
+    ///
+    /// `refusal` is empty iff the export was accepted. When it is non-empty no
+    /// file was written and `content` is empty — reporting a refusal does not
+    /// weaken it into a warning.
+    ///
+    /// # Errors
+    ///
+    /// - `ExportError::InvalidHandle` — if the handle is unknown.
+    /// - `ExportError::FormatError` — the fault could not be injected into
+    ///   this fixture. That is a fixture defect rather than a finding about
+    ///   the model, so it still surfaces as an error here: a fixture with
+    ///   nothing to corrupt must not read as a guard hit.
+    #[doc(hidden)]
+    pub fn step_guard_probe_for_test(
+        &self,
+        handle: GeometryHandleId,
+        schema: &str,
+        fault: StepGuardFault,
+    ) -> Result<StepGuardProbeResult, ExportError> {
+        let shape = self
+            .get_shape(handle)
+            .map_err(|_| ExportError::InvalidHandle(handle))?;
+        ffi::ffi::step_guard_probe_for_test(shape, schema, fault)
+            .map_err(|e| ExportError::FormatError(e.to_string()))
+    }
+
     /// Outward unit normal at the centroid of `face` as a typed `[f64; 3]`.
     ///
     /// Test-side counterpart to `kernel.query(GeometryQuery::FaceNormal(id))`
