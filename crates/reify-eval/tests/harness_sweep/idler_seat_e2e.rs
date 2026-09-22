@@ -132,14 +132,21 @@
 //! diagnostics came from, so neither hard-codes a byte offset and edits to this
 //! file's own `IdlerPulley` cannot shift them.
 
-use reify_core::{
-    ConstraintNodeId, Diagnostic, DimensionVector, ModulePath, Severity, SourceSpan, ValueCellId,
-};
+use reify_core::{ConstraintNodeId, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::{CheckResult, ConstraintCheckEntry};
-use reify_ir::{Satisfaction, Value, ValueMap};
-use std::collections::BTreeSet;
-use std::collections::HashMap;
+use reify_ir::{Value, ValueMap};
+use std::collections::{BTreeSet, HashSet};
 use std::sync::OnceLock;
+
+// The design-file-AGNOSTIC fixture work — dimension-checked cell reads,
+// diagnostic-to-cell identity, and the two-step constraint-set assertion — is
+// [`super::design_fixture`]'s, with the design file a parameter. It was written
+// for [`super::capstan_groove_e2e`] against dev_capstan.ri and moved there once
+// this module wanted it verbatim against printer.ri: the two copies differed
+// only in which file a failure message named.
+use super::design_fixture::{
+    assert_constraints_ok, entity_cell, entity_real, CellSpans, Strictness,
+};
 
 /// The design file that OWNS the idler seat contract, reached from this crate's
 /// manifest dir. Mirrors [`super::capstan_groove_e2e`]'s `DEV_CAPSTAN`.
@@ -248,31 +255,13 @@ fn compile_printer() -> reify_compiler::CompiledModule {
         &reify_constraints::SimpleConstraintChecker,
     );
 
-    // WHICH cell a diagnostic is about, structurally. Nothing below reads a
-    // message: the prose belongs to another crate, and a rewording of it must
-    // not move a diagnostic between the arms here and in [`check_printer`].
-    //
-    // The two populations label differently, so each stage resolves the identity
-    // its own way. This one wants the smallest CONTAINING cell, because an
-    // `UnresolvedName` label sits on an expression INSIDE a cell rather than on
-    // the cell itself; [`check_printer`] wants the cell's own span, exactly as the
-    // capstan gate resolves it. Both are computed against this same compilation,
-    // so neither hard-codes a byte offset and an edit to the file's own
-    // `IdlerPulley` cannot shift them.
-    let spanned_cells: Vec<(SourceSpan, String)> = compiled
-        .templates
-        .iter()
-        .flat_map(|t| t.value_cells.iter())
-        .map(|c| (c.span, format!("{}.{}", c.id.entity, c.id.member)))
-        .collect();
-    let containing_cell = |d: &Diagnostic| -> Option<String> {
-        let sp = d.labels.first()?.span;
-        spanned_cells
-            .iter()
-            .filter(|(cs, _)| cs.start <= sp.start && sp.end <= cs.end)
-            .min_by_key(|(cs, _)| cs.end - cs.start)
-            .map(|(_, n)| n.clone())
-    };
+    // WHICH cell a diagnostic is about, structurally — mechanism, and the
+    // never-read-the-message rule, are [`CellSpans`]'s. The two populations label
+    // differently, so each stage picks its own lookup: this one wants the
+    // smallest CONTAINING cell, because an `UnresolvedName` label sits on an
+    // expression INSIDE a cell rather than on the cell itself, while
+    // [`check_printer`] wants the cell's own span.
+    let cells = CellSpans::of(&compiled);
 
     // ---- Compile stage: the enum-path CEILING ----
     let compile_unexpected: Vec<_> = compiled
@@ -281,7 +270,8 @@ fn compile_printer() -> reify_compiler::CompiledModule {
         .filter(|d| d.severity == Severity::Error)
         .filter(|d| {
             !(d.code == Some(reify_core::DiagnosticCode::UnresolvedName)
-                && containing_cell(d)
+                && cells
+                    .smallest_containing(d)
                     .is_some_and(|c| PRINTER_ENUM_PATH_UNRESOLVED.contains(&c.as_str())))
         })
         .collect();
@@ -312,15 +302,7 @@ fn compile_printer() -> reify_compiler::CompiledModule {
 /// evaluation that is false for that failure. The satisfaction gates own it and
 /// can say WHICH relation broke.
 fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
-    let exact: HashMap<SourceSpan, String> = compiled
-        .templates
-        .iter()
-        .flat_map(|t| t.value_cells.iter())
-        .map(|c| (c.span, format!("{}.{}", c.id.entity, c.id.member)))
-        .collect();
-    let labelled_cell = |d: &Diagnostic| -> Option<String> {
-        exact.get(&d.labels.first()?.span).cloned()
-    };
+    let cells = CellSpans::of(compiled);
 
     let mut engine =
         reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None);
@@ -332,7 +314,9 @@ fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
         .filter(|d| d.severity == Severity::Error)
         .partition(|d| {
             d.code == Some(reify_core::DiagnosticCode::EvalUnresolved)
-                && labelled_cell(d).is_some_and(|c| PRINTER_VOLUME_UNRESOLVED.contains(&c.as_str()))
+                && cells
+                    .exact(d)
+                    .is_some_and(|c| PRINTER_VOLUME_UNRESOLVED.contains(&c.as_str()))
         });
     let unexpected: Vec<_> = rest
         .into_iter()
@@ -355,7 +339,11 @@ fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
     // MISSING one; an EXTRA is caught by `unexpected` above.
     let mut got: Vec<String> = volume_errors
         .iter()
-        .map(|d| labelled_cell(d).expect("partitioned on the label resolving to a value cell"))
+        .map(|d| {
+            cells
+                .exact(d)
+                .expect("partitioned on the label resolving to a value cell")
+        })
         .collect();
     got.sort();
     let mut want: Vec<String> = PRINTER_VOLUME_UNRESOLVED
@@ -398,64 +386,6 @@ fn printer_checked() -> &'static CheckResult {
 fn printer_compiled() -> &'static reify_compiler::CompiledModule {
     static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
     M.get_or_init(compile_printer)
-}
-
-/// Read a `Value::Scalar` cell of `entity` out of a value map, asserting its
-/// dimension, and return its SI value (metres for a `Length`).
-///
-/// Values in the map are SI METRES; every failure message in this module
-/// formats them in mm, the unit the design file is written in.
-///
-/// The panic names the cell AND the file on purpose: a contract this module
-/// states but the design does not declare must read as "this file does not
-/// declare this cell", which is exactly what a RED step here means.
-fn entity_cell(
-    values: &ValueMap,
-    file: &str,
-    entity: &str,
-    cell: &str,
-    expected_dim: DimensionVector,
-) -> f64 {
-    let id = ValueCellId::new(entity, cell);
-    match values.get(&id) {
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) => {
-            assert_eq!(
-                *dimension, expected_dim,
-                "{entity}.{cell}: expected dimension {expected_dim:?}, got {dimension:?}"
-            );
-            *si_value
-        }
-        other => panic!(
-            "{entity}.{cell} must be a Value::Scalar with dimension {expected_dim:?}, \
-             got {other:?} — is the cell declared in {file}?"
-        ),
-    }
-}
-
-/// Read a dimensionless (`: Real`) cell of `entity` out of a value map.
-///
-/// Separate from [`entity_cell`] because the evaluator does NOT wrap a
-/// dimensionless quantity in `Value::Scalar { dimension: DIMENSIONLESS }`: a
-/// `: Real` cell comes back as a bare `Value::Real`. Both spellings are accepted
-/// — they denote the same mathematical object — but a `Value::Scalar` carrying
-/// any real dimension is rejected, since that would mean the ratio had silently
-/// acquired units.
-fn entity_real(values: &ValueMap, file: &str, entity: &str, cell: &str) -> f64 {
-    match values.get(&ValueCellId::new(entity, cell)) {
-        Some(Value::Real(v)) => *v,
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) if *dimension == DimensionVector::DIMENSIONLESS => *si_value,
-        other => panic!(
-            "{entity}.{cell} must be a dimensionless real (a ratio), i.e. a \
-             `Value::Real` or a DIMENSIONLESS `Value::Scalar`, got {other:?} — is \
-             the cell declared in {file}, and is it still `: Real`?"
-        ),
-    }
 }
 
 /// Read one [`IDLER_CELLS`] entry off a given file's value map — `None`
@@ -796,53 +726,47 @@ fn min_mouth_clearance_frac() -> f64 {
     (4.0 * super::capstan_groove_e2e::DIN_15061_SEAT_RATIO - 1.0).sqrt() - 1.0
 }
 
-/// Assert an entity-scoped `constraint_results` set is non-empty and every entry
-/// is `Satisfied`; returns the entries examined.
+/// [`assert_constraints_ok`] bound to this module's subject: the [`IDLER_ENTITY`]
+/// scope of one design file's kernel-free check surface, read STRICTLY.
 ///
-/// The two-step shape is [`super::capstan_groove_e2e`]'s `assert_constraints_ok`,
-/// and the first step is the one that silently rots when copied: a satisfaction
-/// filter over an EMPTY set is vacuously green, and an empty
-/// `constraint_results` emits no diagnostic, so nothing else here could see it.
-/// Non-emptiness is therefore asserted BEFORE the filter, never alongside it.
+/// A binding wrapper, not a second implementation — the relationship
+/// [`super::capstan_groove_e2e`]'s `capstan_cell` has to [`entity_cell`]. The
+/// two-step shape (non-emptiness BEFORE the satisfaction filter, because a
+/// filter over an empty set is vacuously green and an empty `constraint_results`
+/// emits no diagnostic) is asserted once, there. What this fixes is that BOTH
+/// copies of the structure now reach it: the lockstep gate used to spell the
+/// dev_capstan.ri half by hand, which is three copies of one check inside one
+/// module.
+///
+/// `file` rather than a constant because the point is to read the SAME claim off
+/// each copy — see `idler_copies_stay_in_lockstep`, whose count comparison then
+/// quantifies over exactly the entries each side asserted.
 ///
 /// Strict — `Indeterminate` fails too, not just `Violated`. That is decidable
 /// for this entity because every `IdlerPulley` constraint reads pure-scalar cells
 /// and none reaches a `volume()` consumer, so an `Indeterminate` here means an
-/// input cell stopped evaluating rather than that a kernel was needed. It is
-/// also the failure mode a `Violated`-only filter is blindest to: the constraint
-/// is still declared, still reported, and checking nothing — and it reaches the
-/// diagnostics only as a warning, so no Error filter in this module sees it
-/// either.
+/// input cell stopped evaluating rather than that a kernel was needed.
 ///
-/// Deliberately scoped rather than file-wide: 38 of printer.ri's 406 constraints
+/// Deliberately SCOPED rather than file-wide: 38 of printer.ri's 406 constraints
 /// are not `Satisfied` today (measured, pre-existing — the `volume()` cells'
 /// constraints among them), so a strict file-wide claim would be red on arrival
 /// and is not this task's business.
-fn assert_idler_constraints_ok(entries: &[ConstraintCheckEntry]) -> Vec<&ConstraintCheckEntry> {
-    let scoped: Vec<&ConstraintCheckEntry> =
-        entries.iter().filter(|c| c.id.entity == IDLER_ENTITY).collect();
-    assert!(
-        !scoped.is_empty(),
-        "no `{IDLER_ENTITY}` constraint results at all on the kernel-free surface \
-         of {PRINTER_RI} — the structure declares five, so an empty set means the \
-         check never ran or stopped covering this scope, and the satisfaction \
-         filter below would then pass vacuously. Entities checked: {:?}",
-        entries.iter().map(|c| &c.id.entity).collect::<Vec<_>>()
-    );
-    let bad: Vec<_> = scoped
-        .iter()
-        .filter(|c| c.satisfaction != Satisfaction::Satisfied)
-        .collect();
-    assert!(
-        bad.is_empty(),
-        "{PRINTER_RI} must satisfy every `{IDLER_ENTITY}` constraint at its \
-         defaults — {} of {} did not. `Violated` means the design broke the \
-         relation; `Indeterminate` means an input cell failed to EVALUATE, so the \
-         constraint is present but checking nothing. Results: {bad:#?}",
-        bad.len(),
-        scoped.len()
-    );
-    scoped
+fn assert_idler_constraints_ok<'a>(
+    result: &'a CheckResult,
+    file: &str,
+) -> Vec<&'a ConstraintCheckEntry> {
+    assert_constraints_ok(
+        &result.constraint_results,
+        file,
+        Some(IDLER_ENTITY),
+        Strictness::AllSatisfied,
+        "the kernel-free check surface",
+        "The structure declares five constraints, so an empty set means the check \
+         never ran or stopped covering this scope. `Violated` means the design \
+         broke a relation — the DIN clearance, the rim shoulder or the bore \
+         clearance; `Indeterminate` means an input cell stopped evaluating, and \
+         every one of these constraints is pure-scalar, so no kernel was needed.",
+    )
 }
 
 // ── The seat must clear the tendon, and the design must say so ───────────────
@@ -1055,7 +979,7 @@ fn idler_seat_clears_the_tendon() {
     );
 
     // …and all of them hold, strictly, on this surface.
-    assert_idler_constraints_ok(&printer_checked().constraint_results);
+    assert_idler_constraints_ok(printer_checked(), PRINTER_RI);
 }
 
 // ── The second copy, and the fabricated solid ────────────────────────────────
@@ -1283,41 +1207,21 @@ fn idler_copies_stay_in_lockstep() {
         );
     }
 
-    let scoped = |entries: &[ConstraintCheckEntry]| -> Vec<ConstraintNodeId> {
-        entries
-            .iter()
-            .filter(|c| c.id.entity == IDLER_ENTITY)
-            .map(|c| c.id.clone())
-            .collect()
-    };
-    let a_cons = assert_idler_constraints_ok(&printer_checked().constraint_results);
-    let b_ids = scoped(&dev_capstan_checked().constraint_results);
-    assert!(
-        !b_ids.is_empty(),
-        "no `{IDLER_ENTITY}` constraint results at all from {DEV_CAPSTAN} — an \
-         empty set would satisfy the satisfaction filter below vacuously."
-    );
-    let bad: Vec<_> = dev_capstan_checked()
-        .constraint_results
-        .iter()
-        .filter(|c| c.id.entity == IDLER_ENTITY && c.satisfaction != Satisfaction::Satisfied)
-        .collect();
-    assert!(
-        bad.is_empty(),
-        "{DEV_CAPSTAN} must satisfy every `{IDLER_ENTITY}` constraint at its \
-         defaults — {} did not: {bad:#?}",
-        bad.len()
-    );
+    // Each copy through the SAME helper, so neither side can lose the
+    // non-emptiness guard or the strict satisfaction filter, and the count
+    // comparison below quantifies over exactly the entries each side asserted.
+    let a_cons = assert_idler_constraints_ok(printer_checked(), PRINTER_RI);
+    let b_cons = assert_idler_constraints_ok(dev_capstan_checked(), DEV_CAPSTAN);
     assert_eq!(
         a_cons.len(),
-        b_ids.len(),
+        b_cons.len(),
         "the two `{IDLER_ENTITY}` copies declare DIFFERENT numbers of constraints \
          — printer.ri {} and dev_capstan.ri {}. The cell comparison above cannot \
          see this: a copy can reproduce every number exactly and still have \
          dropped a constraint, which leaves those numbers free to be edited back \
          to a zero-clearance slip fit with nothing objecting.",
         a_cons.len(),
-        b_ids.len(),
+        b_cons.len(),
     );
 
     // ---- (3) The whole compiled structure, as one fingerprint ----

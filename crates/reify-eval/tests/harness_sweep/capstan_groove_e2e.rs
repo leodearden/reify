@@ -150,6 +150,12 @@
 //! also the thematically right home — it already carries #5342's
 //! `helix_sweep_e2e`, whose `helix()` spine this design consumes.
 //!
+//! What this module does NOT own is the design-file-AGNOSTIC half of its own
+//! fixture work — dimension-checked cell reads, diagnostic-to-cell identity and
+//! the two-step constraint-set assertion. That was written here, and moved to
+//! [`super::design_fixture`] with the design file as a parameter once
+//! [`super::idler_seat_e2e`] wanted it verbatim against `printer.ri` (#6135).
+//!
 //! This module OWNS the `dev_capstan.ri` fixtures for the whole `harness_sweep`
 //! compile unit: [`DEV_CAPSTAN`], [`dev_capstan_compiled`],
 //! [`dev_capstan_checked`] and [`dev_capstan`] are `pub(super)`, and the sibling
@@ -172,13 +178,18 @@
 
 use reify_core::{
     ConstraintNodeId, Diagnostic, DiagnosticCode, DimensionVector, ModulePath, Severity,
-    SourceSpan, ValueCellId,
+    ValueCellId,
 };
-use reify_eval::{CheckResult, ConstraintCheckEntry, TessellateResult};
-use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value, ValueMap};
-use std::collections::{HashMap, HashSet};
+use reify_eval::{CheckResult, TessellateResult};
+use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
+use std::collections::HashSet;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
+
+// The design-file-agnostic half of this module's fixture work — see the header.
+use super::design_fixture::{
+    assert_constraints_ok, entity_cell, entity_real, CellSpans, Strictness,
+};
 
 /// The real design file under test, reached from this crate's manifest dir.
 ///
@@ -573,25 +584,13 @@ fn check_dev_capstan() -> CheckResult {
     let result = engine.check(compiled);
 
     {
-        // WHICH cell a diagnostic is about, structurally. The emission carries the
-        // offending cell's `span` as its label
-        // (`crates/reify-eval/src/engine_eval.rs`), so the identity is recovered by
-        // mapping that span back through the compiled module's value cells — the
-        // same compilation `result` came from, which is what
-        // [`dev_capstan_compiled`] guarantees. Nothing here reads the message: the
-        // prose is another crate's, and a rewording of it must not move a
-        // diagnostic between the two arms below.
-        let cell_by_span: HashMap<SourceSpan, &ValueCellId> = compiled
-            .templates
-            .iter()
-            .flat_map(|t| t.value_cells.iter())
-            .map(|cell| (cell.span, &cell.id))
-            .collect();
-        let labelled_cell = |d: &Diagnostic| -> Option<String> {
-            let label = d.labels.first()?;
-            let id = cell_by_span.get(&label.span)?;
-            Some(format!("{}.{}", id.entity, id.member))
-        };
+        // WHICH cell a diagnostic is about, structurally — built from the same
+        // compilation `result` came from, which is what [`dev_capstan_compiled`]
+        // guarantees. `exact` because the evaluator labels an unresolvable cell
+        // on the cell itself; mechanism and the never-read-the-message rule are
+        // [`CellSpans`]'s.
+        let cells = CellSpans::of(compiled);
+        let labelled_cell = |d: &Diagnostic| cells.exact(d);
 
         let (volume_errors, rest): (Vec<_>, Vec<_>) = result
             .diagnostics
@@ -697,183 +696,10 @@ fn tessellate_dev_capstan() -> TessellateResult {
     result
 }
 
-/// How strictly [`assert_constraints_ok`] reads a set of constraint results.
-///
-/// **This is the module's one statement of why a constraint failure is not a
-/// fixture's business**, and every other site links here rather than re-deriving
-/// it — nothing executable checks a restatement, so copies go stale. This enum
-/// is the natural home because it is the axis that exists *because* of it.
-///
-/// How `SimpleConstraintChecker` reports a failure alongside the typed
-/// `Satisfaction` result is that crate's business, not this module's: see
-/// `crates/reify-constraints/src/lib.rs`. The one consequence this module acts
-/// on is that a failure reaches the diagnostics as `ConstraintViolated`
-/// (`Violated`) or as a mere WARNING (`Indeterminate`) — so both fixtures,
-/// [`check_dev_capstan`] and [`tessellate_dev_capstan`], route the former OUT
-/// of their Error filters and neither can see the latter at all.
-///
-/// Routed out because a violated constraint is a DESIGN failure, not a pipeline
-/// one. Left in, it panics the shared fixture first — in every test at once,
-/// including the pure-geometry ones that have nothing to do with the relation
-/// that broke — under a message about evaluation or geometry that is false for
-/// that failure, and it shadows the diagnosis [`assert_constraints_ok`] exists
-/// to give (WHICH relation, at what strictness).
-///
-/// So NEITHER failure is a fixture's business: the satisfaction gates own both,
-/// and they read `constraint_results` directly rather than the diagnostics — which
-/// is what keeps their claims true however the checker chooses to report.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Strictness {
-    /// Every result must be `Satisfied` — `Indeterminate` fails too.
-    ///
-    /// `Indeterminate` is what a constraint whose inputs failed to EVALUATE
-    /// reports: an undef leaf, or a cross-`sub` field reference that did not
-    /// resolve. It is therefore the failure mode a `Violated`-only filter is
-    /// blindest to — the constraint is still declared, still reported, and
-    /// checking nothing — and per the enum doc above it reaches the diagnostics
-    /// only as a WARNING, so no Error filter here sees it either. This strictness
-    /// is the only claim in the module that catches it.
-    AllSatisfied,
-    /// Only `Violated` fails — the weaker statement `reify check` itself makes.
-    NoneViolated,
-}
-
-/// Assert a `constraint_results` set is non-empty and holds at the strictness
-/// asked for, optionally scoped to one entity; returns the entries examined.
-///
-/// One helper rather than a copy per site because all three of this module's
-/// constraint claims — `capstan_surfaces_only_the_finished_drum` (scoped
-/// `Capstan`, plus its file-wide mirror), the `CapstanDrive` scope of
-/// `capstan_drive_constrains_the_shuttle_to_cover_the_band`, and the file-wide
-/// `capstan_design_file_checks_clean_without_a_kernel` — are the same two-step
-/// statement, and the first step is the one that silently rots when copied:
-///
-///   * **Non-emptiness first.** A satisfaction filter over an empty set is
-///     vacuously green, and an empty `constraint_results` emits NO diagnostic,
-///     so nothing else in the module can see it. That guard has to hold at every
-///     site or the site that lost it stops asserting anything at all.
-///   * **Then the satisfaction filter**, at [`Strictness`] — the axis that
-///     genuinely differs between the sites, so it is a parameter rather than
-///     three hand-written filters that could drift apart.
-///
-/// `surface` names which evaluation surface the entries came from and `note`
-/// carries the site's own mechanical reading of a failure; both are only ever
-/// message text.
-fn assert_constraints_ok<'a>(
-    entries: &'a [ConstraintCheckEntry],
-    scope: Option<&str>,
-    strictness: Strictness,
-    surface: &str,
-    note: &str,
-) -> Vec<&'a ConstraintCheckEntry> {
-    let scoped: Vec<&ConstraintCheckEntry> = match scope {
-        Some(entity) => entries.iter().filter(|c| c.id.entity == entity).collect(),
-        None => entries.iter().collect(),
-    };
-    let what = match scope {
-        Some(entity) => format!("`{entity}` constraint results"),
-        None => "constraint results".to_string(),
-    };
-
-    assert!(
-        !scoped.is_empty(),
-        "no {what} at all on {surface} of {DEV_CAPSTAN} — every structure in the \
-         file declares constraints, so an empty set means the check never ran, or \
-         stopped covering this scope, and the satisfaction filter would then pass \
-         vacuously. {note} Entities checked: {:?}",
-        entries.iter().map(|c| &c.id.entity).collect::<Vec<_>>()
-    );
-
-    let bad: Vec<_> = scoped
-        .iter()
-        .filter(|c| match strictness {
-            Strictness::AllSatisfied => c.satisfaction != Satisfaction::Satisfied,
-            Strictness::NoneViolated => c.satisfaction == Satisfaction::Violated,
-        })
-        .collect();
-    assert!(
-        bad.is_empty(),
-        "{DEV_CAPSTAN} must satisfy {what} at its defaults on {surface} — {} of {} \
-         did not, at {strictness:?} strictness. `Violated` means the design broke the \
-         relation; `Indeterminate` means an input cell failed to EVALUATE, so the \
-         constraint is present but checking nothing. {note} Results: {bad:#?}",
-        bad.len(),
-        scoped.len()
-    );
-
-    scoped
-}
-
-/// Read a `Value::Scalar` cell of `entity` out of a value map, asserting its
-/// dimension, and return its SI value (m / m³ / dimensionless).
-///
-/// Entity-parameterised so the cross-structure band↔stroke gate can read
-/// [`FAIRLEAD_ENTITY`] cells — and the instance-scoped `CapstanDrive.shuttle`
-/// form — through the same dimension-checked path (and the same "is the cell
-/// declared in …?" hint) the capstan cells go through, rather than carrying a
-/// second copy of the `Value::Scalar` match. Map-parameterised (rather than
-/// taking a `&TessellateResult`) so the kernel-free [`dev_capstan_checked`]
-/// surface reads its cells through the same helper.
-///
-/// Both structures are `sub`s of the file's `CapstanDrive` assembly, so their
-/// scalar cells are in the map under two key forms ([`sub_entity`]). Which one a
-/// caller wants is a real choice, not a formality: see the (0) claim in
-/// `capstan_active_band_is_covered_by_the_fairlead_stroke`.
-fn entity_cell(
-    values: &ValueMap,
-    entity: &str,
-    cell: &str,
-    expected_dim: DimensionVector,
-) -> f64 {
-    let id = ValueCellId::new(entity, cell);
-    match values.get(&id) {
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) => {
-            assert_eq!(
-                *dimension, expected_dim,
-                "{entity}.{cell}: expected dimension {expected_dim:?}, got {dimension:?}"
-            );
-            *si_value
-        }
-        other => panic!(
-            "{entity}.{cell} must be a Value::Scalar with dimension {expected_dim:?}, \
-             got {other:?} — is the cell declared in {DEV_CAPSTAN}?"
-        ),
-    }
-}
-
 /// [`entity_cell`] fixed to [`CAPSTAN_ENTITY`] — the majority of this module's
 /// reads.
 fn capstan_cell(values: &ValueMap, cell: &str, expected_dim: DimensionVector) -> f64 {
-    entity_cell(values, CAPSTAN_ENTITY, cell, expected_dim)
-}
-
-/// Read a dimensionless (`: Real`) cell of `entity` — a pure count such as
-/// `active_turns` or `dead_total` — and return it.
-///
-/// Separate from [`entity_cell`] because the evaluator does NOT wrap a
-/// dimensionless quantity in `Value::Scalar { dimension: DIMENSIONLESS }`; a
-/// `: Real` cell comes back as a bare `Value::Real`. Both spellings are accepted
-/// here anyway: they denote the same mathematical object, and this module's
-/// assertions are about the DESIGN, not about which representation the evaluator
-/// picks for a unitless number. A `Value::Scalar` carrying any real dimension is
-/// still rejected — that would mean the cell had silently acquired units.
-fn entity_real(values: &ValueMap, entity: &str, cell: &str) -> f64 {
-    let id = ValueCellId::new(entity, cell);
-    match values.get(&id) {
-        Some(Value::Real(v)) => *v,
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) if *dimension == DimensionVector::DIMENSIONLESS => *si_value,
-        other => panic!(
-            "{entity}.{cell} must be a dimensionless real (a count of turns), i.e. a \
-             `Value::Real` or a DIMENSIONLESS `Value::Scalar`, got {other:?} — is the \
-             cell declared in {DEV_CAPSTAN}, and is it still `: Real`?"
-        ),
-    }
+    entity_cell(values, DEV_CAPSTAN, CAPSTAN_ENTITY, cell, expected_dim)
 }
 
 /// Arc length of a helix of radius `rho` making `turns` revolutions while
@@ -1496,16 +1322,34 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
 
     let band = capstan_cell(&result.values, "band", DimensionVector::LENGTH);
     let lead = capstan_cell(&result.values, "lead", DimensionVector::LENGTH);
-    let active_turns = entity_real(&result.values, CAPSTAN_ENTITY, "active_turns");
-    let dead_total = entity_real(&result.values, CAPSTAN_ENTITY, "dead_total");
+    let active_turns = entity_real(&result.values, DEV_CAPSTAN, CAPSTAN_ENTITY, "active_turns");
+    let dead_total = entity_real(&result.values, DEV_CAPSTAN, CAPSTAN_ENTITY, "dead_total");
     let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
-    let stroke = entity_cell(&result.values, FAIRLEAD_ENTITY, "stroke", DimensionVector::LENGTH);
+    let stroke = entity_cell(
+        &result.values,
+        DEV_CAPSTAN,
+        FAIRLEAD_ENTITY,
+        "stroke",
+        DimensionVector::LENGTH,
+    );
 
     // The instance-scoped spellings — what the DSL constraints resolve against.
     let capstan_inst = sub_entity(CAPSTAN_SUB);
     let shuttle_inst = sub_entity(SHUTTLE_SUB);
-    let band_inst = entity_cell(&result.values, &capstan_inst, "band", DimensionVector::LENGTH);
-    let stroke_inst = entity_cell(&result.values, &shuttle_inst, "stroke", DimensionVector::LENGTH);
+    let band_inst = entity_cell(
+        &result.values,
+        DEV_CAPSTAN,
+        &capstan_inst,
+        "band",
+        DimensionVector::LENGTH,
+    );
+    let stroke_inst = entity_cell(
+        &result.values,
+        DEV_CAPSTAN,
+        &shuttle_inst,
+        "stroke",
+        DimensionVector::LENGTH,
+    );
 
     // ---- (0) The template and instance spellings are the same number ----
     // Not a formality: an override through `sub capstan = Capstan(...)` would
@@ -1675,6 +1519,7 @@ fn capstan_surfaces_only_the_finished_drum() {
     // too. File-wide it is the weaker statement `reify check` itself makes.
     assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         Some(CAPSTAN_ENTITY),
         Strictness::AllSatisfied,
         "the OCCT build surface",
@@ -1683,6 +1528,7 @@ fn capstan_surfaces_only_the_finished_drum() {
     );
     assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         None,
         Strictness::NoneViolated,
         "the OCCT build surface",
@@ -1898,6 +1744,7 @@ fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
     // the doc comment above, not by execution order.
     let drive_constraints = assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         Some(CAPSTAN_DRIVE_ENTITY),
         Strictness::AllSatisfied,
         "the kernel-free check surface",
@@ -2015,6 +1862,7 @@ fn capstan_design_file_checks_clean_without_a_kernel() {
 
     assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         None,
         Strictness::NoneViolated,
         "the kernel-free check surface",
@@ -2039,6 +1887,7 @@ fn capstan_design_file_checks_clean_without_a_kernel() {
     // kernel.
     assert_constraints_ok(
         &result.constraint_results,
+        DEV_CAPSTAN,
         Some(CAPSTAN_ENTITY),
         Strictness::AllSatisfied,
         "the kernel-free check surface",
