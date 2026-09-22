@@ -138,11 +138,13 @@ pub fn write_sidecar(path: &Path) -> io::Result<()> {
 ///
 /// **Wire-format contract:** `ENTRY_FORMAT_VERSION` covers the `bincode 1.3`
 /// fixint-LE encoding of [`CacheEntryHeader`] (4+32+32+8+8+8 = 92 bytes)
-/// AND the `zstd 0.13` compressed body that follows it. Any change to either
+/// AND the body that follows it: the bincode [`WithDiagnostics`] prefix and
+/// the `zstd 0.13` compressed value. Any change to either
 /// encoder that produces different bytes on disk — including a minor version
 /// bump within the `=1.3` or `0.13` pins — MUST be accompanied by a bump of
 /// this constant in the same commit. Pinned by
-/// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal` and
+/// `cache_entry_header_bincode_encoding_matches_pinned_hex_literal`,
+/// `with_diagnostics_prefix_encoding_matches_pinned_bytes` and
 /// `entry_format_version_const_matches_history`.
 ///
 /// Starting at 1 follows the Reify convention that 0 means "uninitialised /
@@ -5599,20 +5601,6 @@ version = "9.9.9"
     }
 
     #[test]
-    fn persisted_diagnostic_encoding_is_byte_deterministic() {
-        // `PersistentlyCacheable` requires byte-deterministic encoding; the
-        // mirror is part of that body, so it must be deterministic too.
-        let mirror = vec![
-            diagnostic_to_persisted(&shell_too_thick_warning()),
-            diagnostic_to_persisted(&reify_core::Diagnostic::error("solve did not converge")),
-        ];
-        let a = bincode::serialize(&mirror).expect("mirror must encode");
-        let b = bincode::serialize(&mirror).expect("mirror must encode");
-        assert_eq!(a, b, "re-encoding the same mirror must be byte-identical");
-        assert!(!a.is_empty(), "a non-empty mirror must produce bytes");
-    }
-
-    #[test]
     fn persisted_diagnostic_code_is_encoded_by_name_not_variant_index() {
         let block = encode_diagnostics_block(&[reify_core::Diagnostic::warning("m")
             .with_code(reify_core::DiagnosticCode::ShellTooThick)]);
@@ -5837,6 +5825,50 @@ version = "9.9.9"
             (8 + block_len + decompressed.len()) as u64,
             "byte_size must be the uncompressed body byte count: the 8-byte \
              length frame plus the diagnostics block plus the decompressed V body"
+        );
+    }
+
+    #[test]
+    fn with_diagnostics_prefix_encoding_matches_pinned_bytes() {
+        // The prefix is on-disk layout, pinned like the header in
+        // `cache_entry_header_bincode_encoding_matches_pinned_hex_literal`.
+        let entry = WithDiagnostics {
+            diagnostics: vec![
+                reify_core::Diagnostic::warning("m")
+                    .with_code(reify_core::DiagnosticCode::ShellTooThick)
+                    .with_candidates(["c"]),
+            ],
+            value: make_sample_result(),
+        };
+        let mut encoded: Vec<u8> = Vec::new();
+        entry
+            .serialize_to_writer(&mut encoded)
+            .expect("serialize_to_writer into a Vec must not fail");
+
+        // bincode 1.3 fixint-LE: u64 lengths, a u8 `Option` tag, fields in
+        // declaration order.
+        #[rustfmt::skip]
+        let expected: [u8; 65] = [
+            // block length frame = 57 (u64)
+            0x39, 0, 0, 0, 0, 0, 0, 0,
+            // Vec<PersistedDiagnostic> length = 1 (u64)
+            0x01, 0, 0, 0, 0, 0, 0, 0,
+            // severity = Warning
+            0x01,
+            // message = "m" (u64 length, UTF-8)
+            0x01, 0, 0, 0, 0, 0, 0, 0, b'm',
+            // code = Some("ShellTooThick") (tag, u64 length, UTF-8)
+            0x01, 0x0D, 0, 0, 0, 0, 0, 0, 0,
+            b'S', b'h', b'e', b'l', b'l', b'T', b'o', b'o', b'T', b'h', b'i', b'c', b'k',
+            // candidates = ["c"] (u64 count, then one u64-length string)
+            0x01, 0, 0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0, b'c',
+        ];
+        assert_eq!(
+            &encoded[..expected.len()],
+            &expected[..],
+            "the diagnostics prefix encoding has drifted from the pinned bytes; \
+             if intentional, bump ENTRY_FORMAT_VERSION in the SAME commit and \
+             update this literal"
         );
     }
 
