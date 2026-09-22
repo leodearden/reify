@@ -4272,6 +4272,17 @@ enum FeaValueShapeError {
     ExpectedList { context: &'static str, got: String },
     /// A required `StructureInstance` field was absent.
     MissingField { context: &'static str, field: &'static str },
+    /// A present, defined `Value::Scalar` whose dimension is not the one this
+    /// reader position expects (task #7019). Distinct from `ExpectedScalar`,
+    /// which fires when the value is not a `Value::Scalar` at all: this
+    /// variant is for the wrong dimension on the RIGHT shape — e.g. a
+    /// LENGTH-dimensioned Scalar at a position that expects DIMENSIONLESS,
+    /// or vice versa. `expected` names the position's `ArgSpec::type_name`.
+    WrongDimension {
+        context: &'static str,
+        expected: &'static str,
+        got: String,
+    },
 }
 
 impl std::fmt::Display for FeaValueShapeError {
@@ -4294,6 +4305,13 @@ impl std::fmt::Display for FeaValueShapeError {
             FeaValueShapeError::MissingField { context, field } => {
                 write!(f, "missing field {field:?} for {context}")
             }
+            FeaValueShapeError::WrongDimension {
+                context,
+                expected,
+                got,
+            } => {
+                write!(f, "expected {expected} for {context}, got {got}")
+            }
         }
     }
 }
@@ -4304,21 +4322,26 @@ impl std::fmt::Display for FeaValueShapeError {
 /// slice.
 ///
 /// `shape_context` labels a `< 3`-components arity error; `component_context`
-/// labels a per-component read failure; `noun` names the shape
-/// (`"Point"`/`"Vector"`) for the arity error's message.
+/// labels a per-component read failure, and is threaded into `component` so
+/// the reader itself owns its rejection wording instead of this caller
+/// inventing one; `noun` names the shape (`"Point"`/`"Vector"`) for the
+/// arity error's message.
 ///
-/// `component` is what SPLITS the two callers (task 5848). They differ in
-/// DIMENSION, so they differ in which `Value` spellings are legitimate:
-/// `extract_point3_si` reads a genuinely dimensioned `Point3<Length>` and
-/// stays strict ([`dimensioned_component`]); `extract_vec3_si` reads the
-/// dimensionless `MaterialFrame` axes and is tolerant
-/// ([`dimensionless_component`]).
+/// `component` is what SPLITS the two callers (task 5848; task #7019 gives it
+/// its final shape). They differ in DIMENSION, so they differ in which
+/// `Value` spellings are legitimate: `extract_point3_si` reads a genuinely
+/// dimensioned `Point3<Length>` via [`dimensioned_component`];
+/// `extract_vec3_si` reads the dimensionless `MaterialFrame` axes via
+/// [`dimensionless_component`]. Both are thin adapters over the same
+/// [`spec_component`]/`accept_arg` rule, so this parameter carries the one
+/// axis of variability between the two positions rather than a bespoke
+/// per-caller predicate.
 fn extract_scalar_triple(
     comps: &[Value],
     shape_context: &'static str,
     component_context: &'static str,
     noun: &'static str,
-    component: fn(&Value) -> Option<f64>,
+    component: fn(&Value, &'static str) -> Result<f64, FeaValueShapeError>,
 ) -> Result<[f64; 3], FeaValueShapeError> {
     if comps.len() < 3 {
         return Err(FeaValueShapeError::ExpectedList {
@@ -4326,39 +4349,82 @@ fn extract_scalar_triple(
             got: format!("{noun} with {} components", comps.len()),
         });
     }
-    let comp = |v: &Value| {
-        component(v).ok_or_else(|| FeaValueShapeError::ExpectedScalar {
-            context: component_context,
-            got: format!("{v:?}"),
-        })
-    };
+    let comp = |v: &Value| component(v, component_context);
     Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
+}
+
+/// Shared spec-driven per-component reader (task #7019): classifies `v`
+/// against `spec` via the canonical `reify_ir::arg_acceptance::accept_arg`,
+/// so [`dimensioned_component`]/[`dimensionless_component`] differ only in
+/// which `ArgSpec` they pass, not in a hand-written `match` over `Value`.
+///
+/// The `matches!(v, Value::Scalar { .. })` discriminator on a `Rejected`
+/// distinguishes two genuinely different faults: a `Value::Scalar` whose
+/// `dimension` is wrong ([`FeaValueShapeError::WrongDimension`]) vs. a value
+/// that is not a `Value::Scalar` at all (`ExpectedScalar`) — which is what
+/// keeps `Acceptance::Undefined` (only `Value::Undef` produces this, and it
+/// is not a Scalar) and every non-Scalar value on today's exact
+/// `ExpectedScalar` path. `got` keeps `format!("{v:?}")`, which already
+/// prints the offending dimension, so the diagnostic is self-locating.
+fn spec_component(
+    v: &Value,
+    spec: &crate::arg_acceptance::ArgSpec,
+    context: &'static str,
+) -> Result<f64, FeaValueShapeError> {
+    use crate::arg_acceptance::{Acceptance, accept_arg};
+
+    match accept_arg(v, spec) {
+        Acceptance::Accepted(x) => Ok(x),
+        _ if matches!(v, Value::Scalar { .. }) => Err(FeaValueShapeError::WrongDimension {
+            context,
+            expected: spec.type_name,
+            got: format!("{v:?}"),
+        }),
+        _ => Err(FeaValueShapeError::ExpectedScalar {
+            context,
+            got: format!("{v:?}"),
+        }),
+    }
 }
 
 /// Per-component reader for a DIMENSIONED triple — `aabb_min`/`aabb_max`'s
 /// `Point3<Length>`. A bare `Value::Real`/`Value::Int` component there is a
 /// genuinely missing dimension, so it must fail (task #5080's contract, pinned
 /// by `extract_point3_si_rejects_non_scalar_component`).
-fn dimensioned_component(v: &Value) -> Option<f64> {
+///
+/// PLUMBING ONLY as of task #7019 step-3: behaviour is byte-identical to
+/// before this task — any dimensioned `Value::Scalar` still reads, regardless
+/// of which dimension it carries. Narrowed to `length_spec()` in step-5.
+fn dimensioned_component(v: &Value, context: &'static str) -> Result<f64, FeaValueShapeError> {
     match v {
-        Value::Scalar { si_value, .. } => Some(*si_value),
-        _ => None,
+        Value::Scalar { si_value, .. } => Ok(*si_value),
+        _ => Err(FeaValueShapeError::ExpectedScalar {
+            context,
+            got: format!("{v:?}"),
+        }),
     }
 }
 
 /// Per-component reader for a DIMENSIONLESS triple — `MaterialFrame`'s three
 /// `Vector3<Dimensionless>` axes (task 5848). A dimensionless `.ri` literal
 /// compiles to `Value::Int`/`Value::Real` and reaches this reader verbatim, so
-/// all three numeric spellings must read; mirrors `modal_ops::read_scalar_si`,
-/// the landed tolerant reader serving `ModalOptions.reference_direction`. A
-/// genuinely non-numeric component still fails.
-fn dimensionless_component(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar { si_value, .. } => Some(*si_value),
-        Value::Real(r) => Some(*r),
-        Value::Int(n) => Some(*n as f64),
-        _ => None,
-    }
+/// all three numeric spellings must read; `Int` is not redundant with `Real`,
+/// since an integer `.ri` literal (e.g. `vec3(0, 1, 0)`) compiles to
+/// `Value::Int` specifically.
+///
+/// Task #7019: a thin adapter over `reify_ir::arg_acceptance::dimensionless_spec`,
+/// the canonical definition of this acceptance set (`Real | Int |
+/// Scalar{DIMENSIONLESS}`, PRD `dimension-checked-readers.md` Leg B,
+/// invariant I3) — this reader CONSUMES that spec rather than mirroring a
+/// sibling copy of it. A `Value::Scalar` carrying any OTHER dimension (e.g. a
+/// LENGTH-spelled axis) is now REJECTED instead of having its SI magnitude
+/// reinterpreted as the bare component; a genuinely non-numeric component
+/// still fails. `tensegrity_crack::crack_dimensionless_scalar` is the sibling
+/// reader at the same Leg B position, consuming the same spec.
+fn dimensionless_component(v: &Value, context: &'static str) -> Result<f64, FeaValueShapeError> {
+    use crate::arg_acceptance::dimensionless_spec;
+
+    spec_component(v, &dimensionless_spec(), context)
 }
 
 /// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
@@ -4387,9 +4453,14 @@ fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
 /// components.
 ///
 /// Used to parse MaterialFrame axis vectors from the AsPrintedZones lambda.
-/// Those axes are `Vector3<Dimensionless>` (task 5848), so the components
-/// arrive as `Int`/`Real` from a `.ri` literal and as `Scalar` from a Rust
-/// minter — see [`dimensionless_component`].
+/// Those axes are `Vector3<Dimensionless>` (task 5848): a `Scalar{DIMENSIONLESS}`,
+/// `Real`, or `Int` component all read alike, but (task #7019) a
+/// `Value::Scalar` carrying any OTHER dimension is rejected instead of
+/// having its SI magnitude reinterpreted as the bare component — see
+/// [`dimensionless_component`], a thin adapter over the canonical
+/// `reify_ir::arg_acceptance::dimensionless_spec` (PRD
+/// `dimension-checked-readers.md` Leg B, invariant I3). Its sibling at the
+/// same Leg B position is `tensegrity_crack::crack_dimensionless_scalar`.
 fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
     let comps = match val {
         Value::Vector(v) => v,
@@ -4663,13 +4734,19 @@ fn is_named_anisotropic_law(type_name: &str) -> bool {
 /// the isotropic shape — instead of just the field that happened to be
 /// missing or malformed, which alone gives no hint the `type_name` went
 /// unrecognised at all (task #7210 review round 2 suggestion 3). Stays
-/// inside the fixed 5-variant `FeaValueShapeError` taxonomy: `MissingField`
-/// has no `got: String` to carry the extra context, so this re-emits as
-/// `ExpectedScalar`, whose `got` is already a free-form diagnostic string
-/// elsewhere in this module (see `scalar_si_field`'s comment).
+/// inside the (six-variant as of task #7019) `FeaValueShapeError` taxonomy:
+/// `MissingField` and `WrongDimension` each get their own `reason` arm below
+/// (`WrongDimension`'s folds in `expected` alongside `got`, since it has no
+/// `field` to report); the rest have no `got: String` distinct enough to
+/// need one and re-emit as `ExpectedScalar`, whose `got` is already a
+/// free-form diagnostic string elsewhere in this module (see
+/// `scalar_si_field`'s comment).
 fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeError {
     let reason = match err {
         FeaValueShapeError::MissingField { field, .. } => format!("missing field {field:?}"),
+        FeaValueShapeError::WrongDimension { expected, got, .. } => {
+            format!("expected {expected}, got {got}")
+        }
         FeaValueShapeError::ExpectedScalar { got, .. }
         | FeaValueShapeError::ExpectedReal { got, .. }
         | FeaValueShapeError::ExpectedStructureInstance { got, .. }
@@ -4828,22 +4905,31 @@ fn extract_density(val: &Value) -> f64 {
 ///   is the exact silent-corruption failure this reader exists to close.
 ///
 /// Per-component reads delegate to [`dimensionless_component`], so a component
-/// spelled `Value::Scalar` (dimensionless), `Value::Real` or `Value::Int` all
-/// read alike; a genuinely non-numeric component contributes `0.0`.
+/// spelled `Value::Scalar{DIMENSIONLESS}`, `Value::Real` or `Value::Int` all
+/// read alike. Task #7019 (PRD `dimension-checked-readers.md` invariant I2 —
+/// no coercion for a *present* value): a genuinely non-numeric OR
+/// wrong-dimension component now returns `Err` instead of silently
+/// contributing `0.0` — for a direction like `[0, 1, 0]`, coercing an
+/// unreadable middle component to `0.0` would silently delete the load's
+/// entire direction, which is strictly worse than the unit-strip it replaces.
 ///
 /// The `_ => [0.0, 0.0, -1.0]` fallback for genuinely malformed input is
 /// intentional forward-compatibility contract, pinned by
-/// `extract_loads_malformed_direction_defaults_to_neg_z`.
-fn read_direction_or_neg_z(direction: Option<&Value>) -> [f64; 3] {
+/// `extract_loads_malformed_direction_defaults_to_neg_z`. This draws the
+/// boundary between the two failure classes: an absent or mis-SHAPED
+/// `direction` (not 3 elements, not a Vector/List at all) keeps this
+/// documented fallback (decision 3, "Absent != wrong"); a PRESENT component
+/// that fails to read is a rejection (I2), not a fallback.
+fn read_direction_or_neg_z(direction: Option<&Value>) -> Result<[f64; 3], FeaValueShapeError> {
     match direction {
         Some(Value::Vector(elems) | Value::List(elems)) if elems.len() == 3 => {
             let mut d = [0.0f64; 3];
             for (slot, e) in d.iter_mut().zip(elems.iter()) {
-                *slot = dimensionless_component(e).unwrap_or(0.0);
+                *slot = dimensionless_component(e, "read_direction_or_neg_z component")?;
             }
-            d
+            Ok(d)
         }
-        _ => [0.0, 0.0, -1.0],
+        _ => Ok([0.0, 0.0, -1.0]),
     }
 }
 
@@ -4887,7 +4973,7 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
         if let Value::StructureInstance(data) = item {
             if data.type_name == "PointLoad" {
                 if let Some(Value::Real(f)) = data.fields.get("force") {
-                    let dir = read_direction_or_neg_z(data.fields.get("direction"));
+                    let dir = read_direction_or_neg_z(data.fields.get("direction"))?;
                     for axis in 0..3 {
                         tip_force_vec[axis] += f * dir[axis];
                     }
@@ -4903,7 +4989,7 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
                     Some(Value::Scalar { si_value, .. }) => *si_value,
                     _ => continue,
                 };
-                let dir = read_direction_or_neg_z(data.fields.get("direction"));
+                let dir = read_direction_or_neg_z(data.fields.get("direction"))?;
                 for axis in 0..3 {
                     body_force[axis] += density * magnitude * dir[axis];
                 }
