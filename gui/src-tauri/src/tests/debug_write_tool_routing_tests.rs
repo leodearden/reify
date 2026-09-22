@@ -255,6 +255,13 @@ fn parse_fn_name(trimmed: &str) -> Option<&str> {
 
 /// Returns the source slice of the TOP-LEVEL fn named `name`, from its
 /// signature line through the closing brace.
+fn fn_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let span = fn_span(source, name)?;
+    Some(&source[span.0..span.1])
+}
+
+/// The `(start, end)` byte offsets of the TOP-LEVEL fn named `name` — what
+/// [`fn_body`] slices, and what [`splice_into_fn_body`] edits inside.
 ///
 /// The terminator is the next line that is exactly `}` in column 0. That is
 /// sound for `debug_server.rs`, which indents every nested block, so no inner
@@ -262,7 +269,7 @@ fn parse_fn_name(trimmed: &str) -> Option<&str> {
 /// that does. A file violating that convention truncates the body early,
 /// which loses seam matches and therefore false-POSITIVES — red, never
 /// silently green.
-fn fn_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+fn fn_span(source: &str, name: &str) -> Option<(usize, usize)> {
     let mut start: Option<usize> = None;
     let mut offset = 0usize;
     for line in source.split_inclusive('\n') {
@@ -274,13 +281,36 @@ fn fn_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
             }
             Some(begin) => {
                 if line.trim_end() == "}" {
-                    return Some(&source[begin..offset + line.len()]);
+                    return Some((begin, offset + line.len()));
                 }
             }
         }
         offset += line.len();
     }
     None
+}
+
+/// `source` with `stmt` spliced in as the first statement of the TOP-LEVEL fn
+/// named `fn_name` — the mutation
+/// [`the_private_emit_sweep_fires_on_the_real_file_when_mutated`] controls
+/// with.
+///
+/// `None`, never a silently unmutated copy, when the fn does not resolve: the
+/// caller unwraps, so a splice that failed to apply reds its positive control
+/// instead of passing it vacuously. A mutation test whose mutation did not
+/// happen is the same false GREEN one level up that the control exists to
+/// retire.
+///
+/// The fn is located by [`fn_span`] — the same walk the gate itself runs on,
+/// so the control cannot drift onto a different notion of "top-level fn" than
+/// the checks it is the floor for. The insertion point is the first `{` in
+/// that span, which opens the body: a multi-line signature puts it several
+/// lines below the `fn` keyword.
+fn splice_into_fn_body(source: &str, fn_name: &str, stmt: &str) -> Option<String> {
+    let (start, end) = fn_span(source, fn_name)?;
+    let open = start + source[start..end].find('{')?;
+    let (head, tail) = source.split_at(open + 1);
+    Some(format!("{head}\n{stmt}{tail}"))
 }
 
 /// True when `body` names any identifier ending in `_and_refresh_baseline`
