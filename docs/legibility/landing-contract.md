@@ -8,13 +8,17 @@ reify refuses a commit. Recorded by #7788 (2026-09-22).
 Two mechanisms named below were on branches, not on `main`, when this was
 written. They are cited by branch and commit because the numbers in their names
 are not their task ids: reify tasks #7784 and #7785 are unrelated work, and
-neither branch has a task record (esc-7788-5).
+neither branch has a task record (esc-7788-5). Each entry also names the symbol
+that carries the mechanism. Once its branch has landed, that symbol is the cite
+to follow.
 
 - **The codebook-exempt branch**, `task/7784-codebook-exempt` (e5044ebadb),
-  excludes the codebook from the cited-test-path scan.
+  adds the codebook row to
+  `tests/infra/cited-test-path-lib.sh::cited_test_path_exclusions`, which takes
+  it out of the cited-test-path scan.
 - **The staged-cited-gate branch**, `task/7785-staged-cited-gate` (b68becc336),
-  runs the cited-test-path gate on `--scope staged` via
-  `select_cited_test_path_gate`.
+  adds `scripts/verify.sh::select_cited_test_path_gate`, which runs the
+  cited-test-path gate on `--scope staged`.
 
 `git merge-base --is-ancestor <commit> main` tells whether either has landed.
 
