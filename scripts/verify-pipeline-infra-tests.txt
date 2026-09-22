@@ -44,6 +44,13 @@
 scripts/verify.sh    tests/infra/test_verify_*.sh
 scripts/prd-capability-check.py    tests/infra/test_prd_capability_check.sh
 scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
+# Task 7044 (Gap 4, folded in from a 5738 review follow-up): the suite's
+# assertions live in the .py; the thin .sh wrapper above only closes
+# run_all.sh's test_*.sh DISCOVERY hole, not this map's exact-path SELECTION
+# one. Mirrors the scripts/lib_lane_lock.sh -> test_lane_lock_probe.py/.sh
+# pair at the bottom of this file. Without this row a --scope branch diff
+# touching only the .py selects no infra test at all.
+tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_report.sh
 
 # Warm-lane CoW pool scripts — edits route to the end-to-end integration gate.
 # Note: this is a load-bearing verify-pipeline file (see CLAUDE.md); editing it
@@ -486,6 +493,14 @@ scripts/git-rerere-guard.sh    tests/infra/test_git_rerere_guard.sh
 # scripts/setup-dev.sh already has an OCCT row).
 scripts/setup-dev.sh           tests/infra/test_git_rerere_guard.sh
 
+# Task 7044 (Gap 2, follow-up from task 6920): test_jcodemunch_index_units.sh's
+# Block G ("setup-dev.sh wiring") asserts structurally ON scripts/setup-dev.sh
+# that it invokes scripts/install-jcodemunch-index-units.sh (uncommented, at
+# the pinned setup-dev.sh:283-287 warm-lane call site). Without this row a
+# task-scope verify that edits only setup-dev.sh's jcodemunch-index-units
+# install-wiring selects zero infra poles for that block.
+scripts/setup-dev.sh           tests/infra/test_jcodemunch_index_units.sh
+
 # Task 5629 (esc-5392-1): these four artifacts JOINTLY decide whether the
 # compiled libtree_sitter_reify.a matches the tree being verified —
 # build.rs declares which inputs cargo watches and attests what it compiled,
@@ -586,3 +601,20 @@ scripts/lib_lane_lock.sh    tests/infra/test_warm_lane_sizing_lifecycle.sh
 # one. Without this row a --scope branch diff touching only the assertions selects
 # no infra test at all.
 tests/infra/test_lane_lock_probe.py    tests/infra/test_lane_lock_probe.sh
+
+# Task 7044 (Gap 1, discovered while planning task 6889): the worktree
+# core.hooksPath re-pinning helper had no row anywhere in this map, so a
+# task-scope verify whose diff touched ONLY scripts/setup-main-gate-worktree-config.sh
+# never selected the suite that exists to guard it — including that suite's
+# (wiring) block at :283-284, which asserts on scripts/setup-dev.sh separately
+# (see the scripts/setup-dev.sh -> test_jcodemunch_index_units.sh row above for
+# the sibling gap on that same artifact).
+scripts/setup-main-gate-worktree-config.sh    tests/infra/test_main_gate_worktree_config.sh
+
+# Task 7044 (Gap 3): task 7630's GUI vitest worker->host RPC-hardening runner.
+# scripts/gui-vitest-run.sh already routes to the full --scope all gate via
+# scripts/verify-pipeline-paths.txt (task 7630), but that only fires the
+# expensive gate — it does not select the fast, hermetic, `pool`-classified
+# fail-fast pole. Mirrors scripts/check-manifold-deps.sh -> test_occt_deps_preflight.sh
+# above, the same full-gate-plus-selective-row pattern.
+scripts/gui-vitest-run.sh    tests/infra/test_gui_vitest_rpc_hardening.sh
