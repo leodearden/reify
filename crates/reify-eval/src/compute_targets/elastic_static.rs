@@ -9200,12 +9200,18 @@ mod tests {
 
         let res = extract_loads(&Value::List(vec![point_load]), 0.0);
         assert!(
-            res.is_err(),
-            "expected Err for a PRESENT, correctly-shaped direction component \
-             carrying a unit — today the unit is silently stripped and this \
-             reads as fy=-800.0; if the dimensionless_component gate landed \
-             without this fix the same input would instead give fy=0.0, \
-             silently deleting the whole load direction, got: {:?}",
+            matches!(
+                res,
+                Err(FeaValueShapeError::WrongDimension { expected: "Real", .. })
+            ),
+            "expected Err(WrongDimension {{ expected: \"Real\", .. }}) for a \
+             PRESENT, correctly-shaped direction component carrying a unit — \
+             without the gate the unit is silently stripped and this reads \
+             as fy=-800.0; without also Result-ifying read_direction_or_neg_z \
+             the same input would instead give fy=0.0, silently deleting the \
+             whole load direction. Asserting the variant (not just is_err) \
+             pins that this is a real dimension check, not a fluke \
+             ExpectedScalar; got: {:?}",
             res
         );
     }
@@ -11263,12 +11269,19 @@ mod tests {
         ]);
         let res = extract_point3_si(&wrong_dimension);
         assert!(
-            res.is_err(),
-            "expected Err for a Point3<Length> corner with a MASS-dimensioned \
-             component, got: {:?} — aabb_min/aabb_max corners feed \
-             reify_fdm::AxisAlignedBox and drive classify_point's \
-             wall/skin/infill zone assignment, so a wrong-dimension corner \
-             silently mis-zones the whole part",
+            matches!(
+                res,
+                Err(FeaValueShapeError::WrongDimension { expected: "Length", .. })
+            ),
+            "expected Err(WrongDimension {{ expected: \"Length\", .. }}) for a \
+             Point3<Length> corner with a MASS-dimensioned component, got: \
+             {:?} — aabb_min/aabb_max corners feed reify_fdm::AxisAlignedBox \
+             and drive classify_point's wall/skin/infill zone assignment, so \
+             a wrong-dimension corner silently mis-zones the whole part. \
+             Asserting the variant (not just is_err) is what distinguishes a \
+             real dimension check from a fluke ExpectedScalar — the existing \
+             ExpectedScalar-side tests already pin the non-Scalar half of \
+             that discriminator",
             res
         );
     }
@@ -11538,12 +11551,18 @@ mod tests {
         ]);
         let res = extract_vec3_si(&dimensioned);
         assert!(
-            res.is_err(),
-            "expected Err for a LENGTH-dimensioned axis component instead of \
-             silently reinterpreting its SI magnitude as the bare component — \
-             nothing normalises the frame afterward and D_global is homogeneous \
-             of degree 4 in its entries, so a 1mm-spelled axis would silently \
-             rescale the stiffness by 1e-12; got: {:?}",
+            matches!(
+                res,
+                Err(FeaValueShapeError::WrongDimension { expected: "Real", .. })
+            ),
+            "expected Err(WrongDimension {{ expected: \"Real\", .. }}) for a \
+             LENGTH-dimensioned axis component instead of silently \
+             reinterpreting its SI magnitude as the bare component — nothing \
+             normalises the frame afterward and D_global is homogeneous of \
+             degree 4 in its entries, so a 1mm-spelled axis would silently \
+             rescale the stiffness by 1e-12. Asserting the variant (not just \
+             is_err) is what distinguishes a real dimension check from a \
+             fluke ExpectedScalar; got: {:?}",
             res
         );
 
@@ -12557,9 +12576,14 @@ mod tests {
         .collect();
         let res = anisotropic_material_from_value(&anisotropic_material(fields));
         assert!(
-            res.is_err(),
-            "a LENGTH-dimensioned axis component must be rejected, not silently \
-             reinterpreted as a bare dimensionless component, got: {:?}",
+            matches!(
+                res,
+                Err(FeaValueShapeError::WrongDimension { expected: "Real", .. })
+            ),
+            "a LENGTH-dimensioned axis component must be rejected with \
+             WrongDimension {{ expected: \"Real\", .. }}, not silently \
+             reinterpreted as a bare dimensionless component and not a fluke \
+             ExpectedScalar, got: {:?}",
             res
         );
     }
