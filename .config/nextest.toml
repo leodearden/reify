@@ -255,15 +255,10 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # verify.sh's `--test-threads=N` (task 5264, the dark-factory offline deep-test
 # lane) still wins verbatim when passed.  This key changes only the UNSET
 # default.  That precedence is GUARDED (task 6375): gen-nextest-config.sh
-# compares REIFY_NEXTEST_CLI_TEST_THREADS against the derived pool immediately
-# after the >=1 clamp and refuses (exit 64) when the CLI value would RAISE the
-# pool above this key's resolution; verify.sh wires it as a per-invocation env
-# prefix (deliberately not exported) at both generation sites, with a
-# _die_nextest_config handler naming the refusal.  Three-way contract: unset ->
-# no-op; <= the derived pool -> one stderr note naming both values, exit 0 (the
-# sanctioned offline-lane use of capping below the pool); > the derived pool ->
-# exit 64, nothing on stdout.  Guard: tests/infra/test_verify_test_threads.sh
-# Tests 6a-6e.
+# refuses a CLI `--test-threads` that would RAISE the pool above this key's
+# resolution.  Normative contract: the REIFY_NEXTEST_CLI_TEST_THREADS entry in
+# scripts/gen-nextest-config.sh's header.  Guard:
+# tests/infra/test_verify_test_threads.sh Tests 6a-6e.
 test-threads = "num-cpus"
 
 # Pin the OCCT-touching packages to the `occt` group (max-threads = 24, env-driven).
