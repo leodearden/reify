@@ -1081,6 +1081,319 @@ fn worst_unmet_floor_term(
         .max_by(|(a_got, a_need), (b_got, b_need)| (a_need - a_got).total_cmp(&(b_need - b_got)))
 }
 
+/// A point that VERIFIABLY satisfies `target`, or `None` when no candidate does.
+///
+/// THE CONTRACT STOPS THERE: the witness is verified against `target` AND
+/// NOTHING ELSE.  Callers that want to speak about a different constraint set
+/// must ASK FOR THAT SET — never re-check a witness found for a neighbouring one
+/// and read the outcome as a verdict on the set it was not searched against.
+/// That is a soundness rule, not a style preference: the floor's per-side
+/// margins are ASYMMETRIC (`collect_floor_terms` reads each off its own `Lt`/`Le`
+/// bound at the seed), while rung 2 below maximises the RAW minimum slack — so
+/// the un-floored centre sits OUTSIDE a non-empty floored window across a whole
+/// band of shapes.  That band, its measured margins and the boundary they put
+/// the class transition at are asserted in closed form by
+/// `floored_window_emptiness_decides_the_class_across_the_band`
+/// (`tests/robustness_floor.rs`), whose two consts are the executed copy of
+/// those numbers; the two #5714 cuts that each read one set's witness as a
+/// verdict on the other are recorded in that task's escalation history.
+///
+/// Hence `target`: the caller passes `effective_constraints` when it needs a
+/// point verified against the floor, and `problem.constraints` when it needs one
+/// verified against the originals only.  Neither answer is ever inferred from
+/// the other.
+///
+/// A `None` is a statement about THE SEARCH, not about the region: it means no
+/// candidate on either rung was verified, which is weaker than emptiness.  Every
+/// message keyed off it must stay worded accordingly.
+///
+/// Two rungs, cheapest first:
+///
+///   1. `converged` — a point the CALLER already holds, typically the floored
+///      solve's own converged point.  Free: it is already in hand.  A shallow
+///      objective leaves it inside the user's box, so this rung carries the
+///      `q ∈ [99, 100]` shape by itself, with the slack digits it has always
+///      reported.  `None` skips the rung, and a caller that already knows the
+///      point misses `target` must pass `None` rather than pay a full re-
+///      evaluation to be told so again.  That is why rung 1 is live for the
+///      ORIGINALS target only: the floored call comes from an emit site reached
+///      exactly when the residual against `effective_constraints` ALREADY
+///      exceeds `FEASIBILITY_THRESHOLD`, so offering it that same point would be
+///      a guaranteed-false re-computation of a value in hand.
+///   2. one bounded FEASIBILITY-ONLY re-solve — floor off, objective dropped.
+///      A Money objective steep relative to `PENALTY_WEIGHT` parks the floored
+///      penalty minimiser outside the user's box (measured, `x > 10mm ∧
+///      x < 10.3mm` under `5 USD × (x / 1mm)` lands at x ≈ 8.85e-3), which is
+///      what rung 1 cannot rescue and what this rung is for (task #5714).
+///      Dropping the objective is what makes the rung immune to that steepness
+///      by construction rather than by luck — see the rung itself.
+///
+/// The return is deliberately a WITNESS — a concrete point re-checked against
+/// `target` — never an inference from a derived box.
+/// `derive_param_intervals` SKIPs nonlinear and multi-auto shapes, so a
+/// non-degenerate derived box is not evidence of satisfiability: measured,
+/// `2·x > 60mm ∧ 2·x < 20mm` derives `DerivedInterval { lo: None, hi: None }`
+/// and hence the non-degenerate `default_bounds_for(Length) = (1e-6, 10.0)` for
+/// a region that is genuinely EMPTY.  A box-emptiness shortcut would over-claim
+/// exactly there; control test
+/// `underivable_empty_box_keeps_the_region_empty_wording`.
+///
+/// RECURSION is exactly one level deep BY CONSTRUCTION, not by a counter: rung 2
+/// passes `apply_robustness_floor = false`, so `floor_applied` is false inside
+/// that solve and [`floor_infeasible_diagnostic`] — the only caller — is
+/// structurally unreachable there.
+fn constraints_witness(
+    problem: &ResolutionProblem,
+    target: &[(ConstraintNodeId, CompiledExpr)],
+    converged: Option<&ValueMap>,
+    sd_tolerance: f64,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Option<ValueMap> {
+    let satisfies_target = |values: &ValueMap| {
+        max_constraint_residual(target, values, &problem.functions, dispatch)
+            <= FEASIBILITY_THRESHOLD
+    };
+
+    // ── rung 1: a point the caller already holds (free) ──────────────────────
+    if let Some(converged) = converged
+        && satisfies_target(converged)
+    {
+        return Some(converged.clone());
+    }
+
+    // ── rung 2: one floor-free, OBJECTIVE-FREE re-solve ──────────────────────
+    //
+    // Dropping the objective is the root-cause fix, not a trick.  A Money
+    // objective steep relative to `PENALTY_WEIGHT` is exactly what parks the
+    // penalty minimiser outside the user's box, so a witness search that keeps
+    // it inherits the very defect it is meant to route around: MEASURED, the
+    // objective-KEEPING form returns `Infeasible` on `2·x ∈ (60mm, 61mm)` (its
+    // minimiser of `5000·x + 1e6·(0.060 − 2x)²` sits at x ≈ 2.9375e-2, residual
+    // 1.25e-3), while the objective-DROPPED form returns x = 3.025e-2 at
+    // residual 0.0 — and still returns x = 1.015e-2 on the headline bracket.
+    //
+    // With `objective: None`, `solve_core_with_sd_tolerance` synthesises the eta
+    // centrality (Chebyshev-centre) objective from the SAME slack terms via
+    // `build_centrality_objective`, so the search MAXIMISES THE MINIMUM SLACK
+    // and cannot be pulled off the feasible set by cost at all.
+    //
+    // Both genuinely-empty controls still decline under this form (MEASURED
+    // `Infeasible`): `x >= 50mm ∧ x <= 10mm` and `2·x > 60mm ∧ 2·x < 20mm`.
+    //
+    // `..problem.clone()` functional-update form, not an explicit field literal:
+    // it is the established idiom (`registry.rs:453`, `:789`) and it is what
+    // keeps a future seventh `ResolutionProblem` field from being silently
+    // dropped here — the compile tripwire is
+    // `resolution_problem_field_set_is_pinned_at_the_solver_spread_sites`.  The
+    // clone is paid once on an already-failing path; its only real cost is the
+    // `CompiledExpr` deep clone of `constraints`.
+    //
+    // `constraints: target` is what makes the rung answer the question the
+    // caller actually asked.  Searching the originals and then re-checking the
+    // floor is NOT equivalent — see the asymmetric-margin band in the doc
+    // comment above — so the floored search must be driven by the floored set
+    // from the start, seed box and centrality objective included.
+    let feasibility_problem = ResolutionProblem {
+        objective: None,
+        constraints: target.to_vec(),
+        ..problem.clone()
+    };
+    let seed = extract_initial_point(&feasibility_problem, dispatch);
+    let (result, _) = solve_core_with_sd_tolerance(
+        &feasibility_problem,
+        &seed,
+        sd_tolerance,
+        /* apply_robustness_floor = */ false,
+        dispatch,
+    );
+    let SolveResult::Solved { values, .. } = result else {
+        // `Infeasible` and `NoProgress` both mean "no witness found HERE" — a
+        // fact about this search, not about `target`'s region.  The caller words
+        // its message accordingly rather than upgrading it to emptiness.
+        return None;
+    };
+    // `SolveResult::Solved` carries only the autos, so rebuild the full map the
+    // residual check needs — dependent cells included — via the same helper the
+    // solve itself uses.  Any missing or non-numeric auto declines.
+    let xs: Vec<f64> = problem
+        .auto_params
+        .iter()
+        .map(|p| values.get(&p.id).and_then(Value::as_f64))
+        .collect::<Option<_>>()?;
+    let witness = build_trial_values(
+        &problem.current_values,
+        &problem.auto_params,
+        &xs,
+        &problem.dependent_cells,
+        &problem.functions,
+        dispatch,
+    );
+    satisfies_target(&witness).then_some(witness)
+}
+
+/// The `RobustnessFloorInfeasible` diagnostic for a solve that failed WITH the
+/// synthesised floor applied (tasks #5618 step-10, #5714).
+///
+/// `final_max_residual` is measured against `effective_constraints`, i.e. the
+/// user's constraints PLUS the floor.  On its own it cannot tell the three
+/// situations below apart, and the message used to assert the worst of them in
+/// all cases.  For a tight-but-satisfiable bracket that is simply false, and it
+/// was the original report's sharpest complaint: the diagnostic sent the user
+/// off relaxing a design that was never over-constrained.
+///
+/// So SEARCH FOR A WITNESS, and search the set the claim is about — two
+/// searches, each verified against the constraint set it speaks for, tried
+/// strongest-evidence first:
+///
+///   3. a point meeting `effective_constraints` (originals AND every floor
+///      term) → nothing is over-constrained at all; the floored solve simply
+///      did not converge to it.  None of class 2's remedies apply.
+///      `wide_underivable_bracket_does_not_blame_a_satisfiable_margin`
+///   2. else a point meeting `problem.constraints` → the originals are
+///      satisfiable but the floored search declined; report the shortfall at
+///      that point, WITHOUT claiming the floor is unmeetable anywhere.
+///      `steep_objective_over_an_underivable_bracket_still_names_the_margin`
+///   1. else neither search found anything → keep the original region-empty
+///      wording.  `underivable_empty_box_keeps_the_region_empty_wording`
+///
+/// Two SEARCHES, never one-plus-a-re-check: a witness found for one set is no
+/// verdict on the other, for the asymmetric-margin reason documented on
+/// [`constraints_witness`] and swept by
+/// `floored_window_emptiness_decides_the_class_across_the_band`.
+///
+/// Every claim stays about a CONCRETE POINT, never about the feasible region —
+/// verified, not inferred.  Classes 2 and 1 rest on a search DECLINING, which is
+/// weaker than emptiness, so their wording asserts only what was searched and
+/// what was found.
+///
+/// COST: up to two extra bounded solves on an already-failing path (class 3 pays
+/// one, and the originals search's rung 1 is free).
+///
+/// TODO(#7643): under `solve_ranked_impl` multistart this is paid `K = 2·(dim+1)`
+/// times and every copy is DISCARDED — that loop consumes only the
+/// `Solved`/not-`Solved` bit and re-solves once more via `solve_with_meta` to
+/// build the message it actually returns.  Making the construction lazy for that
+/// loop is a signature/ownership call on `solve_core`, deferred rather than
+/// bolted on as a sixth flag through `solve_core_with_sd_tolerance`.
+fn floor_infeasible_diagnostic(
+    problem: &ResolutionProblem,
+    effective_constraints: &[(ConstraintNodeId, CompiledExpr)],
+    final_values: &ValueMap,
+    final_max_residual: f64,
+    sd_tolerance: f64,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> reify_core::Diagnostic {
+    // `converged: None` — this function is reached only when `final_max_residual`
+    // against `effective_constraints` already exceeds `FEASIBILITY_THRESHOLD`, so
+    // offering `final_values` as a floored candidate would re-derive a value
+    // already in hand and known to fail.  Rung 1 is live for the ORIGINALS search
+    // below, where the answer is genuinely unknown.
+    let floored_witness =
+        constraints_witness(problem, effective_constraints, None, sd_tolerance, dispatch);
+    if floored_witness.is_some() {
+        // ── CLASS 3: everything is satisfiable; the solve just did not get ──
+        // there.  The witness is verified against `effective_constraints`, so
+        // BOTH halves of the claim below are proved at one concrete point — no
+        // inference.  Offer NONE of class 2's remedies: nothing is
+        // over-constrained and there is no cost/robustness conflict to trade
+        // off, so all three would be wrong advice.  `final_max_residual` is
+        // reported because it describes the point the solve actually REACHED —
+        // at the witness it is 0.0, which would tell the user nothing about the
+        // failure.
+        //
+        // TODO(#7632): the witness is a verified feasible point and is thrown
+        // away — the user gets a hard `Infeasible` on a model this function is
+        // holding a solution to.  Returning it instead is a change to solver
+        // SEMANTICS (result class, uniqueness, and the eval-layer
+        // `RobustnessFloorApplied` suppression that keys off this code), which
+        // is why it is tracked rather than done here.
+        return reify_core::Diagnostic::error(format!(
+            "infeasible under robustness floor: the original constraints \
+             and the synthesised {:.0}% robustness margin are both \
+             satisfiable — verified at a point that meets every one of \
+             them — but the floored solve did not converge to it (max \
+             absolute residual at the point it reached: {:.2e}); this is \
+             a solver convergence limit, not an over-constrained design",
+            REL_MARGIN * 100.0,
+            final_max_residual
+        ))
+        .with_code(DiagnosticCode::RobustnessFloorInfeasible);
+    }
+
+    let Some(witness) = constraints_witness(
+        problem,
+        &problem.constraints,
+        Some(final_values),
+        sd_tolerance,
+        dispatch,
+    ) else {
+        // ── CLASS 1: neither search found anything.  This is the pre-#5618 ──
+        // wording, kept deliberately: it is the one case where no verified point
+        // exists to talk about, so the message stays as it always was rather
+        // than inventing a weaker claim the user has no use for.
+        return reify_core::Diagnostic::error(format!(
+            "infeasible under robustness floor: the floored feasible \
+             region is empty (max absolute residual: {:.2e}); relax \
+             opposing constraints or widen the tolerance margin",
+            final_max_residual
+        ))
+        .with_code(DiagnosticCode::RobustnessFloorInfeasible);
+    };
+
+    // ── CLASS 2: the originals are satisfiable, the floored search is not. ──
+    // The ONLY region-level claim made is the positive one about the originals,
+    // which a verified point does license.  The floor half is worded as what
+    // happened — a search declined — because that is all that was established;
+    // asserting "the margin cannot be met" here is what the asymmetric-margin
+    // band falsified.
+    //
+    // The floor terms occupy the tail of `effective_constraints` past the
+    // originals — the ORDERING INVARIANT documented at the
+    // `synthesise_floor_constraints` call site is what makes this slice
+    // well-defined.  Evaluated AT THE WITNESS: the margins are constant literals
+    // synthesised once from the seed, so the shortfall is the one the user would
+    // hit at the point being reported as satisfiable.
+    let shortfall = match worst_unmet_floor_term(
+        &effective_constraints[problem.constraints.len()..],
+        &witness,
+        &problem.functions,
+        dispatch,
+    ) {
+        Some((achieved, required)) => format!(
+            "; the margin falls short at that point (worst \
+             slack there: {achieved:.3e} achieved vs \
+             {required:.3e} required)"
+        ),
+        // NO NUMBERS TO STAND BEHIND → no clause, and the sentence below is
+        // written to stand on its own without it.  `worst_unmet_floor_term`
+        // documents three routes here: every floor term met at this witness, an
+        // empty floor tail, and a term that does not evaluate numerically.  The
+        // first is the interesting one and is NOT excluded by reaching class 2 —
+        // the floored search declining is a fact about THAT search, and the two
+        // searches optimise different centrality objectives, so this witness may
+        // well meet every floor term.  It is, however, not constructible on
+        // demand: any point meeting both sets is a valid class-3 witness, so
+        // getting here needs the floored feasibility solve to miss a point the
+        // originals solve found — solver non-convergence, not a shape.  Hence
+        // the arm is DEFENSIVE and unexercised by the suite; do not read its
+        // absence from the fixtures as proof it is dead.
+        None => String::new(),
+    };
+    reify_core::Diagnostic::error(format!(
+        "infeasible under robustness floor: the original \
+         constraints ARE satisfiable — verified at a point \
+         that meets them — but no point satisfying the \
+         synthesised {:.0}% robustness margin as well was \
+         found{}; relax opposing constraints, widen the \
+         tolerance margin, or take explicit control with \
+         `minimize cost_robustness_tradeoff(<cost-expr>, λ)`",
+        REL_MARGIN * 100.0,
+        shortfall
+    ))
+    .with_code(DiagnosticCode::RobustnessFloorInfeasible)
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constraint-derived parameter bounds (task #5618)
 //
@@ -2697,82 +3010,14 @@ fn solve_core_with_sd_tolerance(
         return (
             SolveResult::Infeasible {
                 diagnostics: vec![if floor_applied {
-                    // ── Diagnostic honesty (task #5618 step-10) ──────────────────
-                    // `final_max_residual` above is measured against
-                    // `effective_constraints`, i.e. the user's constraints PLUS the
-                    // synthesised floor.  It cannot tell "your constraints admit no
-                    // solution" apart from "your constraints do, but my 2% margin
-                    // does not fit inside them" — and the message used to assert the
-                    // former in both cases.  For a tight-but-satisfiable bracket that
-                    // is simply false, and it was the original report's sharpest
-                    // complaint: the diagnostic sent the user off relaxing a design
-                    // that was never over-constrained.
-                    //
-                    // So re-measure against `problem.constraints` — the ORIGINAL set,
-                    // floor excluded — at the point actually being reported.  This is
-                    // deliberately a claim about THAT POINT, not about the feasible
-                    // region: it is verified, not inferred, so the new wording can
-                    // never over-claim.  Deriving the raw box instead (via
-                    // `derive_param_intervals`) would be cheaper but unsound —
-                    // that helper SKIPs nonlinear and multi-auto shapes, so a
-                    // non-degenerate derived box is not evidence of satisfiability.
-                    //
-                    // KNOWN GAP (not a regression; #5618 does not close it): the
-                    // honest branch is only reachable when the returned point stays
-                    // inside the user's box.  Under a steep objective it need not —
-                    // measured, `x > 10mm ∧ x < 10.3mm` with `5 USD × (x / 1mm)`
-                    // (gradient 5000/m vs PENALTY_WEIGHT = 1e6) parks ~1.25e-3 m below
-                    // the floored lower bound, outside the 0.3mm-wide user box, so
-                    // this check correctly declines and the region-empty wording
-                    // stands even though the region is not empty.  Making it reachable
-                    // means changing WHICH point a floor-infeasible solve reports —
-                    // solver semantics, and its own task: #5714, which carries this
-                    // measurement and the reason the cheap box-emptiness shortcut is
-                    // unsound.  See the
-                    // `margin_only_infeasibility_names_the_margin_not_an_empty_region`
-                    // doc comment in `tests/robustness_floor.rs` for the measurement.
-                    let original_max_residual = max_constraint_residual(
-                        &problem.constraints,
+                    floor_infeasible_diagnostic(
+                        problem,
+                        &effective_constraints,
                         &final_values,
-                        &problem.functions,
+                        final_max_residual,
+                        sd_tolerance,
                         dispatch,
-                    );
-                    if original_max_residual <= FEASIBILITY_THRESHOLD {
-                        // The floor terms occupy the tail of `effective_constraints`
-                        // past the originals — the ORDERING INVARIANT documented at
-                        // the `synthesise_floor_constraints` call site is what makes
-                        // this slice well-defined.
-                        let shortfall = match worst_unmet_floor_term(
-                            &effective_constraints[problem.constraints.len()..],
-                            &final_values,
-                            &problem.functions,
-                            dispatch,
-                        ) {
-                            Some((achieved, required)) => format!(
-                                " (worst slack at that point: {achieved:.3e} achieved vs \
-                                 {required:.3e} required)"
-                            ),
-                            None => String::new(),
-                        };
-                        reify_core::Diagnostic::error(format!(
-                            "infeasible under robustness floor: the original constraints ARE \
-                             satisfied at the returned point — it is the synthesised {:.0}% \
-                             robustness margin that cannot be met{}; relax opposing \
-                             constraints, widen the tolerance margin, or take explicit \
-                             control with `minimize cost_robustness_tradeoff(<cost-expr>, λ)`",
-                            REL_MARGIN * 100.0,
-                            shortfall
-                        ))
-                        .with_code(DiagnosticCode::RobustnessFloorInfeasible)
-                    } else {
-                        reify_core::Diagnostic::error(format!(
-                            "infeasible under robustness floor: the floored feasible region is \
-                             empty (max absolute residual: {:.2e}); relax opposing constraints \
-                             or widen the tolerance margin",
-                            final_max_residual
-                        ))
-                        .with_code(DiagnosticCode::RobustnessFloorInfeasible)
-                    }
+                    )
                 } else {
                     reify_core::Diagnostic::error(format!(
                         "constraints could not be satisfied (max absolute residual: {:.2e})",
@@ -3132,12 +3377,15 @@ mod resolution_problem_spread_pin {
     /// `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`,
     /// whose doc carries the full rationale.
     ///
-    /// SIX production sites in this crate build a `ResolutionProblem` with
+    /// SEVEN production sites in this crate build a `ResolutionProblem` with
     /// functional-update syntax, inheriting every field their literal does not
     /// name:
     ///
     /// - `solver.rs`: `solve_cost_robustness_tradeoff`'s `cost_problem`,
-    ///   `rob_problem` and `blend_problem` — the three directly above
+    ///   `rob_problem` and `blend_problem` — the three directly above — and
+    ///   `constraints_witness`'s `feasibility_problem`, which is NOT directly
+    ///   above: it sits ~2000 lines up, so the break still lands in this file
+    ///   but the reader has to go find that one
     /// - `registry.rs`: `solve_inner`'s `sub_problem`,
     ///   `solve_lexicographic`'s `stage_problem` and its degenerate
     ///   single-priority `ws_problem`
