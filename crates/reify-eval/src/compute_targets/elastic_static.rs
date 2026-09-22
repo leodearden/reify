@@ -9173,30 +9173,15 @@ mod tests {
     /// than the unit strip it replaces.
     #[test]
     fn extract_loads_rejects_a_dimensioned_direction_component() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let fields: PersistentMap<String, Value> = [
-            ("force".to_string(), Value::Real(800.0)),
-            (
-                "direction".to_string(),
-                Value::Vector(vec![
-                    Value::Real(0.0),
-                    Value::Scalar {
-                        si_value: -1.0,
-                        dimension: DimensionVector::LENGTH,
-                    },
-                    Value::Real(0.0),
-                ]),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let point_load = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "PointLoad".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 0,
-            fields,
-        }));
+        let dir = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::Scalar {
+                si_value: -1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Real(0.0),
+        ]);
+        let point_load = point_load_with_direction_value(800.0, dir);
 
         let res = extract_loads(&Value::List(vec![point_load]), 0.0);
         assert!(
@@ -9320,22 +9305,8 @@ mod tests {
         // (c) Gravity: both consumers must be covered, because
         // read_direction_or_neg_z is ?-threaded at both the PointLoad arm and
         // the Gravity arm of extract_loads.
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-        let gravity_fields: PersistentMap<String, Value> = [
-            ("magnitude".to_string(), Value::Real(9.81)),
-            (
-                "direction".to_string(),
-                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Undef]),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let gravity = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "Gravity".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 0,
-            fields: gravity_fields,
-        }));
+        let dir_c = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Undef]);
+        let gravity = gravity_with_direction_value(9.81, dir_c);
         let res_c = extract_loads(&Value::List(vec![gravity]), 7850.0);
         assert!(
             res_c.is_ok(),
