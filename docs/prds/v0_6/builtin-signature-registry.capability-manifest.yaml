@@ -136,7 +136,7 @@ tasks:
   capabilities:
   - name: orientation-frame-eval-arms-exist
     binding: wired — grep:crates/reify-stdlib/src/orientation.rs orient_* arms of eval_orientation
-      + crates/reify-stdlib/src/geometry.rs:605 frame_to_frame arm of eval_geometry
+      + grep:crates/reify-stdlib/src/geometry.rs frame_to_frame arm of eval_geometry
     verdict: PASS
     delivered_check:
       kind: grep
