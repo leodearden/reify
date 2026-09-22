@@ -15,6 +15,8 @@
 #   (C) The scan's charter (task 7788), pinned against a throwaway repo: a
 #       mention inside the machine-written agent-confusion corpus is ignored,
 #       while the identical mention in any other file is still reported.
+#   (D) The (B) check fails, rather than passing vacuously, when its scan
+#       cannot run (git grep exit >1: no PCRE, a bad pathspec, no repo).
 #
 # The match pattern is a PCRE negative-lookbehind
 # `(?<!dark-factory-)orchestrator\.yaml` so the canonical filename
@@ -73,18 +75,26 @@ legacy_config_ref_exclusions() {
 
 # legacy_config_refs <root> — print `file:line:text` for every tracked line
 # under <root> that names the legacy config filename; nothing when none does.
+# Only git grep's "no match" (exit 1) reads as none; any other failure is
+# returned, so a scan that could not run never passes as a clean tree.
 legacy_config_refs() {
-    local root="$1"
+    local root="$1" rc=0
     local -a excl
     mapfile -t excl < <(legacy_config_ref_exclusions)
-    git -C "$root" grep -nP '(?<!dark-factory-)orchestrator\.yaml' -- . "${excl[@]}" || true
+    git -C "$root" grep -nP '(?<!dark-factory-)orchestrator\.yaml' -- . "${excl[@]}" || rc=$?
+    case "$rc" in
+        0|1) return 0 ;;
+    esac
+    echo "legacy_config_refs: git grep could not scan $root (exit $rc)" >&2
+    return "$rc"
 }
 
-# PASSES iff the scan finds nothing on the real tree. Any match is echoed so
-# the assert() harness dumps the offending file:line list on FAIL.
+# assert_no_legacy_config_refs <root> — PASSES iff the scan of <root> ran and
+# found nothing. Any match is echoed so the assert() harness dumps the
+# offending file:line list on FAIL.
 assert_no_legacy_config_refs() {
-    local matches
-    matches="$(legacy_config_refs "$REPO_ROOT")"
+    local root="$1" matches
+    matches="$(legacy_config_refs "$root")" || return
     if [ -n "$matches" ]; then
         echo "Legacy top-level config references still present (expected: none):"
         echo "$matches"
@@ -95,7 +105,7 @@ assert_no_legacy_config_refs() {
 }
 
 assert "no legacy top-level config reference remains in tracked content" \
-    assert_no_legacy_config_refs
+    assert_no_legacy_config_refs "$REPO_ROOT"
 
 # ---------------------------------------------------------------------------
 # (C) The machine-written confusion corpus is out of charter
@@ -146,5 +156,17 @@ assert "(C)(a) a legacy-filename mention in docs/elsewhere.md is reported" \
     _scan_reports "$FIXTURE_REFS" docs/elsewhere.md
 assert "(C)(b) the identical mention inside docs/legibility/confusion-codebook.yaml is ignored" \
     _scan_omits "$FIXTURE_REFS" docs/legibility/confusion-codebook.yaml
+
+# ---------------------------------------------------------------------------
+# (D) A scan that cannot run fails the (B) check
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (D) a scan that cannot run fails the (B) check ---"
+
+# _fails <cmd...> — PASSES iff <cmd...> exits non-zero.
+_fails() { ! "$@"; }
+
+assert "(D) the (B) check fails on a root git grep cannot scan" \
+    _fails assert_no_legacy_config_refs "$_RUN_TMP/absent"
 
 test_summary
