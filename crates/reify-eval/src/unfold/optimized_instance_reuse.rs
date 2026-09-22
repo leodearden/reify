@@ -951,4 +951,173 @@ mod tests {
              strictly less actionable than the unbounded message: {detail}"
         );
     }
+
+    /// ITEM 2 of task #7021. The read gate compared two `Option<&Value>`s with a
+    /// bare `!=`, so a cell PRESENT at one scope and ABSENT at the other was
+    /// reported as a value that "differs from the template's" — an accusation of
+    /// a constructor override against a read that very likely holds the identical
+    /// value and is merely invisible.
+    ///
+    /// Both directions are reachable, not hypothetical:
+    ///
+    /// * INSTANCE-SIDE ABSENCE. `child_values` is seeded with the child
+    ///   template's own params, the collapsed sub instances, and a BFS
+    ///   projection over the subs phase 1.5 actually elaborated — so a read of a
+    ///   member of a DECLINED sub (a collection, a keyed sub, a
+    ///   `skip_reason_for_shape` miss, an unresolvable target, a cycle cut) is
+    ///   absent at instance scope while the global map holds it from the
+    ///   top-level pass.
+    /// * TEMPLATE-SIDE ABSENCE. For a prelude/stdlib child structure — absent
+    ///   from `module.templates`, the very population
+    ///   [`DeclineCause::NoTemplateValue`]'s doc describes — the top-level pass
+    ///   never seeds `{Tmpl}.{param}` globally, while
+    ///   `elaborate_child_params_only` always seeds it into the instance map.
+    ///
+    /// Arm (c) is the DISCRIMINATOR: without it, (a) and (b) would be satisfied
+    /// by reclassifying every decline, which would move the false positive
+    /// rather than remove it. Arm (d) is the FROZEN INVARIANT: this task changes
+    /// the message, never the value — every read that declined before declines
+    /// after, and a pair that was equal (both absent) still reuses.
+    #[test]
+    fn presence_asymmetry_is_classified_apart_from_a_genuine_value_difference() {
+        let source = r#"
+            @optimized("test::asym")
+            fn asym_opt(x : Int) -> Int {
+                x + 1
+            }
+
+            structure AsymLike {
+                param x : Int = 3
+                let r = asym_opt(x)
+            }
+        "#;
+        let module = reify_test_support::compile_source_with_stdlib(source);
+        let errors = reify_test_support::collect_errors(&module.diagnostics);
+        assert!(errors.is_empty(), "fixture must compile clean: {errors:?}");
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == "AsymLike")
+            .expect("AsymLike template");
+        let expr = reify_test_support::get_let_expr_in(&module, "AsymLike", "r");
+        let names = OptimizedNameIndex::new(&module.functions);
+
+        // The template OUTPUT cell is present on every arm, so the READ LOOP is
+        // what decides and never the absent-output branch.
+        let resolve = |instance: Option<Value>, global: Option<Value>| {
+            let read = ValueCellId::new("AsymLike", "x");
+            let mut instance_values = ValueMap::new();
+            if let Some(value) = instance {
+                instance_values.insert(read.clone(), value);
+            }
+            let mut global_values = ValueMap::new();
+            if let Some(value) = global {
+                global_values.insert(read, value);
+            }
+            global_values.insert(ValueCellId::new("AsymLike", "r"), Value::Int(777));
+            resolve_optimized_instance_cell(
+                expr,
+                &names,
+                template,
+                "r",
+                || extract_dependency_trace(expr).reads,
+                &instance_values,
+                &global_values,
+            )
+        };
+        let declining_cause = |resolution| match resolution {
+            OptimizedInstanceResolution::Unreusable { cause, .. } => cause,
+            OptimizedInstanceResolution::Reuse(v) => panic!(
+                "a read the gate cannot compare must still DECLINE — reuse here is \
+                 the unsoundness #6662 exists to prevent (got {v:?})"
+            ),
+            OptimizedInstanceResolution::NotOptimized => {
+                panic!("`asym_opt` carries @optimized; the probe must see it")
+            }
+        };
+
+        // (a) UNPROJECTED AT INSTANCE SCOPE — the ITEM 2 false positive.
+        match declining_cause(resolve(None, Some(Value::Int(3)))) {
+            DeclineCause::InputNotComparable { detail } => {
+                assert!(
+                    detail.contains("AsymLike.x"),
+                    "the detail is the only place the unreadable input is named: {detail}"
+                );
+                assert!(
+                    detail.contains("instance scope"),
+                    "an input absent from the INSTANCE map must say so, so the \
+                     reader looks at projection and not at overrides: {detail}"
+                );
+                assert!(
+                    !detail.contains("differs"),
+                    "the two values were never compared — one of them does not \
+                     exist — so nothing may claim they differ: {detail}"
+                );
+            }
+            other => panic!(
+                "an input absent at instance scope is a VISIBILITY fact, not a \
+                 value difference: {other:?}"
+            ),
+        }
+
+        // (b) THE REVERSE DIRECTION — a prelude/stdlib child structure.
+        match declining_cause(resolve(Some(Value::Int(3)), None)) {
+            DeclineCause::InputNotComparable { detail } => {
+                assert!(
+                    detail.contains("AsymLike.x"),
+                    "the detail is the only place the unreadable input is named: {detail}"
+                );
+                assert!(
+                    detail.contains("template scope"),
+                    "an input absent from the GLOBAL map must name TEMPLATE scope, \
+                     so the two directions stay distinguishable in the message: {detail}"
+                );
+                assert!(
+                    !detail.contains("differs"),
+                    "the two values were never compared — one of them does not \
+                     exist — so nothing may claim they differ: {detail}"
+                );
+            }
+            other => panic!(
+                "an input absent at template scope is a VISIBILITY fact, not a \
+                 value difference: {other:?}"
+            ),
+        }
+
+        // (c) THE DISCRIMINATOR. Both sides present and unequal is the one case
+        // that genuinely differs, and must keep today's classification and
+        // wording.
+        match declining_cause(resolve(Some(Value::Int(10)), Some(Value::Int(3)))) {
+            DeclineCause::InputsDiffer { detail } => assert!(
+                detail.contains("differs from the template's"),
+                "a genuine divergence must keep the wording it was always \
+                 correct for: {detail}"
+            ),
+            other => panic!(
+                "two present-and-unequal inputs genuinely differ and must stay \
+                 InputsDiffer — reclassifying everything would move the false \
+                 positive, not fix it: {other:?}"
+            ),
+        }
+
+        // (d) THE FROZEN INVARIANT, other half. Two absent sides — the
+        // guarded-group shape, whose member cells are in no `value_cells` at all
+        // — compared EQUAL before and must still compare equal, so the
+        // exhaustive match cannot have widened the declining set.
+        match resolve(None, None) {
+            OptimizedInstanceResolution::Reuse(v) => assert_eq!(
+                v,
+                Value::Int(777),
+                "a read absent from BOTH maps was never a decline and must not \
+                 become one: the declining set is frozen by this task"
+            ),
+            OptimizedInstanceResolution::Unreusable { cause, .. } => panic!(
+                "a read absent at both scopes compares equal and must still \
+                 reuse; declining here would widen the declining set: {cause:?}"
+            ),
+            OptimizedInstanceResolution::NotOptimized => {
+                panic!("`asym_opt` carries @optimized; the probe must see it")
+            }
+        }
+    }
 }
