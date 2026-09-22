@@ -58,7 +58,8 @@
 use super::debug_write_tool_routing_fixtures::{
     ADVERTISED_BUT_UNDISPATCHED_SOURCE, ARM_SHAPES_SOURCE, BYPASSING_SOURCE,
     COMMENT_ONLY_MENTION_SOURCE, COMPLIANT_SOURCE, DELEGATED_PRIVATE_EMIT_SOURCE,
-    INLINE_ARM_SOURCE, LYING_SEAM_SOURCE, PRIVATE_EMIT_SOURCE, STRING_ONLY_MENTION_SOURCE,
+    EVENT_BUS_PRIVATE_EMIT_SOURCE, INLINE_ARM_SOURCE, LYING_SEAM_SOURCE, PRIVATE_EMIT_SOURCE,
+    STRING_ONLY_MENTION_SOURCE,
 };
 
 /// One way a `reify_*` write tool can break INV-GUI-2.
@@ -801,6 +802,24 @@ fn a_private_emit_in_the_delegated_helper_is_flagged() {
         vec![Bypass {
             tool: "reify_open_file".to_string(),
             handler: "handle_reify_open_file".to_string(),
+            kind: BypassKind::PrivateEmit,
+        }],
+    );
+}
+
+/// The grammar must span the library's REAL emission surface, not just the
+/// binary-private `emit_delta` and a bare `.emit(`. A handler that routes
+/// correctly and then emits again through `crate::event_bus::emit_typed` is a
+/// second emission path exactly as much as a direct `app.emit` is — and it is
+/// the only one of the three a `debug_server.rs` author can actually reach
+/// from the library today.
+#[test]
+fn a_private_emit_through_the_event_bus_wrapper_is_flagged() {
+    assert_eq!(
+        write_tool_bypasses(EVENT_BUS_PRIVATE_EMIT_SOURCE),
+        vec![Bypass {
+            tool: "reify_set_parameter".to_string(),
+            handler: "handle_reify_set_parameter".to_string(),
             kind: BypassKind::PrivateEmit,
         }],
     );

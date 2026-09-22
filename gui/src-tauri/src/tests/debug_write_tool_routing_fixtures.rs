@@ -271,6 +271,50 @@ async fn open_path_into_engine(
 }
 "#;
 
+/// A handler that routes through its seam CORRECTLY and then emits a second
+/// time through `crate::event_bus::emit_typed` — the library's own sanctioned
+/// emission wrapper, whose header steers callers to it as "a stable API
+/// surface that lets emitter call sites stay unchanged".
+///
+/// This is the shape a future author is MOST likely to write, and the one the
+/// first private-emit grammar could not see: `emit_typed` yields none of the
+/// identifiers that grammar matched, and `::emit_typed(` is not `.emit(`.
+/// Unlike the two fixtures above it is realizable against the real library
+/// today — `emit_typed` is a `pub fn` of `reify_gui`, while `emit_delta` is
+/// private to the `reify-gui` BINARY.
+///
+/// Consumed by `a_private_emit_through_the_event_bus_wrapper_is_flagged`.
+pub(super) const EVENT_BUS_PRIVATE_EMIT_SOURCE: &str = r#"
+async fn dispatch_tool(
+    state: &DebugServerState,
+    name: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match name {
+        "reify_set_parameter" => handle_reify_set_parameter(state, params).await,
+        _ => state.debug_bridge.query_frontend(name, params).await,
+    }
+}
+
+async fn handle_reify_set_parameter(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    let (cell_id, value) = reify_set_parameter_params(&params)?;
+    let gs = reify_set_parameter_on_engine_and_refresh_baseline(
+        &state.engine,
+        &state.last_state,
+        &cell_id,
+        &value,
+    )
+    .await?;
+    let delta = crate::diff::compute_delta(&state.last_state, &gs);
+    crate::event_bus::emit_typed(&state.app, "state-delta", &delta).ok();
+    push_gui_state(&state.debug_bridge, &gs, None).await?;
+    Ok(reify_set_parameter_envelope(None, None, vec![]))
+}
+"#;
+
 /// A handler that looks perfectly compliant — it calls a
 /// `*_and_refresh_baseline` fn — where that fn never reaches `compute_delta`.
 /// Without this check the whole gate would rest on a NAME rather than on
