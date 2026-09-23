@@ -54,7 +54,9 @@
 #      hosts the workspace crate-DAG gate, a non-manifest source touch
 #      does not, and the ALL sentinel is never unioned with it; plus a drift
 #      guard pinning _REIFY_DAG_GATE_CRATE to a real workspace member that
-#      hosts the gate
+#      hosts the gate; and a manifest whose crate resolves to no workspace
+#      package is exactly ALL, composing with task 6268's unresolvable-seed
+#      C5 arm
 
 set -euo pipefail
 
@@ -186,7 +188,7 @@ _check_crate_owned_doc_maps_to_owner() {
     local expected="$1" path="$2" out
     out="$(affected_crates "$path")"
     echo "$path -> [$(printf '%s' "$out" | tr '\n' ' ')]"
-    printf '%s\n' "$out" | grep -qx "$expected"
+    grep -qx "$expected" <<< "$out"
 }
 assert "an include_str!-ed crate-owned *.md maps to its owning crate" \
     _check_crate_owned_doc_maps_to_owner reify-mcp crates/reify-mcp/src/tools/chunks/syntax.md
@@ -642,6 +644,28 @@ _check_gate_crate_is_workspace_member() {
 }
 assert "_REIFY_DAG_GATE_CRATE is a real workspace member, so the -p selector verify.sh emits for it resolves" \
     _check_gate_crate_is_workspace_member
+
+# Composition with the unresolvable-seed C5 arm (task 6268). A manifest path
+# attributes to its crate DIRECTORY's name, and nothing pins that name to a
+# workspace package — a typo'd or not-yet-declared crate directory resolves to
+# none. That is a failure to attribute, so it must fail wide to exactly ALL:
+# never the empty print verify.sh reads as "provably zero crates", and never
+# ALL unioned with the DAG-gate crate. Needs the REAL, succeeding cargo
+# metadata so the seed reaches the closure and resolves to nothing; a stubbed
+# cargo would exercise the cargo-failure C5 arm instead. Captured and dumped
+# per the _sentinel_manifest_report convention below.
+_UNRESOLVED_MANIFEST_OUT=""
+_unresolved_manifest_report() {
+    echo "unresolvable crate's manifest: affected_crates -> [$_UNRESOLVED_MANIFEST_OUT]"
+}
+
+_check_unresolvable_manifest_is_exactly_ALL() {
+    _UNRESOLVED_MANIFEST_OUT="$(affected_crates crates/reify-no-such-crate/Cargo.toml)"
+    _unresolved_manifest_report
+    [ "$_UNRESOLVED_MANIFEST_OUT" = "ALL" ]
+}
+assert "C5 integrity: a manifest whose crate resolves to no workspace package -> exactly ALL (never empty, never unioned with the DAG-gate crate)" \
+    _check_unresolvable_manifest_is_exactly_ALL
 
 # ---------------------------------------------------------------------------
 # Amendment (code-review follow-up, task 6277): --locked non-mutation check.
