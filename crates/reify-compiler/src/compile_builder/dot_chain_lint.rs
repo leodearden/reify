@@ -25,8 +25,15 @@
 //! recurses into the chain's leaf root so that nested chains (e.g. a deep
 //! chain inside `IndexAccess.index` or a `FunctionCall.args` element) are
 //! detected too.
+//!
+//! # Walk coverage
+//!
+//! Member nesting is not walked here — it is delegated to
+//! [`reify_ast::walk_all_member_bodies`], which owns both the recursion set and
+//! the depth bound ([`reify_ast::MAX_MEMBER_NESTING_DEPTH`]). This lint walks
+//! only each member's own expressions.
 
-use reify_ast::{Expr, ExprKind, ParsedModule};
+use reify_ast::{Expr, ExprKind, MemberDecl, ParsedModule, walk_all_member_bodies};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
 
 /// Maximum allowed chain length before the lint fires.
@@ -87,19 +94,19 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
     match decl {
         Declaration::Structure(s) => {
             walk_annotations(&s.annotations, diagnostics);
-            walk_members(&s.members, diagnostics, 0);
+            walk_members(&s.members, diagnostics);
         }
         Declaration::Occurrence(o) => {
             walk_annotations(&o.annotations, diagnostics);
-            walk_members(&o.members, diagnostics, 0);
+            walk_members(&o.members, diagnostics);
         }
         Declaration::Trait(t) => {
             walk_annotations(&t.annotations, diagnostics);
-            walk_members(&t.members, diagnostics, 0);
+            walk_members(&t.members, diagnostics);
         }
         Declaration::Purpose(p) => {
             walk_annotations(&p.annotations, diagnostics);
-            walk_members(&p.members, diagnostics, 0);
+            walk_members(&p.members, diagnostics);
         }
         Declaration::Function(f) => {
             walk_annotations(&f.annotations, diagnostics);
@@ -168,8 +175,21 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
     }
 }
 
-/// Recurse through a member list, walking every expression-bearing position
-/// of every `MemberDecl` variant.
+/// Walk every member reachable under `members`, at any nesting depth.
+///
+/// Nesting and its depth bound belong to [`reify_ast::walk_all_member_bodies`];
+/// this lint contributes only [`walk_member_own_exprs`]. The widest recursion
+/// set is deliberate: spec §5.7 lints every user expression, so no member body
+/// may be skipped — sub specialization overrides (body or keyed) and match-arm
+/// members included (decision record: task #7127).
+fn walk_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
+    walk_all_member_bodies(members, &mut |member| {
+        walk_member_own_exprs(member, diagnostics)
+    });
+}
+
+/// Walk the expressions `member` carries itself. Nested member lists are NOT
+/// walked here; [`walk_members`] reaches them.
 ///
 /// Visits:
 ///   * `Param`: `annotations[*].args` + `default` + `where_clause.condition`.
@@ -178,8 +198,8 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
 ///   * `ConstraintInst`: `args[*].1` + `where_clause.condition`.
 ///   * `Sub`: `args[*].1` + `where_clause.condition`.
 ///   * `Minimize`/`Maximize`: `expr` + `where_clause.condition`.
-///   * `GuardedGroup`: `condition` + nested `members`/`else_members` (recursive).
-///   * `Port`: `frame_expr` + nested `members` (recursive).
+///   * `GuardedGroup`: `condition`.
+///   * `Port`: `frame_expr`.
 ///   * `MatchArmDeclGroup`: `discriminant`.
 ///   * `Connect`: `left.expr`, `right.expr`, `params[*].1`.
 ///   * `Chain`: each `elements[*]`.
@@ -189,145 +209,129 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
 ///     [`super::forall_walk::walk_forall_constraint_body`]).
 ///   * `AssociatedType`/`MetaBlock`: no expressions, no-op.
 ///
-/// Recursion into nested `GuardedGroup`/`Port` member lists is bounded by
-/// [`reify_syntax::MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on
-/// pathological input — mirrors `find_named_member_span_depth` in
-/// `reify-syntax`.
-fn walk_members(
-    members: &[reify_ast::MemberDecl],
-    diagnostics: &mut Vec<Diagnostic>,
-    depth: usize,
-) {
-    use reify_ast::MemberDecl;
-    if depth > reify_ast::MAX_MEMBER_NESTING_DEPTH {
-        return;
-    }
-    for member in members {
-        match member {
-            // Relate-block relations are ordinary expressions — walk them so
-            // dot-chain lints apply inside `relate { … }` too (task δ 4384).
-            MemberDecl::Relate(r) => {
-                for rel in &r.relations {
-                    walk_expr(rel, diagnostics);
-                }
+/// The match has no `_` wildcard: reify-ast's walker forces the recursion
+/// decision for a new `MemberDecl` variant, and this match forces its
+/// expression decision.
+fn walk_member_own_exprs(member: &MemberDecl, diagnostics: &mut Vec<Diagnostic>) {
+    match member {
+        // Relate-block relations are ordinary expressions — walk them so
+        // dot-chain lints apply inside `relate { … }` too (task δ 4384).
+        MemberDecl::Relate(r) => {
+            for rel in &r.relations {
+                walk_expr(rel, diagnostics);
             }
-            MemberDecl::Param(p) => {
-                walk_annotations(&p.annotations, diagnostics);
-                if let Some(default) = &p.default {
+        }
+        MemberDecl::Param(p) => {
+            walk_annotations(&p.annotations, diagnostics);
+            if let Some(default) = &p.default {
+                walk_expr(default, diagnostics);
+            }
+            if let Some(wc) = &p.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Let(l) => {
+            walk_annotations(&l.annotations, diagnostics);
+            walk_expr(&l.value, diagnostics);
+            if let Some(wc) = &l.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Constraint(c) => {
+            walk_expr(&c.expr, diagnostics);
+            if let Some(wc) = &c.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::ConstraintInst(c) => {
+            for (_, expr) in &c.args {
+                walk_expr(expr, diagnostics);
+            }
+            if let Some(wc) = &c.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Sub(s) => {
+            for (_, expr) in &s.args {
+                walk_expr(expr, diagnostics);
+            }
+            if let Some(wc) = &s.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Minimize(m) => {
+            walk_expr(&m.expr, diagnostics);
+            if let Some(wc) = &m.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Maximize(m) => {
+            walk_expr(&m.expr, diagnostics);
+            if let Some(wc) = &m.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::GuardedGroup(g) => walk_expr(&g.condition, diagnostics),
+        MemberDecl::Port(p) => {
+            if let Some(frame) = &p.frame_expr {
+                walk_expr(frame, diagnostics);
+            }
+        }
+        MemberDecl::MatchArmDeclGroup(g) => walk_expr(&g.discriminant, diagnostics),
+        MemberDecl::Connect(c) => {
+            walk_expr(&c.left.expr, diagnostics);
+            walk_expr(&c.right.expr, diagnostics);
+            for (_, expr) in &c.params {
+                walk_expr(expr, diagnostics);
+            }
+        }
+        MemberDecl::Chain(c) => {
+            for elem in &c.elements {
+                walk_expr(elem, diagnostics);
+            }
+        }
+        MemberDecl::ForallConnect(f) => {
+            walk_expr(&f.collection, diagnostics);
+            super::forall_walk::walk_forall_connect_body(&f.body, |expr| {
+                walk_expr(expr, diagnostics);
+            });
+        }
+        MemberDecl::ForallConstraint(f) => {
+            walk_expr(&f.collection, diagnostics);
+            super::forall_walk::walk_forall_constraint_body(&f.body, |expr| {
+                walk_expr(expr, diagnostics);
+            });
+        }
+        // Trait associated-fn bodies (task ζ 3941). ζ makes trait-fn bodies
+        // live, so the deep-dot-chain lint now recurses into every
+        // expression-bearing position of the fn: each param default, each
+        // let-binding value (and its where-clause condition), and the result
+        // expression. A bodyless required trait fn (`fn req(self) -> Real`
+        // with no `{ … }`) has `body: None` and contributes no expressions.
+        //
+        // NOTE: this `MemberDecl` match runs in parallel with the one in
+        // `shadow_lint.rs::walk_members_depth`; a newly added
+        // expression-bearing member kind must be handled in both. Unifying
+        // the two walkers is a larger refactor (the two carry different
+        // scope-frame state) and is intentionally out of scope here.
+        MemberDecl::Fn(f) => {
+            for param in &f.params {
+                if let Some(default) = &param.default {
                     walk_expr(default, diagnostics);
                 }
-                if let Some(wc) = &p.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
             }
-            MemberDecl::Let(l) => {
-                walk_annotations(&l.annotations, diagnostics);
-                walk_expr(&l.value, diagnostics);
-                if let Some(wc) = &l.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::Constraint(c) => {
-                walk_expr(&c.expr, diagnostics);
-                if let Some(wc) = &c.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::ConstraintInst(c) => {
-                for (_, expr) in &c.args {
-                    walk_expr(expr, diagnostics);
-                }
-                if let Some(wc) = &c.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::Sub(s) => {
-                for (_, expr) in &s.args {
-                    walk_expr(expr, diagnostics);
-                }
-                if let Some(wc) = &s.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::Minimize(m) => {
-                walk_expr(&m.expr, diagnostics);
-                if let Some(wc) = &m.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::Maximize(m) => {
-                walk_expr(&m.expr, diagnostics);
-                if let Some(wc) = &m.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::GuardedGroup(g) => {
-                walk_expr(&g.condition, diagnostics);
-                walk_members(&g.members, diagnostics, depth + 1);
-                walk_members(&g.else_members, diagnostics, depth + 1);
-            }
-            MemberDecl::Port(p) => {
-                if let Some(frame) = &p.frame_expr {
-                    walk_expr(frame, diagnostics);
-                }
-                walk_members(&p.members, diagnostics, depth + 1);
-            }
-            MemberDecl::MatchArmDeclGroup(g) => walk_expr(&g.discriminant, diagnostics),
-            MemberDecl::Connect(c) => {
-                walk_expr(&c.left.expr, diagnostics);
-                walk_expr(&c.right.expr, diagnostics);
-                for (_, expr) in &c.params {
-                    walk_expr(expr, diagnostics);
-                }
-            }
-            MemberDecl::Chain(c) => {
-                for elem in &c.elements {
-                    walk_expr(elem, diagnostics);
-                }
-            }
-            MemberDecl::ForallConnect(f) => {
-                walk_expr(&f.collection, diagnostics);
-                super::forall_walk::walk_forall_connect_body(&f.body, |expr| {
-                    walk_expr(expr, diagnostics);
-                });
-            }
-            MemberDecl::ForallConstraint(f) => {
-                walk_expr(&f.collection, diagnostics);
-                super::forall_walk::walk_forall_constraint_body(&f.body, |expr| {
-                    walk_expr(expr, diagnostics);
-                });
-            }
-            // Trait associated-fn bodies (task ζ 3941). ζ makes trait-fn bodies
-            // live, so the deep-dot-chain lint now recurses into every
-            // expression-bearing position of the fn: each param default, each
-            // let-binding value (and its where-clause condition), and the result
-            // expression. A bodyless required trait fn (`fn req(self) -> Real`
-            // with no `{ … }`) has `body: None` and contributes no expressions.
-            //
-            // NOTE: this `MemberDecl` match runs in parallel with the one in
-            // `shadow_lint.rs::walk_members_depth`; a newly added
-            // expression-bearing member kind must be handled in both. Unifying
-            // the two walkers is a larger refactor (the two carry different
-            // scope-frame state) and is intentionally out of scope here.
-            MemberDecl::Fn(f) => {
-                for param in &f.params {
-                    if let Some(default) = &param.default {
-                        walk_expr(default, diagnostics);
+            if let Some(body) = &f.body {
+                for let_decl in &body.let_bindings {
+                    walk_expr(&let_decl.value, diagnostics);
+                    if let Some(wc) = &let_decl.where_clause {
+                        walk_expr(&wc.condition, diagnostics);
                     }
                 }
-                if let Some(body) = &f.body {
-                    for let_decl in &body.let_bindings {
-                        walk_expr(&let_decl.value, diagnostics);
-                        if let Some(wc) = &let_decl.where_clause {
-                            walk_expr(&wc.condition, diagnostics);
-                        }
-                    }
-                    walk_expr(&body.result_expr, diagnostics);
-                }
+                walk_expr(&body.result_expr, diagnostics);
             }
-            // Members with no embedded expressions.
-            MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
         }
+        // Members with no embedded expressions.
+        MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
     }
 }
 

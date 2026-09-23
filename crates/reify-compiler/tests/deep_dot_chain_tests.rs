@@ -572,8 +572,8 @@ structure S {
 ///
 /// The param body (default = 0) deliberately contains NO deep chain so the
 /// asserted count of 1 isolates the warning to the annotation-arg position.
-/// If `walk_members` silently skips Param annotations (the coverage hole
-/// for this arm), the count is 0 and this test FAILS — expected pre-impl.
+/// If `walk_member_own_exprs` silently skips Param annotations (the coverage
+/// hole for this arm), the count is 0 and this test FAILS — expected pre-impl.
 #[test]
 fn walker_visits_param_member_annotation_arg() {
     let source = r#"
@@ -589,8 +589,8 @@ structure S {
 /// member-level annotation arg on a `let`.
 ///
 /// Tested separately from Param because the two are independent `match` arms
-/// in `walk_members`; a regression that wires `walk_annotations` into only
-/// one of them would silently lose coverage on the other.
+/// in `walk_member_own_exprs`; a regression that wires `walk_annotations` into
+/// only one of them would silently lose coverage on the other.
 ///
 /// The let value (= 0) deliberately contains NO deep chain so the asserted
 /// count of 1 isolates the warning to the annotation-arg position.

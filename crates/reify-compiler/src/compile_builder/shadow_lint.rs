@@ -508,7 +508,7 @@ fn walk_members_depth(
             // required trait fn (`body: None`) has nothing to walk.
             //
             // NOTE: this `MemberDecl` match runs in parallel with the one in
-            // `dot_chain_lint.rs::walk_members`; a newly added expression-bearing
+            // `dot_chain_lint.rs::walk_member_own_exprs`; a newly added expression-bearing
             // member kind must be handled in both. Unifying the two walkers is a
             // larger refactor (the two carry different scope-frame state) and is
             // intentionally out of scope here.
