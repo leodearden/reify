@@ -26,8 +26,8 @@ once, at the base commit stamped above.
 ## Provenance
 
 Every row and every count here is **machine-generated — zero hand-derived
-entries**. The corpus is `git ls-files -- '*.ri'`; each member is compiled with
-the α(+ε) warn-stage compiler in-process (`parse_with_stdlib` →
+entries**. The corpus is `git ls-files -- '*.ri'`; each member is compiled
+in-process by the compiler at the commit surveyed (`parse_with_stdlib` →
 `compile_with_stdlib`) and every diagnostic carrying one of the seven
 ctor-conformance codes becomes one row. The `file:line` comes from the
 diagnostic's own label span; `expected`/`found` come from the label message.
@@ -59,8 +59,9 @@ prose here has to guess a cause on a reader's behalf.
 The **`disposition` column is γ's RULING**, projected from the site's measured
 severity and wording and the three per-site tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`
 and `CTOR_CONFORMANCE_REJECTION_FIXTURES` in the generator,
-`CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling `examples_smoke.rs`) rather than
-typed here. It has four states, and they call for four DIFFERENT actions:
+`CTOR_CONFORMANCE_MIGRATION_DEBT` in `reify_test_support::ctor_conformance_debt`)
+rather than typed here. It has four states, and they call for four DIFFERENT
+actions:
 
 - **`deferred`** names the LIVE task that owns retiring the site, and the reason
 migrating it here would destroy something — most of these are committed RED
