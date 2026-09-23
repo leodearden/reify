@@ -4,11 +4,14 @@
 //! max_shear, safety_factor) that wrap tensor fields and apply pointwise
 //! analysis when sampled.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+use reify_core::{
+    ContentHash, Diagnostic, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId,
+};
 use reify_ir::{
     CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction,
     SampledField, SampledGridKind, Value, ValueMap,
@@ -743,6 +746,23 @@ fn sampled_stress_fixture() -> (Value, Type) {
     wrap_sampled_stress_field(sf)
 }
 
+/// [`sampled_stress_fixture`] plus an out-of-solid sentinel window at x = 3:
+/// all nine components `f64::NAN`, as `solve_elastic_static` writes at grid
+/// points outside the mesh.
+fn sampled_stress_with_exterior_fixture() -> (Value, Type) {
+    let sf = make_sampled_tensor_1d(
+        "stress_with_exterior",
+        vec![0.0, 1.0, 2.0, 3.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+            [f64::NAN; 9], // out-of-solid sentinel
+        ],
+    );
+    wrap_sampled_stress_field(sf)
+}
+
 /// Evaluate a single-argument analysis builtin over `field`.
 fn eval_analysis_wrapper(op: &str, field: Value, field_type: Type, codomain: Type) -> Value {
     let result_type = Type::Field {
@@ -1263,17 +1283,7 @@ fn argmax_argmin_of_von_mises_over_sampled_field_return_domain_coordinates() {
 /// exterior grid points still reduces to the interior peak.
 #[test]
 fn von_mises_over_sampled_field_skips_nan_sentinel_windows() {
-    let sf = make_sampled_tensor_1d(
-        "stress_with_exterior",
-        vec![0.0, 1.0, 2.0, 3.0],
-        vec![
-            uniaxial_window(100e6),
-            uniaxial_window(250e6),
-            uniaxial_window(175e6),
-            [f64::NAN; 9], // out-of-solid sentinel
-        ],
-    );
-    let (field, field_type) = wrap_sampled_stress_field(sf);
+    let (field, field_type) = sampled_stress_with_exterior_fixture();
     let wrapper =
         eval_analysis_wrapper("von_mises", field, field_type, pressure_scalar_type());
     let wrapper_type = Type::Field {
@@ -1371,31 +1381,99 @@ fn analysis_reductions_over_all_nan_sampled_field_return_undef() {
     }
 }
 
-/// REMAINING-GAP PIN: the wrapper now constructs over a Sampled backing, but
-/// pointwise `sample()` of that wrapper is still `Value::Undef`.
-///
-/// Mechanism: `sample_field_at` (`crates/reify-expr/src/lib.rs`) forwards the
-/// INNER field's lambda slot — a `Value::SampledField` — into
-/// `apply_lambda_with_point_unpacking`, which handles `Value::Lambda` only and
-/// returns `Undef` for anything else. Closing it needs the tensor element
-/// dimension plumbed through `sample_field_at` (the wrapper's own codomain
-/// cannot recover it for `safety_factor`, whose codomain is dimensionless)
-/// plus a stride-3 variant for `principal_stresses`, i.e. edits to `lib.rs` and
-/// `sampled.rs` that fall well outside this task's assigned file set. Task
-/// #7131 carries that work.
-///
-/// This is NOT a regression from task 7129: before the fix
-/// `von_mises(sampled)` was itself `Undef`, so sampling it was `Undef` too.
-/// The observable for the sample path is unchanged; only the reduction path
-/// changed. The test is written in two parts so it was genuinely RED before
-/// the `validate_tensor_field` relaxation — the first assertion failed.
-#[test]
-fn sampled_backed_analysis_wrapper_is_constructed_but_pointwise_sample_still_undef() {
-    let (field, field_type) = sampled_stress_fixture();
-    let wrapper =
-        eval_analysis_wrapper("von_mises", field, field_type, pressure_scalar_type());
+// ── Task 7131: pointwise sample() of a Sampled-backed analysis wrapper ──────
+//
+// Over a Sampled backing, `sample(W, p)` projects every node's stride-9 window
+// with the same `reify_stdlib` kernel the reductions scan, then interpolates
+// the projected node values with the backing field's own method. At a grid
+// node the sample therefore IS the node value `max`/`min`/`argmax`/`argmin`
+// see, and a Linear sample is a convex combination of node values.
+//
+// Every expected value below is exact in binary: the inputs are integers or
+// dyadics, `lerp(a, b, t) = a + (b − a)·t` is exact at t ∈ {0, 0.5, 1} for
+// them, and at t = 0 it returns `a` bit for bit whenever the right neighbour is
+// finite. `Value::eq` compares f64 bits, so whole values are compared with
+// `assert_eq!`; every zero here is +0.0.
 
-    // Part 1 — the wrapper IS constructed (this is what task 7129 fixed).
+/// Build `sample(<field>, <at>)`, typed as the field's codomain.
+fn sample_call((field, field_type): &(Value, Type), at: Value, at_type: Type) -> CompiledExpr {
+    let Type::Field { codomain, .. } = field_type else {
+        panic!("sample_call: expected a Type::Field, got {field_type:?}");
+    };
+    make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field.clone(), field_type.clone()),
+            CompiledExpr::literal(at, at_type),
+        ],
+        (**codomain).clone(),
+    )
+}
+
+/// Evaluate `sample(<field>, <at>)`.
+fn sample_at(field: &(Value, Type), at: Value, at_type: Type) -> Value {
+    let values = ValueMap::new();
+    eval_expr(
+        &sample_call(field, at, at_type),
+        &EvalContext::simple(&values),
+    )
+}
+
+/// Evaluate `sample(<field>, x)` over a dimensionless 1-D domain.
+fn sample_1d(field: &(Value, Type), x: f64) -> Value {
+    sample_at(field, Value::Real(x), Type::dimensionless_scalar())
+}
+
+/// A `Value::Scalar` carrying LENGTH.
+fn length(si_value: f64) -> Value {
+    Value::Scalar {
+        si_value,
+        dimension: DimensionVector::LENGTH,
+    }
+}
+
+/// Build the `kind` analysis wrapper over a stress field with a dimensionless
+/// 1-D domain, paired with its `Type::Field`, asserting that it constructs.
+/// `safety_factor` takes a 500e6 Pa yield.
+fn analysis_wrapper(kind: &str, (field, field_type): (Value, Type)) -> (Value, Type) {
+    let codomain = match kind {
+        "principal_stresses" => Type::List(Box::new(pressure_scalar_type())),
+        "safety_factor" => Type::dimensionless_scalar(),
+        _ => pressure_scalar_type(),
+    };
+    let wrapper = if kind == "safety_factor" {
+        eval_safety_factor(field, field_type, 500e6)
+    } else {
+        eval_analysis_wrapper(kind, field, field_type, codomain.clone())
+    };
+    assert_ne!(wrapper, Value::Undef, "{kind} must construct a wrapper");
+    let wrapper_type = Type::Field {
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(codomain),
+    };
+    (wrapper, wrapper_type)
+}
+
+/// `principal_stresses` of a uniaxial window σ > 0, in the builtin's
+/// ascending order: the two zero principal stresses first, then σ.
+fn uniaxial_principal_stresses(sigma: f64) -> Value {
+    Value::List(vec![pressure(0.0), pressure(0.0), pressure(sigma)])
+}
+
+/// A grid-backed wrapper's node values ARE what the reductions scan, so
+/// sampling `von_mises(stress)` where `argmax`/`argmin` of it point returns
+/// exactly its `max`/`min`. `argmin` is the first node, which reaches the
+/// interpolator's lower clamp branch.
+///
+/// Part 1 pins that the wrapper is constructed over a Sampled backing at all:
+/// before task 7129 relaxed `validate_tensor_field` it was not, and this
+/// test's first assertion failed.
+#[test]
+fn sampled_backed_von_mises_wrapper_samples_to_its_reduction_extrema_at_their_arg_coordinates() {
+    let (field, field_type) = sampled_stress_fixture();
+    let wrapper = eval_analysis_wrapper("von_mises", field, field_type, pressure_scalar_type());
+
+    // Part 1 — the wrapper IS constructed.
     assert!(
         matches!(
             &wrapper,
@@ -1407,24 +1485,208 @@ fn sampled_backed_analysis_wrapper_is_constructed_but_pointwise_sample_still_und
         "von_mises over a Sampled stress field must construct a VonMises wrapper, got {wrapper:?}"
     );
 
-    // Part 2 — pointwise sampling of it is still Undef (the remaining gap).
+    // Part 2 — sampled at its arg-extrema, it returns its extrema.
     let wrapper_type = Type::Field {
         domain: Box::new(Type::dimensionless_scalar()),
         codomain: Box::new(pressure_scalar_type()),
     };
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            CompiledExpr::literal(wrapper, wrapper_type),
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
-        ],
-        pressure_scalar_type(),
+    let wrapper = (wrapper, wrapper_type);
+    for (arg_reduction, reduction, extremum) in [
+        ("argmax", "max", pressure(250e6)),
+        ("argmin", "min", pressure(100e6)),
+    ] {
+        let (field, field_type) = wrapper.clone();
+        let at = reduce(
+            arg_reduction,
+            field.clone(),
+            field_type.clone(),
+            Type::dimensionless_scalar(),
+        );
+        assert_eq!(
+            reduce(reduction, field, field_type, pressure_scalar_type()),
+            extremum,
+            "{reduction}(von_mises(stress))"
+        );
+        assert_eq!(
+            sample_at(&wrapper, at.clone(), Type::dimensionless_scalar()),
+            extremum,
+            "sample(von_mises(stress), {arg_reduction}(..) = {at:?}) must equal {reduction}(..)"
+        );
+    }
+}
+
+/// Sampling interpolates the node PROJECTIONS, not the tensors. The two nodes
+/// hold σ_xx = +100e6 and −100e6, both of von Mises value exactly 100e6, so
+/// the mid-cell sample is 100e6 too — equal to `min`, as a convex combination
+/// of node values must be. Interpolating the tensors first would sample the
+/// zero tensor there, whose von Mises value 0 lies below `min`.
+#[test]
+fn sampled_backed_wrapper_interpolates_node_projections_not_tensors() {
+    let sf = make_sampled_tensor_1d(
+        "sign_flip",
+        vec![0.0, 1.0],
+        vec![uniaxial_window(100e6), uniaxial_window(-100e6)],
+    );
+    let wrapper = analysis_wrapper("von_mises", wrap_sampled_stress_field(sf));
+
+    let mid_cell = sample_1d(&wrapper, 0.5);
+    assert_eq!(mid_cell, pressure(100e6));
+    let (field, field_type) = wrapper;
+    assert_eq!(
+        mid_cell,
+        reduce("min", field, field_type, pressure_scalar_type()),
+        "the mid-cell sample must equal min(von_mises(..)), not undercut it"
+    );
+}
+
+/// `max_shear`, `principal_stresses` and `safety_factor` sample their node
+/// projections too, at the node x = 1 (σ_xx = 250e6) and mid-cell x = 0.5
+/// (between σ_xx = 100e6 and 250e6):
+///
+/// - `max_shear` = σ/2: 125e6 at the node, lerp(50e6, 125e6, 0.5) = 87.5e6
+///   mid-cell.
+/// - `principal_stresses` = [0, 0, σ]: σ = 250e6 at the node and
+///   lerp(100e6, 250e6, 0.5) = 175e6 mid-cell, every element typed by the
+///   wrapper's `List<Scalar<P>>` codomain.
+/// - `safety_factor` = 500e6 / σ: 2 at the node and lerp(5, 2, 0.5) = 3.5
+///   mid-cell, where interpolating the tensor first would give 500/175.
+#[test]
+fn max_shear_principal_stresses_and_safety_factor_sample_their_node_projections() {
+    for (kind, at_node, mid_cell) in [
+        ("max_shear", pressure(125e6), pressure(87.5e6)),
+        (
+            "principal_stresses",
+            uniaxial_principal_stresses(250e6),
+            uniaxial_principal_stresses(175e6),
+        ),
+        ("safety_factor", Value::Real(2.0), Value::Real(3.5)),
+    ] {
+        let wrapper = analysis_wrapper(kind, sampled_stress_fixture());
+        assert_eq!(
+            sample_1d(&wrapper, 1.0),
+            at_node,
+            "{kind} at the grid node x = 1"
+        );
+        assert_eq!(
+            sample_1d(&wrapper, 0.5),
+            mid_cell,
+            "{kind} mid-cell at x = 0.5"
+        );
+    }
+}
+
+/// A sample whose interpolation stencil touches an out-of-solid (all-NaN)
+/// window is `Undef` for every wrapper kind — never NaN — while a sample over
+/// a fully finite cell of the same field keeps its value.
+///
+/// Nothing is asserted AT x = 2, the finite node beside the sentinel: a t = 0
+/// lerp against a NaN right neighbour yields NaN there, an interpolation
+/// artefact rather than a contract worth pinning.
+#[test]
+fn sampled_backed_wrapper_samples_undef_where_the_stencil_touches_an_out_of_solid_window() {
+    for (kind, at_node) in [
+        ("von_mises", pressure(250e6)),
+        ("max_shear", pressure(125e6)),
+        ("principal_stresses", uniaxial_principal_stresses(250e6)),
+        ("safety_factor", Value::Real(2.0)),
+    ] {
+        let wrapper = analysis_wrapper(kind, sampled_stress_with_exterior_fixture());
+        assert_eq!(
+            sample_1d(&wrapper, 1.0),
+            at_node,
+            "{kind}: the cell [1, 2] is finite"
+        );
+        assert_eq!(
+            sample_1d(&wrapper, 2.5),
+            Value::Undef,
+            "{kind}: the cell [2, 3] holds the out-of-solid sentinel"
+        );
+    }
+}
+
+/// An out-of-bounds sample of a grid-backed wrapper is `Undef` and warns
+/// through the BACKING field's once-per-session latch. Every clone of the
+/// wrapper shares that `SampledField` through the `Arc`s in the lambda slots,
+/// so repeated samples warn exactly once.
+#[test]
+fn out_of_bounds_sample_of_a_sampled_backed_wrapper_warns_once_per_backing_field() {
+    let wrapper = analysis_wrapper("von_mises", sampled_stress_fixture());
+    let values = ValueMap::new();
+    let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+    let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+    let outside = sample_call(&wrapper, Value::Real(5.0), Type::dimensionless_scalar());
+
+    for _ in 0..2 {
+        assert_eq!(eval_expr(&outside, &ctx), Value::Undef);
+    }
+    let out_of_bounds_warnings = sink
+        .borrow()
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FieldOutOfBounds)
+        })
+        .count();
+    assert_eq!(
+        out_of_bounds_warnings, 1,
+        "two out-of-bounds samples of one backing field must warn exactly once"
+    );
+}
+
+/// Pointwise sampling reads a Regular3D stress grid in its row-major node
+/// order — x outer, z inner, as `solve_elastic_static`'s resample writes it —
+/// at `Point3<Length>` coordinates, the production domain.
+///
+/// Node (i, j, k) of the 2×2×2 unit grid is window n = 4i + 2j + k and holds a
+/// uniaxial (n + 1)e6 Pa tensor. Node (1, 1, 0) is n = 6 → 7e6 Pa, where a
+/// transposed layout would read n = 3 → 4e6 Pa. The cell centre is the mean of
+/// the eight corners, 4.5e6 Pa, exactly.
+#[test]
+fn sampled_backed_von_mises_wrapper_samples_a_regular3d_grid_at_point3_length_coordinates() {
+    let unit_axis = vec![0.0, 1.0];
+    let sf = SampledField {
+        name: "stress_3d".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0; 3],
+        bounds_max: vec![1.0; 3],
+        spacing: vec![1.0; 3],
+        axis_grids: vec![unit_axis.clone(), unit_axis.clone(), unit_axis],
+        interpolation: InterpolationKind::Linear,
+        data: (1..=8)
+            .flat_map(|m| uniaxial_window(m as f64 * 1e6))
+            .collect(),
+        oob_emitted: AtomicBool::new(false),
+    };
+    let domain = Type::point3(Type::length());
+    let (field, field_type) = make_field_with_source(
+        domain.clone(),
+        pressure_tensor_type(),
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+    let wrapper_type = Type::Field {
+        domain: Box::new(domain.clone()),
+        codomain: Box::new(pressure_scalar_type()),
+    };
+    let von_mises = make_function_call(
+        "von_mises",
+        vec![CompiledExpr::literal(field, field_type)],
+        wrapper_type.clone(),
     );
     let values = ValueMap::new();
+    let wrapper = (
+        eval_expr(&von_mises, &EvalContext::simple(&values)),
+        wrapper_type,
+    );
+
+    let point = |x: f64, y: f64, z: f64| Value::Point(vec![length(x), length(y), length(z)]);
     assert_eq!(
-        eval_expr(&sample_expr, &EvalContext::simple(&values)),
-        Value::Undef,
-        "pointwise sample() of a Sampled-backed analysis wrapper is still Undef — \
-         a separate, pre-existing gap in apply_lambda_with_point_unpacking"
+        sample_at(&wrapper, point(1.0, 1.0, 0.0), domain.clone()),
+        pressure(7e6),
+        "node (1, 1, 0) is window 4·1 + 2·1 + 0 = 6"
+    );
+    assert_eq!(
+        sample_at(&wrapper, point(0.5, 0.5, 0.5), domain),
+        pressure(4.5e6),
+        "the cell centre is the mean of the eight corners"
     );
 }
