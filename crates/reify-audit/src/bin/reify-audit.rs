@@ -1374,6 +1374,52 @@ mod tests {
         // the meaningful contract.
     }
 
+    /// The `--pattern` vocabulary is `reify_audit::pattern_flag::TOKENS`, in
+    /// full: every member parses alone and in the full union, and both places
+    /// a user learns the vocabulary — the unknown-token error and `--help` —
+    /// name every member. Containment only, so neither the joining prose nor
+    /// the token order is pinned.
+    #[test]
+    fn pattern_flag_vocabulary_is_accepted_and_advertised_in_full() {
+        let tokens = reify_audit::pattern_flag::TOKENS;
+        assert!(!tokens.is_empty(), "the --pattern vocabulary must not be empty");
+        let distinct: std::collections::HashSet<&str> = tokens.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            tokens.len(),
+            "the --pattern vocabulary must not repeat a token; got {tokens:?}"
+        );
+
+        for &tok in tokens {
+            let args = parse_args(&["--pattern".to_string(), tok.to_string()])
+                .unwrap_or_else(|e| panic!("--pattern {tok} must parse; got: {e}"));
+            assert_eq!(args.pattern.as_deref(), Some(tok), "--pattern {tok} must be stored as given");
+        }
+
+        let union = tokens.join(",");
+        if let Err(e) = parse_args(&["--pattern".to_string(), union.clone()]) {
+            panic!("the full union --pattern {union} must parse; got: {e}");
+        }
+
+        let unknown_err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
+        let mut usage: Vec<u8> = Vec::new();
+        print_usage(&mut usage);
+        let usage = String::from_utf8(usage).expect("usage text is UTF-8");
+        for &tok in tokens {
+            assert!(
+                unknown_err.contains(tok),
+                "the unknown-token error must name {tok}; got: {unknown_err}"
+            );
+            assert!(usage.contains(tok), "--help must name {tok}; got:\n{usage}");
+        }
+
+        let non_member_err = unwrap_err(parse_args(&["--pattern".to_string(), "PNOPE".to_string()]));
+        assert!(
+            non_member_err.contains("'PNOPE'"),
+            "a token outside the vocabulary must be rejected by name; got: {non_member_err}"
+        );
+    }
+
     /// Trailing or leading commas (`--pattern P1,` / `--pattern ,P2`) produce
     /// a dedicated "empty --pattern token" diagnostic rather than the generic
     /// `unknown --pattern value ''` message.
