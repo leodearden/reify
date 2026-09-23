@@ -13,7 +13,7 @@ pub trait Rigid : Physical {
 
 Every name above is real: `Physical` is the stdlib trait supplying the
 `geometry` and `material` params, and `moment_of_inertia(solid, density)` is a
-compiler builtin. This is the stdlib's own `Rigid` (`stdlib/structural_physical.ri`)
+compiler builtin. This is the stdlib's own `Rigid` (`crates/reify-compiler/stdlib/structural_physical.ri`)
 minus its positive-definiteness constraint — the `body_density` line is not
 decoration, it binds `material.density` to a name so the builtin receives a
 value reference rather than a member access.
