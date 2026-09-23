@@ -687,18 +687,16 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
 }
 
 /// The un-consumable-relate-member [`Diagnostic`] (code
-/// [`DiagnosticCode::RelateExpectsRelation`], task 7050) for a `relate {}` member
-/// that type-checks to `Type::Relation` — so the compiler's own
-/// `check_relate_relations` accepted it — yet is not a direct geometric-relation
-/// call the solve can build a [`RelationInstance`] from (e.g. an alias to a
-/// `let`-bound Relation, an `if`/`match` yielding one, or a call to a user-defined
-/// `fn ... -> Relation` wrapper). The code is shared with the compiler's own
-/// relate-member type-mismatch diagnostic; a dedicated code is deferred to #7494.
-/// `source` is the member's 0-based index into `scope.relations`; the message
-/// names its 1-based DECLARATION position — the diagnostic's only localiser. It
-/// does not also name a sub: which sub(s) a member touches can't generally be
-/// read back out of a non-`FunctionCall` expr the way [`operand_refs`] reads a
-/// driving relation's operand references.
+/// [`DiagnosticCode::RelateExpectsRelation`]) for a `relate {}` member that
+/// type-checks to `Type::Relation` — so the compiler's own `check_relate_relations`
+/// accepted it — yet is not a direct geometric-relation call the solve can build a
+/// [`RelationInstance`] from (e.g. an alias to a `let`-bound Relation, an
+/// `if`/`match` yielding one, or a call to a user-defined `fn ... -> Relation`
+/// wrapper). The code is shared with the compiler's own relate-member
+/// type-mismatch diagnostic; a dedicated code is deferred to #7494. `source` is
+/// the member's 0-based index into `scope.relations`; the message names its
+/// 1-based DECLARATION position — the diagnostic's only localiser, since which
+/// sub(s) a non-`FunctionCall` member touches can't generally be read back out.
 ///
 /// Only call this for a `Type::Relation` member (see [`build_relation_instances`]):
 /// a member the compiler already flagged as NOT `Type::Relation` gets an accurate
@@ -708,7 +706,7 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
 /// (anti-cascade, mirroring `check_relate_relations`'s own `Type::Error` skip).
 ///
 /// Replaces a SILENT drop with the INV-SF-3 diagnostic
-/// (`docs/legibility/design-invariants.md:130`: a declaration is either consumed by
+/// (`docs/legibility/design-invariants.md`: a declaration is either consumed by
 /// a solve/verify pass this run, or generates a diagnostic naming why not) — but
 /// only for scopes that reach this function at all. A relate scope with no `at
 /// auto` sub never calls it (`solve_scopes`'s qualifying filter, and this file's
@@ -1414,23 +1412,20 @@ pub fn solve_scopes(
 }
 
 /// The [`RelationInstance`]s [`build_relation_instances`] builds from a scope's
-/// relations, paired with the `scope.relations` SOURCE index each was built from
-/// (task 7050).
+/// relations, paired with the `scope.relations` SOURCE index each was built from.
 ///
 /// A relate-block member that is `Type::Relation` (the compiler accepted it) but
 /// isn't a `CompiledExprKind::FunctionCall` — e.g. a call to a user-defined
 /// `fn ... -> Relation` wrapper — is one the solve cannot build an instance for;
 /// `build_relation_instances` records its source index in [`skipped`](Self::skipped)
-/// instead, so `instances` can be SHORTER than `scope.relations` and the two are
-/// addressed by DIFFERENT indices. `sources[i]` is the one place that mapping is
-/// recorded, and [`ScopeInstances::relation`] is the ONLY sanctioned crossing from
-/// an instance POSITION back to its source relation in `scope.relations` — no other
-/// code may index `scope.relations` with an instance position. Borrowing `scope`
-/// here, rather than re-taking it as a parameter on every call, ties that crossing
-/// structurally to the ONE scope the pairing was built from, so a caller cannot
-/// pass a mismatched scope. A member the compiler already flagged as NOT
-/// `Type::Relation` is left to THAT diagnostic (anti-cascade) — it lands in neither
-/// `sources` nor `skipped`.
+/// instead, so `instances` can be SHORTER than `scope.relations`, addressed by a
+/// DIFFERENT index. [`ScopeInstances::relation`] is the ONLY sanctioned crossing
+/// from an instance POSITION to its source relation — no other code may index
+/// `scope.relations` with an instance position. Borrowing `scope` here, rather than
+/// re-taking it as a parameter on every call, makes a mismatched-scope crossing
+/// unrepresentable. A member the compiler already flagged as NOT `Type::Relation`
+/// is left to THAT diagnostic (anti-cascade): it lands in neither `sources` nor
+/// `skipped`.
 struct ScopeInstances<'a> {
     /// The built instances, contiguous and in source order — the shape every
     /// `reify_constraints::relate_solve` entry point (`partition_driving_set`,
@@ -1671,8 +1666,15 @@ fn describe_operands(rel: &CompiledExpr) -> String {
 /// geometry; θ #4388 renders the polished `reify explain` ledger / spans / badge from
 /// the same data).
 fn conflict_diagnostic(conflict: &[usize], built: &ScopeInstances, auto_sub: &str) -> Diagnostic {
-    // primary = newest-declared = greatest SOURCE index among the conflict set.
-    let primary = conflict.iter().copied().max_by_key(|&i| built.sources[i]).unwrap_or(0);
+    // primary = newest-declared = greatest SOURCE index among the conflict set. Both
+    // call sites guarantee `conflict` is non-empty: `minimal_infeasible_subset`
+    // returns an infeasible pair or falls back to the non-empty driving set, and the
+    // redundant-remainder caller always pushes the violated index onto `colocated`.
+    let primary = conflict
+        .iter()
+        .copied()
+        .max_by_key(|&i| built.sources[i])
+        .expect("conflict_diagnostic's caller always passes a non-empty conflict set");
     let mut others: Vec<usize> = conflict.iter().copied().filter(|&i| i != primary).collect();
     others.sort_unstable();
 
