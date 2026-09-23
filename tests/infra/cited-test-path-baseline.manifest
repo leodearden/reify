@@ -159,12 +159,6 @@ docs/architecture-audit/findings/topology-selectors.md :: crates/reify-eval/test
 docs/architecture-audit/findings/topology-selectors.md :: crates/reify-eval/tests/topology_selector_smoke_tests.rs
 docs/architecture-audit/findings/topology-selectors.md :: crates/reify-kernel-occt/tests/topology_selectors_integration.rs
 docs/design/rigid-moment-of-inertia-shape-2026-06-10.md :: crates/reify-compiler/tests/material_struct_tests.rs
-docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/examples_smoke.rs
-docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/geometry_traits_inference_tests.rs
-docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/harness_compilation_surface/registry_seed_result_types.rs
-docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/modal_options_validation_tests.rs
-docs/legibility/confusion-codebook.yaml :: crates/reify-eval/tests/selective_demand_redemand_staleness.rs
-docs/legibility/confusion-codebook.yaml :: crates/reify-kernel-occt/tests/harness_occt/reflection_det_negative_integration.rs
 docs/notes/angle-crossing-discoverability-2026-08-10.md :: crates/reify-eval/tests/best_practices_constraint_gate.rs
 docs/notes/angle-literal-migration-ledger.md :: crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
 docs/notes/dimensioned-construction-blast-radius-2026-07-29.md :: crates/reify-compiler/tests/collection_sub_tests.rs

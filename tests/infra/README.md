@@ -346,6 +346,29 @@ Repointing those is impossible and a guessed target would be noise, so they
 are out of charter.  This gate does **not** tell you every citation is live —
 only that no citation is stale *in the repointable sense*.
 
+### What is excluded: mention, not use
+
+A file is excluded from the scan when the citation shape appears in it as the
+gate's own *subject matter* rather than as a reference a reader is meant to
+follow — repointing a mention falsifies the record carrying it, so a finding
+against one is never actionable.  The list lives in
+`cited_test_path_exclusions()` and has two kinds of member.
+
+The gate's own three artifacts (the baseline, the lib, the gate) are excluded
+**structurally** — the baseline is ~300 rows each ending in a stale cited path,
+so without exclusion regenerating it would fold it into itself.
+
+`docs/legibility/confusion-codebook.yaml` is excluded **contingently**.  It is
+dark-factory's agent-confusion registry; its `cause:` / `evidence_quote:` /
+sighting `note:` fields record agents handed a path that did not exist, so the
+stale path *is* the payload.  All 16 citation occurrences in it were measured
+as mention-not-use when the exclusion was added.  **Re-audit trigger:** the
+codebook's schema is open-world, and the v1 vocabulary its merger still admits
+includes remediation-shaped `fix` / `fix_where` fields — unpopulated today, but
+they *would* carry live references.  If either starts being written, revisit
+the exclusion.  The vacuity floor cannot signal this for you: the codebook is
+~0.83% of the citation corpus, far below anything the floor's bounds resolve.
+
 ### Fingerprint grammar
 
 Baseline rows are `<containing-file> :: <cited-path>`.  Line numbers **and**

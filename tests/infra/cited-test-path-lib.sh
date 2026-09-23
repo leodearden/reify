@@ -53,13 +53,54 @@ _CITED_TEST_PATH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CITED_TEST_PATH_REGEX='crates/[a-z0-9-]+/tests/[A-Za-z0-9_./-]+\.rs'
 
 # ---------------------------------------------------------------------------
-# SELF-EXCLUSION — load-bearing, not cosmetic.
+# SCAN EXCLUSIONS — load-bearing, not cosmetic. NOT a self-exclusion list: it
+# carries a third-party data file too, on the principle below.
 #
-# This gate's own three artifacts quote the citation shape: the baseline is
-# ~300 rows each ENDING in a stale cited path, and the lib and the gate carry
-# the regex plus worked examples. Without exclusion the scan would harvest its
-# own baseline as ~300 fresh citations, every one of them stale, and
-# regenerating the baseline would fold it into itself.
+# THE PRINCIPLE — MENTION, NOT USE. A file is excluded when the citation shape
+# appears in it as this tool's own SUBJECT MATTER rather than as a reference a
+# reader is meant to follow. Repointing a mention falsifies the record that
+# carries it, so a finding against one is never actionable. Same principle,
+# and the same shape of judgement, as the ALLOWLIST_PREFIXES in
+# crates/reify-audit/src/ptodo.rs, which exempts files carrying the TODO
+# pattern as the data they operate on. Decide the next case against THAT, not
+# against "the scan is noisy here".
+#
+# ROWS 1-3 ARE STRUCTURAL. This gate's own three artifacts quote the citation
+# shape: the baseline is ~300 rows each ENDING in a stale cited path, and the
+# lib and the gate carry the regex plus worked examples. Without exclusion the
+# scan would harvest its own baseline as ~300 fresh citations, every one of
+# them stale, and regenerating the baseline would fold it into itself. Their
+# mention-shape is not a property of what they happen to contain; it follows
+# from what the files ARE, so rows 1-3 need no re-audit, ever.
+#
+# ROW 4 IS DIFFERENT IN KIND. docs/legibility/confusion-codebook.yaml is
+# dark-factory's agent-confusion registry, written by its
+# scripts/legibility/codebook.py merger out of the nightly legibility trickle.
+# Its `cause:` / `evidence_quote:` / sighting `note:` fields carry LLM-authored
+# prose recording agents that were handed a path which did not exist — so in a
+# sighting the STALE PATH IS THE PAYLOAD, and repointing it would destroy the
+# finding it is evidence for. Its exclusion therefore rests on a MEASURED,
+# CONTINGENT property of the file's content, NOT on a structural guarantee the
+# way rows 1-3 do: measured at the time of writing, all 16 citation
+# occurrences in that file are mention and not use (10 in evidence_quote, 3 in
+# sighting note, 3 in cause), every one naming the path as the thing that was
+# missing rather than as a reference to open. Zero live references are blinded.
+#
+# RE-AUDIT TRIGGER for row 4. That property can stop holding. The codebook's
+# schema is OPEN-WORLD — codebook.py constrains only the v2 structural fields
+# and leaves additionalProperties permissive — and the v1 vocabulary it still
+# admits includes REMEDIATION-shaped fields, `fix` and `fix_where`, which are
+# unpopulated today but WOULD carry live references a reader is meant to
+# follow. If either starts being written, revisit this exclusion: part of the
+# file becomes use rather than mention, and a whole-file exclusion is then too
+# coarse.
+#
+# AND THE VACUITY FLOOR CANNOT POLICE THAT. Do not assume Section I has it
+# covered. The codebook is ~16 of ~1925 citation occurrences — 0.83%, three
+# orders of magnitude below anything the floor's bounds can resolve — so
+# dropping it moves no observable the floor watches, and NOTHING will
+# automatically signal when this exemption goes stale. The trigger above is a
+# human obligation, not a check.
 #
 # Defined ONCE here so the gate and the generator cannot drift apart — the
 # `:(exclude)` pathspec idiom tests/infra/test_orchestrator_config_canonical_path.sh
@@ -73,7 +114,8 @@ cited_test_path_exclusions() {
     printf '%s\n' \
         ':(exclude)tests/infra/cited-test-path-baseline.manifest' \
         ':(exclude)tests/infra/cited-test-path-lib.sh' \
-        ':(exclude)tests/infra/test_cited_test_paths_resolve.sh'
+        ':(exclude)tests/infra/test_cited_test_paths_resolve.sh' \
+        ':(exclude)docs/legibility/confusion-codebook.yaml'
 }
 
 # ---------------------------------------------------------------------------
