@@ -1,3 +1,175 @@
+//! Every SIGNATURE written in a chunk's unfenced prose must be exercised, at its
+//! documented arity, by a fixture that compiles clean.
+//!
+//! A span is a signature only when it is signature-shaped as a whole — the rule
+//! is `doc_forms.rs`'s — and the prose read is `chunk_prose.rs`'s unfenced model,
+//! so fence bodies (the fence gate's jurisdiction) and maintainer notes are never
+//! scanned. The mirror set is this gate's own fixture together with
+//! `stdlib_geometry_ops_smoke.ri`. A span shaped like a signature that is not one
+//! — a prose mention, a trap example — is excused by an audited [`ProseMention`],
+//! and an excuse that matches nothing is reported in its turn.
+//!
+//! # What is NOT established
+//!
+//! Arity is truly checked only where the compile layer checks it: geometry-op
+//! arms, `some` and stdlib-`.ri` functions reject a wrong arity; list and field
+//! helpers only WARN at an unrecognised argument shape; measurement, oracle and
+//! kinematic queries, topology selectors, trailing field-op arity, `single` and
+//! `mechanism` are SILENT (measured 2026-09-23). For those the pairing is a
+//! doc↔fixture consistency pin that becomes a real arity pin as #7343 and the
+//! builtin-signature-registry work land — deliberately not pinned executably,
+//! so those merges stay in scope. Argument type and order are never checked.
+//! Lambda-parameter spans and ```` ```reify-schematic ```` listings are out of
+//! scope.
+
+use reify_core::{DiagnosticCode, Severity};
+use reify_test_support::compile_source_with_stdlib;
+
+use crate::chunk_prose::{code_spans, unfenced_prose};
+use crate::doc_forms::{DocForm, doc_form_of_span};
+use crate::fence_gate::chunk_label;
+
+/// This gate's own fixture, repo-relative — how every violation names it.
+const UNFENCED_FIXTURE: &str = "crates/reify-compiler/tests/fixtures/unfenced_signatures_smoke.ri";
+
+/// A span in `chunk`'s prose that is signature-SHAPED but is not a signature,
+/// excused from the gate for the recorded reason.
+pub(crate) struct ProseMention {
+    pub(crate) chunk: &'static str,
+    pub(crate) span: &'static str,
+    pub(crate) why: &'static str,
+}
+
+/// One signature-shaped span in a chunk's unfenced prose.
+pub(crate) struct DocumentedForm {
+    pub(crate) form: DocForm,
+    /// 1-based line of the span's opening backtick run.
+    pub(crate) line: usize,
+    pub(crate) span: String,
+}
+
+/// Every signature-shaped code span in `markdown`'s unfenced prose, in document
+/// order; `Err` when the prose cannot be read.
+pub(crate) fn documented_unfenced_forms(markdown: &str) -> Result<Vec<DocumentedForm>, String> {
+    Ok(code_spans(&unfenced_prose(markdown)?)
+        .into_iter()
+        .filter_map(|span| {
+            doc_form_of_span(&span.text).map(|form| DocumentedForm {
+                form,
+                line: span.line,
+                span: span.text,
+            })
+        })
+        .collect())
+}
+
+/// Everything wrong across `chunks` (`(stem, markdown)`), one line each, sorted
+/// and deduped: a documented signature no call in `calls` exercises at its
+/// arity, a `not_signatures` excuse matching no span, and a chunk whose prose
+/// cannot be read. Pure — no file I/O.
+pub(crate) fn unfenced_signature_violations(
+    chunks: &[(&str, &str)],
+    calls: &[(String, usize)],
+    not_signatures: &[ProseMention],
+) -> Vec<String> {
+    let read: Vec<(&str, Result<Vec<DocumentedForm>, String>)> = chunks
+        .iter()
+        .map(|(stem, markdown)| (*stem, documented_unfenced_forms(markdown)))
+        .collect();
+    let excused = |stem: &str, span: &str| {
+        not_signatures
+            .iter()
+            .any(|mention| mention.chunk == stem && mention.span == span)
+    };
+
+    let unreadable = read.iter().filter_map(|(stem, forms)| {
+        forms.as_ref().err().map(|error| {
+            format!(
+                "{}: {error} — so no signature in its prose is checked. FIX: repair the markup.",
+                chunk_label(stem)
+            )
+        })
+    });
+    let unmirrored = read.iter().flat_map(|(stem, forms)| {
+        forms
+            .iter()
+            .flatten()
+            .filter(|documented| {
+                !excused(stem, &documented.span) && !documented.form.is_exercised_by(calls)
+            })
+            .map(|documented| {
+                format!(
+                    "{}:{} — `{}` documents {}/{:?}, which no signature fixture calls at that \
+                     arity. FIX: if the signature is right, add a call at that arity to \
+                     {UNFENCED_FIXTURE} (it must compile clean); if the compiler rejects it, \
+                     correct the chunk; if the span is not a signature (a prose mention or a \
+                     trap example), add a ProseMention with its reason to NOT_SIGNATURES.",
+                    chunk_label(stem),
+                    documented.line,
+                    documented.span,
+                    documented.form.name,
+                    documented.form.arity
+                )
+            })
+    });
+    let stale = not_signatures
+        .iter()
+        .filter(|mention| {
+            !read.iter().any(|(stem, forms)| {
+                *stem == mention.chunk
+                    && forms.as_ref().map_or(true, |forms| {
+                        forms
+                            .iter()
+                            .any(|documented| documented.span == mention.span)
+                    })
+            })
+        })
+        .map(|mention| {
+            format!(
+                "NOT_SIGNATURES entry `{}` for {} is STALE: no signature-shaped span there reads \
+                 that any more, so it excuses nothing. It was listed because: {}. FIX: delete the \
+                 entry.",
+                mention.span,
+                chunk_label(mention.chunk),
+                mention.why
+            )
+        });
+
+    let mut violations: Vec<String> = unreadable.chain(unmirrored).chain(stale).collect();
+    violations.sort();
+    violations.dedup();
+    violations
+}
+
+/// The diagnostics that make a signature fixture's calls untrustworthy, rendered
+/// one per line: any `Severity::Error`, a call to a name nothing resolves, and a
+/// builtin called at an argument shape it does not recognise. Any other warning
+/// never counts.
+pub(crate) fn fixture_compile_violations(source: &str) -> Vec<String> {
+    compile_source_with_stdlib(source)
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.severity == Severity::Error
+                || matches!(
+                    diagnostic.code,
+                    Some(
+                        DiagnosticCode::UnresolvedFunction
+                            | DiagnosticCode::BuiltinArgShapeUnrecognized
+                    )
+                )
+        })
+        .map(|diagnostic| {
+            let code = diagnostic
+                .code
+                .as_ref()
+                .map(|code| format!(" {code:?}"))
+                .unwrap_or_default();
+            format!("{:?}{code}: {}", diagnostic.severity, diagnostic.message)
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Hermetic controls — synthetic chunks and sources; no chunk or fixture file is
 // read.

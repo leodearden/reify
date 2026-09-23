@@ -30,6 +30,8 @@
 //!   and maintainer-note gates.
 //! - `doc_forms` (#6974) — documented call forms, read from markdown spans and
 //!   parsed sources, and their pairing.
+//! - `unfenced_signature_gate` (#6974) — every signature in any chunk's unfenced
+//!   prose is exercised by a compile-verified fixture.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
