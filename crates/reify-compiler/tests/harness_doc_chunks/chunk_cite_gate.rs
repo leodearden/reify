@@ -9,9 +9,9 @@
 //! and, for a `::fn` cite, that it declares that fn — never that a cited test
 //! still asserts what the prose claims.
 
-use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::chunk_prose::{
     EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, HtmlComment, html_comments,
@@ -25,7 +25,8 @@ use crate::fence_gate::{
 type BasenameIndex = BTreeMap<String, Vec<PathBuf>>;
 
 /// Repo root, derived from this crate's manifest dir
-/// (`<repo>/crates/reify-compiler`).
+/// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this
+/// binary resolves against, cites and signature fixtures alike.
 pub(crate) fn repo_root() -> PathBuf {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest
@@ -44,7 +45,11 @@ pub(crate) fn repo_root() -> PathBuf {
 /// Build artifacts are skipped by directory name rather than by path prefix, so a
 /// nested `target/` cannot smuggle a stale duplicate into the index and make an
 /// otherwise-unique basename ambiguous.
-fn source_files_by_basename() -> BasenameIndex {
+///
+/// Walked at most ONCE per test process, when a bare-basename cite first needs
+/// it: the tree does not change under a test run, and the corpus gate resolves
+/// every chunk's cites against the same index.
+fn source_files_by_basename() -> &'static BasenameIndex {
     fn walk(dir: &Path, out: &mut BasenameIndex) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -63,11 +68,14 @@ fn source_files_by_basename() -> BasenameIndex {
         }
     }
 
-    let root = repo_root();
-    let mut out = BTreeMap::new();
-    walk(&root.join("crates"), &mut out);
-    walk(&root.join("examples"), &mut out);
-    out
+    static INDEX: OnceLock<BasenameIndex> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let root = repo_root();
+        let mut out = BTreeMap::new();
+        walk(&root.join("crates"), &mut out);
+        walk(&root.join("examples"), &mut out);
+        out
+    })
 }
 
 /// Every repo-path cite in `markdown`, deduped, in document order: a `/`-bearing
@@ -84,6 +92,10 @@ fn source_files_by_basename() -> BasenameIndex {
 /// kinds (#7095 measured eight), and an allowlist silently misses the next one.
 /// LETTER-led, so a divided length (`width/2.0`) stays arithmetic.
 ///
+/// A URL is NOT a cite, however file-like its path: each whitespace-separated
+/// word is read only up to where a URL in it begins ([`before_url`]), so the
+/// text of a `[crates/x.rs](https://…)` link is still read and its target is not.
+///
 /// A BARE basename in prose is NOT a cite. geometry.md is a designer-facing
 /// tutorial whose whole subject is writing `.ri` files, so it will keep acquiring
 /// illustrative filenames ("save the model as `my_bracket.ri`"); resolving those
@@ -93,9 +105,11 @@ fn source_files_by_basename() -> BasenameIndex {
 pub(crate) fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
     let mut out: Vec<(String, Option<String>)> = Vec::new();
 
-    for run in markdown
-        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ':' | '-')))
-    {
+    let runs = markdown
+        .split_whitespace()
+        .map(before_url)
+        .flat_map(|text| text.split(|c: char| !is_path_char(c)));
+    for run in runs {
         // Sentence punctuation that the run charset happens to include.
         let run = run.trim_end_matches(['.', '/', ':', '-']);
         let (path, fn_name) = match run.split_once("::") {
@@ -123,6 +137,20 @@ pub(crate) fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)
     out
 }
 
+fn is_path_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ':' | '-')
+}
+
+/// `word` cut where a URL in it begins — at the scheme before its `://`. A URL
+/// runs to the end of its word, through characters (`~`, `?`, `%`) that would
+/// otherwise split its path into path-shaped pieces.
+fn before_url(word: &str) -> &str {
+    match word.find("://") {
+        Some(separator) => word[..separator].trim_end_matches(|c: char| c.is_ascii_alphanumeric()),
+        None => word,
+    }
+}
+
 fn has_letter_led_extension(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
     file_name
@@ -131,9 +159,7 @@ fn has_letter_led_extension(path: &str) -> bool {
 }
 
 /// Resolve one cited path token to a real file, or explain why it did not.
-///
-/// The basename index is built only when a bare-basename cite needs it.
-fn resolve_cited_path(token: &str, index: &OnceCell<BasenameIndex>) -> Result<PathBuf, String> {
+fn resolve_cited_path(token: &str) -> Result<PathBuf, String> {
     let root = repo_root();
     if token.contains('/') {
         // Repo-relative, or crate-relative (the chunks write both forms).
@@ -148,11 +174,7 @@ fn resolve_cited_path(token: &str, index: &OnceCell<BasenameIndex>) -> Result<Pa
             root.join("crates").join(token)
         ));
     }
-    match index
-        .get_or_init(source_files_by_basename)
-        .get(token)
-        .map(Vec::as_slice)
-    {
+    match source_files_by_basename().get(token).map(Vec::as_slice) {
         None | Some([]) => Err(format!(
             "no file named `{token}` exists under crates/ or examples/"
         )),
@@ -188,7 +210,6 @@ pub(crate) struct CiteAudit {
 /// Only `.rs` and `.ri` files are bucketed; any other kind (a `docs/…md` cite)
 /// counts as a cite and in neither bucket.
 pub(crate) fn audit_cited_paths(chunk_path: &str, markdown: &str) -> CiteAudit {
-    let index = OnceCell::new();
     let mut audit = CiteAudit {
         cites: cited_source_paths(markdown),
         violations: Vec::new(),
@@ -198,7 +219,7 @@ pub(crate) fn audit_cited_paths(chunk_path: &str, markdown: &str) -> CiteAudit {
     };
 
     for (path_token, fn_name) in &audit.cites {
-        let resolved = match resolve_cited_path(path_token, &index) {
+        let resolved = match resolve_cited_path(path_token) {
             Ok(resolved) => resolved,
             Err(why) => {
                 audit.violations.push(format!(
@@ -571,13 +592,29 @@ fn cited_source_paths_reads_a_slash_bearing_path_with_any_letter_led_extension()
 fn cited_source_paths_ignores_words_that_only_look_path_shaped() {
     let md = "Save it as `my_bracket.ri`; designs live under examples/, and/or the tolerancing/\n\
               subdir. OCCT's `BRepExtrema_DistShapeShape::InnerSolution()` decides it, and a\n\
-              length divided as width/2.0 stays a length.\n";
+              length divided as width/2.0 stays a length. The API is documented at\n\
+              https://docs.rs/foo/latest/foo/index.html and <https://example.com/~me/a.md?f=docs/x.md>.\n";
 
     assert_eq!(
         cited_source_paths(md),
         Vec::<(String, Option<String>)>::new(),
-        "a bare basename, a directory word, an extension-less slash token, a C++ cite and a \
-         digit-led `.0` are prose, not file cites"
+        "a bare basename, a directory word, an extension-less slash token, a C++ cite, a \
+         digit-led `.0` and a URL — even one whose `~`/`?` would split it into path-shaped \
+         pieces — are prose, not file cites"
+    );
+}
+
+#[test]
+fn cited_source_paths_reads_a_link_text_cite_but_not_its_url_target() {
+    let md = "See [crates/reify-compiler/tests/harness_doc_chunks.rs](https://example.com/blob/main/crates/x.rs).\n";
+
+    assert_eq!(
+        cited_source_paths(md),
+        vec![(
+            "crates/reify-compiler/tests/harness_doc_chunks.rs".to_string(),
+            None
+        )],
+        "a word is cut where its URL begins, not skipped whole, so the link text stays a cite"
     );
 }
 
