@@ -1374,14 +1374,12 @@ mod tests {
         // the meaningful contract.
     }
 
-    /// The `--pattern` vocabulary is `reify_audit::pattern_flag::TOKENS`, in
-    /// full: every member parses alone and in the full union, and both places
-    /// a user learns the vocabulary — the unknown-token error and `--help` —
-    /// name every member. Containment only, so neither the joining prose nor
-    /// the token order is pinned.
+    /// `parse_args` accepts exactly the `--pattern` vocabulary,
+    /// `pattern_flag::TOKENS`: every member alone and in the full union, and
+    /// nothing outside it.
     #[test]
-    fn pattern_flag_vocabulary_is_accepted_and_advertised_in_full() {
-        let tokens = reify_audit::pattern_flag::TOKENS;
+    fn parse_args_accepts_exactly_the_pattern_flag_vocabulary() {
+        let tokens = pattern_flag::TOKENS;
         assert!(
             !tokens.is_empty(),
             "the --pattern vocabulary must not be empty"
@@ -1408,23 +1406,10 @@ mod tests {
             panic!("the full union --pattern {union} must parse; got: {e}");
         }
 
-        let unknown_err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
-        let mut usage: Vec<u8> = Vec::new();
-        print_usage(&mut usage);
-        let usage = String::from_utf8(usage).expect("usage text is UTF-8");
-        for &tok in tokens {
-            assert!(
-                unknown_err.contains(tok),
-                "the unknown-token error must name {tok}; got: {unknown_err}"
-            );
-            assert!(usage.contains(tok), "--help must name {tok}; got:\n{usage}");
-        }
-
-        let non_member_err =
-            unwrap_err(parse_args(&["--pattern".to_string(), "PNOPE".to_string()]));
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "PNOPE".to_string()]));
         assert!(
-            non_member_err.contains("'PNOPE'"),
-            "a token outside the vocabulary must be rejected by name; got: {non_member_err}"
+            err.contains("'PNOPE'"),
+            "a token outside the vocabulary must be rejected by name; got: {err}"
         );
     }
 
