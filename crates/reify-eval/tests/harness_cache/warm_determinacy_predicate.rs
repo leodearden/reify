@@ -2,19 +2,17 @@
 //! instead of `Bool`.
 //!
 //! Root cause: the five bare eval sites (eval_cached Let branch, eval_cached
-//! Param-default closure, edit_param Let main loop, edit_source Let main loop,
-//! concurrent wave-2) omit `.with_determinacy(snapshot_values)` from the
-//! EvalContext they build.  Any `determined(x)` / `undetermined(x)` / etc.
-//! evaluated through those sites collapses to `Value::Undef` because the
-//! `DeterminacyPredicate` eval arm returns `Undef` when no determinacy map is
-//! present.
+//! Param-default closure, edit_param Let main loop, edit_source Let main
+//! loop, edit_source post-solve wave-2 (#7114)) omit
+//! `.with_determinacy(snapshot_values)` from the EvalContext they build.
+//! Any `determined(x)` / `undetermined(x)` / etc. evaluated through those
+//! sites collapses to `Value::Undef` because the `DeterminacyPredicate` eval
+//! arm returns `Undef` when no determinacy map is present.
 //!
 //! The main-loop tests below use a plain NON-guard readable `let r =
 //! determined(x)` so they traverse the bare main-loop site (not the
 //! guard-re-elaboration phase that already rescues guard cells with
-//! `.with_determinacy`). A further site sits downstream of the main loop:
-//! edit_source's post-solve second propagation wave, reached only through a
-//! solver-resolved `auto` param — covered separately below (task #7114).
+//! `.with_determinacy`).
 //!
 //! Task 4356: cell_eval_ctx determinacy unification.
 
@@ -254,9 +252,9 @@ fn solver_engine() -> reify_eval::Engine {
 /// them — this pins that wave's context on both edit surfaces, not just the
 /// main walk covered above.
 ///
-/// RED today: edit_source's second propagation wave omits
-/// `.with_determinacy`, so `ready`/`gated` evaluate to `Undef` there while
-/// `edit_param` and cold both resolve to `Bool(true)` / 9mm.
+/// Regression (#7114): edit_source's second propagation wave once omitted
+/// `.with_determinacy`, so `ready`/`gated` collapsed to `Undef` there while
+/// `edit_param` and cold both resolved to `Bool(true)` / 9mm.
 #[test]
 fn solver_wave2_resolves_determinacy_predicate_on_both_edit_surfaces() {
     let pre = parse_and_compile(SOLVER_WAVE2_BASE3_SRC);
