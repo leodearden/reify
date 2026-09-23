@@ -1,11 +1,26 @@
-//! Integration tests for the InProcessLsp bridge.
+//! Integration tests for the InProcessLsp bridge, plus the server-side
+//! write-lock/log-call ordering invariant.
+//!
+//! The latter lives here rather than in `server.rs`'s `mod tests` because it
+//! is observed from OUTSIDE the crate, through public API only
+//! (`ReifyLanguageServer::state()`, `NotificationSink`): a probe sink that
+//! records whether the `state` write lock was free when a log line arrived.
+//! See `log_message_is_never_called_while_the_state_write_lock_is_held`.
 
 use reify_lsp::bridge::InProcessLsp;
 use reify_lsp::bridge::error_prefix;
+use reify_lsp::server::{LogLine, NotificationSink, ReifyLanguageServer, ServerState};
 use reify_test_support::assert_warn_count;
 use reify_test_support::warn_counting_guard;
 use serde_json::json;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tokio::sync::RwLock;
+use tower_lsp::lsp_types::{
+    Diagnostic, DidChangeTextDocumentParams, MessageType, TextDocumentContentChangeEvent, Url,
+    VersionedTextDocumentIdentifier,
+};
+use tower_lsp::{LanguageServer, LspService};
 
 /// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
 /// malformed payload) returns an `Err` whose message contains `fragment`.
@@ -1217,6 +1232,126 @@ mod hang_guard_tests {
     async fn timeout_panic_reports_caller_location() {
         with_hang_guard(1, tokio::time::sleep(Duration::from_secs(60))).await;
     }
+}
+
+/// A [`NotificationSink`] that records, for every log line it receives,
+/// whether the server's `state` write lock was FREE at the moment the call
+/// arrived.
+///
+/// The probe is `try_write().is_ok()` on the server's own
+/// `Arc<RwLock<ServerState>>`, reached through the already-public
+/// [`ReifyLanguageServer::state`]. It therefore reaches no internals and
+/// needs no test-only hook in production code.
+///
+/// `state` is a `OnceLock` rather than a constructor argument because the
+/// sink must exist BEFORE the server whose lock it probes: `LspService::new`
+/// takes a closure that builds the server from a `Client`, and the sink is
+/// moved into that closure. It is injected immediately afterwards, before
+/// any request is driven.
+///
+/// `publish_diagnostics` ignores its arguments — this sink exists for one
+/// question only.
+#[derive(Default)]
+struct LockProbeSink {
+    state: OnceLock<Arc<RwLock<ServerState>>>,
+    /// `(severity, message, write-lock-was-free)`, in arrival order.
+    calls: Mutex<Vec<(MessageType, String, bool)>>,
+}
+
+impl NotificationSink for LockProbeSink {
+    fn publish_diagnostics(&self, _uri: Url, _diagnostics: Vec<Diagnostic>, _version: Option<i32>) {
+    }
+
+    fn log_message(&self, line: LogLine) {
+        let write_lock_was_free = self
+            .state
+            .get()
+            .expect("LockProbeSink::state must be injected before the first request")
+            .try_write()
+            .is_ok();
+        self.calls
+            .lock()
+            .unwrap()
+            .push((line.typ, line.message, write_lock_was_free));
+    }
+}
+
+/// THE INVARIANT: `did_change`'s `state` write lock guards ONLY the document
+/// store mutation. No `NotificationSink::log_message` call may run while it
+/// is held.
+///
+/// Task #6162 narrowed that lock scope and its own comment admitted the
+/// narrowing had no dedicated regression test — both e2e guards would pass
+/// unchanged if a future edit moved the call back inside the lock. This test
+/// closes that, and task #6329 made it matter more: the call is no longer a
+/// known-cheap `eprintln!` but a virtual dispatch into an arbitrary sink
+/// implementation (in the GUI, one that re-enters the Tauri event bus), so
+/// holding the lock across it re-queues every other
+/// `did_open`/`did_change`/`did_close` behind third-party code.
+///
+/// WHY `try_write` IS SOUND HERE: `#[tokio::test]` defaults to the
+/// current_thread flavor and this test spawns nothing, so no other task can
+/// contend for the lock. `try_write()` therefore succeeds if and only if the
+/// guard had already been dropped — a deterministic boolean observation, not
+/// a timing tolerance. This is the in-process alternative #6162's design
+/// decisions wanted but could not reach: it needs no process-wide stderr fd
+/// redirection onto a deliberately-full pipe, so it cannot hang a shared
+/// parallel test run.
+#[tokio::test]
+async fn log_message_is_never_called_while_the_state_write_lock_is_held() {
+    hang_guard!(async {
+        let sink = Arc::new(LockProbeSink::default());
+        let (service, _socket) =
+            LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone()));
+        let server = service.inner();
+        assert!(
+            sink.state.set(server.state().clone()).is_ok(),
+            "LockProbeSink::state must be injected exactly once, before any request"
+        );
+
+        // Never opened, so DocumentStore::update returns false and the
+        // unknown-URI log site fires.
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: Url::parse("file:///never-opened.ri").unwrap(),
+                    version: 1,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: reify_test_support::bracket_source().to_string(),
+                }],
+            })
+            .await;
+
+        let calls = sink.calls.lock().unwrap().clone();
+
+        // NON-VACUITY: the invariant assertion below must not be able to pass
+        // by the log call having disappeared.
+        assert!(
+            calls.iter().any(|(typ, message, _)| {
+                *typ == MessageType::WARNING && message.contains("didChange for unknown URI")
+            }),
+            "expected did_change to emit the unknown-URI WARNING through the sink — without it \
+             the ordering assertion below is vacuous. Recorded calls: {calls:?}"
+        );
+
+        let while_locked: Vec<_> = calls
+            .iter()
+            .filter(|(_, _, write_lock_was_free)| !write_lock_was_free)
+            .collect();
+        assert!(
+            while_locked.is_empty(),
+            "a NotificationSink::log_message call ran while did_change held the `state` WRITE \
+             lock. That lock must guard ONLY the document-store mutation: holding it across a \
+             log call re-queues every other did_open/did_change/did_close behind an arbitrary \
+             sink implementation (in the GUI, one that re-enters the Tauri event bus). This is \
+             the hazard task #6162 fixed by narrowing the lock scope and task #6329 pinned \
+             here — move the log call back below the `let known = {{ ... }};` block. \
+             Offending calls: {while_locked:?}"
+        );
+    });
 }
 
 /// Unit tests for the `assert_ok_or_nonempty_err` helper.

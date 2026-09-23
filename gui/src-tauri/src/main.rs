@@ -28,7 +28,7 @@ use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
 use reify_gui::watcher::{FileEvent, FileWatcher};
-use reify_lsp::server::NotificationSink;
+use reify_lsp::server::{LogLine, NotificationSink};
 use tower_lsp::lsp_types::{Diagnostic, Url};
 
 // --- Event emission helpers ---
@@ -64,11 +64,13 @@ impl Drop for IdleGuard {
     }
 }
 
-/// Notification sink that emits diagnostics as Tauri events.
+/// Notification sink that emits server-initiated notifications as Tauri
+/// events.
 ///
 /// Created during Tauri `setup()` where the [`tauri::AppHandle`] is available,
 /// then passed into the [`LspBridge`] so the language server can push
-/// diagnostics directly to the frontend without manual polling.
+/// diagnostics and server log lines directly to the frontend without manual
+/// polling.
 struct TauriNotificationSink {
     app: tauri::AppHandle,
 }
@@ -85,6 +87,23 @@ impl NotificationSink for TauriNotificationSink {
                 serde_json::json!({
                     "uri": uri.as_str(),
                     "diagnostics": diags,
+                }),
+            )
+            .ok();
+    }
+
+    fn log_message(&self, line: LogLine) {
+        // Same shape as the `diagnostics` arm above: one event named for the
+        // channel, carrying the LSP payload's own field names (`type` /
+        // `message` — `window/logMessage`'s `LogMessageParams`) so the
+        // frontend reads the protocol's vocabulary, not a GUI-local
+        // re-spelling. `MessageType` serializes as its LSP integer.
+        self.app
+            .emit(
+                "lsp-log",
+                serde_json::json!({
+                    "type": line.typ,
+                    "message": line.message,
                 }),
             )
             .ok();
