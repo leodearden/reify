@@ -1037,6 +1037,7 @@ mod expand_tests {
         assert_eq!(diags.len(), 1, "exactly one diagnostic: {diags:?}");
         let d = &diags[0];
         assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryListTooManyElements));
         assert!(
             d.message.contains("generate"),
             "message must name the construct: {}",
@@ -1068,6 +1069,7 @@ mod expand_tests {
         assert_eq!(diags.len(), 1, "exactly one diagnostic: {diags:?}");
         let d = &diags[0];
         assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::GeometryListTooManyElements));
         assert!(
             d.message.contains("list literal"),
             "message must name the construct: {}",

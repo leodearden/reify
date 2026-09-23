@@ -46,14 +46,26 @@ fn error_messages(compiled: &reify_compiler::CompiledModule) -> Vec<String> {
         .collect()
 }
 
-fn error_messages_with_code(
+/// Helper: the Error-severity diagnostics carrying `code` — which diagnostic it
+/// is comes from the code, never from message text (diagnostic-severity-policy
+/// §2).
+fn errors_with_code(
     compiled: &reify_compiler::CompiledModule,
     code: DiagnosticCode,
-) -> Vec<String> {
+) -> Vec<&reify_core::Diagnostic> {
     compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error && d.code == Some(code))
+        .collect()
+}
+
+fn error_messages_with_code(
+    compiled: &reify_compiler::CompiledModule,
+    code: DiagnosticCode,
+) -> Vec<String> {
+    errors_with_code(compiled, code)
+        .into_iter()
         .map(|d| d.message.clone())
         .collect()
 }
@@ -434,29 +446,12 @@ fn generate_with_non_literal_count_over_geometry_is_a_loud_error() {
     "#;
     let compiled = compile_source(source);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "a geometry-producing generate() with a non-literal count must be an \
-         ERROR, not a silent undef list",
-    );
-    let matching: Vec<_> = errors
-        .iter()
-        .filter(|d| {
-            d.message.contains("generate")
-                && d.message.contains("literal")
-                && d.message.contains("Int")
-        })
-        .collect();
+    let matching = errors_with_code(&compiled, DiagnosticCode::GeometryListNonLiteralCount);
     assert!(
         !matching.is_empty(),
-        "expected an error naming generate() and the literal-Int-count \
-         requirement; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>(),
+        "a geometry-producing generate() with a non-literal count must be a \
+         GeometryListNonLiteralCount ERROR, not a silent undef list; got: {:?}",
+        error_messages(&compiled),
     );
     assert!(
         matching.iter().any(|d| !d.labels.is_empty()),
@@ -485,19 +480,12 @@ fn mixed_kind_geometry_list_literal_is_a_loud_error() {
     "#;
     let compiled = compile_source(source);
 
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    let matching: Vec<_> = errors
-        .iter()
-        .filter(|d| d.message.contains("geometry") && d.message.contains("list literal"))
-        .collect();
+    let matching = errors_with_code(&compiled, DiagnosticCode::GeometryListMixedElements);
     assert!(
         !matching.is_empty(),
-        "expected an error naming the mixed-kind list literal; got: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>(),
+        "expected a GeometryListMixedElements error for the mixed-kind list \
+         literal; got: {:?}",
+        error_messages(&compiled),
     );
     assert!(
         matching.iter().any(|d| !d.labels.is_empty()),
@@ -676,21 +664,20 @@ fn union_all_over_a_non_geometry_list_reports_the_element_kind() {
     "#;
     let compiled = compile_source(source);
 
-    let errors: Vec<String> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| d.message.clone())
-        .collect();
-    assert!(
-        errors.iter().any(|m| m.contains("geometry list")),
-        "expected a 'must be a geometry list' error; got: {errors:?}",
+    let errors = error_messages(&compiled);
+    assert_eq!(
+        error_messages_with_code(&compiled, DiagnosticCode::GeometryListFoldArgNotGeometry).len(),
+        1,
+        "expected one GeometryListFoldArgNotGeometry error; got: {errors:?}",
     );
-    assert!(
-        !errors
-            .iter()
-            .any(|m| m.contains("expects at least 2 arguments")),
-        "the bare arity message must NOT be what the user sees here; got: {errors:?}",
+    // The arity diagnostic is code-less (arg_check.rs), so it cannot be ruled
+    // out by code; ruling out EVERY other Error covers it without matching on
+    // its wording.
+    assert_eq!(
+        errors.len(),
+        1,
+        "the not-a-geometry-list Error must be the only one — in particular not \
+         the bare arity message; got: {errors:?}",
     );
 }
 
@@ -705,17 +692,10 @@ fn union_all_over_an_empty_geometry_list_reports_the_empty_fold() {
     "#;
     let compiled = compile_source(source);
 
-    let errors: Vec<String> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| d.message.clone())
-        .collect();
     assert!(
-        errors
-            .iter()
-            .any(|m| m.contains("empty") && m.contains("at least one element")),
-        "expected an empty-fold error naming the requirement; got: {errors:?}",
+        !error_messages_with_code(&compiled, DiagnosticCode::GeometryListFoldEmpty).is_empty(),
+        "expected a GeometryListFoldEmpty error; got: {:?}",
+        error_messages(&compiled),
     );
 }
 
@@ -845,11 +825,12 @@ fn union_all_over_a_list_holding_a_selector_composition_is_not_folded_as_csg() {
         "no CSG Boolean op may be emitted: one of the two list elements is a \
          SELECTOR composition, not geometry",
     );
-    let errors = error_messages(&compiled);
     assert!(
-        errors.iter().any(|m| m.contains("geometry list")),
-        "the fold must be refused with a geometry-list diagnostic rather than \
-         silently folding selector algebra as CSG; got: {errors:?}",
+        !error_messages_with_code(&compiled, DiagnosticCode::GeometryListFoldArgNotGeometry)
+            .is_empty(),
+        "the fold must be refused with GeometryListFoldArgNotGeometry rather than \
+         silently folding selector algebra as CSG; got: {:?}",
+        error_messages(&compiled),
     );
 
     // Control: same fixture with both elements real geometry folds normally, so
@@ -935,13 +916,15 @@ fn a_rejected_geometry_list_let_does_not_cascade_into_its_fold() {
         1,
         "exactly one Error — the non-literal count — must survive; got: {errors:?}",
     );
-    assert!(
-        errors[0].contains("literal non-negative Int count"),
+    assert_eq!(
+        error_messages_with_code(&compiled, DiagnosticCode::GeometryListNonLiteralCount).len(),
+        1,
         "the surviving Error must be the declaring let's, not the fold's; \
          got: {errors:?}",
     );
     assert!(
-        !errors.iter().any(|m| m.contains("must be a geometry list")),
+        error_messages_with_code(&compiled, DiagnosticCode::GeometryListFoldArgNotGeometry)
+            .is_empty(),
         "the fold must stay silent about a let that already failed loudly; \
          got: {errors:?}",
     );
@@ -991,17 +974,13 @@ fn a_scalar_fold_still_speaks_beside_a_muted_rejected_lets_fold() {
         "exactly two Errors — the rejected let's own, and the scalar fold's; \
          got: {messages:?}",
     );
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("literal non-negative Int count")),
+    assert_eq!(
+        errors_with_code(&compiled, DiagnosticCode::GeometryListNonLiteralCount).len(),
+        1,
         "the declaring let must still report its own defect; got: {messages:?}",
     );
 
-    let fold_errors: Vec<_> = errors
-        .iter()
-        .filter(|d| d.message.contains("must be a geometry list"))
-        .collect();
+    let fold_errors = errors_with_code(&compiled, DiagnosticCode::GeometryListFoldArgNotGeometry);
     assert_eq!(
         fold_errors.len(),
         1,
