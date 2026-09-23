@@ -1284,13 +1284,12 @@ mod tests {
     /// The script's absence is a graceful skip, not a hard assertion: this
     /// module treats "the script does not exist on disk" as environmentally
     /// legitimate everywhere else (a packaged crate or a source tarball with
-    /// no `scripts/` tree) — see [`run_orphan_audit_at`]'s
-    /// `EnvUnavailable("audit-orphan-producers.sh not found on disk")` branch
-    /// and `missing_script_is_env_unavailable` above. Hard-asserting here
-    /// would turn that same environmental condition into a red unit test
-    /// instead. The hard assertions this test exists for — that a root
-    /// resolving an EXISTING script also holds both crates' manifests — only
-    /// make sense once the script is confirmed present.
+    /// no `scripts/` tree) — see [`run_orphan_audit_at`]'s missing-script
+    /// `EnvUnavailable` branch and `missing_script_is_env_unavailable` above.
+    /// Hard-asserting here would turn that same environmental condition into
+    /// a red unit test instead. The hard assertions this test exists for —
+    /// that a root resolving an EXISTING script also holds both crates'
+    /// manifests — only make sense once the script is confirmed present.
     #[test]
     fn audit_command_names_an_existing_script_under_a_root_holding_both_crates() {
         let cmd = audit_command("crates/reify-audit/src");
