@@ -2004,6 +2004,84 @@ select_pdiag_ratchet() {
 select_pdiag_ratchet
 
 # ---------------------------------------------------------------------------
+# Cheap cited-test-path gate on the hook-gated --scope staged path (task #7785).
+#
+# tests/infra/test_cited_test_paths_resolve.sh — prose that names a
+# `crates/<crate>/tests/**/*.rs` file must name a path that still resolves —
+# ran ONLY in the merge-tier run_all.sh pool. hooks/pre-commit ->
+# hooks/project-checks invokes `--scope staged` with no DF_VERIFY_ROLE set, so
+# the role defaults to `task` and that pool never fires; a docs-only stage also
+# classifies inert (RUN_RUST=0), which is the pool block's other precondition.
+# That is a PATH ASYMMETRY, not just a latency gap: a writer whose only landing
+# path is a hook-gated `git commit` on `main` can mint content that passes its
+# OWN gate and then fails the whole-tree gate for everyone else. Commit
+# f7b607527e (an unattended nightly trickle) landed a stale citation at
+# 03:20:36 having passed its own hook, and every merge for the next 8 hours
+# failed on it. This selector makes that commit fail at ITS OWN commit.
+#
+# NO EXTENSION FILTER. That is the deliberate difference from
+# select_cheap_ptodo_gate directly above, which DOES filter, and it is the one
+# thing a later reader must not "helpfully" add. Three independent reasons,
+# any one of them sufficient:
+#
+#   (1) The scan is extension-agnostic BY CONSTRUCTION, and says so:
+#       cited_test_path_citations in tests/infra/cited-test-path-lib.sh (cited
+#       by function name, not line) — "NO EXTENSION FILTER. Extension-
+#       agnosticism is the ABSENCE of a filter, not an allowlist" — because the
+#       stale citations measured on the live tree span 8 extensions (.ri .md
+#       .rs .yaml .txt .sh .js .grammar) across crates/, examples/, docs/,
+#       tests/, tree-sitter-reify/, gui/ and .claude/, and a ninth would
+#       silently escape an allowlist. ptodo may mirror a list because
+#       is_swept_ext is a CLOSED set; here there is no closed set to mirror,
+#       so any list would be an invention rather than a derived copy.
+#
+#   (2) Even a perfect "does this staged file contain a citation" test would
+#       still be a hole, because the staged file need not be the file that goes
+#       stale. The finding is a whole-tree JOIN — the citation corpus against
+#       the tracked-test index — so a `git mv crates/<c>/tests/<unit>.rs ...`
+#       reds the gate through citations in files the commit never touched. The
+#       trigger is therefore not derivable from the staged set's IDENTITY at
+#       all; the only honest predicate over that set is whether it is non-empty.
+#
+#   (3) Textness is not a property of a filename, and the scan already decides
+#       it correctly (`git grep -I`). Re-deciding it here from names would be a
+#       second, weaker copy of a judgement that already has one home (SPOT).
+#
+# COST is what makes "any changed file" affordable as well as correct, measured
+# 2026-09-22 on a warm worktree: the whole-tree scan is 0.76s
+# (cited_test_path_scan, 281 rows); the whole leaf — the file also runs its
+# hermetic `git init` fixture sections A-L — is 11.1s / 17.4s / 18.0s over
+# three runs. No cargo, no npm. On a path taken only by a hook-gated commit on
+# `main`, against an 8-hour fleet-wide merge outage, a cleverer filter would be
+# trading a coverage hole for a latency saving that does not matter.
+#
+# Hence NO per-file loop: "any staged change at all, in any tracked file" IS
+# `[ -n "$CHANGED_FILES_RAW" ]`, and writing it as a loop would only offer
+# someone a `case` to put inside.
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS as select_cheap_ptodo_gate, so it
+# inherits the four properties that selector's header enumerates BY MECHANISM
+# rather than by restatement: (a) merge/background suppression — the selective
+# emission block is suppressed under those roles, where run_all.sh runs this
+# file wholesale, so it still runs exactly once (INV-5); (b) the
+# REIFY_INFRA_SUITE_ACTIVE re-entrancy guard; (c) fail-fast ordering ahead of
+# the cargo poles; (d) add_tool's LD_LIBRARY_PATH scrub.
+#
+# RESIDUAL, shared with select_cheap_ptodo_gate and NOT introduced here: a
+# decide_scope C5 fail-wide leaves SCOPE=staged with CHANGED_FILES_RAW="" and
+# RUN_RUST=1, so this selector returns without adding while the role is still
+# `task` and no run_all.sh pool runs. Such a commit gets the full cargo
+# workspace but not this gate. Closing it needs a fail-wide signal decide_scope
+# does not expose today; the merge tier remains the wholesale authority.
+# ---------------------------------------------------------------------------
+select_cited_test_path_gate() {
+    [ "$SCOPE" = "staged" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    add_selected_infra_glob "tests/infra/test_cited_test_paths_resolve.sh"
+}
+select_cited_test_path_gate
+
+# ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
 #
 # Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
