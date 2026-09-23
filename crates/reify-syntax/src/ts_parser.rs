@@ -2045,10 +2045,7 @@ impl<'a> Lowering<'a> {
                 // before the loop via child_by_field_name / lower_type_parameters.
                 "identifier" | "type_parameters" => {}
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in constraint body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in constraint body");
                 }
                 _ => self.warn_unexpected_child(child, "constraint body"),
             }
