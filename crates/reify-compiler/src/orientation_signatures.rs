@@ -71,8 +71,7 @@ use reify_core::Type;
 /// 1. **`frame_to_frame` is a Transform, not a Frame.** Despite the `frame_`
 ///    prefix it returns `Value::Transform` — it computes the rigid motion
 ///    mapping one frame onto another. Source: the `"frame_to_frame" =>` arm of
-///    `eval_geometry` (`reify-stdlib/src/geometry.rs`) — grep the arm, not the
-///    line; a line cite here rotted twice (:512, :605).
+///    `eval_geometry` (`reify-stdlib/src/geometry.rs`).
 /// 2. **The digit is meaningful.** The digit-carrying `transform3` /
 ///    `transform3_identity` CONSTRUCTORS are distinct from the digitless
 ///    `transform_compose` / `transform_inverse` / `transform_exp` OPERATIONS;
