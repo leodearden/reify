@@ -310,7 +310,7 @@ fn wrap_result(v: f64, codomain_type: &Type) -> Value {
 mod tests {
     use std::sync::atomic::AtomicBool;
 
-    use reify_core::Type;
+    use reify_core::{DimensionVector, Type};
     use reify_ir::{InterpolationKind, SampledField, SampledGridKind, Value, ValueMap};
 
     use crate::EvalContext;
@@ -526,6 +526,30 @@ mod tests {
             }
             other => panic!("expected Value::Vector, got {:?}", other),
         }
+    }
+
+    /// A `List<Scalar<P>>` codomain samples a stride-3 field to a `Value::List`
+    /// whose components carry the element's dimension, not to a `Value::Vector`
+    /// of dimensionless `Real`s. At the grid node (2, 1, 0) every trilinear lerp
+    /// is exact (t = 0 against a finite neighbour, or t = 1 between adjacent
+    /// integers), so the whole value compares bit-exactly.
+    #[test]
+    fn sample_at_point_stride3_with_list_codomain_returns_a_list_of_element_typed_components() {
+        let sf = make_3d_stride3(3, 3, 3, 1.0, |x, y, z| [x, y, z]);
+        let codomain = Type::List(Box::new(Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        }));
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let point = Value::Vector(vec![Value::Real(2.0), Value::Real(1.0), Value::Real(0.0)]);
+        let pressure = |si_value: f64| Value::Scalar {
+            si_value,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert_eq!(
+            sample_at_point(&sf, &point, &codomain, &ctx),
+            Value::List(vec![pressure(2.0), pressure(1.0), pressure(0.0)]),
+        );
     }
 
     /// sample_at_point on a stride-2 Regular2D field with linearly-varying components
