@@ -1138,6 +1138,32 @@ fn an_empty_fence_body_parses_as_the_empty_string() {
     assert_eq!(fences[0].body, "");
 }
 
+/// `close_line` is the 1-based line of the CLOSING delimiter — the one line a
+/// fence's extent cannot be derived from its body without.
+#[test]
+fn close_line_is_the_one_based_line_of_the_closing_delimiter() {
+    let md = "prose\n\
+              ```reify-schematic\n\
+              ```\n\
+              between\n\
+              ```reify\n\
+              structure def S { let n = 1 }\n\
+              ````\n";
+
+    let fences = parse_fences(md).expect("well-formed markdown must parse");
+
+    let extents: Vec<(usize, usize)> = fences
+        .iter()
+        .map(|fence| (fence.open_line, fence.close_line))
+        .collect();
+    assert_eq!(
+        extents,
+        vec![(2, 3), (5, 7)],
+        "an empty-bodied fence closes on the line after it opens; a longer closing run \
+         still closes its fence"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Check 2 — the bare-fence ban
 // ---------------------------------------------------------------------------
