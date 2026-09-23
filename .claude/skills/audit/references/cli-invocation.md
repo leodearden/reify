@@ -182,7 +182,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 
 **The five structural lanes — PTODO, PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK — are unaffected by jcodemunch outages.** Whether they run in the default sweep (PTODO, PDSSENTINEL) or because `--pattern` names them, each uses only deterministic tracked-file enumeration and working-tree reads, plus read-only sqlite for PTODO and PDCHECK. None opens a jcodemunch connection, so none degrades on a down serve. Two of them read `tasks.db` and degrade gracefully without it, with the exit class unchanged:
 
-- PTODO's liveness lane is skipped behind one stderr breadcrumb; its structural lane still runs.
+- PTODO's `tasks.db`-backed lanes (liveness, inverse and G-allow) are skipped together behind one stderr breadcrumb; its structural lane still runs.
 - PDCHECK is skipped entirely. Like the jcodemunch breadcrumb below, its breadcrumb precedes the JSON array in the stderr tempfile:
   ```
   reify-audit: PDCHECK delivered_checks dead-path lane skipped — tasks.db absent at '<project-root>/.taskmaster/tasks/tasks.db': …; this is NOT a clean bill of health

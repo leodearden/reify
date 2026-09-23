@@ -129,9 +129,9 @@ reify-audit \
 
 PTODO (`--pattern PTODO`) is **part of the no-`--pattern` default all-detector sweep** (P1/P2/P5/PTODO/PDSSENTINEL) — this section documents its explicit invocation. It is distinct from the opt-in advisory P-* patterns below.
 
-- **Severity:** All PTODO violation kinds emit **Severity Medium** → file a deferred follow-up task per `references/severity-routing.md` PTODO row.
-- **Implementation:** Deterministic grep + read-only sqlite; **no jcodemunch/LLM/MCP**. Unaffected by jcodemunch outages. Only its liveness lane degrades gracefully when `tasks.db` is absent (one stderr breadcrumb; structural lane still runs). See `references/cli-invocation.md` §4.1 PTODO note.
-- **Exit-neutrality:** PTODO emits Medium only; exit code = High-severity count, so a PTODO-only run always exits 0 on a clean tree.
+- **Severity:** split by kind since η (#4559), so route each finding by its own `severity` field. The High kinds (`untracked`, `bare-ignore`, `orphaned`, `g-allow-orphaned`) escalate per `references/severity-routing.md` §1; every Medium kind files a deferred follow-up task (§2 PTODO notes).
+- **Implementation:** Deterministic grep + read-only sqlite; **no jcodemunch/LLM/MCP**. Unaffected by jcodemunch outages. Its `tasks.db`-backed lanes (liveness, inverse and G-allow) degrade together when `tasks.db` is absent (one stderr breadcrumb); the structural lane still runs. See `references/cli-invocation.md` §4.1.
+- **Exit code:** the High count, so a PTODO-only run exits non-zero whenever a High kind is present. On main that is the steady state, not a regression (SKILL.md "Default-sweep membership"). The merge gate is the fingerprint ratchet in `tests/infra/test_reify_audit_ptodo.sh`, not this exit code.
 
 ### PDSSENTINEL — notes
 
