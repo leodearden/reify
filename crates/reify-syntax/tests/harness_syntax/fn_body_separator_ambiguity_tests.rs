@@ -733,9 +733,9 @@ fn a_member_let_following_a_collapsed_fn_is_never_blamed_for_a_missing_separator
 /// the source echo removed here), and a property another crate's ratchet depends on must be
 /// pinned inside this task's own corpus.
 ///
-/// Broadening the generic MESSAGE is deliberately out of scope — follow-up #6156. Measured, no
-/// snippet choice works: `snippet(fault)` is `"v"` (says nothing), and `snippet(node)` is the
-/// declaration header, which `fn_body_parse_error_messages_do_not_echo_source_blocks` forbids.
+/// Broadening the generic MESSAGE is deliberately out of scope. Measured, no snippet choice
+/// works: `snippet(fault)` is `"v"` (says nothing), and `snippet(node)` is the declaration
+/// header, which `fn_body_parse_error_messages_do_not_echo_source_blocks` forbids.
 #[test]
 fn an_unanchorable_fault_is_reported_with_a_token_precise_span() {
     let source = "structure def D {\n\
