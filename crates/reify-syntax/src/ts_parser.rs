@@ -2027,14 +2027,21 @@ impl<'a> Lowering<'a> {
                 }
                 "let_declaration" => {
                     // let declarations in constraint def body are ignored for now
-                    // (captured in params/predicates separation; future: add lets field)
+                    // (captured in params/predicates separation; future: add lets field),
+                    // but a FAULTY let is still refused loudly: its recovery can absorb the
+                    // following predicate (INV-SF-7).
+                    let _ = check_and_lower!(self, child, "constraint let", None::<()>);
                 }
                 "constraint_def_predicate" => {
-                    if let Some(expr_node) = child.child_by_field_name("expr")
-                        && let Some(expr) = self.lower_expr(expr_node)
-                    {
-                        predicates.push(expr);
-                    }
+                    let _ = check_and_lower!(
+                        self,
+                        child,
+                        "constraint predicate",
+                        child
+                            .child_by_field_name("expr")
+                            .and_then(|e| self.lower_expr(e))
+                            .map(|p| predicates.push(p))
+                    );
                 }
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
