@@ -1790,7 +1790,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // second route — a persisted `Type::Point` on the value cell rather than
         // a `FunctionCall`'s inferred `result_type` — and the rule below fires
         // through it exactly as it does for a direct call. Pinned by
-        // `point3_cross_dimension_via_let_at_dimensioned_point_param_warns_arg_type_mismatch`
+        // `point3_cross_dimension_via_let_at_dimensioned_point_param_errors_arg_type_mismatch`
         // (`struct_ctor_field_conformance_tests.rs`); this claim is not carried
         // by prose alone.
         //
@@ -7497,8 +7497,8 @@ mod tests {
     /// made it invisible to the walk: RED (zero diagnostics) until
     /// `param_default_cells` chains `template.ports[].members` in.
     ///
-    /// Its integration twin `port_member_geometry_param_default_warns`
-    /// (`harness_structure_declarations`) proves the same warning end-to-end from
+    /// Its integration twin `port_member_geometry_param_default_errors`
+    /// (`harness_structure_declarations`) proves the same diagnostic end-to-end from
     /// real source, so this probe is not here for the diagnostic — it is here for
     /// the ROUTE. Constructing the cell on `ports[].members` and nowhere else is
     /// the only way to distinguish "the chain reached the port list" from "the
@@ -7737,7 +7737,7 @@ mod tests {
     /// The value-cell route (`let p = point3(…); Anchor(origin: p)`) is a THIRD
     /// entry point and NOTHING here stands in for it — this probe builds no
     /// `CompiledExpr` at all. It is pinned by its own fixture,
-    /// `point3_cross_dimension_via_let_at_dimensioned_point_param_warns_arg_type_mismatch`.
+    /// `point3_cross_dimension_via_let_at_dimensioned_point_param_errors_arg_type_mismatch`.
     ///
     /// The complement of `point_param_accepts_dimensionless_point_arg` directly
     /// above: that one pins the TOLERANT half (either side declines to name a
@@ -7767,7 +7767,7 @@ mod tests {
     /// (task 5766), sibling of `point_param_rejects_cross_dimension_point_arg`.
     ///
     /// The `.ri` seam for the same rule is
-    /// `vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch`
+    /// `vec3_cross_dimension_at_dimensioned_vector_param_errors_arg_type_mismatch`
     /// in `struct_ctor_field_conformance_tests.rs`. Pinning BOTH seams matters
     /// because they reach the arm by different routes — a hand-built `Type`
     /// here, versus a `FunctionCall`'s inferred `result_type` there — so this
@@ -7868,11 +7868,11 @@ mod tests {
     /// For a probe whose types are WRAPPERS (the `List<Vector3<…>>` recursion
     /// probe), the quantities named are the INNER ones the rule fires on.
     ///
-    /// This is where the ERROR half of the rule's severity split is pinned: the
-    /// fn-call entry point this scaffold drives sets `Severity::Error`, while the
-    /// ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α) and is
-    /// pinned by the `.ri` fixtures in `struct_ctor_field_conformance_tests.rs`.
-    /// Both halves are recorded in `crates/reify-core/src/ty.rs`.
+    /// This pins the fn-call entry point this scaffold drives, which sets
+    /// `Severity::Error`. The ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`]
+    /// instead (Warning at α, `Error` since δ / task #5306, so the two entries no
+    /// longer split on severity) and is pinned by the `.ri` fixtures in
+    /// `struct_ctor_field_conformance_tests.rs`.
     fn assert_quantity_slot_conflict(
         param_type: Type,
         arg_ty: Type,
@@ -7899,7 +7899,7 @@ mod tests {
             diagnostics[0].severity,
             Severity::Error,
             "{why}\nthe fn-call entry point sets Severity::Error (the ctor entry sets the \
-             CTOR_FIELD_CONFORMANCE_SEVERITY knob, Warning at α); the quantity rule inherits \
+             CTOR_FIELD_CONFORMANCE_SEVERITY knob, Error since δ); the quantity rule inherits \
              whichever the walk was entered with. Got {:?}",
             diagnostics[0].severity,
         );
@@ -8007,10 +8007,11 @@ mod tests {
     /// a deliberate assertion of unit-lessness rather than a grammar workaround,
     /// so a `Vector3<Length>` arg there is a real error.
     ///
-    /// Ruling and its basis: `crates/reify-core/src/ty.rs`. The Warning half of
-    /// the severity split for this same cell is pinned by
+    /// Ruling and its basis: `crates/reify-core/src/ty.rs`. The ctor-path `.ri`
+    /// twin of this same cell is
     /// `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
-    /// (`struct_ctor_field_conformance_tests.rs`).
+    /// (`struct_ctor_field_conformance_tests.rs`), at `Severity::Error` since
+    /// δ / task #5306 — so the two paths no longer split on severity.
     #[test]
     fn dimensionless_quantity_param_rejects_dimensioned_vector_arg() {
         let diagnostics = assert_quantity_slot_conflict(
@@ -8062,7 +8063,7 @@ mod tests {
     /// now be rejected on cell `[0][0]` alone, where before only a dimensioned
     /// param slot could trip it. That claim is only true if this arm actually
     /// reaches the STRICT param-side predicate — the arm's one other quantity
-    /// fixture (`matrix_builtin_cross_dimension_at_inertia_param_warns_…` in
+    /// fixture (`matrix_builtin_cross_dimension_at_inertia_param_errors_…` in
     /// `struct_ctor_field_conformance_tests.rs`) is concrete×concrete and was
     /// already green under task 5766's symmetric rule, so it cannot tell the two
     /// predicates apart. Without this probe, routing the arm through the
@@ -8107,7 +8108,7 @@ mod tests {
     /// there are none outstanding.
     ///
     /// The `.ri` twin of this exact cell is
-    /// `point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch`
+    /// `point3_dimensioned_at_dimensionless_point_param_errors_arg_type_mismatch`
     /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Error`
     /// since δ / task #5306), which pins the inference chain this direct-`Type`
     /// probe deliberately
@@ -8359,7 +8360,7 @@ mod tests {
     /// twin named below carries the detail.
     ///
     /// The arity leg IS now pinned from `.ri` source, by
-    /// `point2_arg_at_point3_param_warns_arity_arg_type_mismatch`
+    /// `point2_arg_at_point3_param_errors_arity_arg_type_mismatch`
     /// (`struct_ctor_field_conformance_tests.rs`). This probe stays as the
     /// direct-`Type` seam of the same pair the cross-dimension probe above
     /// describes: constructed directly so it reaches the walker without
@@ -8372,7 +8373,7 @@ mod tests {
     /// so nothing there needs the correction this block carries. The `Vector`
     /// arm has the same asymmetry (no `Vector2` param spelling; `vec2` claimed
     /// into the same collapsed arm by 5344) and now has the matching `.ri` twin,
-    /// `vec2_arg_at_vector3_param_warns_arity_type_not_conforming`. The two
+    /// `vec2_arg_at_vector3_param_errors_arity_type_not_conforming`. The two
     /// arms' arity legs differ in EMITTER, not in reachability: `Point` routes
     /// arity through `emit_arg_type_mismatch`, `Vector` keeps its bespoke
     /// `TypeNotConformingToVector`, and each `.ri` twin asserts its own code so
@@ -8609,7 +8610,7 @@ mod tests {
     /// A bare `Enum("Hue")` param supplied an applied `Result<…>` arg resolves
     /// to two DIFFERENT base names, so it must still be exactly one
     /// `ArgTypeMismatch` — the same verdict the forward-direction cross-enum
-    /// probe (`enum_param_given_wrong_enum_warns_arg_type_mismatch`) pins.
+    /// probe (`enum_param_given_wrong_enum_errors_arg_type_mismatch`) pins.
     #[test]
     fn enum_param_rejects_applied_enum_arg_of_different_base() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
