@@ -69,36 +69,57 @@ fn workspace_root() -> std::path::PathBuf {
 const LOCAL_PATH: &str = "crates/reify-ir/src/geometry.rs";
 const CANONICAL_PATH: &str = "crates/reify-test-support/src/fixtures.rs";
 
-/// Extracts the `u32` index literals from `fn <fn_name>`'s `indices` `vec![…]`
-/// block in `src`.
+/// `src` with every `//` comment cut off its line, so nothing a comment says —
+/// a `]` in `// [0,1]^3`, a mention of `indices` — can be read as code.
+fn strip_line_comments(src: &str) -> String {
+    src.lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Extracts the `u32` literals from the `vec![…]` that initialises
+/// `fn <fn_name>`'s `indices` binding in `src` — a `let indices: … = vec![…]`
+/// or an `indices: vec![…]` field.
 ///
 /// Pure and policy-free: it knows how to read an index block and nothing about
-/// which blocks ought to agree. Returns `Err` rather than panicking so the
-/// negative control can observe a failure without unwinding.
+/// which blocks ought to agree. Whatever it cannot read unambiguously is an
+/// `Err`, never a guess, and is returned rather than panicked so the negative
+/// controls can observe it without unwinding.
 fn extract_indices(src: &str, fn_name: &str) -> Result<Vec<u32>, String> {
-    let fn_at = src
-        .find(&format!("fn {fn_name}("))
-        .ok_or_else(|| format!("no `fn {fn_name}(` in source"))?;
-    let body = &src[fn_at..];
+    let code = strip_line_comments(src);
+    let header = format!("fn {fn_name}(");
+    let headers: Vec<usize> = code.match_indices(&header).map(|(at, _)| at).collect();
+    let [fn_at] = headers[..] else {
+        return Err(format!(
+            "expected exactly one `{header}`, found {}",
+            headers.len()
+        ));
+    };
+    let body = &code[fn_at..];
 
-    let indices_at = body
-        .find("indices")
-        .ok_or_else(|| format!("`fn {fn_name}` has no `indices` binding"))?;
-    let open = body[indices_at..]
+    // The leading space keeps this a whole word: `n_indices:` is not the binding.
+    const BINDING: &str = " indices:";
+    let init_at = body
+        .find(BINDING)
+        .ok_or_else(|| format!("`fn {fn_name}` has no `indices:` binding"))?
+        + BINDING.len();
+    let literal_at = body[init_at..]
         .find("vec![")
         .ok_or_else(|| format!("`fn {fn_name}`'s `indices` is not a `vec![…]` literal"))?
-        + indices_at
-        + "vec![".len();
+        + init_at;
+    if body[init_at..literal_at].contains([',', ';']) {
+        return Err(format!(
+            "`fn {fn_name}`'s `indices` is initialised by something other than the next `vec![…]`"
+        ));
+    }
+    let open = literal_at + "vec![".len();
     let close = body[open..]
         .find(']')
         .ok_or_else(|| format!("`fn {fn_name}`'s `indices` block is unterminated"))?
         + open;
 
     body[open..close]
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join(" ")
         .split(',')
         .map(str::trim)
         .filter(|tok| !tok.is_empty())
@@ -183,6 +204,44 @@ fn extractor_distinguishes_a_differing_index_block() {
     );
     assert!(
         extract_indices("fn f() { let verts = vec![1.0]; }", "f").is_err(),
-        "extractor must report a missing `indices` binding rather than reading a neighbour"
+        "extractor must report a missing `indices` binding rather than reading another `vec![…]`"
+    );
+}
+
+/// The extractor reads only the `vec![…]` that initialises the `indices`
+/// binding of a uniquely named fn, so annotating or reformatting a fixture
+/// cannot silently re-point it.
+#[test]
+fn extractor_reads_only_the_indices_initialiser_of_a_unique_fn() {
+    let annotated = "fn f() {
+        // indices: vec![9, 9, 9] is commented out, so it is not the binding
+        let n_indices: usize = 3;
+        let indices: Vec<u32> = vec![
+            0, 2, 1, // a `]` in a comment, as in [0,1]^3, must not end the block
+            3, 0, 2,
+        ];
+    }";
+    assert_eq!(
+        extract_indices(annotated, "f"),
+        Ok(vec![0, 2, 1, 3, 0, 2]),
+        "comments and `n_indices` must be skipped, and the block read up to its real `]`"
+    );
+    assert!(
+        extract_indices(
+            "fn f() { let indices: Vec<u32> = vec![0]; } \
+             fn f() { let indices: Vec<u32> = vec![1]; }",
+            "f"
+        )
+        .is_err(),
+        "a repeated `fn f(` is ambiguous and must be reported, not resolved to the first"
+    );
+    assert!(
+        extract_indices(
+            "fn f() { Mesh { indices: BOX.to_vec(), normals: Some(vec![0]) } }",
+            "f"
+        )
+        .is_err(),
+        "an `indices` not initialised by a `vec![…]` literal must be reported, \
+         not read from a later one"
     );
 }
