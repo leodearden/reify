@@ -1516,6 +1516,53 @@ fn sampled_backed_von_mises_wrapper_samples_to_its_reduction_extrema_at_their_ar
     }
 }
 
+/// Node equality holds for every wrapper kind: sampled at its own
+/// `argmax`/`argmin`, each wrapper returns exactly its `max`/`min`. The sample
+/// path and the reductions apply the per-kind kernel in two separate places —
+/// the `sample_*_at_point` closures in `analysis.rs` and the `project_*_sampled`
+/// functions in `field_reductions.rs` — so this is the pin that fails when one
+/// side's kernel changes without the other.
+///
+/// `principal_stresses` samples to its ascending List but reduces to a single
+/// principal stress — the largest for `max`, the smallest for `min` — so the
+/// matching end of the sampled List is compared.
+#[test]
+fn every_wrapper_kind_samples_to_its_reduction_extrema_at_their_arg_coordinates() {
+    for kind in [
+        "von_mises",
+        "max_shear",
+        "principal_stresses",
+        "safety_factor",
+    ] {
+        let wrapper = analysis_wrapper(kind, sampled_stress_fixture());
+        for (arg_reduction, reduction) in [("argmax", "max"), ("argmin", "min")] {
+            let (field, field_type) = wrapper.clone();
+            let at = reduce(
+                arg_reduction,
+                field.clone(),
+                field_type.clone(),
+                Type::dimensionless_scalar(),
+            );
+            let extremum = reduce(reduction, field, field_type, Type::dimensionless_scalar());
+            assert_ne!(
+                extremum,
+                Value::Undef,
+                "{reduction}({kind}(stress)) must reduce"
+            );
+
+            let sampled = match sample_at(&wrapper, at.clone(), Type::dimensionless_scalar()) {
+                Value::List(items) if reduction == "max" => items[items.len() - 1].clone(),
+                Value::List(items) => items[0].clone(),
+                scalar => scalar,
+            };
+            assert_eq!(
+                sampled, extremum,
+                "sample({kind}(stress), {arg_reduction}(..) = {at:?}) must equal {reduction}(..)"
+            );
+        }
+    }
+}
+
 /// Sampling interpolates the node PROJECTIONS, not the tensors. The two nodes
 /// hold σ_xx = +100e6 and −100e6, both of von Mises value exactly 100e6, so
 /// the mid-cell sample is 100e6 too — equal to `min`, as a convex combination
@@ -1603,6 +1650,37 @@ fn sampled_backed_wrapper_samples_undef_where_the_stencil_touches_an_out_of_soli
             "{kind}: the cell [2, 3] holds the out-of-solid sentinel"
         );
     }
+}
+
+/// A hydrostatic node — equal normal stresses, so von Mises 0 — has an
+/// infinite safety factor. A sample whose stencil reaches it is `Undef`, never
+/// +∞, as the pointwise `safety_factor` builtin sanitizes it; a cell between
+/// two loaded nodes keeps its value, lerp(5, 2, 0.5) = 3.5.
+#[test]
+fn safety_factor_sample_is_undef_where_the_stencil_reaches_a_hydrostatic_node() {
+    let hydrostatic = [100e6, 0.0, 0.0, 0.0, 100e6, 0.0, 0.0, 0.0, 100e6];
+    let sf = make_sampled_tensor_1d(
+        "stress_with_hydrostatic_node",
+        vec![0.0, 1.0, 2.0],
+        vec![uniaxial_window(100e6), uniaxial_window(250e6), hydrostatic],
+    );
+    let wrapper = analysis_wrapper("safety_factor", wrap_sampled_stress_field(sf));
+
+    assert_eq!(
+        sample_1d(&wrapper, 0.5),
+        Value::Real(3.5),
+        "the cell [0, 1] is loaded at both ends"
+    );
+    assert_eq!(
+        sample_1d(&wrapper, 1.5),
+        Value::Undef,
+        "the cell [1, 2] reaches the hydrostatic node"
+    );
+    assert_eq!(
+        sample_1d(&wrapper, 2.0),
+        Value::Undef,
+        "the hydrostatic node itself"
+    );
 }
 
 /// An out-of-bounds sample of a grid-backed wrapper is `Undef` and warns
