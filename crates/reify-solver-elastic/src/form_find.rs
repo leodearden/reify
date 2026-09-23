@@ -1899,6 +1899,49 @@ mod tests {
         );
     }
 
+    // (h) TASK 7046 — the singular-solve verdict must be identical at every
+    // uniform gauge. The guard's residual branch is unreachable through the
+    // public API (partial-pivot LU is backward-stable; a singular `D_ff`
+    // yields inf/NaN, caught first), so this drives the pure predicate on
+    // test (c)'s chain at power-of-two λ, where `D_λ = λ·D` exactly.
+    //
+    // MEASURED RED against the mixed guard `residual > 1e-6·(1 + rhs_scale)`:
+    // the off-equilibrium geometry (per-row relative residual 2^-13 ≈ 1.2e-4,
+    // garbage) is rejected at λ = 1 (residual 2^-9 > 4e-6) and λ = 2^20
+    // (2048 > 3.15) but ACCEPTED at λ = 2^-20 (2^-29 ≈ 1.9e-9 < 1.0000029e-6):
+    // the additive 1.0 blinds the guard as λ → 0. The exact solution is the
+    // non-vacuity control, accepted at every λ.
+    #[test]
+    fn singular_solve_verdict_is_invariant_under_uniform_force_density_scaling() {
+        const BASE_Q: f64 = 1.0;
+        const TWO_POW_20: f64 = 1_048_576.0;
+        let chain_with_node0_at = |x0: f64| {
+            vec![
+                [x0, 0.0, 0.0],  // free node 0
+                [2.0, 0.0, 0.0], // free node 1, at its exact solution
+                [0.0, 0.0, 0.0], // anchor at x=0
+                [3.0, 0.0, 0.0], // anchor at x=3
+            ]
+        };
+        let exact = chain_with_node0_at(1.0);
+        let off_equilibrium = chain_with_node0_at(1.0 + 1.0 / 1024.0); // 2^-10: exact
+        let members = [(2, 0), (0, 1), (1, 3)];
+        let free_indices = [0usize, 1];
+
+        for lambda in [1.0, TWO_POW_20, 1.0 / TWO_POW_20] {
+            let q = [BASE_Q * lambda; 3];
+            let d = assemble_d(4, &members, &q, &[], &[], &exact).expect("line-only D");
+            assert!(
+                !is_singular_reduced_solve(&d, &exact, &free_indices),
+                "λ={lambda:e}: the exact chain solution must be accepted",
+            );
+            assert!(
+                is_singular_reduced_solve(&d, &off_equilibrium, &free_indices),
+                "λ={lambda:e}: the off-equilibrium chain (x0 = 1 + 2^-10) must be rejected",
+            );
+        }
+    }
+
     // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────
 
     /// Tolerance for the anisotropic stencil reduction test (σ_w=σ_f → isotropic).
