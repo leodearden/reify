@@ -33903,9 +33903,9 @@
     }
 
     /// A ring with |signed area| BELOW the tolerance is degenerate and rejected.
-    /// Half the tolerance, not one ulp below it: the point is to pin the
-    /// constant's magnitude, and a 2x margin keeps the test itself immune to
-    /// float noise in the shoelace sum.
+    /// Half the tolerance, not one ulp below it: the 2x margin keeps the test
+    /// immune to float noise in the shoelace sum while still pinning that the
+    /// gate rejects rings below the shared constant.
     #[test]
     fn compile_geometry_op_polygon_profile_area_just_below_tolerance_returns_err() {
         let target = DEGENERATE_RING_AREA_TOLERANCE * 0.5;

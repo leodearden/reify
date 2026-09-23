@@ -1029,7 +1029,7 @@ mod tests {
     // `mesh_swept_profile_2d`, the accept half would continue into Gmsh with a
     // ~0.1 µm auto mesh size.
 
-    /// Mirrors reify-eval's `triangle_args_with_area`: both gates see identical rings.
+    /// A CCW right triangle whose shoelace signed area is `area`.
     fn right_triangle_ring_with_area(area: f64) -> Vec<[f64; 2]> {
         let h = 1e-7_f64; // 0.1 µm
         let b = 2.0 * area / h;
