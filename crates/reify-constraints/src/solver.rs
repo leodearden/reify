@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::dependent_reads::{CellReads, DependentCellReads};
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_core::{
@@ -1484,33 +1485,28 @@ impl DerivedInterval {
 /// Built once per derivation walk by the two entry points, which are the only
 /// members holding `auto_params`; every inner member takes `&DerivationCtx`.
 ///
-/// COST: `auto_reads` and `cell_ids` are pure functions of
-/// `(dependent_cells, auto_params)`, neither of which changes across a
-/// resolution — yet both are rebuilt at every entry-point call, which over one
-/// resolution is `extract_initial_point` + [`derived_seed_box`] + one per
-/// `solve_core_with_sd_tolerance` across the multistart points + two in
-/// `verify_uniqueness`. A model with NO dependent cells pays nothing
-/// (`dependent_cell_auto_reads` early-returns an empty map and the `cell_ids`
-/// collect is over an empty slice), and otherwise the reachability DFS is
-/// dwarfed by the Nelder-Mead fold it precedes — so this is priced, not
-/// overlooked. Hoisting the pair to once per resolution means threading a
-/// prebuilt context through all four consumers, which is task #7728 rather
-/// than part of the fix this context exists to carry.
+/// COST: `auto_reads` is a pure function of `(dependent_cells, auto_params)`,
+/// neither of which changes across a resolution — yet it is rebuilt at every
+/// entry-point call, which over one resolution is `extract_initial_point` +
+/// [`derived_seed_box`] + one per `solve_core_with_sd_tolerance` across the
+/// multistart points + two in `verify_uniqueness`. A model with NO dependent
+/// cells pays nothing (`dependent_cell_auto_reads` early-returns an empty
+/// map), and otherwise the reachability DFS is dwarfed by the Nelder-Mead fold
+/// it precedes — so this is priced, not overlooked. Hoisting it to once per
+/// resolution means threading a prebuilt context through all four consumers,
+/// which is task #7728 rather than part of the fix this context exists to
+/// carry.
 struct DerivationCtx<'a> {
     /// Position of each auto param within `auto_params` — the index every
     /// `DerivedInterval` buffer in the family is addressed by, and the family's
     /// test for "is this ref an auto?".
     auto_index: HashMap<ValueCellId, usize>,
-    /// Per dependent cell, the autos it reads TRANSITIVELY —
-    /// [`crate::dependent_reads::dependent_cell_auto_reads`] verbatim, reused rather
-    /// than reimplemented. A constant-only cell is present with an EMPTY set, a
-    /// cycle-tainted one is ABSENT; [`DerivationCtx::varies_with_solve`] is the
-    /// only reader and owns what each of those means here.
-    auto_reads: HashMap<ValueCellId, HashSet<ValueCellId>>,
-    /// Every dependent-cell id, including the cycle-tainted ones `auto_reads`
-    /// omits. This is what tells an omission apart from an ordinary value:
-    /// both are absent from the map, and only one of them varies.
-    cell_ids: HashSet<ValueCellId>,
+    /// Per dependent cell, the autos it reads TRANSITIVELY and whether a fold
+    /// derives it — [`crate::dependent_reads::dependent_cell_auto_reads`]
+    /// verbatim, reused rather than reimplemented.
+    /// [`DerivationCtx::varies_with_solve`] is the only reader and owns what
+    /// each [`CellReads`] answer means here.
+    auto_reads: DependentCellReads,
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
     dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
@@ -1534,7 +1530,6 @@ impl<'a> DerivationCtx<'a> {
                 dependent_cells,
                 auto_params,
             ),
-            cell_ids: dependent_cells.iter().map(|(id, _)| id.clone()).collect(),
             values,
             functions,
             dispatch,
@@ -1544,13 +1539,15 @@ impl<'a> DerivationCtx<'a> {
     /// Does a ref to `id` MOVE when the solver moves?
     ///
     /// True for an auto param itself, and for a dependent cell that either
-    /// transitively reads one or has UNKNOWN auto dependence. All of them are
-    /// finite numbers in the map the family evaluates against —
+    /// transitively reads one or is UNFOLDABLE (on or downstream of a cycle).
+    /// All of them are finite numbers in the map the family evaluates against —
     /// `build_trial_values` binds the autos and folds every cell — so
     /// evaluating is no evidence of constancy, and this is the only question
     /// that separates a bound from a snapshot.
     ///
-    /// Unknown resolves to "varies" because the caller is a GUARD, where the
+    /// An unfoldable cell varies whatever it reads: its folded value is an
+    /// artefact of fold order, not a function of its reads. Resolving it to
+    /// "varies" is the safe direction because the caller is a GUARD, where the
     /// cost of the two errors is not symmetric: treating a constant as varying
     /// only widens a box, while treating a varying cell as constant returns a
     /// wrong answer silently.
@@ -1558,13 +1555,10 @@ impl<'a> DerivationCtx<'a> {
         if self.auto_index.contains_key(id) {
             return true;
         }
-        match self.auto_reads.get(id) {
-            Some(reads) => !reads.is_empty(),
-            // Absent from the map and a known cell id ⇒ cycle-tainted, auto
-            // dependence UNKNOWN. Absent and not a cell id at all ⇒ an ordinary
-            // value or param, which nothing makes vary. Both are absences, so
-            // membership in `cell_ids` is what tells them apart.
-            None => self.cell_ids.contains(id),
+        match self.auto_reads.lookup(id) {
+            CellReads::Foldable(reads) => !reads.is_empty(),
+            CellReads::Unfoldable(_) => true,
+            CellReads::NotACell => false,
         }
     }
 
@@ -1608,16 +1602,10 @@ impl<'a> DerivationCtx<'a> {
 /// transitive auto reads. A cell that reads NO auto (a named alias for a
 /// constant, `let yield_limit = 310MPa`) stays minable: nothing about it moves.
 ///
-/// A CYCLE-TAINTED cell is treated as varying too, which resolves — for THIS
-/// consumer, locally — the residual `decompose_into_components_with_reads`
-/// flags ("Closing it properly means returning the omitted-id set alongside the
-/// map … larger than a doc correction and outside task #5467's lock set"). Such
-/// a cell is omitted from the map rather than published with a partial set,
-/// which is the fail-safe direction for that map's drop-side filter and the
-/// UNSAFE one here; `DerivationCtx::cell_ids` recovers the distinction without
-/// widening `dependent_cell_auto_reads`' interface or changing its semantics.
-/// The CONNECTIVITY consumer's copy of the same residual is untouched and
-/// stays open.
+/// An UNFOLDABLE cell (on or downstream of a cycle) is treated as varying too.
+/// The reads map classifies such a cell rather than omitting it, and each
+/// consumer names its own safe direction: the registry's fold filter drops it,
+/// decomposition couples through it, and this guard refuses to mine it.
 ///
 /// The `floor_applied` gate that decides whether a CLAMP box is built at all is
 /// a separate question, settled by task #5711 — not re-litigated here.
@@ -9833,22 +9821,17 @@ mod tests {
         );
     }
 
-    /// RESIDUAL HOLE: a CYCLE-TAINTED cell is OMITTED from
-    /// `dependent_cell_auto_reads` rather than published with the partial set
-    /// its DFS accumulated (`if incomplete[i] { continue; }`, dependent_reads.rs).
-    /// Omission is the FAIL-SAFE direction for that map's primary consumer, the
-    /// registry's drop-side subset filter — but it is the UNSAFE direction for a
-    /// guard deciding "does this operand vary?", because an absent entry reads
-    /// as "no autos" and the bogus bound is mined anyway.
+    /// A CYCLE-TAINTED cell is never mined as a bound. `dependent_cell_auto_reads`
+    /// reports it `Unfoldable`, which the guard reads as "varies"; were it read
+    /// as "not a cell" (an absent entry), the bogus bound would be mined.
     ///
     /// `p = q + c` and `q = p` are both cycle-tainted AND transitively read auto
     /// `c`. Reaching `derive_param_intervals` directly is what makes this
     /// testable: reify-eval's `build_dependent_cells` pre-drops cycles, which is
-    /// the only reason the hole is unreachable in production — and decompose.rs
-    /// says so itself, that the masking "is a property of the CALLER, though,
-    /// not of anything enforced here, so a future producer that stops
-    /// pre-dropping cycles re-opens it with no compile error and no test
-    /// failure". This test is that missing failure.
+    /// the only reason the shape is unreachable in production. That is a
+    /// property of the CALLER, not of anything enforced here, so a producer
+    /// that stops pre-dropping cycles would get no compile error; this test is
+    /// the failure it gets instead.
     #[test]
     fn derive_intervals_rejects_a_cycle_tainted_dependent_cell_far_operand() {
         use reify_core::{Type, ValueCellId};
@@ -9881,10 +9864,9 @@ mod tests {
         assert_eq!(
             ivs[0].lo, None,
             "`a >= p` with `p = q + c` and `q = p` must derive NO lower bound: \
-             `p` is cycle-tainted, so `dependent_cell_auto_reads` OMITS it — and \
-             a non-empty-set test reads that absence as `no autos` and mines the \
-             bound. For this consumer an unknown auto dependence must be treated \
-             as a varying one; absence is the UNSAFE direction here"
+             `p` is cycle-tainted, so `dependent_cell_auto_reads` reports it \
+             Unfoldable, and this guard must read that as varying. Reading it \
+             as not-a-cell mines a bound that moves with `c`"
         );
     }
 

@@ -229,7 +229,12 @@ pub(crate) fn dependent_cell_auto_reads(
 
     let exact: Vec<(usize, HashSet<ValueCellId>)> = (0..n)
         .filter(|&i| incomplete[i])
-        .map(|i| (i, exact_reach(i, &direct_autos, &child_cells, &memo, &incomplete)))
+        .map(|i| {
+            (
+                i,
+                exact_reach(i, &direct_autos, &child_cells, &memo, &incomplete),
+            )
+        })
         .collect();
     for (i, reach) in exact {
         memo[i] = Some(reach);
@@ -306,11 +311,16 @@ impl<'m> Reach<'m> {
 
 /// The [`Reach`] of `refs`. `reads` is already transitive, so one pass closes
 /// the set. The result may hold duplicates and ids `refs` already contains;
-/// every consumer tolerates both. D1/B2 IDENTITY: an empty `reads` — what [`dependent_cell_auto_reads`]
+/// every consumer tolerates both.
+///
+/// D1/B2 IDENTITY: an empty `reads` — what [`dependent_cell_auto_reads`]
 /// returns for an empty `dependent_cells` — reaches nothing, so every ref set,
 /// union edge and `referenced_params` list downstream stays exactly the
 /// direct-only one.
-pub(crate) fn reach_of<'m>(refs: &HashSet<ValueCellId>, reads: &'m DependentCellReads) -> Reach<'m> {
+pub(crate) fn reach_of<'m>(
+    refs: &HashSet<ValueCellId>,
+    reads: &'m DependentCellReads,
+) -> Reach<'m> {
     let mut reach = Reach::default();
     if reads.is_empty() {
         return reach;
@@ -375,7 +385,10 @@ mod tests {
     }
 
     fn autos<const N: usize>(names: [&str; N]) -> HashSet<ValueCellId> {
-        names.into_iter().map(|n| ValueCellId::new("P", n)).collect()
+        names
+            .into_iter()
+            .map(|n| ValueCellId::new("P", n))
+            .collect()
     }
 
     #[test]
