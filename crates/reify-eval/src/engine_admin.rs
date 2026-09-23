@@ -391,6 +391,9 @@ impl Engine {
             // Task 4198 (Determinacy β): empty until tessellate_realizations()
             // / tessellate_snapshot() populates it via measure_mesh_deviation.
             achieved_repr_tol: BTreeMap::new(),
+            // DIC α (#5415): per-build ledger, populated by the relate
+            // consumption loop and cleared on every surface.
+            relate_static_facts: Vec::new(),
             // task #3428 step-6: persistent cache — off by default so all
             // existing tests without set_persistent_cache_dir are unaffected.
             persistent_cache_dir: None,
@@ -630,6 +633,38 @@ impl Engine {
     /// this to compare the measured deviation against the demanded tolerance.
     pub fn achieved_repr_tol(&self, occurrence: &str) -> Option<f64> {
         self.achieved_repr_tol.get(occurrence).copied()
+    }
+
+    /// The static-relate consumption ledger produced by the LAST build — one
+    /// `(scope_name, facts)` row per ZERO-AUTO relate scope, in `solve_scopes`
+    /// order (DIC α, task 5415).
+    ///
+    /// Each row records how many of that scope's declared relations were
+    /// measured and found satisfied, measured and found violated, or could not
+    /// be decided; the three always sum to the scope's relation count.
+    ///
+    /// An EMPTY slice means this build processed no zero-auto relate scope —
+    /// either the module has no relate block, or every relate scope has `at
+    /// auto` subs and was SOLVED rather than statically verified. Those are
+    /// different ledger rows to ζ (#5420) and are deliberately not folded
+    /// together here: reporting an assembly the solver actually placed as one
+    /// merely checked in place would be a false claim.
+    ///
+    /// Per-build, not cumulative: `reset_per_build_state` clears it on the
+    /// `Build` surface — the one that also repopulates it, from the relate
+    /// consumption loop — so a row can never describe a previous module's
+    /// scopes. The other surfaces deliberately leave it standing: a
+    /// `tessellate_realizations()` after a build (which `reify check` performs on
+    /// any module carrying a `RepresentationWithin` rule) never repopulates, so
+    /// clearing there would hand ζ (#5420) an empty ledger for a module that has
+    /// a relate block — the same conflation, one layer up, that the ledger exists
+    /// to remove.
+    ///
+    /// This task produces the rows; rendering them into the `reify check`
+    /// summary is ζ #5420's leaf
+    /// (`docs/prds/v0_6/declared-intent-consumption-accounting.md` §4.4 V3).
+    pub fn relate_static_facts(&self) -> &[(String, crate::relate_solve::StaticRelateFacts)] {
+        &self.relate_static_facts
     }
 
     /// **Test-instrumentation only — not a stable public surface.**

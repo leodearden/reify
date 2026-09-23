@@ -25,8 +25,9 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    partition_driving_set, pose_from_frame, solve_frame,
+    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, comparable_datum_operands,
+    max_relation_residual, ResidualRow, ResidualUnit, partition_driving_set, pose_from_frame,
+    solve_frame, static_relation_residuals,
 };
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
@@ -73,6 +74,36 @@ pub struct RelateScope {
     pub relations: Vec<CompiledExpr>,
     /// The grounded anchor subs (non-auto), by instance name.
     pub ground: Vec<String>,
+    /// The subs declared with a CONCRETE `at <pose>`, by instance name, in
+    /// sub-declaration order (DIC α, task 5415).
+    ///
+    /// An ADDITIONAL classification, not a partition of [`ground`](Self::ground):
+    /// a concretely-posed sub is genuinely a fixed non-auto anchor and appears in
+    /// BOTH lists. An `at auto` sub never appears here —
+    /// [`SubComponentDecl`](reify_compiler::SubComponentDecl) guarantees
+    /// structurally that `auto_pose.is_some()` implies `pose.is_none()`.
+    ///
+    /// # Why this has to be known
+    ///
+    /// [`resolve_operands`] keys realized datums by `(structure, member)` — each
+    /// structure's LOCAL datum in its OWN identity frame — and a declared
+    /// `SubComponentDecl.pose` is never composed into them. So a verdict computed
+    /// over a posed sub's datums would be evaluated at the WRONG configuration,
+    /// and would be confidently wrong in EITHER direction: it could report a
+    /// correctly-placed assembly as violated, or a misplaced one as satisfied.
+    ///
+    /// The zero-auto static-verification arm therefore uses this list to classify
+    /// such a scope's relations UNVERIFIABLE and say why, rather than emit a
+    /// confident wrong answer (`docs/prds/v0_6/declared-intent-consumption-\
+    /// accounting.md` §10 open question 5; honest non-consumption over a false
+    /// verdict, `docs/legibility/design-invariants.md` INV-SF-3). Composing
+    /// declared poses into the operand frames — which would make these scopes
+    /// genuinely verifiable — is a clean follow-up seam, deliberately not taken
+    /// here.
+    ///
+    /// The auto-FUL path ignores this field entirely: [`solve_relate_scope`]
+    /// never reads it, so the solve is byte-identical with and without it.
+    pub posed: Vec<String>,
 }
 
 /// Collect a compiled scope [`TopologyTemplate`] into the relate-solve's three
@@ -87,10 +118,16 @@ pub struct RelateScope {
 /// member" for ζ's conflict attribution) is preserved by
 /// [`TopologyTemplate::relations`] itself.
 ///
+/// The same single walk also records the subs carrying a CONCRETE `at <pose>`
+/// into [`posed`](RelateScope::posed) — an additional classification layered over
+/// `ground`, not a partition of it; see that field for why the zero-auto arm
+/// needs it.
+///
 /// No solve is performed here — this is pure structural classification.
 pub fn collect_relate_scope(template: &TopologyTemplate) -> RelateScope {
     let mut auto_unknowns = Vec::new();
     let mut ground = Vec::new();
+    let mut posed = Vec::new();
 
     for sub in &template.sub_components {
         match &sub.auto_pose {
@@ -101,12 +138,19 @@ pub fn collect_relate_scope(template: &TopologyTemplate) -> RelateScope {
             }),
             None => ground.push(sub.name.clone()),
         }
+        // Layered over the auto/ground split rather than folded into it: a
+        // concretely-posed sub is a ground anchor AND posed. `auto_pose.is_some()`
+        // implies `pose.is_none()`, so this can never fire for an auto sub.
+        if sub.pose.is_some() {
+            posed.push(sub.name.clone());
+        }
     }
 
     RelateScope {
         auto_unknowns,
         relations: template.relations.clone(),
         ground,
+        posed,
     }
 }
 
@@ -474,6 +518,43 @@ pub struct RelateSolution {
     /// `Infeasible` report; step-16 refines it into a minimal conflict set). An
     /// `Error` here fails the build.
     pub diagnostics: Vec<Diagnostic>,
+    /// The per-relation consumption ledger of a ZERO-AUTO scope's static
+    /// verification (DIC α, task 5415), or `None` when this solution came from the
+    /// auto-ful solve path.
+    ///
+    /// `None` vs `Some(StaticRelateFacts { verified: 0, .. })` is a real
+    /// distinction and the reason this is an `Option`: the first means "static
+    /// verification did not run here", the second "it ran and decided nothing".
+    /// `Default` leaves it `None`, so every existing `..Default::default()` site
+    /// and the whole auto-ful path are byte-identical (invariant V1).
+    pub static_facts: Option<StaticRelateFacts>,
+}
+
+/// The consumption ledger for one zero-auto relate scope's static verification
+/// (DIC α, task 5415) — how many of its declared relations were actually decided,
+/// and how.
+///
+/// Every relation in the scope lands in exactly one bucket, so
+/// `verified + violated + unverifiable` always equals the scope's relation count.
+/// That total is the point: it is what lets ζ's declared-intent ledger (#5420)
+/// report consumption without re-deriving it, and what makes a silently-skipped
+/// relation impossible to hide — a relation that fell through every arm would show
+/// up as a missing count rather than as nothing at all
+/// (`docs/legibility/design-invariants.md` INV-SF-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StaticRelateFacts {
+    /// Relations measured and found SATISFIED within the assertion tolerance.
+    /// Reported silently — a held assertion raises no diagnostic.
+    pub verified: usize,
+    /// Relations measured and found VIOLATED beyond the assertion tolerance.
+    /// Aggregated into one [`DiagnosticCode::RelateStaticViolated`] Error.
+    pub violated: usize,
+    /// Relations whose satisfaction could not be DECIDED — no residual model, an
+    /// operand that did not realize, or an operand on a concretely-posed sub whose
+    /// placement is not composed into the local datums. Aggregated into one
+    /// [`DiagnosticCode::RelateStaticUnverifiable`] Warning. Never counted as
+    /// verified: that is the false green this arm exists to kill.
+    pub unverifiable: usize,
 }
 
 // ── Trace-to-ground / global float (η, B6) ───────────────────────────────────
@@ -484,8 +565,9 @@ fn link(adj: &mut HashMap<String, Vec<String>>, a: &str, b: &str) {
     adj.entry(b.to_string()).or_default().push(a.to_string());
 }
 
-/// Does `expr` denote a `self.*` intrinsic-datum operand — the anchor reference a
-/// `ground(sub)` desugar (`fasten(sub.frame, self.frame)`) carries?
+/// The datum name of a `self.*` intrinsic-datum operand — the anchor reference a
+/// `ground(sub)` desugar (`fasten(sub.frame, self.frame)`) carries — or `None` when
+/// `expr` is not one.
 ///
 /// A `self.<datum>` projection lowers to `MethodCall { object: ValueRef(__self :
 /// StructureRef), method, [] }` (η step-8/10) — distinct from a `<sub>.<member>`
@@ -493,12 +575,19 @@ fn link(adj: &mut HashMap<String, Vec<String>>, a: &str, b: &str) {
 /// `StructureRef`-typed receiver is the `self` anchor operand. Mirrors the
 /// self-datum discriminator the compiler's `classify` / eval's
 /// `try_eval_self_datum_projection` use.
-fn is_self_anchor_operand(expr: &CompiledExpr) -> bool {
-    matches!(
-        &expr.kind,
-        CompiledExprKind::MethodCall { object, args, .. }
-            if args.is_empty() && matches!(object.result_type, Type::StructureRef(_))
-    )
+///
+/// The member name is carried rather than a bare `bool` so the zero-auto verifier
+/// can NAME the operand (`self.frame`) it could not compare against; the two
+/// callers that only need presence read `.is_some()`.
+fn self_anchor_member(expr: &CompiledExpr) -> Option<&str> {
+    match &expr.kind {
+        CompiledExprKind::MethodCall { object, method, args }
+            if args.is_empty() && matches!(object.result_type, Type::StructureRef(_)) =>
+        {
+            Some(method)
+        }
+        _ => None,
+    }
 }
 
 /// Trace each `at auto` sub in `scope` to the grounded anchor over the relation
@@ -512,7 +601,7 @@ fn is_self_anchor_operand(expr: &CompiledExpr) -> bool {
 ///  - every `<sub>.<member>` datum operand ([`decode_operand`]) contributes its sub,
 ///    and the relation unions all the auto subs it references together;
 ///  - a relation referencing a GROUND sub (a non-auto anchor) or any `self.*` datum
-///    operand ([`is_self_anchor_operand`]) unions its auto subs into the anchor.
+///    operand ([`self_anchor_member`]) unions its auto subs into the anchor.
 ///
 /// An auto sub not in the anchor's connected component is floating.
 pub fn trace_to_ground(scope: &RelateScope) -> Vec<String> {
@@ -537,7 +626,7 @@ pub fn trace_to_ground(scope: &RelateScope) -> Vec<String> {
                 } else if auto.contains(opref.sub.as_str()) {
                     rel_autos.push(opref.sub);
                 }
-            } else if is_self_anchor_operand(arg) {
+            } else if self_anchor_member(arg).is_some() {
                 touches_anchor = true;
             }
         }
@@ -796,19 +885,387 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     solution
 }
 
-/// Run the per-scope relate-solve for every scope in `module` that has at least
-/// one `at auto` sub AND at least one relation (ζ step-18 — the build-pass entry).
+// ── Zero-auto static verification (DIC α, task 5415) ─────────────────────────
+
+/// One relation's static verdict.
+enum StaticVerdict {
+    /// Measured, and satisfied within the assertion tolerance — silent.
+    Verified,
+    /// Measured, and violated. Carries the DOMINANT residual row — value AND unit
+    /// — so the aggregate can say by how much in the unit that was actually
+    /// measured. A bare `f64` here is what let the renderer print `fmt_mm` over a
+    /// dimensionless direction/dot/cosine row and state a fabricated length; a
+    /// residual row vector is not dimensionally homogeneous (`concentric` alone
+    /// mixes two tilt rows with two metre rows), so the unit has to ride along.
+    ///
+    /// The measured [`RelationInstance`] rides along too, so the renderer derives
+    /// the demand phrase from the instance ALREADY IN HAND. Rebuilding it there
+    /// re-walked the args and deep-cloned every operand `Value`, and needed an
+    /// `unwrap_or_else` fallback that this arm's own precondition makes
+    /// unreachable — dead code that, if ever reached, would have rendered
+    /// "`concentric` requires … satisfied — off by 30 mm".
+    Violated(ResidualRow, RelationInstance),
+    /// Not DECIDED. Carries the reader-facing reason, which is the whole value of
+    /// this arm: an undecided relation must say why, not fall silent.
+    Unverifiable(String),
+}
+
+/// Statically verify a relate scope that has NO `at auto` subs.
 ///
-/// For each qualifying scope this collects ([`collect_relate_scope`]) and runs the
-/// full partition → solve → verify pipeline ([`solve_relate_scope`]) over its
-/// realized operand datums; it returns one `(scope_name, RelateSolution)` per solved
-/// scope so the build pass can write each solved Frame back into the value map (keyed
-/// by [`auto_pose_cell`]) and surface the verification diagnostics (an `Error` fails
-/// the build).
+/// # Why this exists
 ///
-/// Scopes with no `at auto` sub OR no relation are skipped before any realization
-/// — nothing to solve, and the skip keeps a kernel sub-build off the hot path for
-/// the overwhelmingly common non-relate scope.
+/// A `relate { }` block whose subs are all fixed has nothing to solve for, so
+/// [`solve_scopes`] used to skip it outright. The consequence was that a
+/// geometrically FALSE relate block was a total silent no-op — `reify eval` said
+/// nothing and `reify check` printed "All constraints satisfied." A declared
+/// intent was neither consumed nor its non-consumption reported, which
+/// `docs/legibility/design-invariants.md` INV-SF-3 forbids
+/// (`docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 1).
+///
+/// Nothing moves here: there is no pose to determine, only a verdict to render on
+/// the datums as they already sit. So no solver, no partition, no Jacobian — just
+/// [`static_relation_residuals`] per relation.
+///
+/// # Every relation lands in exactly one bucket
+///
+/// Walked in SOURCE order, each relation is tried against these arms in turn, and
+/// the FIRST that matches wins:
+///
+/// 1. not a relation call ⇒ unverifiable (never dropped — a member that vanished
+///    silently would be the same class of failure as the no-op itself);
+/// 2. an operand on a sub in [`RelateScope::posed`] ⇒ unverifiable. Realized datums
+///    are each structure's LOCAL datum in its own identity frame, and a declared
+///    `at <pose>` is never composed into them, so any residual measured here would
+///    be measured at the WRONG configuration. This arm runs BEFORE the measurement
+///    precisely so a coincidentally-zero residual cannot be mistaken for a pass;
+/// 3. an operand that did not realize (`Value::Undef` / absent) ⇒ unverifiable,
+///    naming the operand;
+/// 4. fewer than two datum operands to compare ⇒ unverifiable, naming the
+///    `self.*` anchor when that is the cause. The reachable shape is the
+///    `ground(sub)` / `fix(sub)` desugar `fasten(sub.frame, self.frame)`, whose
+///    `self.frame` is the enclosing structure's own datum and so is not among the
+///    realized sub datums arm 3 walks;
+/// 5. an EMPTY residual row vector ⇒ unverifiable — no residual model for this
+///    relation name / operand-kind combination. Never folded into "satisfied".
+///    Arm 4 runs first so this arm's reason is only ever given for a genuinely
+///    UNMODELLED combination;
+/// 6. otherwise each row against the assertion rung for ITS OWN unit
+///    ([`assertion_rung`]): every row within ⇒ verified (silent), any row beyond ⇒
+///    violated.
+///
+/// The counts therefore always sum to the scope's relation count, which is what
+/// makes a silently-skipped relation impossible to hide.
+///
+/// # Rendering
+///
+/// At most ONE Error and at most ONE Warning per scope, each naming its full set.
+/// Aggregation is load-bearing rather than stylistic: `dedup_diagnostics`
+/// (`crates/reify-cli/src/main.rs`) short-circuits on `code.is_some()`, so a CODED
+/// per-relation diagnostic would reach the user uncollapsed, one line per relation
+/// (the #5014 collateral-observability shape).
+///
+/// A wholly satisfied scope is SILENT. The placement-relations belt's δ leaf would
+/// have warned on every zero-auto block regardless of the verdict; it was dropped
+/// at decompose and superseded by this task (ratified 2026-07-25). Satisfied
+/// relations are counted in [`StaticRelateFacts::verified`] for ζ's ledger instead.
+///
+/// Diagnostics speak geometry — via the same [`describe_demand`] /
+/// [`describe_operands`] / [`fmt_mm`] helpers the auto-ful conflict path uses —
+/// never solver internals. The measured magnitude is rendered by
+/// [`fmt_residual`] in the unit the residual row carries: mm for a length row,
+/// degrees for an orientation row, and a bare number for a direction/dot/cosine
+/// row, which has no length reading at all. That same unit tag also selects the
+/// rung the row is JUDGED against ([`assertion_rung`]) — rendering a row in one
+/// unit while thresholding it in another would leave the category error in place
+/// where it does the most damage, since a static violation FAILS the build. [`conflict_diagnostic`] is deliberately NOT reused: it
+/// needs an auto sub and a driving/redundant partition that a zero-auto scope does
+/// not have.
+pub fn verify_static_scope(scope: &RelateScope, realized: &RealizedDatums) -> RelateSolution {
+    let tol = RelateTolerance::kernel_default();
+    let mut solution = RelateSolution::default();
+    let mut facts = StaticRelateFacts::default();
+
+    // Both lists are built by walking `scope.relations` in order, so the rendering
+    // below is deterministic without sorting anything.
+    let mut violated: Vec<String> = Vec::new();
+    let mut unverifiable: Vec<String> = Vec::new();
+
+    for rel in &scope.relations {
+        let refs = operand_refs(rel);
+        match static_verdict(rel, &refs, scope, realized, tol) {
+            StaticVerdict::Verified => facts.verified += 1,
+            StaticVerdict::Violated(row, inst) => {
+                facts.violated += 1;
+                violated.push(format!(
+                    "`{}` requires {} {} — off by {}",
+                    relation_name(rel),
+                    describe_operands(rel),
+                    describe_demand(&inst),
+                    fmt_residual(row)
+                ));
+            }
+            StaticVerdict::Unverifiable(reason) => {
+                facts.unverifiable += 1;
+                unverifiable.push(format!(
+                    "`{}` on {} could not be checked: {reason}",
+                    relation_name(rel),
+                    describe_operands(rel)
+                ));
+            }
+        }
+    }
+
+    if !violated.is_empty() {
+        solution.diagnostics.push(
+            Diagnostic::error(format!(
+                "relate: {} not satisfied by the subs' fixed placements: {}",
+                plural_relations(violated.len()),
+                violated.join("; ")
+            ))
+            .with_code(DiagnosticCode::RelateStaticViolated),
+        );
+    }
+    if !unverifiable.is_empty() {
+        solution.diagnostics.push(
+            Diagnostic::warning(format!(
+                "relate: {} could not be statically verified: {}",
+                plural_relations(unverifiable.len()),
+                unverifiable.join("; ")
+            ))
+            .with_code(DiagnosticCode::RelateStaticUnverifiable),
+        );
+    }
+
+    // Always `Some`, including the all-verified silent case: the ledger must be able
+    // to tell "2 relations verified" from "no relate block here".
+    solution.static_facts = Some(facts);
+    solution
+}
+
+/// `"1 relation"` / `"{n} relations"` — the counted NOUN PHRASE both aggregate
+/// headers open with. What it guarantees is number agreement with the count, the
+/// one concern the two sites genuinely share.
+///
+/// The VERB belongs to each call site, which is why none appears here. Folding a
+/// copula in is what produced "relate: 1 relation is could not be statically
+/// verified": one helper cannot serve both "could not be statically verified"
+/// and "not satisfied by …". Splitting into two per-site helpers is the wrong
+/// repair — the counted noun phrase stays SPOT.
+fn plural_relations(n: usize) -> String {
+    if n == 1 {
+        "1 relation".to_string()
+    } else {
+        format!("{n} relations")
+    }
+}
+
+/// The relation's name as written, or a placeholder for a member that is not a
+/// relation call (which arm 1 of [`verify_static_scope`] reports as unverifiable).
+fn relation_name(rel: &CompiledExpr) -> String {
+    match &rel.kind {
+        CompiledExprKind::FunctionCall { function, .. } => function.name.clone(),
+        _ => "<non-relation member>".to_string(),
+    }
+}
+
+/// Decide ONE relation's static verdict. See [`verify_static_scope`] for the arm
+/// ordering and why each exists; this function is that list, in that order.
+fn static_verdict(
+    rel: &CompiledExpr,
+    refs: &[(String, String)],
+    scope: &RelateScope,
+    realized: &RealizedDatums,
+    tol: RelateTolerance,
+) -> StaticVerdict {
+    // 1. Not a relation call. Counted, never dropped.
+    let Some(inst) = relation_instance(rel, realized) else {
+        return StaticVerdict::Unverifiable(
+            "this relate member is not a relation call, so it has no geometric \
+             residual to measure"
+                .to_string(),
+        );
+    };
+
+    // 2. An operand on a concretely-posed sub. BEFORE the measurement, so a
+    //    coincidentally-zero residual at the wrong configuration cannot pass.
+    if let Some((sub, _)) = refs.iter().find(|(sub, _)| scope.posed.contains(sub)) {
+        return StaticVerdict::Unverifiable(format!(
+            "sub `{sub}` is placed with a concrete `at <pose>`, which is not \
+             composed into the local datums this check compares, so any verdict \
+             would be measured at the wrong configuration"
+        ));
+    }
+
+    // 3. An operand that did not realize — absent from the map, or present as
+    //    `Undef`. Both mean the same thing to a reader, and both would otherwise
+    //    reach `static_relation_residuals` as a missing datum.
+    if let Some((sub, member)) = refs
+        .iter()
+        .find(|(sub, member)| !matches!(realized.get(sub, member), Some(v) if *v != Value::Undef))
+    {
+        return StaticVerdict::Unverifiable(format!(
+            "`{sub}.{member}` did not resolve to a geometric datum"
+        ));
+    }
+
+    // 4. Fewer than two datum operands, so there is no PAIR to compare. Read from
+    //    `comparable_datum_operands` — the very guard `static_relation_residuals`
+    //    applies — rather than re-derived here, so the reason cannot drift from the
+    //    condition that fired. Arm 3 cannot catch this shape: `operand_refs` lists
+    //    only `<sub>.<member>` operands, and the `self.*` anchor a
+    //    `ground(sub)`/`fix(sub)` desugar carries is not one.
+    if comparable_datum_operands(&inst) < 2 {
+        return StaticVerdict::Unverifiable(match self_anchor_operand_name(rel) {
+            Some(anchor) => format!(
+                "`{anchor}` is the enclosing structure's own datum rather than a \
+                 realized sub datum, so this relation has only one operand to \
+                 compare"
+            ),
+            None => format!(
+                "only {} of its operands realized as a geometric datum, so there is \
+                 nothing to compare it against",
+                comparable_datum_operands(&inst)
+            ),
+        });
+    }
+
+    // 5. An EMPTY row vector now means exactly one thing — no residual model for
+    //    this name/operand-kind combination — because arm 4 took the other source
+    //    (`static_relation_residuals` (iii)). UNVERIFIABLE, never folded into
+    //    satisfied.
+    let rows = static_relation_residuals(&inst);
+    if rows.is_empty() {
+        return StaticVerdict::Unverifiable(format!(
+            "there is no residual model for `{}` over these operand kinds",
+            inst.name
+        ));
+    }
+
+    // 6. Judge each row against the rung for ITS OWN unit. A single rung applied to
+    //    the whole vector was the same category error the `ResidualUnit` tag exists
+    //    to prevent, one level up: `concentric` mixes dimensionless tilt rows with
+    //    metre rows, and 1e-5 m and 1e-5 rad are not the same claim about geometry.
+    //    Because a static violation FAILS a build that previously built silently,
+    //    an over-tight rung on the wrong unit is a false Error, not just a cosmetic
+    //    mismatch.
+    //
+    //    The DOMINANT row — the one the diagnostic reports — is the one furthest
+    //    beyond its own rung, i.e. the largest exceedance RATIO. Picking it by raw
+    //    `|value|` instead would compare a radian against a metre to decide which
+    //    to show. `reduce` keeps the FIRST row of a tie, matching the source-order
+    //    determinism the rest of this arm relies on.
+    let (dominant, exceedance) = rows
+        .iter()
+        .copied()
+        .map(|row| (row, row.value.abs() / assertion_rung(row.unit, &tol)))
+        .reduce(|m, r| if r.1 > m.1 { r } else { m })
+        .expect("rows is non-empty — the empty case returned Unverifiable above");
+    if exceedance <= 1.0 {
+        StaticVerdict::Verified
+    } else {
+        StaticVerdict::Violated(dominant, inst)
+    }
+}
+
+/// The assertion rung a residual row is judged against — the one for ITS unit.
+///
+/// The three rungs are all derived from [`RelateTolerance`]'s single base length
+/// (see [`RelateTolerance::assertion_angle`]), so they move together under an edit
+/// to the hierarchy and cannot drift into three independent hand-picked epsilons.
+fn assertion_rung(unit: ResidualUnit, tol: &RelateTolerance) -> f64 {
+    match unit {
+        ResidualUnit::Length => tol.assertion(),
+        ResidualUnit::Angle => tol.assertion_angle(),
+        ResidualUnit::Dimensionless => tol.assertion_dimensionless(),
+    }
+}
+
+/// The name of the `self.*` anchor operand `rel` carries (`"self.frame"` for a
+/// `ground(sub)` desugar), or `None` if it has none.
+fn self_anchor_operand_name(rel: &CompiledExpr) -> Option<String> {
+    let CompiledExprKind::FunctionCall { args, .. } = &rel.kind else {
+        return None;
+    };
+    args.iter()
+        .find_map(|arg| self_anchor_member(arg).map(|m| format!("self.{m}")))
+}
+
+/// Render a residual row in the unit it was MEASURED in.
+///
+/// Never launder a dimensionless row through [`fmt_mm`]. `parallel` /
+/// `antiparallel` / `coincident`-over-Direction measure a unit-vector difference,
+/// `perpendicular` a dot product and `angle` a cosine difference — all pure
+/// numbers — while `concentric` / `flush` / `offset` mix dimensionless tilt rows
+/// WITH metre rows in one vector. Printing "off by 0.5 mm" for a 0.5 direction
+/// residual is a confidently-wrong claim of exactly the kind this whole arm exists
+/// to prevent, so the unit tag decides the phrasing.
+///
+/// The MAGNITUDE is rendered, never the signed row value. A residual row's sign is
+/// an artefact of the residual form's operand order and tangent-frame choice — the
+/// dominant `concentric` row for the B1 fixture is `−0.03`, which read out as "off
+/// by −30 mm" — and "off by" states a distance from satisfaction, which has no
+/// direction a reader can act on. Unsigned is also the pre-existing convention on
+/// this path: `max_relation_residual` accumulates `r.abs()`, and every other
+/// reader-facing magnitude here is a magnitude. Taken ONCE, here, so all three arms
+/// agree rather than each remembering.
+fn fmt_residual(row: ResidualRow) -> String {
+    let magnitude = row.value.abs();
+    match row.unit {
+        ResidualUnit::Length => fmt_mm(magnitude),
+        ResidualUnit::Angle => fmt_deg(magnitude),
+        // No length and no angle reading — say the number and what it is, rather
+        // than dress it in a unit it does not have.
+        ResidualUnit::Dimensionless => {
+            format!("{magnitude:.4} (direction residual, dimensionless)")
+        }
+    }
+}
+
+/// An angle magnitude in degrees, trimmed like [`fmt_mm`] so the two read alike.
+///
+/// The trim cannot eat the whole numeral: `{:.3}` always emits a decimal point and
+/// `trim_end_matches('0')` stops there, so the smallest rendering is `"0°"`, never a
+/// bare `"°"`. That is a property of the format string rather than a thing to
+/// defend with a fallback branch, so it is PINNED
+/// (`fmt_deg_keeps_a_numeral_below_the_trim_threshold`) instead.
+fn fmt_deg(radians: f64) -> String {
+    let s = format!("{:.3}", radians.to_degrees());
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    format!("{s}°")
+}
+
+/// Process every scope in `module` that declares at least one relation (ζ step-18 —
+/// the build-pass entry).
+///
+/// Each such scope is collected ([`collect_relate_scope`]) and then dispatched on
+/// whether it has anything to SOLVE for:
+///
+/// * **auto-ful** (≥1 `at auto` sub) → the full partition → solve → verify pipeline
+///   ([`solve_relate_scope`]), which determines each auto sub's Frame; or
+/// * **zero-auto** (every sub fixed) → static verification
+///   ([`verify_static_scope`]), which determines nothing and renders a verdict on
+///   the datums as they already sit.
+///
+/// One `(scope_name, RelateSolution)` is returned per processed scope, so the build
+/// pass can write each solved Frame back into the value map (keyed by
+/// [`auto_pose_cell`]) and surface the diagnostics (an `Error` fails the build). A
+/// zero-auto solution carries empty `poses`, so the consumption loop skips the
+/// writeback and forwards only the diagnostics — no caller change was needed to
+/// surface this arm.
+///
+/// # Only a scope with NO relations is skipped
+///
+/// This filter used to also require a non-empty auto set, which meant a `relate { }`
+/// block over fixed subs was dropped before any realization and never checked at
+/// all. That made a geometrically FALSE relate block a total silent no-op — `reify
+/// eval` said nothing and `reify check` printed "All constraints satisfied." A
+/// declared intent was neither consumed nor its non-consumption reported, which
+/// `docs/legibility/design-invariants.md` INV-SF-3 forbids (fixed by task #5415;
+/// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3 decision 1, §4.4).
+///
+/// Skipping a scope with no relations at all is kept, and still does the work the
+/// old filter was really there for: it keeps the kernel sub-build off the hot path
+/// for the overwhelmingly common non-relate scope.
 ///
 /// **One shared realization build.** Rather than clone + rebuild the module once per
 /// scope, the operand structures of ALL qualifying scopes are realized together in a
@@ -817,23 +1274,40 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
 /// are structure-keyed and pose-independent, so the build is shared safely — a
 /// structure's datums are identical regardless of which scope references it.
 ///
-/// **Single-level recursion.** That sub-build realizes each referenced structure
-/// through `engine`. ζ's grounding model keeps those leaf structures free of
-/// `at auto` / relations, so the sub-build's own `solve_scopes` finds nothing and
-/// does not recurse further. The caller MUST invoke this BEFORE the outer build's
-/// own state resets so the transient sub-build state is re-established by the main
-/// `check()` that follows.
+/// **Recursion through the sub-build.** That sub-build realizes each referenced
+/// structure through `engine`, so its own `solve_scopes` runs over the retained
+/// templates — and since the filter is now "≥1 relation", an operand structure that
+/// declares a ZERO-AUTO relate block of its own recurses one level further than it
+/// used to. Termination is structural: each level retains a strict sub-closure of
+/// the last. The nested build's diagnostics are DISCARDED
+/// ([`realize_structures`] keeps only `.values`), which costs nothing here because
+/// this walk covers every template in the module — so the nested scope is verified
+/// by THIS pass in its own right, exactly once. Measured, not assumed, by
+/// `a_nested_zero_auto_scope_is_verified_once_by_the_outer_pass` in
+/// `harness_engine/relate_static_verification_e2e.rs`; the prose this replaced
+/// asserted that operand structures simply carry no relations, which nothing in the
+/// compiler enforces.
+///
+/// Do NOT "fix" the extra level by filtering relation-declaring templates out of
+/// `sub_module`: an operand structure may be BOTH (the pin's `Carrier` is), and
+/// dropping it would leave the outer scope's operand unrealized — a decidable scope
+/// turned unverifiable to save a sub-build.
+///
+/// The caller MUST invoke this BEFORE the outer build's own state resets so the
+/// transient sub-build state is re-established by the main `check()` that follows.
 pub fn solve_scopes(
     module: &CompiledModule,
     engine: &mut Engine,
 ) -> Vec<(String, RelateSolution)> {
-    // Collect every qualifying scope (≥1 `at auto` sub AND ≥1 relation); scopes with
-    // neither are skipped before any realization — nothing to solve.
+    // Collect every scope that declares a relation. A scope with NO relations is
+    // skipped before any realization — there is nothing to solve and nothing to
+    // verify. A scope WITH relations is always processed, even with zero auto subs:
+    // dropping those was the silent no-op INV-SF-3 forbids (#5415).
     let scopes: Vec<(String, RelateScope)> = module
         .templates
         .iter()
         .map(|t| (t.name.clone(), collect_relate_scope(t)))
-        .filter(|(_, s)| !s.auto_unknowns.is_empty() && !s.relations.is_empty())
+        .filter(|(_, s)| !s.relations.is_empty())
         .collect();
     if scopes.is_empty() {
         return Vec::new();
@@ -843,18 +1317,43 @@ pub fn solve_scopes(
     // — no per-scope module.clone()/rebuild. Local datums are pose-independent, so the
     // seed estimate is empty and `solve_relate_scope` witnesses at identity (the
     // grounded anchor's datums encode the target).
+    //
+    // MIXING THE TWO SCOPE CLASSES IN THIS UNION IS SAFE, and safe for a specific
+    // reason worth stating: widening the filter above means `all_refs` now also
+    // carries zero-auto scopes' operand structures, so `realize_structures` retains
+    // MORE templates than it used to. That cannot perturb an auto-ful scope because
+    // each structure is realized STANDALONE in its own identity frame and
+    // `resolve_operands` looks datums up by `(structure, member)` — so adding
+    // structures adds map entries without altering any existing one.
+    //
+    // That is reasoning, not evidence, so it is also MEASURED: the V1 pins in
+    // `harness_engine/relate_static_verification_e2e.rs` solve the same auto-ful
+    // scope with and without a zero-auto companion sharing these leaf structures and
+    // compare the DOF partition exactly and the solved pose to the solver's
+    // convergence rung. If that ever reds, do NOT repair it by reverting to a
+    // per-scope `module.clone()`/rebuild — that discards the single-shared-build
+    // property PRD §3 decision 1 / §4.4 require. Split the retained-template set per
+    // scope class instead.
     let scope_refs: Vec<Vec<OperandRef>> =
         scopes.iter().map(|(_, s)| scope_operand_refs(s)).collect();
     let all_refs: Vec<OperandRef> = scope_refs.iter().flatten().cloned().collect();
     let values = realize_structures(&all_refs, module, engine);
 
-    // Solve each scope against the shared realized datums.
+    // Process each scope against the shared realized datums. Zero-auto scopes join
+    // the SAME union sub-build rather than getting one of their own — which is what
+    // PRD §3 decision 1 / §4.4 require, and why the arm costs no extra kernel work.
     scopes
         .iter()
         .zip(scope_refs.iter())
         .map(|((name, scope), refs)| {
             let realized = resolve_operands(refs, &values);
-            (name.clone(), solve_relate_scope(scope, &realized))
+            let solution = if scope.auto_unknowns.is_empty() {
+                // Nothing to determine — render a verdict on the fixed placements.
+                verify_static_scope(scope, &realized)
+            } else {
+                solve_relate_scope(scope, &realized)
+            };
+            (name.clone(), solution)
         })
         .collect()
 }
@@ -877,35 +1376,47 @@ fn build_relation_instances(
     scope
         .relations
         .iter()
-        .filter_map(|rel| {
-            let CompiledExprKind::FunctionCall { function, args } = &rel.kind else {
-                return None;
-            };
-            let mut operands = Vec::new();
-            for arg in args {
-                if let Some(opref) = decode_operand(arg) {
-                    let datum = realized
-                        .get(&opref.sub, &opref.member)
-                        .cloned()
-                        .unwrap_or(Value::Undef);
-                    operands.push(Operand {
-                        sub: Some(opref.sub),
-                        datum,
-                    });
-                } else if let Some(scalar) = scalar_operand(arg) {
-                    operands.push(Operand {
-                        sub: None,
-                        datum: scalar,
-                    });
-                }
-            }
-            Some(RelationInstance {
-                name: function.name.clone(),
-                operands,
-                nominal_delta_dof: None,
-            })
-        })
+        .filter_map(|rel| relation_instance(rel, realized))
         .collect()
+}
+
+/// Build ONE relation's [`RelationInstance`] from its compiled expr + the realized
+/// datums, or `None` when the expr is not a relation call.
+///
+/// Extracted from [`build_relation_instances`] (behaviour-preserving) so the
+/// zero-auto static arm can walk `scope.relations` with `enumerate()` and keep each
+/// entry's SOURCE index. That matters: `build_relation_instances` `filter_map`s
+/// non-`FunctionCall` members away, so its output can be SHORTER than
+/// `scope.relations` and the two are not index-aligned in general. The auto-ful path
+/// indexes both by the same `i`; that is a latent bug there, filed separately, and
+/// deliberately not changed here.
+fn relation_instance(rel: &CompiledExpr, realized: &RealizedDatums) -> Option<RelationInstance> {
+    let CompiledExprKind::FunctionCall { function, args } = &rel.kind else {
+        return None;
+    };
+    let mut operands = Vec::new();
+    for arg in args {
+        if let Some(opref) = decode_operand(arg) {
+            let datum = realized
+                .get(&opref.sub, &opref.member)
+                .cloned()
+                .unwrap_or(Value::Undef);
+            operands.push(Operand {
+                sub: Some(opref.sub),
+                datum,
+            });
+        } else if let Some(scalar) = scalar_operand(arg) {
+            operands.push(Operand {
+                sub: None,
+                datum: scalar,
+            });
+        }
+    }
+    Some(RelationInstance {
+        name: function.name.clone(),
+        operands,
+        nominal_delta_dof: None,
+    })
 }
 
 /// The literal scalar magnitude an operand expr denotes (the trailing metric of a
@@ -1418,5 +1929,939 @@ structure MechFixed {
                  fixed joints cannot reference a sub datum by construction"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_static_verification {
+    //! Kernel-free unit tests for the ZERO-AUTO static-verification arm — DIC α
+    //! (task 5415).
+    //!
+    //! In-file rather than an integration test (mirroring
+    //! [`super::tests_mounted_joint_cell`]) because these reach crate-private
+    //! internals — `resolve_operands`, `RealizedDatums`' inner map — that an
+    //! external test crate cannot see. They compile `.ri` source strings and
+    //! read structure off the resulting templates; no geometry kernel is
+    //! involved.
+
+    use std::collections::HashMap;
+
+    use reify_core::{DiagnosticCode, Severity};
+    use reify_ir::Value;
+    use reify_test_support::compile_source_with_stdlib;
+
+    use super::{
+        RealizedDatums, RelateScope, StaticRelateFacts, collect_relate_scope,
+        verify_static_scope,
+    };
+
+    /// Three scopes covering the whole `posed` classification:
+    ///
+    /// * `PosedScope` — one sub with a concrete `at <pose>`, one with no `at`
+    ///   clause at all;
+    /// * `PoseFreeScope` — the shape both DIC fixtures use: no `at` anywhere;
+    /// * `AutoScope` — an `at auto` sub, whose placement is solver-determined.
+    ///
+    /// Kernel-free: the leaf structures carry only `point3`, a plain
+    /// multi-component constructor the compiler types without geometry (the same
+    /// restriction `tests_mounted_joint_cell`'s fixture works under).
+    const SOURCE: &str = r#"
+structure Bushing {
+    let p = point3(0mm, 0mm, 0mm)
+}
+
+structure Plate {
+    let p = point3(0mm, 0mm, 0mm)
+}
+
+structure PosedScope {
+    sub a : Bushing at transform3(orient_identity(), vec3(30mm, 20mm, 5mm))
+    sub b : Plate
+}
+
+structure PoseFreeScope {
+    sub a : Bushing
+    sub b : Plate
+}
+
+structure AutoScope {
+    sub a : Bushing at auto
+    sub b : Plate
+}
+
+structure BushingS {
+    let bore = cylinder(4mm, 12mm)
+    let bore_axis : Axis = bore.axis
+    let seat = rectangle(10mm, 10mm)
+    let seat_plane : Plane = seat.plane
+}
+
+structure PlateS {
+    let boss = cylinder(4mm, 12mm)
+    let boss_axis : Axis = boss.axis
+    let top = rectangle(10mm, 10mm)
+    let top_plane : Plane = top.plane
+}
+
+structure StaticScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        concentric(bush.bore_axis, plate.boss_axis)
+        flush(bush.seat_plane, plate.top_plane)
+    }
+}
+
+structure SingleRelationScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        concentric(bush.bore_axis, plate.boss_axis)
+    }
+}
+
+structure PosedOperandScope {
+    sub bush : BushingS
+    sub plate : PlateS at transform3(orient_identity(), vec3(30mm, 20mm, 5mm))
+
+    relate {
+        concentric(bush.bore_axis, plate.boss_axis)
+    }
+}
+
+structure GroundedScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        ground(bush)
+    }
+}
+
+structure FastenScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        fasten(bush.frame, plate.frame)
+    }
+}
+
+structure PerpendicularScope {
+    sub bush : BushingS
+    sub plate : PlateS
+
+    relate {
+        perpendicular(bush.bore_axis, plate.boss_axis)
+    }
+}
+"#;
+
+    /// Collect the named scope, panicking with the available template names on a
+    /// miss so a fixture rename fails legibly rather than as `unwrap` on `None`.
+    fn scope(name: &str) -> RelateScope {
+        let module = compile_source_with_stdlib(SOURCE);
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture template `{name}` must compile; got {:?}",
+                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            });
+        collect_relate_scope(template)
+    }
+
+    /// A sub declared with a concrete `at <pose>` is recorded in `posed`, in
+    /// sub-declaration order — AND still appears in `ground`.
+    ///
+    /// `posed` is an ADDITIONAL classification, not a partition of `ground`: a
+    /// posed sub is genuinely a fixed (non-auto) anchor, so removing it from
+    /// `ground` would change the auto-ful solve path's inputs and break V1. The
+    /// two lists overlap on purpose.
+    ///
+    /// # Why the classification is needed at all
+    ///
+    /// `resolve_operands` keys realized datums by `(structure, member)` — each
+    /// structure's LOCAL datum in its OWN identity frame — and a declared
+    /// `SubComponentDecl.pose` is never composed into them. A static verdict
+    /// computed over a posed sub's datums would therefore be evaluated at the
+    /// WRONG configuration, producing a confidently wrong answer in either
+    /// direction. The zero-auto arm uses this list to classify such a scope's
+    /// relations UNVERIFIABLE instead (PRD §10 open question 5).
+    #[test]
+    fn collect_relate_scope_records_concretely_posed_subs() {
+        let s = scope("PosedScope");
+        assert_eq!(
+            s.posed,
+            vec!["a".to_string()],
+            "only the sub carrying a concrete `at <pose>` belongs in `posed`"
+        );
+        assert_eq!(
+            s.ground,
+            vec!["a".to_string(), "b".to_string()],
+            "a posed sub is STILL a non-auto ground anchor — `posed` is an \
+             additional classification, not a partition of `ground`"
+        );
+        assert!(
+            s.auto_unknowns.is_empty(),
+            "no sub in this scope is `at auto`"
+        );
+    }
+
+    /// A scope whose subs carry no `at` clause has an EMPTY `posed` list.
+    ///
+    /// This is the shape of both DIC fixtures
+    /// (`dic_relate_static_{violated,ok}.ri`), so it is the shape that must be
+    /// statically VERIFIABLE — an over-eager `posed` would classify them
+    /// unverifiable and leave the false green in place under a new name.
+    #[test]
+    fn collect_relate_scope_leaves_posed_empty_without_at_clauses() {
+        let s = scope("PoseFreeScope");
+        assert!(
+            s.posed.is_empty(),
+            "no sub carries an `at` clause, so `posed` must be empty; got {:?}",
+            s.posed
+        );
+        assert_eq!(s.ground, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    /// An `at auto` sub never appears in `posed`.
+    ///
+    /// Guaranteed structurally, not incidentally: `SubComponentDecl` documents
+    /// that `auto_pose.is_some()` implies `pose.is_none()` — the placement is
+    /// solver-determined, not a compiled pose expression — so the two
+    /// classifications cannot both fire for one sub.
+    #[test]
+    fn collect_relate_scope_never_files_an_auto_sub_as_posed() {
+        let s = scope("AutoScope");
+        assert!(
+            s.posed.is_empty(),
+            "`at auto` is solver-determined, not a concrete pose; got {:?}",
+            s.posed
+        );
+        assert_eq!(
+            s.auto_unknowns.len(),
+            1,
+            "the `at auto` sub must still be collected as a Frame unknown"
+        );
+        assert_eq!(s.auto_unknowns[0].sub, "a");
+    }
+
+    // ── static verification (`verify_static_scope`) — DIC α steps 5/6 ────────
+    //
+    // These build `RealizedDatums` BY HAND rather than through a kernel build, so
+    // the whole verdict surface — satisfied, violated, and both flavours of
+    // unverifiable — is reachable without OCCT and without contriving `.ri`
+    // geometry that lands on each one. The datum magnitudes are the measured
+    // `dic_relate_static_violated` split (30, 20, 5 mm), so the kernel-free unit
+    // and the OCCT e2e are pinning the same numbers.
+
+    fn point3v(x: f64, y: f64, z: f64) -> Value {
+        Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
+    }
+
+    fn vec3v(x: f64, y: f64, z: f64) -> Value {
+        Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+    }
+
+    fn axis_v(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
+        Value::Axis {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            direction: Box::new(vec3v(d.0, d.1, d.2)),
+        }
+    }
+
+    fn plane_v(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
+        Value::Plane {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            normal: Box::new(vec3v(n.0, n.1, n.2)),
+        }
+    }
+
+    /// A `Frame` at `o` whose basis is a rotation of `deg` about `+z`. The basis is
+    /// a unit quaternion, which is the only shape `frame_coincidence_residual`
+    /// reads; `deg = 0` is the identity orientation.
+    fn frame_v(o: (f64, f64, f64), deg: f64) -> Value {
+        let half = deg.to_radians() / 2.0;
+        Value::Frame {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            basis: Box::new(Value::Orientation {
+                w: half.cos(),
+                x: 0.0,
+                y: 0.0,
+                z: half.sin(),
+            }),
+        }
+    }
+
+    /// Hand-build a [`RealizedDatums`] — its map is crate-private, which is the
+    /// reason this module lives in-file rather than in `tests/`.
+    fn realized(entries: &[(&str, &str, Value)]) -> RealizedDatums {
+        let mut operands = HashMap::new();
+        for (sub, member, v) in entries {
+            operands.insert(((*sub).to_string(), (*member).to_string()), v.clone());
+        }
+        RealizedDatums { operands }
+    }
+
+    /// The `dic_relate_static_violated` split, in metres.
+    const SPLIT: (f64, f64, f64) = (0.030, 0.020, 0.005);
+
+    /// Both subs' datums colocated at `SPLIT` — every relation TRUE.
+    fn colocated_datums() -> RealizedDatums {
+        realized(&[
+            ("bush", "bore_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+        ])
+    }
+
+    /// The bushing at the origin, the plate at `SPLIT` — every relation FALSE.
+    ///
+    /// The resulting magnitudes are derived, not tuned: `concentric` measures the
+    /// 30 mm in-plane split (an axis constrains only the two components
+    /// perpendicular to itself), `flush` the 5 mm along-normal offset. Both are
+    /// 500×–3000× the 1e-5 m assertion tolerance, so no verdict here is sensitive
+    /// to that constant's exact value.
+    fn split_datums() -> RealizedDatums {
+        realized(&[
+            ("bush", "bore_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", plane_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+        ])
+    }
+
+    /// (a) A zero-auto scope whose relations all HOLD is completely silent, and
+    /// reports both as verified.
+    ///
+    /// The silence is the contract, not an accident of implementation. The
+    /// placement-relations belt's δ leaf would have emitted a `W_RELATE_NO_AUTO`
+    /// warning on every zero-auto relate block regardless of whether the assertion
+    /// held; that leaf was DROPPED at decompose and superseded by this task
+    /// (ratified 2026-07-25). So this asserts the diagnostic list is empty
+    /// outright — not merely free of Errors — which is what would fail if
+    /// `W_RELATE_NO_AUTO` were ever reintroduced.
+    ///
+    /// `static_facts` is `Some` even here, so ζ's ledger can tell "2 relations
+    /// verified" from "no relate block at all" — the difference between consumed
+    /// and absent.
+    #[test]
+    fn verify_static_scope_is_silent_when_every_relation_holds() {
+        let s = scope("StaticScope");
+        let solution = verify_static_scope(&s, &colocated_datums());
+
+        assert!(
+            solution.diagnostics.is_empty(),
+            "a satisfied zero-auto relate block must be SILENT — no error, no \
+             warning, no info. Got {:?}. A warning here would be the dropped \
+             `W_RELATE_NO_AUTO` resurfacing.",
+            solution
+                .diagnostics
+                .iter()
+                .map(|d| (d.severity, d.code, d.message.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 2,
+                violated: 0,
+                unverifiable: 0,
+            }),
+            "facts must be reported even when the scope is silent, so the ledger \
+             can distinguish `verified: 2` from the absence of a relate block"
+        );
+    }
+
+    /// (b) A zero-auto scope with two VIOLATED relations emits EXACTLY ONE
+    /// aggregated Error naming both.
+    ///
+    /// The count is load-bearing, not stylistic. `dedup_diagnostics`
+    /// (`crates/reify-cli/src/main.rs`) short-circuits on `d.code.is_some()`, so a
+    /// CODED diagnostic is never collapsed at the CLI — a per-relation diagnostic
+    /// would reach the user unfiltered, one line per relation. Hence the #5014
+    /// collateral-observability shape: one Error per relate block naming the full
+    /// violated set.
+    #[test]
+    fn verify_static_scope_aggregates_violations_into_one_error() {
+        let s = scope("StaticScope");
+        let solution = verify_static_scope(&s, &split_datums());
+
+        assert_eq!(
+            solution.diagnostics.len(),
+            1,
+            "two violated relations must produce ONE aggregated Error, never one \
+             each — coded diagnostics bypass the CLI's dedup. Got {:?}",
+            solution
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        );
+        let d = &solution.diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::RelateStaticViolated));
+        // Content, not wording: WHICH relations were reported is the aggregation
+        // contract. The phrasing is deliberately not pinned.
+        assert!(
+            d.message.contains("concentric") && d.message.contains("flush"),
+            "the aggregate must name BOTH violated relations; got {:?}",
+            d.message
+        );
+        // The measured figures are MAGNITUDES. Both dominant rows here are
+        // negative as measured — `concentric`'s tangent-frame projection of the
+        // −30 mm split, `flush`'s −5 mm along-normal offset — and the renderer used
+        // to pass the signed value straight to `fmt_mm`, so the Error read "off by
+        // −30 mm". A residual's sign is an artefact of operand order and tangent-
+        // frame choice; "off by" is a distance from satisfaction and has no
+        // direction to carry. `max_relation_residual` is the sibling convention
+        // (it accumulates `r.abs()`).
+        assert!(
+            d.message.contains("off by 30 mm") && d.message.contains("off by 5 mm"),
+            "both measured magnitudes must render unsigned, in mm; got {:?}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("off by -"),
+            "no `off by` clause may carry a sign; got {:?}",
+            d.message
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 2,
+                unverifiable: 0,
+            })
+        );
+    }
+
+    /// (b′) A violation whose DOMINANT residual row is angular must not be
+    /// rendered as a length.
+    ///
+    /// A residual row vector is not dimensionally homogeneous:
+    /// `axis_coincidence_residual` returns two dimensionless TILT rows followed by
+    /// two metre POSITION rows. Two axes that are CO-LOCATED but tilted are
+    /// therefore violated entirely in the dimensionless block, and the earlier
+    /// renderer — `fmt_mm(max |row|)` — turned that pure number into a confident
+    /// millimetre figure that no measurement supports. Fabricating a length is
+    /// precisely the class of claim this whole arm exists to kill, so it is pinned
+    /// here rather than left to the reviewer who happens to read the output.
+    ///
+    /// Every other violated-path test uses axis-aligned datums, where the dominant
+    /// row happens to be the metre one — which is why the bug survived them all.
+    #[test]
+    fn verify_static_scope_reports_an_angular_violation_without_claiming_mm() {
+        let s = scope("StaticScope");
+        // Axes share an origin and differ only in TILT (45°); planes are left
+        // genuinely flush, so `concentric` is the only violated relation.
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v(SPLIT, (1.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+        ]);
+
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 1,
+                violated: 1,
+                unverifiable: 0,
+            }),
+            "tilted co-located axes violate `concentric` while the flush planes \
+             still hold; got {:?}",
+            solution.diagnostics
+        );
+        let d = solution
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == Severity::Error)
+            .expect("a tilted concentric pair is a violation");
+
+        // The measured magnitude is whatever follows "off by ". The DEMAND clause
+        // legitimately says "0 mm" (that is the target, not a measurement), so the
+        // assertion is scoped to the measured figure alone.
+        let measured = d
+            .message
+            .split("off by ")
+            .nth(1)
+            .expect("a violated relation reports what it measured")
+            .trim_end_matches(['"', '.']);
+        assert!(
+            !measured.contains("mm"),
+            "the dominant row here is a dimensionless tilt component, which has no \
+             length reading — reporting it in mm states a magnitude nothing \
+             measured. Got {measured:?} from {:?}",
+            d.message
+        );
+        assert!(
+            measured.contains("dimensionless"),
+            "an angular/direction violation must say what it actually measured; \
+             got {measured:?}"
+        );
+    }
+
+    /// (b″) A violation whose dominant row is an ORIENTATION delta renders in
+    /// DEGREES — the only path that reaches `fmt_deg`.
+    ///
+    /// `fasten` (= `coincident` over Frame) is the one residual form that emits
+    /// Angle rows: three metre origin-delta rows followed by three radian
+    /// exponential-map rows. Two frames sharing a BIT-IDENTICAL origin and
+    /// differing only in orientation therefore violate entirely in the angular
+    /// block. Every other violated-path test lands on a metre or a dimensionless
+    /// row, so without this one the degrees rendering never runs at all.
+    ///
+    /// `fasten` is reachable in a zero-auto scope both as written here and as the
+    /// `ground(sub)` / `fix(sub)` desugar, so this is a user-visible rendering, not
+    /// a defensive arm.
+    #[test]
+    fn verify_static_scope_reports_an_orientation_violation_in_degrees() {
+        let s = scope("FastenScope");
+        // Same origin (bitwise), bases 5° apart about +z.
+        let datums = realized(&[
+            ("bush", "frame", frame_v(SPLIT, 0.0)),
+            ("plate", "frame", frame_v(SPLIT, 5.0)),
+        ]);
+
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 1,
+                unverifiable: 0,
+            }),
+            "co-located frames 5° apart violate `fasten`; got {:?}",
+            solution.diagnostics
+        );
+        let d = solution
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == Severity::Error)
+            .expect("a 5° orientation split is a violation");
+        let measured = d
+            .message
+            .split("off by ")
+            .nth(1)
+            .expect("a violated relation reports what it measured")
+            .trim_end_matches(['"', '.']);
+        assert!(
+            measured.starts_with("5°"),
+            "the dominant row is a radian orientation delta of exactly 5°, so it \
+             must render in degrees; got {measured:?} from {:?}",
+            d.message
+        );
+        assert!(
+            !measured.contains("mm") && !measured.contains("dimensionless"),
+            "an orientation residual has neither a length reading nor a bare-number \
+             one; got {measured:?}"
+        );
+    }
+
+    /// The degree rendering always keeps a numeral — `"0°"`, never a bare `"°"`.
+    ///
+    /// [`super::fmt_deg`] formats to three decimals and then trims trailing zeros
+    /// and a trailing point, which LOOKS like it could eat the whole numeral for a
+    /// magnitude below 0.0005°. It cannot: `{:.3}` always emits a decimal point, so
+    /// `trim_end_matches('0')` stops there and leaves the integer part. Measured
+    /// rather than argued, and measured rather than "fixed" with a fallback branch
+    /// that could never run — dead code whose behaviour nobody checks is how the
+    /// `unwrap_or_else("satisfied")` fallback on the violated path came to render
+    /// nonsense.
+    #[test]
+    fn fmt_deg_keeps_a_numeral_below_the_trim_threshold() {
+        for radians in [0.0, 1e-9, 1e-6, 0.0004_f64.to_radians()] {
+            let rendered = super::fmt_deg(radians);
+            assert_eq!(
+                rendered, "0°",
+                "a sub-0.0005° magnitude must render as a zero with its unit, never \
+                 as a bare unit; got {rendered:?} for {radians} rad"
+            );
+        }
+        assert_eq!(super::fmt_deg(5.0_f64.to_radians()), "5°");
+        assert_eq!(super::fmt_deg(0.25), "14.324°");
+    }
+
+    /// A correct `perpendicular` over NON-UNIT direction operands is VERIFIED, not
+    /// failed.
+    ///
+    /// `perpendicular`'s residual is the dot product of its two operands, and
+    /// `dir_of` does not normalize — an `Axis` carries whatever direction vector
+    /// realization produced. Unnormalized, the row scales with BOTH magnitudes: the
+    /// exactly-perpendicular pair below reads `10 × 10 = 100` against a 1e-5 rung
+    /// and fails a build whose geometry is exactly right. The zero set is
+    /// magnitude-invariant, so the solve path never noticed; the static arm turns
+    /// the same row into a build-FAILING Error, which is what made this reachable.
+    ///
+    /// Normalizing first (as `angle` already did) makes the row the cosine of the
+    /// misalignment — the scale-free number the dimensionless rung is defined
+    /// against.
+    #[test]
+    fn verify_static_scope_holds_a_perpendicular_over_non_unit_directions() {
+        let s = scope("PerpendicularScope");
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v(SPLIT, (10.0, 0.0, 0.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 10.0))),
+        ]);
+
+        let solution = verify_static_scope(&s, &datums);
+
+        assert!(
+            solution.diagnostics.is_empty(),
+            "exactly perpendicular axes are SATISFIED however long their direction \
+             vectors are; got {:?}",
+            solution
+                .diagnostics
+                .iter()
+                .map(|d| (d.severity, d.message.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 1,
+                violated: 0,
+                unverifiable: 0,
+            })
+        );
+    }
+
+    /// (c) UNVERIFIABLE, source 1 — an operand that did not realize.
+    ///
+    /// A Warning, not an Error: an unverifiable relation is *not consumed*, which
+    /// is a different claim from *proven violated*. Erroring would fail builds
+    /// that are green today on the strength of a measurement never taken — the
+    /// never-false-Error hygiene mirroring R2's never-false-Inert. Whether the
+    /// ledger escalates it is ζ (#5420)'s call, not this arm's.
+    #[test]
+    fn verify_static_scope_warns_when_an_operand_did_not_realize() {
+        let s = scope("SingleRelationScope");
+        let datums = realized(&[
+            ("bush", "bore_axis", Value::Undef),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+        ]);
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(solution.diagnostics.len(), 1);
+        let d = &solution.diagnostics[0];
+        assert_eq!(
+            d.severity,
+            Severity::Warning,
+            "unverifiable is `not consumed`, not `proven violated`"
+        );
+        assert_eq!(d.code, Some(DiagnosticCode::RelateStaticUnverifiable));
+        assert!(
+            d.message
+                .starts_with("relate: 1 relation could not be statically verified"),
+            "the header must read grammatically at the SINGULAR cardinality. \
+             Anchored at the start on purpose: a `contains` probe passes on \
+             \"1 relation is could not be statically verified\" too. Got {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("concentric") && d.message.contains("bush.bore_axis"),
+            "the warning must name the relation AND the operand that did not \
+             resolve, or the reader cannot act on it; got {:?}",
+            d.message
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 0,
+                unverifiable: 1,
+            })
+        );
+    }
+
+    /// (c′) UNVERIFIABLE, source 1b — a relation with only ONE realized sub datum
+    /// says so, and names the operand it could not compare against.
+    ///
+    /// The reachable shape is the `ground(sub)` / `fix(sub)` sugar, which the
+    /// compiler desugars to `fasten(sub.frame, self.frame)`. `self.frame` is the
+    /// ENCLOSING structure's own datum, not a sub datum: it lowers to a no-arg
+    /// `MethodCall` that `decode_operand` rejects, so it never appears in
+    /// `operand_refs` and the did-not-realize arm cannot see it. The relation
+    /// reaches `static_relation_residuals` with one datum operand, trips its arity
+    /// guard, and comes back with an empty row vector.
+    ///
+    /// Reading that emptiness as "there is no residual model for `fasten` over
+    /// these operand kinds" was FALSE — `coincident_residual`'s Frame branch models
+    /// exactly this pair, and would measure it the moment a second Frame were
+    /// available. An unverifiable verdict's whole value is its reason, so a wrong
+    /// reason undercuts the honest-non-consumption contract this arm exists to
+    /// uphold (INV-SF-3).
+    #[test]
+    fn verify_static_scope_names_the_self_anchor_it_cannot_compare() {
+        let s = scope("GroundedScope");
+        let datums = realized(&[("bush", "frame", frame_v(SPLIT, 0.0))]);
+
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(solution.diagnostics.len(), 1);
+        let d = &solution.diagnostics[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::RelateStaticUnverifiable));
+        assert!(
+            d.message.contains("`self.frame`"),
+            "the reason must name the operand that is not a realized sub datum; got \
+             {:?}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("no residual model"),
+            "`fasten` over two Frames IS modelled — this relation simply has one \
+             operand, not two. Reserving that wording for the genuinely unmodelled \
+             case is the point of the arm; got {:?}",
+            d.message
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 0,
+                unverifiable: 1,
+            })
+        );
+    }
+
+    /// (d) UNVERIFIABLE, source 2 — an operand belonging to a concretely-posed
+    /// sub, even when the raw local-datum residual reads as SATISFIED.
+    ///
+    /// This is the sharpest test in the module, and the reason `RelateScope.posed`
+    /// exists. The datums here are bit-identical, so a naive arm would measure
+    /// zero and report the scope verified. But realized datums are each
+    /// structure's LOCAL datum in its OWN identity frame, and `plate`'s declared
+    /// `at transform3(…)` is never composed into them — so that zero was measured
+    /// at the wrong configuration and means nothing. Reporting it as verified
+    /// would be a confidently wrong verdict.
+    ///
+    /// Honest non-consumption beats a false verdict (INV-SF-3): say it is
+    /// unverifiable, and say why (PRD §10 open question 5). Composing declared
+    /// poses is the follow-up that would make this genuinely decidable.
+    #[test]
+    fn verify_static_scope_will_not_judge_a_posed_sub_even_when_it_would_pass() {
+        let s = scope("PosedOperandScope");
+        assert_eq!(
+            s.posed,
+            vec!["plate".to_string()],
+            "fixture guard: this scope must actually carry a posed sub"
+        );
+
+        // Bit-identical operands: the RAW residual is exactly zero here.
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+        ]);
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(solution.diagnostics.len(), 1);
+        let d = &solution.diagnostics[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::RelateStaticUnverifiable));
+        assert!(
+            d.message.contains("plate"),
+            "the warning must name the posed sub whose placement is not composed \
+             into the datums; got {:?}",
+            d.message
+        );
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 0,
+                unverifiable: 1,
+            }),
+            "a posed-sub relation is neither verified nor violated — the residual \
+             that would have read as satisfied was measured at the wrong \
+             configuration and must not be counted"
+        );
+    }
+
+    /// (e) A scope carrying BOTH a violation and an unverifiable relation emits
+    /// exactly TWO diagnostics — one Error aggregate and one Warning aggregate —
+    /// never one per relation.
+    #[test]
+    fn verify_static_scope_emits_one_aggregate_per_severity() {
+        let s = scope("StaticScope");
+        // concentric: violated by the 30 mm split. flush: bush's plane never
+        // realized ⇒ unverifiable.
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", Value::Undef),
+            ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+        ]);
+        let solution = verify_static_scope(&s, &datums);
+
+        assert_eq!(
+            solution.diagnostics.len(),
+            2,
+            "one Error aggregate + one Warning aggregate; got {:?}",
+            solution
+                .diagnostics
+                .iter()
+                .map(|d| (d.severity, d.message.clone()))
+                .collect::<Vec<_>>()
+        );
+        let errors: Vec<_> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        let warnings: Vec<_> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(errors[0].code, Some(DiagnosticCode::RelateStaticViolated));
+        assert_eq!(
+            warnings[0].code,
+            Some(DiagnosticCode::RelateStaticUnverifiable)
+        );
+        assert!(errors[0].message.contains("concentric"));
+        assert!(warnings[0].message.contains("flush"));
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 0,
+                violated: 1,
+                unverifiable: 1,
+            })
+        );
+    }
+
+    /// Both aggregate headers read grammatically at BOTH cardinalities.
+    ///
+    /// Nothing else in this module can catch a malformed header: every other
+    /// assertion here is a `contains("concentric")` / `contains("plate")`
+    /// substring probe and the e2e filters on [`DiagnosticCode`], so word ORDER
+    /// is entirely unpinned. That is how the unverifiable site came to emit
+    /// "relate: 1 relation is could not be statically verified: …" unnoticed.
+    /// These pins are `starts_with` on the header prefix rather than `contains`:
+    /// only an ANCHORED prefix fails on a doubled or mis-ordered verb.
+    ///
+    /// Four pins across this test and (c), not one on the site that broke,
+    /// because the defect class is "one shared helper is asked to serve two
+    /// different verb forms" — pinning only the broken site lets the other drift
+    /// back in unobserved.
+    ///
+    /// The expected strings are the HEADER PREFIXES of the canonical message forms
+    /// documented on [`DiagnosticCode::RelateStaticViolated`] and
+    /// [`DiagnosticCode::RelateStaticUnverifiable`], so no third wording is
+    /// invented here. What is pinned is ONLY that prefix, up to the colon — the
+    /// per-item tail those doc examples go on to show is not under test. Saying so
+    /// is the point: the earlier claim that this "pins the code TO the doc" was
+    /// read as a doc↔code binding, and under it BOTH examples drifted from the
+    /// emitted text and stayed stale until a reader compared them by hand.
+    #[test]
+    fn verify_static_scope_headers_agree_in_number_at_both_sites() {
+        // Each case below renders exactly one aggregate, so the sole message IS
+        // the header under test.
+        let sole_message = |solution: &super::RelateSolution| -> String {
+            assert_eq!(
+                solution.diagnostics.len(),
+                1,
+                "each case here must render exactly ONE aggregate, or the message \
+                 picked below is not the one under test; got {:?}",
+                solution
+                    .diagnostics
+                    .iter()
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>()
+            );
+            solution.diagnostics[0].message.clone()
+        };
+
+        // (b) PLURAL unverifiable. No existing fixture yields two unverifiable
+        // relations, so both of `StaticScope`'s relations lose their `bush`
+        // operand here.
+        let plural_unverifiable = sole_message(&verify_static_scope(
+            &scope("StaticScope"),
+            &realized(&[
+                ("bush", "bore_axis", Value::Undef),
+                ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+                ("bush", "seat_plane", Value::Undef),
+                ("plate", "top_plane", plane_v(SPLIT, (0.0, 0.0, 1.0))),
+            ]),
+        ));
+        assert!(
+            plural_unverifiable
+                .starts_with("relate: 2 relations could not be statically verified"),
+            "PLURAL unverifiable header must agree in number and carry no second \
+             verb; got {plural_unverifiable:?}"
+        );
+
+        // (c) SINGULAR violated — `SingleRelationScope`'s one relation, measured
+        // across the 30 mm split.
+        let singular_violated = sole_message(&verify_static_scope(
+            &scope("SingleRelationScope"),
+            &realized(&[
+                ("bush", "bore_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                ("plate", "boss_axis", axis_v(SPLIT, (0.0, 0.0, 1.0))),
+            ]),
+        ));
+        assert!(
+            singular_violated
+                .starts_with("relate: 1 relation not satisfied by the subs' fixed placements"),
+            "SINGULAR violated header; got {singular_violated:?}"
+        );
+
+        // (d) PLURAL violated — the split-datum pair, both relations false.
+        let plural_violated =
+            sole_message(&verify_static_scope(&scope("StaticScope"), &split_datums()));
+        assert!(
+            plural_violated
+                .starts_with("relate: 2 relations not satisfied by the subs' fixed placements"),
+            "PLURAL violated header; got {plural_violated:?}"
+        );
+    }
+
+    /// (f) The rendering is deterministic and follows SOURCE order.
+    ///
+    /// Two invocations over the same inputs must produce byte-identical messages
+    /// — the aggregate is built by walking `scope.relations` in order, never by
+    /// iterating a `HashMap`. Source order also decides the listing order within
+    /// an aggregate, so `concentric` (declared first) precedes `flush`.
+    #[test]
+    fn verify_static_scope_renders_deterministically_in_source_order() {
+        let s = scope("StaticScope");
+        let first = verify_static_scope(&s, &split_datums());
+        let second = verify_static_scope(&s, &split_datums());
+
+        let msgs = |sol: &super::RelateSolution| {
+            sol.diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            msgs(&first),
+            msgs(&second),
+            "two invocations over identical inputs must render identically — any \
+             difference means a HashMap iteration order leaked into the message"
+        );
+
+        let m = &first.diagnostics[0].message;
+        let c = m.find("concentric").expect("concentric must be named");
+        let f = m.find("flush").expect("flush must be named");
+        assert!(
+            c < f,
+            "relations must be listed in SOURCE order (concentric is declared \
+             first); got {m:?}"
+        );
     }
 }

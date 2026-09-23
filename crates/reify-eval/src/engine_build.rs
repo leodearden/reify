@@ -3274,6 +3274,8 @@ impl Engine {
             geometry_revalidation_slow_path,
             // ── reset-on-BUILD-surfaces ──────────────────────────────────
             realization_handles,
+            // ── reset-on-`Build`-ONLY (the one surface that writes it) ────────
+            relate_static_facts,
             // ── reset-on-TESSELLATE-surfaces ─────────────────────────────
             achieved_repr_tol,
             // ── MUST-SURVIVE (regression if swept) ───────────────────────
@@ -3359,6 +3361,25 @@ impl Engine {
             BuildSurface::TessellateRealizations | BuildSurface::TessellateSnapshot => {
                 achieved_repr_tol.clear();
             }
+        }
+
+        // DIC α (#5415): the static-relate consumption ledger is cleared by the ONE
+        // surface that also WRITES it — `Build`, whose relate consumption loop
+        // repopulates it a few statements later. Clearing it on every surface was a
+        // silent WIPE: `reify check` calls `tessellate_realizations` after
+        // `realize_for_check` whenever the module carries a `RepresentationWithin`
+        // rule, and that surface never repopulates, so ζ (#5420) would read an
+        // empty ledger and report "no relate block" for a module that has one — and
+        // for a SATISFIED scope, which raises no diagnostic, that row is the only
+        // evidence the block was consumed at all.
+        //
+        // Per-build freshness and non-accumulation are unaffected: rows can only
+        // ever describe the module the last `Build` processed, because reaching a
+        // DIFFERENT module's relate scopes means another `Build`, which clears here
+        // first. `BuildSnapshot` re-builds the SAME module from its snapshot and
+        // runs no relate-solve, so it too must leave the ledger standing.
+        if surface == BuildSurface::Build {
+            relate_static_facts.clear();
         }
     }
 
@@ -4110,23 +4131,36 @@ impl Engine {
         format: ExportFormat,
         emit_geometry_output: bool,
     ) -> BuildResult {
-        // Geometric-relations ζ (task 4386) step-18: per-scope relate-solve.
+        // Geometric-relations ζ (task 4386) step-18 + DIC α (task 5415): per-scope
+        // relate processing. TWO arms, dispatched inside `solve_scopes`:
         //
-        // For each scope with `at auto` subs + relations, solve each auto sub's
-        // 6-DOF assembly Frame from the scope's geometric relations and verify the
-        // redundant remainder. This runs BEFORE the main check/surfacing so the
-        // solved Frames can be injected into `values` (below) for the surfacing walk
-        // to place via `eval_sub_pose`'s auto arm.
+        //   * AUTO-FUL scopes (≥1 `at auto` sub) — solve each auto sub's 6-DOF
+        //     assembly Frame from the scope's geometric relations and verify the
+        //     redundant remainder. This runs BEFORE the main check/surfacing so the
+        //     solved Frames can be injected into `values` (below) for the surfacing
+        //     walk to place via `eval_sub_pose`'s auto arm.
+        //
+        //   * ZERO-AUTO scopes (every sub fixed) — nothing to solve, so instead
+        //     verify each relation statically against the subs' fixed placements.
+        //     These write back NO pose; they contribute consumption facts (recorded
+        //     on `self.relate_static_facts` by the loop below) and, on violation, a
+        //     build-failing Error. Before #5415 such a scope was skipped outright,
+        //     which made a geometrically FALSE relate block a silent no-op —
+        //     the declared-intent non-consumption `docs/legibility/design-invariants.md`
+        //     INV-SF-3 forbids (`docs/prds/v0_6/declared-intent-consumption-\
+        //     accounting.md` §3 decision 1, §4.4).
         //
         // Realization sub-builds each referenced leaf structure through `self`
         // (`relate_solve::solve_scopes` → `realize_operand_datums`), so it requires a
         // registered geometry kernel AND must run here, before this build's own state
         // resets: the sub-build mutates `self`'s transient build state, and the outer
         // resets + `self.check(module)` below re-establish the main-module state. ζ's
-        // leaf structures carry no auto/relations, so the sub-build does not recurse
-        // into another relate-solve (single-level). When no kernel is registered the
-        // pass is skipped (auto subs degrade to identity; a geometry-less build has no
-        // placement to compute).
+        // leaf structures carry no relations, so the sub-build does not recurse into
+        // another relate-solve (single-level). When no kernel is registered the pass
+        // is skipped entirely — including the #5415 static arm, which compares
+        // REALIZED datums and so needs a kernel just as the solve does. A
+        // geometry-less build has neither a placement to compute nor datums to
+        // measure, so it reports an empty static ledger rather than a false verdict.
         let kernel_available = match self.default_kernel_name.as_deref() {
             Some(name) => self.geometry_kernels.contains_key(name),
             None => false,
@@ -4249,6 +4283,20 @@ impl Engine {
                 {
                     values.insert(cell_id, reify_stdlib::set_mount_origin(joint_val, frame));
                 }
+            }
+            // DIC α (#5415): a ZERO-AUTO scope carries `static_facts` and no poses,
+            // so the loop above is a no-op for it and only this row + the
+            // diagnostics below come out. Recorded on the engine because
+            // `relate_solutions` is dropped when this function returns, and these
+            // facts are the surface ζ (#5420)'s ledger reads. A SATISFIED scope
+            // raises no diagnostic at all, so its row here is the ONLY evidence
+            // its relate block was consumed (INV-SF-3; PRD §4.4 V3).
+            //
+            // Written AFTER `reset_per_build_state` (which clears the field) and
+            // after `check()`, so the write survives the reset. Do not move it
+            // earlier.
+            if let Some(facts) = solution.static_facts {
+                self.relate_static_facts.push((scope.clone(), facts));
             }
             diagnostics.extend(solution.diagnostics.iter().cloned());
         }
@@ -13871,6 +13919,16 @@ mod reset_per_build_state_tests {
         // ── reset-on-BUILD-surface ────────────────────────────────────────
         engine.realization_handles.insert(rid.clone(), GeometryHandleId(9));
 
+        // ── reset-on-`Build`-ONLY ────────────────────────────────────────
+        engine.relate_static_facts.push((
+            "SeedScope".to_string(),
+            crate::relate_solve::StaticRelateFacts {
+                verified: 2,
+                violated: 0,
+                unverifiable: 0,
+            },
+        ));
+
         // ── reset-on-TESSELLATE-surface ───────────────────────────────────
         engine
             .achieved_repr_tol
@@ -13967,6 +14025,24 @@ mod reset_per_build_state_tests {
                 engine.realization_handles.is_empty(),
                 "realization_handles is reset-on-BUILD → cleared on {surface:?}"
             );
+            // `Build` writes the static-relate ledger (its relate consumption loop
+            // runs a few statements after this reset), so it is also the only
+            // surface entitled to clear it. `BuildSnapshot` re-builds the SAME
+            // module from its snapshot and runs no relate-solve at all — clearing
+            // there would empty the ledger with nothing to refill it.
+            if surface == BuildSurface::Build {
+                assert!(
+                    engine.relate_static_facts.is_empty(),
+                    "relate_static_facts is reset-on-`Build`-ONLY → cleared on {surface:?}"
+                );
+            } else {
+                assert_eq!(
+                    engine.relate_static_facts.len(),
+                    1,
+                    "relate_static_facts is reset-on-`Build`-ONLY → PRESERVED on \
+                     {surface:?}, which never repopulates it"
+                );
+            }
             assert_eq!(
                 engine.achieved_repr_tol.len(),
                 1,
@@ -13997,6 +14073,16 @@ mod reset_per_build_state_tests {
                 1,
                 "realization_handles is reset-on-BUILD → PRESERVED on tessellate surface \
                  {surface:?} (load-bearing build↔tessellate asymmetry, leaf d)"
+            );
+            // The silent-wipe this classification exists to prevent: `reify check`
+            // runs `tessellate_realizations` after `realize_for_check` on any module
+            // carrying a `RepresentationWithin` rule, and a cleared ledger there
+            // reads downstream as "this module has no relate block" (DIC α, #5415).
+            assert_eq!(
+                engine.relate_static_facts.len(),
+                1,
+                "relate_static_facts is reset-on-`Build`-ONLY → PRESERVED on tessellate \
+                 surface {surface:?}, which never repopulates it"
             );
             assert_must_survive(&engine, surface);
         }
