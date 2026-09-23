@@ -4,7 +4,9 @@
 //! union-find to identify independent sub-problems.
 
 use crate::classifier::ConstraintClassifier;
-use crate::dependent_reads::{collect_value_refs, dependent_cell_auto_reads, reach_of};
+use crate::dependent_reads::{
+    DependentCellReads, collect_value_refs, dependent_cell_auto_reads, reach_of,
+};
 use reify_core::{ConstraintNodeId, ValueCellId};
 use reify_ir::{AutoParam, CompiledExpr, ConstraintDomain};
 use std::collections::{HashMap, HashSet};
@@ -67,16 +69,19 @@ impl UnionFind {
 /// [`ExpandedObjectiveRefs::expand`] is the only constructor, so an unexpanded
 /// objective cannot reach the decomposition — the shape that split autos
 /// coupled only through a derived cell into separate components (task #5720).
+///
+/// Only FOLDABLE cells widen it, unlike the constraint side, which couples
+/// through unfoldable cells too. A cell no stored-order fold derives is never
+/// folded, so an objective reaching autos only through one governs nothing;
+/// coupling it would turn `FallbackComponentZero` into `Consumed` and silence
+/// `E_OBJECTIVE_UNCONSUMED`.
 pub(crate) struct ExpandedObjectiveRefs {
     refs: HashSet<ValueCellId>,
 }
 
 impl ExpandedObjectiveRefs {
-    pub(crate) fn expand(
-        mut refs: HashSet<ValueCellId>,
-        auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
-    ) -> Self {
-        for id in reach_of(&refs, auto_reads) {
+    pub(crate) fn expand(mut refs: HashSet<ValueCellId>, auto_reads: &DependentCellReads) -> Self {
+        for id in reach_of(&refs, auto_reads).foldable {
             if !refs.contains(id) {
                 refs.insert(id.clone());
             }
@@ -383,38 +388,15 @@ pub fn decompose_into_components(
     decompose_into_components_with_reads(auto_params, constraints, objective.as_ref(), &auto_reads)
 }
 
-/// [`decompose_into_components`] over an ALREADY-BUILT
-/// `dependent-cell id → transitive auto set` map.
+/// [`decompose_into_components`] over an ALREADY-BUILT dependent-cell reads
+/// map (see [`dependent_cell_auto_reads`]).
 ///
-/// See [`dependent_cell_auto_reads`] for the map's construction and its cycle
-/// semantics (a cell on or downstream of a back edge is OMITTED rather than
-/// published with a partial set).
-///
-/// # That omission is fail-safe for the DROP-side consumer, NOT for this one
-///
-/// (Review round 3, suggestion 7 — recorded here rather than fixed, see the
-/// follow-up note at the end.) Omission is the safe direction for
-/// `SolverRegistry`'s subset filter, where a missing entry can only make the
-/// filter keep a constraint it might have dropped. It is the UNSAFE direction
-/// for this CONNECTIVITY consumer, and the two must not be conflated:
-///
-///   * an omitted cell contributes no `refs` and therefore no union edges;
-///   * a constraint that reads ONLY such a cell has an empty `referenced` set
-///     and is silently `continue`d out of the decomposition;
-///   * if that empties the component list entirely, `SolverRegistry` reports
-///     `Solved { unique: true }` with every auto at its default — the exact
-///     silent "all autos unconstrained" outcome LAYER 2 exists to close,
-///     re-opened for cyclic or incomplete cells.
-///
-/// Not reachable from today's callers: `reify-eval`'s `build_dependent_cells`
-/// drops cyclic cells upstream, so a cell on a back edge never reaches this
-/// map with a constraint still reading it. The masking is a property of the
-/// CALLER, though, not of anything enforced here, so a future producer that
-/// stops pre-dropping cycles re-opens it with no compile error and no test
-/// failure. Closing it properly means returning the omitted-id set alongside
-/// the map so a constraint reading an omitted cell can be routed to
-/// `CrossDomain` (or rejected with a diagnostic) instead of dropped — larger
-/// than a doc correction and outside task #5467's lock set.
+/// A constraint that reads an UNFOLDABLE cell (on or downstream of a cycle) is
+/// coupled to every auto that cell reaches and classified `CrossDomain`: no
+/// specialized solver can derive a value the registry's per-component fold
+/// filter refuses to fold. Dropping it for lack of edges instead could empty
+/// the decomposition, which `SolverRegistry` answers with
+/// `Solved { unique: true }` and every auto at its default.
 ///
 /// `objective` is already widened through the same `auto_reads` — an
 /// [`ExpandedObjectiveRefs`] cannot be built any other way — so its autos are
@@ -423,7 +405,7 @@ pub(crate) fn decompose_into_components_with_reads(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     objective: Option<&ExpandedObjectiveRefs>,
-    auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
+    auto_reads: &DependentCellReads,
 ) -> Vec<SubProblem> {
     if constraints.is_empty() {
         return vec![];
@@ -476,15 +458,15 @@ pub(crate) fn decompose_into_components_with_reads(
         let mut refs = HashSet::new();
         collect_value_refs(expr, &mut refs);
         // LAYER 2 (task #5467 / PRD2 α): a constraint that reads a derived
-        // cell references every auto that cell transitively drives. With an
-        // empty `auto_reads` nothing is reached, so the union edges and
-        // `referenced_params` below are exactly pre-α's.
-        let reached = reach_of(&refs, auto_reads);
+        // cell references every auto that cell transitively drives, foldable
+        // or not. With an empty `auto_reads` nothing is reached, so the union
+        // edges and `referenced_params` below are exactly pre-α's.
+        let reach = reach_of(&refs, auto_reads);
 
         // Filter to only auto params
         let mut referenced: Vec<usize> = refs
             .iter()
-            .chain(reached.iter().copied())
+            .chain(reach.all())
             .filter_map(|id| param_index.get(id).copied())
             .collect();
         referenced.sort_unstable();
@@ -520,10 +502,10 @@ pub(crate) fn decompose_into_components_with_reads(
         // `None`, so both spellings fall back to `DimensionalSolver` and
         // production routing is unchanged today.
         //
-        // SCOPE of the fold: only the reach (`reached`), never the syntactic
-        // `refs`. `reached` is NOT disjoint from the syntactically-visible
-        // autos, though — `reach_of` derives it from each derived cell's
-        // TRANSITIVE auto set, which may
+        // SCOPE of the fold: only the reach, never the syntactic `refs`. The
+        // reach is NOT disjoint from the syntactically-visible autos, though —
+        // `reach_of` derives it from each derived cell's TRANSITIVE auto set,
+        // which may
         // contain an auto the constraint also references directly and whose
         // type the classifier therefore already folded in. That overlap is
         // harmless rather than merely tolerated: `widen_domain` is idempotent on
@@ -543,12 +525,19 @@ pub(crate) fn decompose_into_components_with_reads(
         // `Option<ConstraintDomain>` meaning "no flags") out of `classify`, and
         // `classifier.rs` is outside this task's lock set.
         //
-        // D1/B2 IDENTITY: an empty `auto_reads` returns an empty `reached`, so
-        // this loop never runs and the domain is bit-identical to pre-α.
-        let mut domain = ConstraintClassifier::classify(expr);
-        let reached_params = reached
-            .iter()
-            .filter_map(|id| param_index.get(*id).copied());
+        // A constraint reading an UNFOLDABLE cell is `CrossDomain` outright —
+        // the same top-of-lattice forcing `domain_of_auto`'s `_` arm uses —
+        // because no specialized solver can derive a value the per-component
+        // fold filter refuses to fold.
+        //
+        // D1/B2 IDENTITY: an empty `auto_reads` reaches nothing, so this loop
+        // never runs and the domain is bit-identical to pre-α.
+        let mut domain = if reach.reads_unfoldable_cell {
+            ConstraintDomain::CrossDomain
+        } else {
+            ConstraintClassifier::classify(expr)
+        };
+        let reached_params = reach.all().filter_map(|id| param_index.get(id).copied());
         for pi in reached_params {
             let verdict = *auto_domain[pi]
                 .get_or_insert_with(|| domain_of_auto(&auto_params[pi], constraints));

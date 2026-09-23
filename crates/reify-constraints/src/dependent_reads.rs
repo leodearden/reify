@@ -29,9 +29,50 @@ pub(crate) fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCel
     });
 }
 
+/// Per dependent cell, the auto params it reads TRANSITIVELY, and whether a
+/// stored-order fold can derive its value at all. Built by
+/// [`dependent_cell_auto_reads`].
+#[derive(Debug, Default)]
+pub(crate) struct DependentCellReads {
+    cells: HashMap<ValueCellId, CellEntry>,
+}
+
+#[derive(Debug)]
+struct CellEntry {
+    autos: HashSet<ValueCellId>,
+    foldable: bool,
+}
+
+/// What [`DependentCellReads::lookup`] knows about one id. Each consumer
+/// chooses its own safe direction for [`CellReads::Unfoldable`] by name.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CellReads<'a> {
+    /// Not a dependent cell: a plain value, or an auto param.
+    NotACell,
+    /// A cell a stored-order fold derives, and every auto it reads.
+    Foldable(&'a HashSet<ValueCellId>),
+    /// A cell on or downstream of a cycle: no stored-order fold can derive its
+    /// value, though it still reads exactly these autos.
+    Unfoldable(&'a HashSet<ValueCellId>),
+}
+
+impl DependentCellReads {
+    pub(crate) fn lookup(&self, id: &ValueCellId) -> CellReads<'_> {
+        match self.cells.get(id) {
+            None => CellReads::NotACell,
+            Some(entry) if entry.foldable => CellReads::Foldable(&entry.autos),
+            Some(entry) => CellReads::Unfoldable(&entry.autos),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+}
+
 /// For each dependent cell, the set of auto-param ids it reads TRANSITIVELY —
 /// following `ValueRef`s through OTHER dependent cells, not just its own
-/// expression.
+/// expression — and whether a stored-order fold can derive it.
 ///
 /// # Why this exists (task #5720)
 ///
@@ -39,12 +80,12 @@ pub(crate) fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCel
 /// references SYNTACTICALLY. The canonical joint-drive shape (task #5189 β) is
 /// an objective that reads a bare DERIVED cell and no auto at all, so that
 /// union step sees an empty set and two autos coupled only through the derived
-/// cell land in SEPARATE components. `SolverRegistry::solve_inner` feeds this map back into
-/// its `obj_refs` before decomposing, so decomposition follows `dependent_cells`
-/// and the coupled autos are solved jointly. It also uses the map as the
-/// per-component fold filter: a component folds a cell only when it OWNS every
-/// auto that cell transitively reads, which is what makes a cross-component
-/// `Undef` fold structurally impossible.
+/// cell land in SEPARATE components. `SolverRegistry`'s decomposition prelude
+/// expands the objective's refs through this map before decomposing, so
+/// decomposition follows `dependent_cells` and the coupled autos are solved
+/// jointly. It also uses the map as the per-component fold filter: a component
+/// folds a cell only when it OWNS every auto that cell transitively reads,
+/// which is what makes a cross-component `Undef` fold structurally impossible.
 ///
 /// # Why a reachability DFS, not a single forward pass
 ///
@@ -62,36 +103,35 @@ pub(crate) fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCel
 ///
 /// # INVARIANTS
 ///
-/// - Cycle-safe, and FAIL-SAFE on a cycle: a cell that closes a back edge — or
-///   that transitively reads one — is OMITTED from the returned map entirely
-///   rather than published with the partial set the DFS accumulated. Publishing
-///   a partial set would be the exact under-approximation this function exists
-///   to prevent: the registry's subset filter would wrongly KEEP such a cell in
-///   a component missing one of its autos and the `Undef` fold would come
-///   straight back. ABSENCE is the safe direction — the filter drops a cell it
-///   has no entry for. reify-eval's `build_dependent_cells` already drops
-///   cycles, so this costs nothing on a well-formed problem and removes the
-///   dependency on that upstream guarantee.
+/// - EVERY dependent cell is present, with its EXACT transitive auto set. A
+///   cell that closes a back edge, or transitively reads one, is UNFOLDABLE:
+///   its value depends on a cycle that no stored-order fold can derive. It is
+///   classified, not omitted, because an absence would read as "not a cell"
+///   to every consumer, while each needs its own safe direction: the fold
+///   filter drops such a cell, connectivity couples through it, and the
+///   bound-derivation guard treats it as varying. The DFS memo is partial for
+///   such a cell, so a reachability walk re-derives its set; reify-eval's
+///   `build_dependent_cells` drops cycles upstream, so on a well-formed
+///   problem that walk never runs.
 /// - Iterative (explicit stack), so a deep dependent-cell chain cannot blow the
 ///   native stack.
 /// - A ref that is neither an auto nor another dependent cell is ignored: it is
 ///   a plain value that carries no auto dependence.
 /// - A duplicate cell id resolves to the UNION over ALL of its occurrences —
 ///   both as a child edge (a ref to that id inherits every occurrence's set)
-///   and in the returned map. First-occurrence-wins would be unsafe in this
-///   map's PRIMARY consumer: the registry filter keys on id, so every
-///   occurrence of a duplicated cell is retained or dropped TOGETHER. Were a
-///   later occurrence to read a strictly larger auto set, first-wins would keep
-///   both in a component that does not own one of those autos and the fold
-///   would read it unbound. Unioning is the drop-side-safe direction, matching
-///   how every other unknown here resolves.
+///   and in the returned map — and is UNFOLDABLE if ANY occurrence is.
+///   First-occurrence-wins would be unsafe in this map's PRIMARY consumer: the
+///   registry filter keys on id, so every occurrence of a duplicated cell is
+///   retained or dropped TOGETHER. Were a later occurrence to read a strictly
+///   larger auto set, first-wins would keep both in a component that does not
+///   own one of those autos and the fold would read it unbound.
 pub(crate) fn dependent_cell_auto_reads(
     dependent_cells: &[(ValueCellId, CompiledExpr)],
     auto_params: &[AutoParam],
-) -> HashMap<ValueCellId, HashSet<ValueCellId>> {
+) -> DependentCellReads {
     let n = dependent_cells.len();
     if n == 0 {
-        return HashMap::new();
+        return DependentCellReads::default();
     }
 
     let auto_ids: HashSet<&ValueCellId> = auto_params.iter().map(|ap| &ap.id).collect();
@@ -132,8 +172,7 @@ pub(crate) fn dependent_cell_auto_reads(
     let mut memo: Vec<Option<HashSet<ValueCellId>>> = vec![None; n];
     // `incomplete[i]`: frame `i` closed a back edge, or inherited one from a
     // child, so `memo[i]` is a STRICT UNDER-APPROXIMATION of that cell's auto
-    // reads. Such a cell is omitted from the returned map entirely rather than
-    // published partial — see the cycle invariant above.
+    // reads. Such a cell is UNFOLDABLE, and its exact set is re-derived below.
     let mut incomplete: Vec<bool> = vec![false; n];
     let mut state: Vec<u8> = vec![0; n];
     let mut stack: Vec<usize> = Vec::new();
@@ -188,51 +227,105 @@ pub(crate) fn dependent_cell_auto_reads(
         }
     }
 
+    let exact: Vec<(usize, HashSet<ValueCellId>)> = (0..n)
+        .filter(|&i| incomplete[i])
+        .map(|i| (i, exact_reach(i, &direct_autos, &child_cells, &memo, &incomplete)))
+        .collect();
+    for (i, reach) in exact {
+        memo[i] = Some(reach);
+    }
+
     // Materialise. `take()` MOVES each memoised set out — every index is
     // materialised exactly once — so the map never holds a second copy of the
     // DFS's working sets.
-    let mut out: HashMap<ValueCellId, HashSet<ValueCellId>> = HashMap::with_capacity(n);
+    let mut cells: HashMap<ValueCellId, CellEntry> = HashMap::with_capacity(n);
     for (i, (id, _)) in dependent_cells.iter().enumerate() {
-        if incomplete[i] {
-            continue;
-        }
+        let entry = cells.entry(id.clone()).or_insert_with(|| CellEntry {
+            autos: HashSet::new(),
+            foldable: true,
+        });
         // UNION across every occurrence of a duplicated id, matching the
-        // all-occurrences child edges above.
-        out.entry(id.clone())
-            .or_default()
-            .extend(memo[i].take().unwrap_or_default());
+        // all-occurrences child edges above; ANY unfoldable occurrence makes
+        // the id unfoldable.
+        entry.autos.extend(memo[i].take().unwrap_or_default());
+        entry.foldable &= !incomplete[i];
     }
-    // An id is only as sound as its WEAKEST occurrence: if ANY occurrence is
-    // incomplete, drop the id outright rather than publish a partial union that
-    // the registry's subset filter would read as authoritative.
-    for (i, (id, _)) in dependent_cells.iter().enumerate() {
-        if incomplete[i] {
-            out.remove(id);
-        }
-    }
-    out
+    DependentCellReads { cells }
 }
 
-/// The autos `refs` reaches THROUGH dependent cells, borrowed from
-/// `auto_reads`.
-///
-/// `auto_reads` is already transitive, so one pass closes the set. The result
-/// may hold duplicates and ids `refs` already contains; every consumer
-/// tolerates both. D1/B2 IDENTITY: an empty `auto_reads` — what
-/// [`dependent_cell_auto_reads`] returns for an empty `dependent_cells` —
-/// reaches nothing, so every ref set, union edge and `referenced_params` list
-/// downstream stays exactly the direct-only one.
-pub(crate) fn reach_of<'m>(
-    refs: &HashSet<ValueCellId>,
-    auto_reads: &'m HashMap<ValueCellId, HashSet<ValueCellId>>,
-) -> Vec<&'m ValueCellId> {
-    if auto_reads.is_empty() {
-        return Vec::new();
+/// The exact transitive auto set of `start`, a cell the DFS left `incomplete`:
+/// a cycle-safe reachability walk that takes a COMPLETE cell's memo whole
+/// rather than walking beneath it (a complete cell never reaches an incomplete
+/// one, or it would have inherited the taint).
+fn exact_reach(
+    start: usize,
+    direct_autos: &[HashSet<ValueCellId>],
+    child_cells: &[Vec<usize>],
+    memo: &[Option<HashSet<ValueCellId>>],
+    incomplete: &[bool],
+) -> HashSet<ValueCellId> {
+    let mut reach = HashSet::new();
+    let mut visited = vec![false; direct_autos.len()];
+    visited[start] = true;
+    let mut stack = vec![start];
+    while let Some(node) = stack.pop() {
+        if !incomplete[node] {
+            reach.extend(memo[node].iter().flatten().cloned());
+            continue;
+        }
+        reach.extend(direct_autos[node].iter().cloned());
+        for &child in &child_cells[node] {
+            if !visited[child] {
+                visited[child] = true;
+                stack.push(child);
+            }
+        }
     }
-    refs.iter()
-        .filter_map(|id| auto_reads.get(id))
-        .flatten()
-        .collect()
+    reach
+}
+
+/// The autos `refs` reaches THROUGH dependent cells, split by whether the cell
+/// that reaches them is foldable; ids are borrowed from `reads`.
+#[derive(Debug, Default)]
+pub(crate) struct Reach<'m> {
+    /// Reached through cells a stored-order fold derives.
+    pub(crate) foldable: Vec<&'m ValueCellId>,
+    /// Reached through UNFOLDABLE cells.
+    pub(crate) unfoldable: Vec<&'m ValueCellId>,
+    /// Some ref is an unfoldable cell — true even when that cell reaches no
+    /// auto.
+    pub(crate) reads_unfoldable_cell: bool,
+}
+
+impl<'m> Reach<'m> {
+    /// Every auto reached, through foldable and unfoldable cells alike.
+    pub(crate) fn all(&self) -> impl Iterator<Item = &'m ValueCellId> {
+        self.foldable.iter().chain(&self.unfoldable).copied()
+    }
+}
+
+/// The [`Reach`] of `refs`. `reads` is already transitive, so one pass closes
+/// the set. The result may hold duplicates and ids `refs` already contains;
+/// every consumer tolerates both. D1/B2 IDENTITY: an empty `reads` — what [`dependent_cell_auto_reads`]
+/// returns for an empty `dependent_cells` — reaches nothing, so every ref set,
+/// union edge and `referenced_params` list downstream stays exactly the
+/// direct-only one.
+pub(crate) fn reach_of<'m>(refs: &HashSet<ValueCellId>, reads: &'m DependentCellReads) -> Reach<'m> {
+    let mut reach = Reach::default();
+    if reads.is_empty() {
+        return reach;
+    }
+    for id in refs {
+        match reads.lookup(id) {
+            CellReads::NotACell => {}
+            CellReads::Foldable(autos) => reach.foldable.extend(autos),
+            CellReads::Unfoldable(autos) => {
+                reach.reads_unfoldable_cell = true;
+                reach.unfoldable.extend(autos);
+            }
+        }
+    }
+    reach
 }
 
 #[cfg(test)]
@@ -281,13 +374,17 @@ mod tests {
         CompiledExpr::value_ref(ValueCellId::new("P", name), Type::length())
     }
 
+    fn autos<const N: usize>(names: [&str; N]) -> HashSet<ValueCellId> {
+        names.into_iter().map(|n| ValueCellId::new("P", n)).collect()
+    }
+
     #[test]
     fn dependent_cell_auto_reads_direct_auto() {
         let cells = vec![(ValueCellId::new("P", "total"), vref("a"))];
         let map = dependent_cell_auto_reads(&cells, &[auto("a")]);
         assert_eq!(
-            map.get(&ValueCellId::new("P", "total")),
-            Some(&HashSet::from([ValueCellId::new("P", "a")]))
+            map.lookup(&ValueCellId::new("P", "total")),
+            CellReads::Foldable(&autos(["a"]))
         );
     }
 
@@ -303,11 +400,8 @@ mod tests {
         ];
         let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
         assert_eq!(
-            map.get(&ValueCellId::new("P", "total")),
-            Some(&HashSet::from([
-                ValueCellId::new("P", "a"),
-                ValueCellId::new("P", "b"),
-            ])),
+            map.lookup(&ValueCellId::new("P", "total")),
+            CellReads::Foldable(&autos(["a", "b"])),
             "`total` reads `b` only through `subtotal`; a non-transitive walk \
              would miss it and the registry's subset filter would then keep \
              `total` in a component that does not own `b`"
@@ -328,11 +422,8 @@ mod tests {
         ];
         let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
         assert_eq!(
-            map.get(&ValueCellId::new("P", "total")),
-            Some(&HashSet::from([
-                ValueCellId::new("P", "a"),
-                ValueCellId::new("P", "b"),
-            ]))
+            map.lookup(&ValueCellId::new("P", "total")),
+            CellReads::Foldable(&autos(["a", "b"]))
         );
     }
 
@@ -341,10 +432,14 @@ mod tests {
         let cells = vec![(ValueCellId::new("P", "total"), vref("plain"))];
         let map = dependent_cell_auto_reads(&cells, &[auto("a")]);
         assert_eq!(
-            map.get(&ValueCellId::new("P", "total")),
-            Some(&HashSet::new()),
+            map.lookup(&ValueCellId::new("P", "total")),
+            CellReads::Foldable(&HashSet::new()),
             "a ref that is neither an auto nor another dependent cell carries \
              no auto dependence"
+        );
+        assert_eq!(
+            map.lookup(&ValueCellId::new("P", "plain")),
+            CellReads::NotACell
         );
     }
 
@@ -363,27 +458,19 @@ mod tests {
         ];
         let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
 
-        // Terminating at all is half the assertion. The other half is that
-        // each cycle member is COMPLETE-OR-ABSENT, never partial. `x` and `y`
-        // each transitively read {a, b}; whichever resolves FIRST can only see
-        // the children already off the stack, so a partial set is what the DFS
-        // naturally accumulates. Publishing it would let the registry's subset
-        // filter keep `y` (apparent reads {b}) in a component owning only `b`,
-        // where folding it reads the unowned auto `a` → `Undef` — precisely the
-        // failure the filter is documented to make structurally impossible.
-        let both = HashSet::from([ValueCellId::new("P", "a"), ValueCellId::new("P", "b")]);
+        // Terminating at all is half the assertion. The other half is that each
+        // cycle member is published UNFOLDABLE with its EXACT reach, never the
+        // partial set the DFS naturally accumulates for whichever member
+        // resolves first. A partial `y` (apparent reads {b}) would let a
+        // connectivity consumer leave `a` out of the component that must
+        // couple it.
         for name in ["x", "y"] {
-            let id = ValueCellId::new("P", name);
-            match map.get(&id) {
-                None => {} // Fail-safe: absent, so the filter drops the cell.
-                Some(set) => assert_eq!(
-                    set, &both,
-                    "`{name}` is on a cycle and transitively reads BOTH autos. \
-                     A published set MUST be complete; got the partial {set:?}. \
-                     Omitting the id entirely is the other acceptable answer — \
-                     the registry filter drops a cell it has no entry for."
-                ),
-            }
+            assert_eq!(
+                map.lookup(&ValueCellId::new("P", name)),
+                CellReads::Unfoldable(&autos(["a", "b"])),
+                "`{name}` is on a cycle, so no stored-order fold derives it, \
+                 and it transitively reads BOTH autos",
+            );
         }
     }
 
@@ -405,13 +492,39 @@ mod tests {
         ];
         let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
         assert_eq!(
-            map.get(&dup),
-            Some(&HashSet::from([
-                ValueCellId::new("P", "a"),
-                ValueCellId::new("P", "b"),
-            ])),
+            map.lookup(&dup),
+            CellReads::Foldable(&autos(["a", "b"])),
             "a duplicated cell id must resolve to the union over ALL of its \
              occurrences — the drop-side-safe direction"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_id_with_one_cyclic_occurrence_is_unfoldable_with_the_union() {
+        // `total` twice: first reading `a` (foldable), then `spin + b`, where
+        // `spin = spin` is a cycle reaching no auto. The id is only as foldable
+        // as its WEAKEST occurrence, and its reach is still the union.
+        let dup = ValueCellId::new("P", "total");
+        let cells = vec![
+            (dup.clone(), vref("a")),
+            (
+                dup.clone(),
+                CompiledExpr::binop(BinOp::Add, vref("spin"), vref("b"), Type::length()),
+            ),
+            (ValueCellId::new("P", "spin"), vref("spin")),
+        ];
+        let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
+        assert_eq!(
+            map.lookup(&dup),
+            CellReads::Unfoldable(&autos(["a", "b"])),
+            "one cyclic occurrence makes the id unfoldable, and its reach is \
+             the union over every occurrence: `Foldable({{a}})` is \
+             first-occurrence-wins, `Unfoldable({{b}})` last-occurrence-wins",
+        );
+        assert_eq!(
+            map.lookup(&ValueCellId::new("P", "spin")),
+            CellReads::Unfoldable(&HashSet::new()),
+            "a cycle that reaches no auto is still unfoldable",
         );
     }
 

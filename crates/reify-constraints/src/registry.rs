@@ -4,6 +4,7 @@
 //! to domain-specific solvers.
 
 use crate::decompose::{ExpandedObjectiveRefs, SubProblem};
+use crate::dependent_reads::{CellReads, DependentCellReads};
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver,
@@ -107,11 +108,12 @@ struct DecompositionPrelude {
     /// The verdict those components imply. Its `component` index is an index
     /// into `components` above and is meaningless against any other vector.
     consumption: ObjectiveConsumption,
-    /// dependent-cell id → the autos it reads TRANSITIVELY. Returned rather
-    /// than rebuilt because `solve_inner`'s per-component `dependent_cells`
-    /// fold filter needs the same map, and re-deriving it there would be a
-    /// second transitive walk on the solve hot path.
-    dependent_auto_reads: HashMap<ValueCellId, std::collections::HashSet<ValueCellId>>,
+    /// Per dependent cell, the autos it reads TRANSITIVELY and whether a fold
+    /// can derive it. Returned rather than rebuilt because `solve_inner`'s
+    /// per-component `dependent_cells` fold filter needs the same map, and
+    /// re-deriving it there would be a second transitive walk on the solve hot
+    /// path.
+    dependent_auto_reads: DependentCellReads,
 }
 
 /// The `(components, verdict)` half of [`decompose_prelude`], for callers that
@@ -139,7 +141,7 @@ fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
         return DecompositionPrelude {
             components: Vec::new(),
             consumption,
-            dependent_auto_reads: HashMap::new(),
+            dependent_auto_reads: DependentCellReads::default(),
         };
     }
 
@@ -219,9 +221,10 @@ fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
     // guaranteed to land in a single component, so first-match always finds the
     // correct one.
     //
-    // A cell absent from `dependent_auto_reads` contributes nothing to the
-    // expansion and so is matched on its own id alone: that is deliberate, and
-    // it is the shape the `FallbackComponentZero` arm below still exists for.
+    // An UNFOLDABLE cell contributes nothing to the objective's expansion (see
+    // `ExpandedObjectiveRefs`) and so is matched on its own id alone: that is
+    // deliberate, and it is the shape the `FallbackComponentZero` arm below
+    // still exists for.
     let matched = components
         .iter()
         .position(|comp| objective.reaches_any(&comp.auto_params));
@@ -495,9 +498,10 @@ impl SolverRegistry {
                 .dependent_cells
                 .iter()
                 .filter(|(id, _)| {
-                    dependent_auto_reads
-                        .get(id)
-                        .is_some_and(|autos| autos.is_subset(&component.auto_params))
+                    matches!(
+                        dependent_auto_reads.lookup(id),
+                        CellReads::Foldable(autos) if autos.is_subset(&component.auto_params)
+                    )
                 })
                 .cloned()
                 .collect();
@@ -597,13 +601,12 @@ impl SolverRegistry {
             //   trivially a subset, so the filter is the IDENTITY and every
             //   pre-existing single-component solve stays byte-identical
             //   (PRD §6.2 / I1).
-            // - A cell absent from `dependent_auto_reads` is dropped.  For a
-            //   well-formed problem the only such cells are cycle members, which
-            //   `dependent_cell_auto_reads` deliberately omits rather than
-            //   publish a partial auto set (reify-eval's `build_dependent_cells`
-            //   drops cycles upstream anyway).  Dropping is the safe direction: a
-            //   cell whose auto reads are unknown is exactly one we cannot prove
-            //   is foldable here.
+            // - An UNFOLDABLE cell (on or downstream of a cycle) is dropped
+            //   even when its autos are a subset: no stored-order fold derives
+            //   its value, so there is nothing sound to fold (reify-eval's
+            //   `build_dependent_cells` drops cycles upstream anyway).  The
+            //   component still exists: decomposition couples a constraint
+            //   reading such a cell and routes it `CrossDomain`.
             //
             // # SCOPE of "structurally impossible" — now BOTH ref sides
             //
@@ -629,7 +632,7 @@ impl SolverRegistry {
             // whichever side of the problem it appears on.
             //
             // What the filter still drops is unchanged and still deliberate: a
-            // cell whose transitive auto set is UNKNOWN (the cycle case in the
+            // cell no stored-order fold derives (the UNFOLDABLE case in the
             // bullet above).  Do not read the closure of the coupling gap as a
             // licence to widen the subset test — the subset test is what bounds
             // the per-trial fold to the component's own cells.
