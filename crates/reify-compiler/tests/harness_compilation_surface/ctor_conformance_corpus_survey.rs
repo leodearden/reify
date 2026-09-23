@@ -3857,8 +3857,8 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
         ## Provenance\n\
         \n\
         Every row and every count here is **machine-generated — zero hand-derived\n\
-        entries**. The corpus is `git ls-files -- '*.ri'`; each member is compiled with\n\
-        the α(+ε) warn-stage compiler in-process (`parse_with_stdlib` →\n\
+        entries**. The corpus is `git ls-files -- '*.ri'`; each member is compiled\n\
+        in-process by the compiler at the commit surveyed (`parse_with_stdlib` →\n\
         `compile_with_stdlib`) and every diagnostic carrying one of the seven\n\
         ctor-conformance codes becomes one row. The `file:line` comes from the\n\
         diagnostic's own label span; `expected`/`found` come from the label message.\n\
@@ -3890,8 +3890,9 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
         The **`disposition` column is γ's RULING**, projected from the site's measured\n\
         severity and wording and the three per-site tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`\n\
         and `CTOR_CONFORMANCE_REJECTION_FIXTURES` in the generator,\n\
-        `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling `examples_smoke.rs`) rather than\n\
-        typed here. It has four states, and they call for four DIFFERENT actions:\n\
+        `CTOR_CONFORMANCE_MIGRATION_DEBT` in `reify_test_support::ctor_conformance_debt`)\n\
+        rather than typed here. It has four states, and they call for four DIFFERENT\n\
+        actions:\n\
         \n\
         - **`deferred`** names the LIVE task that owns retiring the site, and the reason\n\
         migrating it here would destroy something — most of these are committed RED\n\
