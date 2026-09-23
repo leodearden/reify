@@ -83,8 +83,7 @@
 >    `transform_log` are also in that array and are NOT affected: they are deliberately absent
 >    from `ORIENTATION_TYPED_FN_NAMES` and genuinely still fall through. The parallel
 >    `corrections` entry inside that JSON — the twin of the one correction 4 added — is NOT
->    yet written: the JSON is outside the file scope of the task (7022) that wrote this
->    correction, so it was left untouched rather than edited out of scope.]
+>    yet written; tracked as #7827.]
 
 ---
 
