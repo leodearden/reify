@@ -7601,8 +7601,9 @@ mod tests {
 
     #[test]
     fn lower_connect_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside connect_body.
-        // When lower_connect_body is called directly, the ERROR arm fires.
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // connect_body. When lower_connect_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt (INV-SF-7, task #6156).
         // NOTE: we use `: BoltSet` to specify a connector_type before the brace
         // block, making `{` unambiguously the start of connect_body.  Without
         // the connector_type, the new variant_construction GLR fork (task α,
@@ -7613,19 +7614,14 @@ mod tests {
         // causing `find_node_by_kind("connect_body")` to fail.  The connector
         // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
         let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { >= } }",
+            "structure S {\n  port a : out T\n  port b : in T\n  connect a -> b : BoltSet {\n    >= )\n    <= (\n  }\n}\n",
         );
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
         assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
+            !errors[0].message.contains('\n'),
+            "expected a single-line diagnostic, got: {errors:?}"
         );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in connect body")),
-            "expected 'syntax error in connect body', got: {:?}",
-            errors
-        );
+        assert_eq!(errors[0].message, "syntax error in connect body: >= )…");
     }
 
     #[test]
@@ -7754,20 +7750,18 @@ mod tests {
 
     #[test]
     fn lower_port_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside port_body.
-        // When lower_port_body is called directly, the ERROR arm should fire.
-        let errors = lower_port_body_with_errors("structure S { port a : in T { >= } }");
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // port_body. When lower_port_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt (INV-SF-7, task #6156).
+        let errors = lower_port_body_with_errors(
+            "structure S {\n  port a : in T {\n    >= )\n    <= (\n  }\n}\n",
         );
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in port body")),
-            "expected 'syntax error in port body', got: {:?}",
-            errors
+            !errors[0].message.contains('\n'),
+            "expected a single-line diagnostic, got: {errors:?}"
         );
+        assert_eq!(errors[0].message, "syntax error in port body: >= )…");
     }
 
     #[test]
@@ -7822,6 +7816,24 @@ mod tests {
             "expected no errors for syntactically valid port body with comment, got: {:?}",
             errors
         );
+    }
+
+    // ── Guarded block ERROR arm ────────────────────────────────
+
+    /// A guarded block is a member list, so its `ERROR` arm takes the member-list policy
+    /// (`diagnose_error_node`): no source echo, located at the fault (INV-SF-7, task #6156).
+    ///
+    /// Only a direct call reaches this arm. Through `parse`, `lower_member` refuses a faulty
+    /// `guarded_block` via `check_and_lower!` before `lower_guarded_block` ever runs.
+    #[test]
+    fn lower_guarded_block_error_node_emits_diagnostic() {
+        let source = "structure S {\n  param x: Real = 1\n  where x > 0 {\n    let a = 1\n    ) (\n      ] [\n    let b = 2\n  }\n}\n";
+        let errors = lower_node_with_errors(source, "guarded_block", |l, n| {
+            l.lower_guarded_block(n);
+        });
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in guarded block");
+        assert_eq!(errors[0].span.start as usize, source.find(") (").unwrap());
     }
 
     // ── Constraint def defensive catch-all tests ───────────────
