@@ -1937,6 +1937,17 @@ mod tests {
             f64::INFINITY,
             "a NaN-carrying free row must reject even when another free row is healthy, got {r_mixed}",
         );
+
+        // (d) EMPTY free set: with no free row there is no equilibrium to
+        // judge, so it must reject rather than report a vacuous residual.
+        let mut d_healthy = Mat::<f64>::zeros(2, 2);
+        d_healthy[(1, 0)] = 8.5;
+        let r_empty = free_equilibrium_residual_relative(&d_healthy, &nodes, &[]);
+        assert_eq!(
+            r_empty,
+            f64::INFINITY,
+            "an empty free set must reject, got {r_empty}"
+        );
     }
 
     // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────

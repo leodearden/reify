@@ -22,6 +22,9 @@
 //! fix restores covariance on BOTH surfaces entry points —
 //! [`form_find_anchored_surfaces`] and [`form_find_anchored_surfaces_aniso`],
 //! which share the identical criterion.
+//!
+//! It also pins the LOCAL form of the same invariance (task 7046): rescaling
+//! only a mechanically decoupled subsystem's `q` must not move any other node.
 
 use reify_solver_elastic::{
     AnisoFormFindSolve, AnisotropicSurfaceStress, FormFindSolve, MemberKind,
@@ -160,6 +163,17 @@ fn ring_member_q(kinds: &[MemberKind]) -> Vec<f64> {
         })
         .collect()
 }
+
+/// Base-gauge isotropic surface stress of every triangle.
+const ISO_SIGMA: f64 = 1.0;
+
+/// Base-gauge anisotropic prestress of every triangle: warp along the tube
+/// axis, `σ_w = 1`, `σ_f = 0.4`.
+const ANISO_PRESTRESS: AnisotropicSurfaceStress = AnisotropicSurfaceStress {
+    warp_dir: [0.0, 0.0, 1.0],
+    sigma_warp: 1.0,
+    sigma_weft: 0.4,
+};
 
 /// Perturbation off the analytic catenoid — large enough that the solve must
 /// do real work, small enough to stay in the basin of attraction (matches the
@@ -403,8 +417,7 @@ fn check_iso_surfaces_gauge_covariance(lambda: f64) {
     let (nodes, surfaces, anchors, members, kinds) =
         build_catenoid_tube_with_ring_members(PERTURB);
     let q = ring_member_q(&kinds);
-    let sigma = 1.0_f64;
-    let sigmas = vec![sigma; surfaces.len()];
+    let sigmas = vec![ISO_SIGMA; surfaces.len()];
 
     let base =
         form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
@@ -462,13 +475,7 @@ fn check_aniso_surfaces_gauge_covariance(lambda: f64) {
     let (nodes, surfaces, anchors, members, kinds) =
         build_catenoid_tube_with_ring_members(PERTURB);
     let q = ring_member_q(&kinds);
-    let sigma_warp = 1.0_f64;
-    let sigma_weft = 0.4_f64;
-    let warp_dir = [0.0, 0.0, 1.0];
-    let prestress = vec![
-        AnisotropicSurfaceStress { warp_dir, sigma_warp, sigma_weft };
-        surfaces.len()
-    ];
+    let prestress = vec![ANISO_PRESTRESS; surfaces.len()];
 
     let base = form_find_anchored_surfaces_aniso(
         &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors,
@@ -478,9 +485,9 @@ fn check_aniso_surfaces_gauge_covariance(lambda: f64) {
     let q_scaled: Vec<f64> = q.iter().map(|v| v * lambda).collect();
     let prestress_scaled = vec![
         AnisotropicSurfaceStress {
-            warp_dir,
-            sigma_warp: sigma_warp * lambda,
-            sigma_weft: sigma_weft * lambda,
+            sigma_warp: ANISO_PRESTRESS.sigma_warp * lambda,
+            sigma_weft: ANISO_PRESTRESS.sigma_weft * lambda,
+            ..ANISO_PRESTRESS
         };
         surfaces.len()
     ];
@@ -522,4 +529,151 @@ fn aniso_surfaces_form_find_is_gauge_covariant() {
 #[test]
 fn aniso_surfaces_form_find_is_gauge_covariant_small_lambda() {
     check_aniso_surfaces_gauge_covariance(LAMBDA_SMALL);
+}
+
+// ---------------------------------------------------------------------------
+// Decoupled-subsystem ("local") gauge — task 7046
+// ---------------------------------------------------------------------------
+
+/// Base-gauge force density of the decoupled cable pair.
+const DECOUPLED_CABLE_Q: f64 = 1.0;
+
+/// The catenoid+ring-members fixture plus a mechanically DECOUPLED,
+/// already-equilibrated cable pair: a free node seeded at the exact midpoint
+/// of two new anchors `(0, 0, ∓0.5)`, so its net force is exactly zero at every
+/// iterate. Every new coordinate lies inside the membrane's coordinate range,
+/// so the solver's `(1+scale)` coordinate normalisation is unchanged.
+struct DecoupledPairFixture {
+    nodes: Vec<[f64; 3]>,
+    surfaces: Vec<(usize, usize, usize)>,
+    anchors: Vec<usize>,
+    members: Vec<(usize, usize)>,
+    kinds: Vec<MemberKind>,
+    /// Base-gauge force densities: the ring members' then the pair's.
+    q: Vec<f64>,
+    /// The pair's free node.
+    pair_node: usize,
+    /// The pair's two cables (the last two members).
+    pair_members: [usize; 2],
+}
+
+fn build_catenoid_tube_with_decoupled_cable_pair() -> DecoupledPairFixture {
+    let (mut nodes, surfaces, mut anchors, mut members, mut kinds) =
+        build_catenoid_tube_with_ring_members(PERTURB);
+    let mut q = ring_member_q(&kinds);
+
+    let pair_anchors = [nodes.len(), nodes.len() + 1];
+    nodes.extend([[0.0, 0.0, -0.5], [0.0, 0.0, 0.5]]);
+    anchors.extend(pair_anchors);
+    let pair_node = nodes.len();
+    nodes.push([0.0, 0.0, 0.0]);
+
+    let pair_members = [members.len(), members.len() + 1];
+    for anchor in pair_anchors {
+        members.push((pair_node, anchor));
+        kinds.push(MemberKind::Cable);
+        q.push(DECOUPLED_CABLE_Q);
+    }
+
+    DecoupledPairFixture {
+        nodes,
+        surfaces,
+        anchors,
+        members,
+        kinds,
+        q,
+        pair_node,
+        pair_members,
+    }
+}
+
+/// A gauge change confined to a mechanically DECOUPLED subsystem must not
+/// move any other node: force densities are relative ratios PER independent
+/// component, so rescaling only the cable pair's `q` by [`LAMBDA`] is
+/// physically a no-op on the membrane (and, at a power-of-two `λ`, an
+/// arithmetic identity). form_find.rs's stop criterion,
+/// `free_equilibrium_residual_relative`, must therefore judge each free row
+/// against that row's own magnitude — one global `max` over rows lets the
+/// stiffened pair loosen every membrane row's stop test.
+///
+/// MEASURED RED against the ratio-of-maxes criterion: the λ-solve's nodes
+/// differ from the base solve's by 7.928e-5 (iso) / 4.045e-4 (aniso), the
+/// λ-solve stopping after 33 vs 99 (iso) and 49 vs 396 (aniso) iterations.
+/// A per-row criterion makes the difference 0.0, bit-exact. Only [`LAMBDA`]
+/// is exercised: at [`LAMBDA_SMALL`] the pair's rows never dominate, so that
+/// direction measures 0.0 under both criteria and does not discriminate.
+fn check_decoupled_subsystem_gauge_invariance(
+    context: &str,
+    solve: impl Fn(&DecoupledPairFixture, &[f64]) -> (bool, Vec<[f64; 3]>),
+) {
+    let fixture = build_catenoid_tube_with_decoupled_cable_pair();
+    let mut q_scaled = fixture.q.clone();
+    for m in fixture.pair_members {
+        q_scaled[m] *= LAMBDA;
+    }
+
+    let (base_converged, base_nodes) = solve(&fixture, &fixture.q);
+    let (scaled_converged, scaled_nodes) = solve(&fixture, &q_scaled);
+
+    assert!(
+        base_converged && scaled_converged,
+        "[{context}] both solves must converge: base={base_converged} pair-scaled={scaled_converged}",
+    );
+
+    let moved = max_coord_rel_diff(&base_nodes, &fixture.nodes);
+    assert!(
+        moved > MIN_SOLVE_DISPLACEMENT,
+        "[{context}] base solve barely moved off the seed geometry (rel diff = {moved:e}, \
+         expected > {MIN_SOLVE_DISPLACEMENT:e}) — the agreement check below would be vacuous",
+    );
+
+    let node_err = max_coord_rel_diff(&scaled_nodes, &base_nodes);
+    assert!(
+        node_err < GAUGE_REL_TOL,
+        "[{context}] rescaling only the decoupled pair's q by λ={LAMBDA:e} moved the solved \
+         geometry: rel err = {node_err:e}, expected < {GAUGE_REL_TOL:e}",
+    );
+
+    for (label, nodes) in [("base", &base_nodes), ("pair-scaled", &scaled_nodes)] {
+        assert_eq!(
+            nodes[fixture.pair_node], [0.0; 3],
+            "[{context}] {label}: the pair's free node must stay at its equilibrium midpoint",
+        );
+    }
+}
+
+#[test]
+fn iso_surfaces_solve_is_invariant_to_a_decoupled_subsystems_gauge() {
+    check_decoupled_subsystem_gauge_invariance("ISO", |fixture, q| {
+        let sigmas = vec![ISO_SIGMA; fixture.surfaces.len()];
+        let solve = form_find_anchored_surfaces(
+            &fixture.nodes,
+            &fixture.members,
+            &fixture.kinds,
+            q,
+            &fixture.surfaces,
+            &sigmas,
+            &fixture.anchors,
+        )
+        .expect("catenoid + decoupled pair iso solve must be feasible");
+        (solve.converged, solve.nodes)
+    });
+}
+
+#[test]
+fn aniso_surfaces_solve_is_invariant_to_a_decoupled_subsystems_gauge() {
+    check_decoupled_subsystem_gauge_invariance("ANISO", |fixture, q| {
+        let prestress = vec![ANISO_PRESTRESS; fixture.surfaces.len()];
+        let solve = form_find_anchored_surfaces_aniso(
+            &fixture.nodes,
+            &fixture.members,
+            &fixture.kinds,
+            q,
+            &fixture.surfaces,
+            &prestress,
+            &fixture.anchors,
+        )
+        .expect("catenoid + decoupled pair aniso solve must be feasible");
+        (solve.converged, solve.nodes)
+    });
 }
