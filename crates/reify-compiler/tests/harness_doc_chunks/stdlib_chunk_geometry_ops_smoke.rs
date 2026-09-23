@@ -79,7 +79,7 @@ use crate::doc_forms::{
     Arity, DocForm, call_forms, doc_form_of_span, parse_or_panic, unmirrored_forms,
 };
 
-const FIXTURE_PATH: &str = concat!(
+pub(crate) const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/stdlib_geometry_ops_smoke.ri"
 );

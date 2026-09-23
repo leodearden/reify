@@ -22,15 +22,26 @@
 //! Lambda-parameter spans and ```` ```reify-schematic ```` listings are out of
 //! scope.
 
+use std::collections::BTreeSet;
+
 use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::compile_source_with_stdlib;
 
+use crate::chunk_cite_gate::repo_root;
 use crate::chunk_prose::{code_spans, unfenced_prose};
-use crate::doc_forms::{DocForm, doc_form_of_span};
-use crate::fence_gate::chunk_label;
+use crate::doc_forms::{Arity, DocForm, call_forms, doc_form_of_span};
+use crate::fence_gate::{
+    CHUNK_FILE_COUNT, chunk_label, discover_chunk_stems, read_chunk_file, report,
+};
+use crate::stdlib_chunk_geometry_ops_smoke::FIXTURE_PATH;
 
 /// This gate's own fixture, repo-relative — how every violation names it.
 const UNFENCED_FIXTURE: &str = "crates/reify-compiler/tests/fixtures/unfenced_signatures_smoke.ri";
+
+/// Every compile-verified fixture whose calls can exercise a documented form:
+/// this gate's own, and stdlib's. Each is joined onto the repo root, which
+/// leaves an absolute path — stdlib's `FIXTURE_PATH` — as it is.
+const SIGNATURE_FIXTURES: &[&str] = &[UNFENCED_FIXTURE, FIXTURE_PATH];
 
 /// A span in `chunk`'s prose that is signature-SHAPED but is not a signature,
 /// excused from the gate for the recorded reason.
@@ -39,6 +50,33 @@ pub(crate) struct ProseMention {
     pub(crate) span: &'static str,
     pub(crate) why: &'static str,
 }
+
+impl ProseMention {
+    fn excuses(&self, stem: &str, span: &str) -> bool {
+        self.chunk == stem && self.span == span
+    }
+}
+
+/// The signature-shaped spans in the live chunks that are not signatures —
+/// each triaged by hand, and each reported STALE the moment it excuses nothing.
+const NOT_SIGNATURES: &[ProseMention] = &[
+    ProseMention {
+        chunk: "enums",
+        span: "f(x)",
+        why: "the map_or lambda applied to the payload — a metavariable in the combinator \
+              table, not a builtin",
+    },
+    ProseMention {
+        chunk: "geometry",
+        span: "single()",
+        why: "names the function in prose — `single` takes one selector argument",
+    },
+    ProseMention {
+        chunk: "geometry",
+        span: "min_clearance(a, b)",
+        why: "trap 3 documents this 2-arg form as UNSUPPORTED",
+    },
+];
 
 /// One signature-shaped span in a chunk's unfenced prose.
 pub(crate) struct DocumentedForm {
@@ -79,7 +117,7 @@ pub(crate) fn unfenced_signature_violations(
     let excused = |stem: &str, span: &str| {
         not_signatures
             .iter()
-            .any(|mention| mention.chunk == stem && mention.span == span)
+            .any(|mention| mention.excuses(stem, span))
     };
 
     let unreadable = read.iter().filter_map(|(stem, forms)| {
@@ -115,13 +153,12 @@ pub(crate) fn unfenced_signature_violations(
     let stale = not_signatures
         .iter()
         .filter(|mention| {
-            !read.iter().any(|(stem, forms)| {
-                *stem == mention.chunk
-                    && forms.as_ref().map_or(true, |forms| {
-                        forms
-                            .iter()
-                            .any(|documented| documented.span == mention.span)
-                    })
+            !read.iter().any(|(stem, forms)| match forms {
+                // Reported as unreadable; whether it still excuses anything is unknowable.
+                Err(_) => *stem == mention.chunk,
+                Ok(forms) => forms
+                    .iter()
+                    .any(|documented| mention.excuses(stem, &documented.span)),
             })
         })
         .map(|mention| {
@@ -168,6 +205,115 @@ pub(crate) fn fixture_compile_violations(source: &str) -> Vec<String> {
             format!("{:?}{code}: {}", diagnostic.severity, diagnostic.message)
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The real-corpus gate
+// ---------------------------------------------------------------------------
+
+/// Anti-vacuity floor: the distinct documented forms the gate reads across the
+/// corpus, excused spans left out. EXACT live value — re-measure it by the
+/// protocol stated once next to `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
+const MINIMUM_UNFENCED_FORMS: usize = 119;
+
+/// One form per chunk family that prose extraction must reach. The geometry one
+/// sits in the Topology Selectors table at the END of geometry.md, so reading it
+/// proves the extraction survived every fence and note above it.
+const SENTINELS: &[(&str, &str, Arity)] = &[
+    ("collections", "generate", Arity::Exact(2)),
+    ("enums", "unwrap_or", Arity::Exact(2)),
+    ("fields", "constant_field", Arity::Exact(1)),
+    ("stdlib", "rotate", Arity::Exact(5)),
+    ("geometry", "faces_by_normal", Arity::Exact(3)),
+];
+
+fn read_fixture(path: &str) -> String {
+    std::fs::read_to_string(repo_root().join(path)).unwrap_or_else(|e| {
+        panic!("{path} must be readable ({e}) — it is one of this gate's SIGNATURE_FIXTURES")
+    })
+}
+
+/// Every signature in any chunk's unfenced prose is exercised, at its documented
+/// arity, by a call in a compile-verified fixture. Scope and limits: this
+/// module's doc.
+#[test]
+fn every_unfenced_signature_is_exercised_by_a_compiling_fixture() {
+    let stems = discover_chunk_stems();
+    assert!(
+        stems.len() >= CHUNK_FILE_COUNT,
+        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — the gate below \
+         would be vacuous",
+        stems.len()
+    );
+    let markdowns: Vec<String> = stems.iter().map(|stem| read_chunk_file(stem)).collect();
+    let chunks: Vec<(&str, &str)> = stems
+        .iter()
+        .map(String::as_str)
+        .zip(markdowns.iter().map(String::as_str))
+        .collect();
+    let calls: Vec<(String, usize)> = SIGNATURE_FIXTURES
+        .iter()
+        .flat_map(|path| call_forms(&read_fixture(path), path))
+        .collect();
+
+    let documented: Vec<(&str, DocumentedForm)> = chunks
+        .iter()
+        .flat_map(|(stem, markdown)| {
+            documented_unfenced_forms(markdown)
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |documented| (*stem, documented))
+        })
+        .collect();
+    let distinct: BTreeSet<&DocForm> = documented
+        .iter()
+        .filter(|(stem, documented)| {
+            !NOT_SIGNATURES
+                .iter()
+                .any(|mention| mention.excuses(stem, &documented.span))
+        })
+        .map(|(_, documented)| &documented.form)
+        .collect();
+    assert!(
+        distinct.len() >= MINIMUM_UNFENCED_FORMS,
+        "the prose scan read only {} distinct documented form(s) across the chunks, expected at \
+         least {MINIMUM_UNFENCED_FORMS} — either the extraction regressed and the verdict below \
+         passes vacuously, or signatures were removed and MINIMUM_UNFENCED_FORMS must come down \
+         in the same diff",
+        distinct.len()
+    );
+    for (stem, name, arity) in SENTINELS {
+        assert!(
+            documented.iter().any(|(documented_stem, documented)| {
+                documented_stem == stem
+                    && documented.form.name == *name
+                    && documented.form.arity == *arity
+            }),
+            "{} documents {name}/{arity:?} in its prose, but the scan did not read it — the \
+             extraction no longer reaches that chunk (or the signature was rewritten: re-pick \
+             the sentinel)",
+            chunk_label(stem)
+        );
+    }
+
+    report(
+        "signatures in the MCP language-reference chunks' prose that no compile-verified fixture \
+         exercises at their documented arity",
+        &unfenced_signature_violations(&chunks, &calls, NOT_SIGNATURES),
+    );
+}
+
+/// This gate's fixture compiles clean: every call in it stands for a documented
+/// signature, so an Error, an unresolved name or an unrecognised argument shape
+/// there is a documented form the compiler does not accept.
+#[test]
+fn unfenced_signatures_fixture_compiles_clean() {
+    let violations = fixture_compile_violations(&read_fixture(UNFENCED_FIXTURE));
+    assert!(
+        violations.is_empty(),
+        "{UNFENCED_FIXTURE} does not compile clean:\n{}",
+        violations.join("\n")
+    );
 }
 
 // ---------------------------------------------------------------------------
