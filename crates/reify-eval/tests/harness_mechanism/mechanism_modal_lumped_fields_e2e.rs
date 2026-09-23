@@ -1,12 +1,14 @@
-//! Author-surface gate for the `ModalResult` fields `mechanism_modal_analysis`
-//! cannot define (task #7012).
+//! Author-surface gate for the `ModalResult` fields of
+//! `mechanism_modal_analysis` (task #7012).
 //!
 //! The lumped generalized-coordinate producer (`run_mechanism_modal` in
 //! `crates/reify-eval/src/modal_ops.rs`) has no per-node mode shape, no
 //! direction to project a participation mass onto, and applies no `Support`.
 //! It used to report those as `[]`, `0` and `[]`: plausible values that
 //! downstream arithmetic such as `pm + 1.0` silently consumed. This pins them,
-//! and what is computed from them, as `undef`.
+//! and what is computed from them, as `undef`. It also pins the matrix norms,
+//! which the lumped model does have, as the solve's own `‖M‖` / `‖K‖` rather
+//! than the `0` they used to be.
 //!
 //! The source is inlined rather than committed as a fixture for the reason
 //! `mechanism_modal_damping_e2e.rs` gives: a committed `.ri` read by a Rust
@@ -14,9 +16,12 @@
 //! `scripts/verify.sh`.
 
 use reify_core::{Severity, ValueCellId};
+use reify_eval::EvalResult;
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::Value;
 use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
+
+const PROBE: &str = "MechanismLumpedFieldsProbe";
 
 const SOURCE: &str = r#"
 structure def MechanismLumpedFieldsProbe {
@@ -36,6 +41,8 @@ structure def MechanismLumpedFieldsProbe {
     let pm_plus_one = pm + 1.0
     let shape = z_modal.modes[0].shape
     let bcs = z_modal.boundary_conditions
+    let mass_norm = z_modal.mass_matrix_norm
+    let stiffness_norm = z_modal.stiffness_matrix_norm
 }
 "#;
 
@@ -50,8 +57,8 @@ fn num(v: &Value) -> f64 {
     }
 }
 
-#[test]
-fn mechanism_modal_lumped_fields_are_honest_undef_at_author_surface() {
+/// Compile and evaluate [`SOURCE`], asserting neither step reports an error.
+fn eval_probe() -> EvalResult {
     let compiled = parse_and_compile_with_stdlib(SOURCE);
     assert!(
         errors_only(&compiled).is_empty(),
@@ -70,19 +77,25 @@ fn mechanism_modal_lumped_fields_are_honest_undef_at_author_surface() {
         errors.is_empty(),
         "eval must produce no Error diagnostics, got: {errors:#?}"
     );
+    eval_result
+}
 
-    let cell = |name: &str| {
-        eval_result
-            .values
-            .get(&ValueCellId::new("MechanismLumpedFieldsProbe", name))
-            .unwrap_or_else(|| {
-                panic!(
-                    "MechanismLumpedFieldsProbe.{name} not found in eval result; \
-                     all diagnostics: {:#?}",
-                    eval_result.diagnostics
-                )
-            })
-    };
+fn cell<'a>(eval_result: &'a EvalResult, name: &str) -> &'a Value {
+    eval_result
+        .values
+        .get(&ValueCellId::new(PROBE, name))
+        .unwrap_or_else(|| {
+            panic!(
+                "{PROBE}.{name} not found in eval result; all diagnostics: {:#?}",
+                eval_result.diagnostics
+            )
+        })
+}
+
+#[test]
+fn mechanism_modal_lumped_fields_are_honest_undef_at_author_surface() {
+    let eval_result = eval_probe();
+    let cell = |name: &str| cell(&eval_result, name);
 
     let f = num(cell("z_first_mode_hz"));
     assert!(
@@ -110,5 +123,31 @@ fn mechanism_modal_lumped_fields_are_honest_undef_at_author_surface() {
         "participation_mass, shape and boundary_conditions are undefined for the \
          lumped model, so they and anything computed from them must be undef; \
          got {not_undef:?}"
+    );
+}
+
+/// The one-body lumped model is M = [m], K = [k], so ‖M‖_F = m and
+/// ‖K‖_F = √(k²) = k. `prb_parallelogram_flexure`'s effective stiffness equals
+/// the joint's `spring_rate` to 1e-12 (pinned in
+/// `crates/reify-stdlib/src/flexures/compound.rs`), hence the 1e-9 band on ‖K‖.
+#[test]
+fn mechanism_modal_lumped_matrix_norms_are_the_physical_m_and_k_at_author_surface() {
+    let eval_result = eval_probe();
+    let num_cell = |name: &str| num(cell(&eval_result, name));
+    let rel_err = |got: f64, expected: f64| (got - expected).abs() / expected;
+
+    let mass = num_cell("z_carriage_mass");
+    let mass_norm = num_cell("mass_norm");
+    assert!(
+        rel_err(mass_norm, mass) <= 1e-12,
+        "mass_matrix_norm {mass_norm} must equal the carriage mass {mass} kg"
+    );
+
+    let stiffness = num_cell("z_effective_stiffness");
+    let stiffness_norm = num_cell("stiffness_norm");
+    assert!(
+        rel_err(stiffness_norm, stiffness) <= 1e-9,
+        "stiffness_matrix_norm {stiffness_norm} must equal the flexure's effective \
+         stiffness {stiffness} N/m"
     );
 }

@@ -12273,6 +12273,67 @@ mod tests {
         );
     }
 
+    /// Task #7012: `ModalResult.mass_matrix_norm` / `stiffness_matrix_norm`
+    /// are the Frobenius norms of the PHYSICAL lumped M and K, excluding the
+    /// n_dof = 1 anchor DOF. Both matrices are diagonal and
+    /// ‖diag(d)‖_F = √(Σ d_i²) exactly, so each expectation is that closed
+    /// form and the 1e-12 relative band only absorbs fp associativity.
+    #[test]
+    fn mechanism_modal_reports_lumped_matrix_norms() {
+        fn norms(mech: Value) -> (f64, f64) {
+            let data = solved_mechanism_modal_result(mech, struct_instance("ModalOptions", vec![]));
+            let real = |name: &str| match data.fields.get(name) {
+                Some(Value::Real(v)) => *v,
+                other => panic!("{name} must be a Real; got {other:?}"),
+            };
+            (real("mass_matrix_norm"), real("stiffness_matrix_norm"))
+        }
+        fn assert_rel_close(label: &str, got: f64, expected: f64) {
+            let rel = (got - expected).abs() / expected;
+            assert!(
+                rel <= 1e-12,
+                "{label}: got {got}, expected {expected} (relative error {rel:.3e})"
+            );
+        }
+
+        // Case A — n_dof = 1, the anchor-pad path. The padded pencil's norms
+        // would be √(0.5² + 1²) ≈ 1.118 and ≈ 2e11 (λ_anchor = max(k/m, 1)·1e8).
+        let (mass_norm, stiffness_norm) = norms(one_body_mechanism(
+            mass_props_solid(0.5),
+            flexure_joint(1_000.0),
+        ));
+        assert_rel_close("Case A mass_matrix_norm", mass_norm, 0.5);
+        assert_rel_close("Case A stiffness_matrix_norm", stiffness_norm, 1_000.0);
+
+        // Case B — n_dof = 2, the direct solve.
+        let (mass_norm, stiffness_norm) = norms(two_body_mechanism(
+            mass_props_solid(2.0),
+            flexure_joint(1_000.0),
+            mass_props_solid(0.1),
+            flexure_joint(50_000.0),
+        ));
+        assert_rel_close(
+            "Case B mass_matrix_norm",
+            mass_norm,
+            (2.0_f64 * 2.0 + 0.1 * 0.1).sqrt(),
+        );
+        assert_rel_close(
+            "Case B stiffness_matrix_norm",
+            stiffness_norm,
+            (1_000.0_f64 * 1_000.0 + 50_000.0 * 50_000.0).sqrt(),
+        );
+
+        // Case C — a rigid joint stores no K entry, so ‖K‖ = 0 is measured,
+        // not a fake; ‖M‖ keeps the case from passing on an all-zero result.
+        let (mass_norm, stiffness_norm) =
+            norms(one_body_mechanism(mass_props_solid(0.5), rigid_joint()));
+        assert_rel_close("Case C mass_matrix_norm", mass_norm, 0.5);
+        assert_eq!(
+            stiffness_norm, 0.0,
+            "Case C: a rigid joint contributes no stiffness, so ‖K‖ must be exactly 0"
+        );
+    }
+
     /// Task #6875 step-5 (RED → GREEN in step-6): an unrecognised
     /// `DampingDescriptor` refinement must be reported, never silently zeroed.
     ///
