@@ -208,6 +208,7 @@ pub(crate) fn compile_boolean_op(
                                     "{name}() over an empty geometry list has nothing \
                                      to fold; it needs at least one element"
                                 ))
+                                .with_code(DiagnosticCode::GeometryListFoldEmpty)
                                 .with_label(DiagnosticLabel::new(
                                     args[0].span,
                                     "this geometry list is empty",
@@ -226,6 +227,7 @@ pub(crate) fn compile_boolean_op(
                                  (a list literal of geometry, or generate(<literal>, \
                                  |i| <geometry>))"
                             ))
+                            .with_code(DiagnosticCode::GeometryListFoldArgNotGeometry)
                             .with_label(DiagnosticLabel::new(
                                 args[0].span,
                                 "this collection's elements are not geometry",
@@ -283,6 +285,7 @@ pub(crate) fn compile_boolean_op(
                                      argument; fold this list on its own, or write out \
                                      its elements alongside the other arguments"
                                 ))
+                                .with_code(DiagnosticCode::GeometryListFoldMixedArgs)
                                 .with_label(DiagnosticLabel::new(
                                     arg.span,
                                     "this geometry list is mixed with other arguments",

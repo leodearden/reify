@@ -46,6 +46,18 @@ fn error_messages(compiled: &reify_compiler::CompiledModule) -> Vec<String> {
         .collect()
 }
 
+fn error_messages_with_code(
+    compiled: &reify_compiler::CompiledModule,
+    code: DiagnosticCode,
+) -> Vec<String> {
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.code == Some(code))
+        .map(|d| d.message.clone())
+        .collect()
+}
+
 // ─── step-1: result typing ───
 
 /// `generate(4, |i| i * 1mm)` types cell `xs` to `List<Length>` with zero Error
@@ -733,14 +745,15 @@ fn union_all_over_an_over_cap_inline_geometry_list_reports_the_cap() {
     );
     let errors = error_messages(&generated);
     assert!(
-        errors
+        error_messages_with_code(&generated, DiagnosticCode::GeometryListTooManyElements)
             .iter()
             .any(|m| m.contains("limited to 256 geometry elements") && m.contains("257")),
         "expected the element-cap error naming the cap and the actual count; \
          got: {errors:?}",
     );
     assert!(
-        !errors.iter().any(|m| m.contains("must be a geometry list")),
+        error_messages_with_code(&generated, DiagnosticCode::GeometryListFoldArgNotGeometry)
+            .is_empty(),
         "the elements ARE geometry — the not-a-geometry-list message would send \
          the user hunting a type error that does not exist; got: {errors:?}",
     );
@@ -754,7 +767,7 @@ fn union_all_over_an_over_cap_inline_geometry_list_reports_the_cap() {
     ));
     let literal_errors = error_messages(&literal);
     assert!(
-        literal_errors
+        error_messages_with_code(&literal, DiagnosticCode::GeometryListTooManyElements)
             .iter()
             .any(|m| m.contains("limited to 256 geometry elements") && m.contains("257")),
         "an over-cap inline LITERAL must report the cap too; got: {literal_errors:?}",
@@ -1192,9 +1205,7 @@ fn a_geometry_list_mixed_into_a_multi_argument_fold_is_a_loud_error() {
 
     let errors = error_messages(&compiled);
     assert!(
-        errors
-            .iter()
-            .any(|m| m.contains("takes a geometry list only as its SOLE argument")),
+        !error_messages_with_code(&compiled, DiagnosticCode::GeometryListFoldMixedArgs).is_empty(),
         "mixing a geometry list into a multi-argument fold must be diagnosed; \
          got {errors:?}",
     );

@@ -176,6 +176,7 @@ pub(crate) fn push_element_cap_error(
             "{subject} is limited to {GEOMETRY_LIST_MAX_ELEMENTS} geometry \
              elements, but this one has {count}"
         ))
+        .with_code(DiagnosticCode::GeometryListTooManyElements)
         .with_label(DiagnosticLabel::new(
             span,
             format!(
@@ -535,6 +536,7 @@ pub(crate) fn diagnose_unsupported_geometry_list(
                     "generate() with a geometry-producing lambda requires a literal \
                      non-negative Int count",
                 )
+                .with_code(DiagnosticCode::GeometryListNonLiteralCount)
                 .with_label(DiagnosticLabel::new(
                     count_expr.span,
                     "this count is not a literal non-negative Int, so the geometry \
@@ -558,6 +560,7 @@ pub(crate) fn diagnose_unsupported_geometry_list(
                     "list literal mixes geometry and non-geometry elements; a geometry \
                      list must contain only geometry expressions",
                 )
+                .with_code(DiagnosticCode::GeometryListMixedElements)
                 .with_label(DiagnosticLabel::new(
                     offender,
                     "this element is not a geometry expression",
