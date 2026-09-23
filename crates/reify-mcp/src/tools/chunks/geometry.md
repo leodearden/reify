@@ -162,7 +162,7 @@ When in doubt, prefer the `_centered` variant over a manual
      by a table row AND called by the fence — so neither half can cover for the other losing one.
      geometry_chunk_smoke.rs::reify_tagged_fences_in_geometry_chunk_compile compiles the ```reify
      fence below as a whole module, so the migration forms are verified rather than asserted. Both
-     scans are scoped BYTE-EXACTLY by the `<!-- LENGTH-ARGS-SECTION -->` marker on the line above,
+     scans are scoped BYTE-EXACTLY by the `LENGTH-ARGS-SECTION` marker on the line above,
      NOT by this heading's wording, which is free to change — keep the marker directly under the
      heading it opens.
 
@@ -362,7 +362,7 @@ Worked examples: `examples/multi_kernel/voxel_to_mesh.ri` and
      all) by the eval/CLI tests mapped in the SYNC block at that subsection — read it before relying
      on a trap, and before changing one of those behaviours.
 
-     The `<!-- ORACLE-SECTION -->` marker on the line above is what scopes that guard's scan, matched
+     The `ORACLE-SECTION` marker on the line above is what scopes that guard's scan, matched
      byte-exactly — NOT this heading's wording, which is free to change. Keep the marker directly
      under the heading it opens; the scan runs from it to the next `##` heading. -->
 
@@ -551,8 +551,8 @@ gate.
        geometry_chunk_smoke.rs::documented_measurement_arities_are_exercised_by_a_compiling_fence
        geometry_chunk_smoke.rs::the_undef_trap_example_is_a_query_the_hoist_does_not_cover
 
-     That last guard scopes the region BETWEEN `<!-- NOT-HOISTED-TRAP -->` and
-     `<!-- /NOT-HOISTED-TRAP -->` below — both markers matched byte-exactly, and a missing
+     That last guard scopes the region BETWEEN the `NOT-HOISTED-TRAP` and
+     `/NOT-HOISTED-TRAP` markers below — both matched byte-exactly, and a missing
      closing one is RED rather than a silent widening — and pins exactly ONE
      claim: the call form the arg-shape trap exhibits is drawn from OUTSIDE
      reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES, so the trap cannot illustrate "an inline
@@ -575,7 +575,7 @@ gate.
      The OCCT-absence claim in "When a query yields `undef`" is UNPINNED prose — verified by
      reading the gate in crates/reify-kernel-occt/src/lib.rs, not by a test in this harness.
 
-     The `<!-- MEASUREMENT-SECTION -->` marker on the line above is what scopes the guard's scan,
+     The `MEASUREMENT-SECTION` marker on the line above is what scopes the guard's scan,
      matched byte-exactly — NOT this heading's wording. Keep it directly under the heading it
      opens; the scan runs from it to the next `##` heading. -->
 
@@ -717,7 +717,7 @@ from the compiler registry in `crates/reify-compiler/src/units.rs`.
      UNPINNED prose, and a result-type change in units.rs will not turn this table red. Re-read
      both sources before relying on a cell.
 
-     The `<!-- TOPOLOGY-SECTION -->` marker on the line above is what scopes the scan, matched
+     The `TOPOLOGY-SECTION` marker on the line above is what scopes the scan, matched
      byte-exactly — NOT this heading's wording. Keep it directly under the heading it opens; the
      scan runs from it to the next `##` heading. -->
 

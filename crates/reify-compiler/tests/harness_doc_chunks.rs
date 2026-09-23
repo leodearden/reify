@@ -17,12 +17,17 @@
 //! tests/common/mod.rs into this compile unit for nothing, in a PRD whose whole point is
 //! cutting merge-gate compile cost.
 //!
-//! `fence_gate` (#5479, same PRD, leaf β) is the one module here that is NOT an
-//! absorbed standalone binary: it is a NEW repo-wide gate over every
-//! `chunks/*.md` fence, authored directly into this compile unit so it never
-//! becomes another grandfathered top-level `tests/*.rs` row. The C1 harness-layout
-//! contract in tests/infra/test_harness_kloc_cap.sh should read it that way — no
-//! baseline-manifest row is reversed by it, and none is added.
+//! Modules authored DIRECTLY into this compile unit rather than absorbed from a
+//! standalone binary, so none becomes another grandfathered top-level `tests/*.rs`
+//! row. The C1 harness-layout contract in tests/infra/test_harness_kloc_cap.sh
+//! should read them that way — no baseline-manifest row is reversed by them, and
+//! none is added:
+//!
+//! - `fence_gate` (#5479, same PRD, leaf β) — the repo-wide gate over every
+//!   `chunks/*.md` fence.
+//! - `chunk_prose` (#6974) — the unfenced-prose model every prose scan reads.
+//! - `chunk_cite_gate` (#6974) — the one cite scanner, and the corpus-wide cite
+//!   and maintainer-note gates.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;

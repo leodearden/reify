@@ -71,7 +71,7 @@
 //! `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`), which is `deferred` — reuse inside the
 //! existing binary is what is available today, not a substitute for it.
 
-use crate::chunk_prose::{HTML_COMMENT_CLOSE, strip_html_comments};
+use crate::chunk_prose::{EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, strip_html_comments};
 use crate::geometry_chunk_smoke::{
     CHUNK_PATH as GEOMETRY_CHUNK_PATH, GEOMETRY_ORACLE_NAMES, call_sites, called_names,
     phantom_name_panic, registry_family, section_body,
@@ -226,12 +226,9 @@ fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
              `{HTML_COMMENT_CLOSE}` after its HTML comments were stripped. A terminator that \
              survives stripping was never opened, so an editor note in this region CLOSED \
              EARLIER than its author intended: the tail of the note is now rendered text the \
-             reader sees, and it is being charged to the pointer's word budget. HTML comments \
-             do not nest and HTML defines no escape inside one, so backticks do not protect a \
-             quoted terminator — writing a marker out in full is what ends the note. FIX: name \
-             the marker WITHOUT its closing bracket (`ORACLE-XREF`, not the whole comment), or \
-             move that sentence out of the comment. Do NOT reword the pointer; the pointer is \
-             not what is wrong."
+             reader sees, and it is being charged to the pointer's word budget. \
+             {EARLY_CLOSED_NOTE_FIX} Do NOT reword the pointer; the pointer is not what is \
+             wrong."
         ));
     }
 

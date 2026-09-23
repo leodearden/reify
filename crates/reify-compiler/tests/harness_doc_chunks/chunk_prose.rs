@@ -24,6 +24,14 @@ use crate::fence_gate::parse_fences;
 pub(crate) const HTML_COMMENT_OPEN: &str = "<!--";
 pub(crate) const HTML_COMMENT_CLOSE: &str = "-->";
 
+/// Why a maintainer note that quotes a full marker ends early, and the fix — ONE
+/// wording for every gate that reports the debris, so what a fixer is told
+/// cannot drift between them.
+pub(crate) const EARLY_CLOSED_NOTE_FIX: &str = "HTML comments do not nest and HTML defines no \
+    escape inside one, so backticks do not protect a quoted terminator — writing a marker out in \
+    full is what ends the note. FIX: name the marker WITHOUT its closing bracket (e.g. \
+    `ORACLE-XREF`, not the whole comment), or move that sentence out of the comment.";
+
 /// One HTML comment outside any fence.
 #[derive(Debug)]
 pub(crate) struct HtmlComment {

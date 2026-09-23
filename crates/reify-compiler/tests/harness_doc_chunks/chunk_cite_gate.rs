@@ -1,4 +1,6 @@
-//! The binary's ONE cite scanner and resolver.
+//! The binary's ONE cite scanner and resolver, and the two corpus gates built on
+//! it: every cited path resolves, and every maintainer note is whole with every
+//! SYNC note naming a path.
 //!
 //! A cite is a repo path a chunk names — `docs/…/x.md`, `crates/…/y.rs`,
 //! `examples/…/z.ri`, or a `name.rs::fn` test — read out of the markdown by
@@ -11,7 +13,10 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::chunk_prose::EARLY_CLOSED_NOTE_FIX;
+use crate::chunk_prose::{
+    EARLY_CLOSED_NOTE_FIX, HTML_COMMENT_CLOSE, HtmlComment, html_comments,
+    stray_comment_terminators,
+};
 use crate::fence_gate::{
     CHUNK_FILE_COUNT, chunk_label, discover_chunk_stems, read_chunk_file, report,
 };
@@ -300,6 +305,51 @@ pub(crate) fn assert_cited_paths_resolve(
          discoverability regression. Cites seen: {cites:?}",
         audit.ri_files.len()
     );
+}
+
+/// The SYNC notes in `markdown`: maintainer notes (HTML comments outside any
+/// fence) whose body starts with `SYNC:`. Their cites are simply whatever
+/// [`cited_source_paths`] reads in the body, so "verified by <path>" and
+/// "<path> verifies" are the same to it.
+pub(crate) fn sync_notes(markdown: &str) -> Result<Vec<HtmlComment>, String> {
+    Ok(html_comments(markdown)?
+        .into_iter()
+        .filter(|comment| comment.body.trim_start().starts_with("SYNC:"))
+        .collect())
+}
+
+/// Everything wrong with one chunk's maintainer notes, one line each: a SYNC
+/// note that names no path, and — for EVERY note, SYNC or not — the `-->` a note
+/// that closed early leaves in the rendered prose. A chunk whose notes cannot be
+/// read at all is one violation.
+pub(crate) fn note_violations(chunk_path: &str, markdown: &str) -> Vec<String> {
+    let read = sync_notes(markdown)
+        .and_then(|notes| stray_comment_terminators(markdown).map(|strays| (notes, strays)));
+    let (notes, strays) = match read {
+        Ok(read) => read,
+        Err(error) => return vec![format!("{chunk_path}: {error}")],
+    };
+
+    let unnamed = notes
+        .iter()
+        .filter(|note| cited_source_paths(&note.body).is_empty())
+        .map(|note| {
+            format!(
+                "{chunk_path}:{} — this SYNC note names no path. A SYNC note points a maintainer \
+                 at what verifies the prose beside it, so one naming nothing is a claim nobody \
+                 can check. FIX: cite the verifying file whole on one line (repo-relative, or \
+                 `name.rs::fn`), or drop the `SYNC:` lead if the note makes no such claim.",
+                note.line
+            )
+        });
+    let closed_early = strays.into_iter().map(|line| {
+        format!(
+            "{chunk_path}:{line} — a maintainer note CLOSED EARLY: this `{HTML_COMMENT_CLOSE}` \
+             survives into the rendered chunk, so the note's tail is text the reader sees, and a \
+             SYNC note loses every cite past the early close. {EARLY_CLOSED_NOTE_FIX}"
+        )
+    });
+    unnamed.chain(closed_early).collect()
 }
 
 // ---------------------------------------------------------------------------
