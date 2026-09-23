@@ -9904,6 +9904,11 @@ impl Engine {
         // (via eval_ctx), then write them back via &mut ValueMap. This avoids a
         // split-borrow conflict between the read and write phases.
         let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        // Geometry-list lets (task #5385): their element realizations are named
+        // `"{list}#{k}"` — synthetic, unaddressable from source — so they are
+        // routed away from the scalar `entries` write and regrouped into one
+        // `Value::List` cell after the loop.
+        let mut geometry_lists = GeometryListCellAccumulator::declaring(&template.realizations);
 
         {
             let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
@@ -9952,16 +9957,16 @@ impl Engine {
                 let upstream_values_hash =
                     compute_realization_upstream_values_hash(realization, &ctx);
 
-                entries.push((
-                    ValueCellId::new(realization.id.entity.as_str(), name),
-                    Value::GeometryHandle {
-                        realization_ref: realization.id.clone(),
-                        upstream_values_hash,
-                        kernel_handle: Some(kernel_handle),
-                    },
-                ));
+                let value = Value::GeometryHandle {
+                    realization_ref: realization.id.clone(),
+                    upstream_values_hash,
+                    kernel_handle: Some(kernel_handle),
+                };
+                geometry_lists.route(realization, name, value, &mut entries);
             }
         } // ctx dropped — &ValueMap borrow released
+
+        entries.extend(geometry_lists.into_entries());
 
         for (cell_id, value) in entries {
             values.insert(cell_id, value);
@@ -10603,6 +10608,10 @@ impl Engine {
         use reify_ir::Value;
 
         let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        // Same geometry-list regrouping as `post_process_geometry_handle_cells`
+        // (task #5385), so the tessellate surface exposes the same
+        // `List<Geometry>` cell the build surface does.
+        let mut geometry_lists = GeometryListCellAccumulator::declaring(&template.realizations);
         {
             let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
             for realization in &template.realizations {
@@ -10616,16 +10625,15 @@ impl Engine {
                 };
                 let upstream_values_hash =
                     compute_realization_upstream_values_hash(realization, &ctx);
-                entries.push((
-                    ValueCellId::new(realization.id.entity.as_str(), name),
-                    Value::GeometryHandle {
-                        realization_ref: realization.id.clone(),
-                        upstream_values_hash,
-                        kernel_handle: Some(kernel_handle),
-                    },
-                ));
+                let value = Value::GeometryHandle {
+                    realization_ref: realization.id.clone(),
+                    upstream_values_hash,
+                    kernel_handle: Some(kernel_handle),
+                };
+                geometry_lists.route(realization, name, value, &mut entries);
             }
         }
+        entries.extend(geometry_lists.into_entries());
         for (cell_id, value) in entries {
             values.insert(cell_id, value);
         }
@@ -10770,19 +10778,25 @@ impl Engine {
         // Two-phase: collect while holding a &ValueMap borrow (via eval_ctx),
         // then write back via &mut ValueMap to avoid a split-borrow conflict.
         let mut entries: Vec<(ValueCellId, Value)> = Vec::new();
+        // Geometry-list lets (task #5385): the pure-eval symbolic route must
+        // agree with the kernel-backed one, so element realizations are
+        // regrouped here too rather than written as synthetic scalar cells.
+        let realizations = || module.templates.iter().flat_map(|t| &t.realizations);
+        let mut geometry_lists = GeometryListCellAccumulator::declaring(realizations());
         {
             let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
-            for realization in module.templates.iter().flat_map(|t| &t.realizations) {
+            for realization in realizations() {
                 let name = match &realization.name {
                     Some(n) => n.as_str(),
                     None => continue, // unnamed realizations have no named cell
                 };
-                let cell_id = ValueCellId::new(realization.id.entity.as_str(), name);
                 // Do not clobber a realized handle already stamped by the build path.
-                if matches!(
-                    values.get(&cell_id),
-                    Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
-                ) {
+                if realization.list_binding.is_none()
+                    && matches!(
+                        values.get(&ValueCellId::new(realization.id.entity.as_str(), name)),
+                        Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
+                    )
+                {
                     continue;
                 }
                 // Delegate to the single canonical fold (step-6, task #4652):
@@ -10790,16 +10804,30 @@ impl Engine {
                 // path so eval-mint == build-realize (§7.1 identity, GHR-β).
                 let upstream_values_hash =
                     compute_realization_upstream_values_hash(realization, &ctx);
-                entries.push((
-                    cell_id,
-                    Value::GeometryHandle {
-                        realization_ref: realization.id.clone(),
-                        upstream_values_hash,
-                        kernel_handle: None,
-                    },
-                ));
+                let value = Value::GeometryHandle {
+                    realization_ref: realization.id.clone(),
+                    upstream_values_hash,
+                    kernel_handle: None,
+                };
+                geometry_lists.route(realization, name, value, &mut entries);
             }
         } // ctx dropped — &ValueMap borrow released
+        // The per-element clobber guard above cannot apply to list elements
+        // (their synthetic cells never exist), so the list-cell equivalent is
+        // applied here: a list already holding realized handles is left alone.
+        for (cell_id, value) in geometry_lists.into_entries() {
+            let already_realized = matches!(
+                values.get(&cell_id),
+                Some(Value::List(items))
+                    if items.iter().any(|v| matches!(
+                        v,
+                        Value::GeometryHandle { kernel_handle: Some(_), .. }
+                    ))
+            );
+            if !already_realized {
+                entries.push((cell_id, value));
+            }
+        }
         // No caller reads a flipped set (see doc comment above) — just write
         // back the mint results, skipping any per-entry `values.get`
         // re-probe or `HashSet` allocation.
@@ -12134,16 +12162,53 @@ impl Engine {
                     );
                     reify_expr::eval_expr(expr, &ctx)
                 };
+                // Existing snapshot entry, read BEFORE any write-back (Phase 3
+                // is the only mutator and runs after this loop), so this is the
+                // value as of the previous build.
+                let existing = self
+                    .eval_state
+                    .as_ref()
+                    .and_then(|s| s.snapshot.values.get(cell_id));
+                // The write-back test is deliberately the SHALLOW
+                // `!new_val.is_undef()` — do not "strengthen" it to
+                // `value_is_or_contains_undef` without a test that fails
+                // without it (review esc-5385-6).
+                //
+                // A monotone variant (refuse any write-back less resolved than
+                // the existing snapshot value) was tried here for a geometry
+                // LIST let and MEASURED INERT for that case: such a cell never
+                // holds a resolved value in `snapshot.values` to begin with. It
+                // reads `List([Undef; n])` in EVERY path (`eval`,
+                // `tessellate_snapshot`, `build_snapshot`, `build`), because the
+                // regroup in `post_process_geometry_handle_cells` /
+                // `hydrate_geometry_handles_into_values` writes the assembled
+                // list into the build's working `ValueMap` — which becomes the
+                // RESULT — and never back into the snapshot. The `existing`
+                // value is therefore already undef-containing for a list cell,
+                // so a monotone test can never fire there.
+                //
+                // What it DID change is every other `Let` cell on this shared
+                // selective-demand refresh path: a cell that LEGITIMATELY
+                // regresses (a dependency left the demand cone, so the re-eval
+                // is honestly partially-undef) would keep its stale
+                // fully-resolved snapshot value instead — a staleness
+                // regression in the very path this file's staleness tests
+                // guard, with no test pinning it either way. Untested
+                // behaviour change plus inert motivation ⇒ removed.
+                //
+                // The real defect on the geometry-list side — under selective
+                // demand a second no-op `tessellate_snapshot` returns
+                // `[Undef; n]` where the first returned live handles, while full
+                // scope returns live handles both times — is filed separately as
+                // task #6460 (escalation esc-5385-5) and is NOT addressed by
+                // anything at this line.
                 if !new_val.is_undef() {
-                    // Update local context for chain deps.
-                    ctx_values.insert(cell_id.clone(), new_val.clone());
                     // Preserve existing DeterminacyState from snapshot.values.
-                    let det = self
-                        .eval_state
-                        .as_ref()
-                        .and_then(|s| s.snapshot.values.get(cell_id))
+                    let det = existing
                         .map(|(_, d)| *d)
                         .unwrap_or(reify_ir::DeterminacyState::Determined);
+                    // Update local context for chain deps.
+                    ctx_values.insert(cell_id.clone(), new_val.clone());
                     refreshed.push((cell_id.clone(), new_val, det));
                 }
             }
@@ -12387,6 +12452,152 @@ impl Engine {
             diagnostics,
             resolved_params: HashMap::new(),
         })
+    }
+}
+
+/// Regroups the sibling realizations of a *geometry-list let* back into the
+/// single `Value::List` its cell should hold (task #5385).
+///
+/// A `let holes = generate(3, |i| cylinder(…))` lowers to three realizations
+/// named `holes#0..holes#2`, each tagged with a
+/// [`reify_compiler::GeometryListBinding`]. Those synthetic names are not
+/// addressable from source, so instead of writing three scalar cells the
+/// hydration passes funnel them through this accumulator and emit one
+/// `ValueCellId::new(entity, "holes")` holding the handles in index order.
+///
+/// **All-or-nothing.** A list cell is emitted only when every DECLARED element
+/// resolved. A partially-resolved list leaves the cell untouched, so the
+/// eval-side undef provenance (task #5402) still owns that failure case rather
+/// than seeing a silently short list and reporting nothing.
+///
+/// **Declared at construction.** [`Self::declaring`] records every element of
+/// the realizations a hydration pass is about to walk BEFORE the walk, so no
+/// early `continue` inside a pass (a `named_steps` miss, a clobber guard) can
+/// hide an unresolved element from the all-or-nothing check. There is
+/// deliberately no `Default`: an accumulator that declared nothing would drop
+/// every list it was routed.
+struct GeometryListCellAccumulator {
+    /// `(entity, list_name)` → the list's COMPILE-TIME element count, read
+    /// from [`reify_compiler::GeometryListBinding::len`].
+    ///
+    /// NOT a running tally of the realizations seen: the compiler's emission
+    /// loop drops an element whenever `compile_geometry_call` returns `None`
+    /// (two of those returns are diagnostic-free), so a tally would make a
+    /// dropped element look like a complete shorter list and silently diverge
+    /// from the `<list>.count` already folded from the compiler's
+    /// `scope.geometry_list_elements[name].len()` (review esc-5385-3).
+    declared: BTreeMap<(String, String), usize>,
+    /// `(entity, list_name)` → `index` → resolved handle value.
+    resolved: BTreeMap<(String, String), BTreeMap<usize, reify_ir::Value>>,
+}
+
+impl GeometryListCellAccumulator {
+    /// An accumulator expecting every list element among `realizations` — pass
+    /// exactly the realizations the hydration pass will walk.
+    fn declaring<'a>(
+        realizations: impl IntoIterator<Item = &'a reify_compiler::RealizationDecl>,
+    ) -> Self {
+        let mut declared = BTreeMap::new();
+        for realization in realizations {
+            let Some(binding) = &realization.list_binding else {
+                continue;
+            };
+            let previous = declared.insert(
+                (realization.id.entity.clone(), binding.list_name.clone()),
+                binding.len,
+            );
+            // Every sibling of one list carries the same compile-time `len`, so
+            // a repeat insert is idempotent. A disagreement means the compiler
+            // emitted siblings from two different expansions of the same name —
+            // impossible today (entity.rs expands exactly once, in pass 1) and a
+            // silent short/long list if it ever became possible.
+            debug_assert!(
+                previous.is_none_or(|p| p == binding.len),
+                "geometry list '{}' declared with conflicting lengths {:?} vs {}",
+                binding.list_name,
+                previous,
+                binding.len,
+            );
+        }
+        Self {
+            declared,
+            resolved: BTreeMap::new(),
+        }
+    }
+
+    /// Route one hydrated handle to where it belongs: a list element is held
+    /// back for [`Self::into_entries`] to regroup, and any other realization is
+    /// written straight to `entries` under its own named cell.
+    fn route(
+        &mut self,
+        realization: &reify_compiler::RealizationDecl,
+        name: &str,
+        value: reify_ir::Value,
+        entries: &mut Vec<(reify_core::identity::ValueCellId, reify_ir::Value)>,
+    ) {
+        match &realization.list_binding {
+            Some(binding) => {
+                self.resolved
+                    .entry((realization.id.entity.clone(), binding.list_name.clone()))
+                    .or_default()
+                    .insert(binding.index, value);
+            }
+            None => entries.push((
+                reify_core::identity::ValueCellId::new(realization.id.entity.as_str(), name),
+                value,
+            )),
+        }
+    }
+
+    /// Emit `(list cell, Value::List)` for every list whose elements ALL
+    /// resolved, in ascending index order.
+    ///
+    /// The all-or-nothing drop is a SAFETY property rather than a data
+    /// regression only because `demand.rs`'s reverse edge — a demanded cell
+    /// pulls every realization that produces it into the cone — makes a cone
+    /// holding a strict subset of one list's elements unreachable. Without that
+    /// edge, a partly-demanded list drops the elements that DID resolve.
+    ///
+    /// An empty geometry list (`generate(0, …)`) never reaches this function at
+    /// all: it emits zero `RealizationDecl`s, so [`Self::declaring`] never sees
+    /// it and its key is absent from `declared`. Its cell keeps the
+    /// value the ordinary value-cell pass computed for `generate(0, …)` —
+    /// `Value::List([])`, since `generate` yields one element per index and
+    /// there are none — which is the determinate answer this pass would have
+    /// produced anyway. `empty_geometry_list_evaluates_to_the_empty_list`
+    /// (reify-eval `tests/generate_eval.rs`) pins that end state so the two
+    /// routes cannot silently disagree (review esc-5385-3).
+    fn into_entries(self) -> Vec<(reify_core::identity::ValueCellId, reify_ir::Value)> {
+        let mut out = Vec::new();
+        for (key, &expected) in &self.declared {
+            let elements = self.resolved.get(key);
+            // EXACT INDEX SET, not just the count (review esc-5385-4).
+            //
+            // A count check alone admits a compensating pair: indices
+            // `{0, 1, 7}` against `expected == 3` passes, and the emit below
+            // then yields a 3-element list whose contents are silently wrong —
+            // `m.values()` walks the BTreeMap in ascending KEY order whatever
+            // those keys are, so element 2 would be index 7's handle. (A
+            // duplicate index is the benign direction: it collapses to one
+            // entry, shortening the count, so the list is conservatively
+            // dropped.) Unreachable today — `index` comes from `enumerate()` in
+            // the compiler's unroll — but `declaring` already carries a
+            // `debug_assert!` for the analogous `len` disagreement, and this
+            // costs the same as the count check it replaces.
+            let contiguous = elements.is_some_and(|m| m.keys().copied().eq(0..expected));
+            if !contiguous {
+                continue;
+            }
+            let (entity, list_name) = key;
+            let items = elements
+                .map(|m| m.values().cloned().collect())
+                .unwrap_or_default();
+            out.push((
+                reify_core::identity::ValueCellId::new(entity.clone(), list_name.clone()),
+                reify_ir::Value::List(items),
+            ));
+        }
+        out
     }
 }
 
@@ -14086,5 +14297,153 @@ mod reset_per_build_state_tests {
             );
             assert_must_survive(&engine, surface);
         }
+    }
+}
+
+#[cfg(test)]
+mod geometry_list_cell_accumulator_tests {
+    use super::GeometryListCellAccumulator;
+    use reify_compiler::{GeometryListBinding, RealizationDecl};
+    use reify_core::identity::ValueCellId;
+    use reify_core::{RealizationNodeId, SourceSpan};
+    use reify_ir::Value;
+
+    /// One list-bound `RealizationDecl` for element `index` of `list` in `entity`,
+    /// declaring the list's compile-time length as `len`.
+    fn element(entity: &str, list: &str, index: usize, len: usize) -> RealizationDecl {
+        RealizationDecl {
+            id: RealizationNodeId::new(entity, index as u32),
+            name: Some(format!("{list}#{index}")),
+            is_aux: false,
+            is_query_only: false,
+            list_binding: Some(GeometryListBinding {
+                list_name: list.to_string(),
+                index,
+                len,
+            }),
+            operations: Vec::new(),
+            span: SourceSpan::new(0, 0),
+        }
+    }
+
+    /// Route `realization` exactly as a hydration pass does, under its own name.
+    fn route(
+        acc: &mut GeometryListCellAccumulator,
+        realization: &RealizationDecl,
+        value: Value,
+        entries: &mut Vec<(ValueCellId, Value)>,
+    ) {
+        let name = realization
+            .name
+            .as_deref()
+            .expect("hydrated realizations are named");
+        acc.route(realization, name, value, entries);
+    }
+
+    /// The happy path, so the negatives below are pinning the guard and not an
+    /// accumulator that never emits anything.
+    #[test]
+    fn every_declared_element_resolving_emits_the_list_in_index_order() {
+        let elements: Vec<_> = (0..3).map(|k| element("S", "holes", k, 3)).collect();
+        let mut acc = GeometryListCellAccumulator::declaring(&elements);
+        let mut scalar = Vec::new();
+        for (k, r) in elements.iter().enumerate() {
+            route(&mut acc, r, Value::Int(k as i64), &mut scalar);
+        }
+        assert!(
+            scalar.is_empty(),
+            "a list element must never be written as its own scalar cell; got {scalar:?}",
+        );
+
+        let entries = acc.into_entries();
+        assert_eq!(entries.len(), 1, "one cell per list; got {entries:?}");
+        assert_eq!(entries[0].0.member, "holes");
+        assert_eq!(
+            entries[0].1,
+            Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2)]),
+            "elements must come back in ascending index order",
+        );
+    }
+
+    /// ALL-OR-NOTHING (review esc-5385-7): one unresolved element drops the whole
+    /// list, leaving the cell at its `[Undef; n]` placeholder rather than emitting
+    /// a silently short list. This is the central safety property justifying
+    /// `GeometryListBinding::len` carrying the COMPILE-TIME count.
+    ///
+    /// Index 1 goes missing both ways it can: the hydration pass skipped it (a
+    /// `named_steps` miss — declared, never routed), or the compiler never
+    /// emitted it (`compile_geometry_call` returned `None` — its siblings still
+    /// carry `len == 3`).
+    #[test]
+    fn a_single_unresolved_element_drops_the_whole_list() {
+        let all: Vec<_> = (0..3).map(|k| element("S", "holes", k, 3)).collect();
+        let survivors = vec![all[0].clone(), all[2].clone()];
+        for (how, declared) in [
+            ("skipped by the hydration pass", &all),
+            ("never emitted by the compiler", &survivors),
+        ] {
+            let mut acc = GeometryListCellAccumulator::declaring(declared);
+            let mut scalar = Vec::new();
+            for r in &survivors {
+                let index = r.list_binding.as_ref().map_or(0, |b| b.index);
+                route(&mut acc, r, Value::Int(index as i64), &mut scalar);
+            }
+
+            assert!(
+                acc.into_entries().is_empty(),
+                "index 1 {how}: a partially-resolved list must emit NO cell — a \
+                 2-element list here would be silently wrong, and `holes.count` \
+                 already folded to 3",
+            );
+        }
+    }
+
+    /// The exact-index-set check, not a count check: `{0, 1, 7}` against an
+    /// expected 3 has the right CARDINALITY but the wrong indices, and emitting it
+    /// would put index 7's handle at position 2 (`BTreeMap::values` walks ascending
+    /// key order whatever the keys are). Unreachable today — `index` comes from
+    /// `enumerate()` in the compiler's unroll — which is precisely why it needs a
+    /// test rather than a reader's trust.
+    #[test]
+    fn a_compensating_index_set_of_the_right_length_is_still_dropped() {
+        let declared: Vec<_> = (0..3).map(|k| element("S", "holes", k, 3)).collect();
+        let mut acc = GeometryListCellAccumulator::declaring(&declared);
+        let mut scalar = Vec::new();
+        for k in [0usize, 1, 7] {
+            route(
+                &mut acc,
+                &element("S", "holes", k, 3),
+                Value::Int(k as i64),
+                &mut scalar,
+            );
+        }
+
+        assert!(
+            acc.into_entries().is_empty(),
+            "three resolved elements at indices {{0, 1, 7}} are NOT the list's \
+             elements 0..3 — a count-only check would have emitted a wrong list",
+        );
+    }
+
+    /// A realization with no `list_binding` is not this accumulator's business:
+    /// `route` writes it straight to the caller's entries under its own named
+    /// cell, and `into_entries` never emits it.
+    #[test]
+    fn a_non_list_realization_is_routed_to_its_own_cell_and_never_regrouped() {
+        let scalar_decl = RealizationDecl {
+            name: Some("body".to_string()),
+            list_binding: None,
+            ..element("S", "body", 0, 1)
+        };
+        let mut acc = GeometryListCellAccumulator::declaring(std::slice::from_ref(&scalar_decl));
+        let mut entries = Vec::new();
+        route(&mut acc, &scalar_decl, Value::Int(0), &mut entries);
+
+        assert_eq!(
+            entries,
+            vec![(ValueCellId::new("S", "body"), Value::Int(0))],
+            "a scalar realization is written to its own named cell",
+        );
+        assert!(acc.into_entries().is_empty());
     }
 }

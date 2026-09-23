@@ -4659,6 +4659,99 @@ pub enum DiagnosticCode {
     /// PRD-prose mnemonic: `E_ChainElementNotAnOccurrence` (severity
     /// convention: `E_*` → Error).
     ChainElementNotAnOccurrence,
+    /// Origin: `crates/reify-compiler/src/geometry_list.rs::push_element_cap_error`
+    /// (task #5385, geometry-list lets). One code for both emitters of the cap:
+    /// the declaring geometry-list let, and an inline list passed straight to
+    /// `union_all`/`intersection_all` — same condition, two places.
+    ///
+    /// Emitted at COMPILE time when a geometry list literal or a
+    /// `generate(n, |i| <geometry>)` would unroll to more than
+    /// `GEOMETRY_LIST_MAX_ELEMENTS` (256) elements. Each element becomes its own
+    /// `RealizationDecl`, so the cap bounds the kernel work one list can mint.
+    ///
+    /// Canonical message:
+    /// `"<subject> is limited to 256 geometry elements, but this one has <count>"`,
+    /// where `<subject>` is `"a geometry list literal"` or
+    /// `"generate() with a geometry-producing lambda"`.
+    ///
+    /// Severity: Error.
+    ///
+    /// Minting rationale (for this variant and the five `GeometryList*`
+    /// variants below it): `DiagnosticCode` is `#[non_exhaustive]` with no
+    /// exhaustive match-on-self, so adding variants is non-breaking for
+    /// downstream consumers (follows the `GenerateNegativeCount` precedent). The
+    /// six are separate codes because they are separate conditions with
+    /// separate remedies; collapsing any of them would push a consumer that
+    /// must tell them apart back onto message text.
+    GeometryListTooManyElements,
+    /// Origin: `crates/reify-compiler/src/geometry_list.rs::diagnose_unsupported_geometry_list`
+    /// (task #5385).
+    ///
+    /// Emitted at COMPILE time for a let bound to `generate(<count>, |i|
+    /// <geometry>)` whose count is not a non-negative `Int` LITERAL: each
+    /// element becomes its own compile-time `RealizationDecl`, so the element
+    /// count must be known when compiling. Distinct from
+    /// `GenerateNegativeCount`, which is an EVAL-time check on a negative count
+    /// VALUE for any `generate`, and fires only for a geometry-producing lambda
+    /// — a scalar `generate` keeps accepting a computed count.
+    ///
+    /// Canonical message: `"generate() with a geometry-producing lambda
+    /// requires a literal non-negative Int count"`.
+    ///
+    /// Severity: Error.
+    GeometryListNonLiteralCount,
+    /// Origin: `crates/reify-compiler/src/geometry_list.rs::diagnose_unsupported_geometry_list`
+    /// (task #5385).
+    ///
+    /// Emitted at COMPILE time for a let bound to a list literal whose elements
+    /// mix geometry and non-geometry expressions; the label anchors the first
+    /// non-geometry element. Distinct from `CollectionLiteralKindMismatch`,
+    /// which compares a literal's collection KIND (list/set/map) against an
+    /// annotation rather than the kinds of its elements.
+    ///
+    /// Canonical message: `"list literal mixes geometry and non-geometry
+    /// elements; a geometry list must contain only geometry expressions"`.
+    ///
+    /// Severity: Error.
+    GeometryListMixedElements,
+    /// Origin: `crates/reify-compiler/src/geometry_boolean.rs::compile_boolean_op`
+    /// (task #5385), the single-argument `union_all`/`intersection_all` fold.
+    ///
+    /// Emitted at COMPILE time when the fold's sole argument is a geometry list
+    /// that unrolls to ZERO elements, so there is no operand to fold.
+    ///
+    /// Canonical message: `"<op>() over an empty geometry list has nothing to
+    /// fold; it needs at least one element"`.
+    ///
+    /// Severity: Error.
+    GeometryListFoldEmpty,
+    /// Origin: `crates/reify-compiler/src/geometry_boolean.rs::compile_boolean_op`
+    /// (task #5385), the single-argument `union_all`/`intersection_all` fold.
+    ///
+    /// Emitted at COMPILE time when the fold's sole argument IS a collection,
+    /// but not a statically unrollable geometry list — its elements are not
+    /// geometry, or it cannot be unrolled at compile time. A single argument
+    /// that is not a collection at all is NOT this code: it keeps the ordinary
+    /// "expects at least 2 arguments" arity error.
+    ///
+    /// Canonical message: `"<op>()'s single argument must be a geometry list
+    /// (a list literal of geometry, or generate(<literal>, |i| <geometry>))"`.
+    ///
+    /// Severity: Error.
+    GeometryListFoldArgNotGeometry,
+    /// Origin: `crates/reify-compiler/src/geometry_boolean.rs::compile_boolean_op`
+    /// (task #5385), the multi-argument `union_all`/`intersection_all` form.
+    ///
+    /// Emitted at COMPILE time when a geometry list is passed ALONGSIDE other
+    /// arguments. A geometry list is folded only as the sole argument, so the
+    /// mixed call is rejected rather than treating the list as one operand.
+    ///
+    /// Canonical message: `"<op>() takes a geometry list only as its SOLE
+    /// argument; fold this list on its own, or write out its elements alongside
+    /// the other arguments"`.
+    ///
+    /// Severity: Error.
+    GeometryListFoldMixedArgs,
 }
 
 /// A diagnostic message with location and optional labels.
