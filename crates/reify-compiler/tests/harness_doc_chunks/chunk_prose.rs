@@ -1,4 +1,267 @@
+//! The UNFENCED PROSE of a markdown chunk: what a reader sees outside code
+//! blocks and maintainer notes, with every line and column still pointing into
+//! the source.
+//!
+//! Fenced blocks come from [`parse_fences`], the binary's one fence model.
+//! HTML comments are read as HTML reads them: a comment runs from `<!--` to its
+//! FIRST `-->`, even one quoted in backticks, because markdown is not processed
+//! inside a comment. A maintainer note that quotes a full marker therefore ends
+//! at the quote and leaks its tail into the rendered chunk — the defect
+//! [`stray_comment_terminators`] reports, measured in five notes of
+//! `geometry.md` and `units.md` when this module landed. Code spans pair per
+//! CommonMark within one paragraph, so a stray backtick cannot swallow the
+//! paragraphs after it.
+
+use std::ops::Range;
+
 use crate::fence_gate::parse_fences;
+
+/// The HTML comment grammar — ONE pair of delimiters for every comment reader in
+/// this binary: the prose model here, the renderer-faithful
+/// [`strip_html_comments`], and `oracle_xref_smoke.rs`'s debris check. Readers
+/// that disagreed about what closes a note would each report on a document the
+/// others never saw.
+pub(crate) const HTML_COMMENT_OPEN: &str = "<!--";
+pub(crate) const HTML_COMMENT_CLOSE: &str = "-->";
+
+/// One HTML comment outside any fence.
+#[derive(Debug)]
+pub(crate) struct HtmlComment {
+    /// 1-based line of the comment's `<!--`.
+    pub(crate) line: usize,
+    /// The text between the two delimiters.
+    pub(crate) body: String,
+}
+
+/// One inline code span.
+#[derive(Debug)]
+pub(crate) struct CodeSpan {
+    /// 1-based line of the opening backtick run.
+    pub(crate) line: usize,
+    /// The span's content, a line break inside it read as one space.
+    pub(crate) text: String,
+}
+
+/// `markdown` with every fenced block — both delimiter lines included — and
+/// every HTML comment outside a fence blanked to spaces. Every other byte, and
+/// every line break, is kept.
+///
+/// `Err` on an unterminated fence (the fence model's own message) or an
+/// unterminated comment (naming its line): either would silently hide the rest
+/// of the chunk from whatever reads this prose.
+pub(crate) fn unfenced_prose(markdown: &str) -> Result<String, String> {
+    let unfenced = without_fences(markdown)?;
+    let comments = closed_comments(&unfenced)?;
+    let mut prose = unfenced.into_bytes();
+    for comment in comments {
+        blank(&mut prose[comment]);
+    }
+    Ok(into_text(prose))
+}
+
+/// Every HTML comment outside a fence, in document order.
+pub(crate) fn html_comments(markdown: &str) -> Result<Vec<HtmlComment>, String> {
+    let unfenced = without_fences(markdown)?;
+    let comments = closed_comments(&unfenced)?;
+    Ok(comments
+        .into_iter()
+        .map(|comment| {
+            let body_start = comment.start + HTML_COMMENT_OPEN.len();
+            let body_end = (comment.end - HTML_COMMENT_CLOSE.len()).max(body_start);
+            HtmlComment {
+                line: line_at(&unfenced, comment.start),
+                body: markdown[body_start..body_end].to_string(),
+            }
+        })
+        .collect())
+}
+
+/// The 1-based lines of every `-->` left in unfenced prose: the tail of a
+/// comment that closed before its author meant it to.
+pub(crate) fn stray_comment_terminators(markdown: &str) -> Result<Vec<usize>, String> {
+    let prose = unfenced_prose(markdown)?;
+    let mut lines: Vec<usize> = prose
+        .match_indices(HTML_COMMENT_CLOSE)
+        .map(|(at, _)| line_at(&prose, at))
+        .collect();
+    lines.dedup();
+    Ok(lines)
+}
+
+/// `markdown` with every `<!-- … -->` comment removed.
+///
+/// An UNTERMINATED comment consumes the remainder, which is exactly what a
+/// markdown renderer does with it — so a region whose pointer has been swallowed
+/// by a stray `<!--` reports as missing its call forms, which is the true
+/// description of what the reader can now see.
+pub(crate) fn strip_html_comments(markdown: &str) -> String {
+    let comments = scan_comments(markdown);
+    let mut out = String::with_capacity(markdown.len());
+    let mut kept_from = 0;
+    for comment in comments.closed {
+        out.push_str(&markdown[kept_from..comment.start]);
+        kept_from = comment.end;
+    }
+    out.push_str(&markdown[kept_from..comments.unterminated.unwrap_or(markdown.len())]);
+    out
+}
+
+/// Every inline code span in `text`, in document order.
+///
+/// A backtick run of N opens a span that closes at the next run of EXACTLY N in
+/// the same paragraph; an opener with no such closer is literal text.
+pub(crate) fn code_spans(text: &str) -> Vec<CodeSpan> {
+    paragraphs(text)
+        .into_iter()
+        .flat_map(|(first_line, lines)| paragraph_code_spans(first_line, &lines.join("\n")))
+        .collect()
+}
+
+/// The comments in `text` as byte ranges, delimiters included, in document
+/// order — plus the offset of a final `<!--` that never closes.
+struct CommentScan {
+    closed: Vec<Range<usize>>,
+    unterminated: Option<usize>,
+}
+
+fn scan_comments(text: &str) -> CommentScan {
+    let mut closed = Vec::new();
+    let mut from = 0;
+    while let Some(open) = text[from..].find(HTML_COMMENT_OPEN).map(|at| from + at) {
+        let Some(close) = text[open..].find(HTML_COMMENT_CLOSE) else {
+            return CommentScan {
+                closed,
+                unterminated: Some(open),
+            };
+        };
+        from = open + close + HTML_COMMENT_CLOSE.len();
+        closed.push(open..from);
+    }
+    CommentScan {
+        closed,
+        unterminated: None,
+    }
+}
+
+fn closed_comments(text: &str) -> Result<Vec<Range<usize>>, String> {
+    let scan = scan_comments(text);
+    match scan.unterminated {
+        None => Ok(scan.closed),
+        Some(open) => Err(format!(
+            "unterminated HTML comment: the `{HTML_COMMENT_OPEN}` at line {} is never closed \
+             by `{HTML_COMMENT_CLOSE}`, so a renderer hides everything after it. Close the note.",
+            line_at(text, open)
+        )),
+    }
+}
+
+fn without_fences(markdown: &str) -> Result<String, String> {
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(markdown.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let mut text = markdown.as_bytes().to_vec();
+    for fence in parse_fences(markdown)? {
+        let start = line_starts[fence.open_line - 1];
+        let end = line_starts
+            .get(fence.close_line)
+            .copied()
+            .unwrap_or(markdown.len());
+        blank(&mut text[start..end]);
+    }
+    Ok(into_text(text))
+}
+
+fn blank(bytes: &mut [u8]) {
+    for byte in bytes.iter_mut().filter(|byte| **byte != b'\n') {
+        *byte = b' ';
+    }
+}
+
+fn into_text(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).expect("blanking writes ASCII spaces over whole characters")
+}
+
+fn line_at(text: &str, offset: usize) -> usize {
+    text.as_bytes()[..offset]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1
+}
+
+/// Maximal runs of non-blank lines, each with the 1-based number of its first
+/// line.
+fn paragraphs(text: &str) -> Vec<(usize, Vec<&str>)> {
+    let mut out: Vec<(usize, Vec<&str>)> = Vec::new();
+    let mut current: Option<(usize, Vec<&str>)> = None;
+    for (index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            out.extend(current.take());
+        } else {
+            current
+                .get_or_insert_with(|| (index + 1, Vec::new()))
+                .1
+                .push(line);
+        }
+    }
+    out.extend(current);
+    out
+}
+
+fn paragraph_code_spans(first_line: usize, paragraph: &str) -> Vec<CodeSpan> {
+    let runs = backtick_runs(paragraph);
+    let mut spans = Vec::new();
+    let mut next = 0;
+    while let Some(opener) = runs.get(next) {
+        let closer = runs[next + 1..]
+            .iter()
+            .position(|run| run.len() == opener.len());
+        let Some(skip) = closer else {
+            next += 1;
+            continue;
+        };
+        let closer = &runs[next + 1 + skip];
+        spans.push(CodeSpan {
+            line: first_line + line_at(paragraph, opener.start) - 1,
+            text: span_content(&paragraph[opener.end..closer.start]),
+        });
+        next += skip + 2;
+    }
+    spans
+}
+
+fn backtick_runs(text: &str) -> Vec<Range<usize>> {
+    let mut runs: Vec<Range<usize>> = Vec::new();
+    for (at, byte) in text.bytes().enumerate() {
+        if byte != b'`' {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(run) if run.end == at => run.end += 1,
+            _ => runs.push(at..at + 1),
+        }
+    }
+    runs
+}
+
+/// A span's raw content as CommonMark reads it: a line break, with the next
+/// line's indentation, becomes one space; then one space comes off each end
+/// when both ends have one and the content is not all spaces.
+fn span_content(raw: &str) -> String {
+    let joined = raw
+        .split('\n')
+        .enumerate()
+        .map(|(index, part)| if index == 0 { part } else { part.trim_start() })
+        .collect::<Vec<_>>()
+        .join(" ");
+    match joined
+        .strip_prefix(' ')
+        .and_then(|rest| rest.strip_suffix(' '))
+    {
+        Some(inner) if !joined.trim().is_empty() => inner.to_string(),
+        _ => joined,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Hermetic tests — synthetic markdown only; no chunk file is read.
@@ -90,7 +353,10 @@ fn an_unterminated_comment_is_an_error_naming_its_opening_line() {
     let outcomes = [
         ("unfenced_prose", unfenced_prose(md).map(drop)),
         ("html_comments", html_comments(md).map(drop)),
-        ("stray_comment_terminators", stray_comment_terminators(md).map(drop)),
+        (
+            "stray_comment_terminators",
+            stray_comment_terminators(md).map(drop),
+        ),
     ];
     for (entry_point, outcome) in outcomes {
         let err = outcome.expect_err("an unterminated comment must not read as prose");

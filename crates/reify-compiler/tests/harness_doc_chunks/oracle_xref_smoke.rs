@@ -60,8 +60,10 @@
 //! `section_body`, `call_sites`, `called_names`, `registry_family` and
 //! `phantom_name_panic` are all `geometry_chunk_smoke.rs`'s, already `pub(crate)`
 //! and already parameterised by `chunk_path` so a `constraints.md` failure names
-//! `constraints.md`. The ONE helper added here is [`strip_html_comments`], and it
-//! is pinned directly by the unit tests at the foot of this file.
+//! `constraints.md`. The ONE helper this file added, [`strip_html_comments`],
+//! now lives in `chunk_prose.rs` beside the prose model that shares its comment
+//! grammar, and is still pinned directly by the unit tests at the foot of this
+//! file.
 //!
 //! That follows task 5759's precedent (`units_chunk_smoke.rs`) exactly: the
 //! harness binary now holds FIVE chunk modules and STILL THREE scrapers. The
@@ -69,6 +71,7 @@
 //! `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1`), which is `deferred` — reuse inside the
 //! existing binary is what is available today, not a substitute for it.
 
+use crate::chunk_prose::{HTML_COMMENT_CLOSE, strip_html_comments};
 use crate::geometry_chunk_smoke::{
     CHUNK_PATH as GEOMETRY_CHUNK_PATH, GEOMETRY_ORACLE_NAMES, call_sites, called_names,
     phantom_name_panic, registry_family, section_body,
@@ -281,34 +284,6 @@ fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
         ));
     }
 
-    out
-}
-
-/// The HTML comment grammar, as ONE definition shared by the stripper below and
-/// by [`xref_region_violations`]' comment-integrity class. A stripper and a
-/// debris check that disagreed about what closes a comment would each be
-/// reporting on a document the other never saw.
-const HTML_COMMENT_OPEN: &str = "<!--";
-const HTML_COMMENT_CLOSE: &str = "-->";
-
-/// `markdown` with every `<!-- … -->` comment removed.
-///
-/// An UNTERMINATED comment consumes the remainder, which is exactly what a
-/// markdown renderer does with it — so a region whose pointer has been swallowed
-/// by a stray `<!--` reports as missing its call forms, which is the true
-/// description of what the reader can now see.
-fn strip_html_comments(markdown: &str) -> String {
-    let mut out = String::with_capacity(markdown.len());
-    let mut rest = markdown;
-
-    while let Some(open) = rest.find(HTML_COMMENT_OPEN) {
-        out.push_str(&rest[..open]);
-        let Some(close) = rest[open..].find(HTML_COMMENT_CLOSE) else {
-            return out;
-        };
-        rest = &rest[open + close + HTML_COMMENT_CLOSE.len()..];
-    }
-    out.push_str(rest);
     out
 }
 
@@ -706,11 +681,11 @@ The posed form and the traps are in the `geometry` chunk — topic `geometry` of
 
 // ── Scanner unit tests ───────────────────────────────────────────────────────
 //
-// `strip_html_comments` is this module's only hand-rolled text helper, and every
-// class of `xref_region_violations` runs downstream of it. It is pinned DIRECTLY
-// here rather than only through the controls above, following the posture
-// `geometry_chunk_smoke.rs`'s own "Scanner unit tests" block establishes: the
-// failure it guards against is self-concealing. A stripper that quietly returned
+// `strip_html_comments` (chunk_prose.rs's renderer-faithful stripper) is the
+// one text helper every class of `xref_region_violations` runs downstream of. It
+// is pinned DIRECTLY here rather than only through the controls above, following
+// the posture `geometry_chunk_smoke.rs`'s own "Scanner unit tests" block
+// establishes: the failure it guards against is self-concealing. A stripper that quietly returned
 // nothing would empty every scan, and the call-form class would then blame the
 // chunk for a defect in this function.
 

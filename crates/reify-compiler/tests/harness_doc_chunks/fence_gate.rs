@@ -157,14 +157,16 @@ use crate::geometry_chunk_smoke::reify_tagged_fences;
 
 /// One fenced code block, as this gate sees it.
 #[derive(Debug, Clone)]
-struct Fence {
+pub(crate) struct Fence {
     /// 1-based position in document order across the whole file. This, not the
     /// line number, is what a violation message leads with: a reader counting
     /// fences down a rendered chunk can find "fence #4" without a line-numbered
     /// view of the source.
     ordinal: usize,
     /// 1-based line number of the OPENING delimiter.
-    open_line: usize,
+    pub(crate) open_line: usize,
+    /// 1-based line number of the CLOSING delimiter.
+    pub(crate) close_line: usize,
     /// The info string with surrounding whitespace trimmed; `None` for a bare
     /// opening delimiter.
     tag: Option<String>,
@@ -235,7 +237,7 @@ struct Fence {
 /// Silently dropping it would be the worst outcome for an omission-drift gate:
 /// the offending block would vanish from the scan and the corpus test would go
 /// green *because* the file is malformed.
-fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
+pub(crate) fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
     /// The leading run of a single CommonMark fence character at column 0:
     /// `(character, length)`, or `None` for a line that starts with neither.
     ///
@@ -313,6 +315,7 @@ fn parse_fences(content: &str) -> Result<Vec<Fence>, String> {
             fences.push(Fence {
                 ordinal: fences.len() + 1,
                 open_line: state.line,
+                close_line: line_no,
                 tag: state.tag,
                 body: state.body.join("\n"),
             });
