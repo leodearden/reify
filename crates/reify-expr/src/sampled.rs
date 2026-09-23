@@ -312,13 +312,15 @@ fn wrap_result(v: f64, codomain_type: &Type) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::sync::atomic::AtomicBool;
 
-    use reify_core::{DimensionVector, Type};
+    use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Type};
     use reify_ir::{InterpolationKind, SampledField, SampledGridKind, Value, ValueMap};
 
     use crate::EvalContext;
     use super::sample_at_point;
+    use super::sample_window_projection_at_point;
 
     // ── fixture helpers ──────────────────────────────────────────────────────
 
@@ -587,6 +589,115 @@ mod tests {
                 assert!((c1 - 2.0).abs() < 1e-12, "comp1 at grid node (1,2) must be 2.0, got {c1}");
             }
             other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
+    // ── per-node window projection ───────────────────────────────────────────
+
+    /// Build a Regular1D Linear field whose node `i` holds `windows[i]`: the
+    /// buffer is the windows concatenated, so its stride is the window length.
+    fn make_1d_windowed(axis: Vec<f64>, windows: Vec<Vec<f64>>) -> SampledField {
+        SampledField {
+            name: "test-1d-windowed".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![axis[0]],
+            bounds_max: vec![axis[axis.len() - 1]],
+            spacing: vec![axis[1] - axis[0]],
+            interpolation: InterpolationKind::Linear,
+            data: windows.concat(),
+            axis_grids: vec![axis],
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Nodes x = 0, 1, 2 holding the windows [1, 2], [3, 4], [5, 6].
+    fn pairs_at_three_nodes() -> SampledField {
+        make_1d_windowed(
+            vec![0.0, 1.0, 2.0],
+            vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]],
+        )
+    }
+
+    /// Each node's window is projected FIRST, then the projected node values
+    /// are interpolated with the field's own method. The window products are
+    /// 2, 12 and 30, so the mid-cell sample is lerp(2, 12, 0.5) = 7, whereas
+    /// interpolating the windows first would give 2 · 3 = 6. A K = 2 projection
+    /// takes the multi-component path, so a List codomain yields a List.
+    #[test]
+    fn sample_window_projection_at_point_interpolates_projected_node_values() {
+        let sf = pairs_at_three_nodes();
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let scalar = Type::dimensionless_scalar();
+        let product = |w: &[f64]| [w[0] * w[1]];
+
+        let mid_cell = Value::Real(0.5);
+        let last_node = Value::Real(2.0);
+        assert_eq!(
+            sample_window_projection_at_point(&sf, 2, product, &mid_cell, &scalar, &ctx),
+            Value::Real(7.0),
+        );
+        assert_eq!(
+            sample_window_projection_at_point(&sf, 2, product, &last_node, &scalar, &ctx),
+            Value::Real(30.0),
+        );
+
+        let list = Type::List(Box::new(Type::dimensionless_scalar()));
+        let sum_and_difference = |w: &[f64]| [w[0] + w[1], w[0] - w[1]];
+        assert_eq!(
+            sample_window_projection_at_point(&sf, 2, sum_and_difference, &mid_cell, &list, &ctx),
+            Value::List(vec![Value::Real(5.0), Value::Real(-1.0)]),
+        );
+    }
+
+    /// An out-of-bounds query is refused through the BACKING field's
+    /// once-per-session latch: two projection samples and a later raw sample
+    /// of the same field emit exactly one out-of-bounds warning between them.
+    #[test]
+    fn sample_window_projection_at_point_out_of_bounds_uses_the_backing_fields_once_per_session_warning()
+     {
+        let sf = pairs_at_three_nodes();
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+        let scalar = Type::dimensionless_scalar();
+        let product = |w: &[f64]| [w[0] * w[1]];
+        let outside = Value::Real(5.0);
+
+        for _ in 0..2 {
+            assert_eq!(
+                sample_window_projection_at_point(&sf, 2, product, &outside, &scalar, &ctx),
+                Value::Undef,
+            );
+        }
+        assert_eq!(sample_at_point(&sf, &outside, &scalar, &ctx), Value::Undef);
+
+        let out_of_bounds_warnings = sink
+            .borrow()
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::FieldOutOfBounds))
+            .count();
+        assert_eq!(out_of_bounds_warnings, 1);
+    }
+
+    /// A window length that does not tile the node buffer — including zero —
+    /// is refused as `Undef` instead of projecting a misaligned buffer or
+    /// panicking inside `chunks_exact`.
+    #[test]
+    fn sample_window_projection_at_point_rejects_a_window_length_that_does_not_tile_the_buffer() {
+        let sf = pairs_at_three_nodes();
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        let scalar = Type::dimensionless_scalar();
+        let sum = |w: &[f64]| [w.iter().sum::<f64>()];
+        let mid_cell = Value::Real(0.5);
+
+        for window_len in [3, 0] {
+            assert_eq!(
+                sample_window_projection_at_point(&sf, window_len, sum, &mid_cell, &scalar, &ctx),
+                Value::Undef,
+                "window length {window_len} does not tile a 6-float, 3-node buffer",
+            );
         }
     }
 }
