@@ -487,7 +487,7 @@ fn solve_reduced(
         out_nodes[gi] = [rhs[(fi, 0)], rhs[(fi, 1)], rhs[(fi, 2)]];
     }
 
-    if is_singular_reduced_solve(d, &out_nodes, free_indices) {
+    if is_singular_reduced_solve(d, &out_nodes, free_indices, anchor_indices) {
         return Err(FormFindError::SingularReducedStiffness);
     }
 
@@ -495,12 +495,13 @@ fn solve_reduced(
 }
 
 /// Relative residual above which [`is_singular_reduced_solve`] rejects a
-/// solve, judged by [`free_equilibrium_residual_relative`] at the solved
-/// geometry. Healthy solves are backward-stable (partial-pivot LU): the
-/// measured maximum over the solver's lib and tensegrity suites is 2.84e-16,
-/// so `1e-6` — the pre-7046 constant's magnitude — is a garbage detector with
-/// ~9.5 orders of margin. Being relative to `D`'s own rows, the verdict is
-/// identical at every `(q, σ)` gauge.
+/// solve: the per-row residual against `1 +` the ANCHORS' coordinate scale
+/// (the reduced system's input). Backward-stable LU keeps `|r| ≲ eps·|D|·|x̂|`,
+/// so a solved-scale normaliser would pin the ratio at ~eps and never fire;
+/// against the input scale it grows with `|x̂|/|x_a|`, which a numerically
+/// singular `D_ff` inflates. Coordinates do not scale with `(q, σ)`, so the
+/// verdict stays gauge-free. Healthy solves measure ~1e-16, a near-singular
+/// one ~1e-3 (`near_singular_reduced_stiffness_is_rejected_at_every_gauge`).
 const REDUCED_SOLVE_RESIDUAL_REL_TOL: f64 = 1e-6;
 
 /// Post-solve guard for [`solve_reduced`]: true when the solved geometry must
@@ -508,24 +509,36 @@ const REDUCED_SOLVE_RESIDUAL_REL_TOL: f64 = 1e-6;
 /// disconnected `D_ff` makes the LU solve produce a non-finite or
 /// non-equilibrium result, which must surface as a diagnostic rather than NaNs
 /// or a silently wrong geometry. At the solved geometry the free rows of `D·x`
-/// are exactly the reduced system's residual `D_ff·x_f − b`, so the guard
-/// reuses [`free_equilibrium_residual_relative`]: both form_find tolerance
-/// checks share one normalisation. Non-finite coordinates are tested first
-/// because that helper's max is NaN-transparent.
-fn is_singular_reduced_solve(d: &Mat<f64>, solved: &[[f64; 3]], free_indices: &[usize]) -> bool {
+/// are exactly the reduced residual `D_ff·x_f − b`, so the guard shares the
+/// stop criterion's per-row normaliser but judges it against the input
+/// (anchor) scale. Non-finite coordinates are tested first: that max is
+/// NaN-transparent.
+fn is_singular_reduced_solve(
+    d: &Mat<f64>,
+    solved: &[[f64; 3]],
+    free_indices: &[usize],
+    anchor_indices: &[usize],
+) -> bool {
+    let input_scale = max_abs_coordinate(anchor_indices.iter().map(|&a| &solved[a]));
     solved.iter().any(|p| p.iter().any(|c| !c.is_finite()))
-        || free_equilibrium_residual_relative(d, solved, free_indices)
+        || free_equilibrium_residual_relative_to(d, solved, free_indices, input_scale)
             > REDUCED_SOLVE_RESIDUAL_REL_TOL
 }
 
+/// The stop criterion's measure ([`SURFACE_EQUILIBRIUM_REL_TOL`]): the per-row
+/// residual at the geometry's own coordinate scale, ~0 at a fixed point.
+fn free_equilibrium_residual_relative(
+    d: &Mat<f64>,
+    nodes: &[[f64; 3]],
+    free_indices: &[usize],
+) -> f64 {
+    free_equilibrium_residual_relative_to(d, nodes, free_indices, max_abs_coordinate(nodes))
+}
+
 /// Free-node equilibrium residual, normalised PER ROW: the largest
-/// `|(D·x)_i| / Σ_j |D_ij|` over free rows `i` and axes, divided by the
-/// coordinate scale `(1+scale)`. It is ~0 at a force-density fixed point, so
-/// the cotangent iteration stops on it ([`SURFACE_EQUILIBRIUM_REL_TOL`]) and
-/// [`is_singular_reduced_solve`] rejects solves by it
-/// ([`REDUCED_SOLVE_RESIDUAL_REL_TOL`]).
-/// Each ratio carries one factor of `D` above and below, so the value is
-/// exactly invariant under a uniform `(q, σ) → λ(q, σ)` rescale.
+/// `|(D·x)_i| / Σ_j |D_ij|` over free rows `i` and axes, over `1 + length_scale`.
+/// One factor of `D` above and below makes it exactly invariant under a
+/// uniform `(q, σ) → λ(q, σ)` rescale.
 ///
 /// Returns `f64::INFINITY` ("not at equilibrium") when there is no free row,
 /// or when any free row is identically zero or carries a NaN. A zero row is a
@@ -535,10 +548,11 @@ fn is_singular_reduced_solve(d: &Mat<f64>, solved: &[[f64; 3]], free_indices: &[
 /// check runs per row, before the row divides anything, so a healthy row
 /// cannot mask a degenerate one.
 #[allow(clippy::needless_range_loop)]
-fn free_equilibrium_residual_relative(
+fn free_equilibrium_residual_relative_to(
     d: &Mat<f64>,
     nodes: &[[f64; 3]],
     free_indices: &[usize],
+    length_scale: f64,
 ) -> f64 {
     if free_indices.is_empty() {
         return f64::INFINITY;
@@ -561,13 +575,15 @@ fn free_equilibrium_residual_relative(
             worst = worst.max(net.abs() / row);
         }
     }
-    let mut scale = 0.0_f64;
-    for p in nodes {
-        for &c in p {
-            scale = scale.max(c.abs());
-        }
-    }
-    worst / (1.0 + scale)
+    worst / (1.0 + length_scale)
+}
+
+/// Largest `|c|` over all coordinates of `points` (0 if none; NaN-transparent).
+fn max_abs_coordinate<'a>(points: impl IntoIterator<Item = &'a [f64; 3]>) -> f64 {
+    points
+        .into_iter()
+        .flatten()
+        .fold(0.0_f64, |scale, c| scale.max(c.abs()))
 }
 
 /// Relative threshold below which a triangle is judged degenerate: when
@@ -1929,10 +1945,9 @@ mod tests {
     }
 
     // (h) TASK 7046 — the singular-solve verdict must be identical at every
-    // uniform gauge. The guard's residual branch is unreachable through the
-    // public API (partial-pivot LU is backward-stable; a singular `D_ff`
-    // yields inf/NaN, caught first), so this drives the pure predicate on
-    // test (c)'s chain at power-of-two λ, where `D_λ = λ·D` exactly.
+    // uniform gauge. This pins the pure predicate's gauge invariance on an
+    // EXACT residual: test (c)'s chain at power-of-two λ, where `D_λ = λ·D`
+    // exactly. (b2) covers the end-to-end near-singular case.
     //
     // MEASURED RED against the pre-7046 guard `residual > 1e-6·(1 + rhs_scale)`:
     // the off-equilibrium geometry (per-row relative residual 2^-13 ≈ 1.2e-4,
@@ -1956,16 +1971,17 @@ mod tests {
         let off_equilibrium = chain_with_node0_at(1.0 + 1.0 / 1024.0); // 2^-10: exact
         let members = [(2, 0), (0, 1), (1, 3)];
         let free_indices = [0usize, 1];
+        let anchor_indices = [2usize, 3];
 
         for lambda in [1.0, TWO_POW_20, 1.0 / TWO_POW_20] {
             let q = [BASE_Q * lambda; 3];
             let d = assemble_d(4, &members, &q, &[], &[], &exact).expect("line-only D");
             assert!(
-                !is_singular_reduced_solve(&d, &exact, &free_indices),
+                !is_singular_reduced_solve(&d, &exact, &free_indices, &anchor_indices),
                 "λ={lambda:e}: the exact chain solution must be accepted",
             );
             assert!(
-                is_singular_reduced_solve(&d, &off_equilibrium, &free_indices),
+                is_singular_reduced_solve(&d, &off_equilibrium, &free_indices, &anchor_indices),
                 "λ={lambda:e}: the off-equilibrium chain (x0 = 1 + 2^-10) must be rejected",
             );
         }
