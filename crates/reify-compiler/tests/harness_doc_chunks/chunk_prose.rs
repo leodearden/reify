@@ -3,14 +3,16 @@
 //! the source.
 //!
 //! Fenced blocks come from [`parse_fences`], the binary's one fence model.
-//! HTML comments are read as HTML reads them: a comment runs from `<!--` to its
-//! FIRST `-->`, even one quoted in backticks, because markdown is not processed
-//! inside a comment. A maintainer note that quotes a full marker therefore ends
-//! at the quote and leaks its tail into the rendered chunk — the defect
-//! [`stray_comment_terminators`] reports, measured in five notes of
-//! `geometry.md` and `units.md` when this module landed. Code spans pair per
-//! CommonMark within one paragraph, so a stray backtick cannot swallow the
-//! paragraphs after it.
+//! HTML comments and code spans share CommonMark's one inline precedence —
+//! whichever STARTS first wins — so backticks protect in one direction only. A
+//! `<!--` quoted in a prose code span is literal text. Inside a comment, where
+//! markdown is not processed, backticks protect nothing: a comment runs from
+//! `<!--` to its FIRST `-->`, even one quoted in backticks. A maintainer note
+//! that quotes a full marker therefore ends at the quote and leaks its tail into
+//! the rendered chunk — the defect [`stray_comment_terminators`] reports,
+//! measured in five notes of `geometry.md` and `units.md` when this module
+//! landed. Code spans pair per CommonMark within one paragraph, so a stray
+//! backtick cannot swallow the paragraphs after it.
 
 use std::ops::Range;
 
@@ -30,7 +32,9 @@ pub(crate) const HTML_COMMENT_CLOSE: &str = "-->";
 pub(crate) const EARLY_CLOSED_NOTE_FIX: &str = "HTML comments do not nest and HTML defines no \
     escape inside one, so backticks do not protect a quoted terminator — writing a marker out in \
     full is what ends the note. FIX: name the marker WITHOUT its closing bracket (e.g. \
-    `ORACLE-XREF`, not the whole comment), or move that sentence out of the comment.";
+    `ORACLE-XREF`, not the whole comment), or move that sentence out of the comment. A \
+    terminator quoted on purpose in prose is reported too — it cannot be told from a note's \
+    tail — so name it there as well.";
 
 /// One HTML comment outside any fence.
 #[derive(Debug)]
@@ -86,6 +90,12 @@ pub(crate) fn html_comments(markdown: &str) -> Result<Vec<HtmlComment>, String> 
 
 /// The 1-based lines of every `-->` left in unfenced prose: the tail of a
 /// comment that closed before its author meant it to.
+///
+/// A `-->` quoted in a prose code span counts too. The tail an early close
+/// leaves begins with the quote's own closing backtick, free to pair with any
+/// later one, so a quoted terminator cannot be told from debris — and a false
+/// report here is loud where a missed one is silent. Prose names a terminator
+/// rather than quoting it.
 pub(crate) fn stray_comment_terminators(markdown: &str) -> Result<Vec<usize>, String> {
     let prose = unfenced_prose(markdown)?;
     let mut lines: Vec<usize> = prose
@@ -135,7 +145,7 @@ struct CommentScan {
 fn scan_comments(text: &str) -> CommentScan {
     let mut closed = Vec::new();
     let mut from = 0;
-    while let Some(open) = text[from..].find(HTML_COMMENT_OPEN).map(|at| from + at) {
+    while let Some(open) = next_comment_open(text, from) {
         let Some(close) = text[open..].find(HTML_COMMENT_CLOSE) else {
             return CommentScan {
                 closed,
@@ -149,6 +159,44 @@ fn scan_comments(text: &str) -> CommentScan {
         closed,
         unterminated: None,
     }
+}
+
+/// The first `<!--` at or after `from` that no code span opened before it.
+fn next_comment_open(text: &str, from: usize) -> Option<usize> {
+    let mut at = from;
+    loop {
+        let open = at + text[at..].find(HTML_COMMENT_OPEN)?;
+        match text[at..open].find('`') {
+            None => return Some(open),
+            Some(tick) => at = code_span_end(text, at + tick),
+        }
+    }
+}
+
+/// Where the backtick run starting at `tick` stops protecting what follows it:
+/// the end of the code span it opens — closed, as [`code_spans`] pairs them, by
+/// the next run of the same length in its paragraph — or, with no such closer,
+/// the end of the run itself, which is then literal text.
+fn code_span_end(text: &str, tick: usize) -> usize {
+    let runs = backtick_runs(&text[tick..paragraph_end(text, tick)]);
+    let opener = &runs[0];
+    let closer = runs[1..].iter().find(|run| run.len() == opener.len());
+    tick + closer.unwrap_or(opener).end
+}
+
+/// Where the paragraph holding `offset` ends: before its next blank line, or
+/// before its next line that opens a comment — an HTML block interrupts a
+/// paragraph, so no backtick above a note can pair with one inside it.
+fn paragraph_end(text: &str, offset: usize) -> usize {
+    let mut line_start = offset;
+    while let Some(newline) = text[line_start..].find('\n') {
+        line_start += newline + 1;
+        let line = text[line_start..].lines().next().unwrap_or_default();
+        if line.trim().is_empty() || line.trim_start().starts_with(HTML_COMMENT_OPEN) {
+            return line_start;
+        }
+    }
+    text.len()
 }
 
 fn closed_comments(text: &str) -> Result<Vec<Range<usize>>, String> {
@@ -351,6 +399,58 @@ fn a_comment_ends_at_its_first_terminator_even_inside_backticks() {
         prose,
         format!("{}` tail -->\n", " ".repeat(closed_early.len())),
         "only the text up to the FIRST terminator is comment; the rest is prose"
+    );
+}
+
+fn comments_of(md: &str) -> Vec<(usize, String)> {
+    html_comments(md)
+        .expect("well-formed markdown must list its comments")
+        .into_iter()
+        .map(|comment| (comment.line, comment.body))
+        .collect()
+}
+
+/// The other direction of the one precedence rule: a code span that opens
+/// FIRST makes the `<!--` inside it literal text.
+#[test]
+fn a_comment_opener_quoted_in_a_prose_code_span_opens_nothing() {
+    let md = "Write `<!--` to open a note.\n\
+              `sig(a)` stays prose.\n\
+              <!-- a real note -->\n\
+              after\n";
+
+    let prose = unfenced_prose(md).expect("a quoted opener leaves the chunk readable");
+
+    assert_eq!(
+        prose.lines().take(2).collect::<Vec<_>>(),
+        md.lines().take(2).collect::<Vec<_>>(),
+        "the quoted opener must not swallow the prose up to the next note's terminator"
+    );
+    assert_eq!(comments_of(md), vec![(3, " a real note ".to_string())]);
+}
+
+/// A line that opens a comment ends the paragraph above it — an HTML block
+/// interrupts a paragraph — so a backtick left unpaired there cannot pair with
+/// one inside the note and hide it.
+#[test]
+fn a_stray_backtick_above_a_note_cannot_pair_into_it() {
+    let md = "a stray ` backtick\n\
+              <!-- a note quoting a ` backtick -->\n\
+              prose\n";
+
+    assert_eq!(
+        comments_of(md),
+        vec![(2, " a note quoting a ` backtick ".to_string())]
+    );
+}
+
+/// The early-close check stays conservative: a quoted terminator cannot be
+/// told from a closed-early note's tail, so it is reported.
+#[test]
+fn a_terminator_quoted_in_a_prose_code_span_is_still_reported() {
+    assert_eq!(
+        stray_comment_terminators("Close a note with `-->`.\n").expect("well-formed markdown"),
+        vec![1]
     );
 }
 
