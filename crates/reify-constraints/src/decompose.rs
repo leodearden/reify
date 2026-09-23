@@ -95,8 +95,10 @@ impl ExpandedObjectiveRefs {
     }
 }
 
-/// The domain flag a bare auto param contributes when it was reached only
-/// THROUGH a derived cell.
+/// The domain flag a bare auto param contributes when the classifier never saw
+/// it: reached only THROUGH a derived cell, or coupled in by the objective
+/// alone. `constraints` is the slice of the component the auto lives in — the
+/// same slice CP-SAT builds its domain from.
 ///
 /// `None` means "contributes nothing", which is NOT the same as `Dimensional`:
 /// `Dimensional` doubles as the classifier's empty-default, so folding an auto
@@ -132,7 +134,7 @@ impl ExpandedObjectiveRefs {
 /// `Logical`, because `widen_domain(Logical, Dimensional) == CrossDomain`. It
 /// is a NO-OP against a `Dimensional` base — and `Dimensional` is also the
 /// classifier's EMPTY DEFAULT for a flagless expression (see the
-/// FLAGLESS-EXPRESSION CAVEAT at the widening site). So
+/// FLAGLESS-EXPRESSION CAVEAT on [`component_domain`]). So
 /// `let w = if fit == Fit::Tight { 1.0mm } else { 2.0mm }; constraint w == 1.0mm`
 /// over an `Enum` auto `fit` classifies `Dimensional`, reaches `fit`,
 /// contributes `Dimensional`, stays `Dimensional`, and routes the whole
@@ -189,25 +191,6 @@ impl ExpandedObjectiveRefs {
 /// probe's true-set: no `_ if can_enumerate(..)` catch-all is needed, and
 /// having one is a live bug (it short-circuits the domain answer for the very
 /// types whose domain differs from the base's).
-///
-/// # KNOWN APPROXIMATION, accepted: `Type::Enum` sees the WHOLE problem
-///
-/// `can_enumerate`'s enum arm scans `constraints` for variant literals, and the
-/// slice passed here is the decomposition's FULL input, not the component the
-/// auto will end up in. A variant literal that lands in a DIFFERENT component
-/// therefore still counts as enumerable. Component membership is not known at
-/// this point in the loop (the union-find is still being built), so a
-/// per-component answer would need a second pass.
-///
-/// With `Type::Enum` answering its own domain rather than deferring to the
-/// probe, that imprecision no longer has an UNSAFE direction: an enum answers
-/// `Logical` when the probe says yes and `CrossDomain` when it says no, and
-/// both force the fallback against a `Dimensional`/`Geometric` base while both
-/// are absorbed by a `Logical` one. The approximation therefore costs at most
-/// exactness (`CrossDomain` where `Logical` would have sufficed, against a
-/// non-`Logical` base), never a solver that cannot represent the param —
-/// unlike the `_ if can_enumerate(..)` catch-all this replaced, where a
-/// false-positive probe left an enum auto routed at `DimensionalSolver`.
 ///
 /// # PRECONDITION on the `Logical` slot — read before wiring PRD2 γ
 ///
@@ -269,15 +252,9 @@ fn domain_of_auto(
         // `Logical` is the enum's OWN domain, so the answer behaves exactly
         // like the `Bool` arm above: a no-op against a `Logical` base
         // (`widen_domain`'s `a == b` fast path) and a forcing function against
-        // a `Dimensional` or `Geometric` one.
-        //
-        // NOT hypothetical, and it needs no exotic model: `can_enumerate`'s
-        // enum arm matches variant literals on `type_name` ALONE over the
-        // decomposition's WHOLE constraint slice (see the KNOWN APPROXIMATION
-        // section above), so a DIFFERENT auto's `constraint fit2 == Fit::Tight`
-        // in an unrelated component makes `can_enumerate(fit)` true for a `fit`
-        // whose own component contains no literal at all. Pinned by
-        // `an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional`.
+        // a `Dimensional` or `Geometric` one. Pinned by
+        // `an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional`,
+        // whose component holds a `Fit` literal so the probe answers true.
         reify_core::Type::Enum(_) if crate::cpsat::can_enumerate(param, constraints) => {
             Some(ConstraintDomain::Logical)
         }
@@ -354,6 +331,79 @@ fn widen_domain(a: ConstraintDomain, b: ConstraintDomain) -> ConstraintDomain {
     }
 }
 
+/// One constraint's contribution to the decomposition.
+struct ConstraintInfo {
+    constraint_idx: usize,
+    /// Indices into `auto_params` of every auto the constraint reads,
+    /// syntactically or through a dependent cell: its union-find edges.
+    referenced_params: Vec<usize>,
+    /// Those reached THROUGH dependent cells, whose types the classifier never
+    /// sees.
+    reached_params: Vec<usize>,
+    /// The classifier's verdict on the syntax alone, or `CrossDomain` for a
+    /// constraint reading an unfoldable cell.
+    classified: ConstraintDomain,
+}
+
+/// The routing domain of one component. Each constraint's `classified`
+/// verdict is widened by the own domain of every auto it reaches through a
+/// dependent cell; the UNANIMITY rule combines those (mixed → `CrossDomain`);
+/// the result is widened by every `objective_only` auto. `own(pi)` is
+/// [`domain_of_auto`] over THIS component's constraints.
+///
+/// The classifier reads syntax only, so it never sees the type of an auto
+/// reached through a derived cell, nor of one the objective alone coupled in —
+/// yet connectivity puts both in the component, and routing must agree with
+/// it. `let ok = a > 5.0; constraint ok == true` over a `Real` auto classifies
+/// `Logical`; unwidened, that hands `a` to CP-SAT, whose
+/// `build_variable_domain` rejects it and fails the whole component with
+/// `NoProgress`.
+///
+/// The probe reads the COMPONENT's constraints because CP-SAT builds an auto's
+/// domain from the sub-problem it is handed. Over the whole problem, an enum
+/// variant literal in ANOTHER component made an enum auto look enumerable and
+/// left its component `Logical`, for CP-SAT to reject.
+///
+/// A reached auto may also be referenced syntactically, and so already folded
+/// in by the classifier; re-widening it is a no-op, since `widen_domain` is
+/// idempotent on a flag already present. A syntactically referenced auto is
+/// deliberately NOT re-widened otherwise: that classifier gap is #5416/#6681.
+///
+/// FLAGLESS-EXPRESSION CAVEAT: `classify` answers `Dimensional` both for a
+/// numeric leaf and for an expression with no flag at all, so a flagless
+/// constraint reaching a `Bool` auto widens to `CrossDomain` where `Logical`
+/// would be exact. That is conservative — `CrossDomain` routes to the fallback
+/// slot, never to a solver that cannot represent a param — and making it exact
+/// needs `classify` itself to report "no flags".
+fn component_domain(
+    infos: &[&ConstraintInfo],
+    objective_only: &[usize],
+    mut own: impl FnMut(usize) -> Option<ConstraintDomain>,
+) -> ConstraintDomain {
+    let domains: Vec<ConstraintDomain> = infos
+        .iter()
+        .map(|info| {
+            info.reached_params
+                .iter()
+                .filter_map(|&pi| own(pi))
+                .fold(info.classified, widen_domain)
+        })
+        .collect();
+
+    // Determine component domain: unanimous → that domain, mixed → CrossDomain
+    let first_domain = domains[0];
+    let unanimous = if domains.iter().all(|d| *d == first_domain) {
+        first_domain
+    } else {
+        ConstraintDomain::CrossDomain
+    };
+
+    objective_only
+        .iter()
+        .filter_map(|&pi| own(pi))
+        .fold(unanimous, widen_domain)
+}
+
 /// Decompose a constraint problem into independent connected components.
 ///
 /// Each component groups constraints that share auto parameters (directly
@@ -362,6 +412,8 @@ fn widen_domain(a: ConstraintDomain, b: ConstraintDomain) -> ConstraintDomain {
 ///
 /// The domain for each component is determined by classifying each
 /// constraint's expression: unanimous domain → that domain, mixed → CrossDomain.
+/// Autos the classifier cannot see — reached through a derived cell, or coupled
+/// in by the objective alone — widen it by their own domain.
 ///
 /// Connectivity FOLLOWS `dependent_cells` (task #5467 / PRD2 α, layer 2).
 /// `collect_value_refs ∩ param_index` is ONE HOP: for
@@ -422,36 +474,8 @@ pub(crate) fn decompose_into_components_with_reads(
     let n_params = auto_params.len();
     let mut uf = UnionFind::new(n_params);
 
-    // MEMOIZED `domain_of_auto` verdict, one slot per auto param (task #5467
-    // amendment). `Some(v)` = probed, `None` = not probed yet; the inner
-    // `Option` is the verdict itself.
-    //
-    // Both of `domain_of_auto`'s arguments — `auto_params[pi]` and the whole
-    // `constraints` slice — are invariant across the loop below, so the answer
-    // is a pure function of the param INDEX. Without this cache the probe runs
-    // once per (constraint × dependent cell read × auto behind it): C × K × A
-    // calls, and `reach_of` explicitly may return DUPLICATES,
-    // so even a single constraint can probe one auto repeatedly. Each call
-    // delegates to `cpsat::can_enumerate` → `build_variable_domain`, whose
-    // `Type::Enum` arm walks EVERY expression tree in `constraints` — making
-    // the uncached form O(C² × K × A × tree_size) on the solve hot path, for a
-    // verdict that cannot change between calls. Cached, it is at most A probes
-    // per decomposition.
-    //
-    // D1/B2 IDENTITY: with an empty `auto_reads` no constraint reaches
-    // anything, so no slot is ever filled and the `vec![None; n_params]`
-    // allocation is the only cost — the same order as the `param_ids` vector
-    // already built above.
-    let mut auto_domain: Vec<Option<Option<ConstraintDomain>>> = vec![None; n_params];
-
     // For each constraint, find which auto params it references
     // and union them together. Also track the constraint→params mapping.
-    struct ConstraintInfo {
-        constraint_idx: usize,
-        referenced_params: Vec<usize>, // indices into auto_params
-        domain: ConstraintDomain,
-    }
-
     let mut constraint_infos: Vec<ConstraintInfo> = Vec::new();
 
     for (ci, (_cid, expr)) in constraints.iter().enumerate() {
@@ -482,74 +506,28 @@ pub(crate) fn decompose_into_components_with_reads(
             uf.union(referenced[0], referenced[i]);
         }
 
-        // Domain classification must be widened WHEREVER connectivity was
-        // widened, or the two disagree about the same component (task #5467
-        // amendment). `ConstraintClassifier::classify` reads the SYNTACTIC
-        // expression only, and each `ValueRef` contributes its own
-        // `result_type`; an auto reached only THROUGH a derived cell has no
-        // `ValueRef` node here at all, so its type is invisible to the walk.
-        //
-        // Worked case: `let ok = a > 5.0; constraint ok == true` with a `Real`
-        // auto `a`. Post-α the union step pulls `a` into this component, but
-        // the classifier sees `{ok: Bool, literal true}` and reports `Logical`.
-        // A registry that wires a Bool/Enum-only solver into the `Logical` slot
-        // (`CpSatSolver`, once PRD2 γ wires it) would then hand a `Real` auto to
-        // `build_variable_domain`, get `Err("does not support param type …")`,
-        // and fail the WHOLE component with `NoProgress`. Widening to
-        // `CrossDomain` routes it to the fallback slot instead, which is what a
-        // component holding both a Bool cell and a Real auto actually is.
-        // `SolverRegistry::production()` leaves both `logical` and `fallback`
-        // `None`, so both spellings fall back to `DimensionalSolver` and
-        // production routing is unchanged today.
-        //
-        // SCOPE of the fold: only the reach, never the syntactic `refs`. The
-        // reach is NOT disjoint from the syntactically-visible autos, though —
-        // `reach_of` derives it from each derived cell's TRANSITIVE auto set,
-        // which may
-        // contain an auto the constraint also references directly and whose
-        // type the classifier therefore already folded in. That overlap is
-        // harmless rather than merely tolerated: `widen_domain` is idempotent on
-        // an already-present flag (`a == b` fast path; `Geometric` absorbs
-        // `Dimensional`; `CrossDomain` absorbs everything), so re-widening with
-        // an already-seen type is a no-op by construction.
-        //
-        // FLAGLESS-EXPRESSION CAVEAT: `ConstraintClassifier` collapses its
-        // internal `DomainFlags` to the enum before returning, and `Dimensional`
-        // is BOTH "saw a numeric leaf" and the empty default (classifier.rs
-        // `into_domain`). A constraint expression that sets no flag at all
-        // therefore arrives here as `Dimensional`, and a reached `Bool` auto
-        // widens it to `CrossDomain` where `Logical` would be exact. That is a
-        // deliberate CONSERVATIVE over-approximation: `CrossDomain` routes to
-        // the fallback slot, never to a solver that cannot represent a param.
-        // Making it exact means propagating `DomainFlags` (or an
-        // `Option<ConstraintDomain>` meaning "no flags") out of `classify`, and
-        // `classifier.rs` is outside this task's lock set.
-        //
+        let mut reached_params: Vec<usize> = reach
+            .all()
+            .filter_map(|id| param_index.get(id).copied())
+            .collect();
+        reached_params.sort_unstable();
+        reached_params.dedup();
+
         // A constraint reading an UNFOLDABLE cell is `CrossDomain` outright —
         // the same top-of-lattice forcing `domain_of_auto`'s `_` arm uses —
         // because no specialized solver can derive a value the per-component
         // fold filter refuses to fold.
-        //
-        // D1/B2 IDENTITY: an empty `auto_reads` reaches nothing, so this loop
-        // never runs and the domain is bit-identical to pre-α.
-        let mut domain = if reach.reads_unfoldable_cell {
+        let classified = if reach.reads_unfoldable_cell {
             ConstraintDomain::CrossDomain
         } else {
             ConstraintClassifier::classify(expr)
         };
-        let reached_params = reach.all().filter_map(|id| param_index.get(id).copied());
-        for pi in reached_params {
-            let verdict = *auto_domain[pi]
-                .get_or_insert_with(|| domain_of_auto(&auto_params[pi], constraints));
-            if let Some(d) = verdict {
-                domain = widen_domain(domain, d);
-            }
-        }
 
         constraint_infos.push(ConstraintInfo {
             constraint_idx: ci,
             referenced_params: referenced,
-            domain,
+            reached_params,
+            classified,
         });
     }
 
@@ -580,19 +558,35 @@ pub(crate) fn decompose_into_components_with_reads(
         component_map.entry(root).or_default().push(info_idx);
     }
 
+    // MEMOIZED `domain_of_auto` verdict, one slot per auto param: `Some(v)` =
+    // probed, `None` = not yet; the inner `Option` is the verdict itself. Both
+    // arguments are fixed per param — the param, and the constraint slice of
+    // the ONE component it lives in — so each slot is filled at most once,
+    // always from its own component's slice. Unmemoized, an auto reached by
+    // many constraints (or repeatedly by one) would re-run
+    // `cpsat::can_enumerate`, whose `Type::Enum` arm walks every expression in
+    // the slice. A model whose constraints read every auto directly, with no
+    // auto coupled in by the objective alone, never fills a slot.
+    let mut auto_domain: Vec<Option<Option<ConstraintDomain>>> = vec![None; n_params];
+
+    // An auto in a component that NO constraint reads, syntactically or
+    // through a cell, was put there by the objective's unions alone.
+    let mut read_by_a_constraint = vec![false; n_params];
+    for info in &constraint_infos {
+        for &pi in &info.referenced_params {
+            read_by_a_constraint[pi] = true;
+        }
+    }
+
     // Build SubProblem for each component
     let mut result: Vec<SubProblem> = Vec::new();
     for (root, info_indices) in component_map {
-        let mut params = HashSet::new();
-        let mut sub_constraints = Vec::new();
-        let mut domains: Vec<ConstraintDomain> = Vec::new();
-
-        for &info_idx in &info_indices {
-            let info = &constraint_infos[info_idx];
-            let (cid, expr) = &constraints[info.constraint_idx];
-            sub_constraints.push((cid.clone(), expr.clone()));
-            domains.push(info.domain);
-        }
+        let infos: Vec<&ConstraintInfo> =
+            info_indices.iter().map(|&i| &constraint_infos[i]).collect();
+        let sub_constraints: Vec<(ConstraintNodeId, CompiledExpr)> = infos
+            .iter()
+            .map(|info| constraints[info.constraint_idx].clone())
+            .collect();
 
         // Every param in this component — which is exactly every param whose
         // union-find root IS the component's root, directly referenced or not.
@@ -617,19 +611,21 @@ pub(crate) fn decompose_into_components_with_reads(
         // single `let` over the whole model carries `R = |component|` and the
         // scan goes worst-case O(P^2 x C) — on the solve hot path, for exactly
         // the let-indirected models this feature exists to make solvable.
+        let mut params = HashSet::new();
+        let mut objective_only = Vec::new();
         for (pi, pid) in param_ids.iter().enumerate() {
             if uf.find(pi) == root {
                 params.insert(pid.clone());
+                if !read_by_a_constraint[pi] {
+                    objective_only.push(pi);
+                }
             }
         }
 
-        // Determine component domain: unanimous → that domain, mixed → CrossDomain
-        let first_domain = domains[0];
-        let domain = if domains.iter().all(|d| *d == first_domain) {
-            first_domain
-        } else {
-            ConstraintDomain::CrossDomain
-        };
+        let domain = component_domain(&infos, &objective_only, |pi| {
+            *auto_domain[pi]
+                .get_or_insert_with(|| domain_of_auto(&auto_params[pi], &sub_constraints))
+        });
 
         result.push(SubProblem {
             auto_params: params,
@@ -1169,9 +1165,8 @@ mod tests {
     /// constraints")`. The fixture's `let ok = fit == fit` compares the auto
     /// with ITSELF precisely so no literal appears anywhere.
     ///
-    /// This is also the case that pins the enum half of `domain_of_auto`'s
-    /// documented approximation: the answer depends on the constraint slice,
-    /// not on the type, so it cannot be reached from `param_type` alone.
+    /// It also pins that the enum answer depends on the constraint slice, not
+    /// on the type, so it cannot be reached from `param_type` alone.
     #[test]
     fn a_variantless_enum_auto_behind_a_bool_cell_goes_cross_domain() {
         let enum_ref =

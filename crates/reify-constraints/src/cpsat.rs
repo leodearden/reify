@@ -104,12 +104,12 @@ fn collect_constraint_refs(expr: &CompiledExpr) -> HashSet<ValueCellId> {
 /// and dropped on the spot.
 ///
 /// `decompose_into_components_with_reads` therefore caches the verdict PER AUTO
-/// PARAM INDEX across its constraint loop, so a decomposition performs at most
-/// one probe per auto param rather than one per (constraint × dependent-cell
-/// read × auto behind it) — which, with the enum arm's whole-slice scan, was
-/// quadratic in the constraint count. On a direct-only model the caller's
-/// `reached` set is empty and the probe never runs at all (PRD2 D1/B2
-/// identity).
+/// PARAM INDEX in its component-assembly loop, over that component's
+/// constraints, so a decomposition performs at most one probe per auto param
+/// rather than one per (constraint × dependent-cell read × auto behind it). It
+/// probes only autos the classifier cannot see — reached through a derived
+/// cell, or coupled in by the objective alone — so a model whose constraints
+/// read every auto directly never probes at all.
 pub(crate) fn can_enumerate(
     param: &AutoParam,
     constraints: &[(ConstraintNodeId, CompiledExpr)],
