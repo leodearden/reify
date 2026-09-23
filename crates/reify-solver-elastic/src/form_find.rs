@@ -223,14 +223,6 @@ pub fn form_find_anchored(
 /// Judging the residual, not a coordinate change, keeps fine meshes honest:
 /// the Picard rate approaches 1 under refinement, so a coordinate-change
 /// tolerance stalls long after the residual is already tiny.
-///
-/// SCOPE (task 6119 review): this bound, and the gauge-invariance claim
-/// above, govern the surfaces fixed point's STOP CRITERION only, via
-/// [`free_equilibrium_residual_relative`]. `solve_reduced`'s own post-solve
-/// singularity guard is a separate, pre-existing, mixed absolute/relative
-/// test that is not itself proven gauge-invariant — see
-/// [`is_singular_reduced_solve`]'s doc; that guard is shared by the (already
-/// gauge-covariant) line-only path too.
 const SURFACE_EQUILIBRIUM_REL_TOL: f64 = 1e-11;
 
 /// Iteration cap for the cotangent fixed point. The Picard iteration converges
@@ -502,53 +494,36 @@ fn solve_reduced(
     Ok(out_nodes)
 }
 
+/// Relative residual above which [`is_singular_reduced_solve`] rejects a
+/// solve, judged by [`free_equilibrium_residual_relative`] at the solved
+/// geometry. Healthy solves are backward-stable (partial-pivot LU): the
+/// measured maximum over the solver's lib and tensegrity suites is 2.84e-16,
+/// so `1e-6` — the pre-7046 constant's magnitude — is a garbage detector with
+/// ~9.5 orders of margin. Being relative to `D`'s own rows, the verdict is
+/// identical at every `(q, σ)` gauge.
+const REDUCED_SOLVE_RESIDUAL_REL_TOL: f64 = 1e-6;
+
 /// Post-solve guard for [`solve_reduced`]: true when the solved geometry must
 /// be rejected as [`FormFindError::SingularReducedStiffness`]. A singular /
 /// disconnected `D_ff` makes the LU solve produce a non-finite or
 /// non-equilibrium result, which must surface as a diagnostic rather than NaNs
-/// or a silently wrong geometry. The residual is `D_ff·x_f − b` with
-/// `b = −D_fa·x_a`, read off the free rows of `d` at `solved` (anchors are the
-/// complement of `free_indices` and keep their input coordinates there).
-///
-/// SCOPE: the residual test — `residual_inf > 1e-6 * (1.0 + rhs_scale)` — is a
-/// MIXED absolute/relative test, so unlike
-/// [`free_equilibrium_residual_relative`]'s stop criterion its effective
-/// strictness varies with a uniform `(q, σ) → (λq, λσ)` rescale (the additive
-/// `1.0` does not scale). Task 6119 made the surfaces fixed point's STOP
-/// criterion gauge-invariant and left this pre-existing guard unchanged, so a
-/// marginal input could still take a different branch at two gauges.
-#[allow(clippy::needless_range_loop)]
+/// or a silently wrong geometry. At the solved geometry the free rows of `D·x`
+/// are exactly the reduced system's residual `D_ff·x_f − b`, so the guard
+/// reuses [`free_equilibrium_residual_relative`]: both form_find tolerance
+/// checks share one normalisation. Non-finite coordinates are tested first
+/// because that helper's max is NaN-transparent.
 fn is_singular_reduced_solve(d: &Mat<f64>, solved: &[[f64; 3]], free_indices: &[usize]) -> bool {
-    let n = solved.len();
-    let any_nonfinite = solved.iter().any(|p| p.iter().any(|c| !c.is_finite()));
-    let mut is_free = vec![false; n];
-    for &i in free_indices {
-        is_free[i] = true;
-    }
-    let mut residual_inf = 0.0_f64;
-    let mut rhs_scale = 0.0_f64;
-    for &i in free_indices {
-        for axis in 0..3 {
-            let mut lhs = 0.0;
-            let mut rhs = 0.0;
-            for j in 0..n {
-                if is_free[j] {
-                    lhs += d[(i, j)] * solved[j][axis];
-                } else {
-                    rhs -= d[(i, j)] * solved[j][axis];
-                }
-            }
-            residual_inf = residual_inf.max((lhs - rhs).abs());
-            rhs_scale = rhs_scale.max(rhs.abs());
-        }
-    }
-    any_nonfinite || residual_inf > 1e-6 * (1.0 + rhs_scale)
+    solved.iter().any(|p| p.iter().any(|c| !c.is_finite()))
+        || free_equilibrium_residual_relative(d, solved, free_indices)
+            > REDUCED_SOLVE_RESIDUAL_REL_TOL
 }
 
 /// Free-node equilibrium residual, normalised PER ROW: the largest
 /// `|(D·x)_i| / Σ_j |D_ij|` over free rows `i` and axes, divided by the
 /// coordinate scale `(1+scale)`. It is ~0 at a force-density fixed point, so
-/// the cotangent iteration stops on it (see [`SURFACE_EQUILIBRIUM_REL_TOL`]).
+/// the cotangent iteration stops on it ([`SURFACE_EQUILIBRIUM_REL_TOL`]) and
+/// [`is_singular_reduced_solve`] rejects solves by it
+/// ([`REDUCED_SOLVE_RESIDUAL_REL_TOL`]).
 /// Each ratio carries one factor of `D` above and below, so the value is
 /// exactly invariant under a uniform `(q, σ) → λ(q, σ)` rescale.
 ///
@@ -1905,7 +1880,7 @@ mod tests {
     // yields inf/NaN, caught first), so this drives the pure predicate on
     // test (c)'s chain at power-of-two λ, where `D_λ = λ·D` exactly.
     //
-    // MEASURED RED against the mixed guard `residual > 1e-6·(1 + rhs_scale)`:
+    // MEASURED RED against the pre-7046 guard `residual > 1e-6·(1 + rhs_scale)`:
     // the off-equilibrium geometry (per-row relative residual 2^-13 ≈ 1.2e-4,
     // garbage) is rejected at λ = 1 (residual 2^-9 > 4e-6) and λ = 2^20
     // (2048 > 3.15) but ACCEPTED at λ = 2^-20 (2^-29 ≈ 1.9e-9 < 1.0000029e-6):
