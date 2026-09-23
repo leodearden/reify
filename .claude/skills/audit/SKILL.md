@@ -119,6 +119,8 @@ The skill **never** calls `set_task_status`. State-mutation of the offending tas
 
 **PTODO severity routing (post-η):** `untracked`/`orphaned`/`bare-ignore` → High → escalate via `escalate_info`; `malformed-cite`/`phantom-tracking`/`unknown-id` → Medium → file deferred follow-up task; `task-cites-deleted-path` → Medium (advisory) → file deferred follow-up task; `task-cites-renamed-path` → Medium (advisory) → file deferred follow-up task (the summary already names the new path, so the follow-up is a repoint of `metadata.files`, not an investigation). See `references/severity-routing.md` for the PTODO title template and per-kind routing notes.
 
+**Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK):** PDSSENTINEL is Medium only → file a deferred follow-up task. PDIAG and PDCHECK escalate each High finding and file a follow-up for each Medium one. PDOCCOVER's findings are all High and go out as **one batched escalation per run**, not one per finding. Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1: `task_id` follows its subject rule (the finding's task id, or the fixed subject `"audit"` for path-keyed findings), with `agent_role="audit"` and `terminal_state_is_the_bug=True`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry; the PDOCCOVER batching note is in §2.
+
 ## Outputs
 
 Every run writes two artifacts under `data/audit-runs/` (gitignored):
