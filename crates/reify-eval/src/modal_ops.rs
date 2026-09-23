@@ -2001,6 +2001,38 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
     0.0
 }
 
+/// Build one lumped-model `Mode`. Field dispositions (INV-PD-2):
+///
+/// - `frequency`, `damping_ratio`: populated from the solve.
+/// - `shape`: degraded to `Undef`. The lumped eigenvector is one scalar
+///   generalized coordinate per spanning-tree body, so there is no per-node
+///   `Vector3` displacement field to report.
+/// - `participation_mass`: degraded to `Undef`. It is a projection onto
+///   `ModalOptions.reference_direction`, but the lumped DOFs carry no spatial
+///   direction that the solve uses.
+fn mechanism_mode_value(frequency_hz: f64, damping_ratio: f64) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        (
+            "frequency".to_string(),
+            Value::Scalar {
+                si_value: frequency_hz,
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        ("shape".to_string(), Value::Undef),
+        ("participation_mass".to_string(), Value::Undef),
+        ("damping_ratio".to_string(), Value::Real(damping_ratio)),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Mode".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
 /// Core implementation for the `modal::mechanism_modal` compute target (task
 /// #4271).
 ///
@@ -2017,10 +2049,8 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// `total_damping_ratio`: the modal-strain-energy term is undefined for a lumped
 /// model (see the `DampingKind::Material` arm below).
 /// `NoDamping`, an absent `damping` field, and a rigid-joint ω = 0 mode all
-/// give ζ_i = 0.  `Mode.shape` stays an empty list and
-/// `Mode.participation_mass` stays 0: the lumped generalized-coordinate model
-/// has one scalar DOF per body and therefore no 3D mode shape to report (which
-/// is also why `ModalOptions.reference_direction` is unused here).
+/// give ζ_i = 0.  `Mode.shape` and `Mode.participation_mass` are `Undef`; the
+/// reasons are recorded at [`mechanism_mode_value`].
 ///
 /// DOF model: one generalized DOF per spanning-tree body.  Diagonal M[i,i] =
 /// body scalar mass; diagonal K[i,i] = body inbound joint spring_rate (0 for
@@ -2034,7 +2064,10 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// **`ModalOptions.n_modes` is respected**: the returned modes list is
 /// truncated to `n_modes` when `n_modes < n_physical_modes`.
 /// `ModalOptions.boundary_conditions` and `reference_direction` are unused
-/// (they are FEA-mesh concepts without meaning in the lumped model).
+/// (they are FEA-mesh concepts without meaning in the lumped model), so
+/// `ModalResult.boundary_conditions` is `Undef` rather than an echo. Any
+/// input-side warning for the two belongs to INV-PD-1
+/// (`docs/prds/v0_6/trampoline-param-drop-closure.md`).
 ///
 /// **Multi-body advisory**: for `n_dof ≥ 2` the model uses a strictly diagonal
 /// M and K (one uncoupled DOF per body), which ignores inertial cross-coupling.
@@ -2291,10 +2324,8 @@ fn run_mechanism_modal(
         DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
     };
 
-    // ── (5) shape Mode records (lumped model has no 3D shape) ────────────────
-    // The stdlib accessors first_frequency/mode_frequency read only
-    // Mode.frequency, so frequency-only modes fully satisfy the contract;
-    // `damping_ratio` additionally carries the Rayleigh ratio read from
+    // ── (5) shape Mode records ───────────────────────────────────────────────
+    // `damping_ratio` carries the Rayleigh ratio read from
     // `ModalOptions.damping` (task #6875).
     //
     // ω = 0 needs no extra guard here: `rayleigh_damping_ratio` floors at
@@ -2303,27 +2334,7 @@ fn run_mechanism_modal(
     // yields ζ = 0 rather than a 1/ω blow-up.
     let mut modes_list: Vec<Value> = frequencies
         .iter()
-        .map(|&f| {
-            let omega = 2.0 * PI * f;
-            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
-            let fields: PersistentMap<String, Value> = [
-                (
-                    "frequency".to_string(),
-                    Value::Scalar { si_value: f, dimension: DimensionVector::FREQUENCY },
-                ),
-                ("shape".to_string(), Value::List(Vec::new())),
-                ("participation_mass".to_string(), Value::Real(0.0)),
-                ("damping_ratio".to_string(), Value::Real(damping_ratio)),
-            ]
-            .into_iter()
-            .collect();
-            Value::StructureInstance(Box::new(StructureInstanceData {
-                type_id: StructureTypeId(u32::MAX),
-                type_name: "Mode".to_string(),
-                version: 1,
-                fields,
-            }))
-        })
+        .map(|&f| mechanism_mode_value(f, rayleigh_damping_ratio(alpha, beta, 2.0 * PI * f)))
         .collect();
 
     // ── (5b) honour ModalOptions.n_modes — truncate if caller requests fewer ──
@@ -2356,7 +2367,9 @@ fn run_mechanism_modal(
     let result_fields: PersistentMap<String, Value> = [
         ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(modes_list)),
-        ("boundary_conditions".to_string(), Value::List(Vec::new())),
+        // Degraded: the joint tree, not a `Support`, constrains the lumped
+        // solve, so `[]` or an echo of the caller's list would misreport it.
+        ("boundary_conditions".to_string(), Value::Undef),
         (
             "damping".to_string(),
             field_or(options, "damping", Value::Undef),
