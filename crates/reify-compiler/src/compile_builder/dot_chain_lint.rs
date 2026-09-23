@@ -180,6 +180,7 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
 ///   * `Minimize`/`Maximize`: `expr` + `where_clause.condition`.
 ///   * `GuardedGroup`: `condition` + nested `members`/`else_members` (recursive).
 ///   * `Port`: `frame_expr` + nested `members` (recursive).
+///   * `MatchArmDeclGroup`: `discriminant`.
 ///   * `Connect`: `left.expr`, `right.expr`, `params[*].1`.
 ///   * `Chain`: each `elements[*]`.
 ///   * `ForallConnect`: `collection` + every body expr (delegated to
@@ -271,6 +272,7 @@ fn walk_members(
                 }
                 walk_members(&p.members, diagnostics, depth + 1);
             }
+            MemberDecl::MatchArmDeclGroup(g) => walk_expr(&g.discriminant, diagnostics),
             MemberDecl::Connect(c) => {
                 walk_expr(&c.left.expr, diagnostics);
                 walk_expr(&c.right.expr, diagnostics);
@@ -323,10 +325,8 @@ fn walk_members(
                     walk_expr(&body.result_expr, diagnostics);
                 }
             }
-            // Members with no embedded expressions (or not yet handled).
-            MemberDecl::AssociatedType(_)
-            | MemberDecl::MetaBlock(_)
-            | MemberDecl::MatchArmDeclGroup(_) => {}
+            // Members with no embedded expressions.
+            MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
         }
     }
 }
