@@ -13,6 +13,20 @@ fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     (module.declarations, module.errors)
 }
 
+/// The one error whose message starts with `prefix`, or a failure naming every error emitted.
+#[track_caller]
+fn only_error_starting_with<'a>(errors: &'a [ParseError], prefix: &str) -> &'a ParseError {
+    let mut matching = errors.iter().filter(|e| e.message.starts_with(prefix));
+    let error = matching
+        .next()
+        .unwrap_or_else(|| panic!("expected an error starting with {prefix:?}, got: {errors:?}"));
+    assert!(
+        matching.next().is_none(),
+        "expected exactly one {prefix:?} diagnostic, got: {errors:?}"
+    );
+    error
+}
+
 // ── Step 1: basic constraint def ─────────────────────────────────
 
 #[test]
@@ -196,6 +210,11 @@ fn parse_constraint_def_body_syntax_error() {
         "expected an error message containing 'syntax error in constraint body', got: {:?}",
         errors
     );
+    // INV-SF-7, task #6156: an excerpt already inside the snippet bound is reproduced verbatim.
+    assert_eq!(
+        only_error_starting_with(&errors, "syntax error in constraint body").message,
+        "syntax error in constraint body: >="
+    );
     // The constraint def should still be constructed (with empty predicates).
     assert_eq!(
         decls.len(),
@@ -266,4 +285,41 @@ fn parse_constraint_def_error_param() {
         }
         other => panic!("expected Declaration::Constraint, got {:?}", other),
     }
+}
+
+// ── A body ERROR is one line, located at its first unexpected token ──
+//
+// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #6156.
+
+/// A multi-line recovery blob is reported as ONE line, starting at line 3's `) (`.
+///
+/// The location assertion pins the flat-body policy. Recovery nests only LATER debris (line 5's
+/// `( (`) in inner `ERROR`s, so an innermost-fault walk would report only on line 5 and drop
+/// line 3's break.
+#[test]
+fn multi_line_body_error_is_one_line_at_its_first_unexpected_token() {
+    let source = "constraint def Eq {\n  param x: Length\n  x > 0 ) (\n    x < 10mm\n    x != 3mm ( (\n  x > 1mm\n}\n";
+    let (_, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "syntax error in constraint body");
+    assert!(
+        !error.message.contains('\n'),
+        "expected a single-line diagnostic, got: {errors:?}"
+    );
+    assert_eq!(error.message, "syntax error in constraint body: ) (…");
+    assert_eq!(error.span.start as usize, source.find(") (").unwrap());
+}
+
+/// Recovery folds line 4's `x` into the `ERROR` begun by line 3's `param = =`; the report still
+/// belongs where that `ERROR` starts, not at the absorbed `x`.
+#[test]
+fn body_error_is_located_at_its_start_not_at_absorbed_debris() {
+    let source = "constraint def Eq {\n  param x: Length\n  param = =\n  x > 0\n}\n";
+    let (_, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "syntax error in constraint body");
+    assert!(
+        !error.message.contains('\n'),
+        "expected a single-line diagnostic, got: {errors:?}"
+    );
+    assert_eq!(error.message, "syntax error in constraint body: param = =…");
+    assert_eq!(error.span.start as usize, source.find("param = =").unwrap());
 }
