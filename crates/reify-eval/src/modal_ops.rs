@@ -12152,6 +12152,114 @@ mod tests {
         }
     }
 
+    /// Drive the mechanism-modal trampoline to a `Completed` outcome with no
+    /// `Error` diagnostic and unwrap the `ModalResult` it built.
+    fn solved_mechanism_modal_result(mech: Value, options: Value) -> Box<StructureInstanceData> {
+        let outcome = solve_mechanism_modal_trampoline(
+            &[mech, options],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
+            panic!("expected Completed outcome");
+        };
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "must not produce Error diagnostics; got {diagnostics:?}",
+        );
+        match result {
+            Value::StructureInstance(d) if d.type_name == "ModalResult" => d,
+            other => panic!("expected a ModalResult StructureInstance, got {other:?}"),
+        }
+    }
+
+    /// Task #7012: the fields the lumped generalized-coordinate model cannot
+    /// define — `Mode.shape`, `Mode.participation_mass` and
+    /// `ModalResult.boundary_conditions` — are honest `Value::Undef`, while
+    /// the solved `frequency` / `damping_ratio` stay populated. The caller
+    /// supplies a non-empty support list and a non-default
+    /// `reference_direction`, the two inputs this path does not apply, so
+    /// neither the old `[]` / `0.0` fakes nor an echo of the caller's list can
+    /// pass.
+    #[test]
+    fn mechanism_modal_lumped_undefined_fields_are_honest_undef() {
+        let mech = two_body_mechanism(
+            mass_props_solid(2.0),
+            flexure_joint(1_000.0),
+            mass_props_solid(0.1),
+            flexure_joint(50_000.0),
+        );
+        let options = modal_options(vec![
+            (
+                "boundary_conditions".to_string(),
+                Value::List(vec![fixed_support("x_min")]),
+            ),
+            (
+                "reference_direction".to_string(),
+                Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            ),
+        ]);
+        let data = solved_mechanism_modal_result(mech, options);
+
+        let modes = match data.fields.get("modes") {
+            Some(Value::List(m)) => m,
+            other => panic!("modes must be a List; got {other:?}"),
+        };
+        assert_eq!(
+            modes.len(),
+            2,
+            "the n_dof = 2 solve must return both modes, or the per-mode Undef \
+             checks below are vacuous"
+        );
+        for (i, mode) in modes.iter().enumerate() {
+            let fields = match mode {
+                Value::StructureInstance(d) if d.type_name == "Mode" => &d.fields,
+                other => panic!("modes[{i}] must be a Mode; got {other:?}"),
+            };
+            assert!(
+                matches!(
+                    fields.get("frequency"),
+                    Some(Value::Scalar { si_value, dimension })
+                        if *dimension == DimensionVector::FREQUENCY
+                            && si_value.is_finite()
+                            && *si_value > 0.0
+                ),
+                "mode {i} frequency must stay a finite, positive Scalar<Frequency>; \
+                 got {:?}",
+                fields.get("frequency"),
+            );
+            assert!(
+                matches!(fields.get("damping_ratio"), Some(Value::Real(_))),
+                "mode {i} damping_ratio must stay a populated Real; got {:?}",
+                fields.get("damping_ratio"),
+            );
+            assert_eq!(
+                fields.get("shape"),
+                Some(&Value::Undef),
+                "mode {i} shape: the lumped model has no per-node displacement field"
+            );
+            assert_eq!(
+                fields.get("participation_mass"),
+                Some(&Value::Undef),
+                "mode {i} participation_mass: the lumped DOFs carry no direction to \
+                 project onto reference_direction"
+            );
+        }
+        assert_eq!(
+            data.fields.get("boundary_conditions"),
+            Some(&Value::Undef),
+            "ModalResult.boundary_conditions: the lumped solve applies no Support, \
+             so neither `[]` nor an echo of the caller's list is honest"
+        );
+    }
+
     /// Task #6875 step-5 (RED → GREEN in step-6): an unrecognised
     /// `DampingDescriptor` refinement must be reported, never silently zeroed.
     ///
