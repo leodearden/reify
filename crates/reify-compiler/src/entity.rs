@@ -64,69 +64,129 @@ impl<'a> From<&'a reify_ast::OccurrenceDef> for EntityDefRef<'a> {
 
 /// Substitute constraint parameter references in an AST expression.
 ///
-/// Recursively walks `expr` and replaces every `ExprKind::Ident(name)` where
-/// `name` is a key in `bindings` with the corresponding bound expression.
-/// Lambda and quantifier bodies respect lexical shadowing — when a binder
-/// introduces a name that overlaps a constraint param, the inner name takes
-/// precedence and substitution is suppressed for that name inside the body.
-/// Match arms recurse into the body with the full set of bindings — arm
-/// patterns are structural (enum variants, literals) and do not introduce
-/// shadowing. If pattern bindings are introduced in the future (e.g.
-/// `x @ Pattern` or destructuring), arm-level shadowing suppression must be
-/// added here. Conditional branches (`if/then/else`) are traversed
-/// transparently; substitution applies to condition, then-branch, and
-/// else-branch alike.
+/// Every FREE use of a name in `bindings` becomes a clone of the bound
+/// expression, which keeps that expression's own span. Which uses are free is
+/// [`substitute_free_idents`]' single rule set.
 pub(crate) fn substitute_expr(
     expr: &reify_ast::Expr,
     bindings: &HashMap<String, reify_ast::Expr>,
 ) -> reify_ast::Expr {
-    use reify_ast::{Expr, ExprKind, MatchArm};
-    let span = expr.span;
-    let new_kind = match &expr.kind {
-        // Leaf variants — no sub-expressions to recurse into.
-        ExprKind::NumberLiteral { value, is_real } => ExprKind::NumberLiteral {
-            value: *value,
-            is_real: *is_real,
-        },
-        ExprKind::QuantityLiteral { value, unit } => ExprKind::QuantityLiteral {
-            value: *value,
-            unit: unit.clone(),
-        },
-        ExprKind::StringLiteral(s) => ExprKind::StringLiteral(s.clone()),
-        ExprKind::BoolLiteral(b) => ExprKind::BoolLiteral(*b),
-        ExprKind::Auto { free, params } => ExprKind::Auto {
-            free: *free,
-            // `params` hold full value expressions (`seed = self.frame`,
-            // `x = 5mm`, …) that may reference bindings, so substitute into
-            // each — mirroring the MapLiteral / FunctionCall recursion above.
-            params: params
-                .iter()
-                .map(|(n, v)| (n.clone(), substitute_expr(v, bindings)))
-                .collect(),
-        },
-        ExprKind::Undef => ExprKind::Undef,
-        ExprKind::EnumAccess { type_name, variant } => ExprKind::EnumAccess {
-            type_name: type_name.clone(),
-            variant: variant.clone(),
-        },
+    substitute_free_idents(expr, &|name, _use_span| bindings.get(name).cloned())
+}
 
-        // Identifier — the substitution point.
+/// Clone `expr`, replacing every FREE use of an identifier for which
+/// `replace(name, use_span)` returns `Some`.
+///
+/// The one statement of which uses a binder captures, so every AST-level
+/// substitution shares the same scoping rules:
+///   * a `Lambda`'s params scope over its body;
+///   * a `Quantifier`'s variable scopes over its predicate ONLY — the
+///     collection is compiled in the enclosing scope;
+///   * a `Match` arm's `VariantBind` local binders scope over that arm's body
+///     ONLY — the discriminant and sibling arms sit outside it.
+///
+/// Those are the complete set of name-binding `ExprKind` forms. `Auto { params }`
+/// is not one: its `name = value` entries are call arguments evaluated in the
+/// enclosing scope. Every node other than a replaced use keeps its span.
+pub(crate) fn substitute_free_idents(
+    expr: &reify_ast::Expr,
+    replace: &dyn Fn(&str, SourceSpan) -> Option<reify_ast::Expr>,
+) -> reify_ast::Expr {
+    rewrite_free_idents(expr, replace, &[])
+}
+
+/// [`substitute_free_idents`]' recursion; `bound` holds the names the enclosing
+/// binders have captured at this point.
+fn rewrite_free_idents<'e>(
+    expr: &'e reify_ast::Expr,
+    replace: &dyn Fn(&str, SourceSpan) -> Option<reify_ast::Expr>,
+    bound: &[&'e str],
+) -> reify_ast::Expr {
+    use reify_ast::{Expr, ExprKind, MatchArm, MatchPattern, StringPart};
+
+    let sub = |e: &'e Expr| rewrite_free_idents(e, replace, bound);
+    let sub_box = |e: &'e Expr| Box::new(sub(e));
+    let sub_vec = |es: &'e [Expr]| -> Vec<Expr> { es.iter().map(sub).collect() };
+    let sub_under = |binders: &mut dyn Iterator<Item = &'e str>, e: &'e Expr| {
+        let inner: Vec<&'e str> = bound.iter().copied().chain(binders).collect();
+        rewrite_free_idents(e, replace, &inner)
+    };
+
+    let kind = match &expr.kind {
+        // ── the substitution site ────────────────────────────────────────
         ExprKind::Ident(name) => {
-            if let Some(replacement) = bindings.get(name) {
-                return replacement.clone();
+            if !bound.contains(&name.as_str())
+                && let Some(replacement) = replace(name, expr.span)
+            {
+                return replacement;
             }
             ExprKind::Ident(name.clone())
         }
 
-        // Compound variants — recurse into sub-expressions.
+        // ── binders ──────────────────────────────────────────────────────
+        ExprKind::Lambda { params, body } => ExprKind::Lambda {
+            params: params.clone(),
+            body: Box::new(sub_under(&mut params.iter().map(|p| p.name.as_str()), body)),
+        },
+        ExprKind::Quantifier {
+            kind,
+            variable,
+            variable_span,
+            collection,
+            predicate,
+        } => ExprKind::Quantifier {
+            kind: *kind,
+            variable: variable.clone(),
+            variable_span: *variable_span,
+            collection: sub_box(collection),
+            predicate: Box::new(sub_under(
+                &mut std::iter::once(variable.as_str()),
+                predicate,
+            )),
+        },
+        ExprKind::Match { discriminant, arms } => ExprKind::Match {
+            discriminant: sub_box(discriminant),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    let mut arm_binders = arm
+                        .patterns
+                        .iter()
+                        .flat_map(|p| match p {
+                            MatchPattern::VariantBind { binders, .. } => binders.as_slice(),
+                            MatchPattern::Wildcard | MatchPattern::Variant(_) => &[],
+                        })
+                        .map(|(_, local)| local.as_str());
+                    MatchArm {
+                        patterns: arm.patterns.clone(),
+                        body: sub_under(&mut arm_binders, &arm.body),
+                        span: arm.span,
+                    }
+                })
+                .collect(),
+        },
+
+        // ── leaves ───────────────────────────────────────────────────────
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Undef => expr.kind.clone(),
+
+        // ── structural recursion ─────────────────────────────────────────
+        ExprKind::Auto { free, params } => ExprKind::Auto {
+            free: *free,
+            params: params.iter().map(|(n, v)| (n.clone(), sub(v))).collect(),
+        },
         ExprKind::BinOp { op, left, right } => ExprKind::BinOp {
             op: op.clone(),
-            left: Box::new(substitute_expr(left, bindings)),
-            right: Box::new(substitute_expr(right, bindings)),
+            left: sub_box(left),
+            right: sub_box(right),
         },
         ExprKind::UnOp { op, operand } => ExprKind::UnOp {
             op: op.clone(),
-            operand: Box::new(substitute_expr(operand, bindings)),
+            operand: sub_box(operand),
         },
         ExprKind::FunctionCall {
             name,
@@ -134,11 +194,11 @@ pub(crate) fn substitute_expr(
             arg_names,
         } => ExprKind::FunctionCall {
             name: name.clone(),
-            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+            args: sub_vec(args),
             arg_names: arg_names.clone(),
         },
         ExprKind::MemberAccess { object, member } => ExprKind::MemberAccess {
-            object: Box::new(substitute_expr(object, bindings)),
+            object: sub_box(object),
             member: member.clone(),
         },
         ExprKind::Conditional {
@@ -146,83 +206,27 @@ pub(crate) fn substitute_expr(
             then_branch,
             else_branch,
         } => ExprKind::Conditional {
-            condition: Box::new(substitute_expr(condition, bindings)),
-            then_branch: Box::new(substitute_expr(then_branch, bindings)),
-            else_branch: Box::new(substitute_expr(else_branch, bindings)),
+            condition: sub_box(condition),
+            then_branch: sub_box(then_branch),
+            else_branch: sub_box(else_branch),
         },
-        ExprKind::ListLiteral(items) => {
-            ExprKind::ListLiteral(items.iter().map(|i| substitute_expr(i, bindings)).collect())
+        ExprKind::ListLiteral(items) => ExprKind::ListLiteral(sub_vec(items)),
+        ExprKind::SetLiteral(items) => ExprKind::SetLiteral(sub_vec(items)),
+        ExprKind::MapLiteral(pairs) => {
+            ExprKind::MapLiteral(pairs.iter().map(|(k, v)| (sub(k), sub(v))).collect())
         }
-        ExprKind::SetLiteral(items) => {
-            ExprKind::SetLiteral(items.iter().map(|i| substitute_expr(i, bindings)).collect())
-        }
-        ExprKind::MapLiteral(pairs) => ExprKind::MapLiteral(
-            pairs
-                .iter()
-                .map(|(k, v)| (substitute_expr(k, bindings), substitute_expr(v, bindings)))
-                .collect(),
-        ),
         ExprKind::IndexAccess { object, index } => ExprKind::IndexAccess {
-            object: Box::new(substitute_expr(object, bindings)),
-            index: Box::new(substitute_expr(index, bindings)),
+            object: sub_box(object),
+            index: sub_box(index),
         },
-        ExprKind::Match { discriminant, arms } => ExprKind::Match {
-            discriminant: Box::new(substitute_expr(discriminant, bindings)),
-            arms: arms
-                .iter()
-                .map(|arm| MatchArm {
-                    patterns: arm.patterns.clone(),
-                    body: substitute_expr(&arm.body, bindings),
-                    span: arm.span,
-                })
-                .collect(),
-        },
-        // Lambda — remove params that shadow constraint param names to respect scoping.
-        ExprKind::Lambda { params, body } => {
-            let shadowed: std::collections::HashSet<&str> =
-                params.iter().map(|p| p.name.as_str()).collect();
-            let inner_bindings: HashMap<String, Expr> = bindings
-                .iter()
-                .filter(|(k, _)| !shadowed.contains(k.as_str()))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            ExprKind::Lambda {
-                params: params.clone(),
-                body: Box::new(substitute_expr(body, &inner_bindings)),
-            }
-        }
-        // Quantifier — the bound variable shadows constraint params in the predicate.
-        ExprKind::Quantifier {
-            kind,
-            variable,
-            variable_span,
-            collection,
-            predicate,
-        } => {
-            // The collection expression is evaluated in the outer scope.
-            let sub_collection = substitute_expr(collection, bindings);
-            // The predicate is evaluated with the variable shadowing any same-named binding.
-            let inner_bindings: HashMap<String, Expr> = bindings
-                .iter()
-                .filter(|(k, _)| k.as_str() != variable.as_str())
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            ExprKind::Quantifier {
-                kind: *kind,
-                variable: variable.clone(),
-                variable_span: *variable_span,
-                collection: Box::new(sub_collection),
-                predicate: Box::new(substitute_expr(predicate, &inner_bindings)),
-            }
-        }
         ExprKind::AdHocSelector {
             base,
             selector,
             args,
         } => ExprKind::AdHocSelector {
-            base: Box::new(substitute_expr(base, bindings)),
+            base: sub_box(base),
             selector: selector.clone(),
-            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+            args: sub_vec(args),
         },
         ExprKind::Range {
             lower,
@@ -230,23 +234,19 @@ pub(crate) fn substitute_expr(
             lower_inclusive,
             upper_inclusive,
         } => ExprKind::Range {
-            lower: lower
-                .as_ref()
-                .map(|e| Box::new(substitute_expr(e, bindings))),
-            upper: upper
-                .as_ref()
-                .map(|e| Box::new(substitute_expr(e, bindings))),
+            lower: lower.as_deref().map(sub_box),
+            upper: upper.as_deref().map(sub_box),
             lower_inclusive: *lower_inclusive,
             upper_inclusive: *upper_inclusive,
         },
         ExprKind::QualifiedAccess { qualifier, member } => ExprKind::QualifiedAccess {
-            qualifier: Box::new(substitute_expr(qualifier, bindings)),
+            qualifier: sub_box(qualifier),
             member: member.clone(),
         },
         ExprKind::InstanceQualifiedAccess { object, qualified } => {
             ExprKind::InstanceQualifiedAccess {
-                object: Box::new(substitute_expr(object, bindings)),
-                qualified: Box::new(substitute_expr(qualified, bindings)),
+                object: sub_box(object),
+                qualified: sub_box(qualified),
             }
         }
         ExprKind::TraitMethodCall {
@@ -255,10 +255,10 @@ pub(crate) fn substitute_expr(
             method,
             args,
         } => ExprKind::TraitMethodCall {
-            object: Box::new(substitute_expr(object, bindings)),
+            object: sub_box(object),
             trait_name: trait_name.clone(),
             method: method.clone(),
-            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+            args: sub_vec(args),
         },
         ExprKind::TraitStaticCall {
             trait_name,
@@ -267,30 +267,26 @@ pub(crate) fn substitute_expr(
         } => ExprKind::TraitStaticCall {
             trait_name: trait_name.clone(),
             method: method.clone(),
-            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+            args: sub_vec(args),
         },
         ExprKind::VariantConstruct { name, fields } => ExprKind::VariantConstruct {
             name: name.clone(),
-            fields: fields
-                .iter()
-                .map(|(f, v)| (f.clone(), substitute_expr(v, bindings)))
-                .collect(),
+            fields: fields.iter().map(|(f, v)| (f.clone(), sub(v))).collect(),
         },
         ExprKind::InterpolatedString(parts) => ExprKind::InterpolatedString(
             parts
                 .iter()
-                .map(|p| match p {
-                    reify_ast::StringPart::Literal(s) => reify_ast::StringPart::Literal(s.clone()),
-                    reify_ast::StringPart::Hole(e) => {
-                        reify_ast::StringPart::Hole(Box::new(substitute_expr(e, bindings)))
-                    }
+                .map(|part| match part {
+                    StringPart::Literal(text) => StringPart::Literal(text.clone()),
+                    StringPart::Hole(e) => StringPart::Hole(sub_box(e)),
                 })
                 .collect(),
         ),
     };
+
     Expr {
-        kind: new_kind,
-        span,
+        kind,
+        span: expr.span,
     }
 }
 
@@ -6802,7 +6798,7 @@ pub(crate) fn expand_constraint_inst(
     // `Conforms(actual: undefined_ref)` is silently swallowed and only surfaces
     // later as an opaque Indeterminate from the conformance pass instead of a
     // compile-time error. `substitute_expr` itself is the "is it referenced?"
-    // oracle, so the notion of reference (including lambda/quantifier shadowing)
+    // oracle, so the notion of reference (including every binder's shadowing)
     // can never drift from the substitution path used just below.
     let mut arg_bindings: Vec<(String, CompiledExpr)> = Vec::with_capacity(ci.args.len());
     {
@@ -7772,6 +7768,76 @@ structure def Manifold {
             }
             other => panic!("expected ExprKind::Auto, got {other:?}"),
         }
+    }
+
+    /// A match arm's payload binder (`Circle { radius: r }`) rebinds `r` over
+    /// THAT arm's body, so `substitute_expr` must leave the arm-bound `r` alone —
+    /// while the discriminant and a binder-free sibling arm, which sit outside
+    /// the binder, still substitute. Constraint-param substitution used to rewrite
+    /// the arm-bound name; only the generate-unroll walker had this rule.
+    #[test]
+    fn substitute_expr_respects_a_match_arm_payload_binder() {
+        let source = "structure S {\n    let x = match f(r) { Circle { radius: r } => r * 2, _ => r * 3 }\n}";
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_subst"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let expr = parsed
+            .declarations
+            .iter()
+            .find_map(|decl| match decl {
+                reify_ast::Declaration::Structure(s) => s.members.iter().find_map(|m| match m {
+                    reify_ast::MemberDecl::Let(l) if l.name == "x" => Some(l.value.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("`let x` must parse");
+
+        let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
+        bindings.insert(
+            "r".to_string(),
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident("outer".to_string()),
+                span: SourceSpan::new(0, 0),
+            },
+        );
+        let result = substitute_expr(&expr, &bindings);
+
+        let ident_of = |e: &reify_ast::Expr| match &e.kind {
+            reify_ast::ExprKind::Ident(n) => n.clone(),
+            other => panic!("expected an Ident, got {other:?}"),
+        };
+        let left_operand = |e: &reify_ast::Expr| match &e.kind {
+            reify_ast::ExprKind::BinOp { left, .. } => ident_of(left),
+            other => panic!("expected an arm body `r * k`, got {other:?}"),
+        };
+        let reify_ast::ExprKind::Match { discriminant, arms } = &result.kind else {
+            panic!("expected the Match shape to survive, got {:?}", result.kind);
+        };
+        let reify_ast::ExprKind::FunctionCall { args, .. } = &discriminant.kind else {
+            panic!(
+                "expected the `f(r)` discriminant, got {:?}",
+                discriminant.kind
+            );
+        };
+        assert_eq!(
+            ident_of(&args[0]),
+            "outer",
+            "the discriminant is outside every binder"
+        );
+        assert_eq!(
+            left_operand(&arms[0].body),
+            "r",
+            "the arm-bound `r` must survive"
+        );
+        assert_eq!(
+            left_operand(&arms[1].body),
+            "outer",
+            "a binder-free arm still substitutes"
+        );
     }
 
     /// entity.rs Tier-2 defensive `arm_member_type` wildcard arm (site :3672):

@@ -246,241 +246,25 @@ pub(crate) fn expand_geometry_list_elements(
     }
 }
 
-/// Clone `expr`, rewriting every *use* of `param` into the integer literal
+/// Clone `expr`, rewriting every FREE use of `param` into the integer literal
 /// `value`.
 ///
-/// Shadowing-aware: recursion stops at any nested binder that rebinds the same
-/// name, so an inner `|i| …` keeps its own `i`. Spans are inherited from the
-/// original nodes throughout.
-///
-/// `Lambda` (params), `Quantifier` (bound variable) and `Match` arms whose
-/// patterns carry a `VariantBind` local binder are the COMPLETE set of
-/// name-binding `ExprKind` forms — verified by enumerating every variant in
-/// `crates/reify-ast/src/ast.rs`. `Auto { params }` is NOT one: its `name =
-/// value` entries are call arguments whose values evaluate in the enclosing
-/// scope. No other variant introduces a scope.
+/// Which uses are free — i.e. not recaptured by a nested lambda param,
+/// quantifier variable or match-arm payload binder of the same name — is
+/// [`substitute_free_idents`]' single rule set, shared with constraint-param
+/// substitution. Each literal is spanned at the use it replaces, so a
+/// diagnostic raised while compiling element `k` still points where the user
+/// wrote the index.
 fn substitute_index_ident(expr: &reify_ast::Expr, param: &str, value: usize) -> reify_ast::Expr {
-    use reify_ast::ExprKind as K;
-
-    // Recurse helpers, all inheriting the original spans.
-    let sub = |e: &reify_ast::Expr| substitute_index_ident(e, param, value);
-    let sub_box = |e: &reify_ast::Expr| Box::new(substitute_index_ident(e, param, value));
-    let sub_vec =
-        |es: &[reify_ast::Expr]| -> Vec<reify_ast::Expr> { es.iter().map(&sub).collect() };
-
-    let kind = match &expr.kind {
-        // ── the substitution site ────────────────────────────────────────
-        K::Ident(name) if name == param => K::NumberLiteral {
-            value: value as f64,
-            is_real: false,
-        },
-
-        // ── binders that SHADOW `param`: stop descending into whatever the
-        //    binder covers, while still substituting anything it does not ─
-        //
-        // A `LambdaParam` carries only a name, an optional `TypeExpr` and a
-        // span — no `Expr` evaluated in the enclosing scope — so cloning the
-        // whole lambda is exactly right here.
-        K::Lambda { params, .. } if params.iter().any(|p| p.name == param) => expr.kind.clone(),
-        // A quantifier is NOT symmetric with a lambda: only `predicate` sits
-        // under the binder. `collection` is compiled in the OUTER scope
-        // (expr.rs's `Quantifier` arm compiles it with `scope` and only the
-        // predicate with `quant_scope`), so it must keep substituting even
-        // when the variable shadows `param` — otherwise `generate(2, |i|
-        // forall i in slice(xs, i) : …)` leaves the outer `i` inside
-        // `slice(xs, i)` unsubstituted, to be misresolved later as the
-        // quantifier variable. This mirrors the `Match` arm below, whose
-        // discriminant likewise sits outside every arm's binder (review
-        // esc-5385-3).
-        K::Quantifier {
-            kind,
-            variable,
-            variable_span,
-            collection,
-            predicate,
-        } if variable == param => K::Quantifier {
-            kind: *kind,
-            variable: variable.clone(),
-            variable_span: *variable_span,
-            collection: sub_box(collection),
-            predicate: predicate.clone(),
-        },
-
-        // ── leaves ───────────────────────────────────────────────────────
-        K::Ident(_)
-        | K::NumberLiteral { .. }
-        | K::QuantityLiteral { .. }
-        | K::StringLiteral(_)
-        | K::BoolLiteral(_)
-        | K::EnumAccess { .. }
-        | K::Undef => expr.kind.clone(),
-
-        // ── structural recursion ─────────────────────────────────────────
-        K::BinOp { op, left, right } => K::BinOp {
-            op: op.clone(),
-            left: sub_box(left),
-            right: sub_box(right),
-        },
-        K::UnOp { op, operand } => K::UnOp {
-            op: op.clone(),
-            operand: sub_box(operand),
-        },
-        K::FunctionCall {
-            name,
-            args,
-            arg_names,
-        } => K::FunctionCall {
-            name: name.clone(),
-            args: sub_vec(args),
-            arg_names: arg_names.clone(),
-        },
-        K::MemberAccess { object, member } => K::MemberAccess {
-            object: sub_box(object),
-            member: member.clone(),
-        },
-        K::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => K::Conditional {
-            condition: sub_box(condition),
-            then_branch: sub_box(then_branch),
-            else_branch: sub_box(else_branch),
-        },
-        K::ListLiteral(items) => K::ListLiteral(sub_vec(items)),
-        K::SetLiteral(items) => K::SetLiteral(sub_vec(items)),
-        K::MapLiteral(entries) => {
-            K::MapLiteral(entries.iter().map(|(k, v)| (sub(k), sub(v))).collect())
-        }
-        K::IndexAccess { object, index } => K::IndexAccess {
-            object: sub_box(object),
-            index: sub_box(index),
-        },
-        // `MatchPattern::VariantBind` binders are `(field_name,
-        // local_binder_name)` pairs and the LOCAL BINDER is user-chosen, so an
-        // arm like `Circle { radius: i }` rebinds the index param over that
-        // arm's whole body — exactly as a nested `|i| …` does. The shadow is
-        // ARM-SCOPED: sibling arms and the discriminant (which sits outside
-        // every arm) still substitute.
-        //
-        // Conservatism: the `.any()` scans every pattern and every binder, so
-        // if the grammar later permits a `variant_binding_pattern` inside a
-        // pipe-alternation (today `match_pattern` makes it a standalone
-        // choice, so that is unparseable) the whole arm is still skipped.
-        // Under-substitution merely leaves a legitimately-bound name alone;
-        // over-substitution silently corrupts the geometry.
-        K::Match { discriminant, arms } => K::Match {
-            discriminant: sub_box(discriminant),
-            arms: arms
-                .iter()
-                .map(|arm| {
-                    let rebinds = arm.patterns.iter().any(|p| {
-                        matches!(
-                            p,
-                            reify_ast::MatchPattern::VariantBind { binders, .. }
-                                if binders.iter().any(|(_, local)| local == param)
-                        )
-                    });
-                    if rebinds {
-                        arm.clone()
-                    } else {
-                        reify_ast::MatchArm {
-                            patterns: arm.patterns.clone(),
-                            body: sub(&arm.body),
-                            span: arm.span,
-                        }
-                    }
-                })
-                .collect(),
-        },
-        K::Auto { free, params } => K::Auto {
-            free: *free,
-            params: params.iter().map(|(n, e)| (n.clone(), sub(e))).collect(),
-        },
-        K::Lambda { params, body } => K::Lambda {
-            params: params.clone(),
-            body: sub_box(body),
-        },
-        K::Quantifier {
-            kind,
-            variable,
-            variable_span,
-            collection,
-            predicate,
-        } => K::Quantifier {
-            kind: *kind,
-            variable: variable.clone(),
-            variable_span: *variable_span,
-            collection: sub_box(collection),
-            predicate: sub_box(predicate),
-        },
-        K::AdHocSelector {
-            base,
-            selector,
-            args,
-        } => K::AdHocSelector {
-            base: sub_box(base),
-            selector: selector.clone(),
-            args: sub_vec(args),
-        },
-        K::QualifiedAccess { qualifier, member } => K::QualifiedAccess {
-            qualifier: sub_box(qualifier),
-            member: member.clone(),
-        },
-        K::InstanceQualifiedAccess { object, qualified } => K::InstanceQualifiedAccess {
-            object: sub_box(object),
-            qualified: sub_box(qualified),
-        },
-        K::Range {
-            lower,
-            upper,
-            lower_inclusive,
-            upper_inclusive,
-        } => K::Range {
-            lower: lower.as_ref().map(|e| sub_box(e)),
-            upper: upper.as_ref().map(|e| sub_box(e)),
-            lower_inclusive: *lower_inclusive,
-            upper_inclusive: *upper_inclusive,
-        },
-        K::TraitMethodCall {
-            object,
-            trait_name,
-            method,
-            args,
-        } => K::TraitMethodCall {
-            object: sub_box(object),
-            trait_name: trait_name.clone(),
-            method: method.clone(),
-            args: sub_vec(args),
-        },
-        K::TraitStaticCall {
-            trait_name,
-            method,
-            args,
-        } => K::TraitStaticCall {
-            trait_name: trait_name.clone(),
-            method: method.clone(),
-            args: sub_vec(args),
-        },
-        K::VariantConstruct { name, fields } => K::VariantConstruct {
-            name: name.clone(),
-            fields: fields.iter().map(|(n, e)| (n.clone(), sub(e))).collect(),
-        },
-        K::InterpolatedString(parts) => K::InterpolatedString(
-            parts
-                .iter()
-                .map(|part| match part {
-                    reify_ast::StringPart::Literal(t) => reify_ast::StringPart::Literal(t.clone()),
-                    reify_ast::StringPart::Hole(e) => reify_ast::StringPart::Hole(sub_box(e)),
-                })
-                .collect(),
-        ),
-    };
-
-    reify_ast::Expr {
-        kind,
-        span: expr.span,
-    }
+    substitute_free_idents(expr, &|name, use_span| {
+        (name == param).then_some(reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
+                value: value as f64,
+                is_real: false,
+            },
+            span: use_span,
+        })
+    })
 }
 
 /// Emit the loud compile-time rejection for a let that *plainly* intends
@@ -966,6 +750,45 @@ mod expand_tests {
             assert!(
                 rendered.contains("\"cylinder\""),
                 "element {k} lost its geometry constructor: {rendered}"
+            );
+        }
+    }
+
+    /// Each substituted literal is spanned at the `i` it replaced, not at one
+    /// shared location, so a diagnostic raised while compiling element `k`
+    /// points where the user wrote the index.
+    #[test]
+    fn each_substituted_literal_keeps_its_use_site_span() {
+        let src = "generate(2, |i| cylinder(i * 1mm, 20mm))";
+        let original = let_init(src);
+        let first_arg_left = |e: &reify_ast::Expr| -> reify_ast::Expr {
+            let reify_ast::ExprKind::FunctionCall { args, .. } = &e.kind else {
+                panic!("expected the `cylinder(..)` call, got {e:?}");
+            };
+            let reify_ast::ExprKind::BinOp { left, .. } = &args[0].kind else {
+                panic!("expected `i * 1mm`, got {:?}", args[0]);
+            };
+            (**left).clone()
+        };
+        let reify_ast::ExprKind::FunctionCall { args, .. } = &original.kind else {
+            panic!("expected the generate call, got {original:?}");
+        };
+        let reify_ast::ExprKind::Lambda { body, .. } = &args[1].kind else {
+            panic!("expected the generate lambda, got {:?}", args[1]);
+        };
+        let use_site = first_arg_left(body);
+        assert!(matches!(&use_site.kind, reify_ast::ExprKind::Ident(n) if n == "i"));
+
+        let (elements, _) = expand(src, &[]);
+        for (k, element) in elements.expect("expansion must succeed").iter().enumerate() {
+            let literal = first_arg_left(element);
+            assert!(
+                matches!(literal.kind, reify_ast::ExprKind::NumberLiteral { value, .. } if value == k as f64),
+                "element {k} must carry literal {k}: {literal:?}"
+            );
+            assert_eq!(
+                literal.span, use_site.span,
+                "element {k}'s literal must be spanned at the `i` it replaced"
             );
         }
     }
