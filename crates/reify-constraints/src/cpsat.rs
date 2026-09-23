@@ -1446,7 +1446,8 @@ impl ConstraintSolver for CpSatSolver {
 //
 // Nothing here is new; the bodies and their doc comments are the originals,
 // moved verbatim except for the visibility qualifier and the `or` helper added
-// for β's disjunction fixtures.
+// for β's disjunction fixtures. `GENEROUS_CAP`, `enumerated` and `at` moved up
+// from the β enumeration module when the #6078 locks came to need them too.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod cpsat_test_fixtures {
@@ -1693,6 +1694,42 @@ mod cpsat_test_fixtures {
     pub(super) fn or(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
         CompiledExpr::binop(reify_ir::BinOp::Or, l, r, Type::Bool)
     }
+
+    /// A cap comfortably above every fixture's model count.
+    ///
+    /// STRICTLY GREATER, never equal, and that is load-bearing rather than
+    /// stylistic: the cap is checked AT THE PUSH, so a search that collects its
+    /// `cap`-th solution stops right there and reports `complete: false` even
+    /// when that solution happened to be the last one in the space. The flag is
+    /// deliberately conservative in the honest direction — "I did not prove I
+    /// exhausted it" — so a fixture wanting `complete: true` must leave the cap
+    /// room to come back empty-handed at least once.
+    pub(super) const GENEROUS_CAP: usize = 64;
+
+    /// Unwrap the enumerated arm, or panic naming the variant that came back.
+    ///
+    /// A bare `matches!` would let a `NotEnumerable` regression pass as "well,
+    /// it wasn't `Enumerated`" in some other assertion's shadow; naming the
+    /// actual variant here means a domain-rejection regression reads as one.
+    pub(super) fn enumerated(result: SolveAllResult) -> (Vec<HashMap<ValueCellId, Value>>, bool) {
+        match result {
+            SolveAllResult::Enumerated {
+                solutions,
+                complete,
+            } => (solutions, complete),
+            SolveAllResult::NotEnumerable { reason } => {
+                panic!("expected SolveAllResult::Enumerated; got NotEnumerable {{ {reason} }}")
+            }
+        }
+    }
+
+    /// The value of `S.<member>` in one enumerated solution.
+    pub(super) fn at(solution: &HashMap<ValueCellId, Value>, member: &str) -> Value {
+        solution
+            .get(&ValueCellId::new("S", member))
+            .unwrap_or_else(|| panic!("no enumerated value for S.{member}; got {solution:?}"))
+            .clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1713,6 +1750,8 @@ mod cpsat_test_fixtures {
 // regardless — `[Bool(true), Bool(false)]` for `Type::Bool`, i.e.
 // deterministically `true`, reported as `Solved`/`unique` rather than as a
 // failure. Removing the fold reintroduces exactly that.
+// What any narrowing of that fold must keep observable (#6078) is pinned by
+// `a_deeper_cell_left_over_*`, `a_cell_exact_since_*` and `a_conjunction_*`.
 //
 // LOCK 2 — the auto-id strip on the `current_values` seed in `solve`. Before
 // it, `assignment` started out carrying entries for auto params, so at depth k
@@ -2143,6 +2182,160 @@ mod dependent_cell_forward_check_tests {
              {flipped:?}",
         );
     }
+
+    /// Each enumerated model's `(n, m)`, sorted: the model SET, whatever order
+    /// the search visits it in.
+    fn n_m_models(solutions: &[HashMap<ValueCellId, Value>]) -> Vec<(i64, i64)> {
+        fn int(solution: &HashMap<ValueCellId, Value>, member: &str) -> i64 {
+            match at(solution, member) {
+                Value::Int(i) => i,
+                other => panic!("expected S.{member} to be an Int; got {other:?}"),
+            }
+        }
+        let mut models: Vec<(i64, i64)> = solutions
+            .iter()
+            .map(|s| (int(s, "n"), int(s, "m")))
+            .collect();
+        models.sort_unstable();
+        models
+    }
+
+    /// LOCK 1 — a cell folded by an ABANDONED deeper branch is never read at a
+    /// shallower depth (#6078).
+    ///
+    /// `n, m ∈ [0, 3]`, `let g = n + m`, `constraint g == 5`: exactly the models
+    /// `(2, 3)` and `(3, 2)`. The `n = 0` subtree folds `g` up to `3` at depth 1
+    /// and leaves it there on unwind. A fold that SKIPPED `g` at depth 0, where
+    /// its auto `m` is still unassigned, would read that leftover `3` at
+    /// `n = 1, 2, 3`, prune all three, and come back empty. Re-derived, `g` is
+    /// `Undef` there and cannot prune.
+    #[test]
+    fn a_deeper_cell_left_over_from_an_abandoned_branch_is_never_observed_at_a_shallower_depth() {
+        let p = problem(
+            vec![int_auto("n", 0, 3), int_auto("m", 0, 3)],
+            vec![(ConstraintNodeId::new("S", 0), eq_int(iref("g"), 5))],
+            vec![(ValueCellId::new("S", "g"), sum_int(iref("n"), iref("m")))],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            n_m_models(&solutions),
+            vec![(2, 3), (3, 2)],
+            "`let g = n + m` with `g == 5` over n, m ∈ [0, 3] has exactly the \
+             models (2, 3) and (3, 2). An EMPTY set means a shallower trial read \
+             the `g` an abandoned deeper branch left behind",
+        );
+        assert!(complete, "a 16-point space must be exhausted");
+    }
+
+    /// LOCK 1 — a cell exact since a SHALLOWER depth still feeds the deeper
+    /// cell that reads it (#6078).
+    ///
+    /// `n, m ∈ [0, 5]`; stored order `let f = n * 2`, `let g = f + m`;
+    /// `constraint g == 7`, `constraint f == 4`: the only model is `(2, 3)`.
+    /// `f` is exact from depth 0, so depth 1 need not re-derive it, but `g`,
+    /// re-derived there, must still read it. A fold that DROPPED `f` there
+    /// would leave `g` `Undef`: no constraint could prune at the leaf, and every
+    /// `m` would come back with `n = 2`.
+    #[test]
+    fn a_cell_exact_since_a_shallower_depth_feeds_a_deeper_cell_in_the_same_chain() {
+        let p = problem(
+            vec![int_auto("n", 0, 5), int_auto("m", 0, 5)],
+            vec![
+                (ConstraintNodeId::new("S", 0), eq_int(iref("g"), 7)),
+                (ConstraintNodeId::new("S", 1), eq_int(iref("f"), 4)),
+            ],
+            vec![
+                (ValueCellId::new("S", "f"), mul_int(iref("n"), 2)),
+                (ValueCellId::new("S", "g"), sum_int(iref("f"), iref("m"))),
+            ],
+        );
+
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all(&p, GENEROUS_CAP));
+
+        assert_eq!(
+            n_m_models(&solutions),
+            vec![(2, 3)],
+            "`f = 2n` with `f == 4` pins n = 2, then `g = f + m` with `g == 7` \
+             pins m = 3. Extra models with n = 2 mean `g` was re-derived against \
+             a missing `f`",
+        );
+        assert!(complete, "a 36-point space must be exhausted");
+    }
+
+    /// LOCK 1 — a PARTIAL derivation still prunes (#6078). Kleene `and` makes
+    /// `false and _` defined, so a cell some of whose autos are unassigned can
+    /// already be `false`; re-deriving it at every depth is what prunes there.
+    ///
+    /// Ten `Bool` autos; `let all = a0 and a1 and … and a9`;
+    /// `constraint all == true`. Re-derived per trial, `all` is `false` as soon
+    /// as an assigned conjunct is, so every `false` branch dies at its own
+    /// depth: about 20 nodes for the one model. A fold that dropped or skipped
+    /// `all` until its last auto is assigned walks the whole ~2046-node tree.
+    ///
+    /// ANTI-VACUITY: the same conjunction written into the constraint itself,
+    /// with no dependent cell, is evaluated only at the leaves; under the same
+    /// node budget it must come back INCOMPLETE. That is what proves the budget
+    /// separates the pruned search from the unpruned one.
+    #[test]
+    fn a_conjunction_behind_a_dependent_cell_prunes_at_its_first_false_conjunct() {
+        const NODE_BUDGET: usize = 64;
+        let names: Vec<String> = (0..10).map(|i| format!("a{i}")).collect();
+        let autos: Vec<AutoParam> = names.iter().map(|n| bool_auto(n)).collect();
+        let conjunction = || {
+            names
+                .iter()
+                .map(|n| bref(n))
+                .reduce(and)
+                .expect("ten conjuncts")
+        };
+
+        let behind_a_cell = problem(
+            autos.clone(),
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("all")))],
+            vec![(ValueCellId::new("S", "all"), conjunction())],
+        );
+        let (solutions, complete) = enumerated(CpSatSolver.solve_all_with_budget(
+            &behind_a_cell,
+            GENEROUS_CAP,
+            NODE_BUDGET,
+        ));
+        assert!(
+            complete,
+            "`all` is `false` from the first `false` conjunct on, so every \
+             `false` branch is pruned at its own depth and the search ends well \
+             inside {NODE_BUDGET} nodes. INCOMPLETE means the cell was not \
+             re-derived until its last auto was assigned",
+        );
+        assert_eq!(
+            solutions.len(),
+            1,
+            "only the all-true point satisfies `all == true`; got {solutions:?}",
+        );
+        for name in &names {
+            assert_eq!(
+                at(&solutions[0], name),
+                Value::Bool(true),
+                "the one model sets every conjunct true",
+            );
+        }
+
+        let direct = problem(
+            autos,
+            vec![(ConstraintNodeId::new("S", 0), eq_true(conjunction()))],
+            Vec::new(),
+        );
+        let (_, direct_complete) =
+            enumerated(CpSatSolver.solve_all_with_budget(&direct, GENEROUS_CAP, NODE_BUDGET));
+        assert!(
+            !direct_complete,
+            "fixture integrity: read directly, the conjunction is evaluated only \
+             once all ten autos are assigned, so the search walks the full tree \
+             and must exhaust {NODE_BUDGET} nodes. COMPLETE here means the \
+             budget no longer separates a pruned search from an unpruned one",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2182,42 +2375,6 @@ mod solve_all_enumeration_tests {
     use super::*;
     use super::cpsat_test_fixtures::*;
     use std::collections::HashMap;
-
-    /// A cap comfortably above every fixture's model count.
-    ///
-    /// STRICTLY GREATER, never equal, and that is load-bearing rather than
-    /// stylistic: the cap is checked AT THE PUSH, so a search that collects its
-    /// `cap`-th solution stops right there and reports `complete: false` even
-    /// when that solution happened to be the last one in the space. The flag is
-    /// deliberately conservative in the honest direction — "I did not prove I
-    /// exhausted it" — so a fixture wanting `complete: true` must leave the cap
-    /// room to come back empty-handed at least once.
-    const GENEROUS_CAP: usize = 64;
-
-    /// Unwrap the enumerated arm, or panic naming the variant that came back.
-    ///
-    /// A bare `matches!` would let a `NotEnumerable` regression pass as "well,
-    /// it wasn't `Enumerated`" in some other assertion's shadow; naming the
-    /// actual variant here means a domain-rejection regression reads as one.
-    fn enumerated(result: SolveAllResult) -> (Vec<HashMap<ValueCellId, Value>>, bool) {
-        match result {
-            SolveAllResult::Enumerated {
-                solutions,
-                complete,
-            } => (solutions, complete),
-            SolveAllResult::NotEnumerable { reason } => {
-                panic!("expected SolveAllResult::Enumerated; got NotEnumerable {{ {reason} }}")
-            }
-        }
-    }
-
-    /// The value of `S.<member>` in one enumerated solution.
-    fn at(solution: &HashMap<ValueCellId, Value>, member: &str) -> Value {
-        solution
-            .get(&ValueCellId::new("S", member))
-            .unwrap_or_else(|| panic!("no enumerated value for S.{member}; got {solution:?}"))
-            .clone()
-    }
 
     /// `S.<member> == <b>`, as a plain bool, for membership assertions.
     fn boolean(solution: &HashMap<ValueCellId, Value>, member: &str) -> bool {
