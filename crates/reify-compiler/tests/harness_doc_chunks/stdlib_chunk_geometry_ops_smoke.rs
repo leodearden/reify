@@ -79,10 +79,10 @@ use crate::doc_forms::{
     Arity, DocForm, call_forms, doc_form_of_span, parse_or_panic, unmirrored_forms,
 };
 
-pub(crate) const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/stdlib_geometry_ops_smoke.ri"
-);
+/// The fixture, repo-relative — the currency the corpus-wide signature gate
+/// names every fixture in.
+pub(crate) const FIXTURE_PATH: &str =
+    "crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri";
 
 /// The chunk this fixture transcribes. Read (never written) to check documented
 /// names against the compiler's registries. If the chunk moves, this const must
@@ -153,8 +153,8 @@ fn read_all_chunks() -> String {
 }
 
 fn read_fixture() -> String {
-    std::fs::read_to_string(FIXTURE_PATH)
-        .expect("tests/fixtures/stdlib_geometry_ops_smoke.ri should exist")
+    std::fs::read_to_string(repo_root().join(FIXTURE_PATH))
+        .unwrap_or_else(|e| panic!("{FIXTURE_PATH} must be readable ({e})"))
 }
 
 /// Every geometry-op / curve-constructor form documented in stdlib.md's
@@ -904,20 +904,20 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
     );
 }
 
-// ── geometry.md → examples/ referential integrity ────────────────────────────
+// ── geometry.md → examples/ worked-example claim ─────────────────────────────
 //
 // Everything above checks what geometry.md says about the COMPILER. This checks
-// what it says about the REPOSITORY: the chunk points designers at runnable
-// `.ri` files, and a pointer that does not resolve — or that resolves to a file
-// not containing what the prose promises — sends a designer looking for a
-// constructor they will never find. Same authoritative-doc-is-wrong failure
-// class as the guards above, one artifact over, and NOTHING else checks it: the
-// chunk is inert prose to `cargo test`, and the examples never mention the
-// chunk, so the two drift apart silently.
+// one thing it says about the REPOSITORY: the chunk points designers at a
+// runnable `.ri` file as the worked example of a constructor family, and a
+// pointer to a file not containing what the prose promises sends a designer
+// looking for a constructor they will never find. Same
+// authoritative-doc-is-wrong failure class as the guards above, one artifact
+// over. That every cited path EXISTS is `chunk_cite_gate.rs`'s corpus-wide
+// job, so a dangling cite reds one test, not two.
 //
-// Deliberately NOT a wording pin (house rule: no doc-content meta-tests). Both
-// assertions read a CLAIM out of the chunk and check it against real files on
-// disk; either side may be reworded freely so long as the claim stays true.
+// Deliberately NOT a wording pin (house rule: no doc-content meta-tests). The
+// assertion reads a CLAIM out of the chunk and checks it against the real file
+// on disk; either side may be reworded freely so long as the claim stays true.
 
 /// The example geometry.md cites as the worked example of ALL FOUR GD&T zone
 /// constructors, and the four names that claim has to cover.
@@ -944,19 +944,14 @@ fn strip_line_comments(source: &str) -> String {
         .join("\n")
 }
 
-/// geometry.md's pointers into `examples/` must hold against the real files.
+/// geometry.md's GD&T section cites [`GDT_ZONES_EXAMPLE`] as the worked example
+/// of all four zone constructors, so that example must really call each of them.
 ///
-/// TWO claims, both read out of the chunk rather than pinned as wording:
-///
-/// (a) **Every cited `examples/….ri` path resolves on disk.** A standing ratchet
-///     against path rot — an example renamed or moved leaves the chunk citing a
-///     404, and the chunk is served verbatim to the in-GUI assistant.
-/// (b) **The GD&T section's "worked example of all four" claim is true**: the
-///     cited example really does call each of the four zone constructors. This
-///     is the half that motivated the guard — `zone_slab` had no worked example
-///     anywhere under `examples/` until task #5700 added a cell for it to the
-///     cited file, so the one constructor the prose promised an example for was
-///     the one that had none. This assertion is what keeps it that way.
+/// This claim is what motivated the guard — `zone_slab` had no worked example
+/// anywhere under `examples/` until task #5700 added a cell for it to the cited
+/// file, so the one constructor the prose promised an example for was the one
+/// that had none. This assertion is what keeps it that way. Whether the cite
+/// RESOLVES is `chunk_cite_gate.rs`'s `every_path_cited_by_any_chunk_resolves`.
 #[test]
 fn geometry_chunk_example_citations_hold_against_the_real_examples() {
     let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
@@ -966,27 +961,6 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
         .filter(|path| path.starts_with("examples/") && path.ends_with(".ri"))
         .collect();
 
-    // Anti-vacuity: a scan finding nothing (citations reworded out of
-    // `examples/…` shape) would make (a) pass without checking anything.
-    assert!(
-        cited.len() >= 3,
-        "anti-vacuity: only {} `examples/….ri` citation(s) found in {GEOMETRY_CHUNK_PATH} — \
-         the citation scan is vacuous and gives NO protection. Got: {cited:?}",
-        cited.len()
-    );
-
-    // (a) — every pointer resolves.
-    let missing: Vec<&String> = cited
-        .iter()
-        .filter(|path| !repo_root().join(path).is_file())
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "{GEOMETRY_CHUNK_PATH} cites example file(s) that do not exist — FIX: repoint the \
-         citation at the file's new path, or restore the example. Missing: {missing:?}"
-    );
-
-    // (b) — the "worked example of all four" claim, checked against the example.
     assert!(
         cited.iter().any(|path| path == GDT_ZONES_EXAMPLE),
         "{GEOMETRY_CHUNK_PATH} no longer cites {GDT_ZONES_EXAMPLE} — FIX: repoint this guard \
@@ -1017,9 +991,9 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
 
 // Discriminating-power controls for `strip_line_comments`, in the same
 // synthetic-data posture as the coverage-guard controls earlier in this file: it
-// is the load-bearing part of claim (b), and the real chunk does not exercise it
-// in a way that would notice it going inert. The citation scan's own controls
-// live beside the shared scanner in `chunk_cite_gate.rs`.
+// is the load-bearing part of the worked-example claim, and the real chunk does
+// not exercise it in a way that would notice it going inert. The citation scan's
+// own controls live beside the shared scanner in `chunk_cite_gate.rs`.
 
 #[test]
 fn a_constructor_named_only_in_a_comment_does_not_count_as_exercised() {

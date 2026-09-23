@@ -38,9 +38,8 @@ use crate::stdlib_chunk_geometry_ops_smoke::FIXTURE_PATH;
 /// This gate's own fixture, repo-relative — how every violation names it.
 const UNFENCED_FIXTURE: &str = "crates/reify-compiler/tests/fixtures/unfenced_signatures_smoke.ri";
 
-/// Every compile-verified fixture whose calls can exercise a documented form:
-/// this gate's own, and stdlib's. Each is joined onto the repo root, which
-/// leaves an absolute path — stdlib's `FIXTURE_PATH` — as it is.
+/// Every compile-verified fixture whose calls can exercise a documented form —
+/// this gate's own, and stdlib's — each repo-relative.
 const SIGNATURE_FIXTURES: &[&str] = &[UNFENCED_FIXTURE, FIXTURE_PATH];
 
 /// A span in `chunk`'s prose that is signature-SHAPED but is not a signature,
