@@ -1856,11 +1856,20 @@ assert "L-neg scaffold is non-vacuous — the residual-note seed really changed 
 
 # The positive control for the whole scaffold. Without it every rejection below
 # could be an artifact of the three scaffold mutations rather than of the one
-# mutation its fixture adds — and this is also the ONLY assertion that drives
+# mutation its fixture adds. It is also the only assertion that exercises
 # _role_class's RESIDUAL branch, which has no live user since the allowlist
-# emptied.
+# emptied — the branch pin directly below is what proves that branch is the
+# one actually taken, not just that the boolean checker returned true.
 assert "L-neg scaffold control: the scaffold ALONE classifies — the synthetic role is allowlisted AND documented AND genuinely below its wall (the RESIDUAL branch), and every other heavy-running role reaches the ceiling" \
     _role_classification_ok_with_residuals "$_SYNTH_ROLE" "$_KL_FIX/synth.toml" "$_KL_FIX/verify-synth.sh"
+
+# The control above only asserts _role_classification_ok, which is TRUE
+# whichever branch of _role_class the synthetic role takes. If the gap ever
+# closes, the control stays green through REACHABLE instead of RESIDUAL. This
+# pin asks _role_class directly, where the branch predicate actually lives.
+_SYNTH_CLASS="$(_with_residuals "$_SYNTH_ROLE" _role_class "$_KL_FIX/synth.toml" "$_KL_FIX/verify-synth.sh" "$_SYNTH_ROLE" || true)"
+assert "L-neg scaffold control takes the RESIDUAL branch (task 7791): _role_class classifies the synthetic role RESIDUAL, not REACHABLE (got '${_SYNTH_CLASS:-<unclassified>}') — its ${_SYNTH_DEBUG_WALL_M}m seeded debug wall does not clear the ${_CEILING:-?}s heavy ceiling by the ${L_START_OFFSET_BUDGET_SECONDS}s start-offset budget. On FAIL the control above is passing through REACHABLE, _role_class's RESIDUAL branch is untested, and (v)/(vi)/(vii)/(viii) fail for the same root cause: re-seed _SYNTH_DEBUG_WALL_M lower" \
+    test "${_SYNTH_CLASS:-}" = RESIDUAL
 
 assert "L-neg (iv) fixture is non-vacuous — the synthetic-role exclusion seed really changed the scaffold's verify.sh" \
     _files_differ "$_KL_FIX/verify-synth.sh" "$_KL_FIX/verify-synth-excluded.sh"
