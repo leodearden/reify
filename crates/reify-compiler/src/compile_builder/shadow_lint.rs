@@ -507,11 +507,12 @@ fn walk_members_depth(
             // consistent with the `Declaration::Function` arm). A bodyless
             // required trait fn (`body: None`) has nothing to walk.
             //
-            // NOTE: this `MemberDecl` match runs in parallel with the one in
-            // `dot_chain_lint.rs::walk_member_own_exprs`; a newly added expression-bearing
-            // member kind must be handled in both. Unifying the two walkers is a
-            // larger refactor (the two carry different scope-frame state) and is
-            // intentionally out of scope here.
+            // NOTE: `dot_chain_lint.rs::walk_member_own_exprs` makes the same
+            // per-member expression decisions; a newly added expression-bearing
+            // member kind must be handled in both. This match also hand-rolls
+            // the member recursion that dot_chain_lint takes from reify-ast:
+            // it pushes a scope frame per nested body, and reify-ast's member
+            // walkers are flat visitors with no enter/exit hook to do that.
             MemberDecl::Fn(f) => {
                 if let Some(body) = &f.body {
                     walk_child_scope_body(

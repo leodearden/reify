@@ -318,11 +318,12 @@ fn walk_member_own_exprs(member: &MemberDecl, diagnostics: &mut Vec<Diagnostic>)
         // expression. A bodyless required trait fn (`fn req(self) -> Real`
         // with no `{ … }`) has `body: None` and contributes no expressions.
         //
-        // NOTE: this `MemberDecl` match runs in parallel with the one in
-        // `shadow_lint.rs::walk_members_depth`; a newly added
-        // expression-bearing member kind must be handled in both. Unifying
-        // the two walkers is a larger refactor (the two carry different
-        // scope-frame state) and is intentionally out of scope here.
+        // NOTE: `shadow_lint.rs::walk_members_depth` makes the same
+        // per-member expression decisions; a newly added expression-bearing
+        // member kind must be handled in both. Only those decisions are
+        // duplicated: this lint takes its recursion from reify-ast, but
+        // shadow_lint still hand-rolls its own, because it pushes a scope
+        // frame per nested body.
         MemberDecl::Fn(f) => {
             for param in &f.params {
                 if let Some(default) = &param.default {
