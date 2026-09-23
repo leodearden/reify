@@ -229,7 +229,7 @@ async fn handle_reify_update_source(
     .await?;
     let delta = crate::diff::compute_delta(&state.last_state, &gs);
     emit_delta(&state.app, &delta);
-    state.app.emit("state-delta", &delta).ok();
+    state.app.emit("mesh-update", &delta).ok();
     Ok(reify_update_source_envelope(&gs))
 }
 "#;
@@ -279,7 +279,7 @@ async fn open_path_into_engine(
         open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
             .await?;
     let delta = crate::diff::compute_delta(&state.last_state, &gui_state);
-    state.app.emit("state-delta", &delta).ok();
+    state.app.emit("mesh-update", &delta).ok();
     let frontend = push_gui_state(&state.debug_bridge, &gui_state, None).await?;
     Ok((frontend, gui_state.source.clone()))
 }
@@ -323,7 +323,7 @@ async fn handle_reify_set_parameter(
     )
     .await?;
     let delta = crate::diff::compute_delta(&state.last_state, &gs);
-    crate::event_bus::emit_typed(&state.app, "state-delta", &delta).ok();
+    crate::event_bus::emit_typed(&state.app, "mesh-update", &delta).ok();
     push_gui_state(&state.debug_bridge, &gs, None).await?;
     Ok(reify_set_parameter_envelope(None, None, vec![]))
 }

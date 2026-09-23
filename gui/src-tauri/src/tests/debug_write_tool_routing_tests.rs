@@ -812,26 +812,26 @@ fn the_string_scan_survives_slashes_and_escapes() {
     // scan that mistook the `//` for a comment would blank to end of LINE, so
     // putting the call on the next line would let both assertions pass even
     // with the string tracking removed entirely.
-    let url = r#"    let u = "http://x//y"; state.app.emit("d", &d);
+    let url = r#"    let u = "http://x//y"; state.app.emit("mesh-update", &d);
 "#;
     assert!(strip_comments(url).contains(".emit("));
     assert!(strip_comments(url).contains("http://x//y"));
 
-    let escaped = r#"    let s = "a \" // b"; state.app.emit("d", &d);
+    let escaped = r#"    let s = "a \" // b"; state.app.emit("mesh-update", &d);
 "#;
     assert!(strip_comments(escaped).contains(".emit("));
 
     // A `"` inside a CHAR literal must not open a string. Blanking from there
     // to the next quote swallows real code, and swallowed code false-GREENS
     // the private-emit check — not merely noise, the forbidden direction.
-    let quote_char = r#"    let q = '"'; state.app.emit("d", &d);
+    let quote_char = r#"    let q = '"'; state.app.emit("mesh-update", &d);
 "#;
     assert!(strip_comments(quote_char).contains(".emit("));
     assert!(strip_prose(quote_char).contains(".emit("));
 
     // A lifetime is NOT a char literal, so recognising `'` must not swallow
     // the rest of `&'static str` either.
-    let lifetime = r#"    let n: &'static str = "x"; state.app.emit("d", &d);
+    let lifetime = r#"    let n: &'static str = "x"; state.app.emit("mesh-update", &d);
 "#;
     assert!(strip_comments(lifetime).contains(".emit("));
 
@@ -1025,7 +1025,7 @@ fn the_private_emit_sweep_fires_on_the_real_file_when_mutated() {
     let mutated = splice_into_fn_body(
         &source,
         &handler,
-        "    crate::event_bus::emit_typed(&state.app, \"state-delta\", &delta).ok();",
+        "    crate::event_bus::emit_typed(&state.app, \"mesh-update\", &delta).ok();",
     )
     .expect("the positive control failed to splice — an unmutated copy would pass vacuously");
 
