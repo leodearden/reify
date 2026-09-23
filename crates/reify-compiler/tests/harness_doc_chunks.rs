@@ -51,5 +51,7 @@ mod geometry_chunk_smoke;
 mod oracle_xref_smoke;
 #[path = "harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs"]
 mod stdlib_chunk_geometry_ops_smoke;
+#[path = "harness_doc_chunks/unfenced_signature_gate.rs"]
+mod unfenced_signature_gate;
 #[path = "harness_doc_chunks/units_chunk_smoke.rs"]
 mod units_chunk_smoke;
