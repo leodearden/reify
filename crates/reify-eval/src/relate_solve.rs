@@ -61,8 +61,12 @@ pub struct AutoUnknown {
 ///
 /// * [`auto_unknowns`](Self::auto_unknowns) — the `at auto` Frame unknowns, in
 ///   sub-declaration order;
-/// * [`relations`](Self::relations) — the flat, source-ordered relation set
-///   (each a `FunctionCall` retaining its name + operand exprs); and
+/// * [`relations`](Self::relations) — the flat, source-ordered relate-block
+///   members in declaration order: normally direct geometric-relation
+///   `FunctionCall`s, but any `Type::Relation`-typed expr the compiler
+///   accepted (e.g. a call to a user `fn ... -> Relation` wrapper) can
+///   appear — see [`ScopeInstances`] for how the solve handles a member it
+///   cannot consume; and
 /// * [`ground`](Self::ground) — the names of the non-auto subs that serve as the
 ///   fixed anchor (ζ's grounding model: a non-auto sub is fixed at identity, and
 ///   the auto subs trace to it via the relations).
@@ -688,13 +692,13 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
 /// `check_relate_relations` accepted it — yet is not a direct geometric-relation
 /// call the solve can build a [`RelationInstance`] from (e.g. an alias to a
 /// `let`-bound Relation, an `if`/`match` yielding one, or a call to a user-defined
-/// `fn ... -> Relation` wrapper). `source` is the member's 0-based index into
-/// `scope.relations`; the message names its 1-based DECLARATION position — the
-/// diagnostic's only localiser. It does not also name a sub: which sub(s) a member
-/// touches can't generally be read back out of a non-`FunctionCall` expr the way
-/// [`operand_refs`] reads a driving relation's (an earlier revision hard-coded the
-/// scope's first auto sub regardless of the member; dropped as inaccurate —
-/// amendment review finding: diagnostic-accuracy).
+/// `fn ... -> Relation` wrapper). The code is shared with the compiler's own
+/// relate-member type-mismatch diagnostic; a dedicated code is deferred to #7494.
+/// `source` is the member's 0-based index into `scope.relations`; the message
+/// names its 1-based DECLARATION position — the diagnostic's only localiser. It
+/// does not also name a sub: which sub(s) a member touches can't generally be
+/// read back out of a non-`FunctionCall` expr the way [`operand_refs`] reads a
+/// driving relation's operand references.
 ///
 /// Only call this for a `Type::Relation` member (see [`build_relation_instances`]):
 /// a member the compiler already flagged as NOT `Type::Relation` gets an accurate
@@ -711,7 +715,7 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
 /// own early return, both skip such a scope before any relation is inspected), so
 /// the same authoring mistake there is still silently dropped; closing that gap
 /// belongs to the compiler's `check_relate_relations`, which sees every relate
-/// block regardless of auto subs (amendment review finding: architecture).
+/// block regardless of auto subs (deferred to #7495).
 fn unconsumable_relation_diagnostic(source: usize) -> Diagnostic {
     let position = source + 1;
     Diagnostic::error(format!(
@@ -1528,7 +1532,7 @@ fn relation_instance(rel: &CompiledExpr, realized: &RealizedDatums) -> Option<Re
         // An arg decoding as neither is silently absent from `operands` — a
         // per-operand gap distinct from the whole-member skip in
         // `build_relation_instances`, and not recorded in `skipped`
-        // (follow-up, not this task — amendment review finding: robustness).
+        // (deferred to #7496).
     }
     Some(RelationInstance {
         name: function.name.clone(),

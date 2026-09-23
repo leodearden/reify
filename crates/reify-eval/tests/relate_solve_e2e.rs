@@ -1382,7 +1382,7 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
 // geometric-relation `FunctionCall`; it can be a `CompiledExprKind::UserFunctionCall`
 // the solve cannot build a [`RelationInstance`] for.
 //
-// `build_relation_instances`'s `filter_map` silently DROPS such a member, making
+// `build_relation_instances`'s `filter_map` silently DROPPED such a member, making
 // `instances` SHORTER than `scope.relations`. Pre-fix, `solve_relate_scope` and
 // `conflict_diagnostic` nonetheless cross from an INSTANCE position back to
 // `scope.relations` using that SAME position as if it were a source index — so
