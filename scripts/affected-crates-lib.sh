@@ -296,8 +296,8 @@ _reverse_closure() {
 # documented always-return-0 still holds. `sort -u` also normalises every
 # branch to the sorted-unique output the header promises.
 #
-# _reverse_closure's own `echo ALL` writes are exempt: its stdout is always
-# captured by $(...) below, never connected to a caller's pipe.
+# _reverse_closure's own writes are exempt: its stdout is always captured by
+# $(...) below, never connected to a caller's pipe.
 _emit_affected() {
     printf '%s\n' "$@" | sort -u || true
 }
@@ -364,14 +364,14 @@ affected_crates() {
     # emit sorted-unique (one crate per line).
     local closure
     closure="$(printf '%s\n' "${direct[@]}" | _reverse_closure)"
-    [ -n "$closure" ] || return 0
 
     # ALL is a sentinel, not a crate name, so it is never unioned with
     # anything: verify.sh's NARROW_ACTIVE assignment reads any non-empty value
     # other than exactly ALL as a narrowed -p list, so `ALL` plus a crate name
     # would read as a NARROW carrying a bogus package selector rather than the
-    # C4/C5 fail-wide it actually is.
-    if [ "$closure" = "ALL" ]; then
+    # C4/C5 fail-wide it actually is. An empty closure from this non-empty seed
+    # list is C5 too (see _reverse_closure), never an empty print.
+    if [ -z "$closure" ] || [ "$closure" = "ALL" ]; then
         _emit_affected ALL
         return 0
     fi
