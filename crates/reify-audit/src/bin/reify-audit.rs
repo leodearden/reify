@@ -8,7 +8,7 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDIAG|PDOCCOVER|PDCHECK`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
+//! - `--pattern <token>[,<token>…]`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`). The token vocabulary is [`reify_audit::pattern_flag::TOKENS`].
 //!   `PDIAG` is the INV-SF-6 codes-mandatory ratchet — opt-in only, and one of
 //!   the restricted detectors that move the exit code (see
 //!   `docs/notes/diagnostic-severity-policy.md`).
@@ -63,7 +63,7 @@ use std::process::ExitCode;
 use reify_audit::{
     AuditContext, Finding, JCodemunchOps, NoopJCodemunchOps, RealGitOps, Severity, TaskMetadata,
     TimeWindow, fused_memory_client::FusedMemoryClient, jcodemunch_client::RealJCodemunchOps,
-    jcodemunch_index,
+    jcodemunch_index, pattern_flag,
 };
 
 // -----------------------------------------------------------------------
@@ -77,7 +77,11 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDIAG|PDOCCOVER|PDCHECK Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(
+        out,
+        "  --pattern {} Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)",
+        pattern_flag::TOKENS.join("|")
+    );
     let _ = writeln!(out, "                           PDIAG: INV-SF-6 codes-mandatory ratchet (opt-in; see docs/notes/diagnostic-severity-policy.md)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
@@ -203,7 +207,7 @@ struct Args {
     pre_done: bool,
     since: Option<String>,
     /// Validated comma-separated detector token list (e.g. `"P1,P2,P5"`).
-    /// Each token is one of `P1`, `P2`, `P5`, `PDEAD`, `PUNTESTED`.
+    /// Each token is a member of [`pattern_flag::TOKENS`].
     /// `None` means no restriction — all default-sweep detectors run.
     /// Use `pattern_selects(val, token)` to test membership.
     pattern: Option<String>,
@@ -352,14 +356,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                                 .to_string(),
                         );
                     }
-                    if !matches!(
-                        tok,
-                        "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" | "PTODO"
-                            | "PDSSENTINEL" | "PDIAG" | "PDOCCOVER" | "PDCHECK"
-                    ) {
+                    if !pattern_flag::TOKENS.contains(&tok) {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, PDSSENTINEL, PDIAG, PDOCCOVER, or PDCHECK",
-                            tok
+                            "unknown --pattern value '{tok}'; expected one of: {}",
+                            pattern_flag::TOKENS.join(", ")
                         ));
                     }
                 }
@@ -1382,7 +1382,10 @@ mod tests {
     #[test]
     fn pattern_flag_vocabulary_is_accepted_and_advertised_in_full() {
         let tokens = reify_audit::pattern_flag::TOKENS;
-        assert!(!tokens.is_empty(), "the --pattern vocabulary must not be empty");
+        assert!(
+            !tokens.is_empty(),
+            "the --pattern vocabulary must not be empty"
+        );
         let distinct: std::collections::HashSet<&str> = tokens.iter().copied().collect();
         assert_eq!(
             distinct.len(),
@@ -1393,7 +1396,11 @@ mod tests {
         for &tok in tokens {
             let args = parse_args(&["--pattern".to_string(), tok.to_string()])
                 .unwrap_or_else(|e| panic!("--pattern {tok} must parse; got: {e}"));
-            assert_eq!(args.pattern.as_deref(), Some(tok), "--pattern {tok} must be stored as given");
+            assert_eq!(
+                args.pattern.as_deref(),
+                Some(tok),
+                "--pattern {tok} must be stored as given"
+            );
         }
 
         let union = tokens.join(",");
@@ -1413,7 +1420,8 @@ mod tests {
             assert!(usage.contains(tok), "--help must name {tok}; got:\n{usage}");
         }
 
-        let non_member_err = unwrap_err(parse_args(&["--pattern".to_string(), "PNOPE".to_string()]));
+        let non_member_err =
+            unwrap_err(parse_args(&["--pattern".to_string(), "PNOPE".to_string()]));
         assert!(
             non_member_err.contains("'PNOPE'"),
             "a token outside the vocabulary must be rejected by name; got: {non_member_err}"
