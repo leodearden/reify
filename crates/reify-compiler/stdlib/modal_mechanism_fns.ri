@@ -70,7 +70,8 @@
 // mode.  `.shape` and `.participation_mass` are `undef`, not an empty list or
 // zero: the lumped generalized-coordinate model has one scalar DOF per body,
 // so it has no per-node mode shape and no spatial direction to project a
-// participation mass onto.
+// participation mass onto.  `.mass_matrix_norm` / `.stiffness_matrix_norm` are
+// the Frobenius norms of the lumped diagonal M / K over the physical DOFs only.
 //
 // Rigid-joint note: a body whose inbound `at` joint has no `spring_rate`
 // (a rigid joint) contributes K[i,i] = 0 to the stiffness matrix.  That DOF

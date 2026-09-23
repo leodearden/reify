@@ -2033,6 +2033,51 @@ fn mechanism_mode_value(frequency_hz: f64, damping_ratio: f64) -> Value {
     }))
 }
 
+/// Build the lumped-model `ModalResult`. Field dispositions (INV-PD-2):
+///
+/// - `part`: allowlisted to #7097, which owns replacing [`placeholder_part`].
+/// - `modes`: populated, one [`mechanism_mode_value`] per physical mode.
+/// - `boundary_conditions`: degraded to `Undef`. The joint tree, not a
+///   `Support`, constrains the lumped solve, so `[]` or an echo of the
+///   caller's list would misreport it.
+/// - `damping`: populated input-conditionally, as the echo of the caller's
+///   `ModalOptions.damping` descriptor (task #6875); `Undef` when the caller
+///   supplied none.
+/// - `mass_matrix_norm` / `stiffness_matrix_norm`: populated with the
+///   Frobenius norms of the physical lumped M and K, excluding the anchor DOF.
+/// - `topology`: an undeclared write owned by #7097; always `Undef` here
+///   ([`build_modal_topology_value`]).
+fn mechanism_modal_result_value(
+    modes: Vec<Value>,
+    damping: Value,
+    mass_matrix_norm: f64,
+    stiffness_matrix_norm: f64,
+) -> Value {
+    let fields: PersistentMap<String, Value> = [
+        ("part".to_string(), placeholder_part()),
+        ("modes".to_string(), Value::List(modes)),
+        ("boundary_conditions".to_string(), Value::Undef),
+        ("damping".to_string(), damping),
+        (
+            "mass_matrix_norm".to_string(),
+            Value::Real(mass_matrix_norm),
+        ),
+        (
+            "stiffness_matrix_norm".to_string(),
+            Value::Real(stiffness_matrix_norm),
+        ),
+        ("topology".to_string(), build_modal_topology_value()),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "ModalResult".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
 /// Core implementation for the `modal::mechanism_modal` compute target (task
 /// #4271).
 ///
@@ -2049,8 +2094,12 @@ fn mechanism_mode_value(frequency_hz: f64, damping_ratio: f64) -> Value {
 /// `total_damping_ratio`: the modal-strain-energy term is undefined for a lumped
 /// model (see the `DampingKind::Material` arm below).
 /// `NoDamping`, an absent `damping` field, and a rigid-joint ω = 0 mode all
-/// give ζ_i = 0.  `Mode.shape` and `Mode.participation_mass` are `Undef`; the
-/// reasons are recorded at [`mechanism_mode_value`].
+/// give ζ_i = 0.
+///
+/// **Field dispositions (INV-PD-2)**, with their reasons, are recorded at
+/// [`mechanism_mode_value`] and [`mechanism_modal_result_value`]: `Mode.shape`
+/// and `Mode.participation_mass` are `Undef`, and the matrix norms are those
+/// of the physical lumped M and K.
 ///
 /// DOF model: one generalized DOF per spanning-tree body.  Diagonal M[i,i] =
 /// body scalar mass; diagonal K[i,i] = body inbound joint spring_rate (0 for
@@ -2140,6 +2189,10 @@ fn run_mechanism_modal(
             };
         }
     };
+    // Norms of the PHYSICAL lumped M and K, taken before the step-(2) anchor
+    // pad for the same reason the anchor's mode is kept out of `modes`.
+    let mass_matrix_norm = frobenius_norm(&m_mat);
+    let stiffness_matrix_norm = frobenius_norm(&k_mat);
 
     // ── (1c) multi-body uncoupled-estimate advisory (suggestion: S1) ─────────
     // The lumped model uses a strictly diagonal M and K (one DOF per body),
@@ -2353,39 +2406,13 @@ fn run_mechanism_modal(
         modes_list.truncate(requested_n_modes);
     }
 
-    // ── (6) shape ModalResult (7-field, mirroring run_modal_analysis step 7) ──
-    // topology is always present (Value::Undef on the mechanism path — no B-rep
-    // attributed mesh; stable contract for R3b per task 4654 R3a design decision).
-    //
-    // `damping` genuinely echoes the caller's `ModalOptions.damping` descriptor
-    // (task #6875) via the same [`field_or`] read the FEA path uses — it is no
-    // longer a placeholder. `Value::Undef` now means only "the caller supplied
-    // no descriptor", which is what a bare `ModalOptions()` produces, so an
-    // undamped solve is still reported as `Undef` exactly as before.
-    // `mass_matrix_norm` / `stiffness_matrix_norm` remain 0: the lumped
-    // generalized-coordinate model never forms the norms the FEA path reports.
-    let result_fields: PersistentMap<String, Value> = [
-        ("part".to_string(), placeholder_part()),
-        ("modes".to_string(), Value::List(modes_list)),
-        // Degraded: the joint tree, not a `Support`, constrains the lumped
-        // solve, so `[]` or an echo of the caller's list would misreport it.
-        ("boundary_conditions".to_string(), Value::Undef),
-        (
-            "damping".to_string(),
-            field_or(options, "damping", Value::Undef),
-        ),
-        ("mass_matrix_norm".to_string(), Value::Real(0.0)),
-        ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
-        ("topology".to_string(), build_modal_topology_value()),
-    ]
-    .into_iter()
-    .collect();
-    let result = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "ModalResult".to_string(),
-        version: 1,
-        fields: result_fields,
-    }));
+    // ── (6) shape ModalResult ────────────────────────────────────────────────
+    let result = mechanism_modal_result_value(
+        modes_list,
+        field_or(options, "damping", Value::Undef),
+        mass_matrix_norm,
+        stiffness_matrix_norm,
+    );
     ComputeOutcome::Completed {
         result,
         new_warm_state: None,
