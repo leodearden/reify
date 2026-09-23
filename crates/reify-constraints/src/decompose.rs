@@ -1285,18 +1285,17 @@ mod tests {
     /// verdict AND its flagless empty default), while `Some(Logical)` widens to
     /// `CrossDomain`.
     ///
-    /// The fixture deliberately does NOT put a variant literal in the component
-    /// under test. `S.fit` is reached only through `let w = 1.0mm + fit` from a
-    /// numeric constraint; the `Fit::Tight` literal lives in a SEPARATE
-    /// component belonging to a different auto, `S.fit2`. That is exactly the
-    /// documented `can_enumerate` over-approximation — its enum arm scans the
-    /// decomposition's whole constraint slice and matches on `type_name` alone
-    /// — so `can_enumerate(S.fit)` is true purely because of another auto's
-    /// constraint. A `_ if can_enumerate(..)` catch-all therefore contributed
-    /// `None` for `S.fit`, the component stayed `Dimensional`, and
-    /// `solver_for(Dimensional)` handed an `Enum` auto to `DimensionalSolver`,
-    /// which maps every non-`Type::Scalar` param to `DIMENSIONLESS` and writes
-    /// a `Value::Scalar` back.
+    /// `S.fit` is reached only through `let w = 1.0mm + fit` from a numeric
+    /// constraint. A second constraint, `fit == Fit::Tight`, puts a variant
+    /// literal in the SAME component, so `can_enumerate(S.fit)` is true over
+    /// that component's own constraints. A `_ if can_enumerate(..)` catch-all
+    /// ahead of the `Enum` arm would therefore contribute `None`, and the
+    /// component would stay `Dimensional`: the literal's own constraint is
+    /// flagless too, which the integrity assertion pins so a classifier change
+    /// fails loudly instead of making this test vacuous. `solver_for` would then
+    /// hand an `Enum` auto to `DimensionalSolver`, which maps every
+    /// non-`Type::Scalar` param to `DIMENSIONLESS` and writes a `Value::Scalar`
+    /// back.
     ///
     /// Latent in `production()` today (both the `Logical` and `CrossDomain`
     /// slots are `None`, so every spelling lands on `DimensionalSolver`
@@ -1305,32 +1304,34 @@ mod tests {
     #[test]
     fn an_enumerable_enum_auto_behind_a_numeric_cell_does_not_stay_dimensional() {
         let fit = ValueCellId::new("S", "fit");
-        let fit2 = ValueCellId::new("S", "fit2");
         let fit_ty = || Type::Enum("Fit".to_string());
-        let enum_auto = |id: &ValueCellId| AutoParam {
-            id: id.clone(),
+        let params = vec![AutoParam {
+            id: fit.clone(),
             param_type: fit_ty(),
             bounds: None,
             free: true,
-        };
-        let params = vec![enum_auto(&fit), enum_auto(&fit2)];
+        }];
+        let names_a_variant = CompiledExpr::binop(
+            BinOp::Eq,
+            CompiledExpr::value_ref(fit.clone(), fit_ty()),
+            CompiledExpr::literal(Value::enum_unit("Fit", "Tight"), fit_ty()),
+            Type::Bool,
+        );
+        assert_eq!(
+            ConstraintClassifier::classify(&names_a_variant),
+            ConstraintDomain::Dimensional,
+            "fixture integrity: `fit == Fit::Tight` must classify flagless on its \
+             own. A `Logical` verdict would mix with the numeric constraint into \
+             `CrossDomain` whatever the reached auto contributes, and the \
+             assertion below would pass vacuously",
+        );
         let constraints = vec![
             // Dimensional base, reaching `S.fit` only through the derived cell.
             (
                 ConstraintNodeId::new("S", 0),
                 eq_lit(alpha_vref("S", "w"), 1.0),
             ),
-            // A DIFFERENT auto, a DIFFERENT component — but the same enum type,
-            // so this literal is what makes `can_enumerate(S.fit)` answer true.
-            (
-                ConstraintNodeId::new("S", 1),
-                CompiledExpr::binop(
-                    BinOp::Eq,
-                    CompiledExpr::value_ref(fit2.clone(), fit_ty()),
-                    CompiledExpr::literal(Value::enum_unit("Fit", "Tight"), fit_ty()),
-                    Type::Bool,
-                ),
-            ),
+            (ConstraintNodeId::new("S", 1), names_a_variant),
         ];
         let dependent_cells = vec![(
             ValueCellId::new("S", "w"),
@@ -1342,26 +1343,13 @@ mod tests {
 
         let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
 
-        // Fixture integrity: the two autos must land in SEPARATE components, or
-        // `S.fit2`'s own `Logical` constraint would supply the widening under
-        // test and the assertion would be vacuous.
         assert_eq!(
             components.len(),
-            2,
-            "fixture integrity: `S.fit` (reached through `let w`) and `S.fit2` \
-             (syntactically referenced) share no constraint and must decompose \
-             into two components; got {components:?}",
+            1,
+            "fixture integrity: both constraints read `S.fit`, one through \
+             `let w`, so they form one component; got {components:?}",
         );
-        let under_test = components
-            .iter()
-            .find(|c| c.auto_params.contains(&fit))
-            .expect("fixture integrity: some component must hold `S.fit`");
-        assert!(
-            !under_test.auto_params.contains(&fit2),
-            "fixture integrity: `S.fit`'s component must NOT also hold `S.fit2`, \
-             whose constraint carries the variant literal; got {:?}",
-            under_test.auto_params,
-        );
+        let under_test = &components[0];
 
         assert_eq!(
             under_test.domain,

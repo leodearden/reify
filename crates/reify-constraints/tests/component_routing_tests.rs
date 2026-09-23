@@ -7,12 +7,13 @@
 //! cell reachable at all.
 
 use reify_constraints::{
-    ObjectiveConsumption, SolverRegistry, decompose_into_components, objective_consumption,
+    ObjectiveConsumption, SolverRegistry, SubProblem, decompose_into_components,
+    objective_consumption,
 };
 use reify_core::{Type, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, ConstraintDomain, ConstraintSolver, ObjectiveSense,
-    ObjectiveSet, ResolutionProblem, SolveResult, ValueMap,
+    ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap,
 };
 use reify_test_support::*;
 use std::collections::{HashMap, HashSet};
@@ -250,5 +251,204 @@ fn an_objective_reading_only_a_cyclic_cell_stays_fallback_component_zero() {
         "`minimize x` reads only a cyclic cell no fold can derive. `Consumed` \
          means the objective's reach coupled through that cell, which would \
          silence E_OBJECTIVE_UNCONSUMED for an objective that governs nothing",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// An auto the CLASSIFIER never sees must still widen its component's domain
+// (#6512). The classifier reads one constraint's syntax, so an auto that joined
+// a component only through the objective's unions carries a type nothing
+// routes on, and so does an enum auto probed against a variant literal that
+// lives in ANOTHER component. `SolverRegistry::solver_for` routes on
+// `SubProblem.domain`, so either gap is a mis-ROUTING: latent while
+// `production()` leaves the `Logical` and `CrossDomain` slots `None`, live once
+// PRD2 γ wires them.
+// ---------------------------------------------------------------------------
+
+fn typed_auto(member: &str, param_type: Type) -> AutoParam {
+    AutoParam {
+        id: id(member),
+        param_type,
+        bounds: None,
+        free: true,
+    }
+}
+
+fn fit_type() -> Type {
+    Type::Enum("Fit".to_string())
+}
+
+fn component_holding<'c>(components: &'c [SubProblem], member: &str) -> &'c SubProblem {
+    components
+        .iter()
+        .find(|c| c.auto_params.contains(&id(member)))
+        .unwrap_or_else(|| {
+            panic!("fixture integrity: no component holds `{member}`; got {components:?}")
+        })
+}
+
+/// The task's failure shape: a `Bool` auto that only the objective couples in.
+///
+/// The cell is IR-declarative (`s = a + flag` would not type-check in `.ri`);
+/// what the decomposition consumes is the `ValueRef` edge from `s` to `flag`
+/// and the AUTO's own type, which is all this needs.
+#[test]
+fn a_bool_auto_reached_only_through_the_objective_does_not_stay_dimensional() {
+    let autos = vec![length_auto("a"), typed_auto("flag", Type::Bool)];
+    let constraints = vec![(cnid(E, 0), eq(len_ref("a"), literal(mm(1.0))))];
+    let cells = vec![(
+        id("s"),
+        add(len_ref("a"), value_ref_typed(E, "flag", Type::Bool)),
+    )];
+
+    let without_objective = decompose_into_components(&autos, &constraints, None, &cells);
+    assert!(
+        without_objective
+            .iter()
+            .all(|c| !c.auto_params.contains(&id("flag"))),
+        "fixture integrity: no constraint reads `flag`, so without the objective \
+         it must be in no component; got {without_objective:?}",
+    );
+
+    let components = decompose_into_components(&autos, &constraints, Some(&ids(["s"])), &cells);
+    assert_eq!(
+        components.len(),
+        1,
+        "fixture integrity: `minimize s` reaches `a` and `flag` through `s`, so \
+         the objective couples them into one component; got {components:?}",
+    );
+    assert_eq!(
+        components[0].auto_params,
+        ids(["a", "flag"]),
+        "fixture integrity: the component must hold the Bool auto under test",
+    );
+    assert_eq!(
+        components[0].domain,
+        ConstraintDomain::CrossDomain,
+        "the component holds a length auto AND a Bool auto. `Dimensional` means \
+         the objective unioned `flag` in without contributing its domain, which \
+         routes a Bool auto at `DimensionalSolver`: it cannot enumerate it and \
+         writes a `Value::Scalar` back",
+    );
+}
+
+/// The objective's OWN syntactic autos are widened too: no classifier ever
+/// sees an objective expression, so nothing else would.
+#[test]
+fn a_string_auto_the_objective_names_directly_does_not_stay_dimensional() {
+    let autos = vec![length_auto("a"), typed_auto("name", Type::String)];
+    let constraints = vec![(cnid(E, 0), eq(len_ref("a"), literal(mm(1.0))))];
+
+    let components =
+        decompose_into_components(&autos, &constraints, Some(&ids(["a", "name"])), &[]);
+
+    assert_eq!(
+        components.len(),
+        1,
+        "fixture integrity: the objective names `a` and `name`, so it couples \
+         them into one component; got {components:?}",
+    );
+    assert_eq!(
+        components[0].auto_params,
+        ids(["a", "name"]),
+        "fixture integrity: the component must hold the String auto under test",
+    );
+    assert_eq!(
+        components[0].domain,
+        ConstraintDomain::CrossDomain,
+        "no solver slot can represent a `Type::String` auto, so the component \
+         must route to the FALLBACK. `Dimensional` means the objective's own \
+         autos were never widened",
+    );
+}
+
+/// GUARD: objective reach over numeric autos only must stay `Dimensional`, so
+/// the widening cannot smear every objective-bearing component to
+/// `CrossDomain` and route it away from `DimensionalSolver`.
+#[test]
+fn an_all_numeric_objective_reach_stays_dimensional() {
+    let autos = vec![length_auto("a"), length_auto("b")];
+    let constraints = vec![
+        (cnid(E, 0), eq(len_ref("a"), literal(mm(6.0)))),
+        (cnid(E, 1), eq(len_ref("b"), literal(mm(4.0)))),
+    ];
+    let cells = vec![(id("s"), add(len_ref("a"), len_ref("b")))];
+
+    assert_eq!(
+        decompose_into_components(&autos, &constraints, None, &cells).len(),
+        2,
+        "fixture integrity: without the objective the two constraints are \
+         independent, or the merge below proves nothing",
+    );
+    let components = decompose_into_components(&autos, &constraints, Some(&ids(["s"])), &cells);
+    assert_eq!(
+        components.len(),
+        1,
+        "fixture integrity: `minimize s` reaches both autos through `s`, so the \
+         two components merge; got {components:?}",
+    );
+    assert_eq!(
+        components[0].domain,
+        ConstraintDomain::Dimensional,
+        "every auto in the merged component is a length, so the objective adds \
+         nothing non-numeric. `CrossDomain` sends a purely dimensional problem \
+         to the fallback slot",
+    );
+}
+
+/// The capability probe behind an enum auto must read the auto's OWN
+/// component. `ok = (fit == fit)` holds no variant literal; the only `Fit`
+/// literal is `fit2 == Fit::Tight`, in a DIFFERENT component. CP-SAT builds
+/// each component's variable domains from that component's constraints alone,
+/// so it rejects `fit`, and a `Logical` verdict hands CP-SAT exactly the
+/// component it then fails with `NoProgress`.
+#[test]
+fn a_logical_constraint_reaching_an_enum_whose_only_literal_is_in_another_component_goes_cross_domain()
+ {
+    let autos = vec![
+        typed_auto("fit", fit_type()),
+        typed_auto("fit2", fit_type()),
+    ];
+    let fit_ref = || value_ref_typed(E, "fit", fit_type());
+    let constraints = vec![
+        (
+            cnid(E, 0),
+            eq(
+                value_ref_typed(E, "ok", Type::Bool),
+                literal(Value::Bool(true)),
+            ),
+        ),
+        (
+            cnid(E, 1),
+            eq(
+                value_ref_typed(E, "fit2", fit_type()),
+                literal(Value::enum_unit("Fit", "Tight")),
+            ),
+        ),
+    ];
+    let cells = vec![(id("ok"), eq(fit_ref(), fit_ref()))];
+
+    let components = decompose_into_components(&autos, &constraints, None, &cells);
+
+    assert_eq!(
+        components.len(),
+        2,
+        "fixture integrity: `ok == true` reaches only `fit` and \
+         `fit2 == Fit::Tight` reads only `fit2`, so they share no auto; got \
+         {components:?}",
+    );
+    let under_test = component_holding(&components, "fit");
+    assert!(
+        !under_test.auto_params.contains(&id("fit2")),
+        "fixture integrity: `fit`'s component must not also hold `fit2`, whose \
+         constraint carries the only variant literal; got {:?}",
+        under_test.auto_params,
+    );
+    assert_eq!(
+        under_test.domain,
+        ConstraintDomain::CrossDomain,
+        "`fit`'s own component holds no `Fit` literal, so CP-SAT cannot build \
+         its domain there. `Logical` means the enumeration probe counted a \
+         literal from ANOTHER component",
     );
 }
