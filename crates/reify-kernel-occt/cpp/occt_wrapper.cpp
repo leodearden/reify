@@ -2955,6 +2955,13 @@ std::unique_ptr<OcctShape> gtransform_shape(const OcctShape& shape,
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = gtransform.Shape();
+        // BRepBuilderAPI_GTransform has no copy-mesh switch: BRepTools_GTrsfModification
+        // carries the source's triangulation and polygons onto the result even though it
+        // rewrites every analytic surface as a B-spline. A source tessellated first thus
+        // yields a result BRepCheck_Analyzer rejects and whose re-tessellation silently
+        // reuses the carried mesh. Dropping it matches the theCopyMesh=false default of
+        // BRepBuilderAPI_Transform, which every gp_Trsf transform here relies on (#6652).
+        ::BRepTools::Clean(result->shape);
         return result;
     });
 }

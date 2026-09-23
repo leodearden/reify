@@ -773,6 +773,7 @@ std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape, double px
 
 /// Apply a general non-rigid affine transform (3×3 linear + translation) to `shape`
 /// using gp_GTrsf / BRepBuilderAPI_GTransform (Copy=true; source untouched).
+/// The result carries no mesh, whatever `shape` carried (see ffi.rs).
 /// Row-major linear part (m00..m22) + translation column (tx, ty, tz).
 /// Singular-input guard: rejects |det(linear)| < 1e-12 with an error message containing
 /// "singular". Non-uniform scale and shear are valid. Per PRD affine-map-type.md §5 task ε.
