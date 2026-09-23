@@ -37,20 +37,12 @@ enum OrphanAudit {
     Envelope(serde_json::Value),
     /// `scope`'s crate segment is a literal member of `EXCLUDE_CRATES` — a
     /// legitimate, non-failing outcome that the script itself encodes as
-    /// empty stdout.
-    ExcludedScope,
+    /// empty stdout. Carries the [`SkipNote`] [`run_orphan_audit`] prints.
+    ExcludedScope(SkipNote),
     /// The environment cannot satisfy the script's prerequisites (missing
     /// `python3`/`git`, the script itself absent, or `repo_root` not inside a
-    /// git work tree). Carries a short human-readable reason for logging.
-    ///
-    /// `#[allow(dead_code)]`: the payload is read only from
-    /// `run_orphan_audit_on_excluded_crate_is_named_not_erased` in
-    /// `#[cfg(test)]`. Now that this enum is module-private (task 5698
-    /// amendment pass, review finding #5), it no longer gets the `pub`-item
-    /// dead-code exemption, and the plain (non-test) library build has no
-    /// other reader of this field.
-    #[allow(dead_code)]
-    EnvUnavailable(&'static str),
+    /// git work tree). Carries the [`SkipNote`] [`run_orphan_audit`] prints.
+    EnvUnavailable(SkipNote),
 }
 
 /// The phrase every graceful-skip note [`run_orphan_audit`] prints to stderr
@@ -58,6 +50,31 @@ enum OrphanAudit {
 /// process's stderr to such a skip matches the string this module actually
 /// produces, not a copy of it.
 pub const ORPHAN_AUDIT_SKIP_MARKER: &str = "skipping orphan audit";
+
+/// Why [`run_orphan_audit`] declined to return an envelope for `scope`,
+/// rendered as the one stderr line it prints — so every skip, whichever
+/// cause fired, carries [`ORPHAN_AUDIT_SKIP_MARKER`] in the same place.
+#[derive(Debug)]
+struct SkipNote {
+    scope: String,
+    cause: String,
+}
+
+impl SkipNote {
+    fn new(scope: &str, cause: impl Into<String>) -> Self {
+        Self {
+            scope: scope.to_string(),
+            cause: cause.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SkipNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { scope, cause } = self;
+        write!(f, "{cause}; {ORPHAN_AUDIT_SKIP_MARKER} for scope {scope:?}")
+    }
+}
 
 /// Crate names excluded from the orphan-producer audit — a Rust copy of the
 /// `EXCLUDE_CRATES = {...}` set literal declared in
@@ -208,11 +225,10 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     // self-contained when called directly with a script path that caller
     // never probed — see missing_script_is_env_unavailable.)
     if !script.exists() {
-        eprintln!(
-            "scripts/audit-orphan-producers.sh not found at {:?}; skipping",
-            script
-        );
-        return OrphanAudit::EnvUnavailable("audit-orphan-producers.sh not found on disk");
+        return OrphanAudit::EnvUnavailable(SkipNote::new(
+            scope,
+            format!("scripts/audit-orphan-producers.sh not found at {script:?}"),
+        ));
     }
 
     // Repo-root premise probe (task 5698 step 6): assert that a child spawned
@@ -225,11 +241,10 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     // EXCLUDE_CRATES scope, which the empty-stdout branch alone cannot.
     match child_repo_root(repo_root) {
         Err(ChildRepoRootFailure::NoRepository) => {
-            eprintln!(
-                "repo_root {repo_root:?} is not inside a git work tree; \
-                 {ORPHAN_AUDIT_SKIP_MARKER} for scope {scope:?}"
-            );
-            return OrphanAudit::EnvUnavailable("repo root is not a git work tree");
+            return OrphanAudit::EnvUnavailable(SkipNote::new(
+                scope,
+                format!("repo_root {repo_root:?} is not inside a git work tree"),
+            ));
         }
         Err(ChildRepoRootFailure::Other(detail)) => {
             panic!(
@@ -277,12 +292,14 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
 
     if stdout.trim().is_empty() {
         if scope_is_excluded_crate(scope) {
-            eprintln!(
-                "audit-orphan-producers.sh produced empty output for scope {scope:?} \
-                 — scope is in EXCLUDE_CRATES (exit status: {:?})",
-                output.status
-            );
-            return OrphanAudit::ExcludedScope;
+            return OrphanAudit::ExcludedScope(SkipNote::new(
+                scope,
+                format!(
+                    "audit-orphan-producers.sh produced empty output because the scope is \
+                     in EXCLUDE_CRATES (exit status: {:?})",
+                    output.status
+                ),
+            ));
         }
         // Empty stdout for a scope that is NOT in EXCLUDE_CRATES is never a
         // legitimate outcome: it means the orphan-producer pin for this
@@ -323,14 +340,18 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
 /// external code can reach this functionality.
 ///
 /// Collapses both the excluded-scope and environment-unavailable outcomes to
-/// `None`. Returns `Some(json)` on a well-formed envelope. Panics exactly
-/// when `run_orphan_audit_detailed` would panic: empty output for a scope
-/// that is NOT excluded, or a resolved repo root that disagrees with what
-/// the audit child itself would compute.
+/// `None`, after printing the outcome's note, which always carries
+/// [`ORPHAN_AUDIT_SKIP_MARKER`], to stderr. Returns `Some(json)` on a
+/// well-formed envelope. Panics exactly when `run_orphan_audit_detailed`
+/// would panic: empty output for a scope that is NOT excluded, or a resolved
+/// repo root that disagrees with what the audit child itself would compute.
 pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
     match run_orphan_audit_detailed(scope) {
         OrphanAudit::Envelope(v) => Some(v),
-        OrphanAudit::ExcludedScope | OrphanAudit::EnvUnavailable(_) => None,
+        OrphanAudit::ExcludedScope(note) | OrphanAudit::EnvUnavailable(note) => {
+            eprintln!("{note}");
+            None
+        }
     }
 }
 
@@ -413,8 +434,8 @@ pub fn audit_command(scope: &str) -> Command {
 ///   tree at all (e.g. a source tarball with no `.git`) — genuinely
 ///   environmental, unlike the DIFFERENT-work-tree case below.
 ///
-/// In each of those cases an explanatory message is printed to `stderr` so CI
-/// logs remain informative, and the returned reason string names which one.
+/// In each of those cases, the returned [`SkipNote`] names which one, and
+/// [`run_orphan_audit`] prints it to stderr so CI logs remain informative.
 ///
 /// Returns [`OrphanAudit::ExcludedScope`] when `scope`'s crate segment is a
 /// literal member of `EXCLUDE_CRATES`. Also non-failing, but distinct from
@@ -463,8 +484,7 @@ fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
     match Command::new("python3").arg("--version").output() {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            eprintln!("python3 not on PATH; {ORPHAN_AUDIT_SKIP_MARKER} for scope {scope:?}");
-            return OrphanAudit::EnvUnavailable("python3 not on PATH");
+            return OrphanAudit::EnvUnavailable(SkipNote::new(scope, "python3 not on PATH"));
         }
         Err(e) => panic!("unexpected error probing python3: {e}"),
     }
@@ -475,8 +495,7 @@ fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
     match Command::new("git").arg("--version").output() {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            eprintln!("git not on PATH; {ORPHAN_AUDIT_SKIP_MARKER} for scope {scope:?}");
-            return OrphanAudit::EnvUnavailable("git not on PATH");
+            return OrphanAudit::EnvUnavailable(SkipNote::new(scope, "git not on PATH"));
         }
         Err(e) => panic!("unexpected error probing git: {e}"),
     }
@@ -782,9 +801,9 @@ mod tests {
                     "expected the skip note to name the offending script path, got: {line:?}"
                 );
             }
-            other => panic!(
-                "expected EnvUnavailable for a nonexistent script path, got: {other:?}"
-            ),
+            other => {
+                panic!("expected EnvUnavailable for a nonexistent script path, got: {other:?}")
+            }
         }
     }
 
