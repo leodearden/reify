@@ -41,9 +41,9 @@ use reify_solver_elastic::{
 // `catenoid_radius` / `jitter` and the ring+triangulation body below are a
 // SECOND copy of `tensegrity_gamma_membrane_form_find.rs:56-130`, differing
 // only by the added ring members. The two copies are coupled — that file is
-// where `SURFACE_EQUILIBRIUM_REL_TOL`'s `d_scale ≈ 8.95/8.52/9.71`
-// calibration was measured, and this one is the covariance lock on the same
-// constant — so a mesh change in either silently decorrelates them.
+// where `SURFACE_EQUILIBRIUM_REL_TOL` was calibrated, and this one is the
+// covariance lock on the same constant — so a mesh change in either silently
+// decorrelates them.
 // WHAT BLOCKS THE COLLAPSE HERE: hoisting the mesh (to a shared `tests/`
 // module or to `reify-test-support`) is only a net win if the γ golden's copy
 // is DELETED in the same change, and that file is outside task 6119's locked
