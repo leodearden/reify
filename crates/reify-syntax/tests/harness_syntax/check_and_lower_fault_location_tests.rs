@@ -17,31 +17,7 @@
 
 use reify_ast::ParseError;
 
-/// Helper: parse source and return only the parse errors.
-fn parse_errors(source: &str) -> Vec<ParseError> {
-    reify_syntax::parse(
-        source,
-        reify_core::ModulePath::single("fault_location_test"),
-    )
-    .errors
-}
-
-/// The one error whose message starts with `prefix`, or a failure naming every error emitted.
-///
-/// Selects by prefix rather than requiring a lone error, so a second diagnostic elsewhere in the
-/// fixture cannot red a location test for an unrelated reason.
-#[track_caller]
-fn only_error_starting_with<'a>(errors: &'a [ParseError], prefix: &str) -> &'a ParseError {
-    let mut matching = errors.iter().filter(|e| e.message.starts_with(prefix));
-    let error = matching
-        .next()
-        .unwrap_or_else(|| panic!("expected an error starting with {prefix:?}, got: {errors:?}"));
-    assert!(
-        matching.next().is_none(),
-        "expected exactly one {prefix:?} diagnostic, got: {errors:?}"
-    );
-    error
-}
+use crate::parse_error_lookup::{only_error_starting_with, parse_errors};
 
 /// Assert `error` starts at byte `offset` and renders at `line_col`.
 #[track_caller]

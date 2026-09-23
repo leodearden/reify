@@ -4,6 +4,8 @@
 
 use reify_ast::*;
 
+use crate::parse_error_lookup::only_error_starting_with;
+
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     let module = reify_syntax::parse(
@@ -11,20 +13,6 @@ fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
         reify_core::ModulePath::single("constraint_def_test"),
     );
     (module.declarations, module.errors)
-}
-
-/// The one error whose message starts with `prefix`, or a failure naming every error emitted.
-#[track_caller]
-fn only_error_starting_with<'a>(errors: &'a [ParseError], prefix: &str) -> &'a ParseError {
-    let mut matching = errors.iter().filter(|e| e.message.starts_with(prefix));
-    let error = matching
-        .next()
-        .unwrap_or_else(|| panic!("expected an error starting with {prefix:?}, got: {errors:?}"));
-    assert!(
-        matching.next().is_none(),
-        "expected exactly one {prefix:?} diagnostic, got: {errors:?}"
-    );
-    error
 }
 
 // ── Step 1: basic constraint def ─────────────────────────────────

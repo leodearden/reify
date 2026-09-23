@@ -108,6 +108,8 @@ mod numeric_separators_grammar_tests;
 mod occurrence_tests;
 #[path = "harness_syntax/option_tests.rs"]
 mod option_tests;
+#[path = "harness_syntax/parse_error_lookup.rs"]
+mod parse_error_lookup;
 #[path = "harness_syntax/port_tests.rs"]
 mod port_tests;
 #[path = "harness_syntax/pragma_tests.rs"]
