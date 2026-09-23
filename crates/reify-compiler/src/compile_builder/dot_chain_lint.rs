@@ -80,6 +80,8 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 /// Visits:
 ///   * `Structure`/`Occurrence`/`Trait`/`Purpose`: `annotations[*].args` +
 ///     `members` (delegates to [`walk_members`]).
+///   * `Purpose` also: each of its `structures`, walked like a top-level
+///     `Structure` (delegates to [`walk_structure`]).
 ///   * `Function`: `annotations[*].args` + `body.let_bindings[*].value` +
 ///     `body.result_expr`.
 ///   * `Field`: `annotations[*].args` + `source` (Analytical/Composed `expr`,
@@ -92,10 +94,7 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnostic>) {
     use reify_ast::{Declaration, FieldSource};
     match decl {
-        Declaration::Structure(s) => {
-            walk_annotations(&s.annotations, diagnostics);
-            walk_members(&s.members, diagnostics);
-        }
+        Declaration::Structure(s) => walk_structure(s, diagnostics),
         Declaration::Occurrence(o) => {
             walk_annotations(&o.annotations, diagnostics);
             walk_members(&o.members, diagnostics);
@@ -107,6 +106,9 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
         Declaration::Purpose(p) => {
             walk_annotations(&p.annotations, diagnostics);
             walk_members(&p.members, diagnostics);
+            for s in &p.structures {
+                walk_structure(s, diagnostics);
+            }
         }
         Declaration::Function(f) => {
             walk_annotations(&f.annotations, diagnostics);
@@ -173,6 +175,13 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
         // deferred to task β (DOF self-check + body type enforcement).
         Declaration::Joint(_) => {}
     }
+}
+
+/// Walk a structure's `annotations[*].args` and `members`. It is the one walk for
+/// both a top-level structure and a structure nested in a purpose body.
+fn walk_structure(s: &reify_ast::StructureDef, diagnostics: &mut Vec<Diagnostic>) {
+    walk_annotations(&s.annotations, diagnostics);
+    walk_members(&s.members, diagnostics);
 }
 
 /// Walk every member reachable under `members`, at any nesting depth.

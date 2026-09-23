@@ -815,6 +815,18 @@ trait Reachy {
 // Each test first pins its fixture's AST shape with `structure_s_members`, then
 // counts warnings.
 
+/// Parse `source` and return its declarations, refusing a fixture the parser
+/// could not read cleanly.
+fn parse_clean_declarations(source: &str) -> Vec<Declaration> {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture must parse cleanly, got {:?} for source:\n{source}",
+        parsed.errors
+    );
+    parsed.declarations
+}
+
 /// Parse `source` and return the members of its `structure S`.
 ///
 /// Each nested-site test asserts that S's ONLY member is the container it names,
@@ -822,14 +834,7 @@ trait Reachy {
 /// hoisted the member to top level, where an existing site would already find
 /// it, then fails the shape check instead of passing vacuously.
 fn structure_s_members(source: &str) -> Vec<MemberDecl> {
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "fixture must parse cleanly, got {:?} for source:\n{source}",
-        parsed.errors
-    );
-    parsed
-        .declarations
+    parse_clean_declarations(source)
         .into_iter()
         .find_map(|decl| match decl {
             Declaration::Structure(s) if s.name == "S" => Some(s.members),
@@ -953,5 +958,41 @@ structure S {
         source,
         1,
         "Sub.keyed_members[].overrides (nested Let.value)",
+    );
+}
+
+// ── Structures nested in a purpose body ──────────────────────────────────────
+
+/// Position 35: `Declaration::Purpose.structures[*].members` — chain inside a
+/// structure nested in a purpose body.
+///
+/// The shape guard pins that the purpose has no members of its own, so the
+/// chain can be reached only through the nested structure.
+#[test]
+fn walker_visits_purpose_nested_structure_members() {
+    let source = r#"
+purpose my_purpose(subject: Structure) {
+    structure Inner {
+        let x = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            parse_clean_declarations(source).as_slice(),
+            [Declaration::Purpose(p)]
+                if p.members.is_empty()
+                    && matches!(
+                        p.structures.as_slice(),
+                        [s] if matches!(s.members.as_slice(), [MemberDecl::Let(_)])
+                    )
+        ),
+        "fixture must lower to one purpose with no members of its own and a single \
+         nested structure whose only member is the `let`"
+    );
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Purpose.structures[*].members (nested Let.value)",
     );
 }
