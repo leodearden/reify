@@ -421,8 +421,8 @@ fn t9_t20_sibling_fns_each_get_their_own_error() {
 ///
 /// Scoped to the fn-body sources deliberately. The acceptance criteria scope the general
 /// parse-error-quality cleanup to "at least for this class"; the remaining ERROR arms
-/// (constraint / port / connect / guarded-block bodies) and `check_and_lower!` keep the old
-/// shape and are filed as follow-up work.
+/// (constraint / port / connect / guarded-block bodies) and `check_and_lower!` were moved onto
+/// one-line, bounded, fault-located diagnostics separately, by task #6156.
 #[test]
 fn fn_body_parse_error_messages_do_not_echo_source_blocks() {
     for (label, src) in MALFORMED_FN_BODY_SOURCES {

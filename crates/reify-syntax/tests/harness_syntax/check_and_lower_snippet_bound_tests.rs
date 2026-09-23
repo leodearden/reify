@@ -6,10 +6,10 @@
 //! diagnostics emitted by `check_and_lower!` carry a BOUNDED, single-line excerpt, while
 //! leaving the prefix — and any excerpt already inside the bound — untouched.
 //!
-//! SCOPE is `check_and_lower!` alone. Sibling `push_error` sites in `ts_parser.rs` — the
-//! `syntax error in <context>: {}` arms and the `lower_connect_body` mapping arms — still
-//! interpolate raw `node_text`, and are tracked separately by tasks #6156 and #7756, so
-//! nothing here says the diagnostic-excerpt class is closed across the parser.
+//! SCOPE is `check_and_lower!` alone. The sibling `syntax error in <context>: ` arms in
+//! `ts_parser.rs` no longer interpolate raw `node_text` (task #6156), but `lower_connect_body`'s
+//! parameter and port-mapping arms still do (task #7756), so nothing here says the
+//! diagnostic-excerpt class is closed across the parser.
 //!
 //! Asserted through the public `reify_syntax::parse` API on the messages it actually emits,
 //! not against the private `snippet` helper: the contract is the user-visible diagnostic.

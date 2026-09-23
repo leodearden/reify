@@ -2824,10 +2824,8 @@ impl<'a> Lowering<'a> {
                 }
                 "ERROR" => {
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // Shadowed by `check_and_lower!("guarded block")` in `lower_member`.
+                    self.diagnose_error_node(child, "guarded block");
                 }
                 _ => {
                     let annotations = std::mem::take(&mut pending_annotations);
@@ -3802,10 +3800,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in port body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in port body");
                 }
                 _ => self.warn_unexpected_child(child, "port body"),
             }
@@ -3937,10 +3932,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in connect body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in connect body");
                 }
                 _ => self.warn_unexpected_child(child, "connect body"),
             }
