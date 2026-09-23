@@ -641,7 +641,7 @@ const LANGUAGE_CHUNKS_RS: &str = concat!(
 /// Sorted because `read_dir` order is filesystem-dependent: without this a
 /// failure list would shuffle between machines and a diff of two runs would be
 /// unreadable. Mirrors `pdoccover`'s sorted-corpus discipline.
-fn discover_chunk_stems() -> Vec<String> {
+pub(crate) fn discover_chunk_stems() -> Vec<String> {
     let entries = std::fs::read_dir(CHUNKS_DIR).unwrap_or_else(|e| {
         panic!("{CHUNKS_DIR} must be readable ({e}) — update CHUNKS_DIR if the chunk dir moved")
     });
@@ -664,7 +664,7 @@ fn discover_chunk_stems() -> Vec<String> {
 }
 
 /// The text of one chunk file.
-fn read_chunk_file(stem: &str) -> String {
+pub(crate) fn read_chunk_file(stem: &str) -> String {
     let path = format!("{CHUNKS_DIR}/{stem}.md");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{path} must be readable ({e})"))
@@ -672,7 +672,7 @@ fn read_chunk_file(stem: &str) -> String {
 
 /// The repo-relative label used in violation messages, so a failure reads as a
 /// path a developer can open rather than an absolute build-machine path.
-fn chunk_label(stem: &str) -> String {
+pub(crate) fn chunk_label(stem: &str) -> String {
     format!("crates/reify-mcp/src/tools/chunks/{stem}.md")
 }
 
@@ -2008,7 +2008,7 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
 /// test, `corpus_counts_are_exact_not_slack`, so a diff that legitimately adds
 /// a chunk or a fence gets a message telling it to re-measure rather than a
 /// vacuity warning describing a bug that did not happen.
-const CHUNK_FILE_COUNT: usize = 17;
+pub(crate) const CHUNK_FILE_COUNT: usize = 17;
 const TOTAL_FENCE_COUNT: usize = 76;
 
 const REIFY_INVALID_FENCE_FLOOR: usize = 1;
@@ -2137,7 +2137,7 @@ fn assert_corpus_is_not_vacuous(corpus: &[ChunkDoc]) {
 }
 
 /// Render an accumulated violation list as one panic message.
-fn report(check: &str, violations: &[String]) {
+pub(crate) fn report(check: &str, violations: &[String]) {
     assert!(
         violations.is_empty(),
         "{check}: {} violation(s)\n\n{}\n",

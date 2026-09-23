@@ -11,6 +11,10 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::fence_gate::{
+    CHUNK_FILE_COUNT, chunk_label, discover_chunk_stems, read_chunk_file, report,
+};
+
 /// Every `.rs`/`.ri` file under `crates/` and `examples/`, keyed by basename.
 type BasenameIndex = BTreeMap<String, Vec<PathBuf>>;
 
@@ -294,6 +298,71 @@ pub(crate) fn assert_cited_paths_resolve(
          {min_ri}. The worked examples are what a designer is sent to next, so losing a cite is a \
          discoverability regression. Cites seen: {cites:?}",
         audit.ri_files.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The real-corpus gate
+// ---------------------------------------------------------------------------
+
+/// Anti-vacuity floors for [`every_path_cited_by_any_chunk_resolves`]: the cites
+/// read across every chunk, and the chunks carrying at least one. EXACT live
+/// values — re-measure them by the protocol stated once next to
+/// `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
+const MINIMUM_CORPUS_CITES: usize = 67;
+const MINIMUM_CITING_CHUNKS: usize = 5;
+
+/// Every repo path any chunk cites must exist — a `docs/…md` pointer, a
+/// `crates/…rs` test, an `examples/…ri` walk or a `name.rs::fn` alike.
+///
+/// SCOPE: existence only, never that a cited test still asserts what the prose
+/// claims. Complementary to the chunk-local cite floors in
+/// `geometry_chunk_smoke.rs` and `units_chunk_smoke.rs`, which hold particular
+/// SYNC inventories to their size, and to
+/// `tests/infra/test_cited_test_paths_resolve.sh` (#7095), which reports only
+/// MOVED `crates/*/tests/*.rs` cites — never a deleted target or a non-test path.
+#[test]
+fn every_path_cited_by_any_chunk_resolves() {
+    let stems = discover_chunk_stems();
+    assert!(
+        stems.len() >= CHUNK_FILE_COUNT,
+        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — the cite gate \
+         below would be vacuous",
+        stems.len()
+    );
+
+    let audits: Vec<CiteAudit> = stems
+        .iter()
+        .map(|stem| audit_cited_paths(&chunk_label(stem), &read_chunk_file(stem)))
+        .collect();
+
+    let cites: usize = audits.iter().map(|audit| audit.cites.len()).sum();
+    let citing_chunks = audits
+        .iter()
+        .filter(|audit| !audit.cites.is_empty())
+        .count();
+    assert!(
+        cites >= MINIMUM_CORPUS_CITES,
+        "the cite scan read only {cites} cite(s) across the chunks, expected at least \
+         {MINIMUM_CORPUS_CITES} — either the scanner regressed and the gate below passes \
+         vacuously, or cites were removed and MINIMUM_CORPUS_CITES must come down in the same diff"
+    );
+    assert!(
+        citing_chunks >= MINIMUM_CITING_CHUNKS,
+        "only {citing_chunks} chunk(s) carry a cite the scan can read, expected at least \
+         {MINIMUM_CITING_CHUNKS} — either the scanner regressed, or a chunk's cites were removed \
+         and MINIMUM_CITING_CHUNKS must come down in the same diff"
+    );
+
+    let violations: Vec<String> = audits
+        .into_iter()
+        .flat_map(|audit| audit.violations)
+        .collect();
+    report(
+        "paths cited by the MCP language-reference chunks that do not resolve. A chunk is served \
+         verbatim to the in-GUI assistant, so every dangling cite sends it looking for a file \
+         that is not there",
+        &violations,
     );
 }
 
