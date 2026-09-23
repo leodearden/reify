@@ -70,6 +70,8 @@ use reify_compiler::{
 };
 use reify_core::{ModulePath, Severity};
 
+use crate::chunk_cite_gate::{cited_source_paths, repo_root};
+
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/stdlib_geometry_ops_smoke.ri"
@@ -1166,55 +1168,11 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
 // assertions read a CLAIM out of the chunk and check it against real files on
 // disk; either side may be reworded freely so long as the claim stays true.
 
-/// Repository root, reached from this test crate's manifest dir. Same
-/// `concat!(env!("CARGO_MANIFEST_DIR"), "/../…")` idiom the chunk-path consts
-/// use to reach a sibling crate, one level further out — not a second
-/// path-discovery mechanism.
-const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-
 /// The example geometry.md cites as the worked example of ALL FOUR GD&T zone
 /// constructors, and the four names that claim has to cover.
 const GDT_ZONES_EXAMPLE: &str = "examples/tolerancing/gdt_zones.ri";
 const GDT_ZONE_CONSTRUCTORS: &[&str] =
     &["zone_slab", "zone_cylinder", "zone_annulus", "zone_profile"];
-
-/// Every repo-root-relative `examples/….ri` path cited in `markdown`, deduped,
-/// in source order.
-///
-/// Scans for the `examples/` prefix and consumes the longest following run of
-/// path characters, so a citation ends at the surrounding backtick, quote, comma
-/// or space rather than running on into the prose. A trailing sentence period is
-/// trimmed, and a span that does not end in `.ri` is not a file citation at all
-/// (bare `examples/` used as a directory word contributes nothing).
-///
-/// Anchored on a non-path boundary to the LEFT, for the mirror-image reason
-/// [`chunk_mentions`] is anchored: an `examples/` segment NESTED in a longer path
-/// (`docs/examples/foo.ri`, `crates/reify-eval/tests/examples/bar.ri`) would
-/// otherwise be truncated to `examples/foo.ri` and then reported by the caller as
-/// a file that does not exist — a spurious hard failure, with a misleading fix
-/// instruction, against a chunk edit that was entirely correct. Such a path is
-/// not a repo-root citation, so it contributes nothing.
-///
-/// Loose by design, like [`chunk_mentions`]: it exists only to FIND the pointers
-/// worth checking — the check itself is whether the file is there.
-fn cited_example_paths(markdown: &str) -> Vec<String> {
-    let is_path_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
-    let mut out: Vec<String> = Vec::new();
-    for (at, _) in markdown.match_indices("examples/") {
-        if markdown[..at].chars().next_back().is_some_and(is_path_char) {
-            continue;
-        }
-        let span: String = markdown[at..]
-            .chars()
-            .take_while(|c| is_path_char(*c))
-            .collect();
-        let path = span.trim_end_matches('.');
-        if path.ends_with(".ri") && !out.iter().any(|p| p == path) {
-            out.push(path.to_string());
-        }
-    }
-    out
-}
 
 /// `source` with every `//`-to-end-of-line comment removed.
 ///
@@ -1251,7 +1209,11 @@ fn strip_line_comments(source: &str) -> String {
 #[test]
 fn geometry_chunk_example_citations_hold_against_the_real_examples() {
     let geometry_md = read_chunk(GEOMETRY_CHUNK_PATH);
-    let cited = cited_example_paths(&geometry_md);
+    let cited: Vec<String> = cited_source_paths(&geometry_md)
+        .into_iter()
+        .map(|(path, _)| path)
+        .filter(|path| path.starts_with("examples/") && path.ends_with(".ri"))
+        .collect();
 
     // Anti-vacuity: a scan finding nothing (citations reworded out of
     // `examples/…` shape) would make (a) pass without checking anything.
@@ -1265,7 +1227,7 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
     // (a) — every pointer resolves.
     let missing: Vec<&String> = cited
         .iter()
-        .filter(|path| !std::path::Path::new(REPO_ROOT).join(path).is_file())
+        .filter(|path| !repo_root().join(path).is_file())
         .collect();
     assert!(
         missing.is_empty(),
@@ -1281,7 +1243,7 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
          against the file it is actually made about. Cited: {cited:?}"
     );
 
-    let example_path = std::path::Path::new(REPO_ROOT).join(GDT_ZONES_EXAMPLE);
+    let example_path = repo_root().join(GDT_ZONES_EXAMPLE);
     let example_src = std::fs::read_to_string(&example_path).unwrap_or_else(|e| {
         panic!("{GDT_ZONES_EXAMPLE} must be readable ({e}) — it is cited by {GEOMETRY_CHUNK_PATH}")
     });
@@ -1302,45 +1264,11 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
     );
 }
 
-// Discriminating-power controls for the two pure helpers above, in the same
-// synthetic-data posture as the coverage-guard controls earlier in this file:
-// both helpers are the load-bearing part of the guard, and neither is exercised
-// by the real chunk in a way that would notice it going inert.
-
-#[test]
-fn cited_example_paths_trims_a_trailing_sentence_period_and_dedupes() {
-    let markdown = "Worked example: `examples/tolerancing/gdt_zones.ri`.\n\
-                    See also examples/tolerancing/gdt_zones.ri and examples/half_space.ri.\n";
-    assert_eq!(
-        cited_example_paths(markdown),
-        vec![
-            "examples/tolerancing/gdt_zones.ri".to_string(),
-            "examples/half_space.ri".to_string(),
-        ],
-        "citations are deduped, kept in source order, and stripped of the sentence period \
-         that ends the citing sentence"
-    );
-}
-
-#[test]
-fn cited_example_paths_ignores_a_bare_examples_directory_word() {
-    let markdown = "Runnable designs live under examples/, e.g. the tolerancing/ subdir.";
-    assert!(
-        cited_example_paths(markdown).is_empty(),
-        "`examples/` used as a directory word cites no file, so there is nothing to resolve"
-    );
-}
-
-#[test]
-fn cited_example_paths_ignores_an_examples_segment_nested_in_a_longer_path() {
-    let markdown = "See `crates/reify-eval/tests/examples/bar.ri` and `docs/examples/foo.ri`.";
-    assert!(
-        cited_example_paths(markdown).is_empty(),
-        "an `examples/` segment inside a longer path is not a repo-root citation — truncating \
-         it to `examples/bar.ri` would report a file nobody cited as missing. Got: {:?}",
-        cited_example_paths(markdown)
-    );
-}
+// Discriminating-power controls for `strip_line_comments`, in the same
+// synthetic-data posture as the coverage-guard controls earlier in this file: it
+// is the load-bearing part of claim (b), and the real chunk does not exercise it
+// in a way that would notice it going inert. The citation scan's own controls
+// live beside the shared scanner in `chunk_cite_gate.rs`.
 
 #[test]
 fn a_constructor_named_only_in_a_comment_does_not_count_as_exercised() {

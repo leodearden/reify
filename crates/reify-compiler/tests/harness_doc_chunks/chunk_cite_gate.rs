@@ -1,7 +1,358 @@
+//! The binary's ONE cite scanner and resolver.
+//!
+//! A cite is a repo path a chunk names — `docs/…/x.md`, `crates/…/y.rs`,
+//! `examples/…/z.ri`, or a `name.rs::fn` test — read out of the markdown by
+//! [`cited_source_paths`] and resolved against the tree by
+//! [`audit_cited_paths`]. Resolution is EXISTENCE only: that the file is there
+//! and, for a `::fn` cite, that it declares that fn — never that a cited test
+//! still asserts what the prose claims.
+
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+/// Every `.rs`/`.ri` file under `crates/` and `examples/`, keyed by basename.
+type BasenameIndex = BTreeMap<String, Vec<PathBuf>>;
+
+/// Repo root, derived from this crate's manifest dir
+/// (`<repo>/crates/reify-compiler`).
+pub(crate) fn repo_root() -> PathBuf {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| {
+            panic!("CARGO_MANIFEST_DIR ({manifest:?}) must sit two levels under the repo root")
+        })
+        .to_path_buf()
+}
+
+/// Index of every tracked-ish `.rs`/`.ri` file under `crates/` and `examples/`,
+/// keyed by BASENAME, so the chunk may cite a test by bare file name (as its
+/// prose already does) without this check hard-coding a directory.
+///
+/// Build artifacts are skipped by directory name rather than by path prefix, so a
+/// nested `target/` cannot smuggle a stale duplicate into the index and make an
+/// otherwise-unique basename ambiguous.
+fn source_files_by_basename() -> BasenameIndex {
+    fn walk(dir: &Path, out: &mut BasenameIndex) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if matches!(name.as_str(), "target" | ".git" | "node_modules") {
+                    continue;
+                }
+                walk(&path, out);
+            } else if name.ends_with(".rs") || name.ends_with(".ri") {
+                out.entry(name).or_default().push(path);
+            }
+        }
+    }
+
+    let root = repo_root();
+    let mut out = BTreeMap::new();
+    walk(&root.join("crates"), &mut out);
+    walk(&root.join("examples"), &mut out);
+    out
+}
+
+/// Every repo-path cite in `markdown`, deduped, in document order: a `/`-bearing
+/// path whose last segment has a LETTER-led extension, or a bare `.rs`/`.ri`
+/// basename carrying a `::<fn>` half. The fn half is kept when it is a bare
+/// identifier.
+///
+/// Scans maximal runs of path-ish characters, so markdown decoration (backticks,
+/// parens, commas, the possessive `'s`) bounds a run rather than being swallowed,
+/// and a nested `examples/` segment stays part of its whole path. A trailing
+/// sentence period is not part of the path.
+///
+/// ANY extension, not a `.rs`/`.ri` allowlist: stale citations span many file
+/// kinds (#7095 measured eight), and an allowlist silently misses the next one.
+/// LETTER-led, so a divided length (`width/2.0`) stays arithmetic.
+///
+/// A BARE basename in prose is NOT a cite. geometry.md is a designer-facing
+/// tutorial whose whole subject is writing `.ri` files, so it will keep acquiring
+/// illustrative filenames ("save the model as `my_bracket.ri`"); resolving those
+/// would make an ordinary doc edit RED with a message that names neither the edit
+/// nor its cause. The same rule keeps the chunks' C++ cites
+/// (`BRepExtrema_DistShapeShape::InnerSolution()`) out without an exclusion list.
+pub(crate) fn cited_source_paths(markdown: &str) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+
+    for run in markdown
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ':' | '-')))
+    {
+        // Sentence punctuation that the run charset happens to include.
+        let run = run.trim_end_matches(['.', '/', ':', '-']);
+        let (path, fn_name) = match run.split_once("::") {
+            Some((path, rest)) => (path, Some(rest)),
+            None => (run, None),
+        };
+        // Tested on the RAW `::` split, before the identifier filter below: a
+        // malformed fn half still marks the token as an intended cite, so its
+        // path half stays subject to resolution.
+        let is_cite = if path.contains('/') {
+            has_letter_led_extension(path)
+        } else {
+            fn_name.is_some() && (path.ends_with(".rs") || path.ends_with(".ri"))
+        };
+        if !is_cite {
+            continue;
+        }
+        let fn_name = fn_name
+            .filter(|f| !f.is_empty() && f.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        let cite = (path.to_string(), fn_name.map(str::to_string));
+        if !out.contains(&cite) {
+            out.push(cite);
+        }
+    }
+    out
+}
+
+fn has_letter_led_extension(path: &str) -> bool {
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    file_name
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.starts_with(|c: char| c.is_ascii_alphabetic()))
+}
+
+/// Resolve one cited path token to a real file, or explain why it did not.
+///
+/// The basename index is built only when a bare-basename cite needs it.
+fn resolve_cited_path(token: &str, index: &OnceCell<BasenameIndex>) -> Result<PathBuf, String> {
+    let root = repo_root();
+    if token.contains('/') {
+        // Repo-relative, or crate-relative (the chunks write both forms).
+        for candidate in [root.join(token), root.join("crates").join(token)] {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+        return Err(format!(
+            "no such file — tried {:?} and {:?}",
+            root.join(token),
+            root.join("crates").join(token)
+        ));
+    }
+    match index
+        .get_or_init(source_files_by_basename)
+        .get(token)
+        .map(Vec::as_slice)
+    {
+        None | Some([]) => Err(format!(
+            "no file named `{token}` exists under crates/ or examples/"
+        )),
+        Some([only]) => Ok(only.clone()),
+        Some(many) => Err(format!(
+            "`{token}` is ambiguous — {} files share that basename ({many:?}); cite it by its \
+             full repo-relative path instead",
+            many.len()
+        )),
+    }
+}
+
+/// What resolving one chunk's cites found.
+pub(crate) struct CiteAudit {
+    /// Every cite [`cited_source_paths`] read, resolved or not.
+    pub(crate) cites: Vec<(String, Option<String>)>,
+    /// One line per cite that does not resolve, or whose file does not declare
+    /// its `::fn`.
+    pub(crate) violations: Vec<String>,
+    /// `<path>::<fn>` cites whose path resolved.
+    pub(crate) fn_cites: usize,
+    /// Distinct resolved `.rs` files — distinct after resolution, so one file
+    /// cited two ways (bare basename and full path) counts once.
+    pub(crate) rs_files: BTreeSet<PathBuf>,
+    /// Distinct resolved `.ri` files, likewise.
+    pub(crate) ri_files: BTreeSet<PathBuf>,
+}
+
+/// Resolve every cite in `markdown`, accumulating every failure as a violation
+/// line naming `chunk_path` and the cite — never panicking, so one run reports a
+/// whole chunk's (or corpus's) dangling cites at once.
+///
+/// Only `.rs` and `.ri` files are bucketed; any other kind (a `docs/…md` cite)
+/// counts as a cite and in neither bucket.
+pub(crate) fn audit_cited_paths(chunk_path: &str, markdown: &str) -> CiteAudit {
+    let index = OnceCell::new();
+    let mut audit = CiteAudit {
+        cites: cited_source_paths(markdown),
+        violations: Vec::new(),
+        fn_cites: 0,
+        rs_files: BTreeSet::new(),
+        ri_files: BTreeSet::new(),
+    };
+
+    for (path_token, fn_name) in &audit.cites {
+        let resolved = match resolve_cited_path(path_token, &index) {
+            Ok(resolved) => resolved,
+            Err(why) => {
+                audit.violations.push(format!(
+                    "{chunk_path} cites `{path_token}`, which does not resolve: {why}. The chunk \
+                     is served verbatim to the in-GUI assistant, so a dangling cite sends it to a \
+                     file that is not there — and in a SYNC row it is a false claim that a real \
+                     test pins something. Repoint the cite at the file's repo-relative path, or \
+                     mark the row UNPINNED."
+                ));
+                continue;
+            }
+        };
+
+        if path_token.ends_with(".rs") {
+            audit.rs_files.insert(resolved.clone());
+        } else if path_token.ends_with(".ri") {
+            audit.ri_files.insert(resolved.clone());
+        }
+
+        let Some(fn_name) = fn_name else { continue };
+        audit.fn_cites += 1;
+        match std::fs::read_to_string(&resolved) {
+            Ok(body) if body.contains(&format!("fn {fn_name}(")) => {}
+            Ok(_) => audit.violations.push(format!(
+                "{chunk_path} cites `{path_token}::{fn_name}` as pinning one of its claims, but \
+                 {resolved:?} declares no `fn {fn_name}(`. The test was renamed or deleted, so \
+                 that row now claims a pin that does not exist. Re-point the cite, or downgrade \
+                 the row to UNPINNED."
+            )),
+            Err(e) => audit.violations.push(format!(
+                "{chunk_path} cites `{path_token}::{fn_name}`, but {resolved:?} is unreadable ({e})"
+            )),
+        }
+    }
+    audit
+}
+
+/// Assert every cite in `markdown` resolves, and that the chunk still carries at
+/// least `min_fn` / `min_rs` / `min_ri` of them.
+///
+/// SHARED BY BOTH CHUNK MODULES — `geometry_chunk_smoke.rs`'s traps SYNC block
+/// and `units_chunk_smoke.rs`'s PINNED/UNPINNED inventory. It exists because the
+/// second copy of this loop was a ~55-line near-verbatim duplicate of the first,
+/// differing only in the chunk path, three numeric floors and the panic wording;
+/// a fix to the resolution or existence rule (a `#[cfg]`-gated fn, a `fn foo<T>(`
+/// with a generic parameter) then had to be applied twice or drift. Growing that
+/// kind of copy is exactly the tracked defect
+/// (`tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` / task #5924) this harness binary is trying
+/// to shrink.
+///
+/// The CHUNK-SPECIFIC "why this matters" prose lives in each caller's docstring,
+/// not in the panic text here, so the shared message stays true for both. What
+/// the panics do carry is the chunk path, the floor that was missed and the full
+/// cite list, which is what a reader needs to act.
+///
+/// Floors are `>=`, so ADDING a cite is always safe; raise them WITH the chunk
+/// when one is added, and never lower one to go green — a lowered floor is a
+/// SYNC row that has quietly stopped claiming anything.
+///
+/// SCOPE — an EXISTENCE check, not a semantic one. It cannot tell that a
+/// still-named test stopped asserting what the row claims, it says nothing about
+/// rows marked UNPINNED, and it does not verify the fn is a `#[test]`.
+pub(crate) fn assert_cited_paths_resolve(
+    chunk_path: &str,
+    markdown: &str,
+    min_fn: usize,
+    min_rs: usize,
+    min_ri: usize,
+) {
+    let audit = audit_cited_paths(chunk_path, markdown);
+    let cites = &audit.cites;
+
+    assert!(
+        audit.violations.is_empty(),
+        "{} cite(s) in {chunk_path} do not hold:\n\n{}\n",
+        audit.violations.len(),
+        audit.violations.join("\n\n")
+    );
+
+    // Anti-vacuity. Reformatting a SYNC block into a shape this scan cannot read
+    // — a path wrapped across two lines, or tabulated into two columns — would
+    // otherwise empty the audit above and pass.
+    assert!(
+        audit.fn_cites >= min_fn,
+        "only {} `<path>::<fn>` cite(s) found in {chunk_path} — expected at least {min_fn}. \
+         CITES MUST BE WRITTEN WHOLE ON ONE LINE, never wrapped and never tabulated; a wrapped \
+         path is invisible to this scan. Either the chunk was reformatted into a shape it cannot \
+         read, or a row lost its cite while still claiming to pin something. Cites seen: \
+         {cites:?}",
+        audit.fn_cites
+    );
+    assert!(
+        audit.rs_files.len() >= min_rs,
+        "only {} distinct `.rs` FILE(s) cited in {chunk_path} (distinct after resolution — the \
+         same file cited two ways counts once), expected at least {min_rs}. Losing one turns a \
+         PINNED row into prose. Cites seen: {cites:?}",
+        audit.rs_files.len()
+    );
+    assert!(
+        audit.ri_files.len() >= min_ri,
+        "only {} distinct `.ri` example FILE(s) cited in {chunk_path} (distinct after resolution \
+         — the same example cited both bare and by full path counts once), expected at least \
+         {min_ri}. The worked examples are what a designer is sent to next, so losing a cite is a \
+         discoverability regression. Cites seen: {cites:?}",
+        audit.ri_files.len()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Hermetic tests — synthetic markdown; real repo files serve only as
 // resolution targets.
 // ---------------------------------------------------------------------------
+
+#[test]
+fn cited_source_paths_ignores_a_bare_illustrative_basename() {
+    // geometry.md is a designer-facing tutorial about authoring `.ri` files, so
+    // prose like this is ordinary content — not a claim that a repo file exists.
+    // Resolving it would make an ordinary doc edit RED with a panic about SYNC
+    // blocks and false PINNED claims.
+    let md = "Save the model as `my_bracket.ri` and run `reify build my_bracket.ri`.\n\
+              trap 5 — PINNED by\n\
+              crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs::single_body_self_pair_excluded\n\
+              See `examples/kinematic/dock_pickup.ri`, and `geometry_chunk_smoke.rs`, whose\n\
+              `geometry_chunk_smoke.rs::cited_test_paths_in_the_chunk_resolve` resolves them.\n";
+
+    assert_eq!(
+        cited_source_paths(md),
+        vec![
+            (
+                "crates/reify-eval/tests/harness_mechanism/mechanism_interference_smoke.rs"
+                    .to_string(),
+                Some("single_body_self_pair_excluded".to_string()),
+            ),
+            ("examples/kinematic/dock_pickup.ri".to_string(), None),
+            (
+                "geometry_chunk_smoke.rs".to_string(),
+                Some("cited_test_paths_in_the_chunk_resolve".to_string()),
+            ),
+        ],
+        "only `/`-bearing paths and `::<fn>`-carrying tokens are cites; `my_bracket.ri` and the \
+         bare `geometry_chunk_smoke.rs` mention are prose"
+    );
+}
+
+#[test]
+fn cited_source_paths_keeps_a_malformed_fn_half_as_a_path_cite() {
+    // `::` marks the token as an INTENDED cite even when the fn half is not a bare
+    // identifier, so the path half stays subject to resolution rather than being
+    // dropped as if it were a prose basename.
+    assert_eq!(
+        cited_source_paths("geometry_chunk_smoke.rs::not-an-ident"),
+        vec![("geometry_chunk_smoke.rs".to_string(), None)]
+    );
+}
+
+#[test]
+fn cited_source_paths_leaves_a_cxx_cite_alone() {
+    // The chunk cites OCCT's C++ API for the containment behaviour; the path half
+    // does not end in `.rs`/`.ri`, so no resolution is attempted.
+    assert!(
+        cited_source_paths("BRepExtrema_DistShapeShape::InnerSolution()").is_empty(),
+        "a C++ `Type::method()` cite is not a source-file cite"
+    );
+}
 
 #[test]
 fn cited_source_paths_reads_a_slash_bearing_path_with_any_letter_led_extension() {
