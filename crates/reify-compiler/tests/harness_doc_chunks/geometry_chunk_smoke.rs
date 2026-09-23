@@ -1332,16 +1332,13 @@ fn reify_tagged_fences_in_geometry_chunk_compile() {
 /// their panic text claimed the form was "compile-verified" / "exercised by a
 /// compiling fence". A commented-out call is not a call.
 ///
-/// NOT AN AST WALK, and that is a scope decision rather than a preference. The
-/// sibling `stdlib_chunk_geometry_ops_smoke.rs` already extracts `(name, arity)`
-/// from the real parser via its `collect_call_forms` walk, which would close this
-/// hole for free AND handle nesting exactly — but that helper is a private `fn` in
-/// a sibling module, so reaching it needs a visibility edit to a file outside task
-/// 5389's locked set, and copying its ~120-line exhaustive `ExprKind` match here
-/// would make this binary's FOURTH near-identical scanner (see "Known
-/// duplication" above), which is the opposite of what ticket
-/// `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` exists to fix. The reconciled `chunk_io`
-/// extraction should take the AST route for the fence side; until then this
+/// NOT AN AST WALK — yet. `doc_forms::call_forms` (`pub(crate)`) already extracts
+/// `(name, arity)` from the real parser, which would close this hole for free AND
+/// handle nesting exactly; swapping this scan onto it belongs to the reconciled
+/// `chunk_io` extraction (task #5924 §B), not to this file. Copying its ~120-line
+/// exhaustive `ExprKind` match here instead would make this binary's FOURTH
+/// near-identical scanner (see "Known duplication" above), which is the opposite
+/// of what ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` exists to fix. Until then this
 /// stripper plus the unit tests at the bottom of this file are the guard.
 ///
 /// Handles both comment forms the grammar defines (`tree-sitter-reify/grammar.js`

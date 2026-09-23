@@ -62,15 +62,22 @@
 //! mirrors `reify-eval/tests/harness_topology_selector/topology_selector_smoke_tests.rs`; the
 //! cross-crate-source read plus anti-vacuity self-check mirrors
 //! `reify-eval/tests/ambient_default_material_integration_gate.rs`.
+//!
+//! The documented-form model — `Arity`, `DocForm`, the span and AST readers and
+//! their pairing — is `doc_forms.rs`'s, shared with the corpus-wide
+//! unfenced-signature gate; this module keeps only what is specific to stdlib.md's
+//! section and its fixture.
 
-use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart};
 use reify_compiler::{
     GEOMETRY_FUNCTION_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, compile_with_stdlib,
-    parse_with_stdlib,
 };
-use reify_core::{ModulePath, Severity};
+use reify_core::Severity;
 
 use crate::chunk_cite_gate::{cited_source_paths, repo_root};
+use crate::chunk_prose::code_spans;
+use crate::doc_forms::{
+    Arity, DocForm, call_forms, doc_form_of_span, parse_or_panic, unmirrored_forms,
+};
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -148,24 +155,6 @@ fn read_all_chunks() -> String {
 fn read_fixture() -> String {
     std::fs::read_to_string(FIXTURE_PATH)
         .expect("tests/fixtures/stdlib_geometry_ops_smoke.ri should exist")
-}
-
-fn parse_or_panic(source: &str, label: &str) -> ParsedModule {
-    // Prelude-aware parsing (matches the `compile_with_stdlib` companion). A
-    // parse error is a fixture/snippet bug, not the property under test, so
-    // surface it distinctly.
-    let parsed = parse_with_stdlib(source, ModulePath::single("stdlib_geometry_ops_smoke"));
-    assert!(
-        parsed.errors.is_empty(),
-        "{label} must parse cleanly, got parse errors:\n{}",
-        parsed
-            .errors
-            .iter()
-            .map(|e| e.message.clone())
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    parsed
 }
 
 /// Every geometry-op / curve-constructor form documented in stdlib.md's
@@ -246,177 +235,11 @@ fn is_recognised_geometry_call(name: &str) -> bool {
     GEOMETRY_FUNCTION_NAMES.contains(&name) || GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name)
 }
 
-/// Push `(callee name, arg count)` for every `FunctionCall` in `expr`'s
-/// subtree onto `out`.
-///
-/// The match is intentionally exhaustive with **no `_` wildcard**, so adding an
-/// `ExprKind` variant breaks this file at compile time rather than silently
-/// dropping a whole class of call site from the guard (same posture as
-/// `find_node` in `tests/harness_langcore/type_error_propagation_tests.rs`).
-/// Walking the parsed AST — rather than lexing the source — means no comment or
-/// string-literal blind spots and no keyword/heuristic allowlists.
-///
-/// Non-`FunctionCall` callee names (a trait method, an ad-hoc port selector)
-/// are deliberately NOT collected: they are dispatched through a different
-/// resolver and are not geometry ops.
-fn collect_call_forms(expr: &Expr, out: &mut Vec<(String, usize)>) {
-    match &expr.kind {
-        // Leaves — no subexpressions, no callee name.
-        ExprKind::NumberLiteral { .. }
-        | ExprKind::QuantityLiteral { .. }
-        | ExprKind::StringLiteral(_)
-        | ExprKind::BoolLiteral(_)
-        | ExprKind::Ident(_)
-        | ExprKind::EnumAccess { .. }
-        | ExprKind::Undef => {}
-
-        // The variant under test.
-        ExprKind::FunctionCall { name, args, .. } => {
-            out.push((name.clone(), args.len()));
-            for arg in args {
-                collect_call_forms(arg, out);
-            }
-        }
-
-        // Compound variants — recurse into every child subexpression.
-        ExprKind::BinOp { left, right, .. } => {
-            collect_call_forms(left, out);
-            collect_call_forms(right, out);
-        }
-        ExprKind::UnOp { operand, .. } => collect_call_forms(operand, out),
-        ExprKind::MemberAccess { object, .. } => collect_call_forms(object, out),
-        ExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_call_forms(condition, out);
-            collect_call_forms(then_branch, out);
-            collect_call_forms(else_branch, out);
-        }
-        ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
-            for item in items {
-                collect_call_forms(item, out);
-            }
-        }
-        ExprKind::MapLiteral(entries) => {
-            for (key, value) in entries {
-                collect_call_forms(key, out);
-                collect_call_forms(value, out);
-            }
-        }
-        ExprKind::IndexAccess { object, index } => {
-            collect_call_forms(object, out);
-            collect_call_forms(index, out);
-        }
-        ExprKind::Match { discriminant, arms } => {
-            collect_call_forms(discriminant, out);
-            for arm in arms {
-                collect_call_forms(&arm.body, out);
-            }
-        }
-        ExprKind::Auto { params, .. } => {
-            for (_, value) in params {
-                collect_call_forms(value, out);
-            }
-        }
-        ExprKind::Lambda { body, .. } => collect_call_forms(body, out),
-        ExprKind::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            collect_call_forms(collection, out);
-            collect_call_forms(predicate, out);
-        }
-        ExprKind::AdHocSelector { base, args, .. } => {
-            collect_call_forms(base, out);
-            for arg in args {
-                collect_call_forms(arg, out);
-            }
-        }
-        ExprKind::QualifiedAccess { qualifier, .. } => collect_call_forms(qualifier, out),
-        ExprKind::InstanceQualifiedAccess { object, qualified } => {
-            collect_call_forms(object, out);
-            collect_call_forms(qualified, out);
-        }
-        ExprKind::Range { lower, upper, .. } => {
-            if let Some(lower) = lower {
-                collect_call_forms(lower, out);
-            }
-            if let Some(upper) = upper {
-                collect_call_forms(upper, out);
-            }
-        }
-        ExprKind::TraitMethodCall { object, args, .. } => {
-            collect_call_forms(object, out);
-            for arg in args {
-                collect_call_forms(arg, out);
-            }
-        }
-        ExprKind::TraitStaticCall { args, .. } => {
-            for arg in args {
-                collect_call_forms(arg, out);
-            }
-        }
-        ExprKind::VariantConstruct { fields, .. } => {
-            for (_, value) in fields {
-                collect_call_forms(value, out);
-            }
-        }
-        ExprKind::InterpolatedString(parts) => {
-            for part in parts {
-                match part {
-                    StringPart::Literal(_) => {}
-                    StringPart::Hole(inner) => collect_call_forms(inner, out),
-                }
-            }
-        }
-    }
-}
-
-/// Every `(call name, arg count)` form in `source`, deduped and sorted for
-/// deterministic output.
-///
-/// `source` must be `structure def`s whose members are all `let` bindings —
-/// the shape of the fixture and of the inline snippets above. Anything else
-/// PANICS rather than being skipped, so growing the fixture a new declaration
-/// or member kind is a loud "extend the walker", never a silent coverage hole.
-fn geometry_call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
-    let parsed = parse_or_panic(source, label);
-
-    let mut forms = Vec::new();
-    for decl in &parsed.declarations {
-        let Declaration::Structure(structure) = decl else {
-            panic!(
-                "{label}: the name-existence guard only walks `structure def` declarations, \
-                 but this source has another declaration kind — extend `geometry_call_forms` \
-                 rather than leaving those call sites unchecked"
-            );
-        };
-        for member in &structure.members {
-            let MemberDecl::Let(binding) = member else {
-                panic!(
-                    "{label}: the name-existence guard only walks `let` members of `{}`, \
-                     but it has another member kind — extend `geometry_call_forms` rather \
-                     than leaving those call sites unchecked",
-                    structure.name
-                );
-            };
-            collect_call_forms(&binding.value, &mut forms);
-        }
-    }
-
-    forms.sort();
-    forms.dedup();
-    forms
-}
-
-/// Every call name in `source`, projected from [`geometry_call_forms`] so
+/// Every call name in `source`, projected from `doc_forms`' [`call_forms`] so
 /// exactly one AST walker exists (overloads of the same name collapse to one
-/// entry here — see `geometry_call_forms` for the arity-preserving form).
+/// entry here — see `call_forms` for the arity-preserving form).
 fn geometry_call_names(source: &str, label: &str) -> Vec<String> {
-    let mut names: Vec<String> = geometry_call_forms(source, label)
+    let mut names: Vec<String> = call_forms(source, label)
         .into_iter()
         .map(|(name, _count)| name)
         .collect();
@@ -522,29 +345,6 @@ fn fixture_geometry_call_names_all_exist_in_the_compiler() {
 
 // ── Chunk → compiler / chunk → fixture ───────────────────────────────────────
 
-/// A documented form's declared argument count: either an exact arity, or a
-/// variadic form carrying the given MINIMUM arity.
-///
-/// An argument equal to `…` (U+2026) or ENDING IN `…` (e.g. `weights…`) marks
-/// the form variadic and contributes 0 to the minimum — see
-/// `documented_geometry_op_forms`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Arity {
-    Exact(usize),
-    AtLeast(usize),
-}
-
-/// One documented (name, arity) overload. A single row commonly documents
-/// several of these for the same name (e.g. `mirror(geo, plane)` and
-/// `mirror(geo, ox, oy, oz, nx, ny, nz)`) — they are deliberately NOT
-/// collapsed, which is the whole point of the FORM-granularity upgrade over
-/// `documented_geometry_op_names`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct DocForm {
-    name: String,
-    arity: Arity,
-}
-
 /// Every geometry-op / curve-constructor (name, arity) FORM documented in the
 /// chunk's [`CHUNK_SECTION`] section.
 ///
@@ -552,17 +352,10 @@ struct DocForm {
 /// never becomes a wording pin) — identical section/line/span selection to
 /// the name-only scan this supersedes: inside that section — from its
 /// heading to the next `## ` heading — every line that starts with `**` is a
-/// bolded signature row; within such a row only the backtick-delimited spans
-/// are inspected. From each span:
-///   - no `(`, or no `)`, or `)` before `(` → the span contributes no form
-///     (spans like `List<Geometry>`, `Length` have no `(` at all; a broken
-///     span with an unbalanced `(` is skipped rather than panicking);
-///   - the identifier immediately preceding the `(` is the name (as before);
-///   - the text between the first `(` and the last `)`, split on `,` and
-///     trimmed per piece, is the argument list: empty → `Exact(0)`; otherwise
-///     an argument equal to `…` or ENDING IN `…` contributes 0 to the count
-///     and marks the form variadic → `AtLeast(remaining count)`; with no such
-///     argument → `Exact(args.len())`.
+/// bolded signature row; within such a row only its code spans are inspected,
+/// and each is read by `doc_forms`' [`doc_form_of_span`] — the strict
+/// signature-shape rule, under which a bare `…` or an `ident…` argument marks
+/// the form variadic and counts nothing.
 ///
 /// Deduped and sorted (by name, then arity), so a caller's `assert_eq!` names
 /// the exact form. Callers must anti-vacuity-check the result: a heading
@@ -580,53 +373,11 @@ fn documented_geometry_op_forms(markdown: &str) -> Vec<DocForm> {
         if !in_section || !line.starts_with("**") {
             continue;
         }
-
-        // Odd-indexed pieces of a backtick split are the spans *inside* the
-        // backticks (`a `x` b `y` c` → ["a ", "x", " b ", "y", " c"]).
-        for span in line.split('`').skip(1).step_by(2) {
-            let Some(open) = span.find('(') else {
-                continue;
-            };
-            let Some(close) = span.rfind(')') else {
-                continue;
-            };
-            if close < open {
-                continue;
-            }
-            let name = span[..open]
-                .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .next()
-                .unwrap_or_default();
-            if name.is_empty() {
-                continue;
-            }
-
-            let inner = span[open + 1..close].trim();
-            let arity = if inner.is_empty() {
-                Arity::Exact(0)
-            } else {
-                let mut variadic = false;
-                let mut count = 0usize;
-                for arg in inner.split(',') {
-                    let arg = arg.trim();
-                    if arg == "…" || arg.ends_with('…') {
-                        variadic = true;
-                    } else {
-                        count += 1;
-                    }
-                }
-                if variadic {
-                    Arity::AtLeast(count)
-                } else {
-                    Arity::Exact(count)
-                }
-            };
-
-            forms.push(DocForm {
-                name: name.to_string(),
-                arity,
-            });
-        }
+        forms.extend(
+            code_spans(line)
+                .iter()
+                .filter_map(|span| doc_form_of_span(&span.text)),
+        );
     }
 
     forms.sort();
@@ -1488,7 +1239,7 @@ Prose with `also_ignored(a, b)` inline is not a bolded row.
 //
 // `geometry_call_names` collapses every call to a name to a single entry, so
 // two arities of the same call name in the fixture are indistinguishable from
-// one. `geometry_call_forms` is the fixture-side counterpart to
+// one. `doc_forms::call_forms` is the fixture-side counterpart to
 // `documented_geometry_op_forms`: the same AST walk, additionally recording
 // each `FunctionCall`'s argument count.
 //
@@ -1508,7 +1259,7 @@ structure def TwoArities {
 "#;
 
     assert_eq!(
-        geometry_call_forms(source, "two-arities snippet"),
+        call_forms(source, "two-arities snippet"),
         vec![
             ("box".to_string(), 3),
             ("orient_identity".to_string(), 0),
@@ -1540,7 +1291,7 @@ structure def NestedCall {
 "#;
 
     assert_eq!(
-        geometry_call_forms(source, "nested-call snippet"),
+        call_forms(source, "nested-call snippet"),
         vec![
             ("box".to_string(), 3),
             ("edges".to_string(), 1),
@@ -1565,7 +1316,7 @@ structure def ZeroArgCall {
 "#;
 
     assert_eq!(
-        geometry_call_forms(source, "zero-arg snippet"),
+        call_forms(source, "zero-arg snippet"),
         vec![("orient_identity".to_string(), 0)],
         "a zero-arg call must record arity 0, not be dropped or miscounted"
     );
@@ -1586,7 +1337,7 @@ structure def SortedAndDeduped {
 "#;
 
     assert_eq!(
-        geometry_call_forms(source, "sorted-and-deduped snippet"),
+        call_forms(source, "sorted-and-deduped snippet"),
         vec![("box".to_string(), 3), ("scale".to_string(), 2)],
         "two calls sharing the same (name, arity) — here box/3 and scale/2, each appearing \
          twice — must collapse to one entry each in a deterministic sorted order"
@@ -1602,7 +1353,7 @@ structure def SortedAndDeduped {
 //
 // `unmirrored_documented_forms` is the FORM-granularity counterpart to
 // `every_documented_geometry_op_name_is_exercised_by_the_fixture`: it pairs
-// `documented_geometry_op_forms` against `geometry_call_forms` so a documented
+// `documented_geometry_op_forms` against `doc_forms::call_forms` so a documented
 // OVERLOAD with no compiling instance at that exact arity is reported, not
 // just an absent NAME.
 //
@@ -1615,34 +1366,16 @@ structure def SortedAndDeduped {
 // checks it against the REAL fixture source via `read_fixture()`.
 
 /// Every documented form in `markdown` with no matching call in
-/// `fixture_source` — the doc → fixture direction at FORM granularity.
-///
-/// A `DocForm` is considered mirrored by any fixture `(name, count)` call
-/// where `count == n` for `Arity::Exact(n)`, or `count >= n` for
-/// `Arity::AtLeast(n)`. Pure over two `&str`s — no file I/O — so callers
-/// (including the inline printer_v01-replay controls below) can drive it with
-/// synthetic markdown checked against the real fixture. Sorted and deduped,
-/// so a caller's failure message names the exact unmirrored form(s).
+/// `fixture_source` — the doc → fixture direction at FORM granularity, by
+/// `doc_forms`' [`unmirrored_forms`] (`Exact` pairs by `==`, `AtLeast` by
+/// `>=`). Pure over two `&str`s — no file I/O — so callers (including the
+/// inline printer_v01-replay controls below) can drive it with synthetic
+/// markdown checked against the real fixture.
 fn unmirrored_documented_forms(markdown: &str, fixture_source: &str, label: &str) -> Vec<DocForm> {
-    let documented = documented_geometry_op_forms(markdown);
-    let fixture_forms = geometry_call_forms(fixture_source, label);
-
-    let mut unmirrored: Vec<DocForm> = documented
-        .into_iter()
-        .filter(|form| {
-            !fixture_forms.iter().any(|(name, count)| {
-                *name == form.name
-                    && match form.arity {
-                        Arity::Exact(n) => *count == n,
-                        Arity::AtLeast(n) => *count >= n,
-                    }
-            })
-        })
-        .collect();
-
-    unmirrored.sort();
-    unmirrored.dedup();
-    unmirrored
+    unmirrored_forms(
+        &documented_geometry_op_forms(markdown),
+        &call_forms(fixture_source, label),
+    )
 }
 
 #[test]

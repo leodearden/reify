@@ -28,6 +28,8 @@
 //! - `chunk_prose` (#6974) — the unfenced-prose model every prose scan reads.
 //! - `chunk_cite_gate` (#6974) — the one cite scanner, and the corpus-wide cite
 //!   and maintainer-note gates.
+//! - `doc_forms` (#6974) — documented call forms, read from markdown spans and
+//!   parsed sources, and their pairing.
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
