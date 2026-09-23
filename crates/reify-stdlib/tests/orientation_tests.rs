@@ -88,74 +88,372 @@ fn integration_orient_look_at_parallel_forward_up_returns_undef() {
 }
 
 // ── orient_euler EulerConvention enum G2 signals ──────────────────────────────
+//
+// These formerly asserted enum-vs-lowercase-string parity. Task #6082 removed
+// the string path, which would leave nothing to compare against, so each now
+// pins the enum result against a CLOSED-FORM expectation instead — a stronger
+// signal than parity ever was, since a table that mis-routed both paths
+// identically used to pass.
 
+/// `EulerConvention.XYZ` must rotate about X first and Z last. Driving one
+/// angle at a time isolates each letter against its closed-form quaternion.
 #[test]
-fn integration_orient_euler_enum_xyz_matches_string_xyz() {
-    let angles = [Value::Real(0.2_f64), Value::Real(0.3_f64), Value::Real(-0.1_f64)];
-    let by_enum = eval_builtin(
+fn integration_orient_euler_enum_xyz_matches_closed_form() {
+    let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+    let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+    let quarter = Value::Real(std::f64::consts::FRAC_PI_2);
+    let zero = Value::Real(0.0);
+
+    // First letter X: a lone first angle is a rotation about X.
+    let first = eval_builtin(
         "orient_euler",
-        &[
-            Value::Enum {
-                type_name: "EulerConvention".to_string(),
-                variant: "XYZ".to_string(),
-                payload: vec![],
-            },
-            angles[0].clone(),
-            angles[1].clone(),
-            angles[2].clone(),
-        ],
+        &[convention("XYZ"), quarter.clone(), zero.clone(), zero.clone()],
     );
-    let by_str = eval_builtin(
+    assert_orientation_approx(&first, cos_pi_4, sin_pi_4, 0.0, 0.0);
+
+    // Middle letter Y.
+    let middle = eval_builtin(
         "orient_euler",
-        &[
-            Value::String("xyz".to_string()),
-            angles[0].clone(),
-            angles[1].clone(),
-            angles[2].clone(),
-        ],
+        &[convention("XYZ"), zero.clone(), quarter.clone(), zero.clone()],
     );
-    assert!(!by_enum.is_undef(), "EulerConvention.XYZ orient_euler should not return Undef");
-    assert_eq!(
-        by_enum, by_str,
-        "EulerConvention.XYZ orient_euler should equal string 'xyz'"
-    );
+    assert_orientation_approx(&middle, cos_pi_4, 0.0, sin_pi_4, 0.0);
+
+    // Last letter Z — the one a reversed table would get wrong.
+    let last = eval_builtin("orient_euler", &[convention("XYZ"), zero.clone(), zero, quarter]);
+    assert_orientation_approx(&last, cos_pi_4, 0.0, 0.0, sin_pi_4);
 }
 
 // ── orient_to_euler EulerConvention enum G2 signals ───────────────────────────
 
+/// A pure Z rotation of π/4 decomposes under `EulerConvention.ZYX` to
+/// (π/4, 0, 0): all of it lands in the FIRST angle, because Z is ZYX's first
+/// letter. Closed form, so it is independent of the composer under test.
 #[test]
-fn integration_orient_to_euler_enum_zyx_matches_string_zyx() {
-    // Build a known quaternion, then decode with enum and string paths.
+fn integration_orient_to_euler_enum_zyx_matches_closed_form() {
+    let eighth = std::f64::consts::FRAC_PI_8;
+    let q = Value::Orientation {
+        w: eighth.cos(),
+        x: 0.0,
+        y: 0.0,
+        z: eighth.sin(),
+    };
+    let decomposed = eval_builtin("orient_to_euler", &[q, convention("ZYX")]);
+    let angles = euler_extract(&decomposed).unwrap_or_else(|| {
+        panic!(
+            "orient_to_euler(q, EulerConvention.ZYX) should return a 3-element Angle list, \
+             got {decomposed:?}"
+        )
+    });
+    let expected = [std::f64::consts::FRAC_PI_4, 0.0, 0.0];
+    for (i, (got, want)) in angles.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < TOLERANCE,
+            "a π/4 rotation about Z, decomposed under ZYX: angle[{i}] expected {want}, got {got}"
+        );
+    }
+}
+
+// ── orient_to_euler subject-first signals (task #6082, F3) ────────────────────
+//
+// `orient_to_euler` is a DECOMPOSER and must take its subject at argument 0, to
+// match every sibling — `orient_log(q)`, `orient_to_axis_angle(q)`,
+// `orient_inverse(q)`, `transform_log(t)`. It was the lone exception, taking
+// `(convention, q)`.
+//
+// (`orient_euler` is deliberately NOT flipped: it is a CONSTRUCTOR whose
+// convention selects the meaning of the three angle arguments that follow,
+// matching standard R_xyz(a, b, c) notation. The asymmetry is intentional.)
+
+/// Round-trip tolerance. A quaternion compose→decompose round trip is exact to
+/// ~1e-15; 1e-12 leaves headroom without hiding a real convention mismatch.
+const ROUNDTRIP_TOLERANCE: f64 = 1e-12;
+
+/// Looser than `ROUNDTRIP_TOLERANCE`: at a singular locus the decomposition
+/// routes through `acos` near ±1, where the derivative is unbounded and a
+/// double rounding in the input costs several digits.
+const SINGULAR_RECOMPOSE_TOLERANCE: f64 = 1e-9;
+
+/// Build a qualified `EulerConvention` enum value, as the compiler lowers
+/// `EulerConvention.<VARIANT>` (`Value::enum_unit` with an uppercase variant).
+fn convention(variant: &str) -> Value {
+    Value::Enum {
+        type_name: "EulerConvention".to_string(),
+        variant: variant.to_string(),
+        payload: vec![],
+    }
+}
+
+/// Compose three angles under `variant`, then decompose subject-first, and
+/// assert the angles come back. Exercises the enum path on BOTH builtins.
+fn assert_subject_first_roundtrip(variant: &str, a: f64, b: f64, c: f64) {
     let q = eval_builtin(
         "orient_euler",
-        &[
-            Value::String("zyx".to_string()),
-            Value::Real(0.3_f64),
-            Value::Real(0.5_f64),
-            Value::Real(-0.7_f64),
-        ],
-    );
-    let by_enum = eval_builtin(
-        "orient_to_euler",
-        &[
-            Value::Enum {
-                type_name: "EulerConvention".to_string(),
-                variant: "ZYX".to_string(),
-                payload: vec![],
-            },
-            q.clone(),
-        ],
-    );
-    let by_str = eval_builtin(
-        "orient_to_euler",
-        &[Value::String("zyx".to_string()), q.clone()],
+        &[convention(variant), Value::Real(a), Value::Real(b), Value::Real(c)],
     );
     assert!(
-        euler_extract(&by_enum).is_some(),
-        "EulerConvention.ZYX orient_to_euler should return a 3-element Angle list, got {by_enum:?}"
+        matches!(q, Value::Orientation { .. }),
+        "orient_euler(EulerConvention.{variant}, …) should build an Orientation, got {q:?}"
     );
-    assert_eq!(
-        by_enum, by_str,
-        "EulerConvention.ZYX orient_to_euler should equal string 'zyx'"
+
+    // Subject FIRST: (q, convention).
+    let back = eval_builtin("orient_to_euler", &[q.clone(), convention(variant)]);
+    let angles = euler_extract(&back).unwrap_or_else(|| {
+        panic!(
+            "orient_to_euler(q, EulerConvention.{variant}) should return a 3-element \
+             Angle list, got {back:?}"
+        )
+    });
+
+    for (i, (got, want)) in angles.iter().zip([a, b, c].iter()).enumerate() {
+        assert!(
+            (got - want).abs() < ROUNDTRIP_TOLERANCE,
+            "EulerConvention.{variant} round-trip angle[{i}]: expected {want}, got {got}"
+        );
+    }
+}
+
+/// A Tait-Bryan convention (three distinct axes). Middle angle is kept well
+/// away from ±90°, where this family is singular.
+#[test]
+fn integration_orient_to_euler_subject_first_roundtrips_xyz() {
+    assert_subject_first_roundtrip("XYZ", 0.2, 0.3, -0.1);
+}
+
+/// The reverse Tait-Bryan sequence.
+#[test]
+fn integration_orient_to_euler_subject_first_roundtrips_zyx() {
+    assert_subject_first_roundtrip("ZYX", 0.3, 0.5, -0.7);
+}
+
+/// A proper/classic Euler convention (first axis repeated as third), reachable
+/// as a qualified enum value only since the declaration was widened to twelve.
+/// Middle angle is kept away from 0 and π, where THIS family is singular — a
+/// different locus than Tait-Bryan's.
+#[test]
+fn integration_orient_to_euler_subject_first_roundtrips_zxz() {
+    assert_subject_first_roundtrip("ZXZ", 0.3, 0.7, -0.2);
+}
+
+/// |dot(q1, q2)| — 1.0 exactly when the two quaternions describe the same
+/// rotation, sign flip included.
+fn quaternion_overlap(lhs: &Value, rhs: &Value) -> f64 {
+    match (lhs, rhs) {
+        (
+            Value::Orientation { w: w1, x: x1, y: y1, z: z1 },
+            Value::Orientation { w: w2, x: x2, y: y2, z: z2 },
+        ) => (w1 * w2 + x1 * x2 + y1 * y2 + z1 * z2).abs(),
+        other => panic!("expected two Orientations, got {other:?}"),
+    }
+}
+
+/// Compose → decompose → RECOMPOSE, the only round-trip assertion that means
+/// anything AT a singularity.
+///
+/// There the decomposition is not unique: the first angle is pinned to 0 and
+/// only a combination of the outer two survives, so the returned angles cannot
+/// be compared element-wise against the inputs the way
+/// `assert_subject_first_roundtrip` does. What must still hold is that they
+/// rebuild the SAME ROTATION.
+fn assert_singular_locus_recomposes(variant: &str, a: f64, b: f64, c: f64) {
+    let q = eval_builtin(
+        "orient_euler",
+        &[convention(variant), Value::Real(a), Value::Real(b), Value::Real(c)],
     );
+    let back = eval_builtin("orient_to_euler", &[q.clone(), convention(variant)]);
+    let angles = euler_extract(&back).unwrap_or_else(|| {
+        panic!(
+            "orient_to_euler(q, EulerConvention.{variant}) should return a 3-element \
+             Angle list, got {back:?}"
+        )
+    });
+    let again = eval_builtin(
+        "orient_euler",
+        &[
+            convention(variant),
+            Value::Real(angles[0]),
+            Value::Real(angles[1]),
+            Value::Real(angles[2]),
+        ],
+    );
+
+    let overlap = quaternion_overlap(&q, &again);
+    assert!(
+        (overlap - 1.0).abs() < SINGULAR_RECOMPOSE_TOLERANCE,
+        "EulerConvention.{variant} at its singular locus (a={a}, b={b}, c={c}) decomposed to \
+         {angles:?}, which rebuilds a rotation |dot|={overlap} from the input (1.0 = identical)"
+    );
+}
+
+/// Every convention must survive its OWN singular locus.
+///
+/// The locus differs by family, and probing each convention at the other
+/// family's locus is what let a real defect through: four proper-Euler arms
+/// (XZX, YZY, ZXZ, ZYZ) returned a rotation up to 90° away from the input —
+/// silently, as three finite angles. The element-wise round-trip tests above
+/// deliberately stay well away from both loci, so nothing covered this.
+///
+/// Tait-Bryan (three distinct axes) is singular where the middle angle reaches
+/// ±π/2; proper Euler (first axis repeated as third) where it reaches 0 or π.
+#[test]
+fn integration_every_convention_recomposes_at_its_singular_locus() {
+    const OUTER: [(f64, f64); 4] = [(0.0, 0.0), (0.3, 0.5), (1.1, -1.3), (-2.0, 2.2)];
+
+    for variant in ALL_CONVENTIONS {
+        let bytes = variant.as_bytes();
+        let is_proper_euler = bytes[0] == bytes[2];
+        let loci = if is_proper_euler {
+            [0.0, std::f64::consts::PI]
+        } else {
+            [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2]
+        };
+
+        for b in loci {
+            for (a, c) in OUTER {
+                assert_singular_locus_recomposes(variant, a, b, c);
+            }
+        }
+    }
+}
+
+/// The returned list must carry the ANGLE dimension on all three elements, not
+/// bare Reals — this is what lets the result feed a `List<Angle>` slot.
+#[test]
+fn integration_orient_to_euler_subject_first_returns_angle_dimensioned_list() {
+    let q = eval_builtin(
+        "orient_euler",
+        &[convention("ZXZ"), Value::Real(0.3), Value::Real(0.7), Value::Real(-0.2)],
+    );
+    let back = eval_builtin("orient_to_euler", &[q, convention("ZXZ")]);
+
+    let items = match &back {
+        Value::List(items) => items,
+        other => panic!("orient_to_euler should return a Value::List, got {other:?}"),
+    };
+    assert_eq!(items.len(), 3, "expected exactly 3 angles, got {}", items.len());
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            Value::Scalar { dimension, .. } => assert_eq!(
+                *dimension,
+                DimensionVector::ANGLE,
+                "angle[{i}] should carry the ANGLE dimension"
+            ),
+            other => panic!("angle[{i}] should be a Scalar, got {other:?}"),
+        }
+    }
+}
+
+// ── The raw String convention path is REMOVED (task #6082, item-4 ruling) ─────
+//
+// The qualified `EulerConvention` enum value is now the ONLY accepted form on
+// both builtins. A sweep of all tracked `.ri` files found ZERO call sites of
+// either builtin, so the usual warn-mode phase would have warned nobody; the
+// path is removed outright instead. Removing it also closes the
+// case-sensitivity trap, which lived entirely in the String arm ("XYZ" → Undef
+// while "xyz" worked).
+
+/// The twelve conventions, uppercase as the enum declares them. The removed
+/// path accepted their lowercase spellings.
+const ALL_CONVENTIONS: [&str; 12] = [
+    "XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX", "XYX", "XZX", "YXY", "YZY", "ZXZ", "ZYZ",
+];
+
+/// A rotation whose middle angle is away from EVERY convention's singular
+/// locus — 0.5 rad is far from the Tait-Bryan ±π/2 and from the
+/// proper/classic 0 and π. One triple therefore serves all twelve.
+const REGULAR_ANGLES: [f64; 3] = [0.3, 0.5, -0.2];
+
+/// Build a reference quaternion via the enum path, for feeding the decomposer.
+fn reference_quat(variant: &str) -> Value {
+    let [a, b, c] = REGULAR_ANGLES;
+    eval_builtin(
+        "orient_euler",
+        &[convention(variant), Value::Real(a), Value::Real(b), Value::Real(c)],
+    )
+}
+
+/// The exact call named by the ruling: a lowercase string convention on the
+/// decomposer must no longer decompose.
+#[test]
+fn integration_orient_to_euler_string_convention_returns_undef() {
+    let q = reference_quat("ZYX");
+    let result = eval_builtin("orient_to_euler", &[q, Value::String("zyx".to_string())]);
+    assert!(
+        result.is_undef(),
+        "orient_to_euler(q, String \"zyx\") should return Undef — the String convention \
+         path is removed; got {result:?}"
+    );
+}
+
+/// The mirror call on the constructor.
+#[test]
+fn integration_orient_euler_string_convention_returns_undef() {
+    let result = eval_builtin(
+        "orient_euler",
+        &[
+            Value::String("xyz".to_string()),
+            Value::Real(0.2),
+            Value::Real(0.3),
+            Value::Real(-0.1),
+        ],
+    );
+    assert!(
+        result.is_undef(),
+        "orient_euler(String \"xyz\", …) should return Undef — the String convention \
+         path is removed; got {result:?}"
+    );
+}
+
+/// No convention survives as a String, in either case spelling, on either
+/// builtin. The uppercase spellings always returned Undef (the removed arm was
+/// case-sensitive); the lowercase ones are what this step closes.
+#[test]
+fn integration_no_string_convention_is_accepted_on_either_builtin() {
+    for variant in ALL_CONVENTIONS {
+        for spelling in [variant.to_lowercase(), variant.to_string()] {
+            let built = eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String(spelling.clone()),
+                    Value::Real(0.2),
+                    Value::Real(0.3),
+                    Value::Real(-0.1),
+                ],
+            );
+            assert!(
+                built.is_undef(),
+                "orient_euler(String {spelling:?}, …) should return Undef, got {built:?}"
+            );
+
+            let q = reference_quat(variant);
+            let back = eval_builtin("orient_to_euler", &[q, Value::String(spelling.clone())]);
+            assert!(
+                back.is_undef(),
+                "orient_to_euler(q, String {spelling:?}) should return Undef, got {back:?}"
+            );
+        }
+    }
+}
+
+/// Control: removing the String arm must not disturb the enum arm. Every one of
+/// the twelve conventions still round-trips through the qualified enum value.
+///
+/// Checks the returned ANGLES, not merely that three of them came back. The
+/// shape-only form this replaced was green throughout the period when four of
+/// the six proper/classic arms returned angles that were flatly wrong at their
+/// gimbal-lock singularity — a test named "all twelve conventions still work"
+/// that cannot tell a working convention from a broken one reads as coverage
+/// while providing none.
+///
+/// `REGULAR_ANGLES`'s middle angle is safe for BOTH families at once: 0.5 rad
+/// is far from the Tait-Bryan locus at ±π/2 and from the proper/classic loci at
+/// 0 and π. The loci themselves are covered by
+/// `integration_every_convention_recomposes_at_its_singular_locus`, which has to
+/// assert recomposition rather than angle equality because the decomposition is
+/// genuinely non-unique there.
+#[test]
+fn integration_all_twelve_conventions_still_work_via_the_enum() {
+    let [a, b, c] = REGULAR_ANGLES;
+    for variant in ALL_CONVENTIONS {
+        assert_subject_first_roundtrip(variant, a, b, c);
+    }
 }

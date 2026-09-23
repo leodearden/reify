@@ -61,11 +61,22 @@ fn infer_warnings(module: &CompiledModule) -> Vec<&str> {
 /// `orient_axis_angle` the axis argument still types as
 /// `Vector{3, dimensionless}`, which is exactly the wrong first-arg type the old
 /// fallback adopted.
+///
+/// `EulerConvention` is declared LOCALLY for the same stdlib-free reason. Task
+/// #6082 gave `orient_euler`'s convention slot an `ExpectedArg::Enum`, so the
+/// raw `"xyz"` string this fixture used to pass is now an `ArgTypeMismatch`
+/// error; the stdlib declaration that would otherwise supply the type lives in
+/// `stdlib/geometry_traits.ri`, which `compile_source` does not load. Only the
+/// one variant these assertions exercise is declared — the slot checks the enum
+/// TYPE NAME, so restating all twelve here would be a second copy of the
+/// stdlib's list that nothing keeps in step.
 const ORIENT_HOST: &str = r#"
+    enum EulerConvention { XYZ }
+
     structure OrientHost {
         let identity    = orient_identity()
         let quaternion  = orient_quaternion(1.0, 0.0, 0.0, 0.0)
-        let euler       = orient_euler("xyz", 0.0, 0.0, 0.0)
+        let euler       = orient_euler(EulerConvention.XYZ, 0.0, 0.0, 0.0)
         let basis       = orient_basis(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0))
         let look_at     = orient_look_at(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0))
         let axis_angle  = orient_axis_angle(vec3(0.0, 0.0, 1.0), 90.0)
