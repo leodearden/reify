@@ -766,10 +766,72 @@ mod tests {
             &repo_root,
             "crates/reify-audit/src",
         );
-        assert!(
-            matches!(result, OrphanAudit::EnvUnavailable(_)),
-            "expected EnvUnavailable for a nonexistent script path, got: {result:?}"
-        );
+        match result {
+            OrphanAudit::EnvUnavailable(note) => {
+                let line = note.to_string();
+                assert!(
+                    line.contains(ORPHAN_AUDIT_SKIP_MARKER),
+                    "expected the skip note to carry ORPHAN_AUDIT_SKIP_MARKER, got: {line:?}"
+                );
+                assert!(
+                    line.contains("crates/reify-audit/src"),
+                    "expected the skip note to name its scope, got: {line:?}"
+                );
+                assert!(
+                    line.contains("/nonexistent/audit-orphan-producers.sh"),
+                    "expected the skip note to name the offending script path, got: {line:?}"
+                );
+            }
+            other => panic!(
+                "expected EnvUnavailable for a nonexistent script path, got: {other:?}"
+            ),
+        }
+    }
+
+    /// [`run_orphan_audit_at`]'s repo-root premise probe classifies a plain,
+    /// never-`git init`ed directory as [`ChildRepoRootFailure::NoRepository`]
+    /// (see `child_repo_root_plain_non_git_dir_is_no_repository`, which
+    /// drives [`child_repo_root`] directly) — this test drives the same
+    /// premise through the public seam instead, pinning that the resulting
+    /// [`OrphanAudit::EnvUnavailable`] skip note names both
+    /// [`ORPHAN_AUDIT_SKIP_MARKER`] and the offending `repo_root`.
+    #[test]
+    fn repo_root_outside_any_git_work_tree_is_a_marked_env_unavailable_skip() {
+        let (script, _) = resolve_script_and_root();
+        if !script.exists() {
+            eprintln!(
+                "orphan_audit: skipping \
+                 repo_root_outside_any_git_work_tree_is_a_marked_env_unavailable_skip \
+                 — resolved script {script:?} not found on disk"
+            );
+            return;
+        }
+
+        let dir = crate::temp_dirs::prefixed_tempdir("orphan-audit-no-git-root-");
+        let result = run_orphan_audit_at(&script, dir.path(), "crates/reify-audit/src");
+        match result {
+            OrphanAudit::EnvUnavailable(note) => {
+                let line = note.to_string();
+                let repo_root_debug = format!("{:?}", dir.path());
+                assert!(
+                    line.contains(ORPHAN_AUDIT_SKIP_MARKER),
+                    "expected the skip note to carry ORPHAN_AUDIT_SKIP_MARKER, got: {line:?}"
+                );
+                assert!(
+                    line.contains("crates/reify-audit/src"),
+                    "expected the skip note to name its scope, got: {line:?}"
+                );
+                assert!(
+                    line.contains(&repo_root_debug),
+                    "expected the skip note to name the offending repo_root {repo_root_debug}, \
+                     got: {line:?}"
+                );
+            }
+            other => panic!(
+                "expected EnvUnavailable for a repo_root outside any git work tree, \
+                 got: {other:?}"
+            ),
+        }
     }
 
     /// Hand-rolled parse of an `EXCLUDE_CRATES = {"a", "b"}`-shaped Python
@@ -1055,14 +1117,25 @@ mod tests {
     #[test]
     fn run_orphan_audit_on_excluded_crate_is_named_not_erased() {
         match run_orphan_audit_detailed("crates/reify-test-support/src") {
-            OrphanAudit::ExcludedScope => {}
+            OrphanAudit::ExcludedScope(note) => {
+                let line = note.to_string();
+                assert!(
+                    line.contains(ORPHAN_AUDIT_SKIP_MARKER),
+                    "expected the excluded-scope note to carry ORPHAN_AUDIT_SKIP_MARKER, \
+                     got: {line:?}"
+                );
+                assert!(
+                    line.contains("crates/reify-test-support/src"),
+                    "expected the excluded-scope note to name its scope, got: {line:?}"
+                );
+            }
             // Graceful-skip convention: missing python3/git/script/repo-root
             // is environmentally legitimate and indistinguishable here from
             // the excluded-scope case once collapsed through
             // `run_orphan_audit`; skip rather than fail.
-            OrphanAudit::EnvUnavailable(reason) => {
+            OrphanAudit::EnvUnavailable(note) => {
                 eprintln!(
-                    "orphan_audit: skipping run_orphan_audit_on_excluded_crate_is_named_not_erased — {reason}"
+                    "orphan_audit: skipping run_orphan_audit_on_excluded_crate_is_named_not_erased — {note}"
                 );
                 return;
             }
