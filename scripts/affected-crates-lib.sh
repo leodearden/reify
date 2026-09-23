@@ -336,8 +336,8 @@ affected_crates() {
     local crate
     local manifest_touched=0
     for arg in "$@"; do
-        # Consulted ahead of BOTH the attribution and the non-crate
-        # skip below, so neither can hide a manifest touch.
+        # Independent of attribution: a manifest path is also attributed to
+        # its own crate just below, like any other file that crate owns.
         if _is_crate_manifest "$arg"; then
             manifest_touched=1
         fi
@@ -365,12 +365,9 @@ affected_crates() {
     local closure
     closure="$(printf '%s\n' "${direct[@]}" | _reverse_closure)"
 
-    # ALL is a sentinel, not a crate name, so it is never unioned with
-    # anything: verify.sh's NARROW_ACTIVE assignment reads any non-empty value
-    # other than exactly ALL as a narrowed -p list, so `ALL` plus a crate name
-    # would read as a NARROW carrying a bogus package selector rather than the
-    # C4/C5 fail-wide it actually is. An empty closure from this non-empty seed
-    # list is C5 too (see _reverse_closure), never an empty print.
+    # ALL is a sentinel, not a crate name, so a fail-wide closure is emitted
+    # unchanged and never reaches the union below. The empty case re-checks
+    # _reverse_closure's C5 rule (see its header) at this use site.
     if [ -z "$closure" ] || [ "$closure" = "ALL" ]; then
         _emit_affected ALL
         return 0
