@@ -385,6 +385,16 @@ the findings and never the baseline, and fails if the scan collapses toward
 zero.  Its bounds are conservative lower bounds on *the instrument working*,
 not targets for the tree.
 
+## Whole-tree gates and unattended writers of `main`
+
+Dark-factory's legibility jobs commit machine-written files straight to `main`,
+unattended, so a `run_all.sh` pool gate that scans inert paths repo-wide must
+exclude the machine-written confusion corpus
+(`docs/legibility/confusion-codebook.yaml`) and needs a `--scope staged`
+selector.  Why, and the existing instances:
+[`docs/legibility/landing-contract.md`](../../docs/legibility/landing-contract.md)
+§3; when to re-check them: §5.
+
 ## Files
 
 | File | Purpose |
