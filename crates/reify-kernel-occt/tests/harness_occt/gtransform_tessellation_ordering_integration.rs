@@ -20,6 +20,8 @@
 //! `reflection_det_negative_integration` in the separate
 //! `harness_occt_measurement` binary, and tracked by #7735.
 //!
+//! The fixtures were copied from `reflection_det_negative_integration`'s
+//! same-named ones, but nothing here relies on the two staying alike.
 //! Every fixture goes through [`GeometryOp::Translate`]. A raw
 //! `Cylinder`/`Cone` primitive does not reproduce the BRepCheck rejection
 //! (measured), while any `BRepBuilderAPI_Transform`-derived copy does: the
