@@ -53,6 +53,12 @@ enum OrphanAudit {
     EnvUnavailable(&'static str),
 }
 
+/// The phrase every graceful-skip note [`run_orphan_audit`] prints to stderr
+/// contains, whichever skip cause fired. Exported so a caller attributing a
+/// process's stderr to such a skip matches the string this module actually
+/// produces, not a copy of it.
+pub const ORPHAN_AUDIT_SKIP_MARKER: &str = "skipping orphan audit";
+
 /// Crate names excluded from the orphan-producer audit — a Rust copy of the
 /// `EXCLUDE_CRATES = {...}` set literal declared in
 /// `scripts/audit-orphan-producers.sh` (the source of truth; this copy exists
@@ -220,8 +226,8 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     match child_repo_root(repo_root) {
         Err(ChildRepoRootFailure::NoRepository) => {
             eprintln!(
-                "repo_root {repo_root:?} is not inside a git work tree; skipping orphan \
-                 audit for scope {scope:?}"
+                "repo_root {repo_root:?} is not inside a git work tree; \
+                 {ORPHAN_AUDIT_SKIP_MARKER} for scope {scope:?}"
             );
             return OrphanAudit::EnvUnavailable("repo root is not a git work tree");
         }
@@ -457,7 +463,7 @@ fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
     match Command::new("python3").arg("--version").output() {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            eprintln!("python3 not on PATH; skipping orphan audit for scope {scope:?}");
+            eprintln!("python3 not on PATH; {ORPHAN_AUDIT_SKIP_MARKER} for scope {scope:?}");
             return OrphanAudit::EnvUnavailable("python3 not on PATH");
         }
         Err(e) => panic!("unexpected error probing python3: {e}"),
@@ -469,7 +475,7 @@ fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
     match Command::new("git").arg("--version").output() {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            eprintln!("git not on PATH; skipping orphan audit for scope {scope:?}");
+            eprintln!("git not on PATH; {ORPHAN_AUDIT_SKIP_MARKER} for scope {scope:?}");
             return OrphanAudit::EnvUnavailable("git not on PATH");
         }
         Err(e) => panic!("unexpected error probing git: {e}"),
