@@ -1,6 +1,13 @@
-//! End-to-end CLI tests for the construction-datum LENGTH gate (units-length ε,
-//! task 5746, R11 / decision D4 of
-//! `docs/prds/v0_6/units-length-gate-completion.md`).
+//! End-to-end CLI tests for the construction-datum LENGTH gate, across BOTH
+//! halves of that family: units-length ε (task 5746, R11 / decision D4 of
+//! `docs/prds/v0_6/units-length-gate-completion.md`) gates the `plane_*` /
+//! `axis_*` producers, and units-length η (task 6591) gates the five
+//! construction-datum constructors beside them — `midplane`, `axis_through`,
+//! `plane_through`, the arity-2 `offset` and `frame_at`.
+//!
+//! One module for the whole gate, so a reader finds its entire user-observable
+//! contract in one place. The two halves share every mechanism below; only the
+//! fixtures differ.
 //!
 //! This is the only altitude that proves the gate is REACHABLE. `make_plane` /
 //! `make_axis` return `Value::Undef` for a bare offset/origin, and a `Value::Undef`
@@ -139,4 +146,203 @@ fn eval_dimensioned_datums_exit_0_and_print_length_origins() {
         "stdout should print the axis with an all-LENGTH origin and a bare direction; \
          got: {stdout}"
     );
+}
+
+/// Every BARE construction-datum POSITION operand exits NONZERO with the shared
+/// coded units Error on stderr, naming the builtin and the argument the author
+/// actually wrote (units-length η, task 6591).
+///
+/// All five rows MEASURED as exit-0 before this gate: four of them printed a
+/// bare-origin datum, and `offset` printed a silent `undef`. That is the whole
+/// point of asserting at this altitude — a `Value::Undef` prints `undef` and
+/// exits 0, so without the classifier arm the gate is invisible to the author.
+///
+/// The fixture carries η rows ONLY, so the exit-code assertion below measures
+/// exactly that flip. It used to also carry the δ-reachability control, whose
+/// `mirror` row emits its own `Severity::Error` and so forced a nonzero exit on
+/// its own — over-determining the one assertion this test exists for. That
+/// control now has its own fixture, read by
+/// `eval_deltas_consumer_gate_stays_reachable_through_frame3` below.
+///
+/// One CONTIGUOUS anchor per builtin (name + argument + expected + got). A
+/// POINT/ORIGIN operand is named as the WHOLE parameter rather than per
+/// coordinate: the decoder both the gate and the classifier read has already
+/// required the three components to share one dimension, so all three offend
+/// identically and one edit-build cycle fixes the one line the author wrote.
+#[test]
+fn eval_bare_datum_constructors_exit_nonzero_with_units_errors() {
+    let path = common::fixture_path("datum_units_eta_bare.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        !status.success(),
+        "a non-LENGTH datum position is an Error (not a Warning), so reify eval \
+         should exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    for anchor in [
+        "midplane: a argument expects Length, got Int",
+        "axis_through: a argument expects Length, got Int",
+        "plane_through: a argument expects Length, got Int",
+        // `frame_at` is DELIBERATELY ABSENT from this list, and the gap is an
+        // evaluator one rather than a gate one — see
+        // `eval_bare_frame_at_gate_fires_but_its_diagnostic_is_not_reachable`
+        // directly below, which pins what IS observable plus the reason.
+        // `offset`'s row is the DELTA, not the plane: its plane is a LENGTH
+        // `plane_xy(5mm)` and only the bare `2.0` offends. It is the most
+        // natural authoring error in the family — a forgotten unit on the
+        // offset — and the one that used to be reinterpreted as 2 METRES.
+        "offset: delta argument expects Length, got Real",
+    ] {
+        assert!(
+            stderr.contains(anchor),
+            "stderr should carry the η units rejection `{anchor}`; got: {stderr}"
+        );
+    }
+    // Checked SEPARATELY so a drop of just the hint is distinguishable from a
+    // reword of the base message.
+    assert!(
+        stderr.contains("pass a dimensioned length such as `5mm`"),
+        "stderr should carry the migration hint; got: {stderr}"
+    );
+    // Guards the fixture's `module datum_units_eta_bare` decl: without it,
+    // W_MODULE_DECL_MISSING re-supplies anchor substrings for free and weakens
+    // every assertion above (the trap task 6155 documented).
+    assert!(
+        !stderr.contains("W_MODULE_DECL_MISSING"),
+        "datum_units_eta_bare.ri declares its module, so no module-decl warning \
+         should appear; got: {stderr}"
+    );
+}
+
+/// `frame_at`'s gate FIRES at the CLI — its cell goes `undef` — but its
+/// diagnostic is NOT reachable from any `.ri` source today, so this row asserts
+/// the former and records the latter rather than asserting a flip that cannot
+/// happen.
+///
+/// MEASURED, not assumed. `self.x` / `self.z` are the ONLY `.ri` route to a
+/// `Value::Direction` (there is no free-function Direction constructor), and an
+/// INLINE `self.<datum>` projection is still `Value::Undef` during the pass that
+/// runs `emit_undef_builtin_diagnostics`. The call therefore hits the strict
+/// undef-ARGUMENT short-circuit and never dispatches its builtin; a later pass
+/// re-evaluates the projection and produces the real value. The missing
+/// `OpContractViolation` note is the discriminator: `push_op_contract_failure`
+/// sits in the SAME eval arm as the diagnostics hook, so its absence shows the
+/// arm was never reached — not that `geometry_diagnose` returned `None`. The
+/// unit rows in reify-stdlib pin that it does not: `frame_at`'s exact message,
+/// severity and code are asserted there.
+///
+/// Let-binding the projections is NOT a workaround and was measured too: it
+/// breaks the SUCCESS path as well (`frame_at(point3(1mm, 2mm, 3mm), sx, sz)`
+/// is `undef` while the inline form builds a Frame), so it would trade a
+/// missing diagnostic for a broken constructor.
+///
+/// The gap is NOT an η artifact — task δ's long-landed gate shows the same
+/// shape, `mirror(box(...), self.xy_plane)` reporting "expected a Plane value,
+/// got undef" inline while the let-bound form resolves. It is filed as
+/// follow-up work as task #7765 (spawned from this one); the fixture already
+/// carries the call, so when that lands only the two assertions below change —
+/// both flipping onto the real stderr anchor
+/// `frame_at: o argument expects Length, got Int`.
+///
+/// Both halves are asserted, so the gap is a RATCHET rather than a doc-comment
+/// record: the absence anchor below fails the day #7765 closes it, which is what
+/// forces this test to be rewritten instead of silently outliving its name.
+#[test]
+fn eval_bare_frame_at_gate_fires_but_its_diagnostic_is_not_reachable() {
+    let path = common::fixture_path("datum_units_eta_bare.ri");
+    let (_, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        stdout.contains("DatumUnitsEtaBare.f = undef"),
+        "frame_at's LENGTH gate must still FIRE on a bare origin, even though its \
+         diagnostic cannot reach stderr;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("frame_at: o argument expects Length"),
+        "frame_at's diagnostic reached stderr, so task #7765 (the inline \
+         `self.<datum>` argument short-circuit) has closed the gap this test is \
+         named for — assert the anchor positively now, and retire the name, the \
+         doc above and the `frame_at is DELIBERATELY ABSENT` note in the sibling \
+         test;\nstderr: {stderr}"
+    );
+}
+
+/// The δ-REACHABILITY control: task δ's CONSUMER-side gate stays live and
+/// reachable from real `.ri` source after all five producers above are gated.
+///
+/// It has its OWN fixture rather than riding on `datum_units_eta_bare.ri`,
+/// because its `mirror` row emits a `Severity::Error` of its own and so
+/// over-determined that fixture's exit-code assertion — the one flip the η rows
+/// exist to prove.
+///
+/// Task ε recorded, in two places, that these five are "exactly the producers
+/// that keep δ's consumer gate live and reachable from real `.ri` source" — so
+/// closing them looks like it retires one of decision D4's two ends. It does
+/// not: `frame3` validates that its origin is a 3-component `Value::Point` and
+/// never its dimension, and `Frame.xy_plane` clones that origin verbatim, so a
+/// bare-origin Plane is still constructible and `mirror` still rejects it by
+/// coordinate.
+///
+/// This is pinned as RUNTIME BEHAVIOUR rather than as prose on purpose. A
+/// measurement recorded only in a doc comment goes stale silently with nothing
+/// to catch it — the failure task 5746's review named when it deleted a
+/// changelog paragraph from `make_plane`'s doc. The day task #7625 gates
+/// `frame3`, this assertion fails loudly and D4's second end must be revisited
+/// deliberately.
+#[test]
+fn eval_deltas_consumer_gate_stays_reachable_through_frame3() {
+    let path = common::fixture_path("datum_units_delta_reachability.ri");
+    let (_, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        stderr.contains("mirror: ox argument expects Length, got Int"),
+        "δ's consumer-side decode_plane gate must still fire through frame3's \
+         ungated origin, naming the coordinate;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// The INSEPARABLE control: the same five datum calls with DIMENSIONED literals
+/// still exit 0 and print their values.
+///
+/// Without it, every row above could pass for the wrong reason — a gate that
+/// rejected EVERYTHING would satisfy them perfectly.
+///
+/// Every coordinate is DISTINCT and NON-ZERO wherever the builtin carries one
+/// through (task 5746 review round 1: an all-zeros fixture cannot tell a correct
+/// implementation from a hardcoded one). These constructors are exactly the kind
+/// that could pass a zeroed control while dropping or transposing a coordinate:
+/// `axis_through` / `plane_through` clone their first point VERBATIM, `frame_at`
+/// clones its origin, and `offset` sums 5mm + 3mm = 8mm — a value no single
+/// input spells.
+///
+/// The rows also carry decision D3's scope lock end to end: all-LENGTH origins
+/// beside synthesized normals and directions that stay dimensionless, built by a
+/// `frame_at` whose x/z are still bare `self.x` / `self.z` Directions.
+///
+/// The printed forms were measured against the real `target/debug/reify` binary
+/// before being pinned; the value printer's number formatting is the drift-prone
+/// part.
+#[test]
+fn eval_dimensioned_datum_constructors_exit_0_and_print_length_origins() {
+    let path = common::fixture_path("datum_units_eta_controls.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "dimensioned construction-datum constructors must still build;\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    for expected in [
+        "axis(point(0.001 m, 0.002 m, 0.003 m), vec(0, 0, 1))",
+        "plane(point(0.001 m, 0.002 m, 0.003 m), vec(0, 0, 1))",
+        "frame(point(0.004 m, 0.005 m, 0.006 m), [1, 0, 0, 0]q)",
+        "plane(point(0 m, 0 m, 0.008 m), vec(0, 0, 1))",
+        "plane(point(0 m, 0 m, 0.005 m), vec(0, 0, 1))",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "stdout should print `{expected}` — an all-LENGTH origin beside a \
+             bare normal/direction; got: {stdout}"
+        );
+    }
 }
