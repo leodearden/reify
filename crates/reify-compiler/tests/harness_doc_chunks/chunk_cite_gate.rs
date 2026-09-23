@@ -11,6 +11,7 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::chunk_prose::EARLY_CLOSED_NOTE_FIX;
 use crate::fence_gate::{
     CHUNK_FILE_COUNT, chunk_label, discover_chunk_stems, read_chunk_file, report,
 };
@@ -366,6 +367,71 @@ fn every_path_cited_by_any_chunk_resolves() {
     );
 }
 
+/// The PER-CHUNK SYNC-note floor: every chunk carrying a SYNC note, each entry
+/// its EXACT live count — attributed per file, and TOTAL, in fence_gate's
+/// `REIFY_FENCE_FLOORS` idiom. Re-measure by the protocol stated once next to
+/// `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
+const SYNC_NOTE_FLOORS: &[(&str, usize)] = &[("geometry", 5), ("stdlib", 1), ("units", 1)];
+
+/// Every maintainer note in every chunk must be WHOLE, and every SYNC note must
+/// name a path.
+///
+/// A note that closes early leaks its tail into what the reader sees, and a SYNC
+/// note truncated that way silently loses the cites past the early close — so
+/// intactness is checked for every note, SYNC or not. Whether the named paths
+/// RESOLVE is [`every_path_cited_by_any_chunk_resolves`]' job, so one defect
+/// reds one test.
+#[test]
+fn every_maintainer_note_in_every_chunk_is_intact_and_every_sync_note_names_a_path() {
+    let stems = discover_chunk_stems();
+    assert!(
+        stems.len() >= CHUNK_FILE_COUNT,
+        "the chunk-dir scan found only {} chunk(s), expected {CHUNK_FILE_COUNT} — the note gate \
+         below would be vacuous",
+        stems.len()
+    );
+
+    let chunks: Vec<(&String, String)> = stems
+        .iter()
+        .map(|stem| (stem, read_chunk_file(stem)))
+        .collect();
+
+    for (stem, markdown) in &chunks {
+        // An unreadable chunk is reported below, as a violation of its own.
+        let Ok(notes) = sync_notes(markdown).map(|notes| notes.len()) else {
+            continue;
+        };
+        let label = chunk_label(stem);
+        match SYNC_NOTE_FLOORS
+            .iter()
+            .find(|(floor_stem, _)| floor_stem == stem)
+        {
+            Some((_, floor)) => assert!(
+                notes >= *floor,
+                "{label} carries {notes} SYNC note(s), expected at least {floor}. A SYNC note is \
+                 what points a maintainer at the test verifying the prose beside it; losing one \
+                 leaves that prose looking guarded while nothing says by what. If it was \
+                 retired deliberately, lower its SYNC_NOTE_FLOORS entry in the same diff."
+            ),
+            None => assert_eq!(
+                notes, 0,
+                "{label} carries {notes} SYNC note(s) but has NO entry in SYNC_NOTE_FLOORS. Add \
+                 `(\"{stem}\", {notes})` there, so that losing one later is RED."
+            ),
+        }
+    }
+
+    let violations: Vec<String> = chunks
+        .iter()
+        .flat_map(|(stem, markdown)| note_violations(&chunk_label(stem), markdown))
+        .collect();
+    report(
+        "maintainer notes in the MCP language-reference chunks that closed early or, as SYNC \
+         notes, name no path",
+        &violations,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Hermetic tests — synthetic markdown; real repo files serve only as
 // resolution targets.
@@ -521,5 +587,131 @@ fn audit_passes_real_cites_and_buckets_only_rs_and_ri_files() {
         (2, 1),
         "a `.md` cite is counted as a cite but in NEITHER file bucket, so the chunk-local \
          `.rs`/`.ri` floors stay exact"
+    );
+}
+
+#[test]
+fn a_sync_note_names_its_verifier_in_either_order() {
+    let md = "<!-- SYNC: signatures verified by crates/reify-compiler/tests/harness_doc_chunks.rs -->\n\
+              prose\n\
+              <!-- SYNC: crates/reify-compiler/tests/harness_doc_chunks.rs verifies, for all\n     \
+              five query names, that each is documented. -->\n";
+
+    let notes = sync_notes(md).expect("well-formed markdown must list its SYNC notes");
+
+    assert_eq!(
+        notes.iter().map(|note| note.line).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert_eq!(
+        note_violations("chunks/synthetic.md", md),
+        Vec::<String>::new(),
+        "\"verified by <path>\" and \"<path> verifies\" both name a path"
+    );
+}
+
+/// The explanatory inventory shape: `<!--` alone on its line, a `SYNC:` lead,
+/// a FORMAT note quoting the cite template, then one real cite per line.
+const INVENTORY_NOTE: &str = "\
+<!--
+SYNC: which claim below is pinned by an executable test, and where.
+
+FORMAT IS LOAD-BEARING. Every cite is written WHOLE on ONE line as `<path>::<fn_name>`, never
+wrapped and never tabulated.
+
+  claim 1 — PINNED by
+    crates/reify-compiler/tests/harness_doc_chunks/chunk_prose.rs::code_spans_are_returned_in_document_order_with_their_opening_line
+    crates/reify-eval/src/geometry_ops.rs::expected_arity
+-->
+";
+
+#[test]
+fn an_inventory_note_is_one_note_whose_cite_lines_are_read_and_whose_template_is_not() {
+    let notes = sync_notes(INVENTORY_NOTE).expect("well-formed markdown must list its SYNC notes");
+
+    assert_eq!(notes.len(), 1, "got {notes:#?}");
+    assert_eq!(notes[0].line, 1);
+    assert_eq!(
+        cited_source_paths(&notes[0].body),
+        vec![
+            (
+                "crates/reify-compiler/tests/harness_doc_chunks/chunk_prose.rs".to_string(),
+                Some(
+                    "code_spans_are_returned_in_document_order_with_their_opening_line".to_string()
+                )
+            ),
+            (
+                "crates/reify-eval/src/geometry_ops.rs".to_string(),
+                Some("expected_arity".to_string())
+            ),
+        ],
+        "the `<path>::<fn_name>` template is not a cite; the per-line cites are"
+    );
+    assert_eq!(
+        note_violations("chunks/synthetic.md", INVENTORY_NOTE),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_sync_note_naming_no_path_is_reported_at_its_line() {
+    let md = "prose\n\
+              <!-- ORACLE-XREF -->\n\
+              ```text\n\
+              <!-- SYNC: fenced, so not a note -->\n\
+              ```\n\
+              <!-- SYNC: this section is checked by a guard somewhere -->\n";
+
+    let notes = sync_notes(md).expect("well-formed markdown must list its SYNC notes");
+    assert_eq!(
+        notes.iter().map(|note| note.line).collect::<Vec<_>>(),
+        vec![6],
+        "a marker comment is not a SYNC note, and neither is `SYNC:` text inside a fence"
+    );
+
+    let violations = note_violations("chunks/synthetic.md", md);
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    assert!(
+        violations[0].contains("chunks/synthetic.md:6"),
+        "the violation must name chunk:line, got: {}",
+        violations[0]
+    );
+}
+
+#[test]
+fn an_unterminated_note_is_a_violation_not_a_panic_or_a_skip() {
+    let md = "prose\n\
+              <!-- SYNC: crates/reify-compiler/tests/harness_doc_chunks.rs verifies\n\
+              the rest of the chunk\n";
+
+    let violations = note_violations("chunks/synthetic.md", md);
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    assert!(
+        violations[0].contains("chunks/synthetic.md") && violations[0].contains("line 2"),
+        "the violation must name the chunk and the note's opening line, got: {}",
+        violations[0]
+    );
+}
+
+#[test]
+fn a_note_quoting_a_full_marker_is_reported_at_its_stray_terminator_with_the_shared_fix() {
+    let md = "<!-- MARK -->\n\
+              <!-- SYNC: crates/reify-compiler/tests/harness_doc_chunks.rs scans from the\n\
+              `<!-- MARK -->` marker on the line above. -->\n\
+              prose\n";
+
+    let violations = note_violations("chunks/synthetic.md", md);
+
+    assert_eq!(violations.len(), 1, "got {violations:#?}");
+    assert!(
+        violations[0].contains("chunks/synthetic.md:3"),
+        "the violation must name the line of the stray terminator, got: {}",
+        violations[0]
+    );
+    assert!(
+        violations[0].contains(EARLY_CLOSED_NOTE_FIX),
+        "the fix is the ONE wording oracle_xref_smoke.rs's debris check also gives, got: {}",
+        violations[0]
     );
 }
