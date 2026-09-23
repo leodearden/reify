@@ -861,3 +861,97 @@ structure S {
     );
     assert_deep_chain_warning_count(source, 1, "MatchArmDeclGroup.discriminant");
 }
+
+// Recursion-set discriminators. reify-ast's member walker descends into
+// `where`/`else` branches and match arms under every `MemberRecursionSet`; port
+// bodies and sub specialization overrides are the two cells that differ between
+// the sets. The port-body and sub-override tests therefore catch this lint being
+// wired to the wrong set, and the `else`-branch test pins a recursion site no
+// other test covers.
+
+/// Position 31: `MemberDecl::GuardedGroup.else_members` — nested member chain.
+#[test]
+fn walker_recurses_into_guarded_group_else_members() {
+    let source = r#"
+structure S {
+    where 1 > 0 {
+        let g = 0
+    } else {
+        let h = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::GuardedGroup(g)] if !g.else_members.is_empty()
+        ),
+        "fixture must lower to exactly one GuardedGroup with a non-empty `else` branch"
+    );
+    assert_deep_chain_warning_count(source, 1, "GuardedGroup.else_members (nested Let.value)");
+}
+
+/// Position 32: `MemberDecl::Port.members` — nested member chain.
+#[test]
+fn walker_recurses_into_port_body_members() {
+    let source = r#"
+trait MyPort { param diameter: Real }
+structure S {
+    port p : out MyPort {
+        param diameter: Real = 1
+        let v = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::Port(p)] if p.frame_expr.is_none()
+        ),
+        "fixture must lower to exactly one Port with no `frame` expression"
+    );
+    assert_deep_chain_warning_count(source, 1, "Port.members (nested Let.value)");
+}
+
+/// Position 33: `MemberDecl::Sub.body` — chain nested in a specialization body.
+#[test]
+fn walker_recurses_into_sub_specialization_body() {
+    let source = r#"
+structure S {
+    sub m : Motor {
+        let x = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::Sub(s)] if s.body.is_some()
+        ),
+        "fixture must lower to exactly one Sub that opens a specialization body"
+    );
+    assert_deep_chain_warning_count(source, 1, "Sub.body (nested Let.value)");
+}
+
+/// Position 34: `MemberDecl::Sub.keyed_members[].overrides` — chain nested in a
+/// keyed entry's overrides.
+#[test]
+fn walker_recurses_into_keyed_sub_overrides() {
+    let source = r#"
+structure S {
+    sub p : Foo { "a" => { let x = a.b.c.d.e } }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::Sub(s)] if s.body.is_none() && s.keyed_members.len() == 1
+        ),
+        "fixture must lower to exactly one Sub with a single keyed entry and no body"
+    );
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Sub.keyed_members[].overrides (nested Let.value)",
+    );
+}
