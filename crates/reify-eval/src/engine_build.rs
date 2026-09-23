@@ -9860,7 +9860,7 @@ impl Engine {
         // `"{list}#{k}"` — synthetic, unaddressable from source — so they are
         // routed away from the scalar `entries` write and regrouped into one
         // `Value::List` cell after the loop.
-        let mut geometry_lists = GeometryListCellAccumulator::default();
+        let mut geometry_lists = GeometryListCellAccumulator::declaring(&template.realizations);
 
         {
             let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
@@ -9870,9 +9870,6 @@ impl Engine {
                     Some(n) => n.as_str(),
                     None => continue,
                 };
-                // Declared BEFORE the `named_steps` miss `continue` below, so an
-                // unresolved element still counts against the all-or-nothing check.
-                let is_list_element = geometry_lists.declare(realization);
                 let kernel_handle = match named_steps.get(name) {
                     Some(kh) => kh.id,
                     None => continue,
@@ -9917,14 +9914,7 @@ impl Engine {
                     upstream_values_hash,
                     kernel_handle: Some(kernel_handle),
                 };
-                if is_list_element {
-                    geometry_lists.resolve(realization, value);
-                } else {
-                    entries.push((
-                        ValueCellId::new(realization.id.entity.as_str(), name),
-                        value,
-                    ));
-                }
+                geometry_lists.route(realization, name, value, &mut entries);
             }
         } // ctx dropped — &ValueMap borrow released
 
@@ -10573,7 +10563,7 @@ impl Engine {
         // Same geometry-list regrouping as `post_process_geometry_handle_cells`
         // (task #5385), so the tessellate surface exposes the same
         // `List<Geometry>` cell the build surface does.
-        let mut geometry_lists = GeometryListCellAccumulator::default();
+        let mut geometry_lists = GeometryListCellAccumulator::declaring(&template.realizations);
         {
             let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
             for realization in &template.realizations {
@@ -10581,7 +10571,6 @@ impl Engine {
                     Some(n) => n.as_str(),
                     None => continue,
                 };
-                let is_list_element = geometry_lists.declare(realization);
                 let kernel_handle = match named_steps.get(name) {
                     Some(kh) => kh.id,
                     None => continue,
@@ -10593,14 +10582,7 @@ impl Engine {
                     upstream_values_hash,
                     kernel_handle: Some(kernel_handle),
                 };
-                if is_list_element {
-                    geometry_lists.resolve(realization, value);
-                } else {
-                    entries.push((
-                        ValueCellId::new(realization.id.entity.as_str(), name),
-                        value,
-                    ));
-                }
+                geometry_lists.route(realization, name, value, &mut entries);
             }
         }
         entries.extend(geometry_lists.into_entries());
@@ -10751,20 +10733,19 @@ impl Engine {
         // Geometry-list lets (task #5385): the pure-eval symbolic route must
         // agree with the kernel-backed one, so element realizations are
         // regrouped here too rather than written as synthetic scalar cells.
-        let mut geometry_lists = GeometryListCellAccumulator::default();
+        let realizations = || module.templates.iter().flat_map(|t| &t.realizations);
+        let mut geometry_lists = GeometryListCellAccumulator::declaring(realizations());
         {
             let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
-            for realization in module.templates.iter().flat_map(|t| &t.realizations) {
+            for realization in realizations() {
                 let name = match &realization.name {
                     Some(n) => n.as_str(),
                     None => continue, // unnamed realizations have no named cell
                 };
-                let is_list_element = geometry_lists.declare(realization);
-                let cell_id = ValueCellId::new(realization.id.entity.as_str(), name);
                 // Do not clobber a realized handle already stamped by the build path.
-                if !is_list_element
+                if realization.list_binding.is_none()
                     && matches!(
-                        values.get(&cell_id),
+                        values.get(&ValueCellId::new(realization.id.entity.as_str(), name)),
                         Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
                     )
                 {
@@ -10780,11 +10761,7 @@ impl Engine {
                     upstream_values_hash,
                     kernel_handle: None,
                 };
-                if is_list_element {
-                    geometry_lists.resolve(realization, value);
-                } else {
-                    entries.push((cell_id, value));
-                }
+                geometry_lists.route(realization, name, value, &mut entries);
             }
         } // ctx dropped — &ValueMap borrow released
         // The per-element clobber guard above cannot apply to list elements
@@ -12444,7 +12421,13 @@ impl Engine {
 /// resolved. A partially-resolved list leaves the cell untouched, so the
 /// eval-side undef provenance (task #5402) still owns that failure case rather
 /// than seeing a silently short list and reporting nothing.
-#[derive(Default)]
+///
+/// **Declared at construction.** [`Self::declaring`] records every element of
+/// the realizations a hydration pass is about to walk BEFORE the walk, so no
+/// early `continue` inside a pass (a `named_steps` miss, a clobber guard) can
+/// hide an unresolved element from the all-or-nothing check. There is
+/// deliberately no `Default`: an accumulator that declared nothing would drop
+/// every list it was routed.
 struct GeometryListCellAccumulator {
     /// `(entity, list_name)` → the list's COMPILE-TIME element count, read
     /// from [`reify_compiler::GeometryListBinding::len`].
@@ -12461,50 +12444,61 @@ struct GeometryListCellAccumulator {
 }
 
 impl GeometryListCellAccumulator {
-    /// Record that `realization` is declared as a list element.
-    ///
-    /// MUST be called for every list-bound realization *before* any early
-    /// `continue` that could skip it — otherwise a surviving sibling never
-    /// registers the list's expected length and the whole list is dropped
-    /// silently instead of being regrouped.
-    ///
-    /// Returns `true` iff the realization is list-bound, i.e. iff the caller
-    /// must NOT also write it as a scalar geometry cell.
-    fn declare(&mut self, realization: &reify_compiler::RealizationDecl) -> bool {
-        let Some(binding) = &realization.list_binding else {
-            return false;
-        };
-        let previous = self
-            .declared
-            .insert(
+    /// An accumulator expecting every list element among `realizations` — pass
+    /// exactly the realizations the hydration pass will walk.
+    fn declaring<'a>(
+        realizations: impl IntoIterator<Item = &'a reify_compiler::RealizationDecl>,
+    ) -> Self {
+        let mut declared = BTreeMap::new();
+        for realization in realizations {
+            let Some(binding) = &realization.list_binding else {
+                continue;
+            };
+            let previous = declared.insert(
                 (realization.id.entity.clone(), binding.list_name.clone()),
                 binding.len,
             );
-        // Every sibling of one list carries the same compile-time `len`, so a
-        // repeat insert is idempotent. A disagreement means the compiler
-        // emitted siblings from two different expansions of the same name —
-        // impossible today (entity.rs expands exactly once, in pass 1) and a
-        // silent short/long list if it ever became possible.
-        debug_assert!(
-            previous.is_none_or(|p| p == binding.len),
-            "geometry list '{}' declared with conflicting lengths {:?} vs {}",
-            binding.list_name,
-            previous,
-            binding.len,
-        );
-        true
+            // Every sibling of one list carries the same compile-time `len`, so
+            // a repeat insert is idempotent. A disagreement means the compiler
+            // emitted siblings from two different expansions of the same name —
+            // impossible today (entity.rs expands exactly once, in pass 1) and a
+            // silent short/long list if it ever became possible.
+            debug_assert!(
+                previous.is_none_or(|p| p == binding.len),
+                "geometry list '{}' declared with conflicting lengths {:?} vs {}",
+                binding.list_name,
+                previous,
+                binding.len,
+            );
+        }
+        Self {
+            declared,
+            resolved: BTreeMap::new(),
+        }
     }
 
-    /// Record a resolved handle for a list element. No-op for a realization
-    /// that is not list-bound.
-    fn resolve(&mut self, realization: &reify_compiler::RealizationDecl, value: reify_ir::Value) {
-        let Some(binding) = &realization.list_binding else {
-            return;
-        };
-        self.resolved
-            .entry((realization.id.entity.clone(), binding.list_name.clone()))
-            .or_default()
-            .insert(binding.index, value);
+    /// Route one hydrated handle to where it belongs: a list element is held
+    /// back for [`Self::into_entries`] to regroup, and any other realization is
+    /// written straight to `entries` under its own named cell.
+    fn route(
+        &mut self,
+        realization: &reify_compiler::RealizationDecl,
+        name: &str,
+        value: reify_ir::Value,
+        entries: &mut Vec<(reify_core::identity::ValueCellId, reify_ir::Value)>,
+    ) {
+        match &realization.list_binding {
+            Some(binding) => {
+                self.resolved
+                    .entry((realization.id.entity.clone(), binding.list_name.clone()))
+                    .or_default()
+                    .insert(binding.index, value);
+            }
+            None => entries.push((
+                reify_core::identity::ValueCellId::new(realization.id.entity.as_str(), name),
+                value,
+            )),
+        }
     }
 
     /// Emit `(list cell, Value::List)` for every list whose elements ALL
@@ -12517,8 +12511,8 @@ impl GeometryListCellAccumulator {
     /// edge, a partly-demanded list drops the elements that DID resolve.
     ///
     /// An empty geometry list (`generate(0, …)`) never reaches this function at
-    /// all: it emits zero `RealizationDecl`s, so [`Self::declare`] is never
-    /// called for it and its key is absent from `declared`. Its cell keeps the
+    /// all: it emits zero `RealizationDecl`s, so [`Self::declaring`] never sees
+    /// it and its key is absent from `declared`. Its cell keeps the
     /// value the ordinary value-cell pass computed for `generate(0, …)` —
     /// `Value::List([])`, since `generate` yields one element per index and
     /// there are none — which is the determinate answer this pass would have
@@ -12539,7 +12533,7 @@ impl GeometryListCellAccumulator {
             // duplicate index is the benign direction: it collapses to one
             // entry, shortening the count, so the list is conservatively
             // dropped.) Unreachable today — `index` comes from `enumerate()` in
-            // the compiler's unroll — but `declare` already carries a
+            // the compiler's unroll — but `declaring` already carries a
             // `debug_assert!` for the analogous `len` disagreement, and this
             // costs the same as the count check it replaces.
             let contiguous = elements.is_some_and(|m| m.keys().copied().eq(0..expected));
@@ -12558,7 +12552,6 @@ impl GeometryListCellAccumulator {
         out
     }
 }
-
 
 /// Collect centroid values for each topology-attribute handle, coalescing
 /// kernel query errors and parse errors into at most one summary warning each.
@@ -14225,7 +14218,9 @@ mod reset_per_build_state_tests {
 mod geometry_list_cell_accumulator_tests {
     use super::GeometryListCellAccumulator;
     use reify_compiler::{GeometryListBinding, RealizationDecl};
+    use reify_core::identity::ValueCellId;
     use reify_core::{RealizationNodeId, SourceSpan};
+    use reify_ir::Value;
 
     /// One list-bound `RealizationDecl` for element `index` of `list` in `entity`,
     /// declaring the list's compile-time length as `len`.
@@ -14245,27 +14240,41 @@ mod geometry_list_cell_accumulator_tests {
         }
     }
 
-    /// The happy path, so the two negatives below are pinning the guard and not
-    /// an accumulator that never emits anything.
+    /// Route `realization` exactly as a hydration pass does, under its own name.
+    fn route(
+        acc: &mut GeometryListCellAccumulator,
+        realization: &RealizationDecl,
+        value: Value,
+        entries: &mut Vec<(ValueCellId, Value)>,
+    ) {
+        let name = realization
+            .name
+            .as_deref()
+            .expect("hydrated realizations are named");
+        acc.route(realization, name, value, entries);
+    }
+
+    /// The happy path, so the negatives below are pinning the guard and not an
+    /// accumulator that never emits anything.
     #[test]
     fn every_declared_element_resolving_emits_the_list_in_index_order() {
-        let mut acc = GeometryListCellAccumulator::default();
-        for k in 0..3 {
-            let r = element("S", "holes", k, 3);
-            assert!(acc.declare(&r), "a list-bound realization must report true");
-            acc.resolve(&r, reify_ir::Value::Int(k as i64));
+        let elements: Vec<_> = (0..3).map(|k| element("S", "holes", k, 3)).collect();
+        let mut acc = GeometryListCellAccumulator::declaring(&elements);
+        let mut scalar = Vec::new();
+        for (k, r) in elements.iter().enumerate() {
+            route(&mut acc, r, Value::Int(k as i64), &mut scalar);
         }
+        assert!(
+            scalar.is_empty(),
+            "a list element must never be written as its own scalar cell; got {scalar:?}",
+        );
 
         let entries = acc.into_entries();
         assert_eq!(entries.len(), 1, "one cell per list; got {entries:?}");
         assert_eq!(entries[0].0.member, "holes");
         assert_eq!(
             entries[0].1,
-            reify_ir::Value::List(vec![
-                reify_ir::Value::Int(0),
-                reify_ir::Value::Int(1),
-                reify_ir::Value::Int(2),
-            ]),
+            Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2)]),
             "elements must come back in ascending index order",
         );
     }
@@ -14273,25 +14282,34 @@ mod geometry_list_cell_accumulator_tests {
     /// ALL-OR-NOTHING (review esc-5385-7): one unresolved element drops the whole
     /// list, leaving the cell at its `[Undef; n]` placeholder rather than emitting
     /// a silently short list. This is the central safety property justifying
-    /// `GeometryListBinding::len` carrying the COMPILE-TIME count, and it had no
-    /// test at any level.
+    /// `GeometryListBinding::len` carrying the COMPILE-TIME count.
+    ///
+    /// Index 1 goes missing both ways it can: the hydration pass skipped it (a
+    /// `named_steps` miss — declared, never routed), or the compiler never
+    /// emitted it (`compile_geometry_call` returned `None` — its siblings still
+    /// carry `len == 3`).
     #[test]
     fn a_single_unresolved_element_drops_the_whole_list() {
-        let mut acc = GeometryListCellAccumulator::default();
-        for k in 0..3 {
-            acc.declare(&element("S", "holes", k, 3));
-        }
-        // Index 1 never resolves — e.g. its realization was skipped as
-        // hash-exempt, or `compile_geometry_call` dropped it.
-        for k in [0usize, 2] {
-            acc.resolve(&element("S", "holes", k, 3), reify_ir::Value::Int(k as i64));
-        }
+        let all: Vec<_> = (0..3).map(|k| element("S", "holes", k, 3)).collect();
+        let survivors = vec![all[0].clone(), all[2].clone()];
+        for (how, declared) in [
+            ("skipped by the hydration pass", &all),
+            ("never emitted by the compiler", &survivors),
+        ] {
+            let mut acc = GeometryListCellAccumulator::declaring(declared);
+            let mut scalar = Vec::new();
+            for r in &survivors {
+                let index = r.list_binding.as_ref().map_or(0, |b| b.index);
+                route(&mut acc, r, Value::Int(index as i64), &mut scalar);
+            }
 
-        assert!(
-            acc.into_entries().is_empty(),
-            "a partially-resolved list must emit NO cell — a 2-element list here \
-             would be silently wrong, and `holes.count` already folded to 3",
-        );
+            assert!(
+                acc.into_entries().is_empty(),
+                "index 1 {how}: a partially-resolved list must emit NO cell — a \
+                 2-element list here would be silently wrong, and `holes.count` \
+                 already folded to 3",
+            );
+        }
     }
 
     /// The exact-index-set check, not a count check: `{0, 1, 7}` against an
@@ -14302,12 +14320,16 @@ mod geometry_list_cell_accumulator_tests {
     /// test rather than a reader's trust.
     #[test]
     fn a_compensating_index_set_of_the_right_length_is_still_dropped() {
-        let mut acc = GeometryListCellAccumulator::default();
-        for k in 0..3 {
-            acc.declare(&element("S", "holes", k, 3));
-        }
+        let declared: Vec<_> = (0..3).map(|k| element("S", "holes", k, 3)).collect();
+        let mut acc = GeometryListCellAccumulator::declaring(&declared);
+        let mut scalar = Vec::new();
         for k in [0usize, 1, 7] {
-            acc.resolve(&element("S", "holes", k, 3), reify_ir::Value::Int(k as i64));
+            route(
+                &mut acc,
+                &element("S", "holes", k, 3),
+                Value::Int(k as i64),
+                &mut scalar,
+            );
         }
 
         assert!(
@@ -14318,21 +14340,24 @@ mod geometry_list_cell_accumulator_tests {
     }
 
     /// A realization with no `list_binding` is not this accumulator's business:
-    /// `declare` reports false (so the caller still writes it as a scalar geometry
-    /// cell) and `resolve` is a no-op.
+    /// `route` writes it straight to the caller's entries under its own named
+    /// cell, and `into_entries` never emits it.
     #[test]
-    fn a_non_list_realization_is_declined_and_never_emitted() {
-        let mut acc = GeometryListCellAccumulator::default();
-        let scalar = RealizationDecl {
+    fn a_non_list_realization_is_routed_to_its_own_cell_and_never_regrouped() {
+        let scalar_decl = RealizationDecl {
+            name: Some("body".to_string()),
             list_binding: None,
             ..element("S", "body", 0, 1)
         };
+        let mut acc = GeometryListCellAccumulator::declaring(std::slice::from_ref(&scalar_decl));
+        let mut entries = Vec::new();
+        route(&mut acc, &scalar_decl, Value::Int(0), &mut entries);
 
-        assert!(
-            !acc.declare(&scalar),
-            "declare must report false so the caller writes the scalar cell itself",
+        assert_eq!(
+            entries,
+            vec![(ValueCellId::new("S", "body"), Value::Int(0))],
+            "a scalar realization is written to its own named cell",
         );
-        acc.resolve(&scalar, reify_ir::Value::Int(0));
         assert!(acc.into_entries().is_empty());
     }
 }
