@@ -11455,40 +11455,9 @@ mod tests {
 
     /// Helper: build a 12-triangle unit cube mesh (8 vertices, 36 indices).
     ///
-    /// # Judgment call (task #7137)
-    ///
-    /// This fixture keeps its own box literal and deliberately does NOT
-    /// delegate to `reify_test_support::fixtures::unit_cube_mesh`, even
-    /// though that is the workspace-canonical copy (task #6387). Three
-    /// reasons, in order of how binding they are:
-    ///
-    /// 1. **It would not compile.** This module is `#[cfg(test)]` inside
-    ///    the crate under test, so its `Mesh` comes from the `--test`
-    ///    build of `reify-ir`, while `reify-test-support` links the PLAIN
-    ///    `reify-ir` rlib. Those are distinct crate instances, so the
-    ///    canonical fixture returns a DIFFERENT `Mesh` type ("perhaps two
-    ///    different versions of crate `reify_ir`"). Referencing it here is
-    ///    an unresolved-type error, not a style preference.
-    /// 2. **The fix would be worse than the duplication.** Escaping (1)
-    ///    means a feature-gated `pub mod test_fixtures` plus a
-    ///    `reify-test-support` dev-dep so the guard can be a cross-crate
-    ///    `tests/` binary. But `reify-test-support` normal-deps
-    ///    `reify-compiler`, which normal-deps `reify-ir` — so
-    ///    `cargo test -p reify-ir` would have to build the COMPILER in
-    ///    order to test the IR. That inverts the layering, and it binds
-    ///    harder here than it did for the manifold adapter in #6387
-    ///    because `reify-ir` is foundational.
-    /// 3. **The divergence is watched, not forgotten.**
-    ///    `crates/reify-ir/tests/cube_fixture_agreement.rs` is the
-    ///    executable guard. It compares this fixture's `indices` block
-    ///    against the canonical `prismatic_box_mesh`'s at the SOURCE level
-    ///    (reason 1 rules out a value-level comparison) and reds
-    ///    immediately if either copy is edited in isolation. #7137 found
-    ///    the `+Y` face already emitted in a permuted order and
-    ///    normalised it, so the two now agree exactly.
-    ///
-    /// So the goal #6387 was filed for — kill DRIFT, not bytes — is met
-    /// here by an assertion rather than by deletion.
+    /// Judgment call (task #7137): a deliberate local copy of the canonical
+    /// `reify_test_support::fixtures::unit_cube_mesh`, kept in step by
+    /// `crates/reify-ir/tests/cube_fixture_agreement.rs`, which also says why.
     fn unit_cube_mesh() -> Mesh {
         // 8 corners of a unit cube [0,1]^3
         #[rustfmt::skip]

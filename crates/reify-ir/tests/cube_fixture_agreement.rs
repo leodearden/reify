@@ -1,41 +1,47 @@
-//! Executable drift guard between `geometry`'s in-crate test cube fixture and
-//! the workspace-canonical box fixtures in `reify_test_support::fixtures`.
+//! Executable drift guard between `geometry::tests::unit_cube_mesh`, this
+//! crate's test cube fixture, and the workspace-canonical box fixture
+//! `reify_test_support::fixtures::prismatic_box_mesh`.
 //!
-//! # Why this file exists
+//! # Why the local copy is kept (judgment call, task #7137)
 //!
 //! Task #6387 hoisted the box/cube fixtures into `reify_test_support::fixtures`
-//! so the workspace has ONE definition of "a box". Task #7137 collapsed the
-//! remaining copies onto it — except this crate's, which cannot be collapsed
-//! and so is watched instead. See the cite block on
-//! `geometry::tests::unit_cube_mesh` for the full argument; in short:
+//! so the workspace has ONE definition of "a box", and #7137 collapsed the
+//! remaining copies onto it — except this crate's. Two reasons, in order of
+//! how binding they are:
 //!
-//! 1. Delegating WOULD NOT COMPILE. That copy lives in `#[cfg(test)] mod tests`
+//! 1. Delegating WOULD NOT COMPILE. The copy lives in `#[cfg(test)] mod tests`
 //!    inside the crate under test, so its `Mesh` comes from the `--test` build
-//!    of `reify-ir` while `reify-test-support` links the PLAIN `reify-ir` rlib.
+//!    of `reify-ir`, while `reify-test-support` links the PLAIN `reify-ir` rlib.
 //!    The two are distinct crate instances, so the canonical fixture returns a
 //!    DIFFERENT `Mesh` type ("perhaps two different versions of crate
 //!    `reify_ir`") — an unresolved-type error, not a style preference.
-//! 2. The escape would invert the layering. `reify-test-support` normal-deps
-//!    `reify-compiler`, which normal-deps `reify-ir`, so giving `reify-ir` a
-//!    `reify-test-support` dev-dep would make `cargo test -p reify-ir` build
-//!    the compiler in order to test the IR.
+//! 2. The escape would invert the layering. Escaping (1) the way #6387 did for
+//!    the manifold adapter's copy — a feature-gated `pub mod test_fixtures`
+//!    compared by a cross-crate `tests/` binary — needs a `reify-test-support`
+//!    dev-dep. But `reify-test-support` normal-deps `reify-compiler`, which
+//!    normal-deps `reify-ir`, so `cargo test -p reify-ir` would build the
+//!    compiler in order to test the IR. That binds harder here than it did for
+//!    the adapter, because `reify-ir` is foundational.
 //!
-//! # Why this guard is SOURCE-LEVEL rather than value-level
+//! So the goal #6387 was filed for — kill DRIFT, not bytes — is met here by
+//! this guard rather than by deletion. Giving the two literals one shared
+//! definition instead was deferred to task #7528's placement decision.
 //!
-//! Reason 1 above also blocks the obvious guard: no test in any crate can CALL
-//! the local fixture, because `#[cfg(test)]` items are not part of any artifact
-//! another crate can link. Comparing constructed `Mesh` values is therefore
-//! unavailable, and comparing the two definitions' SOURCE TEXT is the only
-//! executable option that does not buy the dependency edge reason 2 rejects.
+//! # Why SOURCE-level rather than value-level
+//!
+//! Reason 1 also blocks the obvious guard: no test in any crate can CALL the
+//! local fixture, because `#[cfg(test)]` items are not part of any artifact
+//! another crate can link. Comparing the two definitions' source text is the
+//! only executable option that does not buy the dependency edge reason 2
+//! rejects.
 //!
 //! # Why indices only
 //!
-//! Winding/topology is precisely what drifted (#7137 found the `+Y` face
-//! emitted as `3, 6, 2,  3, 7, 6` here against the canonical's
-//! `3, 7, 6,  3, 6, 2`), and it is what makes independent guards disagree about
-//! what "a box" is. Vertices are not textually comparable anyway — the
-//! canonical `prismatic_box_mesh` spells them parametrically (`lx, 0.0, 0.0`) —
-//! and their values are already pinned upstream by
+//! Winding/topology is precisely what drifted: #7137 found the local copy
+//! emitting its `+Y` face as `3, 6, 2,  3, 7, 6` against the canonical's
+//! `3, 7, 6,  3, 6, 2`, and normalised it. Vertices are not textually
+//! comparable anyway — the canonical spells them parametrically
+//! (`lx, 0.0, 0.0`) — and their values are already pinned upstream by
 //! `crates/reify-test-support/tests/box_fixtures.rs`.
 
 /// Resolves the manifest directory to use when locating this crate's sources at
