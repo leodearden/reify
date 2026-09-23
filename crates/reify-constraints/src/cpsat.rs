@@ -4,6 +4,7 @@
 //! cardinality, and all-different via forward-checking backtracking search
 //! with eval_expr as the constraint checker.
 
+use crate::dependent_reads::{CellReads, dependent_cell_auto_reads};
 use reify_expr::{EvalContext, eval_expr};
 use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{AutoParam, BestFoundReason, CompiledExpr, CompiledExprKind, ConstraintSolver, OptimalityStatus, RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, Value, ValueMap};
@@ -312,6 +313,8 @@ struct SearchContext<'a> {
     auto_param_ids: &'a HashSet<ValueCellId>,
     functions: &'a [reify_ir::CompiledFunction],
     dependent_cells: &'a [(ValueCellId, CompiledExpr)],
+    /// Parallel to `dependent_cells`: see [`exact_from_depths`].
+    exact_from: &'a [Option<usize>],
     /// Stop once this many solutions have been collected.
     cap: usize,
     /// Stop once this many search nodes have been visited, whether or not any
@@ -368,6 +371,34 @@ struct SearchInputs {
     /// back out. See the strip's own rationale below — it is load-bearing, not
     /// hygiene.
     assignment: ValueMap,
+    exact_from: Vec<Option<usize>>,
+}
+
+/// Per stored dependent cell, the search depth from which its value is EXACT:
+/// the deepest variable index among the autos it reads transitively (`0` if it
+/// reads none), or `None` for an unfoldable cell, which never is. Variables are
+/// searched in `auto_params` order, so an auto's depth is its index there.
+///
+/// Built once per solve: the `ConstraintSolver::solve` seam cannot carry the
+/// registry's copy of the reads map.
+fn exact_from_depths(problem: &ResolutionProblem) -> Vec<Option<usize>> {
+    let depth: HashMap<&ValueCellId, usize> = problem
+        .auto_params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (&p.id, i))
+        .collect();
+    let reads = dependent_cell_auto_reads(&problem.dependent_cells, &problem.auto_params);
+    problem
+        .dependent_cells
+        .iter()
+        .map(|(id, _)| match reads.lookup(id) {
+            CellReads::Foldable(autos) => autos
+                .iter()
+                .try_fold(0, |deepest, auto| Some(deepest.max(*depth.get(auto)?))),
+            CellReads::Unfoldable(_) | CellReads::NotACell => None,
+        })
+        .collect()
 }
 
 /// Build the inputs a CP-SAT search needs, or report why it cannot.
@@ -454,6 +485,7 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
         auto_param_ids,
         constraints,
         assignment,
+        exact_from: exact_from_depths(problem),
     })
 }
 
@@ -772,6 +804,7 @@ impl CpSatSolver {
             auto_param_ids: &inputs.auto_param_ids,
             functions: &problem.functions,
             dependent_cells: &problem.dependent_cells,
+            exact_from: &inputs.exact_from,
             cap,
             node_budget,
         };

@@ -265,12 +265,15 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 /// Debug builds trip a `debug_assert!` naming the cell; release builds skip the
 /// entry and keep the solver's own value.
 ///
-/// An empty `dependent_cells` returns without touching `values` OR running any
-/// of the guard work — that skip is what keeps every non-clustered solve
+/// An empty `dependent_cells` runs the loop zero times, so it touches neither
+/// `values` nor any of the guard work — which keeps every non-clustered solve
 /// byte-identical to its pre-joint-drive BEHAVIOUR (PRD §6.2).  What the
-/// #5721 split's returned vector does and does not cost on that skip is
-/// accounted for on [`fold_dependent_cells_skipping_collisions`]; it is no
-/// longer a claim about identical codegen.
+/// #5721 split's returned vector costs there is accounted for on
+/// [`fold_dependent_cells_skipping_collisions`].
+///
+/// `dependent_cells` is any stored-order view of the list — a SUBSEQUENCE of
+/// the stored order, never a reordering — so a caller that must fold only some
+/// cells can filter without cloning them.
 ///
 /// # Hot-path cost model (task #5720)
 ///
@@ -307,9 +310,10 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 ///
 /// 1. `build_trial_values` — the DimensionalSolver residual/cost hot path.
 /// 2. `build_scoring_values` — post-solve objective scoring.
-/// 3. `cpsat::backtrack` — the CP-SAT forward-check, which must materialise
-///    dependent cells per trial assignment or a constraint reading only a
-///    dependent cell evaluates to a non-`Bool` and is never able to prune.
+/// 3. `cpsat::backtrack_all` — the CP-SAT forward-check, which must
+///    materialise dependent cells per trial assignment or a constraint reading
+///    only a dependent cell evaluates to a non-`Bool` and is never able to
+///    prune. It passes only the cells not yet exact at its depth.
 ///
 /// A fourth (ζ's mixed outer loop) is expected. Do NOT copy this body into a
 /// caller: the two invariants a copy silently loses are consumption in STORED
@@ -340,9 +344,9 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 ///   `debug_assert!` unwinds, and `values` is a `&mut` borrow the caller drops
 ///   on unwind, so no partially-folded map can escape.
 #[inline]
-pub(crate) fn fold_dependent_cells(
+pub(crate) fn fold_dependent_cells<'c>(
     values: &mut ValueMap,
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    dependent_cells: impl IntoIterator<Item = &'c (ValueCellId, CompiledExpr)>,
     functions: &[CompiledFunction],
     is_solver_owned: impl Fn(&ValueCellId) -> bool,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -386,16 +390,13 @@ pub(crate) fn fold_dependent_cells(
 ///
 /// # What the returned vector costs on the hot path
 ///
-/// The empty-`dependent_cells` early return is preserved: it still touches
-/// neither `values` nor any of the guard work, which is what keeps every
-/// non-clustered solve behaviourally unchanged (PRD §6.2).  What it is no
-/// longer, strictly, is byte-identical CODEGEN — the skip now constructs and
-/// drops a `Vec`.  `Vec::new()` does not allocate, so a clean fold — the
-/// overwhelmingly common case — still allocates nothing, but the construct and
-/// its drop branch are not literally nothing, and in release the
-/// `debug_assert!` that consumes the vector is compiled out entirely.  Both
-/// this function and its wrapper therefore carry `#[inline]`, so the empty
-/// round trip reliably vanishes instead of depending on LLVM to inline an
+/// An empty `dependent_cells` still touches neither `values` nor any of the
+/// guard work, which is what keeps every non-clustered solve behaviourally
+/// unchanged (PRD §6.2).  It does construct and drop an empty `Vec`, which does
+/// not allocate, so a clean fold — the overwhelmingly common case — allocates
+/// nothing; in release the `debug_assert!` that consumes the vector is compiled
+/// out entirely.  Both this function and its wrapper carry `#[inline]`, so the
+/// empty round trip reliably vanishes instead of depending on LLVM to inline an
 /// unannotated call on the Nelder-Mead path.
 ///
 /// On a genuinely DRIFTED list a release build now does one `id.clone()` plus
@@ -403,17 +404,14 @@ pub(crate) fn fold_dependent_cells(
 /// the degraded mode, not the steady state, and it is what buys the release
 /// profile the observable seam its half of the contract is asserted through.
 #[inline]
-fn fold_dependent_cells_skipping_collisions(
+fn fold_dependent_cells_skipping_collisions<'c>(
     values: &mut ValueMap,
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    dependent_cells: impl IntoIterator<Item = &'c (ValueCellId, CompiledExpr)>,
     functions: &[CompiledFunction],
     is_solver_owned: impl Fn(&ValueCellId) -> bool,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Vec<ValueCellId> {
     let mut collisions = Vec::new();
-    if dependent_cells.is_empty() {
-        return collisions;
-    }
     for (id, expr) in dependent_cells {
         if is_solver_owned(id) {
             collisions.push(id.clone());

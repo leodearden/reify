@@ -509,8 +509,8 @@ impl SolverRegistry {
             // β (task #5189): build from `..problem.clone()` and override only the
             // fields that genuinely differ per component.  The functional update
             // syntax is load-bearing, NOT cosmetic: `dependent_cells` must reach
-            // the domain solver or `fold_dependent_cells` takes its empty-vector
-            // early return and the per-trial recompute silently never runs on the
+            // the domain solver or `fold_dependent_cells` folds an empty list and
+            // the per-trial recompute silently never runs on the
             // production path (`SolverRegistry::production()` is what the CLI
             // wires in `configured_eval_engine`).  Listing fields explicitly here
             // is how that field got zeroed in the first place; spreading means the
