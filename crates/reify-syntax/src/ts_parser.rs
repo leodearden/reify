@@ -18,15 +18,13 @@ use fault_diagnosis::{
 /// Check a child node for errors before lowering it. If the node has errors,
 /// push a parse error and return None. Otherwise, evaluate the lowering expression.
 ///
-/// The `invalid <label>: ` prefix is followed by a BOUNDED excerpt of the child's source
-/// text (see [`Lowering::snippet`] — INV-SF-7, task #5392), never the raw node text.
+/// The message is `invalid <label>: ` followed by a BOUNDED excerpt of the child's source
+/// text, never the raw node text, and it is located at the child's first fault (see
+/// [`Lowering::push_fault_error_with_excerpt`] — INV-SF-7, tasks #5392 and #6156).
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
         if $child.is_error() || $child.has_error() {
-            $self.push_error(
-                format!("invalid {}: {}", $label, $self.snippet($child)),
-                $self.span($child),
-            );
+            $self.push_fault_error_with_excerpt($child, &format!("invalid {}", $label));
             None
         } else {
             $lower
@@ -244,12 +242,24 @@ impl<'a> Lowering<'a> {
     /// missing `;` in a function body evaporate a `let` binding and change the
     /// program's value with no diagnostic at all.
     ///
-    /// Deliberately does NOT interpolate `node_text` into the message: echoing a
+    /// `message` must be one line and must never interpolate RAW `node_text`: echoing a
     /// multi-line slice of source is what made these diagnostics unreadable and
-    /// mislocated. `message` must be a fixed, one-line description.
+    /// mislocated. A bounded [`Self::snippet`] excerpt is the only permitted source text
+    /// (see [`Self::push_fault_error_with_excerpt`]).
     fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
         let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
         self.push_error(message.into(), self.span(anchor));
+    }
+
+    /// Push `<what>: <snippet(node)>`, located at `node`'s first fault by
+    /// [`Self::push_fault_error`]'s rule.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), tasks
+    /// #5392 and #6156: the excerpt says WHICH construct or text, the span says WHERE.
+    /// Spanning the whole node instead reported every fault inside a body at the start of
+    /// the construct enclosing it.
+    fn push_fault_error_with_excerpt(&self, node: tree_sitter::Node, what: &str) {
+        self.push_fault_error(node, format!("{what}: {}", self.snippet(node)));
     }
 
     /// Diagnose an `ERROR` node, anchoring the report to the `let` binding whose missing `;`
@@ -2612,9 +2622,8 @@ impl<'a> Lowering<'a> {
             // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
             // task #5392: this was the ONE member kind without a `has_error()` guard, so a
             // fault inside a member fn body evaporated silently. Routed through
-            // `lower_function_checked` rather than `check_and_lower!` so the diagnostic
-            // avoids that macro's `node_text` source echo and so a more specific inner
-            // message is not overwritten by a vague outer one. A bodyless
+            // `lower_function_checked` rather than `check_and_lower!` so a more specific
+            // inner message is not overwritten by a vague outer one. A bodyless
             // `function_signature` is well-formed and lowers to `body: None` as before —
             // the guard fires on CST faults, never on a legitimately absent body.
             "function_definition" | "function_signature" => {
