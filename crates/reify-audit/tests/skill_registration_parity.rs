@@ -45,6 +45,16 @@ const INVOCATION_SURFACES: &[Surface] = &[
     },
 ];
 
+const ROUTING_SURFACES: &[Surface] = &[Surface {
+    file: "references/severity-routing.md",
+    scope: Scope::Section("## §0 "),
+    role: "pattern routing registry",
+}];
+
+fn all_surfaces() -> impl Iterator<Item = &'static Surface> {
+    INVOCATION_SURFACES.iter().chain(ROUTING_SURFACES)
+}
+
 impl Scope {
     fn kind(&self) -> &'static str {
         match self {
@@ -170,6 +180,19 @@ fn every_pattern_token_is_registered_where_the_skill_invokes_detectors() {
 }
 
 #[test]
+fn every_pattern_token_has_a_routing_registry_row() {
+    let gaps = registration_gaps(pattern_flag::TOKENS, ROUTING_SURFACES);
+    assert!(
+        gaps.is_empty(),
+        "every `reify-audit --pattern` token needs a row in the /audit skill's routing \
+         registry, which records the token's Finding.pattern values, what its \
+         Finding.task_id carries and its routing notes. {} gap(s):\n  {}",
+        gaps.len(),
+        gaps.join("\n  ")
+    );
+}
+
+#[test]
 fn mentions_token_matches_whole_tokens_only() {
     assert!(mentions_token("P1|P2", "P1"));
     assert!(mentions_token("P1|P2", "P2"));
@@ -181,13 +204,13 @@ fn mentions_token_matches_whole_tokens_only() {
 }
 
 /// Each surface reports a token no detector has, whether as missing or as
-/// unresolvable, so the parity check above can fail on every surface.
+/// unresolvable, so the parity checks above can fail on every surface.
 #[test]
 fn an_unregistered_token_is_reported_on_every_surface() {
-    let gaps = registration_gaps(&["PNOTAREALDETECTOR"], INVOCATION_SURFACES);
+    let gaps = registration_gaps(&["PNOTAREALDETECTOR"], all_surfaces());
     assert_eq!(
         gaps.len(),
-        INVOCATION_SURFACES.len(),
+        all_surfaces().count(),
         "expected exactly one gap per surface; got:\n  {}",
         gaps.join("\n  ")
     );
