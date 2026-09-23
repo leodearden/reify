@@ -2711,7 +2711,7 @@ fn eval_from_samples(
     // ── 3. Convert to f64 — Real/Int/Scalar all accepted via Value::as_f64() ─
     // Value::as_f64() is the canonical numeric extractor (reify-ir/value.rs:1141)
     // and handles Value::Scalar { si_value, .. } consistently with how
-    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs:272).
+    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs).
     let pt_f64: Vec<f64> = match pts.iter().map(|v| v.as_f64()).collect::<Option<Vec<_>>>() {
         Some(v) => v,
         None => {

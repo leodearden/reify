@@ -989,8 +989,9 @@ fn assert_all_four_wrappers_undef(field: Value, field_type: Type, why: &str) {
 }
 
 /// `FieldSourceKind::Imported` ALSO carries a `Value::SampledField` in its
-/// lambda slot (`crates/reify-expr/src/lib.rs:3505`), so a relaxation phrased
-/// as "accept whenever the lambda is a SampledField" would wrongly admit it.
+/// lambda slot (the Imported arm of `sample_field_at`,
+/// `crates/reify-expr/src/lib.rs`), so a relaxation phrased as "accept whenever
+/// the lambda is a SampledField" would wrongly admit it.
 ///
 /// That would be a false fix: `project_sampled_tensor_windows`
 /// (`field_reductions.rs:821-843`) requires `source: Sampled` on the INNER

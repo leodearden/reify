@@ -294,7 +294,8 @@ mod tests {
     ///
     /// The resolver behind BOTH `von_mises` and `max_shear` (they share one
     /// row-level `ArgAware` resolver, exactly as they shared one legacy ladder
-    /// arm). Mirrors `wrap_tensor_field` (analysis.rs:205-231, :263-265).
+    /// arm). Mirrors `wrap_tensor_field`, which `compute_von_mises` and
+    /// `compute_max_shear` share (`crates/reify-expr/src/analysis.rs`).
     #[test]
     fn a_pressure_tensor_field_reduces_to_a_pressure_field_not_a_scalar() {
         assert_eq!(
@@ -344,7 +345,7 @@ mod tests {
     ///
     /// A `List` codomain because sampling the field at a point yields three
     /// eigenvalues. Mirrors `compute_principal_stresses`
-    /// (`crates/reify-expr/src/analysis.rs:239-256`).
+    /// (`crates/reify-expr/src/analysis.rs`).
     #[test]
     fn a_pressure_tensor_field_of_principal_stresses_is_a_field_of_lists() {
         assert_eq!(
@@ -364,7 +365,7 @@ mod tests {
     /// Dimensionless whatever the argument dimension — yield/von_mises cancels
     /// pointwise over a field exactly as it does for a scalar — but a `Field`
     /// nonetheless, because `compute_safety_factor`
-    /// (`crates/reify-expr/src/analysis.rs:273-302`) hands back a
+    /// (`crates/reify-expr/src/analysis.rs`) hands back a
     /// `Value::Field`. That is why the row cannot stay `ResultSpec::Const`: the
     /// result is no longer arg-INDEPENDENT once a Field argument is admitted.
     #[test]
