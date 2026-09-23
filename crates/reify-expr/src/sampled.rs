@@ -132,14 +132,18 @@ pub fn sample_at_point(
 
     // ── stride > 1: multi-component path (ε) ────────────────────────────────
     // Deinterleave each component from `data[g * stride + c]`, interpolate with
-    // the same kernels as the scalar path, assemble Value::Vector.
-    // Diagnostics are forwarded from component 0 only (not once per component).
+    // the same kernels as the scalar path, and assemble the container the
+    // codomain names. Diagnostics are forwarded from component 0 only (not
+    // once per component).
     if stride > 1 {
-        // Extract the per-component type from the codomain.
-        // Vector{n, quantity} → quantity; any other codomain → codomain itself (fallback).
-        let component_type: &Type = match codomain_type {
-            Type::Vector { quantity, .. } => quantity.as_ref(),
-            _ => codomain_type,
+        // Codomain → (per-component type, container):
+        //   Vector{n, quantity} → (quantity, Value::Vector)
+        //   List(element)       → (element, Value::List)
+        //   anything else       → (the codomain itself, Value::Vector) — fallback
+        let (component_type, assemble): (&Type, fn(Vec<Value>) -> Value) = match codomain_type {
+            Type::Vector { quantity, .. } => (quantity.as_ref(), Value::Vector),
+            Type::List(element) => (element.as_ref(), Value::List),
+            _ => (codomain_type, Value::Vector),
         };
 
         let mut components = Vec::with_capacity(stride);
@@ -190,7 +194,7 @@ pub fn sample_at_point(
             }
         }
 
-        return Value::Vector(components);
+        return assemble(components);
     }
 
     // ── stride ≤ 1: existing scalar path — bit-identical to the original ────
