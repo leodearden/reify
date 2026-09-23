@@ -111,7 +111,9 @@ impl DemandRegistry {
                     // this is "a demanded cell pulls its producing
                     // realizations in". Neither alone closes the cone — a
                     // geometry-list cell is reachable from an ordinary
-                    // consumer with no element as a root.
+                    // consumer with no element as a root. It fires for EVERY
+                    // geometry-backed cell, a 1:1 param/let cell as much as an
+                    // N:1 list cell.
                     //
                     // `GeometryListCellAccumulator::into_entries` is the
                     // consumer that DEPENDS on this: it drops the whole list
@@ -837,12 +839,12 @@ mod tests {
     /// it into the cone. The two read as ONE invariant — neither half alone
     /// closes the cone.
     ///
-    /// `rebuild_cone`'s `NodeId::Value` arm follows only `default_expr`'s reads,
-    /// so before this task the asymmetry was harmless: the compiler emits NO
-    /// value cell for a scalar geometry `let`, leaving no demandable node whose
-    /// producers were unreachable from it. A geometry-LIST let DOES emit one
-    /// (`Type::List(Type::Geometry)`), so this task newly creates exactly that
-    /// node — which is why the edge belongs here.
+    /// `rebuild_cone`'s `NodeId::Value` arm once followed only `default_expr`'s
+    /// reads, which never name the realization that hydrates the cell. For a
+    /// geometry-LIST cell (`Type::List(Type::Geometry)`, one cell backed by N
+    /// realizations) that gap is an atomicity hole as well — which is why the
+    /// edge belongs to this task. The 1:1 geometry cells the same edge covers
+    /// are pinned by `a_demanded_plain_geometry_cell_pulls_exactly_its_own_…`.
     ///
     /// Three roots, each asserted PER ELEMENT so a partial fix cannot pass:
     ///
@@ -921,6 +923,60 @@ mod tests {
                      Realization(pins#{k}) in — the reverse edge is keyed per cell"
                 );
             }
+        }
+    }
+
+    /// The reverse edge's 1:1 half, pinned deliberately rather than left
+    /// incidental: `geometry_cell_realization_reads` carries EVERY geometry
+    /// link, so an ordinary single-geometry `let` and a geometry `param` —
+    /// each paired 1:1 with its own `Type::Geometry` cell by γ (task #4954) —
+    /// also pull their realization in when that cell is demanded.
+    ///
+    /// The widening is exactly ONE realization, the cell's own: the sibling
+    /// `other` backs a different cell and stays out, so the edge never
+    /// degrades into "demand every realization".
+    #[test]
+    fn a_demanded_plain_geometry_cell_pulls_exactly_its_own_realization_into_the_cone() {
+        use crate::graph::EvaluationGraph;
+        use reify_core::RealizationNodeId;
+        use reify_test_support::parse_and_compile;
+
+        let module = parse_and_compile(
+            r#"structure S {
+    param width : Length = 10mm
+    param body : Solid = box(width, width, width)
+    let loc_box = box(width, width, width)
+    let other = cylinder(width, width)
+}"#,
+        );
+        let realization_named = |name: &str| -> RealizationNodeId {
+            module
+                .templates
+                .iter()
+                .flat_map(|t| t.realizations.iter())
+                .find(|r| r.name.as_deref() == Some(name))
+                .map(|r| r.id.clone())
+                .unwrap_or_else(|| panic!("repro must compile a realization named {name:?}"))
+        };
+        let graph = EvaluationGraph::from_templates(&module.templates);
+
+        for cell in ["loc_box", "body"] {
+            let mut reg = DemandRegistry::new();
+            reg.add_demand(NodeId::Value(ValueCellId::new("S", cell)));
+            reg.rebuild_cone(&graph);
+
+            let demanded: Vec<RealizationNodeId> = graph
+                .realizations
+                .keys()
+                .filter(|rid| reg.is_demanded(&NodeId::Realization((*rid).clone())))
+                .cloned()
+                .collect();
+            assert_eq!(
+                demanded,
+                vec![realization_named(cell)],
+                "a cone rooted at Value(S.{cell}) must hold exactly its own \
+                 realization — no other realization, and not none"
+            );
         }
     }
 }
