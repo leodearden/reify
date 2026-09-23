@@ -52,7 +52,10 @@
 #  19. (task 7096) a per-crate manifest touch (crates/*/Cargo.toml,
 #      gui/src-tauri/Cargo.toml) additionally contributes the crate that
 #      hosts the workspace crate-DAG gate, a non-manifest source touch
-#      does not, and the ALL sentinel is never unioned with it; plus a drift
+#      does not, and the ALL sentinel is never unioned with it; the gate
+#      crate is unioned into the closure's result, never seeded (a set
+#      equality against the crate's source-touch closure, with the premise
+#      that makes it discriminate pinned alongside); plus a drift
 #      guard pinning _REIFY_DAG_GATE_CRATE to a real workspace member that
 #      hosts the gate; and a manifest whose crate resolves to no workspace
 #      package is exactly ALL, composing with task 6268's unresolvable-seed
@@ -602,6 +605,42 @@ assert "gui/src-tauri/Cargo.toml touch pulls in reify-build-utils (the second pe
 
 assert "a non-manifest source touch does NOT pull in reify-build-utils — the rule keys on the manifest, not on the crate" \
     _check_not_contains reify-build-utils crates/reify-expr/src/lib.rs
+
+# Unioned into the RESULT, never seeded. Compared as SETS against the public
+# seam's own answers rather than a hand-written crate list, so it cannot rot as
+# the graph moves. The fixture is reify-cli because it is a leaf (#4): its own
+# closure is just itself, so the gate crate's reverse dependents, which seeding
+# would drag in, cannot hide inside it.
+_reify_cli_closure_plus_gate() {
+    { affected_crates crates/reify-cli/src/main.rs
+      printf '%s\n' "$_REIFY_DAG_GATE_CRATE"; } | sort -u
+}
+
+_check_manifest_unions_gate_into_result() {
+    local manifest unioned
+    manifest="$(affected_crates crates/reify-cli/Cargo.toml)"
+    unioned="$(_reify_cli_closure_plus_gate)"
+    echo "manifest touch:            [$(printf '%s' "$manifest" | tr '\n' ' ')]"
+    echo "source touch + gate crate: [$(printf '%s' "$unioned"  | tr '\n' ' ')]"
+    [ "$manifest" = "$unioned" ]
+}
+assert "a manifest touch = its crate's source-touch closure + the DAG-gate crate, as sets (unioned into the result, never seeded)" \
+    _check_manifest_unions_gate_into_result
+
+# Premise of the equality above: for this fixture, seeding and unioning differ.
+# A source touch of reify-cli AND the gate crate is exactly what a seeding
+# implementation would compute for the manifest; were it ever equal to the
+# union, a regression to seeding would pass the equality unseen.
+_check_seeding_differs_from_union() {
+    local seeded unioned
+    seeded="$(affected_crates crates/reify-cli/src/main.rs "crates/$_REIFY_DAG_GATE_CRATE/src/lib.rs")"
+    unioned="$(_reify_cli_closure_plus_gate)"
+    echo "seeded (source touch of both): [$(printf '%s' "$seeded"  | tr '\n' ' ')]"
+    echo "unioned:                       [$(printf '%s' "$unioned" | tr '\n' ' ')]"
+    [ "$seeded" != "ALL" ] && [ "$seeded" != "$unioned" ]
+}
+assert "premise: seeding the DAG-gate crate would yield a different set than unioning it for the reify-cli fixture, so the equality above discriminates" \
+    _check_seeding_differs_from_union
 
 _check_manifest_mixed_not_ALL() {
     local out
