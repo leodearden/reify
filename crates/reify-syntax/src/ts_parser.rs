@@ -15,16 +15,12 @@ use fault_diagnosis::{
     MAX_DIAGNOSTICS, collect_let_anchors, faults_strictly_inside, last_let_anchor_before,
 };
 
-/// Check a child node for errors before lowering it. If the node has errors,
-/// push a parse error and return None. Otherwise, evaluate the lowering expression.
-///
-/// The message is `invalid <label>: ` followed by a BOUNDED excerpt of the child's source
-/// text, never the raw node text, and it is located at the child's first fault (see
-/// [`Lowering::push_fault_error_with_excerpt`] — INV-SF-7, tasks #5392 and #6156).
+/// Check a child node for errors before lowering it. If the node has errors, refuse it
+/// through [`Lowering::refuse_if_faulty`] and return None. Otherwise, evaluate the lowering
+/// expression.
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
-        if $child.is_error() || $child.has_error() {
-            $self.push_fault_error_with_excerpt($child, &format!("invalid {}", $label));
+        if $self.refuse_if_faulty($child, $label) {
             None
         } else {
             $lower
@@ -260,6 +256,22 @@ impl<'a> Lowering<'a> {
     /// the construct enclosing it.
     fn push_fault_error_with_excerpt(&self, node: tree_sitter::Node, what: &str) {
         self.push_fault_error(node, format!("{what}: {}", self.snippet(node)));
+    }
+
+    /// Report `node` as `invalid <label>: <excerpt>` if it carries a CST fault, and return
+    /// whether it did: a faulty node's lowered AST would no longer match its source, so it
+    /// must not be lowered. This is the refusal `check_and_lower!` applies before every
+    /// lowering it guards.
+    ///
+    /// The excerpt is bounded, never the raw node text, and the report is located at the
+    /// node's first fault (see [`Self::push_fault_error_with_excerpt`] — INV-SF-7, tasks
+    /// #5392 and #6156).
+    fn refuse_if_faulty(&self, node: tree_sitter::Node, label: &str) -> bool {
+        let faulty = node.is_error() || node.has_error();
+        if faulty {
+            self.push_fault_error_with_excerpt(node, &format!("invalid {label}"));
+        }
+        faulty
     }
 
     /// Diagnose an `ERROR` node, anchoring the report to the `let` binding whose missing `;`
@@ -2030,7 +2042,7 @@ impl<'a> Lowering<'a> {
                     // (captured in params/predicates separation; future: add lets field),
                     // but a FAULTY let is still refused loudly: its recovery can absorb the
                     // following predicate (INV-SF-7).
-                    let _ = check_and_lower!(self, child, "constraint let", None::<()>);
+                    self.refuse_if_faulty(child, "constraint let");
                 }
                 "constraint_def_predicate" => {
                     let _ = check_and_lower!(
