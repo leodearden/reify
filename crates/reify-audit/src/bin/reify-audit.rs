@@ -63,7 +63,8 @@ use std::process::ExitCode;
 use reify_audit::{
     AuditContext, Finding, JCodemunchOps, NoopJCodemunchOps, RealGitOps, Severity, TaskMetadata,
     TimeWindow, fused_memory_client::FusedMemoryClient, jcodemunch_client::RealJCodemunchOps,
-    jcodemunch_index, pattern_flag,
+    jcodemunch_index, p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pdcheck,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, ptodo, puntested,
 };
 
 // -----------------------------------------------------------------------
@@ -526,12 +527,10 @@ fn pattern_selects(pattern: &str, token: &str) -> bool {
     pattern.split(',').map(str::trim).any(|t| t == token)
 }
 
-/// Return true when at least one jcodemunch-backed detector (P1) is in the
-/// run set for the given args.
-///
-/// Returns true when the selected pattern(s) require a live jcodemunch server.
-/// Currently: no pattern (all detectors include P1), P1, PDEAD, PUNTESTED, or PLAYER.
-/// P2/P5 run without jcodemunch; pre_done always skips it.
+/// Return true when at least one jcodemunch-backed detector is in the run set
+/// for the given args: a pattern-less run (the default sweep includes P1), or
+/// any [`JCODEMUNCH_BACKED`] token. P2/P5 run without jcodemunch; pre_done
+/// always skips it.
 ///
 /// The connect decision (RealJCodemunchOps vs NoopJCodemunchOps) is separated
 /// from the per-detector dispatch predicates (run_p1, run_pdead, …) so that
@@ -541,17 +540,20 @@ fn needs_jcodemunch(args: &Args) -> bool {
         return false;
     }
     args.pattern.as_deref().is_none_or(|p| {
-        pattern_selects(p, "P1")
-            || pattern_selects(p, "PDEAD")
-            || pattern_selects(p, "PUNTESTED")
-            || pattern_selects(p, "PLAYER")
+        JCODEMUNCH_BACKED
+            .iter()
+            .any(|token| pattern_selects(p, token))
     })
 }
 
-/// The detectors that cannot produce a finding without querying jcodemunch.
-/// Kept beside [`needs_jcodemunch`], whose `--pattern` arm must stay the same
-/// set: one lists the tokens, the other decides whether a client is needed.
-const JCODEMUNCH_BACKED: [&str; 4] = ["P1", "PDEAD", "PUNTESTED", "PLAYER"];
+/// The detectors that cannot produce a finding without querying jcodemunch;
+/// [`needs_jcodemunch`] and [`jcodemunch_only_run_set`] both derive from it.
+const JCODEMUNCH_BACKED: [&str; 4] = [
+    pattern_flag::P1,
+    pattern_flag::PDEAD,
+    pattern_flag::PUNTESTED,
+    pattern_flag::PLAYER,
+];
 
 /// Return true when EVERY detector selected by `--pattern` is
 /// jcodemunch-backed, i.e. a refusal costs the run nothing it could still
@@ -579,22 +581,52 @@ fn jcodemunch_only_run_set(args: &Args) -> bool {
         .is_some_and(|p| p.split(',').map(str::trim).all(|t| JCODEMUNCH_BACKED.contains(&t)))
 }
 
+/// Default-sweep dispatch predicate for P1: true when no `--pattern` is given
+/// OR when `P1` is in the comma-separated set. Deliberately independent of
+/// [`needs_jcodemunch`], which also covers PDEAD/PUNTESTED/PLAYER: P1 must not
+/// fire on `--pattern PDEAD`.
+fn run_p1(args: &Args) -> bool {
+    args.pattern
+        .as_deref()
+        .is_none_or(|p| pattern_selects(p, pattern_flag::P1))
+}
+
+/// Default-sweep dispatch predicate for P2, the same shape as [`run_p1`].
+fn run_p2(args: &Args) -> bool {
+    args.pattern
+        .as_deref()
+        .is_none_or(|p| pattern_selects(p, pattern_flag::P2))
+}
+
+/// Default-sweep dispatch predicate for P5, the same shape as [`run_p1`].
+fn run_p5(args: &Args) -> bool {
+    args.pattern
+        .as_deref()
+        .is_none_or(|p| pattern_selects(p, pattern_flag::P5))
+}
+
 /// Opt-in dispatch predicate for PDEAD: true only when `PDEAD` is in the
 /// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_pdead(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDEAD"))
+    args.pattern
+        .as_deref()
+        .is_some_and(|p| pattern_selects(p, pattern_flag::PDEAD))
 }
 
 /// Opt-in dispatch predicate for PUNTESTED: true only when `PUNTESTED` is in the
 /// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_puntested(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PUNTESTED"))
+    args.pattern
+        .as_deref()
+        .is_some_and(|p| pattern_selects(p, pattern_flag::PUNTESTED))
 }
 
 /// Opt-in dispatch predicate for PLAYER: true only when `PLAYER` is in the
 /// comma-separated `--pattern` set (not part of the default all-detector sweep).
 fn run_player(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PLAYER"))
+    args.pattern
+        .as_deref()
+        .is_some_and(|p| pattern_selects(p, pattern_flag::PLAYER))
 }
 
 /// Default-sweep dispatch predicate for PTODO (ε: added to the no-`--pattern`
@@ -605,7 +637,9 @@ fn run_player(args: &Args) -> bool {
 /// *structural* TODO-tracking lane — deterministic grep + read-only sqlite,
 /// never contacts jcodemunch — intentionally absent from `needs_jcodemunch`.
 fn run_ptodo(args: &Args) -> bool {
-    args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PTODO"))
+    args.pattern
+        .as_deref()
+        .is_none_or(|p| pattern_selects(p, pattern_flag::PTODO))
 }
 
 /// Default-sweep dispatch predicate for PDSSENTINEL (task #4650). True when no
@@ -613,7 +647,9 @@ fn run_ptodo(args: &Args) -> bool {
 /// Mirrors `run_ptodo`: advisory / Medium severity, exit-neutral, structural
 /// (working-tree fs reads + ls_files only — never contacts jcodemunch).
 fn run_dssentinel(args: &Args) -> bool {
-    args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PDSSENTINEL"))
+    args.pattern
+        .as_deref()
+        .is_none_or(|p| pattern_selects(p, pattern_flag::PDSSENTINEL))
 }
 
 /// Opt-in dispatch predicate for PDIAG (task #5405): true only when `PDIAG` is
@@ -635,7 +671,9 @@ fn run_dssentinel(args: &Args) -> bool {
 /// working-tree reads, no jcodemunch and no task DB — hence deliberately
 /// absent from `needs_jcodemunch`.
 fn run_pdiag(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDIAG"))
+    args.pattern
+        .as_deref()
+        .is_some_and(|p| pattern_selects(p, pattern_flag::PDIAG))
 }
 
 /// Opt-in dispatch predicate for PDOCCOVER (task #5478): true only when
@@ -649,7 +687,9 @@ fn run_pdiag(args: &Args) -> bool {
 /// the default sweep when #5480 seeds `pdoccover-baseline.txt` and the residual
 /// count is zero — the same warn-first-then-ratchet path PTODO took.
 fn run_pdoccover(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDOCCOVER"))
+    args.pattern
+        .as_deref()
+        .is_some_and(|p| pattern_selects(p, pattern_flag::PDOCCOVER))
 }
 
 /// Opt-in dispatch predicate for PDCHECK (task #7550): true only when
@@ -669,8 +709,38 @@ fn run_pdoccover(args: &Args) -> bool {
 /// `.taskmaster/tasks/tasks.db`, never jcodemunch — hence deliberately absent
 /// from `needs_jcodemunch` and `JCODEMUNCH_BACKED`.
 fn run_pdcheck(args: &Args) -> bool {
-    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDCHECK"))
+    args.pattern
+        .as_deref()
+        .is_some_and(|p| pattern_selects(p, pattern_flag::PDCHECK))
 }
+
+/// One detector a sweep can dispatch: the predicate deciding whether this run
+/// selects it, and its check.
+struct Detector {
+    selected: fn(&Args) -> bool,
+    check: fn(&AuditContext<'_>) -> Vec<Finding>,
+}
+
+/// Every detector a sweep can dispatch, one row per [`pattern_flag::TOKENS`]
+/// member in the same (`--help`) order, which is the order their findings are
+/// emitted in. `main` runs exactly the rows whose predicate selects them, so a
+/// token without a row would be accepted and run nothing;
+/// `every_pattern_token_selects_exactly_its_own_detector` pins each row's
+/// predicate to its token.
+#[rustfmt::skip]
+const DETECTORS: &[Detector] = &[
+    Detector { selected: run_p1,         check: p1_producer_orphan::check },
+    Detector { selected: run_p2,         check: p2_consumer_stub::check },
+    Detector { selected: run_p5,         check: p5_phantom_done::check },
+    Detector { selected: run_pdead,      check: pdead_dead_code::check },
+    Detector { selected: run_puntested,  check: puntested::check },
+    Detector { selected: run_player,     check: player::check },
+    Detector { selected: run_ptodo,      check: ptodo::check },
+    Detector { selected: run_dssentinel, check: pdssentinel::check },
+    Detector { selected: run_pdiag,      check: pdiag::check },
+    Detector { selected: run_pdoccover,  check: pdoccover::check },
+    Detector { selected: run_pdcheck,    check: pdcheck::check },
+];
 
 // -----------------------------------------------------------------------
 // Main
@@ -861,74 +931,12 @@ fn main() -> ExitCode {
         let task_id = args.task_id.as_deref().expect("pre_done requires task_id");
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
-        // Spot-check or window sweep: run selected detectors.
-        // run_p1 is DECOUPLED from needs_jcodemunch: needs_jcodemunch now also
-        // covers PDEAD (which needs the live server), but run_p1 must not fire
-        // on `--pattern PDEAD`. Each detector has its own explicit predicate.
-        let run_p1 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P1"));
-        let run_p2 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P2"));
-        let run_p5 = args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "P5"));
-        // PDEAD, PUNTESTED, and PLAYER are opt-in only — not part of the default all-detector sweep.
-        // PTODO joined the default sweep in ε (run_ptodo uses is_none_or, mirroring P1/P2/P5).
-        let run_pdead = run_pdead(&args);
-        let run_puntested = run_puntested(&args);
-        let run_player = run_player(&args);
-        let run_ptodo = run_ptodo(&args);
-
-        let mut all = Vec::new();
-        if run_p1 {
-            all.extend(reify_audit::p1_producer_orphan::check(&ctx));
-        }
-        if run_p2 {
-            all.extend(reify_audit::p2_consumer_stub::check(&ctx));
-        }
-        if run_p5 {
-            all.extend(reify_audit::p5_phantom_done::check(&ctx));
-        }
-        if run_pdead {
-            all.extend(reify_audit::pdead_dead_code::check(&ctx));
-        }
-        if run_puntested {
-            all.extend(reify_audit::puntested::check(&ctx));
-        }
-        if run_player {
-            all.extend(reify_audit::player::check(&ctx));
-        }
-        // PTODO structural lane: ls_files enumeration + working-tree fs reads.
-        // Needs neither jcodemunch (needs_jcodemunch=false → NoopJCodemunchOps)
-        // nor a live task DB (structural lane ignores task_metadata).
-        if run_ptodo {
-            all.extend(reify_audit::ptodo::check(&ctx));
-        }
-        // PDSSENTINEL structural lane: ds-sentinel reintroduction guard.
-        // Same structural-lane posture as PTODO (working-tree reads only).
-        let run_dssentinel = run_dssentinel(&args);
-        if run_dssentinel {
-            all.extend(reify_audit::pdssentinel::check(&ctx));
-        }
-        // PDIAG codes-mandatory ratchet: same structural-lane posture again
-        // (ls_files + working-tree reads). Opt-in only — see `run_pdiag` for
-        // why this one may not join the default sweep.
-        if run_pdiag(&args) {
-            all.extend(reify_audit::pdiag::check(&ctx));
-        }
-        // PDOCCOVER structural lane: bidirectional registry↔chunk name drift.
-        // Same working-tree-reads-only posture as PTODO and PDSSENTINEL, but
-        // OPT-IN — High-severity findings drive the exit code and the corpus
-        // still carries a known backlog, so it stays out of the default sweep
-        // until #5480 seeds the ratchet baseline.
-        let run_pdoccover = run_pdoccover(&args);
-        if run_pdoccover {
-            all.extend(reify_audit::pdoccover::check(&ctx));
-        }
-        // PDCHECK delivered_checks dead-path lane: `ls_files` plus a read-only
-        // open of .taskmaster/tasks/tasks.db, no jcodemunch. OPT-IN — see
-        // `run_pdcheck` for why a High-capable detector may not join the
-        // default sweep. Degrades fail-soft when that DB is absent.
-        if run_pdcheck(&args) {
-            all.extend(reify_audit::pdcheck::check(&ctx));
-        }
-        all
+        // Spot-check or window sweep: every detector this run selects.
+        DETECTORS
+            .iter()
+            .filter(|detector| (detector.selected)(&args))
+            .flat_map(|detector| (detector.check)(&ctx))
+            .collect()
     };
 
     // Emit JSON findings on stderr. Scope the lock so it's dropped before any
@@ -1411,6 +1419,32 @@ mod tests {
             err.contains("'PNOPE'"),
             "a token outside the vocabulary must be rejected by name; got: {err}"
         );
+    }
+
+    /// `main` dispatches through `DETECTORS` alone, so this is what stops an
+    /// accepted `--pattern` token from running nothing: one row per token, in
+    /// `--help` order, and `--pattern <token>` selecting that row and no other.
+    #[test]
+    fn every_pattern_token_selects_exactly_its_own_detector() {
+        assert_eq!(
+            DETECTORS.len(),
+            pattern_flag::TOKENS.len(),
+            "DETECTORS must hold one row per --pattern token, in --help order"
+        );
+        for (row, &token) in pattern_flag::TOKENS.iter().enumerate() {
+            let args = make_args(false, Some(token));
+            let selected: Vec<usize> = DETECTORS
+                .iter()
+                .enumerate()
+                .filter(|(_, detector)| (detector.selected)(&args))
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(
+                selected,
+                [row],
+                "--pattern {token} must select exactly DETECTORS[{row}], its own row"
+            );
+        }
     }
 
     /// Trailing or leading commas (`--pattern P1,` / `--pattern ,P2`) produce
