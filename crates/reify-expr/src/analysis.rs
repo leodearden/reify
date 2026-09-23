@@ -34,18 +34,33 @@
 //!   `argmax_argmin_index`; an all-non-finite buffer reduces to `Value::Undef`.
 //! - Pointwise `sample()`, here (`sample_tensor_grid_at_point`): project every
 //!   window FIRST, then interpolate the projected node values with the grid's
-//!   own method. So at a grid node a sample equals the value the reductions
-//!   scan, and under Linear / NearestNeighbor every sample lies within the
-//!   wrapper's `[min, max]`. A sample whose interpolation stencil touches a
-//!   non-finite node value (an out-of-solid sentinel window, or a hydrostatic
-//!   node's infinite safety factor) is `Value::Undef`, and an out-of-bounds
-//!   query is `Value::Undef` with one `W_FIELD_OUT_OF_BOUNDS` warning per
-//!   backing field per session.
+//!   own method. A sample whose interpolation stencil holds a non-finite node
+//!   value (an out-of-solid sentinel window, or a hydrostatic node's infinite
+//!   safety factor) is `Value::Undef`, and an out-of-bounds query is
+//!   `Value::Undef` with one `W_FIELD_OUT_OF_BOUNDS` warning per backing field
+//!   per session.
 //!
-//! One exception to that node equality: a non-positive safety-factor yield.
-//! The reductions refuse it (`project_safety_factor_sampled` → `Value::Undef`),
-//! while `sample()` follows the pointwise `safety_factor` builtin and returns
-//! yield / von Mises.
+//! The two consumers agree wherever the stencil is finite: at a grid node a
+//! sample equals the value the reductions scan, and under Linear /
+//! NearestNeighbor every sample lies within the wrapper's `[min, max]`. Each
+//! per-kind kernel is applied in both places — the `sample_*_at_point`
+//! closures here and the `project_*_sampled` functions in
+//! `field_reductions.rs` — and
+//! `every_wrapper_kind_samples_to_its_reduction_extrema_at_their_arg_coordinates`
+//! (`tests/field_analysis_tests.rs`) pins the two to the same node values.
+//!
+//! Node equality has two exceptions:
+//!
+//! - A finite node beside a non-finite one. The interpolation stencil includes
+//!   zero-weight corners — a Linear query AT a node still reads the neighbour
+//!   across its cell, with weight 0 — and a NaN there poisons the sum anyway.
+//!   Such a node samples as `Value::Undef` although the reductions count its
+//!   value; on a real solve that is the solid's surface, where the peak often
+//!   sits, so `sample(W, argmax(W))` can be `Value::Undef` there.
+//! - A non-positive safety-factor yield. The reductions refuse it
+//!   (`project_safety_factor_sampled` → `Value::Undef`), while `sample()`
+//!   follows the pointwise `safety_factor` builtin and returns
+//!   yield / von Mises.
 //!
 //! What that makes reachable for a `Field { source: Sampled }` tensor input:
 //!
@@ -93,10 +108,12 @@ fn tensor_element_dimension(codomain: &Type) -> Option<DimensionVector> {
     }
 }
 
-/// How an analysis wrapper's tensor field is backed. [`tensor_backing`] is the
-/// one place that decides which backings are admitted, so a wrapper that can be
-/// built ([`validate_tensor_field`]) is exactly one that can be sampled (the
-/// four `sample_*_at_point` functions).
+/// How an analysis wrapper's tensor field is backed. Within this module
+/// [`tensor_backing`] alone decides which backings are admitted, so a wrapper
+/// that can be built ([`validate_tensor_field`]) is exactly one that can be
+/// sampled (the four `sample_*_at_point` functions). The reductions re-match
+/// the Grid pair on their own side, in
+/// `field_reductions::project_sampled_tensor_windows`.
 enum TensorBacking<'a> {
     /// A callable lambda: evaluated at the query point, then handed to the
     /// pointwise `reify_stdlib` builtin.
