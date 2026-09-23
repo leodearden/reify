@@ -10,7 +10,8 @@
 //! helpers from `reify-test-support`, mirroring the style of
 //! `import_warning_tests.rs` and `diagnostic_coverage_checkpoint.rs`.
 
-use reify_core::DiagnosticCode;
+use reify_ast::{Declaration, ExprKind, MemberDecl};
+use reify_core::{DiagnosticCode, ModulePath};
 use reify_test_support::{compile_source, warnings_only};
 
 /// A chain at exactly the threshold (length 4 — `a.b.c.d`) must not warn.
@@ -805,4 +806,58 @@ trait Reachy {
 }
 "#;
     assert_deep_chain_warning_count(source, 1, "trait MemberDecl::Fn body nested result_expr");
+}
+
+// ── Match-arm decl groups and nested member bodies (task #7127) ──────────────
+//
+// Positions reached only through a member container: the decl-level `match`
+// group's own discriminant, and the member lists nested inside other members.
+// Each test first pins its fixture's AST shape with `structure_s_members`, then
+// counts warnings.
+
+/// Parse `source` and return the members of its `structure S`.
+///
+/// Each nested-site test asserts that S's ONLY member is the container it names,
+/// so the chain can be reached only through that container. A parser change that
+/// hoisted the member to top level, where an existing site would already find
+/// it, then fails the shape check instead of passing vacuously.
+fn structure_s_members(source: &str) -> Vec<MemberDecl> {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture must parse cleanly, got {:?} for source:\n{source}",
+        parsed.errors
+    );
+    parsed
+        .declarations
+        .into_iter()
+        .find_map(|decl| match decl {
+            Declaration::Structure(s) if s.name == "S" => Some(s.members),
+            _ => None,
+        })
+        .expect("fixture must declare `structure S`")
+}
+
+/// Position 30: `MemberDecl::MatchArmDeclGroup.discriminant`.
+///
+/// The arms of a decl-level `match` are bare `sub name : Type` declarations
+/// (grammar `match_arm_sub_decl`) and hold no expressions, so the discriminant
+/// is the only place a match-arm decl can carry a dot-chain.
+#[test]
+fn walker_visits_match_arm_decl_group_discriminant() {
+    let source = r#"
+structure S {
+    match a.b.c.d.e { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::MatchArmDeclGroup(g)]
+                if matches!(g.discriminant.kind, ExprKind::MemberAccess { .. })
+        ),
+        "fixture must lower to exactly one MatchArmDeclGroup whose discriminant is the \
+         `a.b.c.d.e` chain"
+    );
+    assert_deep_chain_warning_count(source, 1, "MatchArmDeclGroup.discriminant");
 }
