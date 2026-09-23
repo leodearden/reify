@@ -48,7 +48,9 @@
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value, ValueMap};
-use reify_test_support::ctor_conformance_debt::is_migration_debt_diagnostic;
+use reify_test_support::ctor_conformance_debt::{
+    PRINTER_PRINT_ENVELOPE_REL_KEY, is_migration_debt_diagnostic,
+};
 use reify_test_support::{compile_source_with_stdlib, make_simple_engine};
 
 // ── Path constants ────────────────────────────────────────────────────────────
@@ -57,11 +59,6 @@ const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/trajectory/printer_print_envelope.ri"
 );
-
-/// The same file's key in `CTOR_CONFORMANCE_MIGRATION_DEBT` — the forward-slash
-/// `relative_to_examples_dir` spelling that table uses, never the repo-relative
-/// one [`EXAMPLE_PATH`] resolves.
-const DEBT_REL_KEY: &str = "trajectory/printer_print_envelope.ri";
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -223,7 +220,7 @@ fn printer_print_envelope_eval_e2e() {
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
-        .filter(|d| !is_migration_debt_diagnostic(DEBT_REL_KEY, d))
+        .filter(|d| !is_migration_debt_diagnostic(PRINTER_PRINT_ENVELOPE_REL_KEY, d))
         .collect();
     assert!(
         compile_errors.is_empty(),

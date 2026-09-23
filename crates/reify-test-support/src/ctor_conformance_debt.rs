@@ -27,14 +27,22 @@ use reify_core::{Diagnostic, Severity};
 
 use crate::ctor_conformance::CTOR_DIAGNOSTIC_ARG_PREFIX;
 
+/// The key [`CTOR_CONFORMANCE_MIGRATION_DEBT`] files
+/// `examples/trajectory/printer_print_envelope.ri`'s waived sites under.
+///
+/// Exported so the two single-file gates, which unlike `examples_smoke::smoke_one`
+/// have no walk-derived `rel_key` in hand, pass the table's own key rather than a
+/// re-spelling of it.
+pub const PRINTER_PRINT_ENVELOPE_REL_KEY: &str = "trajectory/printer_print_envelope.ri";
+
 /// Per-SITE waivers for ctor-conformance diagnostics that a shipped example
 /// still emits because its call site has not been migrated yet, and cannot be
 /// migrated by the task that promoted the family.
 ///
 /// Each entry is `(relative_path, param_name, owning_task)`:
 /// * `relative_path` is the same forward-slash `relative_to_examples_dir` key
-///   form `examples_smoke::SKIP_SET` uses (`"trajectory/printer_print_envelope.ri"`, never the
-///   repo-relative `"examples/trajectory/..."` spelling);
+///   form `examples_smoke::SKIP_SET` uses (e.g. [`PRINTER_PRINT_ENVELOPE_REL_KEY`],
+///   never the repo-relative `"examples/trajectory/..."` spelling);
 /// * `param_name` is the offending ctor param, parsed back out of the
 ///   diagnostic by [`param_name_from_ctor_diagnostic`];
 /// * `owning_task` is the live task that owns retiring the entry, in the
@@ -64,13 +72,9 @@ use crate::ctor_conformance::CTOR_DIAGNOSTIC_ARG_PREFIX;
 /// simply having been done. Leaving the entries behind after that lands is
 /// caught by `ctor_conformance_migration_debt_entries_are_all_live`.
 pub const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
+    (PRINTER_PRINT_ENVELOPE_REL_KEY, "velocity_limit", "#5847"),
     (
-        "trajectory/printer_print_envelope.ri",
-        "velocity_limit",
-        "#5847",
-    ),
-    (
-        "trajectory/printer_print_envelope.ri",
+        PRINTER_PRINT_ENVELOPE_REL_KEY,
         "acceleration_limit",
         "#5847",
     ),
@@ -156,10 +160,8 @@ mod tests {
     use reify_core::diagnostics::DiagnosticCode;
     use reify_core::{Diagnostic, Severity};
 
-    /// The `rel_key` both debt rows are filed under — the forward-slash
-    /// `relative_to_examples_dir` spelling, never the repo-relative
-    /// `examples/trajectory/...` one.
-    const PRINTER: &str = "trajectory/printer_print_envelope.ri";
+    /// The `rel_key` both debt rows are filed under.
+    const PRINTER: &str = PRINTER_PRINT_ENVELOPE_REL_KEY;
 
     /// A post-δ `emit_arg_type_mismatch` diagnostic for `param`, in the exact
     /// shape `crates/reify-compiler/src/conformance/mod.rs` produces for a bare
@@ -184,7 +186,7 @@ mod tests {
             !CTOR_CONFORMANCE_MIGRATION_DEBT.is_empty(),
             "CTOR_CONFORMANCE_MIGRATION_DEBT is empty — the waiver predicate's \
              negative cases would all pass vacuously. If #5847 landed and both \
-             printer rows were retired, DELETE this module and its three readers \
+             printer rows were retired, DELETE this module and its readers \
              rather than leaving an empty table behind."
         );
     }

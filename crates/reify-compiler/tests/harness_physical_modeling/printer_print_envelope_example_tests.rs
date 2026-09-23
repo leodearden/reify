@@ -22,7 +22,9 @@
 //! Path resolution uses `CARGO_MANIFEST_DIR` so it works in any worktree.
 
 use reify_core::Severity;
-use reify_test_support::ctor_conformance_debt::is_migration_debt_diagnostic;
+use reify_test_support::ctor_conformance_debt::{
+    PRINTER_PRINT_ENVELOPE_REL_KEY, is_migration_debt_diagnostic,
+};
 
 /// `examples/trajectory/printer_print_envelope.ri` must parse and compile under
 /// the stdlib prelude with zero unwaived Error-severity diagnostics, and expose a
@@ -39,12 +41,6 @@ use reify_test_support::ctor_conformance_debt::is_migration_debt_diagnostic;
 /// variants such as `SplineKind.CubicSpline` and `ElementOrder.P2` are
 /// disambiguated as `EnumAccess` nodes rather than member-access chains —
 /// identical to how `examples_smoke.rs::smoke_one` parses every example file.
-/// This file's key in `CTOR_CONFORMANCE_MIGRATION_DEBT` — the forward-slash
-/// `relative_to_examples_dir` spelling the table uses, never the repo-relative
-/// `examples/trajectory/...` one. Spelled out here because, unlike
-/// `examples_smoke::smoke_one`, this single-file test has no `rel_key` in hand.
-const DEBT_REL_KEY: &str = "trajectory/printer_print_envelope.ri";
-
 #[test]
 fn printer_print_envelope_example_compiles_under_stdlib_with_zero_errors() {
     const EXAMPLE_PATH: &str = concat!(
@@ -89,7 +85,7 @@ fn printer_print_envelope_example_compiles_under_stdlib_with_zero_errors() {
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
-        .filter(|d| !is_migration_debt_diagnostic(DEBT_REL_KEY, d))
+        .filter(|d| !is_migration_debt_diagnostic(PRINTER_PRINT_ENVELOPE_REL_KEY, d))
         .collect();
     assert!(
         errors.is_empty(),

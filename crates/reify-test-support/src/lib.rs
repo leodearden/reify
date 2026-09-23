@@ -29,7 +29,7 @@ pub use ctor_conformance::*;
 // `param_name_from_ctor_diagnostic` are generic enough names that hoisting them
 // into a crate root which many test files glob-import would turn a future
 // same-named item in any other glob-exported module into an E0659 ambiguity at
-// every such use site. Its three readers all spell the module path.
+// every such use site. Its readers all spell the module path.
 pub use fixtures::*;
 // Deliberately NOT `pub use git_env::*;`. `sanitize` and `REPO_REDIRECT_VARS`
 // are generic enough names that hoisting them into a crate root which many
