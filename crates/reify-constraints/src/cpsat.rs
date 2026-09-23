@@ -27,8 +27,8 @@ const MAX_INT_DOMAIN: i64 = 1000;
 /// never reaches that second collection: proving no second solution exists
 /// means refuting every remaining point — i.e. EXHAUSTING the space. Two
 /// `Type::Int` autos at [`MAX_INT_DOMAIN`] is 10^6 leaves, and every node on
-/// the way pays a total `fold_dependent_cells` pass plus a full constraint
-/// sweep. Without this bound, `solve()` would silently regress from "stop at
+/// the way pays a dependent-cell fold plus a full constraint sweep. Without
+/// this bound, `solve()` would silently regress from "stop at
 /// the first solution" to "walk the whole product" on every uniquely-solvable
 /// model — the common case, not a pathological one.
 ///
@@ -371,6 +371,7 @@ struct SearchInputs {
     /// back out. See the strip's own rationale below — it is load-bearing, not
     /// hygiene.
     assignment: ValueMap,
+    /// Parallel to the problem's `dependent_cells`: see [`exact_from_depths`].
     exact_from: Vec<Option<usize>>,
 }
 
@@ -493,7 +494,7 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
 /// solution it reaches until `ctx.cap` is met.
 ///
 /// At each level, picks the next unassigned variable, tries each domain value,
-/// materialises `dependent_cells` against that trial assignment, evaluates all
+/// re-derives the dependent cells not yet exact at that depth, evaluates all
 /// constraints whose variables are fully assigned, and prunes on violation.
 /// When every variable is assigned, the point is a solution: it is pushed to
 /// `out` and the search continues from the next sibling.
@@ -532,60 +533,39 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
 /// product comes back as "solutions", with `complete: true` then licensing a
 /// `ProvenOptimal` ranking over a set full of infeasible points.
 ///
-/// # Why no explicit unwind is needed
+/// # Which cells a trial re-derives, and why no unwind is needed
 ///
-/// The fold is TOTAL — it recomputes every dependent cell from the running
-/// assignment — and runs after EVERY trial insert, before any constraint is
-/// evaluated. So entries left behind by an abandoned sibling branch are always
-/// overwritten before they can be read: a cell whose expression reads a
-/// not-yet-assigned deeper auto simply re-evaluates to `Undef` here rather than
-/// retaining the abandoned branch's value. `assignment.remove` on unwind
-/// therefore only has to drop the variable itself. The
-/// `two_autos_*_abandoned_sibling_branch` unit below pins this, because the
-/// argument is not obvious from the code alone.
+/// A dependent cell is EXACT from the deepest variable index among its
+/// transitive autos ([`exact_from_depths`]); an unfoldable cell never is. Each
+/// trial re-derives, in stored order and before any constraint is read, every
+/// cell not yet exact at its depth, and skips the rest. A skipped cell became
+/// exact at a SHALLOWER depth: its autos are fixed on this path and no deeper
+/// trial re-derives it, so it holds exactly what a total fold would recompute.
+/// Every forward check therefore sees the total fold's map, `assignment.remove`
+/// on unwind only has to drop the variable itself, and a solution collected at
+/// the base case — a copy — is out of any later branch's reach.
 ///
-/// It holds unchanged under enumeration, and for the same reason: collecting a
-/// solution at the base case does not stop the search, so the very next trial
-/// re-folds every cell before reading one. The collected `HashMap` is a copy
-/// taken at the base case, so nothing a later branch folds can reach back into
-/// an already-collected solution.
+/// A not-yet-exact cell must be RE-DERIVED, never skipped or removed. Skipped,
+/// it would still hold what an ABANDONED deeper branch folded into it
+/// (`a_deeper_cell_left_over_*`, `two_autos_*_abandoned_sibling_branch`).
+/// Removed, it would lose the pruning a PARTIAL derivation affords: Kleene
+/// `false and _` is `false` and `true or _` is `true`, so a cell with unassigned
+/// autos can already be defined, and that is what cuts a `false` conjunct at
+/// its own depth (`a_conjunction_behind_a_dependent_cell_*`). The skip saves one
+/// evaluation and one map insert per already-exact cell, at every depth, the
+/// leaves included.
 ///
-/// That `Undef` re-evaluation is TRUE ONLY GIVEN THE STRIPPED SEED, and the
-/// guarantor is named deliberately (task #5467): [`build_search_inputs`]
-/// removes every auto id from the `current_values` seed before the search
-/// starts (see the seed site there). A deeper auto is therefore genuinely
-/// ABSENT, not holding a stale value carried in from a previous resolution
-/// round or an earlier lexicographic stage. WITHOUT that strip this fold is not
-/// self-correcting: it materialises dependent cells from a mix of trial and
-/// stale values, and the `Bool(false)` arm below PRUNES A FEASIBLE BRANCH. The
-/// same stale seed also defeats `all_assigned` on the direct path, with no
-/// dependent cell involved at all — which is why the repair belongs at the seed
-/// and not in `fold_dependent_cells`. The `*_stale_*` units below pin both arms.
-///
-/// # Cost of the TOTAL fold, and why the obvious saving is unsound as stated
-///
-/// The fold runs on EVERY trial value at EVERY depth, so it costs
-/// `O(|dependent_cells| · Π|domain_i|)` expression evaluations plus one
-/// persistent-map insert each — and a `Type::Int` domain runs to
-/// `MAX_INT_DOMAIN` = 1000 values, so the multiplier is not academic. The
-/// obvious saving is to hand this function each cell's transitive auto set
-/// (`dependent_reads::dependent_cell_auto_reads`, which `SolverRegistry::solve_inner`
-/// already builds once per solve) and SKIP a cell at a depth where any of its
-/// autos is still unassigned — the folded value would be `Undef` there anyway,
-/// and `get_or_undef` treats absent and `Undef` alike.
-///
-/// SKIPPING IS UNSOUND, and the correction is not obvious from the sketch: a
-/// cell skipped at depth k is not ABSENT — it still holds whatever an ABANDONED
-/// DEEPER branch folded into it, which is exactly the value the total fold
-/// overwrites with `Undef` and which
-/// `two_autos_do_not_observe_a_stale_dependent_value_from_an_abandoned_sibling_branch`
-/// exists to pin. A sound version must `remove` the unfoldable cell, not skip
-/// it. The saving survives that correction (an O(1) map op in place of an
-/// expression eval), but the `remove` is mandatory, not an optimisation detail.
-///
-/// Not done here: CP-SAT is landed-but-unwired — unreachable in production
-/// until PRD2 γ — so nothing pays this cost yet, and the change needs its own
-/// unwind-safety units rather than a rider on an amendment pass.
+/// A re-derived cell reads an unassigned auto as ABSENT ONLY GIVEN THE STRIPPED
+/// SEED, and the guarantor is named deliberately (task #5467):
+/// [`build_search_inputs`] removes every auto id from the `current_values` seed
+/// before the search starts (see the seed site there), so a deeper auto cannot
+/// hold a stale value carried in from a previous resolution round or an earlier
+/// lexicographic stage. WITHOUT that strip this fold is not self-correcting: it
+/// materialises dependent cells from a mix of trial and stale values, and the
+/// `Bool(false)` arm below PRUNES A FEASIBLE BRANCH. The same stale seed also
+/// defeats `all_assigned` on the direct path, with no dependent cell involved at
+/// all — which is why the repair belongs at the seed and not in
+/// `fold_dependent_cells`. The `*_stale_*` units below pin both arms.
 fn backtrack_all(
     ctx: &SearchContext<'_>,
     var_index: usize,
@@ -639,13 +619,12 @@ fn backtrack_all(
         // Assign this variable
         assignment.insert(var.id.clone(), value.clone());
 
-        // Materialise the dependent cells against this trial assignment, in
-        // STORED (topological) order, through THE fold body the DimensionalSolver
-        // residual path uses — never a cpsat-local twin (PRD2 §3.9 G7).
-        // `is_solver_owned` keeps a fold from clobbering a trial auto. An empty
-        // `dependent_cells` early-returns inside the helper without touching
-        // `assignment` or running any guard work, so the D1/B2 path is
-        // byte-identical to pre-α.
+        // Re-derive the dependent cells not yet exact at this depth (see the fn
+        // doc) against this trial assignment, in STORED (topological) order,
+        // through THE fold body the DimensionalSolver residual path uses — never
+        // a cpsat-local twin (PRD2 §3.9 G7). `is_solver_owned` keeps a fold from
+        // clobbering a trial auto. An empty `dependent_cells` folds nothing and
+        // runs no guard work, so the D1/B2 path is byte-identical to pre-α.
         // `dispatch: None` — cpsat has no compute-dispatch plumbing of its own,
         // and its forward-check below evaluates through a bare
         // `EvalContext::new` for the same reason. Passing `None` keeps the fold
@@ -653,7 +632,11 @@ fn backtrack_all(
         // adds no dispatch capability cpsat did not already have.
         crate::solver::fold_dependent_cells(
             assignment,
-            ctx.dependent_cells,
+            ctx.dependent_cells
+                .iter()
+                .zip(ctx.exact_from)
+                .filter(|(_, from)| from.is_none_or(|d| d >= var_index))
+                .map(|(cell, _)| cell),
             ctx.functions,
             |id| ctx.auto_param_ids.contains(id),
             None,
@@ -2742,8 +2725,8 @@ mod solve_all_enumeration_tests {
     // one model" from "at least two". But proving there is no SECOND solution
     // means proving the rest of the space holds none — i.e. EXHAUSTING it. Two
     // `Int` autos at `MAX_INT_DOMAIN` = 1000 is 10^6 leaves, and every node on
-    // the way pays a total `fold_dependent_cells` pass plus a full constraint
-    // sweep. Without a node bound, `solve()` would silently regress from "stop
+    // the way pays a dependent-cell fold plus a full constraint sweep. Without
+    // a node bound, `solve()` would silently regress from "stop
     // at the first solution" to "walk the whole product" — the same work
     // whether or not a second solution turns up on node two.
     //
