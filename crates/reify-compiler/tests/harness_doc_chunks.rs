@@ -26,6 +26,8 @@
 
 #[path = "harness_doc_chunks/angle_crossings_diagnostics_smoke.rs"]
 mod angle_crossings_diagnostics_smoke;
+#[path = "harness_doc_chunks/chunk_cite_gate.rs"]
+mod chunk_cite_gate;
 #[path = "harness_doc_chunks/chunk_prose.rs"]
 mod chunk_prose;
 #[path = "harness_doc_chunks/enums_chunk_option_smoke.rs"]
