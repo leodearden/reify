@@ -2900,7 +2900,8 @@ const REJECTION_PROBE_SET_REL: &str = "tests/prd-gate/struct-ctor-conformance-pr
 /// Each entry excuses ONE `(file, param)` pair, so a rejection fixture that grows
 /// a SECOND, unintended violation is still reported
 /// (`intended_rejection_claims_the_listed_param_and_not_its_neighbours`). And
-/// every entry's file must be named by a probe in [`REJECTION_PROBE_SET_REL`]
+/// every entry's file must be the fixture of a probe in
+/// [`REJECTION_PROBE_SET_REL`] that asserts `reify check` rejects it
 /// (`every_rejection_fixture_is_asserted_by_a_committed_cli_probe`), so a file
 /// can be declared an intended rejection only while a committed gate
 /// independently asserts that it DOES reject.
@@ -3602,8 +3603,8 @@ fn ctor_conformance_rejection_fixtures_are_disjoint_from_both_waiver_tables() {
 }
 
 /// THE ANTI-SKIP_SET INVARIANT: every
-/// [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] file is named by a probe in the
-/// committed CLI probe-set.
+/// [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] file is the fixture of a probe in the
+/// committed CLI probe-set that asserts `reify check` REJECTS it.
 ///
 /// This is what keeps the table from becoming a place to hide an inconvenient
 /// site. A file may be declared an intended rejection ONLY if a committed probe
@@ -3611,9 +3612,12 @@ fn ctor_conformance_rejection_fixtures_are_disjoint_from_both_waiver_tables() {
 /// that reds if the rejection stops happening, and an entry can never silence a
 /// site nothing else is watching.
 ///
-/// A containment check over the probe-set's raw text, not a parse: the only
-/// question asked is whether the path appears, and a JSON model of the probe-set
-/// here would be a second copy of the schema `prd-capability-check.py` owns.
+/// The probe-set is PARSED, through
+/// `reify_test_support::prd_gate_probe_set::fixtures_asserted_to_reject`, rather
+/// than searched as text: a path mentioned only in a `capability` string, or the
+/// fixture of a probe expecting exit 0 or the match `absent`, watches nothing
+/// and must not satisfy this guard. That each probe also PASSES is
+/// `tests/infra/test_prd_gate_struct_ctor_conformance.sh`'s half of the chain.
 #[test]
 fn every_rejection_fixture_is_asserted_by_a_committed_cli_probe() {
     let probe_set = std::path::Path::new(WORKSPACE_ROOT).join(REJECTION_PROBE_SET_REL);
@@ -3624,17 +3628,21 @@ fn every_rejection_fixture_is_asserted_by_a_committed_cli_probe() {
             probe_set.display()
         )
     });
+    let asserted_rejections =
+        reify_test_support::prd_gate_probe_set::fixtures_asserted_to_reject(&text)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", probe_set.display()));
 
     let unwatched: Vec<&str> = CTOR_CONFORMANCE_REJECTION_FIXTURES
         .iter()
         .map(|(path, _, _)| *path)
-        .filter(|path| !text.contains(*path))
+        .filter(|path| !asserted_rejections.contains(*path))
         .collect();
 
     assert!(
         unwatched.is_empty(),
-        "these CTOR_CONFORMANCE_REJECTION_FIXTURES entries are named by NO probe in \
-         {REJECTION_PROBE_SET_REL}:\n  {}\n\n\
+        "these CTOR_CONFORMANCE_REJECTION_FIXTURES entries have NO probe in \
+         {REJECTION_PROBE_SET_REL} asserting that `reify check` rejects them (a `check` \
+         probe on that fixture expecting `present` with `exit_code: 1`):\n  {}\n\n\
          An entry declares `reify check` rejects this file ON PURPOSE. Without a probe \
          asserting the rejection, the declaration is unbacked and the table degrades into \
          a place to hide a site nobody is watching. Add the probe, or remove the entry and \
