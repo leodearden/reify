@@ -6,7 +6,7 @@ Per-finding action ladder. Apply this logic to each `Finding` in the parsed JSON
 
 ## §0 Pattern registry
 
-One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_audit::pattern_flag::TOKENS`. The JSON carries `Finding.pattern`, and this table maps it back to its token; a new token needs a row here, enforced by `crates/reify-audit/tests/skill_registration_parity.rs`.
+One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_audit::pattern_flag::TOKENS`. The JSON carries `Finding.pattern`, a `reify_audit::Pattern` variant, and this table maps it back to its token. `crates/reify-audit/tests/skill_registration_parity.rs` requires a row for every token and a mention of every `Pattern` variant, so a new token needs a row here and a new variant a mention in its token's row.
 
 | Token | `Finding.pattern` value(s) | Default sweep | `Finding.task_id` carries | Routing notes |
 |---|---|---|---|---|

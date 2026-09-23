@@ -2,8 +2,12 @@
 //! `reify-audit` detectors and routes their findings. A `--pattern` token
 //! missing from one of its surfaces is a detector the skill cannot run or
 //! route; PDSSENTINEL, PDOCCOVER, PDIAG and PDCHECK all landed that way (#6354).
+//! A `Finding.pattern` value missing from its routing registry is a finding
+//! the skill cannot map back to its token's routing notes.
 
-use reify_audit::pattern_flag;
+use reify_audit::{Pattern, pattern_flag};
+use serde::Deserialize;
+use serde::de::{self, Visitor};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -162,6 +166,43 @@ fn registration_gaps<'a>(
     gaps
 }
 
+/// The names serde gives `T`'s variants: every value a `T` field can carry in
+/// JSON. serde's derived `Deserialize` hands them to
+/// `Deserializer::deserialize_enum`, where [`VariantNameProbe`] keeps them and
+/// stops, so an enum is enumerated without a hand-kept list.
+fn serde_variant_names<T: de::DeserializeOwned>() -> &'static [&'static str] {
+    let mut names = None;
+    let _ = T::deserialize(VariantNameProbe(&mut names));
+    let type_name = std::any::type_name::<T>();
+    names.unwrap_or_else(|| panic!("{type_name} does not deserialize as an enum"))
+}
+
+struct VariantNameProbe<'a>(&'a mut Option<&'static [&'static str]>);
+
+impl<'de> de::Deserializer<'de> for VariantNameProbe<'_> {
+    type Error = de::value::Error;
+
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        variants: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        *self.0 = Some(variants);
+        Err(de::Error::custom("variant names captured"))
+    }
+
+    fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
+        Err(de::Error::custom("not an enum"))
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes byte_buf
+        option unit unit_struct newtype_struct seq tuple tuple_struct map struct
+        identifier ignored_any
+    }
+}
+
 #[test]
 fn every_pattern_token_is_registered_where_the_skill_invokes_detectors() {
     assert!(
@@ -190,6 +231,29 @@ fn every_pattern_token_has_a_routing_registry_row() {
         gaps.len(),
         gaps.join("\n  ")
     );
+}
+
+#[test]
+fn every_finding_pattern_value_is_in_the_routing_registry() {
+    let gaps = registration_gaps(serde_variant_names::<Pattern>(), ROUTING_SURFACES);
+    assert!(
+        gaps.is_empty(),
+        "every `Finding.pattern` value (a `reify_audit::Pattern` variant) must be named in its \
+         `--pattern` token's row of the /audit skill's routing registry, which is how the skill \
+         maps a finding back to that token's routing notes. {} gap(s):\n  {}",
+        gaps.len(),
+        gaps.join("\n  ")
+    );
+}
+
+#[test]
+fn serde_variant_names_lists_every_variant_in_declaration_order() {
+    #[derive(Deserialize)]
+    enum Probe {
+        First,
+        Second,
+    }
+    assert_eq!(serde_variant_names::<Probe>(), ["First", "Second"]);
 }
 
 #[test]
