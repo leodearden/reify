@@ -1323,6 +1323,60 @@ mod tests {
         );
     }
 
+    // (b2) TASK 7046 REVIEW — a NUMERICALLY singular D_ff must be reported
+    // too, identically at every gauge. MEASURED RED: near the critical strut
+    // LU returns FINITE |x| ≈ 7.5e13, so only the residual branch can reject.
+    // Its per-row residual 2^-8 ≈ 3.9e-3 is 6.5e-4 against the anchors' scale
+    // (651× REDUCED_SOLVE_RESIDUAL_REL_TOL) but 5.2e-17 against the solved
+    // scale, which returned Ok; the pre-7046 guard rejected at λ = 1 and 2^20
+    // only. The control measures 7.4e-17. The residual is rounding noise on
+    // huge coordinates (an x-aligned chain gave an exact 0 at δ = 1e-11, hence
+    // the generic anchors): if a faer upgrade zeroes it, re-pick δ from a
+    // measured sweep — never loosen the guard.
+    #[test]
+    fn near_singular_reduced_stiffness_is_rejected_at_every_gauge() {
+        // The strut is a rank-1 update of the cable-only D_ff, singular at
+        // q_s = −1/(compliance between its ends) = −1/(2 + 2).
+        const CRITICAL_STRUT_Q: f64 = -0.25;
+        const TWO_POW_20: f64 = 1_048_576.0;
+        let nodes = vec![
+            [1.0, 0.0, 0.0],  // free f0
+            [2.0, 0.0, 0.0],  // free f1
+            [3.0, 0.0, 0.0],  // free f2
+            [4.0, 0.0, 0.0],  // free f3
+            [0.0, 1.0, -2.0], // anchor A0
+            [5.0, -3.0, 4.0], // anchor A1
+        ];
+        // A0 —cable— f0 —cable— f1 —STRUT— f2 —cable— f3 —cable— A1
+        let members = [(1, 2), (4, 0), (0, 1), (2, 3), (3, 5)];
+        let kinds = [
+            MemberKind::Strut,
+            MemberKind::Cable,
+            MemberKind::Cable,
+            MemberKind::Cable,
+            MemberKind::Cable,
+        ];
+        let anchors = [4, 5];
+        let solve_at = |strut_q: f64, lambda: f64| {
+            let q = [strut_q * lambda, lambda, lambda, lambda, lambda];
+            form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
+        };
+
+        for lambda in [1.0, TWO_POW_20, 1.0 / TWO_POW_20] {
+            let near = solve_at(CRITICAL_STRUT_Q + 1e-14, lambda);
+            assert_eq!(
+                near.as_ref().err(),
+                Some(&FormFindError::SingularReducedStiffness),
+                "λ={lambda:e}: a near-critical strut leaves D_ff numerically singular, got {near:?}",
+            );
+            let control = solve_at(CRITICAL_STRUT_Q / 2.0, lambda);
+            assert!(
+                control.is_ok(),
+                "λ={lambda:e}: the same chain at half the critical strut density is well posed, got {control:?}",
+            );
+        }
+    }
+
     // (c) Anchoring every node leaves no free DOF to solve for.
     #[test]
     fn all_nodes_anchored_is_empty_free_set() {
