@@ -1658,23 +1658,21 @@ awk -v want="$_GR_FIRST" -v q="'" '
 #
 # THE SCAFFOLD'S OWN VACUITY RISK (task 7791). Item 3 above — narrowing the
 # DEBUG wall below the ceiling — is exactly the construction task 7552 traded
-# the old role-repointing shape for, and it inherits that shape's failure mode
-# one level down: _SYNTH_DEBUG_WALL_M is a LITERAL, not derived from
-# HEAVY_CEILING_SECONDS, so nothing stops a future re-tune from dragging the
-# ceiling below it too. Were that to happen, the scaffold control and every
-# fixture built on it — (iv), (v), (vi), (vii), (viii) — would stop expressing
-# a gap and pass by VACUITY, silently, exactly like the five L-neg rejections
-# task 7552 measured going vacuous together (HEAD=e49c9ee218, probe log
-# /tmp/t7552/probe.log) when HEAVY_CEILING_SECONDS fell below every wall
-# verify.sh defines. The assertion immediately below is the self-detector: it
-# fails loudly, naming every fixture at risk, instead of leaving that to be
-# noticed by a human re-running the arithmetic by hand.
+# the old role-repointing shape for, and _SYNTH_DEBUG_WALL_M is a LITERAL, not
+# derived from HEAVY_CEILING_SECONDS or L_START_OFFSET_BUDGET_SECONDS: either
+# one re-tuning can leave the narrowed wall clearing the ceiling by MORE than
+# the start-offset budget — the same shape task 7552 measured the old
+# role-repointing fixtures going vacuous under (HEAD=e49c9ee218, probe log
+# /tmp/t7552/probe.log). Were that to happen here, (v), (vi) — which reuses
+# this literal on the real verify.sh —, (vii) and (viii) would FAIL LOUDLY,
+# and (iv) would still reject through its self-cleaning direction regardless
+# of the gap. ONLY the scaffold control would pass silently: through
+# _role_class's REACHABLE branch instead of the RESIDUAL branch it exists to
+# cover. The detector is the branch pin placed directly after that control —
+# it asks _role_class itself, so the predicate is not restated here.
 # ---------------------------------------------------------------------------
 _SYNTH_ROLE=synthetic
 _SYNTH_DEBUG_WALL_M=30
-
-assert "L-neg scaffold non-vacuity (task 7791): the seeded DEBUG wall (${_SYNTH_DEBUG_WALL_M}m = $(( _SYNTH_DEBUG_WALL_M * 60 ))s) sits strictly below the current heavy ceiling (${HEAVY_CEILING_SECONDS}s) — every fixture built on this wall (the scaffold control, and (iv)/(v)/(vi)/(vii)/(viii)) IS VACUOUS AT THE CURRENT CEILING if this ever fails: a HEAVY_CEILING_SECONDS re-tune at or below this wall removes the gap they all depend on, and each would then pass by construction rather than by discrimination. Re-seed _SYNTH_DEBUG_WALL_M below the new ceiling to restore a real gap." \
-    test "$(( _SYNTH_DEBUG_WALL_M * 60 ))" -lt "$HEAVY_CEILING_SECONDS"
 
 # _seed_exclude_role <src> <dst> <role> — extend verify.sh's _GATE_HEAVY_EXCLUDE
 # guard to also cover <role>. Windowed to that guard's own `_GATE_HEAVY_EXCLUDE=""`
