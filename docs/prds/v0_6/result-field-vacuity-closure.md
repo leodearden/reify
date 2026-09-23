@@ -85,20 +85,29 @@ value is always `Value::Undef` on the dims path (`build_modal_topology_value`). 
 exists — `CarriedTopology`, R3a task #4654 — but the modal path never reaches it. This is the
 finding class the contract's written-but-undeclared arm (§4 C1′) exists for.
 
-### 2.3 The mechanism-modal fake-value family (allowlisted to #7012)
+### 2.3 The mechanism-modal fake-value family (ruled by #7012)
 
-`mechanism_modal` emits every `Mode` with `shape = []` and `participation_mass = 0`
+`mechanism_modal` emitted every `Mode` with `shape = []` and `participation_mass = 0`
 unconditionally — and (adversary-measured at decompose, fixture
-`tests/prd-gate/fixtures/adv_beta_v7_degraded_arith.ri`) also writes a **hard-coded**
+`tests/prd-gate/fixtures/adv_beta_v7_degraded_arith.ri`) also wrote a **hard-coded**
 `boundary_conditions = []` (not even an echo of the caller's) and `mass_matrix_norm` /
-`stiffness_matrix_norm` `= 0.0`, with a source comment naming them known-unpopulated. These are
+`stiffness_matrix_norm` `= 0.0`, with a source comment naming them known-unpopulated. These were
 C2′ **fakes** (empty-list-masquerading-as-computed, zero-masquerading-as-measured), not the honest
-`Undef` form — so they enter the gate as **allowlist entries owned by #7012 (pending)**, whose
-description covers this extent. Whether each becomes *degraded-with-reason* (honest `Undef` + a
-recorded lumped-model reason) or *populated* is #7012's ruling; the lumped model genuinely has no
-3D mode shape and no mesh to project participation against, so degraded-with-reason is the likely
-end state. (The damping half was fixed by #6875.) The *degraded* bucket's charter members are
-instead the conventions that are already honest — §2.4.
+`Undef` form. #7012 ruled the family and flipped it in the producer:
+
+- `Mode.shape`, `Mode.participation_mass` and `ModalResult.boundary_conditions` are **degraded** —
+  honest `Undef`. The lumped-model reasons are recorded once, at the producer's builders
+  (`mechanism_mode_value` / `mechanism_modal_result_value`, beside `run_mechanism_modal` in
+  `crates/reify-eval/src/modal_ops.rs`), and are not restated here.
+- `mass_matrix_norm` / `stiffness_matrix_norm` are **populated** with the Frobenius norms of the
+  physical lumped M / K the eigensolve ran on.
+
+No upgrade task is cited: honest population of shape and participation arrives on the
+connection-graph path (`docs/prds/v0_6/assembly-modal-connection-graph.md`), not on this legacy
+producer. (The damping half was fixed by #6875.) The *degraded* bucket's other charter members are
+the conventions that were already honest — §2.4. *(Amendment 2026-09-23, task #7012: the family
+entered the gate as allowlist entries owned by #7012 pending this ruling; the dispositions above are
+the ruling, and §7 carries them.)*
 
 ### 2.4 The honest convention that already exists
 
@@ -309,8 +318,9 @@ Every measured finding, with its exit. No finding is unassigned (D4).
 | `ModalResult.part` / `ForcingTimeHistory.part` / `DisplacementTimeHistory.part` | **allowlist** — join-key convergence on `GeometryHandleRef` when modal-on-real-geometry lands (§2.1 ratified direction) | whole-printer-modal decomposition (in flight); leaf ζ files the owner if absent at decompose time |
 | `ModalResult.topology` (written-but-undeclared, `Undef`) | **undeclared-write registry entry** (C1′-2's own arm — it is not a declared field, so it can never sit in the field allowlist; adversary finding ADV-β-3) — populated form is `CarriedTopology` (R3b twin) | same owner as `.part` (one convergence, one owner) |
 | `run_transient_response` `.part` re-echo identity discard | **allowlist** — rides the `.part` entry; noted for its owner | same owner |
-| `mechanism_modal` `Mode.shape` / `participation_mass` | **allowlist** — the values are C2′ fakes (`[]`, `0`), so they cannot sit in `degraded` until #7012 rules and flips the form (§2.3) | **#7012** (pending; description covers this extent) |
-| `mechanism_modal` hard-coded `boundary_conditions = []` + `mass/stiffness_matrix_norm = 0.0` | **allowlist** — same fake-value family, adversary-measured (§2.3) | **#7012** (pending; description covers this extent) |
+| `mechanism_modal` `Mode.shape` / `participation_mass` | **degraded** — honest `Undef`, reason recorded at the producer (§2.3). The entry cites **no** task: #7012, which ruled it, is done, and a degraded entry citing a done task reds C4′(c) *(Amendment 2026-09-23, task #7012: was **allowlist** to #7012 while the values were the C2′ fakes `[]` / `0`)* | declared by β #7100, ruled by #7012 |
+| `mechanism_modal` `ModalResult.boundary_conditions` | **degraded** — honest `Undef`, reason recorded at the producer (§2.3); cites **no** task, for the same C4′(c) reason *(Amendment 2026-09-23, task #7012: was **allowlist** to #7012 while the value was a hard-coded `[]`)* | declared by β #7100, ruled by #7012 |
+| `mechanism_modal` `mass_matrix_norm` / `stiffness_matrix_norm` | **populated** — the Frobenius norms of the physical lumped M / K (§2.3) *(Amendment 2026-09-23, task #7012: was **allowlist** to #7012 while both were a hard-coded `0.0`)* | declared by β #7100, ruled by #7012 |
 | `degenerate_modal_result` / degenerate-builder fields (`modes=[]`, `bcs=[]`, `norms=0.0`) | **degraded** — error-path builder accompanied by its diagnostic; β flips remaining fakes to honest `Undef` **on the degenerate builders only** (error paths, minimal observable change) and records reasons | this PRD, leaf β |
 | buckling `pre_stress` / degenerate `damping` `Undef` convention | **degraded** — already honest; declarations land in δ | this PRD, leaf δ |
 | `placeholder_part()` plausible-fake form | tolerated under `.part`'s allowlist entry per C1′; the honest-form flip belongs to the owner | `.part`'s owner |
@@ -338,7 +348,7 @@ extends **#7085**'s (PDROP η) structure-reading + allowlist machinery.
 | whole-printer-modal design (session `design-reify-3830-1055491`, in flight) | this PRD **defers to** | its decomposition is the expected live owner of the `.part`/`.topology`/re-echo allowlist entries (§7) | that design owns the modal capability; this PRD owns the invariant + detector. **Do not double-own.** If its tasks are absent at decompose time, leaf ζ files placeholder owners (the INV-PD-1 leaf-ι mirror) and that design adopts them |
 | `v0_6/placeholder-type-eradication-ratchet.md` (PTYPE) | sibling, no seam | PTYPE gates the *type* axis (placeholder-typed signatures); PVAC gates the *value* axis (result-field dispositions); both cite the umbrella | no shared code beyond the PTODO liveness lane both already consume |
 | `v0_6/eradicate-silent-undef.md` | this PRD **consumes** | INV-SF-1 `UndefCause` machinery cited by C2′; INV-SF-6 applies to any future runtime diagnostic | that PRD owns the machinery and rules |
-| **#7012** (mechanism_modal degraded fields) | this PRD **defers to** | owns the shape/participation upgrade-or-advisory decision; PVAC's `degraded` declaration cites it | #7012 |
+| **#7012** (mechanism_modal degraded fields) | this PRD **defers to** | ruled the §2.3 family; PVAC's modal declarations are declared per #7012's §7 ruling *(Amendment 2026-09-23, task #7012: previously "owns the shape/participation upgrade-or-advisory decision; PVAC's `degraded` declaration cites it")* | #7012 |
 | **#6346** (PPRDSTATUS) | census row only | named in the umbrella census table as chartered | #6346 |
 
 No new contested-ownership pair is introduced (`phase-3-breadcrumb-map.md` §3 lists three; this
@@ -356,7 +366,7 @@ umbrella + invariant entries are **not** leaves — they land with this PRD's co
 | Label | Task | Modules | Observable signal | Prereqs |
 |---|---|---|---|---|
 | α #7099 | Field-disposition declaration mechanism (C1′), following PDROP's syntax convention | `reify-eval`, `reify-stdlib` | declaration compiles on the modal producers and is consumable by a reader fn; unlocks β/δ/γ | **#7079** |
-| β #7100 | Vertical slice: modal family fully declared + V7/V8 boundary tests (Rust-side, never release-gated) + honest-`Undef` flips on the **degenerate builders only** | `reify-eval` (modal_ops) | V7 + V8 pass; the modal declarations carry the §7 dispositions (`.part` allowlisted to #7097, `.topology` in the undeclared-write registry, the mechanism-modal fake family allowlisted to #7012) | α |
+| β #7100 | Vertical slice: modal family fully declared + V7/V8 boundary tests (Rust-side, never release-gated) + honest-`Undef` flips on the **degenerate builders only** | `reify-eval` (modal_ops) | V7 + V8 pass; the modal declarations carry the §7 dispositions (`.part` allowlisted to #7097, `.topology` in the undeclared-write registry, the mechanism-modal §2.3 family declared per #7012's §7 ruling) *(Amendment 2026-09-23, task #7012: previously "the mechanism-modal fake family allowlisted to #7012")* | α |
 | δ #7101 | Full-family sweep: dispositions declared for every §2.5 producer file (intermediate — unlocks γ's honest real-tree green) | `reify-eval`, `reify-stdlib` | declarations compile across the full ~22-file family; the reader fn enumerates them; consumer: γ | α, β |
 | γ #7102 | `reify-audit --pattern PVAC` + allowlist + liveness + stats-carrying dispatch (D9) + infra ratchet runner, **drift-guard registrations in γ's own diff** (run-all-classification manifest row; wallclock registration if any elapsed-time assertion is added — the esc-4914-162 lesson, same-diff not prose-ordered; per D8 no baseline-artifact guards exist to register) | `reify-audit`, `tests/infra/` | V1–V6 + V9 pass; `reify-audit --pattern PVAC` exits 0 on the real tree with stdout naming each allowlist entry + owner id; `/audit` routes the pattern. Unknown-pattern discrimination: `--pattern PVAC` before γ exits 125 ("unknown pattern"), after γ it is an accepted value — tests must distinguish exit 1 (findings) from exit 125 (no such pattern) | α, δ, **#7085** |
 | ε #7103 | Doc-truth cleanup: rewrite the §2.7 stale promises to cite live owners; delete the false θ/ι consumer claim; fix `placeholder_part` rustdoc | `reify-compiler` stdlib, `reify-eval` | no doc comment in `modal_analysis.ri`/`modal_ops.rs` cites a terminal task as a future owner; the ζ-filed owner #7097 is cited instead | ζ |
@@ -368,8 +378,9 @@ umbrella + invariant entries are **not** leaves — they land with this PRD's co
 - **Populating `.part`, `.topology`, or the re-echo** — owned by the whole-printer-modal
   decomposition (§9). This PRD makes their vacancy declared, honest, and owned; it does not wire
   them.
-- **The #7012 upgrade-or-advisory decision** for `mechanism_modal` shape/participation — that task
-  rules; PVAC only records the degraded disposition citing it.
+- **The #7012 decision** for the `mechanism_modal` §2.3 family — ruled by #7012 (see §7); PVAC
+  only records the dispositions. *(Amendment 2026-09-23, task #7012: previously "that task rules;
+  PVAC only records the degraded disposition citing it".)*
 - **Runtime read diagnostics** — v2, per D2.
 - **Sweeping the stdlib for gratuitous fields** — whether a declared field *should exist* is not
   audited here (the INV-PD-1 §11 posture, mirrored).
