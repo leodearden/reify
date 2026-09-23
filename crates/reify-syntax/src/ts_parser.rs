@@ -7614,7 +7614,7 @@ mod tests {
     fn lower_connect_body_error_node_emits_diagnostic() {
         // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
         // connect_body. When lower_connect_body is called directly, the ERROR arm fires and
-        // reports a one-line excerpt (INV-SF-7, task #6156).
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
         // NOTE: we use `: BoltSet` to specify a connector_type before the brace
         // block, making `{` unambiguously the start of connect_body.  Without
         // the connector_type, the new variant_construction GLR fork (task α,
@@ -7624,15 +7624,11 @@ mod tests {
         // `{ … }` as a member-level ERROR node rather than a connect_body,
         // causing `find_node_by_kind("connect_body")` to fail.  The connector
         // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
-        let errors = lower_body_with_errors(
-            "structure S {\n  port a : out T\n  port b : in T\n  connect a -> b : BoltSet {\n    >= )\n    <= (\n  }\n}\n",
-        );
+        let source = "structure S {\n  port a : out T\n  port b : in T\n  connect a -> b : BoltSet {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_body_with_errors(source);
         assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
-        assert!(
-            !errors[0].message.contains('\n'),
-            "expected a single-line diagnostic, got: {errors:?}"
-        );
         assert_eq!(errors[0].message, "syntax error in connect body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
@@ -7763,16 +7759,12 @@ mod tests {
     fn lower_port_body_error_node_emits_diagnostic() {
         // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
         // port_body. When lower_port_body is called directly, the ERROR arm fires and
-        // reports a one-line excerpt (INV-SF-7, task #6156).
-        let errors = lower_port_body_with_errors(
-            "structure S {\n  port a : in T {\n    >= )\n    <= (\n  }\n}\n",
-        );
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
+        let source = "structure S {\n  port a : in T {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_port_body_with_errors(source);
         assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
-        assert!(
-            !errors[0].message.contains('\n'),
-            "expected a single-line diagnostic, got: {errors:?}"
-        );
         assert_eq!(errors[0].message, "syntax error in port body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
