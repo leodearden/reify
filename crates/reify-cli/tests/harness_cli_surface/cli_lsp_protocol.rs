@@ -479,9 +479,10 @@ fn acquire_lsp_test_lock_recovers_from_poisoned_mutex() {
         .unwrap_or_else(|e| e.into_inner());
 }
 
-/// How long any single [`LspInbox`] wait may take in total, as a deadline
-/// rather than a per-message timeout. See [`LspInbox::wait_for`].
-const WAIT_BUDGET: Duration = Duration::from_secs(30);
+/// How long any [`LspInbox`] wait may go without receiving ANY message before
+/// it fails. An inactivity timeout, not a total deadline — see
+/// [`LspInbox::wait_for`].
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The stdout message stream plus a replay buffer, so no wait can starve
 /// another of a message it still needs.
@@ -521,20 +522,22 @@ impl LspInbox {
     /// replay buffer before pulling from the channel and buffering every
     /// non-match for later waits.
     ///
-    /// Uses a 30-second budget to accommodate CPU saturation when many test
+    /// Uses a 30-second inactivity timeout to accommodate CPU saturation when many test
     /// binaries run in parallel (e.g., during `cargo test --workspace`).  Under
     /// heavy load the spawned tokio runtime may not be scheduled for several
     /// seconds before it can process the `initialize` request; 30 s gives ample
     /// headroom without making genuinely failing tests unreasonably slow.
     ///
-    /// That budget is an `Instant` DEADLINE computed once, not a timeout
-    /// restarted per message — the idiom `wait_for_exit`, `reap_bounded` and
-    /// `drain_bounded` already use. Passing the same `Duration` to each
-    /// `recv_timeout` would let a steady trickle of non-matching messages
-    /// postpone the deadline indefinitely while the panic below still claimed
-    /// 30s, which the burst test makes reachable in practice: up to eight
-    /// `publishDiagnostics` notifications, each carrying a 160 KiB URI, can
-    /// interleave with its log-message waits.
+    /// The timeout restarts on every received message, so it measures
+    /// SILENCE, not total wait: a stream of non-matching messages (the burst
+    /// test interleaves up to eight 160 KiB-URI `publishDiagnostics` with its
+    /// log-message waits) never trips it, and the panic below says exactly
+    /// that rather than claiming a total. A silence bound is also the one that
+    /// does not invert under load: a descheduled server delays its next
+    /// message, it does not make a finite stream arrive late in aggregate.
+    /// A genuinely endless stream is nextest's slow-timeout/terminate-after
+    /// to catch, not a hand-rolled `Instant` deadline (see
+    /// `tests/infra/test_no_new_wallclock_rust_deadlines.sh`).
     ///
     /// `what` is the caller's own fully-formed noun phrase, interpolated into
     /// both panic messages below. Those messages are load-bearing diagnostics
@@ -549,12 +552,8 @@ impl LspInbox {
         if let Some(idx) = self.seen.iter().position(&pred) {
             return self.seen.remove(idx);
         }
-        let deadline = Instant::now() + WAIT_BUDGET;
         loop {
-            match self
-                .rx
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            {
+            match self.rx.recv_timeout(IDLE_TIMEOUT) {
                 Ok(msg) => {
                     if pred(&msg) {
                         return msg;
@@ -563,7 +562,7 @@ impl LspInbox {
                     self.seen.push(msg);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    panic!("timed out after 30s waiting for {what}")
+                    panic!("no message for 30s while waiting for {what}")
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     panic!(
@@ -625,7 +624,7 @@ impl LspInbox {
     /// callers pick a substring unique to the line (and, in the burst test
     /// below, unique to the specific notification) they are waiting for.
     ///
-    /// Same 30s timeout and panic-message discipline as its siblings — see
+    /// Same 30s inactivity timeout and panic-message discipline as its siblings — see
     /// [`LspInbox::wait_for`].
     fn log_message(&mut self, needle: &str) -> serde_json::Value {
         self.wait_for(
@@ -645,7 +644,7 @@ impl LspInbox {
     /// Sound ONLY after the child has exited: `spawn_reader`'s thread returns
     /// on EOF and drops its sender, which is what ends the loop below. Called
     /// before that it would wait for the rest of the session, so it is bounded
-    /// by the same [`WAIT_BUDGET`] deadline as [`LspInbox::wait_for`] and
+    /// by the same [`IDLE_TIMEOUT`] as [`LspInbox::wait_for`] and
     /// panics rather than hanging — this file's discipline is never hang,
     /// always fail. Takes `self` by value so a caller cannot reuse a drained
     /// inbox and mistake "the stream ended" for "nothing matched".
@@ -655,19 +654,15 @@ impl LspInbox {
     /// to be complete.
     fn drain_after_exit(mut self) -> Vec<serde_json::Value> {
         let mut all = std::mem::take(&mut self.seen);
-        let deadline = Instant::now() + WAIT_BUDGET;
         loop {
-            match self
-                .rx
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            {
+            match self.rx.recv_timeout(IDLE_TIMEOUT) {
                 Ok(msg) => all.push(msg),
                 // The reader thread hit EOF and dropped its sender: the
                 // stream really is complete, which is the whole precondition
                 // an exact-count assertion rests on.
                 Err(mpsc::RecvTimeoutError::Disconnected) => return all,
                 Err(mpsc::RecvTimeoutError::Timeout) => panic!(
-                    "timed out after 30s draining the message stream — the child had \
+                    "no message for 30s while draining the message stream — the child had \
                      supposedly exited, so `spawn_reader` should have reached EOF and dropped \
                      its sender. Either it is still alive (drain_after_exit called too early) \
                      or the reader thread is stuck. Drained {} messages before giving up.",
