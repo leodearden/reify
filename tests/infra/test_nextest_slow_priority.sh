@@ -1464,23 +1464,25 @@ _role_classification_ok() {
 _role_classification_reject() { ! _role_classification_ok "$1" "$2"; }
 
 # ---------------------------------------------------------------------------
-# _role_classification_ok_with_residuals "<role...>" <nextest.toml> <verify.sh>
-# — the same checker with the residual allowlist REPLACED for the duration of
-# one call. bash's dynamic scoping makes the local shadow the global that
-# _role_class and _role_classification_ok read, so no parameter has to be
-# threaded through either.
+# _with_residuals "<role...>" <command> [args...] — runs any command
+# (_role_class, _role_classification_ok) with the residual allowlist REPLACED
+# for the duration of the call. bash's dynamic scoping makes the local shadow
+# the global that both functions read, so no parameter has to be threaded
+# through either.
 #
 # This exists because the live allowlist is EMPTY (task 7552) and a checker
 # whose residual branch is never entered is a checker whose residual branch is
 # untested. The synthetic-role fixtures below drive that branch without
 # re-introducing a live residual.
 # ---------------------------------------------------------------------------
-_role_classification_ok_with_residuals() {
-    local _roles="$1" _toml="$2" _vsh="$3"
+_with_residuals() {
     local -a L_RESIDUAL_ROLES=()
-    read -r -a L_RESIDUAL_ROLES <<< "$_roles"
-    _role_classification_ok "$_toml" "$_vsh"
+    read -r -a L_RESIDUAL_ROLES <<< "$1"
+    shift
+    "$@"
 }
+
+_role_classification_ok_with_residuals() { _with_residuals "$1" _role_classification_ok "$2" "$3"; }
 
 _role_classification_reject_with_residuals() { ! _role_classification_ok_with_residuals "$@"; }
 
