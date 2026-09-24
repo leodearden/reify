@@ -1,19 +1,33 @@
 //! The ENGINE lane's single front door: every engine-touching request is
-//! queued here and run one at a time.
+//! submitted here, and its caller awaits an [`EvalTicket`] without blocking any
+//! thread.
 //!
-//! Edits coalesce, per the esc-5215-5 ruling that the newest edit supersedes
-//! queued ones: a newly admitted edit makes every QUEUED older edit of the same
-//! target redundant, and an edit arriving after a newer one of its target was
-//! already admitted is dropped. Two rules decide "older": the newest edit wins
-//! within a target, and a durable write never yields to a transient one.
+//! A single drainer at a time runs the queue in FIFO order on the executor —
+//! the ENGINE lane in production. Evaluations and engine calls are ordered
+//! barriers. Edits coalesce, per the esc-5215-5 ruling that the newest edit
+//! supersedes queued ones: a newly admitted edit resolves every QUEUED older
+//! edit of its target unrun, and an edit arriving after a newer one of its
+//! target was already admitted is dropped. Two rules decide "older": the newest
+//! edit wins within a target, and a durable write never yields to a transient
+//! one. A superseding edit takes its own arrival position, so it never jumps a
+//! barrier.
+//!
+//! Edits and evaluations publish: their snapshot becomes a delta before their
+//! reply is delivered, and the queue reports [`EvalActivity::Evaluating`] when
+//! the first of them is accepted while idle and [`EvalActivity::Idle`] after
+//! the last one's delta.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::{Context, Poll};
 
 use serde::{Deserialize, Serialize};
 
 use crate::diff::{StateDelta, advance_baseline};
+use crate::large_stack::panic_payload_message;
 use crate::types::GuiState;
 
 /// Where the frontend stamped an edit: `seq` increases with every edit of one
@@ -150,6 +164,10 @@ pub enum EvalActivity {
 }
 
 /// What the frontend is told about evaluation.
+///
+/// [`EvalQueue`] reports activity while holding its own lock, so that status
+/// transitions cannot reorder across threads: an observer must never call back
+/// into the queue.
 pub trait EvalObserver: Send + Sync {
     fn activity(&self, activity: EvalActivity);
     fn delta(&self, delta: &StateDelta);
@@ -196,5 +214,420 @@ impl SnapshotPublisher {
         let delta = advance_baseline(&self.baseline, state);
         self.observer.delta(&delta);
         true
+    }
+}
+
+/// Runs a job on another thread, some time later; `Err` means the job was
+/// dropped unrun. It must never run the job inline: [`EvalQueue`] posts while
+/// holding its lock.
+pub type Executor = Arc<dyn Fn(Box<dyn FnOnce() + Send>) -> std::io::Result<()> + Send + Sync>;
+
+/// What a job produced: the snapshot to publish, if any, and its reply.
+pub struct EvalOutcome<T> {
+    pub publish: Option<GuiState>,
+    pub reply: Result<T, String>,
+}
+
+/// A unit of engine work, and how the queue treats it.
+pub struct EvalRequest<T> {
+    role: Role<T>,
+    job: Box<dyn FnOnce() -> EvalOutcome<T> + Send>,
+}
+
+enum Role<T> {
+    /// `superseded` is the reply a superseded edit resolves to.
+    Edit {
+        identity: EditIdentity,
+        superseded: T,
+    },
+    Evaluation,
+    EngineCall,
+}
+
+impl EvalRequest<()> {
+    /// A coalescable edit that publishes its snapshot.
+    pub fn edit(
+        identity: EditIdentity,
+        job: impl FnOnce() -> EvalOutcome<()> + Send + 'static,
+    ) -> Self {
+        Self {
+            role: Role::Edit {
+                identity,
+                superseded: (),
+            },
+            job: Box::new(job),
+        }
+    }
+}
+
+impl<T: 'static> EvalRequest<T> {
+    /// An ordered evaluation that publishes its snapshot.
+    pub fn evaluation(job: impl FnOnce() -> EvalOutcome<T> + Send + 'static) -> Self {
+        Self {
+            role: Role::Evaluation,
+            job: Box::new(job),
+        }
+    }
+
+    /// An ordered read or registration that publishes nothing.
+    pub fn engine_call(job: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
+        Self {
+            role: Role::EngineCall,
+            job: Box::new(move || EvalOutcome {
+                publish: None,
+                reply: job(),
+            }),
+        }
+    }
+}
+
+/// Resolves to its request's reply once the request ran, or to the superseded
+/// reply when a newer edit made it redundant. A request dropped without a reply
+/// resolves `Err`, so a ticket never hangs.
+pub struct EvalTicket<T> {
+    reply: tokio::sync::oneshot::Receiver<Result<T, String>>,
+}
+
+impl<T> Future for EvalTicket<T> {
+    type Output = Result<T, String>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.reply).poll(cx).map(|received| {
+            received.unwrap_or_else(|_| Err("evaluation dropped without a reply".to_string()))
+        })
+    }
+}
+
+/// A request's job and its ticket's sender, with the reply type erased so one
+/// queue holds every request.
+trait QueuedJob: Send {
+    /// Run the job — a panicking job replies `Err` — hand its snapshot, if
+    /// any, to `publish`, then deliver the reply.
+    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState));
+
+    /// Reply `Err(message)` without running the job.
+    fn fail(self: Box<Self>, message: String);
+}
+
+/// An edit's job, which a newer edit of its target may resolve unrun.
+trait QueuedEdit: QueuedJob {
+    fn supersede(self: Box<Self>);
+}
+
+struct TypedJob<T> {
+    job: Box<dyn FnOnce() -> EvalOutcome<T> + Send>,
+    reply: tokio::sync::oneshot::Sender<Result<T, String>>,
+}
+
+impl<T> TypedJob<T> {
+    fn run_now(self, publish: &mut dyn FnMut(GuiState)) {
+        let TypedJob { job, reply } = self;
+        let outcome =
+            std::panic::catch_unwind(AssertUnwindSafe(job)).unwrap_or_else(|payload| EvalOutcome {
+                publish: None,
+                reply: Err(format!(
+                    "panic in evaluation: {}",
+                    panic_payload_message(&*payload)
+                )),
+            });
+        if let Some(state) = outcome.publish {
+            publish(state);
+        }
+        // A dropped ticket means nobody is waiting for the reply.
+        let _ = reply.send(outcome.reply);
+    }
+
+    fn resolve(self, reply: Result<T, String>) {
+        let _ = self.reply.send(reply);
+    }
+}
+
+impl<T: Send> QueuedJob for TypedJob<T> {
+    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState)) {
+        self.run_now(publish);
+    }
+
+    fn fail(self: Box<Self>, message: String) {
+        self.resolve(Err(message));
+    }
+}
+
+struct TypedEdit<T> {
+    job: TypedJob<T>,
+    superseded: T,
+}
+
+impl<T: Send> QueuedJob for TypedEdit<T> {
+    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState)) {
+        self.job.run_now(publish);
+    }
+
+    fn fail(self: Box<Self>, message: String) {
+        self.job.resolve(Err(message));
+    }
+}
+
+impl<T: Send> QueuedEdit for TypedEdit<T> {
+    fn supersede(self: Box<Self>) {
+        let TypedEdit { job, superseded } = *self;
+        job.resolve(Ok(superseded));
+    }
+}
+
+/// A submitted request before the queue has accepted it.
+enum Work {
+    Edit(EditIdentity, Box<dyn QueuedEdit>),
+    Evaluation(Box<dyn QueuedJob>),
+    EngineCall(Box<dyn QueuedJob>),
+}
+
+impl Work {
+    fn into_job(self) -> Box<dyn QueuedJob> {
+        match self {
+            Work::Edit(_, job) => job,
+            Work::Evaluation(job) | Work::EngineCall(job) => job,
+        }
+    }
+}
+
+/// An accepted request. Edits and evaluations carry the generation their
+/// snapshot publishes under.
+enum Entry {
+    Edit {
+        identity: EditIdentity,
+        generation: u64,
+        job: Box<dyn QueuedEdit>,
+    },
+    Ordered {
+        generation: Option<u64>,
+        job: Box<dyn QueuedJob>,
+    },
+}
+
+impl Entry {
+    fn generation(&self) -> Option<u64> {
+        match self {
+            Entry::Edit { generation, .. } => Some(*generation),
+            Entry::Ordered { generation, .. } => *generation,
+        }
+    }
+
+    fn into_job(self) -> Box<dyn QueuedJob> {
+        match self {
+            Entry::Edit { job, .. } => job,
+            Entry::Ordered { job, .. } => job,
+        }
+    }
+}
+
+#[derive(Default)]
+struct QueueState {
+    pending: VecDeque<Entry>,
+    ledger: EditLedger,
+    /// A drainer is posted or running; it clears this when it finds the queue
+    /// empty, under the same lock as every push.
+    draining: bool,
+    /// Accepted edits and evaluations not yet finished, queued or running.
+    outstanding: usize,
+    last_generation: u64,
+}
+
+impl QueueState {
+    fn issue_generation(&mut self) -> u64 {
+        self.last_generation += 1;
+        self.last_generation
+    }
+
+    /// Queue `work` behind everything accepted before it, first resolving the
+    /// queued edits it supersedes.
+    fn enqueue(&mut self, work: Work) {
+        let entry = match work {
+            Work::Edit(identity, job) => {
+                self.supersede_queued(&identity);
+                Entry::Edit {
+                    generation: self.issue_generation(),
+                    identity,
+                    job,
+                }
+            }
+            Work::Evaluation(job) => Entry::Ordered {
+                generation: Some(self.issue_generation()),
+                job,
+            },
+            Work::EngineCall(job) => Entry::Ordered {
+                generation: None,
+                job,
+            },
+        };
+        if entry.generation().is_some() {
+            self.outstanding += 1;
+        }
+        self.pending.push_back(entry);
+    }
+
+    /// Resolve and remove every QUEUED edit `identity` supersedes. The running
+    /// entry is never touched: cancelling it on supersede is #5215, whose seam
+    /// is this pass.
+    fn supersede_queued(&mut self, identity: &EditIdentity) {
+        let mut kept = VecDeque::with_capacity(self.pending.len());
+        for entry in std::mem::take(&mut self.pending) {
+            match entry {
+                Entry::Edit {
+                    identity: queued,
+                    job,
+                    ..
+                } if identity.supersedes(&queued) => {
+                    self.outstanding -= 1;
+                    job.supersede();
+                }
+                entry => kept.push_back(entry),
+            }
+        }
+        self.pending = kept;
+    }
+}
+
+/// The queue in front of the ENGINE lane.
+pub struct EvalQueue {
+    executor: Executor,
+    publisher: SnapshotPublisher,
+    observer: Arc<dyn EvalObserver>,
+    state: Mutex<QueueState>,
+}
+
+impl EvalQueue {
+    /// A queue draining on the persistent ENGINE lane.
+    pub fn on_engine_lane(
+        baseline: Arc<Mutex<Option<GuiState>>>,
+        observer: Arc<dyn EvalObserver>,
+    ) -> Arc<Self> {
+        Self::with_executor(
+            Arc::new(crate::large_stack::post_to_worker),
+            baseline,
+            observer,
+        )
+    }
+
+    /// A queue draining through `executor`.
+    pub fn with_executor(
+        executor: Executor,
+        baseline: Arc<Mutex<Option<GuiState>>>,
+        observer: Arc<dyn EvalObserver>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            executor,
+            publisher: SnapshotPublisher::new(baseline, Arc::clone(&observer)),
+            observer,
+            state: Mutex::new(QueueState::default()),
+        })
+    }
+
+    /// Accept `request` and return the ticket its reply arrives on. Never
+    /// blocks and never runs the job itself.
+    pub fn submit<T: Send + 'static>(self: &Arc<Self>, request: EvalRequest<T>) -> EvalTicket<T> {
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        let job = TypedJob {
+            job: request.job,
+            reply,
+        };
+        let work = match request.role {
+            Role::Edit {
+                identity,
+                superseded,
+            } => Work::Edit(identity, Box::new(TypedEdit { job, superseded })),
+            Role::Evaluation => Work::Evaluation(Box::new(job)),
+            Role::EngineCall => Work::EngineCall(Box::new(job)),
+        };
+        self.accept(work);
+        EvalTicket { reply: receiver }
+    }
+
+    fn accept(self: &Arc<Self>, work: Work) {
+        let mut state = self.lock_state();
+        let work = match work {
+            Work::Edit(identity, job) => {
+                if !state.ledger.admit(&identity) {
+                    job.supersede();
+                    return;
+                }
+                Work::Edit(identity, job)
+            }
+            work => work,
+        };
+        if let Err(error) = self.ensure_drainer(&mut state) {
+            work.into_job()
+                .fail(format!("the evaluation could not be scheduled: {error}"));
+            return;
+        }
+        let was_idle = state.outstanding == 0;
+        state.enqueue(work);
+        if was_idle && state.outstanding > 0 {
+            self.report(EvalActivity::Evaluating);
+        }
+    }
+
+    fn ensure_drainer(self: &Arc<Self>, state: &mut QueueState) -> std::io::Result<()> {
+        if !state.draining {
+            let queue = Arc::clone(self);
+            (self.executor)(Box::new(move || queue.drain()))?;
+            state.draining = true;
+        }
+        Ok(())
+    }
+
+    /// The drainer: run queued entries one at a time until none are left.
+    fn drain(self: Arc<Self>) {
+        while let Some(entry) = self.next_entry() {
+            self.process(entry);
+        }
+    }
+
+    fn next_entry(&self) -> Option<Entry> {
+        let mut state = self.lock_state();
+        let entry = state.pending.pop_front();
+        if entry.is_none() {
+            state.draining = false;
+        }
+        entry
+    }
+
+    fn process(&self, entry: Entry) {
+        let generation = entry.generation();
+        let ran = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            entry.into_job().run(&mut |state| {
+                if let Some(generation) = generation {
+                    self.publisher.publish(generation, state);
+                }
+            });
+        }));
+        if let Err(payload) = ran {
+            tracing::warn!(
+                "publishing an evaluation panicked: {}",
+                panic_payload_message(&*payload)
+            );
+        }
+        if generation.is_some() {
+            let mut state = self.lock_state();
+            state.outstanding -= 1;
+            if state.outstanding == 0 {
+                self.report(EvalActivity::Idle);
+            }
+        }
+    }
+
+    fn report(&self, activity: EvalActivity) {
+        let reported = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            self.observer.activity(activity);
+        }));
+        if let Err(payload) = reported {
+            tracing::warn!(
+                "reporting evaluation activity panicked: {}",
+                panic_payload_message(&*payload)
+            );
+        }
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, QueueState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }

@@ -411,7 +411,7 @@ pub(crate) fn gui_state_with_values(values: &[(&str, &str)]) -> crate::types::Gu
 #[derive(Debug, Clone)]
 pub(crate) enum Observed {
     Activity(crate::eval_queue::EvalActivity),
-    Delta(crate::diff::StateDelta),
+    Delta(Box<crate::diff::StateDelta>),
 }
 
 /// An [`Observed`] call and the name of the thread that made it.
@@ -449,7 +449,7 @@ impl RecordingObserver {
         self.observations()
             .into_iter()
             .filter_map(|o| match o.observed {
-                Observed::Delta(delta) => Some(delta),
+                Observed::Delta(delta) => Some(*delta),
                 Observed::Activity(_) => None,
             })
             .collect()
@@ -470,7 +470,7 @@ impl crate::eval_queue::EvalObserver for RecordingObserver {
     }
 
     fn delta(&self, delta: &crate::diff::StateDelta) {
-        self.record(Observed::Delta(delta.clone()));
+        self.record(Observed::Delta(Box::new(delta.clone())));
     }
 }
 
