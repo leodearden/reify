@@ -1779,8 +1779,9 @@ you apply. They are documented here so the operator `curl` and the result
 channel `curl` sit adjacent and cannot be confused.
 
 ```
-ElasticResult.curl     : Field<Point3<Length>, Vector3<Real>>    // ∇×u
-ElasticResult.rotation : Field<Point3<Length>, Vector3<Angle>>   // ∇×u / 2
+ElasticResult.curl         : Field<Point3<Length>, Vector3<Real>>    // ∇×u
+ElasticResult.rotation     : Field<Point3<Length>, Vector3<Angle>>   // ∇×u / 2
+ElasticResult.shear_angles : Field<Point3<Length>, Vector3<Angle>>   // (γ_yz, γ_zx, γ_xy)
 ```
 
 (`stdlib/solver_elastic.ri` spells curl's quantity `Dimensionless`; `Real` is
@@ -1818,6 +1819,22 @@ Having `rotation` carry a real ANGLE unlocks three things that
   yet — a per-component `deg` comparison is still out of reach;
 - a future `d/dt` of `rotation` yields **angular velocity** (rad/s) rather
   than a bare frequency (1/s).
+
+`shear_angles` (task #6183) is the second named crossing, built the same way
+from `gradient`. Its components are the Voigt-order **engineering** shear
+strains (γ_yz, γ_zx, γ_xy), with γ_ij = ∂u_i/∂x_j + ∂u_j/∂x_i = 2·ε_ij — the
+doubled symmetric off-diagonals of `gradient`, read as angles (× η = 1 rad).
+`gradient` itself stays `Tensor<2,3,Real>`: a tensor has one quantity slot, so
+an angle reading of it is extracted by a named channel, never by retyping it.
+The same small-deformation proviso applies (‖∇u‖ ≪ 1). It is populated on the
+tet/solid path and `undef` on the shell path.
+
+Worked example: `examples/differential_field_ops.ri` carries
+`constraint shear_probe < shear_allowable`, where `shear_probe` is `magnitude`
+of the sampled `Vector3<Angle>`, gated in CI by `differential_field_ops_e2e`.
+Bounding the magnitude is conservative, since ‖γ‖₂ ≥ max_i |γ_i|.
+Per-component `deg` comparisons stay in the Rust harness until in-language
+Vector3 component access exists.
 
 See `docs/prds/v0_6/differential-field-operators.md` for the decision table
 and the full channel specification.
