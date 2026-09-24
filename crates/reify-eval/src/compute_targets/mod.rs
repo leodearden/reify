@@ -238,13 +238,40 @@ pub(crate) fn rotation_sf_from_curl(curl_sf: &SampledField) -> SampledField {
     sf
 }
 
+/// Assert `derived` sits bit-identically on `source`'s grid: every
+/// grid-metadata field is equal; only `name` and `data` may differ.
+///
+/// The SINGLE enumeration of the grid-metadata field list for the derived
+/// channels (`rotation`, `shear_angles`): every path test and wrapper unit test
+/// calls through here, and the exhaustive destructure of `source` makes a new
+/// [`SampledField`] field a compile error until it is classified below.
+///
+/// Carried-through grid metadata is also what proves a channel was DERIVED from
+/// its source rather than independently resampled (an independent resample
+/// would need a 6th `resample_multi_nodal_to_grid` entry, which does not exist).
+#[cfg(test)]
+pub(crate) fn assert_same_grid(derived: &SampledField, source: &SampledField, path: &str) {
+    let SampledField {
+        name: _,
+        kind,
+        bounds_min,
+        bounds_max,
+        spacing,
+        axis_grids,
+        interpolation,
+        data: _,
+        oob_emitted: _,
+    } = source;
+    assert_eq!(&derived.kind, kind, "{path}: grid kind");
+    assert_eq!(&derived.bounds_min, bounds_min, "{path}: bounds_min");
+    assert_eq!(&derived.bounds_max, bounds_max, "{path}: bounds_max");
+    assert_eq!(&derived.spacing, spacing, "{path}: spacing");
+    assert_eq!(&derived.axis_grids, axis_grids, "{path}: axis_grids");
+    assert_eq!(&derived.interpolation, interpolation, "{path}: interpolation");
+}
+
 /// Assert `rot` is exactly what [`rotation_sf_from_curl`] must produce from
 /// `curl`: the same slab halved at 0 ULP, renamed, on the bit-identical grid.
-///
-/// Lives beside the function it pins, and is the SINGLE enumeration of the
-/// grid-metadata field list — the tet path, the cache-reconstruction path and
-/// the wrapper unit test all call through here, so a new [`SampledField`] field
-/// gets checked in every path the moment it is added below.
 ///
 /// 0 ULP is a numeric-premise claim, not laziness: IEEE-754 division by 2.0
 /// only decrements the exponent, so it is exact for every normal operand
@@ -262,19 +289,44 @@ pub(crate) fn assert_rotation_is_half_of(rot: &SampledField, curl: &SampledField
         "{path}: rotation data must be curl data halved element-wise, bit-exactly (0 ULP)"
     );
     assert_eq!(rot.name, "rotation", "{path}: derived field is renamed");
-    // Grid metadata carried through verbatim — this is also what proves the
-    // channel was DERIVED from curl rather than independently resampled (an
-    // independent resample would need a 6th `resample_multi_nodal_to_grid`
-    // entry and a `nodal_rotation_flat` slab, neither of which exists).
-    assert_eq!(rot.kind, curl.kind, "{path}: grid kind");
-    assert_eq!(rot.bounds_min, curl.bounds_min, "{path}: bounds_min");
-    assert_eq!(rot.bounds_max, curl.bounds_max, "{path}: bounds_max");
-    assert_eq!(rot.spacing, curl.spacing, "{path}: spacing");
-    assert_eq!(rot.axis_grids, curl.axis_grids, "{path}: axis_grids");
+    assert_same_grid(rot, curl, path);
+}
+
+/// Assert `shear` is exactly what [`shear_angles_sf_from_gradient`] must
+/// produce from `grad`: per node, the Voigt engineering shears
+/// `[g[5]+g[7], g[6]+g[2], g[1]+g[3]]` (γ_yz, γ_zx, γ_xy) of the row-major
+/// stride-9 gradient, at 0 ULP, renamed, on the bit-identical grid.
+///
+/// 0 ULP holds because the expectation is the same single IEEE addition of the
+/// same two operands (addition is commutative bitwise).
+#[cfg(test)]
+pub(crate) fn assert_shear_angles_project_gradient(
+    shear: &SampledField,
+    grad: &SampledField,
+    path: &str,
+) {
     assert_eq!(
-        rot.interpolation, curl.interpolation,
-        "{path}: interpolation"
+        grad.data.len() % 9,
+        0,
+        "{path}: gradient data must be stride-9 (one row-major 3×3 per node)"
     );
+    assert_eq!(
+        shear.data.len(),
+        3 * (grad.data.len() / 9),
+        "{path}: shear_angles must carry one stride-3 vector per gradient node"
+    );
+    let expected: Vec<f64> = grad
+        .data
+        .chunks_exact(9)
+        .flat_map(|g| [g[5] + g[7], g[6] + g[2], g[1] + g[3]])
+        .collect();
+    assert_eq!(
+        shear.data, expected,
+        "{path}: shear_angles must be (γ_yz, γ_zx, γ_xy) = (g12+g21, g20+g02, g01+g10) \
+         of the gradient, bit-exactly (0 ULP)"
+    );
+    assert_eq!(shear.name, "shear_angles", "{path}: derived field is renamed");
+    assert_same_grid(shear, grad, path);
 }
 
 /// Wrap a [`SampledField`] as an error-indicator `Value::Field`.
@@ -958,5 +1010,108 @@ mod tests {
             vec![1.5, 2.5, 3.5, -1.5, -2.5, -3.5],
             "sanity: literal expected halves of the non-power-of-two fixture"
         );
+    }
+
+    /// step-3 RED (task #6183 σ): the `shear_angles` channel on a
+    /// hand-computable PATCH fixture. A linear displacement u = A·x has
+    /// ∇u ≡ A at every node, so the Voigt engineering shears are known in closed
+    /// form: (γ_yz, γ_zx, γ_xy) = (A12+A21, A20+A02, A01+A10).
+    ///
+    /// A's off-diagonals are distinct, non-symmetric degree literals, so an
+    /// index swap or an antisymmetric (rotation) leak both fail; its nonzero
+    /// diagonal proves the normal strains do not leak.
+    ///
+    /// Drives the exact production composition, pins the declared
+    /// `Vector3<Angle>` codomain, then samples through the PRODUCTION sampler
+    /// and compares each ANGLE component against the degree expectation.
+    ///
+    /// RED: `sampled_shear_angles_field` / `shear_angles_sf_from_gradient` do
+    /// not exist yet, so this does not compile until step-4.
+    #[test]
+    fn shear_angles_patch_fixture_samples_deg_derived_engineering_shears() {
+        use reify_core::{DimensionVector, Type};
+        use reify_ir::{
+            FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value, ValueMap,
+        };
+        use std::sync::atomic::AtomicBool;
+
+        let deg = f64::to_radians;
+        #[rustfmt::skip]
+        let a: [f64; 9] = [
+            1e-3,     deg(0.7), deg(0.6),
+            deg(0.8), -3e-4,    deg(0.2),
+            deg(0.4), deg(0.3), -3e-4,
+        ];
+        // Regular3D on [0,1]^3, 2 nodes per axis: ∇u ≡ A at all 8 nodes.
+        let grad_sf = SampledField {
+            name: "gradient".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0; 3],
+            bounds_max: vec![1.0; 3],
+            spacing: vec![1.0; 3],
+            axis_grids: vec![vec![0.0, 1.0]; 3],
+            interpolation: InterpolationKind::Linear,
+            data: a.repeat(8),
+            oob_emitted: AtomicBool::new(false),
+        };
+
+        let value = super::sampled_shear_angles_field(super::shear_angles_sf_from_gradient(&grad_sf));
+        let Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } = value
+        else {
+            panic!("expected Value::Field")
+        };
+        assert_eq!(domain_type, Type::point3(Type::length()));
+        assert_eq!(
+            codomain_type,
+            Type::vec3(Type::angle()),
+            "shear_angles codomain must be Vector3<Angle> (a named crossing), \
+             NOT vec3(dimensionless_scalar())"
+        );
+        assert_eq!(source, FieldSourceKind::Sampled);
+        let Value::SampledField(out) = lambda.as_ref() else {
+            panic!("expected lambda to be a Value::SampledField, got {lambda:?}")
+        };
+        super::assert_shear_angles_project_gradient(out, &grad_sf, "wrapper");
+
+        let length = |m: f64| Value::Scalar {
+            si_value: m,
+            dimension: DimensionVector::LENGTH,
+        };
+        let probe = Value::Point(vec![length(0.25), length(0.5), length(0.75)]);
+        let empty = ValueMap::new();
+        let sampled = reify_expr::sampled::sample_at_point(
+            out,
+            &probe,
+            &codomain_type,
+            &reify_expr::EvalContext::simple(&empty),
+        );
+        let Value::Vector(components) = &sampled else {
+            panic!("expected a sampled Value::Vector, got {sampled:?}")
+        };
+        // Tolerance basis: trilinear interpolation reproduces constant nodal
+        // data by partition of unity (≤~8 ULP), plus ≤2 ULP for the rad→deg
+        // round trip — orders of magnitude inside 1e-12 relative.
+        let expected_deg = [0.5, 1.0, 1.5];
+        assert_eq!(components.len(), expected_deg.len(), "Voigt shear arity");
+        for (i, (component, want)) in components.iter().zip(expected_deg).enumerate() {
+            let Value::Scalar {
+                si_value,
+                dimension,
+            } = component
+            else {
+                panic!("component {i} must be an ANGLE-dimensioned Scalar, got {component:?}")
+            };
+            assert_eq!(*dimension, DimensionVector::ANGLE, "component {i} dimension");
+            let got = si_value.to_degrees();
+            assert!(
+                (got - want).abs() <= 1e-12 * want,
+                "component {i}: expected {want}°, got {got}°"
+            );
+        }
     }
 }
