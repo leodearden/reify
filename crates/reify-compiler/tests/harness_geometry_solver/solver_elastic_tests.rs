@@ -1353,8 +1353,9 @@ fn elastic_result_struct_has_correct_param_shape() {
         ),
         // ruling #6164: `param rotation : Field<Point3<Length>, Vector3<Angle>>`,
         // placed immediately after `curl` so this table mirrors .ri declaration
-        // order.  It is the only entry here with `Type::angle()` in the codomain
-        // quantity slot — the three sibling derivative channels above stay
+        // order.  It and `shear_angles` below are the only entries here with
+        // `Type::angle()` in the codomain quantity slot — the three sibling
+        // derivative channels above stay
         // `Type::dimensionless_scalar()`.  That asymmetry IS the ruling (rationale
         // on `param rotation` in solver_elastic.ri); "fixing" the `curl` entry
         // above to `Type::angle()` for symmetry would be reverting #6164.
