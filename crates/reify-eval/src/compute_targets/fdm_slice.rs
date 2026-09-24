@@ -98,6 +98,13 @@ pub(crate) fn degraded_toolpath_value() -> Value {
     })
 }
 
+/// The °C value `nominal_temp` carries for a bead with no observed
+/// temperature. It must equal the stdlib `Bead.nominal_temp` default
+/// (`0degC`), so a marshalled unobserved bead and a default-constructed
+/// `Bead()` agree; `fdm_slice_e2e.rs`'s sentinel-agreement test pins that
+/// equality.
+const NOT_OBSERVED_NOMINAL_TEMP_C: f64 = 0.0;
+
 /// Marshal one [`Bead`] into a `Bead` `StructureInstance`.
 fn bead_to_value(b: &Bead) -> Value {
     let centerline = Value::List(
@@ -115,7 +122,10 @@ fn bead_to_value(b: &Bead) -> Value {
             ("role", bead_role_value(b.role)),
             ("layer_index", Value::Int(b.layer_index as i64)),
             ("layer_z", super::length_mm(b.layer_z)),
-            ("nominal_temp", super::temperature_deg_c(b.nominal_temp)),
+            (
+                "nominal_temp",
+                super::temperature_deg_c(b.nominal_temp.unwrap_or(NOT_OBSERVED_NOMINAL_TEMP_C)),
+            ),
             ("speed", super::velocity_mm_per_min(b.speed)),
         ],
     )
@@ -520,7 +530,7 @@ mod tests {
             role: BeadRole::Perimeter,
             layer_index: 0,
             layer_z: 0.2,
-            nominal_temp: 210.0,
+            nominal_temp: Some(210.0),
             speed: 1800.0,
         };
         let bead1 = Bead {
@@ -530,7 +540,7 @@ mod tests {
             role: BeadRole::SolidInfill,
             layer_index: 1,
             layer_z: 0.4,
-            nominal_temp: 215.0,
+            nominal_temp: Some(215.0),
             speed: 2400.0,
         };
         Toolpath {

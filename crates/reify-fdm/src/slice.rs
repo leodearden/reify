@@ -450,7 +450,7 @@ pub fn serialize_toolpath_canonical(tp: &Toolpath) -> String {
             h = fmt6(b.height),
             li = b.layer_index,
             lz = fmt6(b.layer_z),
-            nt = fmt6(b.nominal_temp),
+            nt = fmt6(b.nominal_temp.unwrap_or(0.0)),
             sp = fmt6(b.speed),
         );
         let _ = write!(out, "    centerline {}", b.centerline.len());

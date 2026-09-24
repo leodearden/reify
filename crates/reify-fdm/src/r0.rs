@@ -419,7 +419,11 @@ fn aggregate(beads: &[&Bead]) -> Option<BeadStats> {
     let n = beads.len() as f64;
     let mean_width_mm = beads.iter().map(|b| b.width).sum::<f64>() / n;
     let mean_height_mm = beads.iter().map(|b| b.height).sum::<f64>() / n;
-    let mean_temp_c = beads.iter().map(|b| b.nominal_temp).sum::<f64>() / n;
+    let mean_temp_c = beads
+        .iter()
+        .map(|b| b.nominal_temp.unwrap_or(0.0))
+        .sum::<f64>()
+        / n;
 
     // Per-bead deposition time = centerline length / feedrate (mm / (mm·min⁻¹)
     // → min → s). A non-positive feedrate / zero-length bead contributes none;

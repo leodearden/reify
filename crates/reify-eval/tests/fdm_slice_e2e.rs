@@ -551,9 +551,8 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
 // ── The 0 °C not-observed sentinel (task #6301) ─────────────────────────────
 
 /// A one-bead `Toolpath` whose bead never saw an `M104`/`M109` — i.e. carries
-/// `Sweep::new()`'s untouched `temp: 0.0` accumulator
-/// (`reify-fdm/src/toolpath.rs`). Every other field is arbitrary-but-plausible;
-/// only `nominal_temp` is load-bearing here.
+/// `nominal_temp: None` (`reify-fdm/src/toolpath.rs`). Every other field is
+/// arbitrary-but-plausible; only `nominal_temp` is load-bearing here.
 fn temperature_less_toolpath() -> reify_fdm::Toolpath {
     reify_fdm::Toolpath {
         beads: vec![reify_fdm::Bead {
@@ -564,7 +563,7 @@ fn temperature_less_toolpath() -> reify_fdm::Toolpath {
             layer_index: 0,
             layer_z: 0.2,
             // THE point of the fixture: no M104/M109 was ever seen.
-            nominal_temp: 0.0,
+            nominal_temp: None,
             speed: 1800.0,
         }],
         layers: vec![reify_fdm::Layer {
