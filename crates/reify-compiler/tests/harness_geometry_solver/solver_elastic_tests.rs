@@ -1246,6 +1246,9 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 ///     (task #4565 β: nodal displacement-gradient ∇u; dimensionless)
 ///   - `curl          : Field<Point3<Length>, Vector3<Real>>`
 ///     (task #4565 β: antisymmetric part of ∇u; dimensionless)
+///   - `rotation      : Field<Point3<Length>, Vector3<Angle>>`
+///     (ruling #6164: ∇×u / 2, the designated radian crossing; tet=Sampled,
+///     shell=Undef)
 ///   - `frame         : Field<Point3<Length>, Matrix<3,3,Real>>`
 ///     (per-element local-to-global rotation; tightened in task #3641 using
 ///     the resolver capability confirmed by task 3117)
@@ -1277,9 +1280,9 @@ fn elastic_result_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        13,
-        "ElasticResult should have exactly 13 param cells \
-         (displacement, stress, divergence, gradient, curl, frame, shell_channels, max_von_mises, converged, iterations, \
+        14,
+        "ElasticResult should have exactly 14 param cells \
+         (displacement, stress, divergence, gradient, curl, rotation, frame, shell_channels, max_von_mises, converged, iterations, \
          error_indicator, global_relative_energy_error, convergence_status), \
          got: {:?}",
         names
@@ -1343,6 +1346,22 @@ fn elastic_result_struct_has_correct_param_shape() {
                     dimension: DimensionVector::LENGTH,
                 })),
                 codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
+            },
+        ),
+        // ruling #6164: `param rotation : Field<Point3<Length>, Vector3<Angle>>`,
+        // placed immediately after `curl` so this table mirrors .ri declaration
+        // order.  It is the only entry here with `Type::angle()` in the codomain
+        // quantity slot — the three sibling derivative channels above stay
+        // `Type::dimensionless_scalar()`.  That asymmetry IS the ruling (rationale
+        // on `param rotation` in solver_elastic.ri); "fixing" the `curl` entry
+        // above to `Type::angle()` for symmetry would be reverting #6164.
+        (
+            "rotation",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::vec3(Type::angle())),
             },
         ),
         (

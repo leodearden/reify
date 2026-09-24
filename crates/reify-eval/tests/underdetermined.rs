@@ -5,12 +5,12 @@
 // Engine-level tests are preferred because the builder controls ValueCellIds
 // exactly; `engine.check()` is the literal `reify check` entry point.
 
-use reify_core::{DiagnosticCode, ModulePath, Type};
+use reify_core::{ModulePath, Type};
 use reify_eval::Engine;
 use reify_ir::{BinOp, ObjectiveSense, ObjectiveSet, SolveResult};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver, SequencedMockConstraintSolver,
-    TopologyTemplateBuilder, binop, eq, gt, literal, mm, value_ref,
+    TopologyTemplateBuilder, binop, eq, gt, literal, mm, underdetermined_diags, value_ref,
 };
 
 // ---------------------------------------------------------------------------
@@ -45,11 +45,7 @@ fn eval_emits_underdetermined_for_unconstrained_auto_param() {
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let under_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect();
+    let under_diags = underdetermined_diags(&result.diagnostics);
 
     assert_eq!(
         under_diags.len(),
@@ -102,11 +98,7 @@ fn no_underdetermined_for_objective_only_auto_param() {
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .count();
+    let count = underdetermined_diags(&result.diagnostics).len();
     assert_eq!(
         count, 0,
         "objective-pinned auto param must not trigger W_UNDERDETERMINED; \
@@ -136,11 +128,7 @@ fn no_underdetermined_for_constrained_auto_param() {
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .count();
+    let count = underdetermined_diags(&result.diagnostics).len();
     assert_eq!(
         count, 0,
         "constrained auto param must not trigger W_UNDERDETERMINED; got: {:?}",
@@ -180,11 +168,7 @@ fn no_underdetermined_for_cross_scope_read_auto_param() {
     // Leaf.k is in the global read-set → must not be flagged.
     // Later.y is also read by the constraint (in the constraint expression itself
     // as the LHS of `gt`) → also in the read-set → must not be flagged.
-    let count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .count();
+    let count = underdetermined_diags(&result.diagnostics).len();
     assert_eq!(
         count, 0,
         "cross-scope-pinned auto param must not trigger W_UNDERDETERMINED; got: {:?}",
@@ -207,11 +191,7 @@ fn no_underdetermined_for_non_auto_param() {
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .count();
+    let count = underdetermined_diags(&result.diagnostics).len();
     assert_eq!(
         count, 0,
         "non-auto param must not trigger W_UNDERDETERMINED; got: {:?}",
@@ -254,11 +234,7 @@ fn no_double_emit_for_unconstrained_auto_param_with_active_solver() {
 
     // W_UNDERDETERMINED must still fire — detect_underdetermined is outside the
     // has_active_solver gate.
-    let under_count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .count();
+    let under_count = underdetermined_diags(&result.diagnostics).len();
     assert_eq!(
         under_count, 1,
         "expected exactly 1 W_UNDERDETERMINED with active solver; got: {:?}",
@@ -320,11 +296,7 @@ fn no_double_emit_for_unconstrained_auto_free_param_with_unique_false_solver() {
         Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
     let result = engine.eval(&module);
 
-    let under_count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .count();
+    let under_count = underdetermined_diags(&result.diagnostics).len();
 
     let free_auto_count = result
         .diagnostics
@@ -369,11 +341,7 @@ fn check_propagates_underdetermined_diagnostic() {
     let mut engine = no_solver_engine();
     let check_result = engine.check(&module);
 
-    let count = check_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .count();
+    let count = underdetermined_diags(&check_result.diagnostics).len();
     assert!(
         count > 0,
         "engine.check() should propagate W_UNDERDETERMINED from eval(); got diagnostics: {:?}",
@@ -430,11 +398,7 @@ fn no_underdetermined_for_auto_param_pinned_through_a_let() {
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let count = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .count();
+    let count = underdetermined_diags(&result.diagnostics).len();
     assert_eq!(
         count, 0,
         "an auto pinned by a constraint only THROUGH a `let` must NOT be \
@@ -478,11 +442,7 @@ fn an_auto_reachable_from_no_constraint_is_still_flagged() {
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let under_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect();
+    let under_diags = underdetermined_diags(&result.diagnostics);
 
     assert_eq!(
         under_diags.len(),
@@ -562,11 +522,7 @@ fn an_auto_free_cell_is_still_never_flagged_under_the_closure() {
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let under_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect();
+    let under_diags = underdetermined_diags(&result.diagnostics);
     assert_eq!(
         under_diags.len(),
         0,
@@ -636,11 +592,7 @@ fn no_underdetermined_for_an_instance_path_auto_pinned_by_an_instance_path_const
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let under_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect();
+    let under_diags = underdetermined_diags(&result.diagnostics);
 
     assert!(
         under_diags.is_empty(),
@@ -692,11 +644,7 @@ fn two_sibling_instances_of_one_template_are_flagged_independently() {
     let mut engine = no_solver_engine();
     let result = engine.eval(&module);
 
-    let under_diags: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect();
+    let under_diags = underdetermined_diags(&result.diagnostics);
 
     assert_eq!(
         under_diags.len(),

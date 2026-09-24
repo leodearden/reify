@@ -4276,6 +4276,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-builtins"
+version = "0.1.0"
+dependencies = [
+ "reify-core",
+ "strum 0.26.3",
+]
+
+[[package]]
 name = "reify-cli"
 version = "0.1.0"
 dependencies = [
@@ -4312,6 +4320,7 @@ version = "0.1.0"
 dependencies = [
  "indexmap 2.14.0",
  "reify-ast",
+ "reify-builtins",
  "reify-compiler",
  "reify-config",
  "reify-core",
@@ -4417,6 +4426,7 @@ dependencies = [
  "inventory",
  "reify-ast",
  "reify-build-utils",
+ "reify-builtins",
  "reify-compiler",
  "reify-compute-contract",
  "reify-config",
@@ -4458,6 +4468,7 @@ dependencies = [
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-expr",
  "reify-ir",
  "reify-stdlib",
  "reify-syntax",
@@ -4675,10 +4686,12 @@ dependencies = [
 name = "reify-mesh-morph"
 version = "0.1.0"
 dependencies = [
+ "reify-build-utils",
  "reify-compiler",
  "reify-core",
  "reify-eval",
  "reify-ir",
+ "reify-kernel-gmsh",
  "reify-solver-elastic",
  "reify-test-support",
  "serde",
@@ -4735,9 +4748,11 @@ version = "0.1.0"
 dependencies = [
  "faer",
  "nalgebra",
+ "reify-builtins",
  "reify-core",
  "reify-gcode",
  "reify-ir",
+ "reify-stdlib",
  "reify-test-support",
  "tracing",
 ]
@@ -4762,6 +4777,7 @@ dependencies = [
  "reify-constraints",
  "reify-core",
  "reify-eval",
+ "reify-expr",
  "reify-ir",
  "reify-syntax",
  "serde_json",

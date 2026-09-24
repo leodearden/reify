@@ -13,15 +13,21 @@
 //! Verdict-shaped acceptance (no tuned float tolerance on a response magnitude —
 //! the fixture's projections are exact small integers; equality is discrete by
 //! construction):
-//!   (a) the outcome is a non-Undef, non-empty `List<Real>` with all entries finite;
+//!   (a) the outcome is a non-Undef, non-empty `List` with all entries finite —
+//!       list shape and magnitudes only, since the series is read through a
+//!       dimension-blind fold; the entries' LENGTH dimension is pinned by the
+//!       two guards named on `read_series_list`;
 //!   (b) the Selector-driven series equals the projection at the selector-resolved
 //!       representative node B and NOT the global antinode A (the flip);
 //!   (c) a `String` location still yields the node-A antinode series (3823 preserved).
 //!
-//! RED today (step-06): `displacement_at_trampoline` reads `value_inputs[1]` only as
-//! `Value::String` (else `""`), so a `Value::Selector` falls through the `_ => ""`
-//! arm → `resolve_location_node("", …)` → `dominant_antinode_index` → node A. The
-//! flip assertion (b) fails. GREEN after step-07 wires the Selector dispatch.
+//! Was RED before step-07 wired the Selector dispatch: `displacement_at_trampoline`
+//! read `value_inputs[1]` only as `Value::String` (else `""`), so a `Value::Selector`
+//! fell through the `_ => ""` arm → `resolve_location_node("", …)` →
+//! `dominant_antinode_index` → node A, and the flip assertion (b) failed.
+//! `resolve_location_value` (reify-eval/src/modal_ops.rs) now branches on
+//! `Value::Selector` and resolves it against the carried topology — this suite
+//! guards that flip rather than expecting it to fail.
 
 use reify_core::identity::RealizationNodeId;
 use reify_core::ty::SelectorKind;
@@ -32,7 +38,9 @@ use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeI
 
 use reify_eval::compute_targets::result_topology::{CarriedTopology, from_realized_mesh};
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_test_support::{
+    CTOR_DIAGNOSTIC_ARG_PREFIX, compile_source_with_stdlib, ctor_diagnostic_names_arg, errors_only,
+};
 
 // ── Fixture constants ─────────────────────────────────────────────────────────
 
@@ -221,14 +229,31 @@ fn run_displacement_at(history: &Value, location: Value, direction: Value) -> Ve
         &CancellationHandle::new(),
     );
     match outcome {
-        ComputeOutcome::Completed { result, .. } => read_real_list(&result),
+        ComputeOutcome::Completed { result, .. } => read_series_list(&result),
         other => panic!("expected ComputeOutcome::Completed, got: {:?}", other),
     }
 }
 
-/// Read a `List<Real>` value into `Vec<f64>`; panics if the value is not a List
-/// (so assertion (a)'s non-Undef contract is enforced at the read site).
-fn read_real_list(v: &Value) -> Vec<f64> {
+/// Read the trampoline's series `Value::List` into `Vec<f64>`, accepting
+/// `Real`/`Int`/`Scalar` entries of any dimension; panics if the value is not
+/// a List (so assertion (a)'s non-Undef contract is enforced at the read
+/// site).
+///
+/// The fold is dimension-BLIND on purpose, so no assertion in this suite would
+/// notice the series being retyped away from LENGTH. Two guards elsewhere pin
+/// the two halves, which are checked nowhere against each other:
+///   - RUNTIME — `displacement_at_series_entries_are_length_dimensioned`
+///     (in-module in `reify-eval/src/modal_ops.rs`) drives the trampoline and
+///     asserts every entry is a `Value::Scalar` of `DimensionVector::LENGTH`;
+///   - DECLARED — `displacement_at_overloads_return_list_of_length`
+///     (`reify-compiler/tests/harness_mechanics/modal_mechanism_compile.rs`)
+///     asserts both stdlib overloads declare `-> List<Length>`.
+///
+/// Those are tests. `displacement_series_outcome` — which wraps the series in
+/// LENGTH-dimensioned scalars — is the IMPLEMENTATION both of them pin, so it
+/// is no use as a citation here: retype it and the supposed pin moves with the
+/// behaviour it was meant to catch.
+fn read_series_list(v: &Value) -> Vec<f64> {
     match v {
         Value::List(items) => items
             .iter()
@@ -236,7 +261,7 @@ fn read_real_list(v: &Value) -> Vec<f64> {
                 Value::Real(r) => *r,
                 Value::Scalar { si_value, .. } => *si_value,
                 Value::Int(n) => *n as f64,
-                other => panic!("series entry must be a Real, got: {:?}", other),
+                other => panic!("series entry must be Real, Int, or Scalar, got: {:?}", other),
             })
             .collect(),
         other => panic!("displacement_at must return a Value::List, got: {:?}", other),
@@ -255,14 +280,16 @@ fn series_approx_eq(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9)
 }
 
-// ── step-06 tests (RED until step-07 wires Selector dispatch) ─────────────────────
+// ── Selector-location dispatch tests (added step-06; guards the step-07 wiring) ──
 
 /// (a)+(b): a `Selector` `location` resolves to the +Z face's representative node
 /// B=2 (peak within {1,2}), NOT the global antinode A=0. The series is a non-empty,
-/// all-finite `List<Real>` equal to node B's projection and distinct from node A's.
+/// all-finite `List` equal to node B's projection and distinct from node A's —
+/// magnitudes only, per the dimension note on `read_series_list`.
 ///
-/// RED today: the Selector falls through `value_inputs[1]`'s `_ => ""` arm →
-/// antinode A → the series equals node A and the flip assertion fails.
+/// Was RED before step-07 wired Selector dispatch: the Selector fell through
+/// `value_inputs[1]`'s `_ => ""` arm → antinode A → the series equalled node A
+/// and the flip assertion failed. Now guards against that regression.
 #[test]
 fn selector_location_flips_to_face_representative_node() {
     let carried = make_carried();
@@ -322,7 +349,7 @@ fn string_location_preserves_antinode_3823() {
     );
 }
 
-// ── step-08 test: forcing path resolves a Selector `at` (RED until step-09) ───────
+// ── Selector-forcing dispatch test: resolves a Selector `at` (added step-08; guards the step-09 wiring) ──
 
 /// A `StepForce`-shaped forcing source with the given `at` location and a +X
 /// direction (magnitude 1 N from t=0).
@@ -391,7 +418,7 @@ fn read_mode_coords(history: &Value) -> Vec<Vec<f64>> {
         _ => None,
     };
     match coords {
-        Some(Value::List(series)) => series.iter().map(read_real_list).collect(),
+        Some(Value::List(series)) => series.iter().map(read_series_list).collect(),
         _ => Vec::new(),
     }
 }
@@ -413,9 +440,10 @@ fn peak_abs(coords: &[Vec<f64>]) -> f64 {
 ///       smaller (node B has a smaller Φ than the antinode A → smaller modal
 ///       forcing → smaller response). Both are exact, tolerance-free verdicts.
 ///
-/// RED today: the forcing reads `at` only as `Value::String` (else `""`), so the
-/// Selector and String runs both excite antinode A → identical responses → (b)
-/// fails. GREEN after step-09 routes `at` through `resolve_location_value`.
+/// Was RED before step-09 routed `at` through `resolve_location_value`: the
+/// forcing read `at` only as `Value::String` (else `""`), so the Selector and
+/// String runs both excited antinode A → identical responses → (b) failed. Now
+/// guards against that regression.
 #[test]
 fn forcing_selector_at_resolves_representative_node() {
     let carried = make_carried();
@@ -465,7 +493,7 @@ fn forcing_selector_at_resolves_representative_node() {
     );
 }
 
-// ── step-10 tests: DSL overload typecheck (RED until step-11 adds the overload) ──
+// ── DSL overload typecheck test (added step-10; guards the step-11 overload) ────
 
 /// Compile a `structure` running modal_analysis → transient_response →
 /// displacement_at, with the displacement_at `location` argument given by the DSL
@@ -486,7 +514,7 @@ structure R3bSelectorOverloadProbe {{
     let opts = ModalOptions(
         n_modes: 3,
         boundary_conditions: [root],
-        damping: RayleighDamping(alpha: 0.0, beta: 0.0003),
+        damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0003s),
         sigma: 0.0,
         tol: 0.000000001,
         max_iters: 200,
@@ -531,12 +559,22 @@ fn displacement_at_overload_errors(module: &reify_compiler::CompiledModule) -> V
         .collect()
 }
 
-/// A `Selector` `location` (a let-bound `faces_by_normal`) must resolve the
+/// A `FaceSelector` `location` (a let-bound `faces_by_normal`) must resolve the
 /// `displacement_at` overload — no "no matching overload" diagnostic.
 ///
-/// RED today: only the `location: String` overload exists, so the Selector call
-/// site yields a no-matching-overload error. GREEN after step-11 adds the
-/// `location: Selector` overload sharing the one trampoline.
+/// Was RED before step-11 added the `location : FaceSelector` overload sharing
+/// the one trampoline: only the `location : String` overload existed, so the
+/// selector call site yielded a no-matching-overload error. Now guards against
+/// that regression.
+///
+/// `FaceSelector` is the param spelling on purpose, NOT the kind-agnostic
+/// `Selector` / `AnySelector`: `resolve_function_overload` (type_compat.rs)
+/// matches params by EXACT equality, so an `AnySelector` param would reject the
+/// `FaceSelector` argument this test passes and reinstate the very
+/// no-matching-overload failure guarded here — `stdlib/modal_analysis_fns.ri`
+/// carries the same warning above the declaration. The kind-agnostic shape
+/// belongs one layer down, at runtime, where the shared trampoline branches on
+/// `value_inputs[1]`'s `Value::Selector`.
 #[test]
 fn displacement_at_accepts_selector_location_overload() {
     let module = compile_displacement_at_probe("tip_face");
@@ -549,9 +587,163 @@ fn displacement_at_accepts_selector_location_overload() {
     );
 }
 
+// ── amendment: guard the two migrated RayleighDamping ctor sites this crate
+//    reaches, which `examples_smoke`'s corpus walk does not ───────────────────
+
+/// The `RayleighDamping` params task #6093 retyped to `Frequency` / `Time`.
+const RAYLEIGH_PARAMS: [&str; 2] = ["alpha", "beta"];
+
+/// Diagnostics in `module` naming a `RayleighDamping` ctor arg, at ANY severity.
+///
+/// Matched on the QUOTED label (`argument 'beta'`), never a bare
+/// `contains(param)`: a module compiled through `compile_source_with_stdlib`
+/// carries the diagnostics of the probe source AND of the whole stdlib prelude,
+/// so an unquoted match would also catch any prelude message that merely
+/// contains the word.
+///
+/// Code-AGNOSTIC on purpose: it deliberately does NOT filter on
+/// `is_ctor_conformance_code`. The quoted label is the discriminator that
+/// survives BOTH the planned `Warning`→`Error` flip of
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` and any re-classification of the emitted
+/// `DiagnosticCode` — including a re-emission that carries no code at all,
+/// which a code-set filter would miss entirely.
+fn rayleigh_ctor_arg_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<String> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            RAYLEIGH_PARAMS
+                .iter()
+                .any(|p| ctor_diagnostic_names_arg(&d.message, p))
+        })
+        .map(|d| format!("{:?}: {}", d.severity, d.message))
+        .collect()
+}
+
+/// Both `RayleighDamping` ctor sites reachable from this crate carry UNIT
+/// literals (`alpha: 0.0Hz, beta: 0.0003s`), not bare `Real`s.
+///
+/// MEASURED GAP this closes. `examples_smoke::
+/// no_example_emits_ctor_field_conformance_diagnostics` walks `examples/` only,
+/// so task #6093's three migrated sites under `examples/` were guarded and
+/// these two were not: reverting either back to `(alpha: 0.0, beta: 0.0003)`
+/// left the whole `r3b_modal_selector_displacement` suite green. Nor would the
+/// revert break the build — `CTOR_FIELD_CONFORMANCE_SEVERITY` is `Warning`
+/// pre-δ — so the regression would sit silent until the Warning→Error flip.
+///
+/// The two sites:
+///   - the inline probe source built by [`compile_displacement_at_probe`],
+///     which no test outside this file reaches;
+///   - `tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri`, whose
+///     other consumers judge two axes: PARSE shape (`EXPECTED_CLEAN` in
+///     `gui/src/__tests__/reifyGrammarCorpus.test.ts`, plus `verify.sh`'s
+///     `_GUI_COUPLED_RI_FIXTURES`), and — since task #5305, after the
+///     measurement above — ctor CONFORMANCE by diagnostic-CODE identity
+///     (`CTOR_CONFORMANCE_PINNED_CLEAN`, asserted gate-resident by
+///     `pinned_clean_files_emit_no_ctor_conformance_diagnostic` in
+///     `ctor_conformance_corpus_survey.rs`).
+///
+/// That code-keyed pin and this prose-keyed one overlap on the fixture
+/// DELIBERATELY — the survey's own doc says so and leaves this one alone —
+/// because they go red on disjoint drifts. The pin filters on
+/// `is_ctor_conformance_code`, so a re-emission carrying a re-classified code,
+/// or none, slips past it and is caught here; this helper keys on the message
+/// wording, so an `emit_arg_type_mismatch` reword slips past it and is caught
+/// there. The inline probe site has no such second guard.
+///
+/// The fixture now typechecks cleanly — `reify check` on it exits 0 — since
+/// the R3b `location: FaceSelector` overload landed (it no longer raises "no
+/// matching overload for displacement_at"). This still judges the ctor-arg
+/// axis ONLY, never `errors_only(..).is_empty()`, because it is a targeted
+/// conformance guard scoped to catching a `RayleighDamping` ctor-arg
+/// regression, not a whole-pipeline health check.
+///
+/// Opens with a POSITIVE CONTROL, because both site assertions below are
+/// emptiness assertions over a PROSE-matched helper: [`rayleigh_ctor_arg_diagnostics`]
+/// is deliberately code-agnostic, so it keys on the literal
+/// [`CTOR_DIAGNOSTIC_ARG_PREFIX`] wording of `emit_arg_type_mismatch`
+/// (`reify-compiler/src/conformance/mod.rs`). Reword that emitter — backtick
+/// quoting, `arg 'x'`, a structured label — and the helper returns an empty Vec
+/// for EVERY input, both assertions pass vacuously forever, and a reverted
+/// `alpha: 0.0` site goes unnoticed. Unlike the sibling in
+/// `modal_options_validation_tests.rs`, this crate has no other test asserting a
+/// NON-empty result on the same const, so the control has to live right here.
+#[test]
+fn migrated_rayleigh_ctor_sites_emit_no_ctor_arg_diagnostics() {
+    // (0) POSITIVE CONTROL — a deliberately UN-migrated ctor must produce
+    // exactly one hit per dimensioned slot. Proves the matcher is live before
+    // either emptiness assertion below is trusted; goes red on a wording drift
+    // in `emit_arg_type_mismatch` instead of going quietly green.
+    let unmigrated = compile_source_with_stdlib(
+        r#"
+structure R3bUnmigratedRayleighCtorControl {
+    let damping = RayleighDamping(alpha: 0.0, beta: 0.0003)
+}
+"#,
+    );
+    let control_hits = rayleigh_ctor_arg_diagnostics(&unmigrated);
+    assert_eq!(
+        control_hits.len(),
+        RAYLEIGH_PARAMS.len(),
+        "POSITIVE CONTROL: a bare-Real arg at each of the two dimensioned \
+         RayleighDamping slots must raise exactly one ctor-arg diagnostic \
+         naming that slot. Zero hits means `rayleigh_ctor_arg_diagnostics` has \
+         gone blind — most likely `emit_arg_type_mismatch` no longer words the \
+         `{CTOR_DIAGNOSTIC_ARG_PREFIX}<param>'` prefix this helper matches on — \
+         and the two emptiness assertions below are now VACUOUS. Fix the \
+         helper, do not delete this arm. Got {:#?} out of module diagnostics \
+         {:#?}",
+        control_hits,
+        unmigrated.diagnostics
+    );
+    for param in RAYLEIGH_PARAMS {
+        assert!(
+            control_hits
+                .iter()
+                .any(|m| ctor_diagnostic_names_arg(m, param)),
+            "POSITIVE CONTROL: one ctor-arg diagnostic must name `{param}`; \
+             got: {:#?}",
+            control_hits
+        );
+    }
+
+    let probe = compile_displacement_at_probe("tip_face");
+    let probe_hits = rayleigh_ctor_arg_diagnostics(&probe);
+    assert!(
+        probe_hits.is_empty(),
+        "the inline r3b probe's RayleighDamping ctor must carry unit literals; \
+         got ctor-arg diagnostics: {:#?}",
+        probe_hits
+    );
+
+    let fixture_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri"
+    );
+    let fixture_source = std::fs::read_to_string(fixture_path)
+        .unwrap_or_else(|e| panic!("fixture {fixture_path} must be readable: {e}"));
+    // Guard the guard: with no RayleighDamping ctor in the fixture the
+    // assertion below would pass vacuously, which is exactly the silent-hole
+    // shape this test exists to remove.
+    assert!(
+        fixture_source.contains("RayleighDamping("),
+        "{fixture_path} must still construct a RayleighDamping — otherwise the \
+         ctor-arg assertion below is vacuous"
+    );
+    let fixture = compile_source_with_stdlib(&fixture_source);
+    let fixture_hits = rayleigh_ctor_arg_diagnostics(&fixture);
+    assert!(
+        fixture_hits.is_empty(),
+        "{fixture_path}'s RayleighDamping ctor must carry unit literals; got \
+         ctor-arg diagnostics: {:#?}",
+        fixture_hits
+    );
+}
+
 /// The existing `location: String` form still compiles cleanly (the String
-/// overload is preserved, not replaced) — passes today and after step-11. Asserts
-/// the WHOLE pipeline is error-free, validating the probe source's health.
+/// overload is preserved, not replaced) — passes now that step-11 added the
+/// Selector overload alongside it. Asserts the WHOLE pipeline is error-free,
+/// validating the probe source's health.
 #[test]
 fn displacement_at_string_location_overload_preserved() {
     let module = compile_displacement_at_probe("\"tip\"");

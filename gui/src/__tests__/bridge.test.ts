@@ -21,6 +21,7 @@ import { listen } from '@tauri-apps/api/event';
 import {
   getInitialState,
   setParameter,
+  previewParameter,
   saveFile,
   updateSource,
   exportGeometry,
@@ -86,6 +87,9 @@ describe('bridge commands', () => {
     expect(result).toEqual(mockState);
   });
 
+  // The two wire names carry opposite cadences, so a swap would be silent and
+  // expensive: previews would rewrite the design 60 times a second, and a
+  // released slider would leave nothing behind. Pinned side by side.
   it('setParameter calls invoke with cellId and value', async () => {
     const rawState: RawGuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [] };
     mockInvoke.mockResolvedValue(rawState);
@@ -96,6 +100,29 @@ describe('bridge commands', () => {
       cellId: 'cell_001',
       value: '42.0',
     });
+  });
+
+  it('previewParameter calls invoke with cellId and value', async () => {
+    const rawState: RawGuiState = {
+      meshes: [{ entity_path: 'Box.body', vertices: [0, 1, 2], indices: [0, 1, 2], normals: null }],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+    };
+    mockInvoke.mockResolvedValue(rawState);
+
+    const result = await previewParameter('cell_001', '42.0');
+
+    expect(mockInvoke).toHaveBeenCalledWith('preview_parameter', {
+      cellId: 'cell_001',
+      value: '42.0',
+    });
+    // Converted through `convertRawGuiState` like its sibling — a preview feeds
+    // the same viewport, so it cannot hand back a differently shaped state.
+    expect(result.meshes[0].vertices).toBeInstanceOf(Float32Array);
+    expect(result.meshes[0].indices).toBeInstanceOf(Uint32Array);
   });
 
   it('saveFile calls invoke with both path and content', async () => {

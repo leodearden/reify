@@ -221,6 +221,39 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ---------------------------------------------------------------------------
+# Git repository-environment scrub (task #7106).
+#
+# The defect, its measurement and the variable list live in ONE place —
+# scripts/lib_git_env_scrub.sh's header — and are deliberately NOT restated
+# here; only this site's own reasoning is.
+#
+# Sourced HERE, at the top, rather than beside the pool wiring it was first
+# written for: run_all.sh makes SEVEN repo-targeting `git -C` calls of its OWN
+# (the flaky ledger's branch read, and the content-skip engine's toplevel /
+# diff / status / HEAD reads), and every one of them is the same `git -C is
+# outranked` class. The skip engine in particular is gated on
+# _RA_INBOUND_ROLE=merge — i.e. it runs ONLY under the hook environment that
+# actually exports GIT_INDEX_FILE — and `git status` both reads and (stat-cache
+# refresh) can WRITE the index that variable names. Sourcing before every git
+# call site, rather than merely before the member spawns, is what makes the
+# helper reachable from all of them by construction.
+#
+# UNCONDITIONAL and hard-required (never fail-open): the legacy all-serial
+# fallback path spawns members too, and a silently-absent scrub is the exact
+# defect this closes. run_all.sh is always invoked as $SCRIPT_DIR/run_all.sh
+# from the real tests/infra (only INFRA_DIR is ever redirected at a fixture),
+# so this path always resolves — deliberately derived from SCRIPT_DIR rather
+# than $_H2_REPO_ROOT, which is not resolved until much further down.
+# ---------------------------------------------------------------------------
+_RA_GIT_ENV_SCRUB_LIB="$SCRIPT_DIR/../../scripts/lib_git_env_scrub.sh"
+if [ ! -f "$_RA_GIT_ENV_SCRUB_LIB" ]; then
+    echo "run_all.sh: ERROR — scripts/lib_git_env_scrub.sh not found at $_RA_GIT_ENV_SCRUB_LIB" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_git_env_scrub.sh
+source "$_RA_GIT_ENV_SCRUB_LIB"
+
 # Per-run identifier for the FLAKY ledger (task #5142): stamps every ledger
 # line so the chronic-offender scan (_ra_flaky_chronic_check) can window
 # over "the last M DISTINCT runs" exactly, even though a single run can
@@ -663,7 +696,7 @@ _ra_flaky_ledger_append() {
     command -v flock >/dev/null 2>&1 || return 0
 
     local _branch _task _line
-    _branch="$(git -C "$INFRA_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    _branch="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     [ -n "$_branch" ] || _branch="unknown"
     case "$_branch" in
         task/*) _task="${_branch#task/}" ;;
@@ -1027,8 +1060,8 @@ _ra_skip_engine() {
     [ -n "${REIFY_RUN_ALL_SKIP_STATE:-}" ] || return 0
     _RA_SKIP_ACTIVE=1
 
-    _RA_SKIP_TOPLEVEL="$(git -C "$INFRA_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
-    _RA_SKIP_INFRA_REL="$(git -C "$INFRA_DIR" rev-parse --show-prefix 2>/dev/null || true)"
+    _RA_SKIP_TOPLEVEL="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    _RA_SKIP_INFRA_REL="$(reify_git_env_scrub git -C "$INFRA_DIR" rev-parse --show-prefix 2>/dev/null || true)"
     _ra_skip_read_closures
     _ra_skip_read_state
 
@@ -1075,9 +1108,9 @@ _ra_skip_engine() {
         # or a git error such as a bad sha) ⇒ RUN (delta). Capture a
         # representative touched path (first changed file) for the log line.
         _rc=0
-        git -C "$_RA_SKIP_TOPLEVEL" diff --quiet "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || _rc=$?
+        reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" diff --quiet "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || _rc=$?
         if [ "$_rc" -ne 0 ]; then
-            _names="$(git -C "$_RA_SKIP_TOPLEVEL" diff --name-only "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null)" || _names=""
+            _names="$(reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" diff --name-only "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null)" || _names=""
             _touch="${_names%%$'\n'*}"
             [ -n "$_touch" ] || _touch="(unknown)"
             echo "RUN (delta): $_name touched=$_touch"
@@ -1086,7 +1119,7 @@ _ra_skip_engine() {
         # Worktree delta over the closure (staged/unstaged/untracked) ⇒ RUN
         # (delta). The porcelain first line is `XY <path>`; strip the 3-char
         # status prefix to name the touched path.
-        _wt="$(git -C "$_RA_SKIP_TOPLEVEL" status --porcelain -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || true)"
+        _wt="$(reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" status --porcelain -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || true)"
         if [ -n "$_wt" ]; then
             _touch="${_wt%%$'\n'*}"
             _touch="${_touch:3}"
@@ -1153,7 +1186,7 @@ _ra_skip_state_write() {
     [ -n "$_state" ] || return 0
 
     local _head _now _new_global
-    _head="$(git -C "$_RA_SKIP_TOPLEVEL" rev-parse HEAD 2>/dev/null || true)"
+    _head="$(reify_git_env_scrub git -C "$_RA_SKIP_TOPLEVEL" rev-parse HEAD 2>/dev/null || true)"
     [ -n "$_head" ] || return 0
     _now="${EPOCHSECONDS:-$(date +%s)}"
     _new_global=$(( _RA_SKIP_GLOBAL_MERGES + 1 ))
@@ -1381,7 +1414,7 @@ if [ "$SCOPE" = "host-infra" ]; then
         echo ""
         echo "--- Running: $_h9_name ---"
         _h9_child_rc=0
-        bash "$INFRA_DIR/$_h9_name" 9<&- || _h9_child_rc=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_h9_name" 9<&- || _h9_child_rc=$?
         if [ "$_h9_child_rc" -eq 0 ]; then
             echo "  RESULT: PASS ($_h9_name)"
         else
@@ -1446,7 +1479,7 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
             # corrupting that member's self-tests. The subset knob governs
             # only the outer/top-level discovery, never a member's own
             # nested invocations.
-            env -u REIFY_RUN_ALL_MEMBER_SUBSET \
+            reify_git_env_scrub env -u REIFY_RUN_ALL_MEMBER_SUBSET \
                 bash "$INFRA_DIR/$_ra_subset_base" > "$_ra_subset_tmp" 2>&1 || _ra_subset_rc=$?
             _ra_emit_sanitized "$_ra_subset_tmp" "$_ra_subset_base"
             if [ "$_ra_subset_rc" -eq 0 ]; then
@@ -1853,7 +1886,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # test, never hang. slot_acquire itself already closes FD 9 on
             # every failed attempt, so no held-slot cleanup is needed here.
             slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" "$_H2_POOL_TIMEOUT_DISPOSITION" || _h2_slot_rc=$?
-            bash "$INFRA_DIR/$_h2_name" 9<&- > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_child_rc=$?
+            reify_git_env_scrub bash "$INFRA_DIR/$_h2_name" 9<&- > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_child_rc=$?
             if [ "$_h2_slot_rc" -eq 0 ]; then
                 exec 9>&-
             fi
@@ -1890,7 +1923,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         _ra_interrupt_if_worktree_gone
         _h2_i="${_h2_index_of[$_h2_name]}"
         _h2_rc=0
-        bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_rc=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_rc=$?
         echo "$_h2_rc" > "$_H2_WORKDIR/${_h2_i}.rc"
     done
 
@@ -1921,7 +1954,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         _h2_first_rc="$(cat "$_H2_WORKDIR/${_h2_i}.rc" 2>/dev/null || echo 1)"
         [ "$_h2_first_rc" -eq 0 ] && continue
         _h2_retry_rc_val=0
-        bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.retry.out" 2>&1 || _h2_retry_rc_val=$?
+        reify_git_env_scrub bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.retry.out" 2>&1 || _h2_retry_rc_val=$?
         echo "$_h2_retry_rc_val" > "$_H2_WORKDIR/${_h2_i}.retry.rc"
         _h2_retried["$_h2_name"]=1
         _h2_retry_rc["$_h2_name"]="$_h2_retry_rc_val"
@@ -2002,7 +2035,7 @@ else
         echo ""
         echo "--- Running: $basename ---"
         _ra_legacy_rc=0
-        bash "$test_file" || _ra_legacy_rc=$?
+        reify_git_env_scrub bash "$test_file" || _ra_legacy_rc=$?
         if [ "$_ra_legacy_rc" -eq 0 ]; then
             echo "  RESULT: PASS ($basename)"
         else

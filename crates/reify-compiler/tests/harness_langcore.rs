@@ -25,6 +25,8 @@ mod let_annotation_type_mismatch_tests;
 mod let_scope_tests;
 #[path = "harness_langcore/let_type_disambiguation_tests.rs"]
 mod let_type_disambiguation_tests;
+#[path = "harness_langcore/member_continuation_hard_error_tests.rs"]
+mod member_continuation_hard_error_tests;
 #[path = "harness_langcore/parametric_alias_def_site_validation_tests.rs"]
 mod parametric_alias_def_site_validation_tests;
 #[path = "harness_langcore/parametric_field_resolution_tests.rs"]
@@ -33,6 +35,8 @@ mod parametric_field_resolution_tests;
 mod parametric_tensor_resolution_tests;
 #[path = "harness_langcore/parametric_vector_point_resolution_tests.rs"]
 mod parametric_vector_point_resolution_tests;
+#[path = "harness_langcore/prelude_sub_member_typing_tests.rs"]
+mod prelude_sub_member_typing_tests;
 #[path = "harness_langcore/priv_import_boundary_tests.rs"]
 mod priv_import_boundary_tests;
 #[path = "harness_langcore/priv_member_visibility_tests.rs"]

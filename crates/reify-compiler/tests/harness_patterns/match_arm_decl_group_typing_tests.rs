@@ -84,6 +84,7 @@ fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
         index_binder: None,
         index_domain: None,
         relate_relations: vec![],
+        derivation: None,
         span: zero_span(),
         content_hash: ContentHash(0),
     })
@@ -759,6 +760,7 @@ fn collection_sub_member(name: &str, structure_name: &str) -> MemberDecl {
         index_binder: None,
         index_domain: None,
         relate_relations: vec![],
+        derivation: None,
         span: zero_span(),
         content_hash: ContentHash(0),
     })

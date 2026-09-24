@@ -269,7 +269,9 @@ fn connect_occurrence_chain() {
         .iter()
         .find(|t| t.name == "Pipeline")
         .expect("should have a Pipeline template");
-    // chain p1.outlet -> p2.inlet -> p2.outlet -> p3.inlet should produce 3 connections
+    // `chain p1 -> p2 -> p3` desugars per role: p1.outlet -> p2.inlet, then
+    // p2.outlet -> p3.inlet. The exact endpoints are pinned by the compiler's
+    // chain_desugar_tests; here only their reaching eval matters.
     assert!(
         !pipeline.connections.is_empty(),
         "Pipeline should have connections from chain desugaring"

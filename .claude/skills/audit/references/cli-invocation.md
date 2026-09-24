@@ -93,7 +93,8 @@ $REIFY_AUDIT_BIN \
   [--since <iso-date>] \
   [--pattern P1|P2|P5|PTODO|PDEAD|PUNTESTED|PLAYER] \
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
-  [--jcodemunch-repo <id>]   \  # default: leodearden/reify
+  [--jcodemunch-repo <id>]   \  # NO default: derived per-path as local/<basename>-<sha1(abs project_root)[..8]>
+  [--jcodemunch-index-dir <path>] \  # freshness-gate index dir: flag > $JCODEMUNCH_INDEX_DIR > $CODE_INDEX_PATH > $HOME/.code-index
   [--no-jcodemunch]          \  # force inert stub (offline/test); P1/P-* yield nothing
   --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
@@ -108,6 +109,26 @@ FINDINGS=$(cat "$TMPFILE")
 # Clean up (EXIT trap above also covers abnormal exits).
 rm -f "$SNAPSHOT" "$RESPONSE" "$TMPFILE"
 ```
+
+**Do not "restore" a `--jcodemunch-repo` default.** There is deliberately none.
+`reify-audit` derives the per-path identity from `--project-root` — for
+`/home/leo/src/reify` that is `local/reify-4ae45bbd` — and the flag is retained
+only as an explicit override. Reify **forces** that per-path identity at every
+invocation site for a reason this file deliberately does not restate:
+`docs/architecture-audit/jcodemunch-serve-activation.md` §"Why the identity is
+forced" owns it. Per-path is also what makes the freshness comparison
+meaningful — one corpus per tree, so "built at a different commit" means
+something. Passing the retired `leodearden/reify` by hand resolves to an empty
+husk; with a reachable serve the freshness gate then refuses `E_JC_INDEX_EMPTY`
+— exit 125 with no detector run on an all-jcodemunch `--pattern` set, and a
+zero-findings fail-soft breadcrumb on a mixed or pattern-less run (§4.1).
+
+The `CODE_INDEX_PATH` rung of `--jcodemunch-index-dir` is load-bearing rather than
+decorative: it is jcodemunch's own variable and the one
+`scripts/jcodemunch-index-reify.sh` resolves its DB under, so dropping it would
+let the gate probe a directory the indexer never writes — reopening on the
+DIRECTORY axis exactly the mismatch the derived identity forbids on the IDENTITY
+axis.
 
 **Why a tempfile?** The CLI writes the human-readable summary to stdout and the JSON array to stderr in a single run. A tempfile sink for stderr survives multi-line pretty-printed JSON without the LLM needing to parse a mixed stream inline. `mktemp` generates a collision-free name (`XXXXXX` entropy), safer than a `$$`-based name (which reuses the parent shell PID in long-lived shells and risks stale-file cross-contamination across runs). The `trap 'rm -f "$TMPFILE"' EXIT` guard ensures cleanup even on early exit (parse failure, exception, `Ctrl-C`).
 
@@ -154,6 +175,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 | Unreadable runs.db | `error opening runs-db 'data/orchestrator/runs.db': …` | DB may not exist yet; confirm orchestrator has run at least once |
 | Broken stderr serialization | `error serializing findings to JSON (broken stderr?)` | Rare; may indicate a resource limit; retry or report as infra issue |
 | Unknown flag or missing value | `error: unknown flag '…'` or `error: --<flag> requires a value` | Bug in skill argv construction — check `references/modes.md` |
+| Unusable jcodemunch index (**conditional**) | `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE`, or a token-less `cannot verify jcodemunch index freshness for …` | Only refuses on an all-jcodemunch `--pattern` set; a mixed or pattern-less run fail-softs instead. Codes, remedies and the two-arm rule: §4.1 |
 | Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
 ### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
@@ -170,17 +192,39 @@ When the jcodemunch MCP server is unreachable (the common case — jcodemunch is
   ```
   *(Note: the breadcrumb text names "P1" generically, even when an advisory P-* pattern such as PDEAD, PUNTESTED, or PLAYER is the pattern that degraded — the message text in the binary was written before the P-* patterns existed. All of P1/PDEAD/PUNTESTED/PLAYER degrade identically; the breadcrumb wording is not a reliable indicator of which pattern triggered the degradation.)*
 
-**This breadcrumb is NOT exit 125** — the exit code is determined by findings severity (0 = none, 1+ = findings), same as a normal run. The §3.1 disambiguator applies normally.
+**This breadcrumb is NOT exit 125** — the exit code is determined by findings severity (0 = none, 1+ = findings), same as a normal run. The §3.1 disambiguator applies normally. The freshness gate below does **not** fire on this path: with no serve there is no corpus to be misled by, so there is nothing to refuse.
+
+#### The other arm: serve reachable, index not usable
+
+After a **successful** handshake, a freshness gate probes the index for this checkout before any detector runs. The outcome splits on what `--pattern` selected:
+
+- An **all-jcodemunch** pattern set — any comma set drawn only from `P1`, `PDEAD`, `PUNTESTED`, `PLAYER` — **hard-exits 125** with the refusal on stderr (carrying a marker token in three of the four cases tabulated below). Nothing in the run set could have survived a refusal, so nothing is salvaged.
+- A **mixed or pattern-less** run fail-softs exactly as the unreachable-serve path does: the jcodemunch-backed detectors degrade to zero findings, P2/P5/PTODO still run, and the findings array is still emitted. The breadcrumb repeats the refusal message verbatim, so a run that would have carried a marker token on the hard arm carries the same one here — and the token-less HEAD case below stays token-less on both arms.
+
+The refusal returns **before any findings array is serialized**, so it emits no parseable JSON. That is precisely what lets the existing §3.1 disambiguator classify it correctly: the tempfile does not parse as a JSON array, so it is routed as an infra error rather than as 125 High findings. §3.1 needs no change for this — do not edit it.
+
+**Codes and remedies.** These are emitted by `reify-audit` itself and fire on **any** run, not only a `--pre-done` flip:
+
+| stderr carries | rc | meaning | remedy |
+|---|---|---|---|
+| `E_JC_INDEX_STALE` | 125 | the index was built at a different commit than the working tree | re-index this checkout: `scripts/jcodemunch-index-reify.sh` (it forces `JCODEMUNCH_GIT_ROOT_IDENTITY=0`), or pass `--no-jcodemunch` |
+| `E_JC_INDEX_EMPTY` | 125 | the index carries no symbols, or does not exist at all | same as above |
+| `E_JC_INDEX_UNREADABLE` | 125 | the index file **exists** but could not be read — corrupt, permissions, WAL, or a jcodemunch schema change | repair or remove the file, *then* re-index. Deliberately a separate remedy: sending an operator to rebuild an intact corpus stuck behind a permissions fault costs a full re-index to learn nothing |
+| **no token** — the message reads `cannot verify jcodemunch index freshness for <repo-id> — …` | 125 | HEAD could not be read, so freshness could not be established either way. **Nothing has been learned about the index** | fix the **git** invocation, not the index: confirm `--project-root` is a readable checkout where `git rev-parse HEAD` succeeds. Re-indexing is wasted work here — the corpus was never implicated |
+
+**The marker token is not exhaustive, and that is deliberate.** The fourth row is token-less by design: `enforce_index_freshness` (`crates/reify-audit/src/bin/reify-audit.rs`) writes that message to be *distinct* from every marker token precisely because neither staleness nor emptiness nor unreadability of the index has been established, and mislabelling it as one of them would send an operator to re-index over what is actually a git fault. So the token, **when present**, is the discriminator — but a 125 whose message names freshness and carries no token is this case, not an undocumented fourth code.
 
 **Escape hatch:** pass `--no-jcodemunch` to force the inert stub without connecting, silencing the breadcrumb. Useful for P2/P5-only sweeps where P1 and the advisory P-* patterns are intentionally skipped.
 
-**jcodemunch-serve prerequisite:** For P1 and the advisory P-* patterns (PDEAD/PUNTESTED/PLAYER) to produce **real** findings, the `jcodemunch-serve` systemd unit must be running and reachable at the configured URL. To check:
+**Serve prerequisite:** For P1 and the advisory P-* patterns (PDEAD/PUNTESTED/PLAYER) to produce **real** findings, a serve must be answering at the configured URL for the duration of the run. There is no persistent systemd unit and no `systemctl` query to run — wrap the invocation instead:
 
 ```bash
-systemctl --user status jcodemunch-serve.service
+scripts/with-jcodemunch-serve.sh -- $REIFY_AUDIT_BIN --pattern P1 --project-root "$REPO_ROOT" …
 ```
 
-For full activation instructions (port 8901, repo-id, enable command) see `docs/architecture-audit/jcodemunch-serve-activation.md` — that document is the single source of truth for serve operational identifiers. Note that jcodemunch is not listed in reify's `.mcp.json` — it must be started out-of-band before a live P1 or P-* sweep.
+The wrapper spawns a serve, readiness-polls it (an **identity** check, not a bare TCP connect), runs the wrapped command with `JCODEMUNCH_URL` exported, and tears the serve down on every exit path. The check that matters is therefore whether the wrapper reached readiness, not what `systemctl` thinks: when it does not, it says why with a greppable marker — `E_JC_SERVE_PORT_BUSY`, `E_JC_SERVE_SPAWN_FAILED`, `E_JC_SERVE_NOT_READY`, `E_JC_SERVE_LEAKED`. That script's header is the single source of truth for those markers and for the pinned jcodemunch version.
+
+jcodemunch is still not listed in reify's `.mcp.json`, so it must be brought up out-of-band before a live P1 or P-* sweep — the wrapper is how. For serve operational identifiers see `docs/architecture-audit/jcodemunch-serve-activation.md`.
 
 **Trailing-slash gotcha:** use `/mcp` as the endpoint path, **not** `/mcp/` — the trailing slash triggers a 307 redirect that drops the `mcp-session-id` header, causing the connection to fail silently. The default `http://127.0.0.1:8901/mcp` is correct; do not add a trailing slash when overriding via `--jcodemunch-url`.
 
@@ -201,14 +245,14 @@ $ cat /tmp/out.json
 
 Skill behaviour: parse empty array, write per-run JSON with `findings: []`, report "0 findings" to user.
 
-### High-severity run (2 High findings)
+### High-severity run (1 High + 1 Medium for one task)
 
 ```
 $ reify-audit --task 3242 2>/tmp/out.json; echo "exit=$?"
 reify-audit: 2 finding(s):
-  [High] P5PhantomDone task=3242: task marked done but metadata files missing
-  [High] P5PhantomDone task=3242: done_provenance field absent
-exit=2
+  [High] P5PhantomDone task=3242: metadata.files mismatch / commit not reachable from main
+  [Medium] P5MetadataFilesGitignored task=3242: metadata.files contains gitignored entry — strip per project_steward_metadata_files_gitignore_falsepositive.md
+exit=1
 
 $ cat /tmp/out.json
 [
@@ -216,20 +260,163 @@ $ cat /tmp/out.json
     "pattern": "P5PhantomDone",
     "severity": "High",
     "task_id": "3242",
-    "summary": "task marked done but metadata files missing",
-    "evidence": [{"RunsDb": {"table": "task_runs", "key": "task_id=3242"}}]
+    "summary": "metadata.files mismatch / commit not reachable from main",
+    "evidence": [{"MetadataFiles": {"entries": ["crates/reify-x/src/never_landed.rs"]}}]
   },
   {
-    "pattern": "P5PhantomDone",
-    "severity": "High",
+    "pattern": "P5MetadataFilesGitignored",
+    "severity": "Medium",
     "task_id": "3242",
-    "summary": "done_provenance field absent",
-    "evidence": [{"RunsDb": {"table": "task_runs", "key": "task_id=3242"}}]
+    "summary": "metadata.files contains gitignored entry — strip per project_steward_metadata_files_gitignore_falsepositive.md",
+    "evidence": [{"MetadataFiles": {"entries": ["target/debug/generated.rs"]}}]
   }
 ]
 ```
 
-Skill behaviour: exit code 2 (2 High findings); parse 2 findings; escalate both via `mcp__escalation__escalate_info`; write per-run JSON with `action_taken: "escalated"` for each.
+Skill behaviour: exit code 1 (the exit code counts **High** findings only, so a
+Medium alongside does not raise it); parse 2 findings; route each by severity
+per `references/severity-routing.md`; write per-run JSON with the action taken
+for each.
+
+**At most one `P5PhantomDone` per task id.** `check_task` calls `check_one`
+exactly once per task and `check_one` returns `Option<Finding>`, so the
+phantom-done corroboration legs are mutually exclusive — you will never see two
+`P5PhantomDone` rows for the same `task_id` in one run. A task CAN carry a
+`P5PhantomDone` plus one of the independent per-task passes
+(`P5MetadataFilesGitignored`, `P5TestsAssertEmpty`, `P5LivePathStranded`), which
+is the multi-finding shape above. Two `P5PhantomDone` rows in one run always
+mean two distinct task ids.
+
+### `--pre-done` landing gate (the D-1 hook path)
+
+`reify-audit --task <id> --pre-done` is a DIFFERENT check from the sweep above,
+not a scoped version of it. The hook fires at fused-memory
+`task_interceptor.py` step "2d" — BEFORE the status write — and its command
+template substitutes only `{id}` (no env injection, no stdin). So the
+subprocess sees the pre-transition status and no persisted `done_provenance`,
+and must corroborate landing from `task_id` + `metadata.files` alone.
+
+**Refusal condition:** a declared, non-gitignored `metadata.files` entry that
+is neither tracked on `main` nor covered by a task-referencing commit's own
+delta (`<commit>^1..<commit>`).
+
+**Never refuses:**
+- empty `metadata.files`, or a list consisting solely of gitignored entries
+  (nothing corroboratable — research/ops/escalation tasks must flip freely);
+- every declared entry tracked on `main` (the healthy flip);
+- an entry DELETED or renamed away by the task's own landing commit (only that
+  commit's own delta can show a removal). The rename half depends on the seam
+  running `git diff --name-only --no-renames`: with git's default detection on,
+  a rename lists only the destination path and an entry declaring the
+  pre-rename path would be refused for work that did land.
+
+The emitted summary, verbatim from `check_pre_done_landing`:
+
+```
+pre-done gate: 1 declared metadata.files entry is neither tracked on main nor covered by a task-referencing commit's own delta — refusing the done-flip for task 63451
+```
+
+(`entries are` for a plural count.) Exit code is the High count, so a refusal
+exits non-zero and the transition is refused.
+
+**Break-glass:** `REIFY_AUDIT_PREDONE_WARN_ONLY=1` downgrades that refusal to
+`Low`, making the gate advisory (exit 0). The finding is still emitted, with
+`[warn-only] ` prefixed to the summary above. Default is ARMED. It is scoped to
+this finding only — a sweep `High` is unaffected by it. Two limits before you
+rely on it: setting it requires editing the fused-memory systemd unit and
+restarting fused-memory (the same red-tier restart it exists to avoid), and on
+the LIVE hook path it makes the gate silent rather than advisory, because
+dark-factory's `pre_done_hook.py` surfaces the subprocess's captured stderr only
+on a non-zero exit. Rollout sequence:
+`docs/architecture-audit/f-infra-design.md` §11.1.4. (The freshness guard's own
+rc-0 advisory escapes that silence by ALSO going to the journal and a sentinel
+file — see the table below. `REIFY_AUDIT_PREDONE_WARN_ONLY`'s downgraded
+finding does not; it is still stderr-only.)
+
+**A blocked done-flip is not always a finding.** Since task 7139 the predone
+wrapper's BINARY FRESHNESS guard no longer blocks on staleness. If you are
+triaging a REFUSED flip, both refusals exit 125 and are told apart only by
+their token — check these before reading anything into `metadata.files` or
+`done_provenance`:
+
+| stderr carries | rc | meaning |
+|---|---|---|
+| `E_AUDIT_BIN_STALE` | 125 | the installed `reify-audit` predates `crates/reify-audit` AND an operator armed `REIFY_AUDIT_FRESHNESS_STRICT=1`, so the guard refuses instead of falling open. Unset it, or reinstall. |
+| `E_AUDIT_BIN_MISSING` | 125 | there is no runnable `reify-audit` at `$REIFY_AUDIT_BIN` at all — nothing to fall open onto. Reinstall. |
+
+**Not every rc 125 here is a binary-freshness refusal.** `reify-audit`'s own
+`E_JC_INDEX_*` index refusals share rc 125 with the rows above by collision, not
+by kinship: they gate the **jcodemunch index**, not the predone wrapper's binary
+freshness, and they fire on **any** run rather than only a predone flip. They are
+tabulated with their remedies in §4.1, beside the fail-soft arm they contrast
+with. Nothing in the `E_AUDIT_BIN_*` / `E_AUDIT_GUARD_BAD_MODE` story above
+applies to them.
+
+**The stale-but-runnable case does not block, and you will not see it on
+stderr.** A stale binary the wrapper can still execute produces an
+`E_AUDIT_BIN_STALE` advisory at **rc 0**: nothing is refused, and per the
+paragraph above `pre_done_hook.py` discards captured stderr on a zero exit, so
+that advisory never reaches the MCP caller. Do not go looking for it there.
+Where it IS observable:
+
+- `journalctl --user -t reify-audit-predone` — the wrapper also emits the
+  advisory via `logger`, and its parent is `fused-memory.service`;
+- the one-line sentinel file `${TMPDIR:-/tmp}/reify-audit-predone-advisory.$(id -u)`
+  (override: `REIFY_AUDIT_ADVISORY_SENTINEL`). Truncate-written on every
+  advisory, never written when the binary is fresh — so its **presence** means
+  the fleet is running a stale detector and its **mtime** says since when;
+- stderr, when you invoke `scripts/reify-audit-predone-wrapper.sh` directly, or
+  under `scripts/deploy-reify-audit-predone-hook.sh`'s step-6 probe (which
+  treats the advisory as fatal regardless of rc).
+
+Fix either way: `cargo install --path crates/reify-audit --root ~/.cargo --force`.
+
+A fourth token, `E_AUDIT_GUARD_BAD_MODE`, means a CALLER passed
+`reify_audit_guard` a mode string it does not know (a typo at a call site). The
+call is then treated as `warn-open`, so it never blocks — fix the call site.
+
+None of these tokens is an audit finding, and none is about task records. This
+matters because the outage that motivated 7139 produced three escalations
+(esc-7042-2, esc-6315-2, esc-6120-5) that all misattributed it to stale
+`metadata.files` or the `done_provenance` ancestor check. A real P5 refusal
+exits with the High COUNT and says `pre-done gate:` — an infrastructure
+refusal exits `125` and leads with one of the tokens above.
+
+`REIFY_AUDIT_FRESHNESS_STRICT` and `REIFY_AUDIT_PREDONE_WARN_ONLY` gate
+DIFFERENT things and are not substitutes: the former is binary-freshness
+policy (fall open vs refuse), the latter is a FINDING's severity
+(`High` → advisory `Low`). Neither affects the other.
+
+**Never refuses on incomplete evidence.** Every git leg fail-safes to
+`false`/empty, which on this path would converge on a blocking `High`, so four
+guards downgrade to an advisory `Low` (exit 0) instead, prefixing
+`[advisory — <reason>] ` to the summary:
+- `git degraded: MAIN_BASE did not resolve` — the one-fork probe
+  (`git merge-base --is-ancestor main main`) failed, so "absent from main" is
+  the fail-safe default rather than an observation;
+- `git degraded: ls-tree errored for declared entry <path>` — the presence
+  check for that entry did not run, so its `false` is an unanswered question
+  rather than evidence of absence (the whole-repo probe above cannot see a
+  per-call failure like an unreadable pack or fd exhaustion);
+- `git degraded: log --grep errored, so no rescue candidate was inspected` —
+  the rescue search itself failed, so an empty candidate list is not evidence
+  that no commit references the task;
+- `incomplete: sibling scan hit PRE_DONE_SIBLING_SCAN_CAP…` — the
+  task-referencing-commit scan was truncated at 50, so the corroborating commit
+  may simply be one that was never inspected (a `reify-audit:` breadcrumb is
+  also written to stderr).
+
+A recorded git failure outranks truncation as the reported reason. Note the
+per-sibling delta seams (`changed_paths_in_commit` / `diff_changed_paths` /
+`is_ancestor`) still fail-safe silently — see the "Known residual" note on
+`check_pre_done_landing`.
+
+Read an `[advisory` prefix as "the gate could not decide", NOT as "this task is
+phantom-done at low confidence".
+
+Note the SWEEP deliberately still emits nothing for a provenance-less `done`
+task (guard A1) — that is what keeps the 4075/4464 false-positive storm closed.
+The two modes diverge on purpose.
 
 ### 125 legitimate High findings (boundary collision)
 

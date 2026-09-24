@@ -140,13 +140,22 @@ describe("the load constraint that makes the shared driver modules .mjs", () => 
     ).toEqual([]);
   });
 
-  it("names the three known shared modules — an empty table is not a pass", () => {
+  it("names the known shared modules — an empty table is not a pass", () => {
     // Without this, an edit that empties the table turns the `it.each` above
     // into zero registered tests: a vacuously green suite with the constraint
     // silently gone, which is the same inert-by-default failure the negative
     // controls guard against on the regex side.
+    //
+    // `arrayContaining`, not an exact list: a new shared module is expected to
+    // arrive without churning this pin, and the directory cross-check below is
+    // what keeps the table complete.
     expect(SHARED_ESM_MODULES).toEqual(
-      expect.arrayContaining(["rpcEnvelope.mjs", "meshCountParity.mjs", "smokeDriverGuards.mjs"]),
+      expect.arrayContaining([
+        "rpcEnvelope.mjs",
+        "meshCountParity.mjs",
+        "smokeDriverGuards.mjs",
+        "railLengtheningGate.mjs",
+      ]),
     );
   });
 

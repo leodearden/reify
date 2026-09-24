@@ -8,7 +8,11 @@
 //   Phase 1 — FEA-native differential quantities on an ElasticResult
 //     • result.divergence  (task α: nodal-gradient → sampled divergence field)
 //     • result.gradient    (task β: nodal-gradient → stride-9 Tensor sampled field)
-//     • result.curl        (task β: nodal-gradient → stride-3 Vector3 sampled field)
+//     • result.curl        (task β: nodal-gradient → stride-3 Vector3 sampled field,
+//                           Vector3<Real> — DIMENSIONLESS BY DECISION, ruling #6164)
+//     • result.rotation    (ruling #6164: ∇×u / 2, Vector3<Angle> — the DESIGNATED
+//                           CROSSING where the radian enters explicitly; it is the
+//                           reason curl above stays dimensionless)
 //     • max(result.divergence), min(result.divergence)
 //     • max(result.gradient)   (task γ: tensor Frobenius-magnitude reduction)
 //
@@ -61,6 +65,27 @@ field def linear : Length -> Real {
     }
 }
 
+// ── Ruling #6164: the rotation crossing at a call boundary ────────────────────
+//
+// This fn exists to prove `Vector3<Angle>` is ACCEPTED as a user-function
+// parameter type — the one position in the capability chain that the e2e gate
+// could not otherwise reach.  It is deliberately trivial: it reduces the
+// vector to a scalar and lets the constraints below do the comparing.
+//
+// `magnitude` of a Vector3<Angle> is an Angle, so the crossing's radian tag
+// survives the round trip through the call boundary and back out.  That
+// Angle SCALAR compares against `deg` literals in-language, which is what
+// `constraint rot_probe > 0.001deg` / `< 0.5deg` below exercise.
+//
+// What is still missing is Vector3 COMPONENT access: `.x`, `v[0]` and
+// `norm(v) < 5deg` were all probed dead and stay dead.  So the whole-FIELD
+// rotation↔curl comparison remains harness-side in
+// differential_field_ops_e2e.rs — it reduces over the raw SampledField
+// buffer, which .ri cannot reach.  Only this single-point probe is asserted
+// here.
+
+fn rotation_probe(v: Vector3<Angle>) -> Angle { magnitude(v) }
+
 // ── Integration structure ─────────────────────────────────────────────────────
 
 structure DifferentialFieldOps {
@@ -95,6 +120,18 @@ structure DifferentialFieldOps {
     let g_mag = max(result.gradient)   // γ tensor Frobenius-magnitude reduction
     let cr    = result.curl            // β curl channel (bound to touch the field)
 
+    // Ruling #6164: `rotation` = curl / 2, ANGLE-typed (Vector3<Angle>) — the
+    // designated crossing.  `cr` above stays Vector3<Real>: the derivative
+    // algebra is quotient-pure and the radian enters only here.
+    let rot   = result.rotation
+
+    // Sample the crossing and push it through a user fn to prove Vector3<Angle>
+    // is accepted at a call boundary.  The point is strictly INSIDE the
+    // 1000mm × 100mm × 100mm cantilever bounds ([0,1] × [0,0.1] × [0,0.1] m) —
+    // an out-of-bounds query returns Value::Undef and would silently hollow out
+    // the pin.
+    let rot_probe = rotation_probe(sample(result.rotation, point3(500mm, 50mm, 50mm)))
+
     // ── Phase 2: generic sampled-field differential operators ───────────────
     //
     // Eager-lowered via compute_laplacian / compute_gradient (task ε), both of
@@ -117,6 +154,21 @@ structure DifferentialFieldOps {
     // limit (|strain tensor components| << 1 for a steel beam at these loads).
     constraint g_mag > 0.0
     constraint g_mag < 1.0
+
+    // Phase 1: the ruling-#6164 rotation crossing, compared against `deg`
+    // literals IN-LANGUAGE — the user-observable signal the ruling names.
+    // `rot_probe` is an Angle SCALAR (magnitude of the sampled Vector3<Angle>),
+    // and a scalar/`deg`-literal comparison type-checks and evaluates; it is
+    // only Vector3 COMPONENT access that is still missing (see the
+    // rotation_probe preamble above).  The whole-field bound stays in the Rust
+    // gate, which needs the raw buffer.
+    // BOUND BASIS (G6 — measured on this example, not guessed): rot_probe at
+    // point3(500mm, 50mm, 50mm) = 1.9283303415907750e-4 rad
+    //                           = 0.011048519008017177°.
+    // The bracket clears that measurement by ~11x below and ~45x above, and
+    // 0.5deg is the literal ruling #6164 itself names.
+    constraint rot_probe > 0.001deg
+    constraint rot_probe < 0.5deg
 
     // Phase 2: exact polynomial values (G6 numeric-premise discipline).
     // Central AND one-sided 3-pt 2nd-difference are EXACT on quadratics on any

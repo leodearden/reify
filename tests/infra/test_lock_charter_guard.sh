@@ -305,6 +305,7 @@ stl
 svg
 template
 timer
+tombstones
 toml
 ts
 tsx
@@ -690,7 +691,7 @@ fi
 # Cycle 10 owns the missing-entry direction.
 #
 # SUBSET, not equality, and measured to be binding here rather than merely
-# inherited from Cycle 9: the sweep finds 36 extensions while _EXTS carries 59,
+# inherited from Cycle 9: the sweep finds 37 extensions while _EXTS carries 60,
 # and the 23-entry gap is legitimate because this is a SHARED α/γ vector —
 #   cc cjs csv cts cxx diff example example-systemd-config gitattributes
 #   gitmodules hh hpp jsonl jsx log mts python-version scss step stl svg
@@ -705,8 +706,17 @@ fi
 # .csv files (measured: `git ls-files '*.csv' | wc -l` -> 0); the evidence lived
 # in dark-factory's corpus (plans/evidence/scheduler-scoring-2026-08-06/*.csv).
 # Cycle 10 defends against reify-corpus-driven drift only — a NEW tracked reify
-# extension landing with no allowlist entry, i.e. the #5726 shape.  The
-# cross-source half (γ's skipped Tier-2 comparison, esc-6067-2) stays open.
+# extension landing with no allowlist entry, i.e. the #5726 shape.  At the time
+# #6067 was filed, the cross-source half (γ's Tier-2 comparison) was also open:
+# a path-resolution bug dropped that test at collection, so it skipped on every
+# run (esc-6067-2).  MEASURED 2026-08-27 (#6856): that half is no longer open —
+# dark-factory tasks 3843/4080 re-armed BOTH of γ's Tier-2 cross-source guards
+# on a layout-independent resolver, and fresh -rs plus injected-drift runs
+# confirm both the extension and extensionless comparisons now run and fire.
+# Cycle 10 here still only covers the reify-corpus direction; the
+# cross-source direction is covered from γ's side, not by this file — see the
+# "Cross-repo seam: γ" header note in scripts/lock-charter-guard.sh for the
+# current-state detail, deliberately not restated here.
 #
 # LAST-dot extraction is the filter rule.  The extension side, unlike the
 # extensionless side, can surface non-extension tokens, and the answer is not a
@@ -755,7 +765,7 @@ fi
 #     Cycle 9 above (α's _EXTLESS PLUS γ's EXTENSIONLESS_FILENAMES copies), and
 #     Cycle 9's own assertion will normally RED beside this one.
 #
-# Green on arrival (36 swept ⊂ the 59 pinned) — by construction, since a RED on
+# Green on arrival (37 swept ⊂ the 60 pinned) — by construction, since a RED on
 # arrival would mean the allowlist was already broken.  Per G6 it was shown to
 # FIRE rather than assumed to: deleting `ri` from _EXTS in a scratch copy of the
 # guard (59 -> 58 entries) turns this block from 41 passed / 0 failed to

@@ -36,7 +36,7 @@ tasks:
     ledger (predicate flipped locally, never landed)'
   capabilities:
   - name: corpus-gate-is-the-measurement-instrument
-    binding: grep:crates/reify-compiler/tests/examples_smoke.rs:198 no_example_emits_ctor_field_conformance_diagnostics
+    binding: grep:crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs:198 no_example_emits_ctor_field_conformance_diagnostics
       — severity-blind, ≥40-file floor at :215-220, accumulates every violation into
       one panic at :230-236 (read verbatim at HEAD). This is both α's instrument and
       β's proof.
@@ -45,7 +45,7 @@ tasks:
       kind: grep
       pattern: fn no_example_emits_ctor_field_conformance_diagnostics
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: present
   - name: predicate-flip-is-one-arm
     binding: grep:crates/reify-compiler/src/conformance/mod.rs:1691-1697 — read verbatim
@@ -216,7 +216,7 @@ tasks:
       - crates/reify-compiler/src/conformance/mod.rs
       expect: present
   - name: corpus-gate-panic-prose-encodes-the-OLD-ruling
-    binding: 'grep:crates/reify-compiler/tests/examples_smoke.rs:230-236 — read verbatim
+    binding: 'grep:crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs:230-236 — read verbatim
       at HEAD: "Every one is … a false positive from the conformance walker, not a
       broken example. Fix the walker … the general_leaf_param_family_is_validated
       allowlist …; do NOT add a SKIP_SET entry." After γ a firing diagnostic is a
@@ -227,7 +227,7 @@ tasks:
       kind: grep
       pattern: a false positive from the conformance walker
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: absent
   - name: severity-safe-pre-delta-BY-MEASUREMENT-not-construction
     binding: 'PREMISE REPAIRED by the Adversary. grep:crates/reify-compiler/src/conformance/mod.rs:32
@@ -405,7 +405,7 @@ tasks:
       - crates/reify-compiler/src/type_compat.rs
       expect: absent
   - name: deliberate-Int-leniency-pin-must-be-restated-not-deleted
-    binding: 'grep:crates/reify-compiler/tests/constraint_def_compile_tests.rs:1447-1470
+    binding: 'grep:crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs:1490-1522
       int_literal_for_length_param_no_constraint_arg_type_mismatch — its doc comment
       states the leniency as INTENT ("Int-for-Length is deliberately tolerated at
       the binding site (Rule 4) … with dimensional strictness deferred to task 4490''s
@@ -418,7 +418,7 @@ tasks:
       kind: grep
       pattern: int_literal_for_length_param_no_constraint_arg_type_mismatch
       paths:
-      - crates/reify-compiler/tests/constraint_def_compile_tests.rs
+      - crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs
       expect: present
 - label: ε
   task_id: 5763
@@ -526,7 +526,7 @@ tasks:
     + INDEX row'
   capabilities:
   - name: corpus-is-compile-gated-by-directory-walk
-    binding: 'grep:crates/reify-compiler/tests/examples_smoke.rs walks examples/ recursively;
+    binding: 'grep:crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs walks examples/ recursively;
       examples/best_practices/INDEX.md states it verbatim ("Everything in this directory
       is compile-gated … Do not add a SKIP_SET entry to exempt one"). Drift-guard:
       ζ₂ adds NO new test binary and NO tests/infra/test_*.sh, so no run-all-classification.manifest
@@ -539,7 +539,7 @@ tasks:
       - examples/best_practices/INDEX.md
       expect: present
   - name: bidirectional-index-invariant-test-exists
-    binding: grep:crates/reify-compiler/tests/examples_smoke.rs:548 best_practices_index_matches_corpus_directory
+    binding: grep:crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs:548 best_practices_index_matches_corpus_directory
       — pins file↔row correspondence in both directions and accumulates every violation
       into one panic. ζ₂'s INDEX row is gate-enforced, not honour-system.
     verdict: PASS
@@ -547,7 +547,7 @@ tasks:
       kind: grep
       pattern: fn best_practices_index_matches_corpus_directory
       paths:
-      - crates/reify-compiler/tests/examples_smoke.rs
+      - crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       expect: present
 - label: ζ₃
   task_id: 5769

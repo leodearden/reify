@@ -134,8 +134,8 @@ PTODO (`--pattern PTODO`) is **part of the no-`--pattern` default all-detector s
 These three patterns are **opt-in only** — they are NOT part of the default all-detector sweep (which runs P1/P2/P5/PTODO). They fire only when named explicitly via `--pattern`.
 
 - **Severity:** All three emit Severity Low — log-only, advisory, **never auto-filed** as a follow-up task. See `references/severity-routing.md` for routing details.
-- **Serve dependency:** PDEAD, PUNTESTED, and PLAYER all require `jcodemunch-serve` to be running. When the serve is unreachable, they degrade to **zero findings** (same fail-soft path as P1; P2/P5/PTODO are unaffected — NOT exit 125). See `references/cli-invocation.md` §4.1 for the fail-soft behaviour and `--jcodemunch-url` flag.
-- **Activation:** For serve startup instructions see `docs/architecture-audit/jcodemunch-serve-activation.md`.
+- **Serve dependency:** PDEAD, PUNTESTED, and PLAYER all require a serve for the duration of the run. When no serve answers, they degrade to **zero findings** (same fail-soft path as P1; P2/P5/PTODO are unaffected — NOT exit 125). One asymmetry to know: because all three are jcodemunch-backed, invoking them alone (`--pattern PDEAD`, `--pattern PDEAD,PUNTESTED`, …) is an all-jcodemunch run set, so a serve that IS reachable but whose index is stale/empty/unreadable hard-exits 125 instead of fail-softing. See `references/cli-invocation.md` §4.1 for both arms, the refusal codes and their remedies.
+- **Activation:** Bring a serve up by wrapping the invocation in `scripts/with-jcodemunch-serve.sh`; there is no persistent unit to start. `docs/architecture-audit/jcodemunch-serve-activation.md` remains the identifier and runbook record.
 
 ---
 

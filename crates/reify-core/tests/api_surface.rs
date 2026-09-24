@@ -74,10 +74,23 @@ use reify_core::primitives::{
 };
 
 // ── units ────────────────────────────────────────────────────────────────────
-use reify_core::{BUILTIN_UNITS, ri_emittable_units, unit_symbol_to_si};
+use reify_core::{BUILTIN_UNITS, ri_compound_unit_expr, ri_emittable_units, unit_symbol_to_si};
 use reify_core::units::{
-    BUILTIN_UNITS as BUILTIN_UNITS_MOD, ri_emittable_units as ri_emittable_units_mod,
-    unit_symbol_to_si as unit_symbol_to_si_mod,
+    BUILTIN_UNITS as BUILTIN_UNITS_MOD, ri_compound_unit_expr as ri_compound_unit_expr_mod,
+    ri_emittable_units as ri_emittable_units_mod, unit_symbol_to_si as unit_symbol_to_si_mod,
+};
+
+// ── overload ─────────────────────────────────────────────────────────────────
+use reify_core::{
+    slot_matches_head_tier, slot_matches_wildcard_tier, type_carries_dim_param,
+    type_carries_trait_object, type_carries_type_param,
+};
+use reify_core::overload::{
+    slot_matches_head_tier as slot_matches_head_tier_mod,
+    slot_matches_wildcard_tier as slot_matches_wildcard_tier_mod,
+    type_carries_dim_param as type_carries_dim_param_mod,
+    type_carries_trait_object as type_carries_trait_object_mod,
+    type_carries_type_param as type_carries_type_param_mod,
 };
 
 // ── flat PortDirection ────────────────────────────────────────────────────────
@@ -308,4 +321,66 @@ fn units_flat_and_module_path() {
     let table: &'static [(&'static str, f64, DimensionVector)] = BUILTIN_UNITS;
     assert!(!table.is_empty(), "the built-in unit table must be reachable");
     assert_eq!(BUILTIN_UNITS_MOD, table);
+
+    // The COMPOUND emission builder, in both spellings (task #6400).
+    // `reify-ir`'s `value_to_ri_literal_in_scope` depends on this surface under
+    // `UnitScope::SiBaseUnitsSeeded`, so pin it at compile time.
+    //
+    // Same remit boundary as the ladder above: this pins reachability and the
+    // SIGNATURE — the `fn(&DimensionVector) -> Option<String>` annotation below
+    // is load-bearing, failing to compile if the return type moves to a
+    // borrowed or infallible form. The expected emission STRINGS stay in
+    // `units.rs`, where the builder and its shape/rejection guards live;
+    // duplicating `"m^2"` here would add a third edit site for a deliberate
+    // change and no coverage.
+    let compound: fn(&DimensionVector) -> Option<String> = ri_compound_unit_expr;
+    let area = compound(&DimensionVector::AREA);
+    assert!(area.is_some(), "AREA must have a compound unit expression");
+    assert_eq!(ri_compound_unit_expr_mod(&DimensionVector::AREA), area);
+    assert_eq!(ri_compound_unit_expr(&DimensionVector::DIMENSIONLESS), None);
+}
+
+#[test]
+fn overload_flat_and_module_path() {
+    // The three-tier overload ladder is reified in `reify-core` precisely so
+    // that `reify-compiler` and `reify-expr` share ONE definition (#5689).
+    // Both of those name it from OUTSIDE the crate, so its reachability is
+    // load-bearing, not incidental — pin it at compile time.
+    //
+    // Same remit boundary as the `units` section above: this file pins
+    // reachability and the SIGNATURE (the `fn(&Type, &Type, bool) -> bool` /
+    // `fn(&Type) -> bool` annotations below are the assertion — they fail to
+    // compile if an arity or argument shape moves). The ladder's SEMANTICS
+    // belong to `overload.rs`, where the corpus and per-arm tests live.
+    //
+    // `heads_unifiable` is deliberately ABSENT: it is `pub(crate)` in
+    // `overload.rs` (the head tier's implementation, reached only through
+    // `slot_matches_head_tier`), so it is not part of this crate's API surface
+    // and must not be pinned here. Re-adding it would re-advertise a symbol
+    // #5689 deliberately un-published.
+    let wildcard: fn(&Type, &Type, bool) -> bool = slot_matches_wildcard_tier;
+    let head: fn(&Type, &Type, bool) -> bool = slot_matches_head_tier;
+    let carries_to: fn(&Type) -> bool = type_carries_trait_object;
+    let carries_tp: fn(&Type) -> bool = type_carries_type_param;
+    let carries_dp: fn(&Type) -> bool = type_carries_dim_param;
+
+    // Module-path aliases must resolve to the same functions.
+    assert!(std::ptr::fn_addr_eq(wildcard, slot_matches_wildcard_tier_mod as fn(&Type, &Type, bool) -> bool));
+    assert!(std::ptr::fn_addr_eq(head, slot_matches_head_tier_mod as fn(&Type, &Type, bool) -> bool));
+    assert!(std::ptr::fn_addr_eq(carries_to, type_carries_trait_object_mod as fn(&Type) -> bool));
+    assert!(std::ptr::fn_addr_eq(carries_tp, type_carries_type_param_mod as fn(&Type) -> bool));
+    assert!(std::ptr::fn_addr_eq(carries_dp, type_carries_dim_param_mod as fn(&Type) -> bool));
+
+    // One smoke call per surface, exercising both spellings. The tier-3
+    // WILDCARD gate accepts a type-param-carrying ARG against a concrete param
+    // (D4 / task-4232 γ) — the disjunct #5689 unified onto both consumers.
+    let concrete = TypeMod::Int;
+    let param = TypeMod::TypeParam("T".to_string());
+    assert!(wildcard(&concrete, &param, false));
+    assert!(slot_matches_wildcard_tier_mod(&concrete, &param, false));
+    assert!(head(&concrete, &param, false));
+    assert!(slot_matches_head_tier_mod(&concrete, &param, false));
+    assert!(!carries_to(&param) && !type_carries_trait_object_mod(&param));
+    assert!(carries_tp(&param) && type_carries_type_param_mod(&param));
+    assert!(!carries_dp(&param) && !type_carries_dim_param_mod(&param));
 }

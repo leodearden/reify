@@ -13,7 +13,7 @@ RemainAfterExit=yes
 # Reuse the full idempotent #4659 provision path (P1 never-reformat + P2 fail-closed
 # reflink probe).  Unit-active ⟺ mounted + reflink probe passed.
 # ExecStart uses the stable main-checkout absolute path — host convention matching
-# the live orchestrator unit and jcodemunch-serve.service.  Invoked with defaults:
+# the live orchestrator unit and reify-jcodemunch-index.service.  Invoked with defaults:
 # /media/leo/data_lv_1/leo/reify-warm-lanes.img, 4096 GiB (final sizing/location deferred to R4/#4665
 # per PRD §9 Q3).
 #

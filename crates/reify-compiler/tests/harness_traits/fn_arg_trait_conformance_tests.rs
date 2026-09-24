@@ -541,7 +541,7 @@ structure TObj {{
 }
 
 /// (b) A non-conforming call in a REALIZATION geometry-op arg —
-/// `cylinder(couple(FixedThing()), 2.0)` — emits TypeNotConformingToTrait.
+/// `cylinder(couple(FixedThing()), 2.0mm)` — emits TypeNotConformingToTrait.
 ///
 /// γ (task #4954) update: pre-γ, the geometry `let` was skipped from
 /// `value_cells` (`continue` at entity.rs:1175-1177) and emitted ONLY as a
@@ -561,7 +561,7 @@ structure TObj {{
 /// `Solid`-typed param has had all along (Param arm `compile_expr_with_expected`
 /// at entity.rs ~1955 + the realization loop's `compile_geometry_call`, both
 /// sharing the live `diagnostics` sink) — verified empirically that
-/// `param body : Solid = cylinder(couple(FixedThing()), 2.0)` ALSO produces 2
+/// `param body : Solid = cylinder(couple(FixedThing()), 2.0mm)` ALSO produces 2
 /// identical `TypeNotConformingToTrait` diagnostics today. γ's design decision
 /// to accept the double-compile (mirroring the shipping solid-param precedent)
 /// makes geometry lets consistent with that pre-existing solid-param behavior,
@@ -576,7 +576,7 @@ fn realization_bad_arg_emits_type_not_conforming_to_trait() {
     let source = format!(
         r#"{}
 structure TReal {{
-    let body = cylinder(couple(FixedThing()), 2.0)
+    let body = cylinder(couple(FixedThing()), 2.0mm)
 }}
 "#,
         preamble()

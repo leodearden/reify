@@ -14,6 +14,7 @@ test-support = []
 
 [dependencies]
 reify-ast.workspace = true
+reify-builtins.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 reify-syntax.workspace = true

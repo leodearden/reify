@@ -1,0 +1,27 @@
+module geometry_query_violated
+
+// Task 5748 fixture (D1, exit-code leg): a `: Rigid` body whose ONLY explicit
+// constraint reads a geometry-query cell and is FALSE once that cell resolves.
+//
+// `mass` is `volume(geometry) * material.density` (stdlib
+// crates/reify-compiler/stdlib/structural_physical.ri, trait Physical) — a
+// geometry query populated only by `run_post_processes` /
+// `post_process_geometry_queries` on the realizing path.
+//
+//   volume = 0.1m * 0.1m * 0.1m = 1e-3 m^3
+//   mass   = 7850 kg/m^3 * 1e-3 m^3 = 7.85 kg   →  `mass < 1kg` is FALSE
+//
+// Mechanism, not a re-measured baseline for this fixture: before D1's routing
+// change a module carrying none of {geometric Conforms, RepresentationWithin,
+// DFMRule} took the lightweight `Engine::new(None) + check()` path, where
+// neither post-process runs, so `mass` stayed `undef` and the constraint
+// degraded to INDETERMINATE at exit 0.  MEASURED on this tree with the routing
+// in place: `VIOLATED OverweightBlock#constraint[2]`, exit 1.
+//
+// Pinning test: crates/reify-cli/tests/harness_cli/cli_check.rs::
+//   check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure
+structure def OverweightBlock : Rigid {
+    param geometry : Solid = box(100mm, 100mm, 100mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    constraint mass < 1kg
+}

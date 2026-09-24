@@ -367,3 +367,166 @@ eval (finding #12's inference half; 5204 covered only the docs half).
   x=0 seam), author the top-deck split (solid seam strip through the
   sieve field), then the fit-test print (one bottom half + sieve coupon
   to tune fit_clearance and hole size).
+
+---
+
+# Retest session, 2026-09-03 (dogfood round 3)
+
+Binary `target/debug/reify` built at main b4766d4f0c (ancestors verified per task:
+5337 d453a25c31, 5357 45335a28db, 5208 cfeb81976d, 5201 99ff5be70d, 5338
+f93522dbbc, 5339 00500c223e, 5214 92551d18d6, 5195 d34278cffc, 5196
+44d45aa4c8). Host under heavy load throughout (merge-queue verify; load 110–225).
+Design rulings by Leo this round: hooded finger pockets on the bottom deck,
+glue-only top-deck split with internal tabs, ledge_width synced to 5 mm, and a
+full rewrite of all three decks to selector-driven fillets. Probes, fixtures and
+the working ledger: `/home/leo/.claude/fleet/sessions/dogfood-reify-987649/`.
+
+## Baselines re-measured (cold / warm / warm, values byte-identical across runs)
+
+| file | mass | capacity | eval wall |
+|---|---|---|---|
+| bottom_deck.ri (round-2 file) | 1.455729562567982 kg (= table) | 7.0067 L (= table) | 3.55 / 3.71 / 3.52 s |
+| bottom_deck_split.ri (round-2 file) | 0.7607200616 kg/half (= table) | — | 4.24 / 4.33 / 4.32 s |
+| top_deck.ri (round-2 file) | 0.7929944333280107 kg (= table), 4,616 CYLINDRICAL_SURFACE (= table) | — | **eval 453 s (7:33)**, build 409 s (6:49), check 379 s |
+| bottom_deck_v2_selectors.ri | 1.5142278520 kg (NEW — it evals) | 6.958 L | 1.33 s |
+
+top_deck eval was "~30 min" on the round-2 binary; now 7.5 min with identical
+output. 5317/5220 (Manifold batch_difference) are still pending, so this is not
+Lever 2 — unattributed kernel/eval improvement, noted not filed.
+
+## Retest verdicts (fixes landed since 2026-07-22)
+
+| Task | Verdict | Evidence |
+|---|---|---|
+| 5214 bare spacings → eval error | **PASS** | `probe_5214_bare.ri`: exit 1, `error: linear_pattern_2d: spacing1 argument expects Length, got Int; pass a dimensioned length such as \`5mm\`` (one per axis). Unit-ful control: 10 holes cut, mass 8.784915959694686 g vs hand 8.784915959694688 g. Message names the argument, the type, and the fix — good UX. |
+| 5208 curated fillets | **PASS (CLI) / FAIL (GUI)** | CLI: `bottom_deck_v2_selectors.ri` evals with 0 errors, all seven chained 3-arg fillets realized, 1.33 s (was six "curated edge selection is not yet available" errors on 07-22). GUI: the same file via `open_file` (and every other load path) fails with 10 compile errors — finding #22, → **#7256**. |
+| 5201 rounded_box | **LANDED but does NOT compose with 5208** | finding #19 (→ #7054) |
+| 5196 warning floor | **PASS (CLI + GUI)** | CLI: 0 Warning lines on healthy models; the topology chatter is ONE `info:` summary per realization (was 57 warnings). GUI: 0 Warning-severity topology entries on bottom_deck / the split (Info only). One Warning does remain on every Rigid part — the stale MoI ghost, finding #21. |
+| 5195 hidden intermediates | **PASS** | probe_5195_vis.ri (plain `let a`, `let b`, `aux let c`, product `geometry`): mesh_stats lists all four, `viewport_state.meshCount` = 1 — only the DisplayOutput subject is drawn; plain and aux lets behave identically (hidden). Caveat: mesh_stats has no visibility flag (banked on #6752). |
+| 5337/5357 GUI SIGSEGV on bottom_deck_split.ri | **PASS ×3** | round-2 `bottom_deck_split.ri` (the 9-level inline expression) opened three times with `bottom_deck.ri` between: settled in 11–14 s each, process alive 30 s after settle, both posed halves rendered (2,986 faces each, bboxes x ±[0.002, 0.260]), 0 compile diagnostics. Was exit 139, 3/3 on 07-22. |
+| 5338/5339 mass-props load paths / near-zero rounding | **PASS** (argv launch, open_file, watcher reload) | GUI launched with `bottom_deck.ri` as argv: after settle `engine_state` shows mass 1.45572956257 kg, centroid `point(0, 0, 21.9428391363)`, full inertia tensor, `moi_principal` determined/final, the MoI constraint Satisfied (round 2: all undef). Near-zero centroid components render as `0`, `lower_wall` as `6.4`. The diagnostics list still shows the round-2 "indeterminate: undefined inputs: moi_principal" warning — a stale ghost, finding #21, not a 5338 regression. CLI channel still prints raw near-zero noise — out of 5339's scope by the round-2 ruling. |
+| 5197 / 5206 / 5202 / 5318 / 5551 | still open, as expected | instance-scope `note: … (OpContractViolation)` unchanged; OCCT STEP banner + `Step File Name : /tmp/reify_step_…` still on every eval. |
+
+## 19. `rounded_box` is a never-unified 6-body fuse — curated height-selected fillets on it fail (→ combined into #7054)
+
+The 5201 primitive (built for this tray) and the 5208 capability (just made
+designer-reachable) do not compose. STEP census: a bare `rounded_box(100,60,20,10)`
+exports **50 faces (46 planar) and 88 edges** where the exact prism has 10 and 24;
+identical mass to 1e-12. The compiler desugars `rounded_box` to 2 boxes + 4
+cylinders left-folded through five `Union`s (geometry.rs:2707 → :1279); the kernel's
+`boolean_fuse` returns raw `BRepAlgoAPI_Fuse` output and the workspace contains no
+`UnifySameDomain`/`ShapeUpgrade`/`ShapeFix` call at all; `edges_at_height`
+(topology_selectors.rs:902) is a pure bbox-z predicate over ALL edges, so it feeds
+the coplanar seam edges lying in the top face to `BRepFilletAPI_MakeFillet`, which
+aborts: `OCCT make_fillet_edges_with_history: unexpected: BRepFilletAPI_MakeFillet
+failed (curated per-edge selection)`, followed by the #5208-signature cascade
+(`unresolvable GeomRef::Sub('rim_soft')`…) and `error: all realized bodies are aux;
+no product geometry to export` from plain eval. Bisected on the committed v2 file:
+swapping only its three blanks to `rounded_box` → FAIL; `aux let`, a self-union, or
+unioning pedestals/hoods before the chain → PASS. Intermittent from the designer's
+seat (which seams land at the selected height decides). Side effect: a coupon on
+`rounded_box` exported 104 KB / 21 planes vs 54 KB / 9 planes on the box +
+`edges_parallel_to` blank, and evaluated 2× slower. Workaround adopted in every
+rewritten file: box blank + `edges_parallel_to(blank, +Z, 1deg)` corner fillet.
+Curator folded the filing into **#7054** (third symptom of "boolean output is never
+normalised", with the bare-COMPOUND containment blindness and #6402's BRepKind stamp).
+
+## 20. Rigid sub-instance: `geometry` cell undef at instance scope, MoI undef, mass served unposed (→ amended into #7065)
+
+Minimal fixture `probe_sub_massprops.ri` (20 mm brick, two placed subs): template
+scope all defined; `Pair.a.mass` served, `Pair.a.centroid` served but UNPOSED
+(#6583), `Pair.a.geometry = undef`, `moment_of_inertia`/`moi_principal` undef with
+the #5197 string, and the instance snapshot claims even `mass` is undef. Same
+signature on both split assemblies. Third carrier for #7065 (with #6662/#7184 owning
+the instance-scope undef class); recorded there, not filed.
+
+## Round-3 design results (all files rewritten to the selector idiom; every mass hand-checked)
+
+| file | what changed | mass | check |
+|---|---|---|---|
+| bottom_deck.ri v3 | box+`edges_parallel_to` blanks, `edges_at_height` rim/ledge/floor/base chain, ledge 5 mm, Ø20 pedestals at ±120 (base seams caught by the floor fillet), hooded finger pockets in both end walls (60×22 slot at z 36..58, 70×25×57 hood, roof top z 61) | **1.5847031 kg**, capacity **6.7203 L** (hand: 1.5856 kg, Δ 0.9 g of fillet-fill approximation; capacity exact) | green, 1.8 s |
+| bottom_deck_split.ri v2 | same body + one pedestal + one hooded pocket per half, fillets BEFORE the seam trims (glue faces stay sharp), scarf cutters parametric in strip_half, declarative `STEPOutput` → bottom_half.step | **0.7955804 kg/half** (hand 0.7956648 from monolithic/2 + tab − recess − insert: Δ 0.09 g) | 23/23 green, 3.1 s; bottom_half.step = 1 solid |
+| top_deck.ri v2 | selector shell + rim 1 mm / floor 4 mm / base 1.5 mm fillets BEFORE the punch, then the two grids, pads, slots | **0.7930940 kg**, 4,602 holes (round-2 0.7929944; Δ +0.10 g = the fillet-scheme change, hand +0.1 g) | eval 1,154 s / check 955 s / build 1,010 s (sequential, load ~100–130) — **2.5× the round-2 file at every leg**, finding #23; STEP 1 solid, 4,620 cylinders |
+| top_deck_split.ri v1 (NEW) | glue-only pinwheel scarf through a solid seam strip, first columns x 6.25 / 8.75 (1.25-mod-5 phase ⇒ one continuous hex lattice across the seam after the 180° rotation), 44 + 43 columns × 26 rows = **2,262 holes/half** (4,524/tray), one pad + one hand slot per half, chamfered internal overlap tab 36×2.4×30 at z 9.5..39.5 on the +y inner wall (clears the mate's 4 mm floor fillet; 45° underside prints support-free), `STEPOutput` → top_half.step | **0.4010616 kg/half** (hand 0.3982 + tab 2.8 g = 0.4010) | eval 450 s / check 427 s / build 567 s; STEP of the assembly: 2 solids, 4,542 cylinders; `top_half.step` via the declarative output |
+| sieve_coupon.ri (NEW) | 60×60×5, Ø3/5 mm hex, 85 holes, `hole_d` swept | 19.044732071756062 g (hand Δ 1.4e-14 g) | green; 85 cylinders in STEP |
+| fit_coupon.ri (NEW) | +x+y corner of both decks (bottom z 50..80 with ledge + recess; top z 0..25), `fit_clearance` swept, `FitCheck.penetration = volume(intersection) = 0` exact | 19.43752388617921 g / 29.199596954040036 g (hand Δ 5e-14 / 7e-15) | green; per-structure STEPOutput |
+
+Bed check per bottom half unchanged (258 × 263 mm); top half 239.7 × 254.4 mm.
+
+## 21. Ghost "indeterminate" warning on every Rigid part (→ amended into #6979)
+
+After the mass-property post-process fills `moi_principal`, the constraint panel
+reports the MoI constraint Satisfied and the cell is determined/final, yet the
+diagnostics list keeps the first-pass `constraint … indeterminate: undefined
+inputs: …moi_principal` Warning. #6979's Indeterminate re-check loop flips the
+status but discards its diagnostics, so the Warning is never retracted. It is the
+round-2 5338 "evidence" signature and it briefly fooled this round's argv-launch
+retest. Consequence: a permanent floor of one Warning per Rigid body.
+
+## 22. GUI cannot resolve curated topology selectors at all — 5208's GUI half never landed (→ #7256, high)
+
+`open_file` on the committed 5208 repro (`bottom_deck_v2_selectors.ri`, plain
+lets) settles with 10 compile errors: four `fillet(solid, edges, radius): the
+edge selector did not resolve to a concrete edge list at the point this fillet
+runs … [edge selector evaluated to Undef]` plus the `unresolvable GeomRef::Step`
+/ `GeomRef::Sub('hollowed'…)` cascade; `demand_dispatch` shows only the three
+blank boxes dispatched and the viewport draws only those. Identical on the
+watcher-reload path and with `aux let` intermediates (19 errors on the v3
+bottom deck, 33 on the top-deck split). The CLI evaluates every one of these
+files clean on the same binary. What 5208 did deliver in the GUI is loudness
+(round 1 was silent). Consequence: every selector-driven design — the whole
+round-3 rewrite — renders nothing in the GUI until #7256 lands. Leo's ruling:
+keep the rewrite; the fit-test print goes from the CLI STEP exports; GUI
+screenshots this round come from the round-2 files.
+
+## 23. Fillet-first construction costs 2.5× on the dense boolean (observation → data point on #5317)
+
+The v2 top deck (selector fillets on the shell, then the 4,602-hole punch) takes
+1,154 s to eval, 955 s to check and 1,010 s to build, against 453 / 379 / 409 s
+for the round-2 file under heavier load, with identical mass and hole census.
+OCCT's cut of 4,602 cylinders against a shell carrying toroidal fillet faces is
+~2.5× the cut against all-edge-filleted primitives. The order is forced: a height
+selector at z = floor or z = 0 after the punch would select every hole rim.
+
+## 24. The GUI wedges on the 4,602-hole deck and starves its own debug bridge (→ amended into #6752)
+
+`open_file` on the round-2 `top_deck.ri` exceeded the MCP tool timeout; one
+engine thread then ran at 80–100% for over an hour (35 CPU-min at the 34-minute
+mark, RSS cycling 0.8→3.9 GB) while `mesh_stats`, `demand_dispatch`,
+`store_state` and `wait_for_idle` blocked and `get_diagnostics` kept returning
+the previous file's diagnostics; by the hour mark even `health` stopped
+answering within 8 s. No cancel exists. The "poll mesh_stats until stable"
+settle recipe cannot tell tessellating from bridge-blocked. Two smaller GUI
+findings from the same battery: the viewport's minimum orbit distance is clamped
+at 0.5 m, so parts under ~150 mm cannot be framed (→ combined into #6965), and
+`mesh_stats` carries no visibility flag (on #6752).
+
+## Session tooling notes (round 3)
+
+- The CLI recipe `export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/opt/reify-deps/lib`
+  must NEVER be in the shell that runs `scripts/run-gui-dev.sh`: the launcher prepends
+  the snap OCCT dir to the caller's path, and with the system dir first the system
+  `libtbb.so.12.11` shadows the RUNPATH `tbb-pin` (deps 12.18), so the GUI dies at exec
+  with `symbol lookup error: undefined symbol: _ZN3tbb6detail2r127get_thread_reference_vertex…`
+  (task 5192's mechanism A″ is defeated by LD_LIBRARY_PATH, which beats DT_RUNPATH).
+  Launch with `env -u LD_LIBRARY_PATH WEBKIT_DISABLE_DMABUF_RENDERER=1 REIFY_DEBUG_PORT=<port>
+  bash scripts/run-gui-dev.sh …` — the second variable is required on this NVIDIA host
+  (Mesa's EGL cannot initialise the GBM device: `Could not create GBM EGL display:
+  EGL_NOT_INITIALIZED`, a core dump), which earlier sessions knew and no doc stated.
+  This cost the post-landing GUI relaunch ~30 min this round. → **#7254** (filed by the printer session; scrub/pin + orphan-vite teardown).
+- `reify check` on a kernel-backed module = a full `build()` + a re-run `check()` (done
+  #5748), so it is 4× `eval` on an 85-hole coupon and 6.3 min on the 4,602-hole deck.
+  Iterate with `eval`; gate with `check`.
+- `reify build <file> -o x.step` writes EVERY product body reachable in the file into one
+  STEP (both posed halves of a split assembly, 2 solids) with no notice; for one named
+  file per structure use a declarative `sub step_out = STEPOutput(subject: geometry,
+  path: "…")` and `reify build <file> --out-dir <dir>` (evidence banked on #6648).
+- Cross-sub geometry reads come back UNPOSED (#6583, re-confirmed by the fit coupon):
+  the mated-position check lifts the top body by hand and gates on
+  `volume(intersection(a, b))` — the distance family stays containment-blind on
+  boolean bodies (#7054).
+- Curator combines can CLOBBER a previous repair: the #7054 combine dropped the O5
+  session's restored symptom-2 evidence and paraphrased symptom 3 into a wrong mechanism;
+  always `get_task` after `resolve_ticket` and rewrite the whole record if needed.
+- A fused-memory `update_task` that times out may or may not have landed (the #6648
+  amendment did NOT; the #7065 one did) — read back before resending.

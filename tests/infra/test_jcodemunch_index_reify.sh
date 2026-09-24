@@ -341,6 +341,99 @@ mk_config_jsonc() {
     } > "$dir/config.jsonc"
 }
 
+# mk_real_shaped_config_jsonc <index_dir> <cap|-> — write a config.jsonc that
+# reproduces the REAL jcodemunch-mcp 1.108.54 generated template's shape, not
+# just the "one strict-JSON object with a couple of trailing `//` comments"
+# shape mk_config_jsonc above exercises (task 6486).
+#
+# Built from jcodemunch_mcp/config.py::generate_template() at the pinned
+# 1.108.54 — cited here by module path + version pin rather than by the
+# host-local uv wheel cache directory it was originally transcribed from
+# (that directory name is a content hash valid only on the machine that
+# resolved it, so citing it would not stay resolvable for the next reader).
+# Four JSONC shapes the real template carries that mk_config_jsonc above
+# carries NONE of:
+#   1. A `//`-commented-out "max_folder_files" line (it ships commented out
+#      by default — config.py:1826) alongside plenty of OTHER `//` prose.
+#   2. A live (uncommented) JSON array — "languages" — whose last element
+#      ends with a TRAILING COMMA before the closing `]`, e.g.
+#      `"rust",\n  ],`. That comma is legal JSONC but is exactly what made
+#      jq fail with "Expected another array element" even AFTER `//`
+#      comments were stripped: measured directly against the real template
+#      generated from the pinned wheel (tree_sitter_language_pack stubbed
+#      out to dodge an unrelated missing native dep; that stub touches only
+#      the "languages" array's CONTENTS, not the trailing-comma shape that
+#      matters here or the fixed max_folder_files section).
+#   3. A NESTED object-of-arrays — "tool_tier_bundles" — mirroring the real
+#      template's shape: a trailing comma before each inner array's `]` AND
+#      one before the outer object's `}`. Added under task 6486's review
+#      pass so nested-depth collapse is ASSERTED rather than assumed — the
+#      stripping pipeline is a flat text rewrite with no notion of nesting,
+#      but nothing had exercised more than one level of it before this.
+#   4. An object whose ENTIRE body is `//` comments — "descriptions" —
+#      collapsing to an empty object the same way "meta_fields" above
+#      collapses to an empty array, and (placed last) landing its own
+#      trailing comma directly before the OUTER closing `}` — a
+#      `}`-then-`}` shape the fixture did not previously cover, since
+#      "languages" above only ever put a `]` before that final `}`.
+#
+# `cap` behaves like mk_config_jsonc's: a number makes max_folder_files a
+# LIVE (uncommented) key at that value; `-` leaves it commented out, exactly
+# like the stock template, so the fallback-to-package-default path is
+# exercised against the real shape too.
+mk_real_shaped_config_jsonc() {
+    local dir="$1" cap="$2"
+    mkdir -p "$dir"
+    {
+        echo '// jcodemunch-mcp configuration'
+        echo '// Global: ~/.code-index/config.jsonc'
+        echo '// Project: {project_root}/.jcodemunch.jsonc (optional, overrides global)'
+        echo '//'
+        echo '// All values below show defaults. Uncomment to override.'
+        echo '{'
+        echo '  // Config version - do not edit. Used for additive migrations.'
+        echo '  "version": "1.108.54",'
+        echo ''
+        echo '  // === Indexing ==='
+        if [ "$cap" = "-" ]; then
+            echo '  // "max_folder_files": 2000,'
+        else
+            echo "  \"max_folder_files\": $cap,"
+        fi
+        echo '  //   Maximum number of files to index when indexing a local folder.'
+        echo '  //   Prevents accidental massive indexing jobs.'
+        echo ''
+        echo '  "meta_fields": ['
+        echo '  // "timing_ms",'
+        echo '  ],'
+        echo ''
+        echo '  // === Languages ==='
+        echo '  "languages": ['
+        echo '     "javascript",'
+        echo '  "python",'
+        echo '  "rust",'
+        echo '  ],'
+        echo ''
+        echo '  // === Tool tiers (nested object-of-arrays, task 6486) ==='
+        echo '  "tool_tier_bundles": {'
+        echo '    "fast": ['
+        echo '      "ripgrep",'
+        echo '      "glob",'
+        echo '    ],'
+        echo '    "slow": ['
+        echo '      "semantic_search",'
+        echo '    ],'
+        echo '  },'
+        echo ''
+        echo '  // === Descriptions (all-comment object body, task 6486) ==='
+        echo '  "descriptions": {'
+        echo '    // "fast": "grep/glob-based literal search",'
+        echo '    // "slow": "semantic embedding search",'
+        echo '  },'
+        echo '}'
+    } > "$dir/config.jsonc"
+}
+
 # with_cap <index_dir> <cap> <checker> [args...] — with_index_path plus an
 # exported JCODEMUNCH_MAX_FOLDER_FILES (the real env mapping at config.py:26).
 with_cap() {
@@ -930,6 +1023,22 @@ else
     assert "a config.jsonc WITHOUT max_folder_files falls through to the default" \
         with_index_path "$CAP_INDEX" \
             assert_field file-cap "2000 (package default)" --check-only --project-root "$CAP_ROOT"
+
+    # (i-b) task 6486: the REAL jcodemunch-generated config.jsonc, not just a
+    # synthetic strict-JSON-plus-comments fixture. `//` comment stripping
+    # alone is not sufficient — the real template's live "languages" array
+    # ends in a trailing comma before `]`, which jq rejects even after
+    # comments are gone ("Expected another array element"). Both arms below
+    # must not hit the "cannot parse" refusal.
+    mk_real_shaped_config_jsonc "$CAP_INDEX" -
+    assert "parses the real-template shape (trailing-comma array); falls through to default when max_folder_files is commented out, as the stock template ships it" \
+        with_index_path "$CAP_INDEX" \
+            assert_field file-cap "2000 (package default)" --check-only --project-root "$CAP_ROOT"
+
+    mk_real_shaped_config_jsonc "$CAP_INDEX" 9999
+    assert "parses the real-template shape (trailing-comma array) and reads a LIVE max_folder_files out of it" \
+        with_index_path "$CAP_INDEX" \
+            assert_field file-cap "9999 (config.jsonc)" --check-only --project-root "$CAP_ROOT"
 
     rm -f "$CAP_INDEX/config.jsonc"
 

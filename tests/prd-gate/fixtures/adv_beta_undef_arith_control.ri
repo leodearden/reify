@@ -1,0 +1,19 @@
+module adv_beta_undef_arith_control
+
+// CONTROL fixture (β ADVERSARY): does `reify eval` raise on arithmetic over a
+// genuinely-Undef ModalResult field?  `ModalResult.topology` is
+// unconditionally `Value::Undef` on the mechanism-modal path
+// (build_modal_topology_value, crates/reify-eval/src/modal_ops.rs).  If this
+// eval exits 0, then "exit 0" does NOT discriminate Undef from Real(0.0), and
+// any `ir`-kind probe for V7 is vacuous by construction.
+structure def AdvBetaUndefArithControl {
+    let steel = Steel_AISI_1045()
+    let z_carriage_mass = 0.5kg
+    let z_flexure = prb_parallelogram_flexure(
+        20mm, 5mm, 0.5mm, 10mm, steel, vec3(0, 0, 1), point3(0mm, 0mm, 0mm))
+    let m0 = mechanism()
+    let carriage = body(m0, point_mass(z_carriage_mass), z_flexure)
+    let z_modal = mechanism_modal_analysis(carriage, ModalOptions())
+    let topo = z_modal.topology
+    let topo_plus_one = z_modal.topology + 1.0
+}

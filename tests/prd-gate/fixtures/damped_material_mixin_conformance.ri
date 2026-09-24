@@ -1,0 +1,30 @@
+module damped_material_mixin_conformance
+
+// PRD substrate fixture: damped-modal-bonded-heterogeneous leaf α.
+// Pins the grammar/semantic substrate the Damped-mixin design assumes:
+// user trait declaration with a Real param, multi-parent trait refinement
+// (`trait X : ElasticMaterial + DampedProbe`), a conformer declaring both
+// parents' params, a param typed by the refined trait, and member access
+// through it. Probe-verified green 2026-08-27 pre-α; must stay green after
+// α lands (names deliberately do not collide with stdlib Damped/DampedMaterial).
+
+trait DampedProbe {
+    param loss_factor : Real
+}
+
+trait DampedElasticProbe : ElasticMaterial + DampedProbe {}
+
+structure def EgProbe : DampedElasticProbe {
+    param youngs_modulus : Pressure = 30GPa
+    param poisson_ratio : Real = 0.25
+    param density : Density = 2300kg/m^3
+    param yield_stress : Option<Pressure> = none
+    param loss_factor : Real = 0.03
+}
+
+structure MixinConformance {
+    param m : DampedElasticProbe = EgProbe()
+    let lf : Real = m.loss_factor
+    constraint lf > 0.0
+    constraint lf < 1.0
+}

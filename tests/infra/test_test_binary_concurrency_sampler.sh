@@ -485,4 +485,112 @@ assert "A10d: a REIFY_SAMPLER_PIDS_CMD that itself relies on globbing still work
     '
 
 
+# ---------------------------------------------------------------------------
+# B1 (THE PREFILTER->CONFIRM RACE — defect (d), measured).
+#
+# A1's exe confirmation is exact, but the pre-fix implementation paid for it with
+# ONE `readlink` FORK PER CANDIDATE, issued after the prefilter had already
+# returned its list.  Every fork widens the gap between "this pid was listed" and
+# "this pid's exe was read", and nextest test binaries routinely live 0.2-0.8 s —
+# so candidates that were genuinely running when the sample began were counted as
+# vanished (A5's benign skip) by the time their turn came.
+#
+# MEASURED, not hypothesised: the pre-fix sampler undercounts a batched
+# whole-/proc snapshot by 35-65%.  The A/B series and method live in
+# docs/notes/nextest-global-pool-concurrency-observation.md -> "Prefilter->confirm
+# race", which owns those numbers; this assert pins the BEHAVIOUR they justify,
+# in integers that are exact on any host under any load.
+#
+# WHAT THIS ASSERT PINS: ONE CALL COVERS ALL CANDIDATES OF A SAMPLE.  The PATH
+# shim delegates to the real readlink and only THEN destroys the remaining
+# fixture pids, so it models the real failure semantics exactly — a candidate
+# that exits after being observed but before its own confirmation would have run.
+# An implementation that confirmed in batches of two would report peak=2 and stay
+# RED; only whole-sample batching reports 5.  Measured pre-fix value: peak=1.
+#
+# DELIBERATELY NOT ASSERTED: wall-clock cost or fork count.  This suite runs in
+# bucket `pool`, CONCURRENTLY with others, and A10's note already rejects timing
+# asserts here as load-flaky; a fork-count assert would pass vacuously whenever
+# the shim is not picked up.  The deletion tripwire yields exact integers on any
+# host under any load instead.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- B1 (race fix): every candidate of one sample is confirmed by a SINGLE invocation ---"
+
+assert "B1: five real test binaries, four of which vanish the instant the first confirmation returns, still all count (peak=5 — one batched call covers every candidate; pre-fix peak=1)" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _pids_cmd_file _field)"'
+        # Captured BEFORE PATH is shimmed, so the shim delegates to the real tool.
+        real_rl=$(command -v readlink)
+        _mk_proc "$root" \
+            601=/home/u/lanes/_lane-1/target/debug/deps/reify_lsp-2f1c9ab4 \
+            602=/home/u/lanes/_lane-2/target/debug/deps/reify_core-1111aaaa \
+            603=/home/u/lanes/_lane-3/target/debug/deps/reify_eval-2222bbbb \
+            604=/home/u/lanes/_lane-4/target/debug/deps/reify_kernel-3333cccc \
+            605=/home/u/lanes/_lane-5/target/debug/deps/reify_gui-4444dddd
+        _pids_cmd_file "$d/pids" 601 602 603 604 605
+        mkdir -p "$d/bin"
+        cat > "$d/bin/readlink" <<SHIM
+#!/usr/bin/env bash
+# Delegate first, destroy second: the remaining candidates disappear only AFTER
+# an invocation has completed, which is the race, not a simulation of it.
+"$real_rl" "\$@"; rc=\$?
+rm -rf "$root/602" "$root/603" "$root/604" "$root/605"
+exit \$rc
+SHIM
+        chmod +x "$d/bin/readlink"
+        out=$(PATH="$d/bin:$PATH" REIFY_SAMPLER_PROC_ROOT="$root" \
+              REIFY_SAMPLER_PIDS_CMD="bash $d/pids" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0)
+        [ "$(_field "$out" peak)" = "5" ]
+    '
+
+
+# ---------------------------------------------------------------------------
+# B2 (THE OTHER HALF OF THE RACE — the prefilter IS the stale list).
+#
+# B1's batching is necessary but NOT sufficient.  The `pgrep -f` prefilter walks
+# argv across all of /proc and costs 0.15-0.24 s on this host (2.6 s per pass on
+# the loaded host that produced window 1), so the list it hands back has already
+# decayed before confirmation starts.  Batching the confirmation of a stale list
+# still confirms a stale list, however fast the batch is.  Candidate discovery
+# and confirmation therefore have to be ONE pass over the same snapshot — which
+# is exactly what the observation doc asks for.
+#
+# WHAT THIS ASSERT PINS: the DEFAULT path reads PROC_ROOT itself.  The fixture
+# pid is deliberately ABOVE the host's /proc/sys/kernel/pid_max (4194304), so it
+# can never collide with a live process and the assert can only pass by reading
+# the injected root.  Measured pre-fix value: peak=0 — the default `pgrep -f`
+# prefilters the REAL host, and no real pid has a directory under the fake root.
+#
+# THE SEAM SURVIVES, AS AN OVERRIDE.  REIFY_SAMPLER_PIDS_CMD is still honoured
+# when set (A1-A10d all drive it); unset or empty now means "enumerate
+# PROC_ROOT".  Both branches must feed the SAME batched confirmation, so this
+# suite keeps pinning the code that actually runs beside a gate rather than a
+# test-only branch.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- B2 (race fix): candidate discovery reads PROC_ROOT — no host-wide prefilter on the default path ---"
+
+assert "B2: with REIFY_SAMPLER_PIDS_CMD UNSET, a test binary under the injected PROC_ROOT still counts (peak=1 — discovery must not go via a host-wide pgrep; pre-fix peak=0)" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _field)"'
+        # 4194305 > /proc/sys/kernel/pid_max (4194304): unreachable as a live pid,
+        # so a pass cannot be an accident of the real host.
+        _mk_proc "$root" 4194305=/home/u/lanes/_lane-9/target/debug/deps/reify_lsp-2f1c9ab4
+        # The parent environment must not leak a PIDS_CMD in — the whole point is
+        # to exercise the branch a real run takes.
+        unset REIFY_SAMPLER_PIDS_CMD
+        out=$(REIFY_SAMPLER_PROC_ROOT="$root" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0)
+        [ "$(_field "$out" peak)" = "1" ]
+    '
+
+
 test_summary

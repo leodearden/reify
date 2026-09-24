@@ -16,10 +16,12 @@ Fields: `max_depth` (default 6), `max_cross_product_size` (default 100 000).
 
 ## `[[node_overrides]]`
 
-Array-of-tables. Each entry declares a per-node commitment-policy override that
-fills the "Level 3" slot in the five-level precedence chain
-(`docs/prds/v0_3/node-traits-unification.md` §6; implemented in
-`crates/reify-runtime/src/commitment.rs`).
+Array-of-tables. Each entry declares a per-node commitment-policy override —
+"Level 3" of the five-level precedence chain
+(`docs/prds/v0_3/node-traits-unification.md` §6), read by
+`NodePolicyOverrides::resolve_with_traits` in
+`crates/reify-runtime/src/commitment.rs`. See **Precedence** below for how an
+entry materialises today.
 
 ### Fields
 
@@ -46,7 +48,7 @@ yet implemented (future enhancement; noted in `NodePolicyOverrides::from_config_
 
 ```toml
 [[node_overrides]]
-node_id_pattern = "value"
+node_id_pattern = "compute"
 commitment_policy = "always_cancel_when_stale"
 
 [[node_overrides]]
@@ -54,11 +56,32 @@ node_id_pattern = "Bracket.width"
 commitment_policy = "only_run_on_final_inputs"
 ```
 
+Pick a `commitment_policy` that differs from the node's level-4 default (see
+**Precedence**), or the entry is observationally a no-op: `compute` defaults to
+`commit_if_slow`, so the entry above changes something, whereas `value` +
+`always_cancel_when_stale` would not.
+
 ### Precedence
 
-Override priority (highest → lowest) in `NodePolicyOverrides::resolve`:
-1. Instance override (set_instance)
-2. Type override (set_type) — kind selectors land here
-3. Default (`CommitIfSlow`)
+Override priority (highest → lowest), in PRD §6's numbering. The chain is owned
+by `NodePolicyOverrides::resolve_with_traits`'s rustdoc; this is the reify.toml
+author's view of it:
+1. Instance override — the `set_instance` map
+2. Type override — the `set_type` map, where kind selectors land
+3. Config-file `[[node_overrides]]` — reserved; not yet a distinct slot
+4. Kind+traits default (`default_overrides`) — absent `COMMITTABLE` →
+   `always_cancel_when_stale`, present → `commit_if_slow`
+5. Hard default — PRD §6's floor, `commit_if_slow`
 
-`resolve_with_traits` adds levels 3–5; config-file overrides fill Level 3 per PRD §6.
+Neither level 3 nor level 5 has a branch in `resolve_with_traits`: level 3 is
+reserved for task 3578, and level 4 always returns, so nothing reaches the
+level-5 floor.
+
+Until level 3 lands, `from_config_overrides` materialises each entry straight
+into the level-1 or level-2 map — an instance selector becomes a `set_instance`
+entry, a kind selector a `set_type` entry. A config entry is therefore
+indistinguishable from a programmatic override of the same granularity: they
+share one map, so the last write wins and neither source outranks the other.
+What a `reify.toml` author can rely on is the rest of the chain — an entry beats
+the kind+traits default at level 4, and an instance selector beats a kind
+selector. Full chain rationale: PRD §6.

@@ -2,14 +2,17 @@
 > fallback-soundness investigation; it is the evidence base cited by
 > `docs/prds/v0_6/builtin-signature-registry.md`. Everything below was measured against main
 > `36738b9b92`. Companion raw data: `fallback-soundness-xref-2026-08-03.json` (the two flat name
-> sets the set-diff was taken over — `eval`: 231 names, `fallback`: 121 names). Moved into the
+> sets the set-diff was taken over — `eval`: 231 names, `fallback`: 121 names — plus its own
+> `corrections` array, added 2026-08-25, which holds ONE entry and is NOT kept in lockstep with
+> the numbered Corrections block below: correction 5 records a `fallback`-membership staleness
+> that has no twin in the JSON yet). Moved into the
 > repo on 2026-08-07 because the originally-cited session scratchpad path no longer exists.
 > This is a dated snapshot, not a maintained document.
 
-> **Corrections (2026-08-07 review).** A follow-up review (the type-decision enshrinement
-> review, ratified 2026-08-07) re-probed this snapshot's load-bearing claims. Three passages
-> below would actively mislead and carry inline `[2026-08-07 correction]` markers at the
-> affected spots:
+> **Corrections (2026-08-07 review, extended 2026-08-25 and 2026-09-05).** A follow-up review
+> (the type-decision enshrinement review, ratified 2026-08-07) re-probed this snapshot's
+> load-bearing claims; later spot-checks added corrections 4 and 5. Five passages below would
+> actively mislead and carry inline `[<date> correction]` markers at the affected spots:
 >
 > 1. `complex_mul`/`complex_div`/`complex_pow` were classified FALLBACK-CORRECT by a
 >    Value-kind-only check; `Type::Complex` carries a quantity parameter (ty.rs:199) which
@@ -24,6 +27,63 @@
 > 3. The blanket "typed Scalar<Length>/Real" for the `prb_*` family is imprecise for
 >    `prb_cartwheel_flexure`, which leads with an Int `blade_count` (flexures/compound.rs:289)
 >    and is fallback-typed `Int`.
+> 4. [2026-08-25 correction: `iso_it_tolerance`, listed in the FALLBACK-WRONG Stackup/DFM/tolerancing… bullet below
+>    (`-> Scalar<LENGTH>, typed Int`), has moved to FALLBACK-CORRECT. Task #6091 (RULING,
+>    merged `12d6b19353`, on `main` as of 2026-09-03) flipped `iso_it_tolerance`'s argument
+>    order from grade-first `(grade, nominal_min, nominal_max)` to subject-first
+>    `(nominal_min, nominal_max, grade)`. The name is still not registered in any
+>    compiler-ladder name family (units.rs / signature files) either before or after the
+>    flip, so its call sites still fall through `NoUserFunctions` to the terminal
+>    first-arg fallback — but the new arg0 (`nominal_min`, a `Scalar<LENGTH>`) now matches
+>    the true result type, where the old arg0 (`grade`, an `Int`) did not. Measured
+>    first-hand on branch task/6091 (assertion `(a2)` in
+>    `iso_tolerance_grade_tolerance_value_derived_let`,
+>    crates/reify-compiler/tests/tolerancing_tests.rs): mutating the prelude call site
+>    (crates/reify-compiler/stdlib/tolerancing.ri) back to grade-first reproduces
+>    `left: Int, right: Scalar { dimension: LENGTH }`; subject-first infers `Scalar<LENGTH>`
+>    correctly. This is an untracked side effect of the arg-order ruling, not a deliberate
+>    registry fix — registry τ4 (task #6006) is still `pending` as of 2026-09-03 and has not
+>    added an explicit `iso_it_tolerance` row; when it lands, the name moves again, from
+>    FALLBACK-CORRECT to EXPLICIT, and stops depending on the fallback ladder at all.
+>    Headline counts (FALLBACK-WRONG 93 / FALLBACK-CORRECT 16) elsewhere in this snapshot are
+>    left as written, per the same convention as correction 1. Companion raw-data file
+>    `fallback-soundness-xref-2026-08-03.json` is unaffected by this correction: its
+>    `fallback` list is flat ladder-fallthrough membership, not a WRONG/CORRECT split, and
+>    `iso_it_tolerance` genuinely still falls through to the ladder — see that file's own
+>    `corrections` key for the parallel note.]
+> 5. [2026-09-05 correction: the Q5 sequencing bullet below citing "Task 5979 (pending low):
+>    register frame_to_frame → Transform(3)" is stale on both counts — task 5979 is
+>    cancelled, and the registration it described already landed via task 5344 (merged to
+>    main `4307a398b7`, 2026-08-20). Cited by SYMBOL rather than line, deliberately: this
+>    correction exists because line-number cites to the same family had already rotted, so
+>    the anchors below are ones a `grep` re-derives. In
+>    `crates/reify-compiler/src/orientation_signatures.rs`, `"frame_to_frame"` is a member of
+>    the `ORIENTATION_TYPED_FN_NAMES` slice and sits on the `=> Type::Transform(3)` arm of
+>    `orientation_typed_fn_result_type`; the ladder gate is the `is_orientation_typed_fn(name)`
+>    branch in `crates/reify-compiler/src/expr.rs`, which returns
+>    `orientation_typed_fn_result_type(name)` BEFORE the terminal first-arg fallback in that
+>    ladder's final `else` arm. `frame_to_frame` is therefore no longer in the FALLBACK-WRONG
+>    "frame_to_frame class" this snapshot's Q1 discussion uses as its running example
+>    (§"Precisely when it is wrong vs imprecise", §"Why the lie matters downstream") — those
+>    passages describe the pre-5344 state measured at `36738b9b92` and are left as written per
+>    the same leave-headline-counts-as-written convention as corrections 1 and 4.
+>
+>    UNLIKE correction 4, this one DOES invalidate companion-file membership. All 18
+>    `ORIENTATION_TYPED_FN_NAMES` members — `orient_identity`, `orient_quaternion`,
+>    `orient_euler`, `orient_basis`, `orient_look_at`, `orient_axis_angle`, `orient_exp`,
+>    `orient_inverse`, `orient_compose`, `orient_slerp`, `frame3`, `frame3_identity`,
+>    `transform3`, `transform3_identity`, `transform_compose`, `transform_inverse`,
+>    `transform_exp`, `frame_to_frame` — are still listed in
+>    `fallback-soundness-xref-2026-08-03.json`'s flat `fallback` array (verified 2026-09-05:
+>    all 18 present), and none of them reaches the ladder fallthrough any more. That array is
+>    a 2026-08-03 snapshot at `36738b9b92` and stays correct AS HISTORY, but a consumer
+>    treating it as CURRENT seed data — `docs/prds/v0_6/builtin-signature-registry.md` §5
+>    calls the enumeration "equivalent seed data" — must subtract those 18 names. Note the
+>    four EXCLUDED decomposers `orient_log`, `orient_to_euler`, `orient_to_axis_angle`,
+>    `transform_log` are also in that array and are NOT affected: they are deliberately absent
+>    from `ORIENTATION_TYPED_FN_NAMES` and genuinely still fall through. The parallel
+>    `corrections` entry inside that JSON — the twin of the one correction 4 added — is NOT
+>    yet written; tracked as #7827.]
 
 ---
 
@@ -106,7 +166,7 @@ The fallback is wrong for **93 of its 121 actual clients (77%)**. The five suspe
 - Flexures (14): all prb_* constructors return joint Maps, typed Scalar<Length>/Real; several example-attested. *[2026-08-07 correction: imprecise for `prb_cartwheel_flexure`, which leads with an Int `blade_count` (flexures/compound.rs:289) and is fallback-typed `Int`. See Corrections at top.]*
 - FEA (11, fea.rs): envelope_max/min (→Field, typed Map<String,Field>), case_names, result_for, linear_combine, min_max_stress, worst_case (→String; real impl in reify-expr), worst_buckling_case, envelope_critical_load, envelope_argmax/argmin.
 - Mechanism/snapshot/dynamics (7): world, bodies, transform_of, sweep_grid, ramp_profile_lower, inverse_dynamics_lower, inverse_dynamics_at_snapshot_lower.
-- Stackup/DFM/tolerancing/supports/loads/tensegrity (12): contributor, contributor_asym, stackup_worst_case, stackup_rss, monte_carlo_stackup, fits_build_volume (→Bool, typed BoundingBox), iso_it_tolerance (→Scalar<LENGTH>, typed Int), DisplacementSupport, RollerSupport, gravity, tensegrity_wires, tensegrity_surfaces.
+- Stackup/DFM/tolerancing/supports/loads/tensegrity (12): contributor, contributor_asym, stackup_worst_case, stackup_rss, monte_carlo_stackup, fits_build_volume (→Bool, typed BoundingBox), iso_it_tolerance (→Scalar<LENGTH>, typed Int), DisplacementSupport, RollerSupport, gravity, tensegrity_wires, tensegrity_surfaces. *[2026-08-25 correction: `iso_it_tolerance` is now FALLBACK-CORRECT under the #6091 subject-first arg order. See Corrections at top.]*
 - Trajectory internals (9): gcode_import_lower, end_effector_track_at, deviation_from_nominal_at, peak_deviation_at, evaluate_profile_at/_dot_at/_ddot_at, profile_duration_at, piecewise_polynomial (eval is a permanent Undef stub — fallback typing is vacuous).
 - reify-expr native (2): argmax/argmin (→domain coordinate Point, typed Field).
 
@@ -155,7 +215,7 @@ Judged per Leo's directive (architectural quality, long-term performance/maintai
 
 - **Task 5344 (in-progress NOW, live branch):** registering ~18 orientation/transform/frame constructor names in the exact ladder region. Highest textual-conflict surface. Land it first; it shrinks the wrong set and follows the template.
 - **Task 5436 (pending high, dispatchable):** registers its new `in_frame` explicitly (units.rs arm + signature rows) — the per-family template; canonical arm to copy is `datum_constructor_result_type` (units.rs:644, wired expr.rs:3264). Correction: the frame_to_frame follow-up was filed from esc-5436-2 (recorded on task 5979), not esc-5436-4 [verified from 5979's record; an esc-5436-4 may exist separately — not-checked].
-- **Task 5979 (pending low):** register frame_to_frame → Transform(3). Subsumed by any chosen option — fold in, don't duplicate.
+- **Task 5979 (pending low):** register frame_to_frame → Transform(3). Subsumed by any chosen option — fold in, don't duplicate. *[2026-09-05 correction: task 5979 is cancelled; this registration landed via task 5344 instead. See Corrections at top.]*
 - **Task 5371 (pending low):** IS option O1, framed as a design question, with the closed-world manifest sketched. The fallback closure should land AS PART OF a rewritten 5371 (expand-scope-means-rewrite) or explicitly supersede it.
 - **Task 5380 (pending low):** the known-fallthrough inventory with OPEN design rulings (BoundingBox quantity slot; heterogeneous Map returns for orient_to_axis_angle/transform_log). A hard fallback closure cannot land before these names are ruled or exemption-ledgered.
 - **Task 5068 (deferred BOOKMARK):** the Wave-3 registry slot — activate via /prd to do O3; doing O3 ad hoc outside it orphans the programme's plan.

@@ -12,15 +12,19 @@
 //!   until task #6087 added the §8.1 lane δ-A recognizer — an
 //!   `#[allow(…dead_code…)]` attribute whose trailing rationale defers the
 //!   work. That lane surfaced a pre-existing population of 14 findings which
-//!   fingerprint (line-number-erased, deduped) to the 5 committed entries, and
-//!   they were seeded in the same diff as a SHRINK-ONLY grandfather set.
-//!   §6.6's ratchet cannot grow, so those entries can only be burned down: when
-//!   an underlying comment is re-pointed at a live task or the deferred work
-//!   lands, its baseline line is deleted. Every seeded entry was hand-inspected
-//!   as a genuine deferral; none is a false positive. Three kinds are
-//!   represented, per §8.3's lane-independent taxonomy: one `orphaned` (cites a
-//!   `done` task), one `malformed-cite` (the legacy `task NNNN` form), and three
-//!   `untracked` (no cite at all).
+//!   fingerprint (line-number-erased, deduped) to 5 entries, seeded in the same
+//!   diff as a SHRINK-ONLY grandfather set. Every seeded entry was
+//!   hand-inspected as a genuine deferral; none is a false positive.
+//!
+//!   §6.6's ratchet cannot grow under ordinary work, so an entry can only be
+//!   burned down: when its underlying comment is re-pointed at a live task or
+//!   the deferred work lands, its baseline line is deleted. The one sanctioned
+//!   growth is §6.6's same-diff seeding rule — a NEW LANE seeds its
+//!   pre-existing population in the commit that adds the lane, as #6103 did for
+//!   δ-B. So today's composition is NOT the seed's minus removals; read it from
+//!   the file, never reconstructed from this paragraph. It currently holds 6
+//!   entries, every one `orphaned` — #6934 burned the last `malformed-cite` and
+//!   `untracked` entries down at source.
 //!
 //! (A′) **`validate_*`** — always-on, hermetic unit tests that drive crafted
 //!   content through the shared `validate_baseline_content` validator, so the
@@ -401,15 +405,16 @@ fn live_findings_are_within_baseline() {
     // enforces): a swept, non-allowlisted SOURCE PATH key and a §8.3 taxonomy
     // kind. The α structural and β liveness lanes are path-keyed (`task_id` = the
     // swept file), so they pass this gate. The ζ inverse lane, by contrast, emits
-    // `task-cites-deleted-path` findings keyed by TASK ID (e.g. `task_id = "2560"`)
-    // with a kind outside the baseline taxonomy — a task-DB-metadata hygiene
-    // class, not source-marker debt. Such findings can NEVER appear in
-    // `ptodo-baseline.txt` (they would fail `baseline_is_well_formed`'s swept-ext
-    // and kind-taxonomy assertions), so demanding their membership here would be a
-    // category error that no well-formed baseline could satisfy. They remain
-    // surfaced by the `reify-audit --pattern PTODO` binary and are remediated via
-    // task-metadata curation; they are simply out of scope for the source-marker
-    // baseline ratchet this test guards.
+    // `task-cites-deleted-path` and `task-cites-renamed-path` findings keyed by
+    // TASK ID (e.g. `task_id = "2560"`) with kinds outside the baseline
+    // taxonomy — a task-DB-metadata hygiene class, not source-marker debt. Such
+    // findings can NEVER appear in `ptodo-baseline.txt` (they would fail
+    // `baseline_is_well_formed`'s swept-ext and kind-taxonomy assertions), so
+    // demanding their membership here would be a category error that no
+    // well-formed baseline could satisfy. They remain surfaced by the
+    // `reify-audit --pattern PTODO` binary and are remediated via task-metadata
+    // curation; they are simply out of scope for the source-marker baseline
+    // ratchet this test guards.
     let mut violations: Vec<String> = Vec::new();
     for f in &findings {
         if !is_swept_ext(&f.task_id) {

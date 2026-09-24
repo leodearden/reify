@@ -2710,6 +2710,67 @@ mod tests {
         );
     }
 
+    /// Pins the ManifoldKernel STL arm's LENGTH REGIME: a `unit_cube_mesh`
+    /// is a ONE-METRE cube in reify model space, and `write_stl_binary` emits
+    /// millimetres, so every axis AABB extent must be 1000 mm.
+    ///
+    /// This is the sibling of OCCT's `new_ops_export_stl` extent assert. Task
+    /// 6187's defect (STL emitting SI metres into a millimetre-assuming world)
+    /// was present in BOTH production kernel arms; without this test only the
+    /// OCCT path is regime-covered, so a regression reintroduced on the
+    /// Manifold arm alone would land silently.
+    /// `export_stl_of_unit_cube_writes_valid_binary` stays the structural
+    /// (84 + 50N) pin; this one is purely the regime pin.
+    ///
+    /// **Exactness is correct here, not a tolerance.** `1.0_f32 * 1000.0_f32 ==
+    /// 1000.0_f32` involves no rounding at all — both operands and the product
+    /// are exactly representable — and Manifold's f64→f32 narrowing of an exact
+    /// 1.0 is likewise exact. Do not weaken this to an epsilon without a
+    /// measurement that justifies the epsilon.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn export_stl_of_unit_cube_emits_millimetre_coordinates() {
+        let mut kernel = ManifoldKernel::new();
+        let h = kernel
+            .ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]))
+            .expect("unit_cube_mesh fixture must be a valid manifold")
+            .id;
+
+        let mut buf = Vec::new();
+        kernel
+            .export(h, ExportFormat::Stl, &mut buf)
+            .expect("ManifoldKernel Stl export of a unit cube must succeed");
+
+        let count = u32::from_le_bytes(buf[80..84].try_into().unwrap()) as usize;
+        assert!(count > 0, "STL triangle count must be > 0 for a solid cube");
+
+        // Per triangle: skip the 12-byte facet normal, then 3 vertices × 3 f32.
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for tri in 0..count {
+            for v in 0..3usize {
+                let vbase = 84 + tri * 50 + 12 + v * 12;
+                for axis in 0..3usize {
+                    let bytes: [u8; 4] = buf[vbase + axis * 4..vbase + axis * 4 + 4]
+                        .try_into()
+                        .unwrap();
+                    let coord = f32::from_le_bytes(bytes);
+                    min[axis] = min[axis].min(coord);
+                    max[axis] = max[axis].max(coord);
+                }
+            }
+        }
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let extent = max[axis] - min[axis];
+            assert_eq!(
+                extent, 1000.0_f32,
+                "a 1 m cube must export as exactly 1000 mm on {name}, got {extent} (min {}, \
+                 max {}) — the ManifoldKernel STL arm has left the millimetre regime",
+                min[axis], max[axis]
+            );
+        }
+    }
+
     /// Mirrors `export_stl_of_unit_cube_writes_valid_binary` for 3MF.
     /// Because Stored=uncompressed, OPC part names and model XML appear
     /// literally in raw bytes — no zip reader needed.

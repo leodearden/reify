@@ -2720,6 +2720,7 @@ _BGPIDS+=("$Q_SEED8_PID")
 # call; this is NOT a wall-clock upper-bound assertion -- the "not done yet"
 # check below can only be a false failure (never a false pass), since the
 # holder genuinely holds the lock until killed below.
+# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
 sleep 0.3
 assert "H5d: 'unlimited' (mixed-case) is still blocked while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE8"
@@ -2975,6 +2976,7 @@ _BGPIDS+=("$Q_SEED11_PID")
 # Brief settle so the backgrounded job has reached the flock call. NOT a
 # wall-clock upper bound -- the "not done yet" check can only false-fail, never
 # false-pass, since the holder genuinely holds the lock until killed below.
+# holder-sleep:allow — one-sided: can only false-FAIL, never false-pass.
 sleep 0.3
 assert "H9: WAIT=unlimited + no --lane-lock is still BLOCKED while the lock is held (no done-marker yet)" \
     bash -c '[ ! -e "$1" ]' _ "$Q_DONE11"
@@ -5525,5 +5527,394 @@ assert "R8d: ... and PASSES once that entry is gone (a detector, not a constant 
 # R2's discipline, so nothing leaks past test_summary.
 _SHARED_TRASH_DIR="$_SHARED_TRASH_DIR_SAVED_R8"
 : > "$_TRASH_HITS_FILE"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block W — rerere disarm at lane cadence (task 6889, open item (c))
+#
+# scripts/seed-warm-lane.sh delegates to scripts/git-rerere-guard.sh arm at the
+# tail of every --fresh-checkout seed, so the shared .git/config is re-pinned at
+# ACQUIRE cadence rather than only at developer-setup cadence. This block pins
+# WHEN that call happens, and that it can never break an acquire.
+#
+# THE DISCRIMINATOR, established by experiment rather than assumed: the guard's
+# first two git calls are `rev-parse --is-inside-work-tree` and `rev-parse
+# --git-common-dir`, while seed's OWN git use is only `diff --name-only` and
+# `rev-parse HEAD`. So `--is-inside-work-tree` in CALLS_FILE is a precise "the
+# guard ran" probe that no existing seed call can forge. Deliberately NOT
+# `git config`: under this suite's stub `git` the guard bails at
+# git-rerere-guard.sh:197 (`cd: abc1234`) and never reaches a config call.
+#
+# BUT THE PROBE IS DISPATCH-INDEPENDENT — do NOT re-derive it as an `arm` probe.
+# That misreading is what left W1-W8 coarser than they read, and it is worth
+# spelling out: `--is-inside-work-tree` is emitted at git-rerere-guard.sh:182,
+# BEFORE the subcommand dispatch at :951-953, so it fires identically for `arm`
+# and for `check`, and identically whatever target was passed. On its own it
+# proves only "some guard-shaped call happened somewhere". Two asserts close the
+# two halves it cannot reach:
+#   * W9 — the ARGUMENT half: was the guard pointed at THIS lane?
+#   * W10 — the SUBCOMMAND half: was it `arm` and not `check`? CALLS_FILE
+#     structurally cannot reach this, since the guard's only observable git
+#     calls precede its dispatch; W10 uses a guard SHIM instead.
+#
+# THE GUARD IS DELIBERATELY NOT STUBBED OUT. It runs for real against the stub
+# `git`, where it exits 1 (measured: empty stdout, one stderr line, exactly the
+# two rev-parse calls above). That is what makes W3 a genuine hostile-environment
+# test of the fail-open path rather than a vacuous one.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block W: rerere disarm at lane cadence (task 6889) ---"
+
+W_BASE_PARENT="$(mktemp -d /tmp/test-seed-W-parent-XXXXXX)"
+W_BASE="$W_BASE_PARENT/target"
+_TMPDIRS+=("$W_BASE_PARENT")
+mkdir -p "$W_BASE"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$W_BASE_PARENT/.warm-base-meta"
+
+# W1 (a): INVOKED on the --fresh-checkout path — the production ACQUIRE mode.
+W_LANE1="$(make_isolated_lane W-fresh)"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$W_BASE" "$W_LANE1" --fresh-checkout
+W1_RC="$RC"
+W1_OUT="$OUT"
+
+assert "W1: --fresh-checkout invokes git-rerere-guard.sh (--is-inside-work-tree seen)" \
+    bash -c 'grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+
+# W9: ...AND IT WAS POINTED AT THIS LANE. W1 above is the cheap presence check;
+# W9 refines it from "some guard-shaped call happened somewhere" to "the guard
+# was pointed at THIS lane". Without it, dropping or mis-deriving the
+# `"$LANE_DIR"` argument leaves every one of W1-W8 green.
+#
+# MEASURED shape: the guard resolves TARGET from its first positional
+# (git-rerere-guard.sh:175) and its first call is `git -C "$TARGET" rev-parse
+# --is-inside-work-tree`, so the recorded line is literally
+#     git -C <LANE_DIR> rev-parse --is-inside-work-tree
+# Match the FIELD after `-C`, not a substring of the line: a substring grep for
+# the lane path would also be satisfied by a call that passed a CHILD of the
+# lane, and a grep for a parent would be satisfied by the lane itself.
+#
+# Reuses W1's already-captured CALLS_FILE rather than adding a fixture, so this
+# adds no runtime.
+_guard_target_from_calls() {
+    awk '/--is-inside-work-tree/ {
+             for (i = 1; i <= NF; i++)
+                 if ($i == "-C") { print $(i + 1); exit }
+         }' "$1"
+}
+
+# Asserted as a FUNCTION, not `bash -c`: assert runs "$@" directly in THIS shell
+# (test_helpers.sh's no-subshell idiom), whereas a `bash -c` child would not
+# inherit _guard_target_from_calls and the check would fail for the wrong reason.
+_guard_targeted_lane() {   # <expected_lane> <calls_file>
+    [ "$(_guard_target_from_calls "$2")" = "$1" ]
+}
+
+assert "W9: ...and the guard was pointed at THIS lane (the -C field is \$W_LANE1)" \
+    _guard_targeted_lane "$W_LANE1" "$CALLS_FILE"
+
+# W2 (b): NOT invoked on --reset-in-place, which pins the mode gate. That gate
+# covers every TASK-lane acquire (dark-factory drives those through
+# _seed_warm_lane(lane, '--fresh-checkout')), but NOT the merge-spec lane —
+# measured 2026-08-30, acquire_spec_lane always passes --reset-in-place. That is
+# harmless here because the pin is a property of the ONE shared .git/config, not
+# of a lane: any acquire that pins it pins it for every lane. See the mode-gate
+# comment in scripts/seed-warm-lane.sh for the full measurement.
+# Same fixture shape as Block E's --reset-in-place run.
+W_LANE2="$(make_isolated_lane W-reset)"
+mkdir -p "$W_LANE2/src"
+echo 'fn main() {}' > "$W_LANE2/src/main.rs"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$W_BASE" "$W_LANE2" --reset-in-place
+
+assert "W2: --reset-in-place exits 0 (fixture sanity)" \
+    test "$RC" -eq 0
+assert "W2: --reset-in-place does NOT invoke git-rerere-guard.sh (mode gate)" \
+    bash -c '! grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+
+# W3 (c): FAIL-OPEN. Under the stub `git` the guard exits 1 (measured above), so
+# this assert has teeth: without the `|| _rc=$?` shielding, seed would inherit
+# that status under `set -euo pipefail` and the acquire would fail.
+assert "W3: seed still exits 0 even though the guard exits 1 under the stub git" \
+    test "$W1_RC" -eq 0
+
+# W4 (d): STDOUT UNPOLLUTED. seed's stdout is a single-use machine-readable
+# channel; the guard's diagnostics must never reach it. Same shape as C6/E3.
+assert "W4: STDOUT is exactly <lane_dir>/target with the guard call in place" \
+    bash -c '[ "$1" = "'"$W_LANE1/target"'" ]' _ "$W1_OUT"
+
+# ── W5-W8: the REIFY_WARM_LANE_RERERE_ARM operator escape hatch ──────────────
+#
+# This call now runs on EVERY acquire across 254 linked worktrees that share ONE
+# .git/config, so an off-switch that needs no code change and no merge is prudent
+# for that blast radius. The control must be strictly opt-IN-to-skip: the failure
+# direction has to be "still protected", never "silently off". Same
+# truncate-then-run_helper shape and the same --is-inside-work-tree discriminator
+# as W1/W2.
+
+# W5 (e): the exact value 0 suppresses ONLY the rerere call — the seed still
+# succeeds and its stdout contract is untouched.
+W_LANE3="$(make_isolated_lane W-optout)"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_RERERE_ARM=0 \
+    run_helper "$W_BASE" "$W_LANE3" --fresh-checkout
+
+assert "W5: REIFY_WARM_LANE_RERERE_ARM=0 suppresses the guard call" \
+    bash -c '! grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+assert "W5: ...and the seed still exits 0" \
+    test "$RC" -eq 0
+assert "W5: ...and STDOUT is still exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$W_LANE3/target"'" ]' _ "$OUT"
+
+# W6 (f): UNSET keeps the defence armed — the default must be protected.
+W_LANE4="$(make_isolated_lane W-unset)"
+reset_calls
+unset REIFY_WARM_LANE_RERERE_ARM
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$W_BASE" "$W_LANE4" --fresh-checkout
+
+assert "W6: REIFY_WARM_LANE_RERERE_ARM unset still invokes the guard (default armed)" \
+    bash -c 'grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+
+# W7 (g): an explicit 1 keeps it armed too, so no stray value can silently
+# disable the fleet-wide defence — only a literal 0 does.
+W_LANE5="$(make_isolated_lane W-explicit-1)"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_RERERE_ARM=1 \
+    run_helper "$W_BASE" "$W_LANE5" --fresh-checkout
+
+assert "W7: REIFY_WARM_LANE_RERERE_ARM=1 invokes the guard (only a literal 0 skips)" \
+    bash -c 'grep "^git" "$1" | grep -q -- "--is-inside-work-tree"' _ "$CALLS_FILE"
+
+# W8 (h): the control surface is DISCOVERABLE — --help still exits 0 and names
+# the variable, alongside the existing REIFY_WARM_LANE_RESEED_TRASH_SYNC /
+# REIFY_WARM_LANE_MOUNT entries. An existence check on the documented control
+# surface, not a prose pin. Usage goes to stderr (see A1).
+reset_calls
+run_helper --help
+assert "W8: --help still exits 0" test "$RC" -eq 0
+assert "W8: --help documents REIFY_WARM_LANE_RERERE_ARM" \
+    bash -c 'printf "%s\n" "$1" | grep -q "REIFY_WARM_LANE_RERERE_ARM"' _ "$ERR_OUT"
+
+# Do not let the knob leak into any later block of this long-lived suite.
+unset REIFY_WARM_LANE_RERERE_ARM
+
+# ── W10: the SUBCOMMAND is `arm`, not `check` ────────────────────────────────
+#
+# The half of the coverage gap CALLS_FILE structurally CANNOT reach: the guard's
+# only observable git calls (`--is-inside-work-tree`, `--git-common-dir`) both
+# precede its subcommand dispatch (:951-953), so no CALLS_FILE assert can tell
+# `arm` from `check`. That distinction is the whole point of the block — a
+# `check` would REPORT the drift while leaving all ~253 lanes ARMED.
+#
+# MECHANISM — a guard SHIM beside a fixture copy of the script. Sound here for a
+# reason established by measurement, not assumed: `_SCRIPT_DIR` is derived once
+# at scripts/seed-warm-lane.sh:171 from BASH_SOURCE[0], and `grep -n _SCRIPT_DIR`
+# returns exactly three lines — that derivation plus its only two uses, the `-x`
+# existence gate (:1666) and the invocation (:1668). seed sources no sibling lib
+# at all, so a copy into a temp dir is faithful in every respect EXCEPT which
+# guard it finds — precisely the substitution wanted. run_helper is UNCHANGED: it
+# invokes `bash "$SCRIPT" "$@"`, so BASH_SOURCE[0] — and therefore _SCRIPT_DIR —
+# resolves to the temp dir.
+#
+# DELIBERATELY ADDITIVE, not a replacement for W1-W9. The real guard running
+# against the stub `git` and exiting 1 is what gives W3's fail-open assert its
+# teeth; a shim that exits 0 would make W3 vacuous, reintroducing exactly the
+# defect under remediation. So W1-W9 stay on the real guard and W10 stands
+# alongside. Because the shim exits 0, W10 also exercises the previously
+# UNTESTED `_rerere_arm_rc -eq 0` success branch — no other assert covers it,
+# since the real guard never returns 0 under the stub git.
+W10_DIR="$(mktemp -d /tmp/test-seed-W10-XXXXXX)"
+_TMPDIRS+=("$W10_DIR")
+cp "$SCRIPT" "$W10_DIR/seed-warm-lane.sh"
+W10_ARGV="$W10_DIR/guard-argv"
+
+# Self-contained shim: it writes BESIDE ITSELF, so the heredoc needs no
+# expansion and cannot pick up a stale path from the enclosing shell.
+cat > "$W10_DIR/git-rerere-guard.sh" <<'W10_SHIM'
+#!/usr/bin/env bash
+echo "$*" >> "$(dirname "${BASH_SOURCE[0]}")/guard-argv"
+exit 0
+W10_SHIM
+# EXECUTABLE matters: :1666 gates on `-x`, so a non-executable shim silently
+# takes the warn branch and every assert below would pass vacuously against a
+# never-created file. Asserted, not merely chmod-ed.
+chmod +x "$W10_DIR/git-rerere-guard.sh"
+
+assert "W10: fixture — the shim is executable (a non-exec shim takes the warn branch)" \
+    test -x "$W10_DIR/git-rerere-guard.sh"
+
+W_LANE6="$(make_isolated_lane W-shim)"
+W10_SCRIPT_SAVED="$SCRIPT"
+SCRIPT="$W10_DIR/seed-warm-lane.sh"
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$W_BASE" "$W_LANE6" --fresh-checkout
+W10_RC="$RC"
+W10_OUT="$OUT"
+# RESTORED IMMEDIATELY, in the same sub-block: this suite is long-lived and every
+# later block reads $SCRIPT, so a leaked override would silently retarget the
+# remainder of a 440-assert run at a stale copy.
+SCRIPT="$W10_SCRIPT_SAVED"
+
+assert "W10: the SCRIPT global was restored (later blocks must not run the copy)" \
+    bash -c '[ "$1" = "$2" ]' _ "$SCRIPT" "$REPO_ROOT/scripts/seed-warm-lane.sh"
+
+# Exactly one line, so a future call that ALSO ran `check` cannot satisfy the
+# `arm` assert by accident.
+assert "W10: the guard was invoked exactly once" \
+    bash -c '[ "$(wc -l < "$1")" -eq 1 ]' _ "$W10_ARGV"
+
+assert "W10: the argv is EXACTLY 'arm <lane_dir>'" \
+    bash -c '[ "$(cat "$1")" = "arm $2" ]' _ "$W10_ARGV" "$W_LANE6"
+
+assert "W10: ...argv[1] is 'arm'" \
+    bash -c '[ "$(cut -d" " -f1 "$1")" = arm ]' _ "$W10_ARGV"
+
+assert "W10: ...and is explicitly NOT 'check' (which would leave the fleet armed)" \
+    bash -c '[ "$(cut -d" " -f1 "$1")" != check ]' _ "$W10_ARGV"
+
+# The exit-0 branch, reachable only under the shim: seed must still honour its
+# C5/C6/E3/H1c/I3 single-use-stdout contract on the SUCCESS path too.
+assert "W10: seed still exits 0 on the guard-success branch" \
+    test "$W10_RC" -eq 0
+
+assert "W10: ...and STDOUT is still exactly <lane_dir>/target on that branch" \
+    bash -c '[ "$1" = "$2" ]' _ "$W10_OUT" "$W_LANE6/target"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block X — --fresh-checkout is source-tree CONTENT-INERT and DELETION-INERT
+#           (task 7227)
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS BLOCK EXISTS. warm-lane-gc.sh's Pass-1 reset delegates to this seed
+# and its header claims the reset never harms the lane's source tree. Nothing
+# pinned that claim, and esc-7106-5 — one tracked source file gone from a lane,
+# unattributed — stood as a live counter-hypothesis to it for exactly that
+# reason. The claim is TRUE (task 7227 re-measured the seed: no git
+# clean/checkout/reset/restore/rm/stash is executed anywhere, and every rm/mv
+# is scoped to $LANE_TARGET or the pool-level trash sibling), so this block is
+# a CHARACTERIZATION PIN and is expected green on its first run. It is not
+# hunting a bug; it is closing the hole that let the hypothesis survive.
+#
+# WHY IT LIVES HERE AND NOT IN tests/infra/test_warm_lane_gc.sh, where the
+# reset under investigation actually is: that suite drives every Pass-1 reset
+# through _seed_stub_body, a stub whose whole behaviour is removing a
+# target/DIVERGENT_MARKER. A source-survival assertion there would characterize
+# the stub and stay green no matter what the real primitive did. The pin has to
+# sit where the REAL seed runs against a real lane.
+#
+# The lane is a real git repo (Block M's recipe) so X5/X6 can pin the ref too.
+# No --base-commit is passed, so the seed makes zero git calls and the stub git
+# is never invoked. The pre-existing non-empty target/ forces the most
+# destructive path available — rename-to-trash, reflink-clone, rm trash.
+echo ""
+echo "--- Block X: fresh-checkout leaves the source tree intact (task 7227) ---"
+
+# ── block-local snapshot helpers ──────────────────────────────────────────────
+# Both prune target/ (legitimately replaced) and .git/ (git's own bookkeeping,
+# and pruned by the seed's own bulk stamp). What is left is exactly the lane's
+# source tree — the thing the gc header promises is never touched.
+_x_paths() {
+    ( cd "$1" && find . -mindepth 1 \( -path ./target -o -path ./.git \) -prune -o -print ) |
+        LC_ALL=C sort
+}
+_x_hashes() {
+    local lane="$1" p
+    ( cd "$lane" && find . -mindepth 1 \( -path ./target -o -path ./.git \) -prune -o -type f -print ) |
+        LC_ALL=C sort |
+        while IFS= read -r p; do
+            printf '%s  %s\n' "$(sha256sum < "$lane/$p" | cut -d' ' -f1)" "$p"
+        done
+}
+
+X_LANE="$(make_isolated_lane X-inert)"
+
+git -C "$X_LANE" init -q
+git -C "$X_LANE" config user.email "test@reify.test"
+git -C "$X_LANE" config user.name "Test"
+
+# Path set spans the walk's edges: a nested subdirectory, a name containing a
+# space, and a dotfile. A find/touch walk that mishandles any of those would
+# show up here as a vanished or altered path rather than as a silent survivor.
+mkdir -p "$X_LANE/src" "$X_LANE/nested/deep"
+printf 'target\n'          > "$X_LANE/.gitignore"
+printf 'fn main() {}\n'    > "$X_LANE/src/main.rs"
+printf 'pub fn lib() {}\n' > "$X_LANE/src/lib.rs"
+printf 'pub fn deep() {}\n' > "$X_LANE/nested/deep/buried.rs"
+printf 'spaced content\n'  > "$X_LANE/with space.txt"
+printf 'dotfile content\n' > "$X_LANE/.hidden-config"
+git -C "$X_LANE" add -A
+git -C "$X_LANE" commit -q -m "init"
+
+# Base: real artifact + sidecar so the cp stub has something to clone.
+X_BASE_PARENT="$(mktemp -d /tmp/test-seed-X-base-XXXXXX)"
+X_BASE="$X_BASE_PARENT/target"
+_TMPDIRS+=("$X_BASE_PARENT")
+mkdir -p "$X_BASE/debug"
+echo "base artifact" > "$X_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$X_BASE_PARENT/.warm-base-meta"
+
+# Non-empty pre-existing target/ → the replace path, not the create path.
+mkdir -p "$X_LANE/target/debug"
+echo "stale artifact" > "$X_LANE/target/debug/stale.a"
+
+X_PATHS_BEFORE="$(_x_paths "$X_LANE")"
+X_HASHES_BEFORE="$(_x_hashes "$X_LANE")"
+X_HEAD_BEFORE="$(git -C "$X_LANE" rev-parse HEAD)"
+X_REF_BEFORE="$(git -C "$X_LANE" symbolic-ref HEAD)"
+
+# X4's positive control is only meaningful if the sources do NOT already carry
+# the 2020 stamp. They were written moments ago, but assert it rather than
+# assume it: a fixture that started at the epoch would make X4 vacuous.
+X_MTIME_BEFORE="$(stat -c '%Y' "$X_LANE/src/main.rs")"
+assert "X0: FIXTURE — sources start ABOVE the 2020 epoch (else X4 is vacuous)" \
+    test "$X_MTIME_BEFORE" -gt "$EPOCH_2020"
+assert "X0: FIXTURE — the lane really is a git repo with a resolvable HEAD" \
+    test -n "$X_HEAD_BEFORE"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$X_BASE" "$X_LANE" --fresh-checkout
+
+assert "X1: the seed run succeeded (exit 0)" test "$RC" -eq 0
+
+# X2 — DELETION-INERT. The assertion whose absence let "the reset may delete a
+# source file" stand unfalsified: the path SET is identical, so nothing
+# vanished and nothing appeared.
+assert "X2: the source-tree path set is IDENTICAL across --fresh-checkout" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_PATHS_BEFORE" "$(_x_paths "$X_LANE")"
+
+# X3 — CONTENT-INERT. Set identity alone would still permit a rewrite in place.
+assert "X3: every source file is byte-identical across --fresh-checkout" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_HASHES_BEFORE" "$(_x_hashes "$X_LANE")"
+
+# X4 — POSITIVE CONTROL. Without it, a fixture where the seed never ran at all
+# would satisfy X2/X3 trivially. The 2020 stamp proves the seed's
+# `find "$LANE_DIR" ... -exec touch` walk really did traverse the very files
+# X3 just proved unchanged — which is also the precise, and only, effect the
+# reset has on a lane's source tree.
+assert "X4: src/main.rs was stamped to the 2020 epoch (the walk really ran)" \
+    test "$(stat -c '%Y' "$X_LANE/src/main.rs")" -eq "$EPOCH_2020"
+assert "X4: ...so was the nested file" \
+    test "$(stat -c '%Y' "$X_LANE/nested/deep/buried.rs")" -eq "$EPOCH_2020"
+assert "X4: ...so was the spaced filename" \
+    test "$(stat -c '%Y' "$X_LANE/with space.txt")" -eq "$EPOCH_2020"
+assert "X4: ...and so was the dotfile" \
+    test "$(stat -c '%Y' "$X_LANE/.hidden-config")" -eq "$EPOCH_2020"
+
+# X5/X6 — the branch half of the same header claim: committed work lives on the
+# lane's ref and the reset never moves it.
+assert "X5: HEAD still points at the same commit" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_HEAD_BEFORE" "$(git -C "$X_LANE" rev-parse HEAD)"
+assert "X6: the lane is still on the same branch" \
+    bash -c '[ "$1" = "$2" ]' _ "$X_REF_BEFORE" "$(git -C "$X_LANE" symbolic-ref HEAD)"
+
+# X7 — git's own view agrees: no tracked file is modified or deleted. This is
+# the same question scripts/warm-lane-source-integrity.sh asks a live lane, so
+# a regression here would surface there as a `deleted=` sentinel.
+assert "X7: git reports no tracked source change after the reset" \
+    bash -c '[ -z "$(git -C "$1" status --porcelain)" ]' _ "$X_LANE"
+
 
 test_summary

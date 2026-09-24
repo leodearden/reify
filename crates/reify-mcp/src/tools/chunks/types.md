@@ -13,7 +13,7 @@
 
 ## Type Parameters
 
-```
+```reify-fragment
 structure def FlexibleCoupling<DriverPort: RotaryPort, DrivenPort: RotaryPort> {
     param max_torque : Torque
 }
@@ -31,14 +31,14 @@ Conservative — infer type parameters when unambiguous. Never infer value param
 
 ## Function Types
 
-```
+```reify-schematic
 Point3<Length> -> Scalar<Temperature>    // Spatial temperature field
 (Length, Length) -> Bool                  // Binary predicate
 ```
 
 ## Type Aliases
 
-```
+```reify-fragment
 type Pressure = Force / Area
 type StressTensor = Tensor<2, 3, Pressure>
 type Point3<Q> = Point<3, Q>

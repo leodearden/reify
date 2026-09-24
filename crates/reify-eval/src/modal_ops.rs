@@ -16,23 +16,27 @@
 //! handle, the convergence counts) are read only by the unit tests; `phi_full`
 //! is read by both the trampoline (serialized as `Mode.shape`) and the tests.
 
+use std::collections::BTreeSet;
 use std::f64::consts::PI;
 
 use faer::sparse::{SparseRowMat, Triplet};
 
-use reify_core::{Diagnostic, DimensionVector};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, DirichletBc, EigenSolverOptions, EigenSolverResult,
     ElementOrder, ElementStiffness, IsotropicElastic, JointStiffness, add_joint_stiffness,
     assemble_global_stiffness, consistent_element_mass_tet_p1, consistent_element_mass_tet_p2,
-    element_stiffness, solve_eigen_dense, solve_eigen_shift_invert,
+    ShiftInvertFailure, element_stiffness, solve_eigen_dense, try_solve_eigen_shift_invert,
 };
+// Not re-exported from the crate root: the shift-contract C5 rule belongs beside
+// the other shift helpers, and this is the module path to it.
+use reify_solver_elastic::eigensolve::conservative_shift_provenance;
 use reify_stdlib::dynamics::mass_props::resolve_density_strict;
 use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, is_rigid_body_mode, mass_normalization_scale,
-    modal_participation_mass, rayleigh_damping_ratio,
+    modal_participation_mass, rayleigh_damping_ratio, total_damping_ratio,
 };
 use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
 use reify_stdlib::modal::transient::{
@@ -378,17 +382,21 @@ pub(crate) fn eigensolve_modal(
     // A connected 3-D elastic solid has a 6-dimensional rigid-body null space, so
     // K_free is SPD (hence Cholesky-factorable) only once the Dirichlet BCs remove
     // all six rigid-body modes — which needs at least 6 constrained DOFs. Fewer
-    // than that leaves K_free singular, and solve_eigen_shift_invert factors K up
-    // front (before its own dense fallback), so it would PANIC on such an
-    // under-constrained model whenever n_free is large enough to take the
-    // shift-invert path (e.g. the production default n_modes = 10 on n_free > 64).
-    // Route these cases to the dense generalized solver, which tolerates a
-    // singular K_free and lets the W_ModalRigidBodyMode diagnostic surface
-    // gracefully regardless of mesh size — matching the small-mesh behaviour the
-    // rigid-body diagnostic was designed for (suggestion 1 / robustness).
+    // than that leaves K_free singular, and the shift-invert path factors K up
+    // front, so it would PANIC on such an under-constrained model.
+    //
+    // This count is a NECESSARY condition for SPD-ness, never a sufficient one:
+    // a Pinned-only support set constrains one Z DOF per face node (≥ 6, so this
+    // detector stays quiet) yet still leaves 3–4 rigid-body modes alive. It is
+    // therefore kept only as a CHEAP FAST PATH for the common no/insufficient-
+    // supports user error — skipping a factorization that is known in advance to
+    // fail — and is NOT load-bearing for panic-safety. That guarantee lives in
+    // `solve_generalized_eigen`, which measures SPD-ness directly via
+    // `try_solve_eigen_shift_invert` (task 6663).
     const RIGID_BODY_DOFS: usize = 6;
     let under_constrained = n_dofs.saturating_sub(n_free) < RIGID_BODY_DOFS;
-    let eig = solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone(), under_constrained);
+    let GeneralizedEigenOutcome { result: eig, fault } =
+        solve_generalized_eigen(&k_free, &m_free, eigen_opts.clone(), under_constrained);
 
     // ---- Convert λ→f and scatter φ_free → φ_full --------------------------
     let n_modes_out = eig.eigenvalues.len();
@@ -471,22 +479,115 @@ pub(crate) fn eigensolve_modal(
     for (i, &f) in frequencies.iter().enumerate() {
         let omega = 2.0 * PI * f;
         if is_rigid_body_mode(omega, RIGID_BODY_OMEGA_TOL) {
+            // σ from `eig.shift` — the shift ACTUALLY used — for the same
+            // reason `W_ShiftSkippedModes` below names it from there: both
+            // clauses tell the author to move a σ, so neither may name a σ the
+            // solve might not have applied.
+            diagnostics.push(rigid_body_mode_diagnostic(
+                i,
+                omega,
+                RIGID_BODY_OMEGA_TOL,
+                eig.shift,
+            ));
+        }
+    }
+
+    // Why the solve returned nothing, when it returned nothing. Matched rather
+    // than tested carrier by carrier: each fault names a DIFFERENT remedy, so an
+    // implementation able to report two at once can send an author to fix the
+    // wrong thing. [`ModalSolveFault`] carries the rationale.
+    //
+    // δ (#7261) landed the rest of the shift's surfacing beside this match: the
+    // λ-space read in `extract_eigen_knobs` and the `W_ShiftSkippedModes`
+    // provenance warning below. The refusal stays HERE, in the fault match,
+    // because it is a fault; the warning is deliberately not a fourth arm.
+    match fault {
+        ModalSolveFault::None => {}
+        // The `W_ModalRigidBodyMode` prefix is deliberate: the model IS
+        // under-constrained, and existing assertions and consumer grouping keys
+        // key on it. The companion `Error` is what makes the outcome impossible
+        // to walk past — unlike every other rigid-body warning this one has NO
+        // frequencies behind it, and stdlib `first_frequency` reads an
+        // out-of-bounds `result.modes[0]` as a silent `Undef`, so a warning
+        // alone would pass every `errors.is_empty()` gate in the pipeline.
+        ModalSolveFault::SingularKOverCeiling => {
             diagnostics.push(Diagnostic::warning(format!(
-                "W_ModalRigidBodyMode: mode {i} has near-zero angular frequency \
-                 ω = {omega:.3e} rad/s (≤ {RIGID_BODY_OMEGA_TOL:.1e}); the model \
-                 may be under-constrained (rigid-body or spurious mode)."
+                "W_ModalRigidBodyMode: K_free is singular (the model is \
+                 under-constrained) and n_free = {n_free} exceeds the \
+                 dense-fallback ceiling {DENSE_FALLBACK_MAX_DIM}; no modes were \
+                 computed. Add supports that remove all six rigid-body modes."
             )));
+            diagnostics.push(Diagnostic::error(format!(
+                "E_ModalNoModesComputed: the modal solve returned NO modes \
+                 (n_free = {n_free}, K_free singular above the dense-fallback \
+                 ceiling {DENSE_FALLBACK_MAX_DIM}), so every frequency read off \
+                 this result — `first_frequency`, `mode_frequency` — is Undef. \
+                 This is a failed solve, not a result with rigid-body modes in \
+                 it. Add supports that remove all six rigid-body modes."
+            )));
+        }
+        // α's canonical template VERBATIM (`DiagnosticCode::ShiftAtEigenvalue`'s
+        // rustdoc), never a second wording: δ reuses that template, and two
+        // drifting messages for one condition is the SPOT violation this file
+        // guards against elsewhere. The message does NOT restate the honesty
+        // limit `ShiftInvertFailure::ShiftAtEigenvalue` records — this Error can
+        // also mean "converged nothing", not ruled out on this path and not
+        // observed on it either. Splitting the two causes is #7617's.
+        ModalSolveFault::ShiftAtEigenvalue(sigma) => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "E_ShiftAtEigenvalue: the shift sigma = {sigma} lies on an \
+                     eigenvalue of the pencil, so K − sigma·B is singular; move \
+                     sigma off the eigenvalue"
+                ))
+                .with_code(DiagnosticCode::ShiftAtEigenvalue),
+            );
         }
     }
 
     // Convergence shortfall: `eig.converged` is false iff fewer modes were
     // returned than requested (holds for both the dense and shift-invert paths).
-    if !eig.converged {
+    //
+    // Suppressed on a REFUSED solve. A refusal returns no modes at all, so the
+    // result is not "partial", and "raise max_iters/tol or lower n_modes" is the
+    // wrong remedy for both faults above — it would stand beside the right one
+    // and contradict it.
+    if !eig.converged && fault == ModalSolveFault::None {
         diagnostics.push(Diagnostic::warning(format!(
             "W_ModalConvergence: eigensolver returned {} of {} requested modes; \
              the result is partial (raise max_iters/tol or lower n_modes).",
             n_modes_out, eigen_opts.n_modes,
         )));
+    }
+
+    // Shift provenance (PRD contract clause C5): the returned set is a WINDOW
+    // around σ, not the bottom of the spectrum, because some eigenvalue lies
+    // between zero and σ and is absent from it. Advisory, not an error —
+    // inspecting a band around σ is a legitimate use.
+    //
+    // σ is named from `eig.shift` — the shift ACTUALLY used, per that field's
+    // contract — never from `eigen_opts.sigma`: a caller must not have to infer
+    // which σ was applied.
+    //
+    // The count is OMITTED from α's template. `EigenSolverResult` carries only
+    // the C5 BOOLEAN; there is no count field to read, and α's rustdoc records
+    // that omitting the count is always correct while including it is correct
+    // only on the dense path (the Lanczos path's Cholesky/LU discriminator
+    // yields a boolean, not an inertia count). Do not "improve" this into a
+    // fabricated number.
+    //
+    // Suppressed unless there is a result to describe — the rule and its three
+    // empty-result channels live in [`shift_window_is_reportable`].
+    if shift_window_is_reportable(eig.shift_skipped_modes, fault, frequencies.len()) {
+        diagnostics.push(
+            Diagnostic::warning(format!(
+                "W_ShiftSkippedModes: the shift sigma = {} skipped mode(s) below \
+                 it; the result is a window around sigma, not the bottom of the \
+                 spectrum",
+                eig.shift,
+            ))
+            .with_code(DiagnosticCode::ShiftSkippedModes),
+        );
     }
 
     ModalCoreResult {
@@ -729,41 +830,283 @@ fn non_finite_frequency_diagnostic(n_modes: usize) -> Diagnostic {
     ))
 }
 
+/// The [`ModalCoreResult::diagnostics`] entry pushed for a per-mode `ω ≈ 0`, one
+/// mode at a time.
+///
+/// Extracted from the loop in [`eigensolve_modal`] so the exact rendering can be
+/// asserted DIRECTLY, without a test having to reproduce a spurious eigenvalue
+/// numerically — the σ ≠ 0 case below is reachable only through a near-singular
+/// `K − σM`, which is not a thing a deterministic test should have to conjure.
+///
+/// ONE format template, never two `format!` arms for one condition: two
+/// templates drift, which is the SPOT violation this file guards against
+/// elsewhere.
+///
+/// At σ ≠ 0 a shift clause is APPENDED — one template with an optional part,
+/// the same discipline α mandates for `W_ShiftSkippedModes`. A near-zero mode
+/// at a shifted solve is more likely a spurious artifact of a near-singular
+/// `K − σM` than a rigid-body mode of the model, so the remedy is to move σ,
+/// not to add supports. Without the clause this warning sends the author to fix
+/// the one thing that is not broken.
+///
+/// The σ = 0 rendering is today's, BYTE FOR BYTE — every existing caller and
+/// assertion keyed on this message reads the unshifted path — so the
+/// `W_ModalRigidBodyMode:` prefix (a consumer grouping key, and the anchor for
+/// β's negative assertions), the `{omega:.3e}` / `{tol:.1e}` formats and the
+/// clause order all stay put. No [`DiagnosticCode`] is attached and the severity
+/// stays `Warning`: this is not one of α's three codes, and inventing a fourth
+/// is out of scope.
+///
+/// `sigma` is the shift ACTUALLY USED — [`EigenSolverResult::shift`], never the
+/// requested [`EigenSolverOptions::sigma`]. Same rule, and for the same reason,
+/// as `W_ShiftSkippedModes` in [`eigensolve_modal`]: both diagnostics name a σ
+/// to an author who is being told to move it, so a path that did not honor the
+/// requested shift must name the one it solved at rather than the one it was
+/// handed.
+fn rigid_body_mode_diagnostic(mode_index: usize, omega: f64, tol: f64, sigma: f64) -> Diagnostic {
+    let shift_note = if sigma == 0.0 {
+        String::new()
+    } else {
+        format!(
+            " A non-zero spectral shift sigma = {sigma} was applied; at a \
+             shifted solve a near-zero mode is more likely a spurious artifact \
+             of a near-singular K − sigma·M than a rigid-body mode of the \
+             model, so move sigma before adding supports."
+        )
+    };
+    Diagnostic::warning(format!(
+        "W_ModalRigidBodyMode: mode {mode_index} has near-zero angular frequency \
+         ω = {omega:.3e} rad/s (≤ {tol:.1e}); the model \
+         may be under-constrained (rigid-body or spurious mode).{shift_note}"
+    ))
+}
+
+/// Whether a `W_ShiftSkippedModes` window claim would describe a result that
+/// EXISTS.
+///
+/// "The returned set is a window around σ" is a statement ABOUT a returned mode
+/// set, so an empty one makes it confidently wrong — and the C5 flag alone does
+/// not exclude that, because two of the three ways a shifted solve can come back
+/// empty carry `shift_skipped_modes == true`:
+///
+/// * the REFUSAL (`ShiftAtEigenvalue`) and the over-ceiling degenerate return,
+///   both via `conservative_shift_provenance(σ)`: no spectrum was computed, so
+///   C5 forbids establishing `false`. Both are faults, and both are suppressed
+///   here by `fault == None` alone;
+/// * a solve that CONVERGED NOTHING. Today `try_solve_eigen_shift_invert`
+///   folds that into the refusal — `shift_is_numerically_singular` returns
+///   `true` for an empty eigenvalue list, so the σ≠0 branch never returns `Ok`
+///   with no eigenpairs (MEASURED: every starved shifted solve reachable from
+///   `eigensolve_modal` arrives carrying `E_ShiftAtEigenvalue`). So the
+///   emptiness test is NOT load-bearing today.
+///
+/// It is kept anyway because the fault test is a PROXY for the property, and a
+/// proxy maintained in another crate is the kind that breaks silently: #7617 is
+/// chartered to split `ShiftAtEigenvalue`'s two causes, and a "converged
+/// nothing" outcome that stops being a refusal makes `fault == None` with an
+/// empty result live. Keying on the property directly costs one comparison and
+/// cannot be invalidated from outside this function.
+///
+/// Deliberately NOT gated on σ: at σ ≠ 0 below λ₁ the flag is ESTABLISHED
+/// `false` by a successful Cholesky, which is the case a `σ != 0.0` test would
+/// get wrong.
+fn shift_window_is_reportable(
+    shift_skipped_modes: bool,
+    fault: ModalSolveFault,
+    n_modes_returned: usize,
+) -> bool {
+    shift_skipped_modes && fault == ModalSolveFault::None && n_modes_returned > 0
+}
+
+/// Largest `n_free` for which a SINGULAR `K_free` is still routed to the dense
+/// generalized solver rather than degenerating to "no modes".
+///
+/// [`solve_eigen_dense`] densifies the problem: it allocates four `n × n`
+/// `faer::Mat<f64>`s plus three `Col`s, i.e. ≈ `32·n²` bytes, and its QZ costs
+/// `O(n³)`. At 1024 that is ≈ 34 MB and a few seconds — an acceptable price for
+/// turning an under-constrained model into a graceful `W_ModalRigidBodyMode`
+/// result. 2048 (≈ 134 MB) is the upper end of what is defensible; beyond that
+/// the "fallback" becomes strictly worse than the panic it replaces (a 25 345-DOF
+/// singular system would need ≈ 20.6 GB — a guaranteed OOM).
+///
+/// This ceiling gates ONLY the singular fallback. An SPD `K_free` never reaches
+/// it (the shift-invert path succeeds and returns first), and the small-model
+/// regime `n ≤ max(64, 2·n_modes)` already goes dense by design, so no
+/// well-posed model changes behaviour because of this constant.
+const DENSE_FALLBACK_MAX_DIM: usize = 1024;
+
+/// What [`solve_generalized_eigen`] produced, plus the one fact the caller
+/// cannot recover from an [`EigenSolverResult`] alone.
+struct GeneralizedEigenOutcome {
+    result: EigenSolverResult,
+    fault: ModalSolveFault,
+}
+
+/// Why `GeneralizedEigenOutcome::result` carries no eigenpairs, when it carries
+/// none.
+///
+/// A sum type rather than one carrier per fault: the faults are mutually
+/// exclusive by construction and each names a DIFFERENT remedy, so a shape that
+/// can hold two at once can also hand an author two contradicting remedies.
+/// Stated structurally here, the exclusion needs no comment to hold, and a
+/// fault added later breaks every consumer's match instead of silently widening
+/// a matrix of flags. [`ShiftInvertFailure`] keeps the same discipline one level
+/// down; this is that channel carried up rather than flattened on arrival.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ModalSolveFault {
+    /// The eigensolve ran. `result` carries whatever spectrum it found, which
+    /// may still be partial (`converged: false`).
+    None,
+    /// `K_free` was singular AND `n_free` exceeded [`DENSE_FALLBACK_MAX_DIM`],
+    /// so densifying was unaffordable. Remedy: add supports.
+    ///
+    /// Carried out of band because an empty `result` is otherwise
+    /// indistinguishable from a converge-to-zero failure, and the rigid-body
+    /// diagnostic loop in [`eigensolve_modal`] has no modes left to inspect.
+    SingularKOverCeiling,
+    /// The shifted solve REFUSED the requested σ: `K − σM` is singular there, so
+    /// shift-invert had no operator to apply. Remedy: move σ.
+    ///
+    /// See [`ShiftInvertFailure::ShiftAtEigenvalue`] for why this fault and
+    /// `SingularKOverCeiling` must not be merged.
+    ShiftAtEigenvalue(f64),
+}
+
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
 /// returning eigenvalues ascending by |λ| with column-major eigenvectors.
 ///
 /// Dispatches to the dense path directly in the small regime instead of always
-/// going through [`solve_eigen_shift_invert`], which unconditionally
-/// Cholesky-factors `K` up front and would panic on a singular / near-singular
-/// `K_free` (e.g. an unconstrained fixture's rigid-body modes). The dense-regime
-/// predicate `n ≤ max(64, 2·n_modes)` mirrors the wrapper's own internal
-/// dense-fallback threshold, so the numerical path is identical to what the
-/// wrapper would pick — minus the premature factorization. Larger constrained
-/// problems (`K_free` SPD after BCs) take the shift-invert Lanczos path
-/// (design_decision #4).
+/// going through the shift-invert wrapper, which unconditionally Cholesky-factors
+/// `K` up front and would panic on a singular / near-singular `K_free` (e.g. an
+/// unconstrained fixture's rigid-body modes). The dense-regime predicate
+/// `n ≤ max(64, 2·n_modes)` mirrors the wrapper's own internal dense-fallback
+/// threshold, so the numerical path is identical to what the wrapper would pick —
+/// minus the premature factorization. Larger constrained problems (`K_free` SPD
+/// after BCs) take the shift-invert Lanczos path (design_decision #4).
 ///
-/// `force_dense` overrides the size heuristic to take the dense path regardless
-/// of `n`. The caller sets it when the model is detected as under-constrained
-/// (too few Dirichlet DOFs to remove the rigid-body null space), so a singular
-/// `K_free` never reaches `solve_eigen_shift_invert`'s up-front Cholesky and
-/// panics. NOTE: the caller's detector (constrained-DOF count) is a *necessary*
-/// condition for SPD-ness, not a sufficient one — a pathological
-/// ≥6-but-rank-deficient constraint set on a mesh large enough to take the
-/// shift-invert path could still reach the panicking factorization. Closing that
-/// residual edge would need an explicit SPD probe (a throwaway Cholesky attempt
-/// with graceful fallback) and is deferred as a follow-up; the common
-/// no/insufficient-supports user error is handled here.
+/// # Singular `K_free` is measured, not predicted
+///
+/// Above the small regime this calls [`try_solve_eigen_shift_invert`], whose
+/// `Err(KNotSpd)` means EXACTLY "`K` is not SPD" — the non-positive-pivot arm of faer's
+/// Cholesky error, with a resource failure (out of memory / index overflow)
+/// panicking there rather than arriving here disguised as an under-constrained
+/// model. That is a direct measurement, so the
+/// ≥6-but-rank-deficient edge this function's doc previously deferred as a
+/// follow-up is now CLOSED — and closed at zero cost, because the `try_` variant
+/// factors `K` once and reuses that factorization on the healthy path. A
+/// well-posed model therefore pays nothing: same call, same factorization, same
+/// numbers.
+///
+/// On `Err(KNotSpd)` the model is genuinely under-constrained and the response is size-
+/// dependent: at or below [`DENSE_FALLBACK_MAX_DIM`] the dense generalized solver
+/// tolerates the singular `K_free` and the rigid modes come back as `ω ≈ 0`,
+/// which [`eigensolve_modal`]'s `RIGID_BODY_OMEGA_TOL` loop turns into
+/// `W_ModalRigidBodyMode` warnings. Above it, densifying would be a resource bomb
+/// (see the constant), so the result degenerates to no eigenpairs with
+/// `converged: false` and `ModalSolveFault::SingularKOverCeiling`, and the caller emits
+/// the explanatory diagnostics — a `W_ModalRigidBodyMode` Warning naming the
+/// ceiling AND an `E_ModalNoModesComputed` **Error**, because unlike every other
+/// rigid-body warning this outcome has no frequencies in it at all and would
+/// otherwise reach the author as a silent `Undef` cell.
+///
+/// `force_dense` is the caller's CHEAP FAST PATH for the common no-supports error
+/// (constrained DOFs < 6, which cannot possibly remove a 6-dimensional null
+/// space): it skips a factorization attempt already known to fail. It is no
+/// longer load-bearing for panic-safety — the `try_` call is. Note that it is
+/// routed through the SAME ceiling, which also closes a pre-existing hazard for
+/// free: before task 6663, a no-supports model on a large mesh set `force_dense`
+/// and walked straight into the dense allocation described above.
 fn solve_generalized_eigen(
     k_free: &SparseRowMat<usize, f64>,
     m_free: &SparseRowMat<usize, f64>,
     opts: EigenSolverOptions,
     force_dense: bool,
-) -> EigenSolverResult {
+) -> GeneralizedEigenOutcome {
     let n = k_free.nrows();
-    if force_dense || n <= 64_usize.max(2 * opts.n_modes) {
-        solve_eigen_dense(k_free, m_free, opts)
+
+    // Small-model regime: dense by design and cheap, whatever K looks like.
+    if n <= 64_usize.max(2 * opts.n_modes) {
+        return GeneralizedEigenOutcome {
+            result: solve_eigen_dense(k_free, m_free, opts),
+            fault: ModalSolveFault::None,
+        };
+    }
+
+    // Well-posed models: shift-invert Lanczos, exactly as before. The failure
+    // channel is TYPED, and each arm is routed on its own meaning rather than
+    // collapsed. A resource failure inside the factorization panics there
+    // instead of arriving here, so the under-constrained branch below is never
+    // reached by an allocation problem.
+    if !force_dense {
+        match try_solve_eigen_shift_invert(k_free, m_free, opts.clone()) {
+            Ok(result) => {
+                return GeneralizedEigenOutcome {
+                    result,
+                    fault: ModalSolveFault::None,
+                };
+            }
+            // K is not SPD: fall through to the under-constrained branch below,
+            // exactly as the former `None` did.
+            Err(ShiftInvertFailure::KNotSpd) => {}
+            // REACHABLE from ordinary `.ri` input — `ModalOptions` declares
+            // `param sigma : Real = 0.0` unconstrained and nothing on the path
+            // to here clamps it. It was inert only while the Lanczos path
+            // IGNORED σ; β (#7259) made σ live there, so this arm is live too.
+            // `shift_landing_on_an_eigenvalue_is_returned_not_panicked` walks
+            // the trace link by link.
+            //
+            // Returned as its own fault, never repaired: no re-solve at a nudged
+            // σ and no silent substitution of σ = 0. Automatic perturbation is
+            // the class this PRD exists to close
+            // (`shift_is_numerically_singular`'s rustdoc carries the rule).
+            Err(ShiftInvertFailure::ShiftAtEigenvalue { sigma }) => {
+                return GeneralizedEigenOutcome {
+                    result: EigenSolverResult {
+                        eigenvalues: Vec::new(),
+                        eigenvectors: faer::Mat::<f64>::zeros(n, 0),
+                        n_converged: 0,
+                        converged: false,
+                        shift: sigma,
+                        // Nothing was factored and no spectrum was computed, so
+                        // C5 forbids ESTABLISHING `false` here — the same
+                        // argument the over-ceiling degenerate site below makes,
+                        // for the same reason.
+                        shift_skipped_modes: conservative_shift_provenance(sigma),
+                    },
+                    fault: ModalSolveFault::ShiftAtEigenvalue(sigma),
+                };
+            }
+        }
+    }
+
+    // Under-constrained: degrade gracefully if that is affordable, degenerately
+    // if it is not.
+    if n <= DENSE_FALLBACK_MAX_DIM {
+        GeneralizedEigenOutcome {
+            result: solve_eigen_dense(k_free, m_free, opts),
+            fault: ModalSolveFault::None,
+        }
     } else {
-        solve_eigen_shift_invert(k_free, m_free, opts)
+        GeneralizedEigenOutcome {
+            result: EigenSolverResult {
+                eigenvalues: Vec::new(),
+                eigenvectors: faer::Mat::<f64>::zeros(n, 0),
+                n_converged: 0,
+                converged: false,
+                shift: opts.sigma,
+                // No spectrum was computed at all here, so `false` cannot be
+                // ESTABLISHED and C5 forbids assuming it.  The rule itself lives
+                // in the solver crate (SPOT) — writing it out here too is how
+                // this copy and the solver's own drift apart.
+                //
+                // This is the CONSERVATIVE form, and correctly so: the sparse
+                // shift-invert path establishes a real answer from which
+                // factorization of `K − σB` succeeded, but this branch factored
+                // nothing and computed nothing, so it has no such evidence.
+                shift_skipped_modes: conservative_shift_provenance(opts.sigma),
+            },
+            fault: ModalSolveFault::SingularKOverCeiling,
+        }
     }
 }
 
@@ -830,6 +1173,63 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
          assembled and the free-vibration eigenproblem Kφ = λMφ is undefined; \
          returning an empty modal result.",
     );
+    ComputeOutcome::Completed {
+        result: degenerate_modal_result(),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![diagnostic],
+        structured_detail: vec![],
+    }
+}
+
+/// The runtime type name of a material value, for a diagnostic's subject.
+///
+/// A non-`StructureInstance` value cannot carry one, so a stable placeholder
+/// stands in rather than the message silently losing its subject — a diagnostic
+/// that names nothing is barely better than no diagnostic at all.
+fn material_type_name(val: &Value) -> &str {
+    match val {
+        Value::StructureInstance(data) => data.type_name.as_str(),
+        _ => "<non-structure material value>",
+    }
+}
+
+/// Build the degenerate short-circuit outcome for a `MaterialDamping` solve over
+/// a material that does not conform to `trait Damped` (task #6878, PRD leaf β
+/// §C6): an `E_ModalDampingMaterialNotDamped` `Error` diagnostic plus an
+/// empty-modes `ModalResult`.
+///
+/// Fourth member of this file's eval-time-precondition-failure family, copying
+/// [`no_mass_matrix_outcome`]'s shape exactly (message-prefix code, degenerate
+/// result value, `new_warm_state: None`, `cost_per_byte: None`, empty
+/// `structured_detail`, short-circuit return placed before the expensive work).
+///
+/// THE EMPTY RESULT IS THE POINT, not a side effect. B8's normative wording is
+/// "eval error naming the material; NOT `damping_ratio = 0`". Returning valid
+/// frequencies alongside the Error would still put a literal `damping_ratio = 0`
+/// on the author's result surface — the exact artifact the signal forbids — and a
+/// downstream consumer reading `ModalResult` without inspecting the diagnostics
+/// channel would be right back in the silent-zero shape. The cost is losing the
+/// frequencies for a solve the author explicitly mis-configured; that is the
+/// intended pressure toward the one-line fix the message names.
+fn material_not_damped_outcome(material_type_name: &str) -> ComputeOutcome {
+    let diagnostic = Diagnostic::error(format!(
+        "E_ModalDampingMaterialNotDamped: the material `{material_type_name}` \
+         carries no usable hysteretic loss factor (`loss_factor` missing, \
+         non-numeric, negative or non-finite), but \
+         `ModalOptions.damping = MaterialDamping(...)` selects the \
+         modal-strain-energy value source ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e), \
+         which REQUIRES a per-material η. Fix it one of three ways: (1) conform \
+         the material to `DampedMaterial` — `structure def \
+         {material_type_name} : DampedMaterial + Visual {{ … param loss_factor \
+         : Real = <η> }}` in the style of \
+         crates/reify-compiler/stdlib/materials_fea.ri; (2) use one of the \
+         conforming stdlib presets, which already declare a `loss_factor`; or \
+         (3) switch the descriptor to `RayleighDamping(alpha, beta)` or \
+         `NoDamping()`, neither of which needs one. An EMPTY modal result is \
+         returned rather than modes carrying `damping_ratio = 0`, because a \
+         silent zero would be indistinguishable from a genuinely undamped model."
+    ));
     ComputeOutcome::Completed {
         result: degenerate_modal_result(),
         new_warm_state: None,
@@ -975,8 +1375,12 @@ pub(crate) struct ModalTrampolineRun {
 /// `Value::StructureInstance` (6 fields, α struct-def; `StructureTypeId(u32::MAX)`
 /// sentinel). Each mode is a `Mode` StructureInstance `{ frequency: Scalar<Frequency>(Hz),
 /// shape: List<Vector3<Dimensionless>>, participation_mass: Real, damping_ratio: Real }`,
-/// where `damping_ratio` is the Rayleigh ratio `ζ_i = (α + β·ω_i²)/(2·ω_i)` (0
-/// for `NoDamping`). `Mode.shape` is the mass-normalized eigenvector reshaped
+/// where `damping_ratio` is the COMPOSED ratio
+/// `ζ_i = ζ_material + (α + β·ω_i²)/(2·ω_i)` (task #6878) — summed, and floored
+/// near ω = 0, by `total_damping_ratio`, whose doc owns both semantics. It is 0
+/// for `NoDamping`, and reduces to the plain Rayleigh ratio for every pre-#6878
+/// descriptor (`ζ_material == 0`).
+/// `Mode.shape` is the mass-normalized eigenvector reshaped
 /// from `phi_full` (length `3·n_nodes`) into `n_nodes` per-node `Vector3`,
 /// `(0,0,0)` at every Dirichlet-constrained node.
 ///
@@ -1016,6 +1420,45 @@ pub(crate) fn run_modal_analysis(
         }
     };
 
+    // ── (1b) the damping plan, INCLUDING its conformance rejection ───────────
+    // Task #6878, PRD leaf β §C6. `modal_analysis(material : ElasticMaterial, …)`
+    // does NOT require `Damped`, so a material with no `loss_factor` reaches this
+    // trampoline and the compiler cannot catch it. Declaring `MaterialDamping`
+    // over such a material is an author error with no honest answer: the
+    // modal-strain-energy ratio it selects is undefined without η, and reporting
+    // ζ = 0 would be indistinguishable from a genuinely undamped model.
+    //
+    // SINGLE DECISION POINT. [`plan_modal_damping`] owns BOTH the plan and that
+    // rejection — its `Err` arm IS the missing-η case — so no second site can
+    // reconstruct ζ = 0 from an absent loss factor. An earlier shape split the
+    // two (a `classify_damping` + `extract_loss_factor` guard here, and an
+    // `unwrap_or(0.0)` floor inside the planner) and was only correct so long as
+    // the two stayed ordered; folding them removes that cross-site invariant
+    // along with a duplicate classification per solve.
+    //
+    // ORDERING. Placed AFTER the density guard (1) so a material missing BOTH a
+    // density and a loss factor still reports `E_ModalNoMassMatrix` first — that
+    // is the more fundamental failure (without M there is no eigenproblem at all,
+    // damped or not), matching how the transient path orders its guards by
+    // root-cause depth. Placed BEFORE the mesh build, the cache lookup and the
+    // assembly because the rejection is a genuine SHORT-CIRCUIT: no eigensolve is
+    // run for a solve whose declared damping intent cannot be honoured. Mirrors
+    // `no_mass_matrix_outcome`'s placement. The call is pure and O(1) — it reads
+    // only `value_inputs[0]` and `value_inputs[4]` — so it costs nothing here.
+    //
+    // Nothing downstream changes for a pre-#6878 descriptor: the eigensolve, the
+    // assembly cache key (which deliberately EXCLUDES damping) and the
+    // `ModalResult.damping` echo are all untouched.
+    let (plan, damping_diagnostics) = match plan_modal_damping(&value_inputs[4], &value_inputs[0]) {
+        Ok(planned) => planned,
+        Err(outcome) => {
+            return ModalTrampolineRun {
+                outcome,
+                reused_assembly: false,
+            };
+        }
+    };
+
     // ── (2) material elastic constants (E, ν) ────────────────────────────────
     let material = extract_isotropic_material(&value_inputs[0]);
 
@@ -1031,7 +1474,9 @@ pub(crate) fn run_modal_analysis(
     let options = &value_inputs[4];
     let (n_modes, tol, max_iters, sigma) = extract_eigen_knobs(options);
     let reference_direction = extract_reference_direction(options);
-    let (alpha, beta) = extract_damping(options);
+    // Task #6878: `plan` / `damping_diagnostics` are already resolved at (1b)
+    // above — genuinely above the mesh build, not merely above the assembly —
+    // because the planner's rejection arm must short-circuit before any of it.
     let element_order = extract_element_order(options);
     // Map the order to the cache-key discriminant from the SAME source that picks
     // the ModalMesh below, so the key and the assembled (K, M) can never disagree
@@ -1059,7 +1504,8 @@ pub(crate) fn run_modal_analysis(
     // BC selection reads only node coordinates, so it takes the order-correct node
     // slice directly (no half-populated `BeamMesh` sentinel): the P1 mesh nodes or
     // the promoted P2 node set, whichever `modal_mesh` carries.
-    let bcs = build_dirichlet_bcs(options, modal_mesh.nodes(), length, width, height);
+    let DirichletRealization { bcs, diagnostics: bc_diagnostics } =
+        build_dirichlet_bcs(options, modal_mesh.nodes(), length, width, height);
     let eigen_opts = EigenSolverOptions {
         n_modes,
         tol,
@@ -1124,7 +1570,25 @@ pub(crate) fn run_modal_analysis(
         .enumerate()
         .map(|(i, &f)| {
             let omega = 2.0 * PI * f;
-            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
+            // Task #6878: ADDITIVE composition, ζ_i = ζ_material + ζ_extra(ω_i).
+            // The sum and its near-zero-ω floor both belong to
+            // `total_damping_ratio`, whose doc argues them; the sum is NOT
+            // written out here precisely because that would put the material
+            // half outside the floor.
+            //
+            // B4 (no regression) holds BY CONSTRUCTION, not by inspection: for
+            // `Absent` / `NoDamping` / `Rayleigh` / `Unsupported`,
+            // `zeta_material` is exactly 0.0 and `(alpha, beta)` are bit-for-bit
+            // what the pre-#6878 Rayleigh-only read returned, and
+            // `total_damping_ratio(0.0, α, β, ω)` IS `rayleigh_damping_ratio(α,
+            // β, ω)` — the latter is defined as the former in
+            // `free_vibration.rs`. Those results are therefore byte-identical.
+            //
+            // Getting the floor wrong here would not be cosmetic:
+            // `run_transient_response` reads `Mode.damping_ratio` back into the
+            // modal integrator AND into its cache key.
+            let damping_ratio =
+                total_damping_ratio(plan.zeta_material, plan.alpha, plan.beta, omega);
             let participation_mass = core.participation_mass.get(i).copied().unwrap_or(0.0);
             let fields: PersistentMap<String, Value> = [
                 // `Mode.frequency : Frequency` (modal_analysis.ri, task 4548) —
@@ -1212,11 +1676,22 @@ pub(crate) fn run_modal_analysis(
         None
     };
     let new_warm_state = Some(state);
+    // BC-realization notes FIRST, then the damping plan's, then the solve's own:
+    // an author reading a `W_ModalRigidBodyMode` warning wants the realization
+    // that produced it above the warning, not below. The damping notes sit
+    // between them because they describe the same INPUT-interpretation stage as
+    // the BC realization (what the trampoline made of the options you wrote),
+    // whereas `core.diagnostics` reports what the SOLVE then found. Ordering is
+    // deterministic by construction — all three are plain appends, none depends
+    // on iteration order.
+    let mut diagnostics = bc_diagnostics;
+    diagnostics.extend(damping_diagnostics);
+    diagnostics.extend(core.diagnostics);
     let outcome = ComputeOutcome::Completed {
         result,
         new_warm_state,
         cost_per_byte,
-        diagnostics: core.diagnostics,
+        diagnostics,
         structured_detail: vec![],
     };
     ModalTrampolineRun {
@@ -1494,7 +1969,20 @@ fn get_sparse_diag(mat: &SparseRowMat<usize, f64>, i: usize) -> f64 {
 /// Builds a lumped generalized-coordinate eigenproblem from the assembled
 /// `(K, M)` (via [`assemble_mechanism_km`]), solves it with
 /// [`solve_eigen_dense`], and shapes the result as a `ModalResult`
-/// `Value::StructureInstance` with frequency-only `Mode` records.
+/// `Value::StructureInstance`.
+///
+/// **Per-mode damping (task #6875)**: each `Mode` carries the Rayleigh ratio
+/// ζ_i = (α + β·ω_i²)/(2·ω_i) computed from the `ModalOptions.damping`
+/// descriptor the caller supplied, via the same [`classify_damping`] seam the
+/// FEA path ([`run_modal_analysis`]) discriminates on. This path then applies
+/// [`rayleigh_damping_ratio`] directly rather than the composing
+/// `total_damping_ratio`: the modal-strain-energy term is undefined for a lumped
+/// model (see the `DampingKind::Material` arm below).
+/// `NoDamping`, an absent `damping` field, and a rigid-joint ω = 0 mode all
+/// give ζ_i = 0.  `Mode.shape` stays an empty list and
+/// `Mode.participation_mass` stays 0: the lumped generalized-coordinate model
+/// has one scalar DOF per body and therefore no 3D mode shape to report (which
+/// is also why `ModalOptions.reference_direction` is unused here).
 ///
 /// DOF model: one generalized DOF per spanning-tree body.  Diagonal M[i,i] =
 /// body scalar mass; diagonal K[i,i] = body inbound joint spring_rate (0 for
@@ -1690,12 +2178,96 @@ fn run_mechanism_modal(
         }
     }
 
-    // ── (5) shape Mode records (frequency-only; lumped model has no 3D shape) ─
+    // ── (4c) read the caller's ModalOptions ──────────────────────────────────
+    // Hoisted above the Mode construction below because step (5) needs the
+    // `damping` descriptor per mode; step (5b) reuses the same binding for
+    // `n_modes` and step (6) for the descriptor echo.
+    //
+    // This path CLASSIFIES rather than flattening the descriptor to an (α, β)
+    // pair: such a view maps an unimplemented descriptor to (0, 0), which is
+    // indistinguishable from a genuinely undamped model.  Reporting the
+    // `Unsupported` arm is what
+    // keeps the ζ = 0 degrade honest (INV-SF-3, task #6875).  The match is
+    // deliberately exhaustive with no `_` catch-all, so adding a fourth
+    // `DampingKind` variant fails to compile HERE rather than defaulting to
+    // silence.
+    //
+    // Placement: after assembly succeeded and before the modes are shaped.  A
+    // degenerate mechanism (closed chain, unresolvable mass) early-returns above
+    // with its own `E_MechanismModal*` Error and has no modes to damp, so the
+    // Error is the louder and correct signal there.
+    let options = value_inputs.get(1).unwrap_or(&Value::Undef);
+    let (alpha, beta) = match classify_damping(options) {
+        DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
+        DampingKind::Unsupported(type_name) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "W_MechanismModalUnsupportedDamping: ModalOptions.damping is a \
+                 `{type_name}` descriptor, which the lumped generalized-coordinate \
+                 mechanism-modal model does not implement. Only `RayleighDamping` \
+                 (ζ_i = (α + β·ω_i²)/(2·ω_i)) and `NoDamping` are honored here; every \
+                 Mode.damping_ratio is reported as 0 for this solve. ModalResult.damping \
+                 still echoes the `{type_name}` descriptor you supplied — the declared \
+                 damping intent is NOT applied. Use `RayleighDamping`, or use the FEA \
+                 `modal_analysis` path if it supports `{type_name}`.",
+            )));
+            (0.0, 0.0)
+        }
+        // Task #6878, the arm this match's deliberate exhaustiveness demanded.
+        // `MaterialDamping` keeps the mechanism path's observable behaviour
+        // BYTE-IDENTICAL to before #6878: the same coded warning, and ζ = 0 for
+        // every mode.
+        //
+        // Not merely unimplemented here — UNDEFINED here. The lumped
+        // generalized-coordinate model has no finite elements, so there is no
+        // modal strain energy SE_e to weight η against; the MSE ratio the
+        // descriptor selects has no meaning on this path at all. The FEA
+        // `modal_analysis` path is where it does, so that is where the message
+        // sends the author.
+        //
+        // The `extra` half is deliberately NOT honored either, even though
+        // `rayleigh_damping_ratio` would happily evaluate it: reporting only
+        // part of a declared ADDITIVE total, while looking like a successful
+        // solve, is a strictly worse silent-failure shape than reporting 0 under
+        // a loud warning. Either the whole declared intent is applied or none of
+        // it is, and here it cannot be.
+        DampingKind::Material { .. } => {
+            diagnostics.push(Diagnostic::warning(
+                "W_MechanismModalUnsupportedDamping: ModalOptions.damping is a \
+                 `MaterialDamping` descriptor, which the lumped \
+                 generalized-coordinate mechanism-modal model does not implement. \
+                 Only `RayleighDamping` (ζ_i = (α + β·ω_i²)/(2·ω_i)) and \
+                 `NoDamping` are honored here; every Mode.damping_ratio is \
+                 reported as 0 for this solve. ModalResult.damping still echoes \
+                 the `MaterialDamping` descriptor you supplied — the declared \
+                 damping intent, INCLUDING its `extra` companion, is NOT applied. \
+                 `MaterialDamping` selects the modal-strain-energy value source \
+                 ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e): a lumped mechanism has no \
+                 finite elements and therefore no modal strain energy to weight, \
+                 so that ratio is undefined here rather than merely unimplemented. \
+                 Use the FEA `modal_analysis` path for material damping, or \
+                 `RayleighDamping` on this one."
+                    .to_string(),
+            ));
+            (0.0, 0.0)
+        }
+        DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
+    };
+
+    // ── (5) shape Mode records (lumped model has no 3D shape) ────────────────
     // The stdlib accessors first_frequency/mode_frequency read only
-    // Mode.frequency, so frequency-only modes fully satisfy the contract.
+    // Mode.frequency, so frequency-only modes fully satisfy the contract;
+    // `damping_ratio` additionally carries the Rayleigh ratio read from
+    // `ModalOptions.damping` (task #6875).
+    //
+    // ω = 0 needs no extra guard here: `rayleigh_damping_ratio` floors at
+    // MIN_OMEGA_FOR_DAMPING = 1e-9 and returns 0.0, so a rigid-joint body
+    // (K[i,i] = 0 ⇒ f = 0 Hz, the W_MechanismModalRigidBodyMode case above)
+    // yields ζ = 0 rather than a 1/ω blow-up.
     let mut modes_list: Vec<Value> = frequencies
         .iter()
         .map(|&f| {
+            let omega = 2.0 * PI * f;
+            let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
             let fields: PersistentMap<String, Value> = [
                 (
                     "frequency".to_string(),
@@ -1703,7 +2275,7 @@ fn run_mechanism_modal(
                 ),
                 ("shape".to_string(), Value::List(Vec::new())),
                 ("participation_mass".to_string(), Value::Real(0.0)),
-                ("damping_ratio".to_string(), Value::Real(0.0)),
+                ("damping_ratio".to_string(), Value::Real(damping_ratio)),
             ]
             .into_iter()
             .collect();
@@ -1720,7 +2292,7 @@ fn run_mechanism_modal(
     // extract_eigen_knobs falls back to n_modes=10 when options is not a
     // StructureInstance or the field is absent.  Truncate only when the
     // caller explicitly asked for fewer modes than we computed.
-    let options = value_inputs.get(1).unwrap_or(&Value::Undef);
+    // (`options` is bound at step (4c) above.)
     let (requested_n_modes, _, _, _) = extract_eigen_knobs(options);
     if requested_n_modes < modes_list.len() {
         diagnostics.push(Diagnostic::warning(format!(
@@ -1735,11 +2307,22 @@ fn run_mechanism_modal(
     // ── (6) shape ModalResult (7-field, mirroring run_modal_analysis step 7) ──
     // topology is always present (Value::Undef on the mechanism path — no B-rep
     // attributed mesh; stable contract for R3b per task 4654 R3a design decision).
+    //
+    // `damping` genuinely echoes the caller's `ModalOptions.damping` descriptor
+    // (task #6875) via the same [`field_or`] read the FEA path uses — it is no
+    // longer a placeholder. `Value::Undef` now means only "the caller supplied
+    // no descriptor", which is what a bare `ModalOptions()` produces, so an
+    // undamped solve is still reported as `Undef` exactly as before.
+    // `mass_matrix_norm` / `stiffness_matrix_norm` remain 0: the lumped
+    // generalized-coordinate model never forms the norms the FEA path reports.
     let result_fields: PersistentMap<String, Value> = [
         ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(modes_list)),
         ("boundary_conditions".to_string(), Value::List(Vec::new())),
-        ("damping".to_string(), Value::Undef),
+        (
+            "damping".to_string(),
+            field_or(options, "damping", Value::Undef),
+        ),
         ("mass_matrix_norm".to_string(), Value::Real(0.0)),
         ("stiffness_matrix_norm".to_string(), Value::Real(0.0)),
         ("topology".to_string(), build_modal_topology_value()),
@@ -2481,8 +3064,12 @@ pub fn solve_transient_response_trampoline(
 ///
 /// Lazy: only the queried node's time series is reconstructed — the full
 /// `n_nodes × n_times` displacement field is never materialized. Unlike the other
-/// modal trampolines this returns a non-struct `Value::List(Real)` (PRD §5.2). No
-/// warm state is donated (ι owns fn+dispatch; caching is λ's job).
+/// modal trampolines this returns a non-struct value: a `Value::List` of
+/// LENGTH-dimensioned `Value::Scalar`s in SI metres (PRD §5.2) — Length, not a
+/// bare Real, since #6094; WHY the reconstruction is metres is derived at the
+/// declaration, `reify-compiler/stdlib/modal_analysis_fns.ri` ::
+/// `displacement_at`. No warm state is donated (ι owns fn+dispatch; caching is
+/// λ's job).
 pub fn displacement_at_trampoline(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
@@ -2533,11 +3120,17 @@ pub fn displacement_at_trampoline(
 }
 
 /// Wrap a reconstructed displacement series in a `ComputeOutcome::Completed`
-/// carrying a `Value::List(Real)` (PRD §5.2) — the non-struct result shape unique
-/// to `displacement_at`. No warm state / diagnostics (ι donates neither).
+/// carrying a `Value::List` of LENGTH-dimensioned `Value::Scalar`s in SI metres
+/// (PRD §5.2) — the non-struct result shape unique to `displacement_at`, and the
+/// runtime counterpart of the `-> List<Length>` declaration at
+/// `stdlib/modal_analysis_fns.ri` (#6094). No warm state / diagnostics (ι donates
+/// neither).
 fn displacement_series_outcome(series: Vec<f64>) -> ComputeOutcome {
     ComputeOutcome::Completed {
-        result: Value::List(series.into_iter().map(Value::Real).collect()),
+        result: Value::List(crate::compute_targets::scalar_list(
+            &series,
+            DimensionVector::LENGTH,
+        )),
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: Vec::new(),
@@ -2580,11 +3173,117 @@ fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
     }
 }
 
+/// Read the per-material hysteretic loss factor η off a material value.
+///
+/// `Some(η)` means "this material conforms to `trait Damped`
+/// (`param loss_factor : Real`, `crates/reify-compiler/stdlib/materials_fea.ri`,
+/// task #6877) and here is its loss factor". `None` means "this material does
+/// NOT carry a usable loss factor" — which is the trigger for the
+/// `E_ModalDampingMaterialNotDamped` rejection in [`run_modal_analysis`], not a
+/// value to substitute a default for.
+///
+/// NON-DEFENSIVE ON PURPOSE — note the asymmetry with the neighbouring
+/// [`extract_isotropic_material`], which reads a MISSING field as `0.0`. That
+/// choice is right there: the type-checker guarantees `youngs_modulus` /
+/// `poisson_ratio` on any real `ElasticMaterial`, so its floor is unreachable
+/// scaffolding. Here the opposite is true and measured:
+/// `modal_analysis(material : ElasticMaterial, …)` does NOT require `Damped`, so
+/// a `structure def PlainSteel : ElasticMaterial { … }` type-checks, evaluates
+/// clean, and reaches this fn with no `loss_factor` at all. The absence is a
+/// real, reachable, author-caused condition and IS the signal — folding it to
+/// `0.0` would reconstruct exactly the silent ζ = 0 that PRD §C6 forbids.
+///
+/// The `Option` also keeps a genuinely-undamped CONFORMER (`loss_factor = 0.0` →
+/// `Some(0.0)`, accepted) distinct from a NON-conformer (`None`, rejected) — a
+/// distinction a bare `f64` cannot carry.
+///
+/// The numeric read is gated on the value actually BEING one of the spellings a
+/// stdlib `Real` field takes, rather than delegating to [`read_scalar_si`]
+/// unconditionally: that helper's `_ => 0.0` floor is precisely the behaviour
+/// that must not fire here. `loss_factor : Real` is DIMENSIONLESS, so the
+/// `Value::Scalar` arm is gated on that dimension too — [`read_scalar_si`] is
+/// dimension-BLIND (it takes `si_value` off any `Scalar` whatsoever), so an
+/// ungated arm would read a `Scalar<Pressure>` — a hand-built or mis-typed
+/// `loss_factor` — straight through as a loss factor and turn it into ζ = η/2.
+/// That is the same silent-substitution shape the `Option` exists to prevent,
+/// one variant down; a dimensioned `loss_factor` is not a conformer, it is a
+/// malformed one, and `None` routes it to `E_ModalDampingMaterialNotDamped`
+/// rather than to a fabricated damping ratio. A negative or non-finite η is
+/// rejected for the same reason — `trait Damped`'s `constraint loss_factor >= 0`
+/// is the CHECK-time gate on the author surface, but a hand-built runtime value
+/// can carry a NaN past it, and a NaN ζ must not reach `Mode.damping_ratio`.
+fn extract_loss_factor(val: &Value) -> Option<f64> {
+    let Value::StructureInstance(data) = val else {
+        return None;
+    };
+    let raw = data.fields.get("loss_factor")?;
+    // Gate on the VARIANT (and, for `Scalar`, on the dimension), then convert.
+    // `read_scalar_si` is reused for the conversion so the tolerated spellings
+    // cannot drift apart from it, but its catch-all is deliberately unreachable
+    // from here and its dimension-blindness is deliberately fenced off.
+    let tolerated = match raw {
+        Value::Real(_) | Value::Int(_) => true,
+        Value::Scalar { dimension, .. } => *dimension == DimensionVector::DIMENSIONLESS,
+        _ => false,
+    };
+    if !tolerated {
+        return None;
+    }
+    let eta = read_scalar_si(raw);
+    (eta.is_finite() && eta >= 0.0).then_some(eta)
+}
+
 /// Extract the eigensolver knobs `(n_modes, tol, max_iters, sigma)` from a
 /// `ModalOptions` StructureInstance, falling back to the PRD §4.3 defaults
 /// (`n_modes = 10`, `tol = 1e-9`, `max_iters = 200`, `sigma = 0`) when the value
 /// is not a StructureInstance or a field is missing / malformed. Mirrors
 /// buckling's `extract_buckling_options`.
+///
+/// # σ is in EIGENVALUE (λ) space
+///
+/// The returned σ is in the same space [`EigenSolverOptions::sigma`] and
+/// [`EigenSolverResult::shift`] document, whose rustdoc states that unit
+/// conversion is the CALLER's job — and this trampoline is that caller.
+///
+/// On this branch the conversion is the identity: `ModalOptions.sigma : Real` is
+/// ALREADY λ-space (`modal_analysis.ri`'s `sigma` field note — "spectral-shift
+/// origin (in eigenvalue units)"), so the read is a pass-through and there is NO
+/// unit crossing here. That is the surface-agnostic contract PRD §7.1 names:
+/// `EigenSolverOptions.sigma` receives λ-space, so leaves α and β never learn
+/// which author-facing surface fed them.
+///
+/// If #6097 later retypes the surface to `shift_frequency : Frequency`, the
+/// `λ = (2π·f)²` conversion belongs HERE, at the trampoline, via the declared
+/// inverse helper in `crates/reify-stdlib/src/modal/free_vibration.rs` — never
+/// as a bare inline `2.0 * PI * f` in this file, which INV-AD-4
+/// (`boundaries-declare-angle-convention`) makes a defect even when the number
+/// it computes is right.
+///
+/// # Which value shapes σ accepts, and which it refuses
+///
+/// A `Real`-typed `.ri` param does not arrive as one Rust variant: a literal
+/// `sigma: 2` arrives as [`Value::Int`], and a value that has been through the
+/// dimensional machinery arrives as a DIMENSIONLESS [`Value::Scalar`]. All
+/// three are accepted, the same `tolerated` discipline [`extract_loss_factor`]
+/// spells out one knob up. The shape list is kept EXPLICIT rather than widened
+/// to `Value::Scalar { .. }` because the dimension gate is the load-bearing
+/// part: [`read_scalar_si`] is dimension-BLIND.
+///
+/// The widening is scoped to σ, and `tol` — declared `param tol : Real` beside
+/// it — is the REMAINING instance of this class: a literal `tol: 1` arrives as
+/// [`Value::Int`] and silently becomes the 1e-9 default, exactly as `sigma: 2`
+/// did before this leaf. Left open deliberately (it is outside δ's scope) and
+/// named here so the next reader does not have to rediscover it; filed as a
+/// follow-up, which should also audit `n_modes`/`max_iters` for the
+/// mirror-image [`Value::Real`] spelling.
+///
+/// A DIMENSIONED `Scalar` — notably a `Scalar<Frequency>` — is refused and falls
+/// back to the default. That shape is #6097's future `shift_frequency` surface,
+/// and reading 300 Hz as `λ = 300` would be a silent 4π²-and-square error:
+/// strictly WORSE than dropping the value, because a wrong shift returns a
+/// plausible-looking spectrum from the wrong band rather than an obviously
+/// unshifted one. Converting it here would also duplicate #6097's scope and
+/// manufacture the INV-AD-4 crossing this branch deliberately does not have.
 fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
     let default_n_modes = 10_usize;
     let default_tol = 1e-9_f64;
@@ -2614,9 +3313,27 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
         Some(Value::Int(n)) => (*n).max(1) as usize,
         _ => default_max_iters,
     };
+    // Gate on the VARIANT (and, for `Scalar`, on the DIMENSION), then convert
+    // ONCE through `read_scalar_si` so the tolerated spellings cannot drift
+    // apart from it — the `tolerated` shape [`extract_loss_factor`] spells out
+    // one knob up, which also keeps the finite guard in a single copy rather
+    // than one per accepted shape. A non-finite σ still falls back: it would
+    // poison `K − σM`.
     let sigma = match data.fields.get("sigma") {
-        Some(Value::Real(r)) if r.is_finite() => *r,
-        _ => default_sigma,
+        Some(raw) => {
+            let tolerated = match raw {
+                Value::Real(_) | Value::Int(_) => true,
+                Value::Scalar { dimension, .. } => *dimension == DimensionVector::DIMENSIONLESS,
+                _ => false,
+            };
+            let s = read_scalar_si(raw);
+            if tolerated && s.is_finite() {
+                s
+            } else {
+                default_sigma
+            }
+        }
+        None => default_sigma,
     };
     (n_modes, tol, max_iters, sigma)
 }
@@ -2626,7 +3343,9 @@ fn extract_eigen_knobs(val: &Value) -> (usize, f64, usize, f64) {
 /// Reads the `Value::Vector` field's three components (each via
 /// [`read_scalar_si`]) and normalizes to a unit vector — realizing the
 /// `reference_direction.norm() > 0` invariant deferred from the structure-def to
-/// this trampoline (modal_analysis.ri:382-389). A missing / degenerate
+/// this trampoline (the `reference_direction` field note on `structure def
+/// ModalOptions`, modal_analysis.ri — cited by name, not by line: that block has
+/// moved twice since the line range originally written here). A missing / degenerate
 /// (zero-norm) direction falls back to the slender bending default `[0, 0, 1]`.
 fn extract_reference_direction(val: &Value) -> [f64; 3] {
     let default_dir = [0.0, 0.0, 1.0];
@@ -2649,30 +3368,312 @@ fn extract_reference_direction(val: &Value) -> [f64; 3] {
     }
 }
 
-/// Extract the Rayleigh damping coefficients `(α, β)` from a `ModalOptions`
-/// StructureInstance's `damping` field. A `RayleighDamping { alpha, beta }`
-/// StructureInstance yields its coefficients; `NoDamping` (or any other shape)
-/// yields `(0, 0)` — the undamped case (ζ_i = 0 for every mode). The
-/// discriminator is the runtime `type_name`, matching the SIR-α nominal type-tag
-/// the structure-defs document.
-fn extract_damping(val: &Value) -> (f64, f64) {
-    if let Value::StructureInstance(data) = val
-        && let Some(Value::StructureInstance(damping)) = data.fields.get("damping")
-        && damping.type_name == "RayleighDamping"
-    {
-        let alpha = damping
-            .fields
-            .get("alpha")
-            .map(read_scalar_si)
-            .unwrap_or(0.0);
-        let beta = damping
-            .fields
-            .get("beta")
-            .map(read_scalar_si)
-            .unwrap_or(0.0);
-        return (alpha, beta);
+/// How a `DampingDescriptor` value classifies against the refinements this
+/// trampoline implements.
+#[derive(Debug, Clone, PartialEq)]
+enum DampingKind {
+    /// No `damping` field, or a non-`StructureInstance` options value.
+    /// Undamped, and silent: the caller declared no damping intent.
+    Absent,
+    /// An explicit `NoDamping` marker. Undamped, and silent: the caller
+    /// declared an undamped model and got one. Kept distinct from [`Self::Absent`]
+    /// because the two are different author intents even though both give ζ = 0.
+    NoDamping,
+    /// `RayleighDamping { alpha, beta }` — ζ_i = (α + β·ω_i²)/(2·ω_i).
+    Rayleigh { alpha: f64, beta: f64 },
+    /// `MaterialDamping { extra }` — selects the MODAL-STRAIN-ENERGY value
+    /// source for `Mode.damping_ratio` (task #6878). The closed form and its
+    /// derivation are owned by `structure def MaterialDamping`
+    /// (`crates/reify-compiler/stdlib/modal_analysis.ri`) and PRD §C5; the
+    /// near-zero-ω floor is owned by `total_damping_ratio`. This variant only
+    /// SELECTS the value source — it neither evaluates it nor floors it — so
+    /// neither is restated here.
+    ///
+    /// `extra` is the classified ADDITIVE companion descriptor, carried rather
+    /// than pre-flattened to an `(α, β)` pair: the stdlib types that slot as the
+    /// trait `DampingDescriptor`, so it accepts refinements this trampoline does
+    /// not implement, and flattening would lose the difference between "the
+    /// author declared no companion" and "the author declared one we dropped"
+    /// (INV-SF-3, the same lossy-view defect #6875 split this classifier out
+    /// of the old `(α, β)`-only read to fix).
+    ///
+    /// ζ_material is deliberately NOT carried here. This classifier only ever
+    /// sees a `ModalOptions` value, and the loss factor η lives on the
+    /// MATERIAL (`trait Damped { param loss_factor : Real }`,
+    /// `crates/reify-compiler/stdlib/materials_fea.ri`, task #6877) — it is read
+    /// separately by the producer via [`extract_loss_factor`]. Putting η in this
+    /// variant would require the classifier to take an input it has no business
+    /// knowing about.
+    Material { extra: Box<DampingKind> },
+    /// A `DampingDescriptor` refinement this trampoline does not implement,
+    /// carrying its runtime `type_name` so the producer can name it in a
+    /// diagnostic instead of silently substituting zero (INV-SF-3).
+    Unsupported(String),
+}
+
+/// Classify the `damping` field of a `ModalOptions` StructureInstance.
+///
+/// A missing `damping` field, a `Value::Undef` payload, a non-structure payload,
+/// and a non-structure `val` all classify as [`DampingKind::Absent`]. This
+/// wrapper owns only that field lookup; the type-name discrimination itself is
+/// [`classify_descriptor`].
+fn classify_damping(val: &Value) -> DampingKind {
+    let Value::StructureInstance(data) = val else {
+        return DampingKind::Absent;
+    };
+    let Some(damping) = data.fields.get("damping") else {
+        return DampingKind::Absent;
+    };
+    classify_descriptor(damping)
+}
+
+/// Classify a `DampingDescriptor` VALUE (not the options wrapping it).
+///
+/// The discriminator is the runtime `type_name`, matching the SIR-α nominal
+/// type-tag the structure-defs document. A non-`StructureInstance` value —
+/// including `Value::Undef` — classifies as [`DampingKind::Absent`], which is
+/// what makes a malformed or defaulted-away descriptor silent rather than an
+/// invented `NoDamping`.
+///
+/// This is the single extension point: a new descriptor adds ONE arm here and
+/// both the FEA ([`run_modal_analysis`]) and mechanism ([`run_mechanism_modal`])
+/// producers inherit it — neither may re-implement the type-name match. The
+/// damped-modal-bonded-heterogeneous PRD's `MaterialDamping` has LANDED as
+/// exactly that one arm (task #6878).
+///
+/// The fn is RECURSIVE by design: `MaterialDamping.extra` is itself a
+/// `DampingDescriptor`, so it is classified by this same code. That is what
+/// guarantees a descriptor added here is automatically understood in `extra`
+/// position too, rather than needing a second, drifting match.
+fn classify_descriptor(val: &Value) -> DampingKind {
+    let Value::StructureInstance(descriptor) = val else {
+        return DampingKind::Absent;
+    };
+    match descriptor.type_name.as_str() {
+        "RayleighDamping" => {
+            let alpha = descriptor
+                .fields
+                .get("alpha")
+                .map(read_scalar_si)
+                .unwrap_or(0.0);
+            let beta = descriptor
+                .fields
+                .get("beta")
+                .map(read_scalar_si)
+                .unwrap_or(0.0);
+            DampingKind::Rayleigh { alpha, beta }
+        }
+        "NoDamping" => DampingKind::NoDamping,
+        // Task #6878. A missing / `Value::Undef` `extra` recurses to `Absent`
+        // through the guard above: the stdlib default
+        // (`param extra : DampingDescriptor = NoDamping()`) means a value that
+        // came through the author surface always supplies `NoDamping`, but the
+        // trampoline must not ASSUME a well-formed value and invent a default
+        // it never saw.
+        "MaterialDamping" => DampingKind::Material {
+            extra: Box::new(classify_descriptor(
+                descriptor.fields.get("extra").unwrap_or(&Value::Undef),
+            )),
+        },
+        other => DampingKind::Unsupported(other.to_string()),
     }
-    (0.0, 0.0)
+}
+
+/// The per-solve damping contributions [`run_modal_analysis`] applies, resolved
+/// ONCE from the options and the material before any expensive work runs.
+///
+/// Two INDEPENDENT contributions, summed per mode:
+///   `zeta_material` — the modal-strain-energy term, MODE-INDEPENDENT across the
+///                     FLEXIBLE band on this path (see [`plan_modal_damping`]
+///                     for why);
+///   `(alpha, beta)` — the Rayleigh coefficients, mode-dependent through ω.
+///
+/// The plan carries COEFFICIENTS ONLY; it does not own the near-zero-ω floor.
+/// `total_damping_ratio` does, and it floors BOTH contributions together — so
+/// `zeta_material` being mode-independent is a statement about the flexible
+/// band, NOT a licence to add it unguarded. Why the material half is floored
+/// too is argued once, on that function's doc.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ModalDampingPlan {
+    zeta_material: f64,
+    alpha: f64,
+    beta: f64,
+}
+
+/// Resolve the damping descriptor plus the material's loss factor into a
+/// [`ModalDampingPlan`] (task #6878, PRD leaf β).
+///
+/// ## The B4 argument, structurally
+///
+/// For every PRE-EXISTING descriptor this returns `zeta_material == 0.0` and an
+/// `(alpha, beta)` pair that is bit-for-bit what the pre-#6878 Rayleigh-only
+/// read returned. The per-mode expression therefore reduces to exactly the landed
+/// one, and `NoDamping` / `RayleighDamping` results are byte-identical. That is
+/// a property of this table, not of a test — but it is also pinned by
+/// `trampoline_composes_material_damping_additively_with_extra` and by the
+/// author-surface `material_damping_leaves_nodamping_and_rayleigh_byte_identical`.
+///
+/// ## Why ζ_material is MODE-INDEPENDENT here
+///
+/// [`run_modal_analysis`] reads exactly ONE material (`value_inputs[0]`), which
+/// is PRD §C5's degenerate case: the energy ratio collapses to 1 for any mode
+/// shape whatsoever, giving ζ = η/2 exactly. The derivation is written out once,
+/// author-facing, on `structure def MaterialDamping`
+/// (`crates/reify-compiler/stdlib/modal_analysis.ri`) — including the
+/// FLEXIBLE-band qualifier — and is not repeated here.
+///
+/// What IS owned here is the implementation choice: that identity is realized as
+/// an algebraic short-circuit rather than by summing per-element SE_e. The sum
+/// would add per-element work, re-derive element matrices outside
+/// `assemble_modal_km`, produce the same number to fp rounding, and introduce
+/// accumulation error into an assertion whose whole point is exactness. The
+/// heterogeneous case — where the ratio is genuinely ≠ 1 and ζ genuinely varies
+/// by mode — is a later leaf of the same PRD and is deliberately not implemented
+/// here.
+///
+/// ## Returns diagnostics alongside the plan
+///
+/// Both the `Material { extra }` arm and the `Unsupported` arm can discover a
+/// declared damping intent this trampoline cannot honour, and dropping either
+/// silently would reintroduce INV-SF-3 — one level down from where #6875 closed
+/// it, and one level up, respectively. Those warnings are returned here rather
+/// than pushed to a shared buffer so this fn stays a pure function of its two
+/// inputs — which is what lets it be hoisted above the mesh build and the cache
+/// lookup without ordering hazards. [`run_modal_analysis`] merges them at a
+/// single, deterministic point.
+///
+/// ## The conformance rejection lives HERE, not at the call site
+///
+/// `MaterialDamping` over a material carrying no usable η has no honest answer,
+/// so this fn returns `Err(material_not_damped_outcome(…))` and the producer
+/// short-circuits on it. Expressing the missing η AS the rejection is what makes
+/// the silent-ζ = 0 reconstruction unrepresentable: there is no `unwrap_or(0.0)`
+/// floor to fall through, and no second call site that has to replicate a guard
+/// to keep this one correct. A future producer that starts calling this fn
+/// inherits the rejection rather than having to remember it.
+///
+/// `clippy::result_large_err` is allowed for the same reason its sibling guard
+/// [`extract_density_or_degenerate`] allows it, and deliberately by the same
+/// mechanism so the two read alike: the `Err` carries a [`ComputeOutcome`] that
+/// [`run_modal_analysis`] returns BY VALUE and consumes immediately (the whole
+/// compute contract traffics in by-value `ComputeOutcome`), so boxing this
+/// transient rejection would add an allocation on a path that is about to return
+/// anyway, for no benefit — and would leave the file's two short-circuit guards
+/// gratuitously different in shape.
+#[allow(clippy::result_large_err)]
+fn plan_modal_damping(
+    options: &Value,
+    material: &Value,
+) -> Result<(ModalDampingPlan, Vec<Diagnostic>), ComputeOutcome> {
+    const UNDAMPED: ModalDampingPlan = ModalDampingPlan {
+        zeta_material: 0.0,
+        alpha: 0.0,
+        beta: 0.0,
+    };
+    let no_diagnostics = Vec::new();
+    Ok(match classify_damping(options) {
+        DampingKind::Absent | DampingKind::NoDamping => (UNDAMPED, no_diagnostics),
+        DampingKind::Rayleigh { alpha, beta } => (
+            ModalDampingPlan {
+                zeta_material: 0.0,
+                alpha,
+                beta,
+            },
+            no_diagnostics,
+        ),
+        // A TOP-LEVEL descriptor this trampoline does not implement. The plan is
+        // the undamped triple exactly as before #6878 — but no longer SILENTLY
+        // so. `run_mechanism_modal` has degraded loudly here since #6875
+        // (`W_MechanismModalUnsupportedDamping`), and once the `extra` slot below
+        // started warning for a nested unsupported descriptor, staying mute for
+        // the top-level one made the FEA path inconsistent with both its sibling
+        // producer and with itself. The numbers are unchanged; only the silence
+        // is (INV-SF-3).
+        //
+        // Distinct code from `W_ModalDampingUnsupportedExtra`, and deliberately
+        // NOT a prefix of it, so a `contains` assertion cannot conflate the two
+        // altitudes.
+        DampingKind::Unsupported(type_name) => (
+            UNDAMPED,
+            vec![Diagnostic::warning(format!(
+                "W_ModalDampingUnsupportedDescriptor: ModalOptions.damping is a \
+                 `{type_name}` descriptor, which the FEA `modal_analysis` \
+                 trampoline does not implement. Every Mode.damping_ratio is \
+                 reported as 0 for this solve and ModalResult.damping still echoes \
+                 the `{type_name}` descriptor you supplied — the declared damping \
+                 intent is NOT applied. Only `NoDamping()`, \
+                 `RayleighDamping(alpha, beta)` (ζ = (α + β·ω²)/(2·ω)) and \
+                 `MaterialDamping(extra)` (ζ = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e) + \
+                 ζ_extra) are honored on this path."
+            ))],
+        ),
+        DampingKind::Material { extra } => {
+            // THE conformance decision, made here and nowhere else: a material
+            // with no usable η cannot answer the modal-strain-energy question
+            // this descriptor asks, and `Err` is the only honest reply. Folding
+            // `None` to 0.0 here would be precisely the silent ζ = 0 PRD §C6
+            // forbids, reconstructed inside the fn built to prevent it.
+            let Some(eta) = extract_loss_factor(material) else {
+                return Err(material_not_damped_outcome(material_type_name(material)));
+            };
+            let mut diagnostics = Vec::new();
+            let (alpha, beta) = match *extra {
+                DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
+                DampingKind::Absent | DampingKind::NoDamping => (0.0, 0.0),
+                // A descriptor we cannot honour in `extra` position. The MSE
+                // half IS applied — a PARTIAL degrade, not a failure — so this
+                // is a Warning rather than the Error
+                // `E_ModalDampingMaterialNotDamped` uses. Without it the
+                // trait-typed `extra` slot would silently drop a declared
+                // additive intent: the INV-SF-3 shape #6875 was filed to
+                // eliminate one level up, reintroduced one level down.
+                //
+                // A NESTED `MaterialDamping` warns identically rather than
+                // recursing into a second η/2 term: additive composition of a
+                // descriptor with itself is not a defined semantics (PRD §C5),
+                // and silently doubling ζ would be a worse answer than
+                // declining with a warning.
+                //
+                // Message shape deliberately follows
+                // `W_MechanismModalUnsupportedDamping` — same "the declared
+                // intent is NOT applied" honesty framing — so the two damping
+                // degrades read as one family.
+                ref unhonored => {
+                    let type_name = match unhonored {
+                        DampingKind::Unsupported(name) => name.clone(),
+                        DampingKind::Material { .. } => "MaterialDamping".to_string(),
+                        // Unreachable: the two arms above cover every other
+                        // variant. Named rather than `unreachable!()` so a future
+                        // variant degrades loudly instead of panicking a solve.
+                        other => format!("{other:?}"),
+                    };
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "W_ModalDampingUnsupportedExtra: MaterialDamping.extra is a \
+                         `{type_name}` descriptor, which this trampoline does not \
+                         implement as an additive companion. The modal-strain-energy \
+                         half IS applied (ζ_i = ½·(Σ_e η_e·SE_e)/(Σ_e SE_e), which \
+                         for this single-material model is η/2), but the `extra` half \
+                         contributes 0 — the declared additive total is NOT what you \
+                         get. Only `RayleighDamping(alpha, beta)` (ζ = (α + β·ω²)/(2·ω)) \
+                         and `NoDamping()` are honored in `extra` position; \
+                         `NoDamping()` is the default and means \"no additive \
+                         companion\". Note that nesting `MaterialDamping` inside \
+                         `extra` is not a defined composition — a descriptor cannot \
+                         compose additively with itself."
+                    )));
+                    (0.0, 0.0)
+                }
+            };
+            (
+                ModalDampingPlan {
+                    zeta_material: eta / 2.0,
+                    alpha,
+                    beta,
+                },
+                diagnostics,
+            )
+        }
+    })
 }
 
 /// Extract the requested finite-element order from a `ModalOptions`
@@ -2684,7 +3685,7 @@ fn extract_damping(val: &Value) -> (f64, f64) {
 /// value, or the explicit `ElementOrder.P1` — defaults to [`ElementOrder::P1`],
 /// keeping the constant-strain path and every existing P1 fixture/test bit-for-bit
 /// unchanged (matching `ModalOptions.element_order`'s declared `ElementOrder.P1`
-/// default). Mirrors [`extract_damping`]'s match-then-default defensive field read;
+/// default). Mirrors [`extract_eigen_knobs`]'s match-then-default field reads;
 /// the enum is discriminated solely by its `variant` tag, the runtime
 /// representation of an `ElementOrder` value (reify-ir `Value::Enum`).
 fn extract_element_order(val: &Value) -> ElementOrder {
@@ -2697,23 +3698,48 @@ fn extract_element_order(val: &Value) -> ElementOrder {
     ElementOrder::P1
 }
 
-/// Build the homogeneous Dirichlet BCs from the `boundary_conditions` faces.
+/// Build the homogeneous Dirichlet BCs from the `boundary_conditions` supports.
 ///
-/// Two realizations, discriminated by the named faces (design_decision #1; the
-/// `Part`/`Support`-topology channel that would carry richer BC intent has not
-/// landed, so the support *targets* encode the configuration):
+/// Realization is **per named face and KIND-AWARE** (task 6663): EVERY support
+/// contributes constraints on its own target face, and what it constrains there
+/// is decided by the support's `type_name` (via [`face_realization`]), not by how
+/// many supports the model happens to carry.
 ///
-///   • **Simply-supported (pin-pin)** — both beam-axis end faces (`"x_min"` AND
-///     `"x_max"`) are named (the `simply_supported_beam_modes.ri` two-support
-///     fixture). Delegates to [`simply_supported_pin_pin_bcs`]: pin only the
-///     transverse (Z) DOF on both end faces + minimal axial/lateral anchors, so
-///     the bending rotation stays free and the modes follow the `(nπ)²`
-///     simply-supported family (NOT fixed-fixed).
+///   • **`FixedSupport` (and every other support kind)** — clamp all three
+///     translational DOFs on every mesh node of the named face
+///     (`"x_min"`/`"x_max"`/`"y_min"`/`"y_max"`/`"z_min"`/`"z_max"`). This is the
+///     cantilever root clamp (step-16), and — with BOTH end faces named — the
+///     genuine clamped-clamped beam.
 ///
-///   • **Clamp the named face(s)** — any other target set (the cantilever's lone
-///     `"x_min"` support). Every mesh node on each named face
-///     (`"x_min"`/`"x_max"`/`"y_min"`/`"y_max"`/`"z_min"`/`"z_max"`) has all three
-///     translational DOFs clamped — the cantilever root clamp (step-16).
+///   • **`PinnedSupport`** — pin only the transverse (Z) DOF on every node of the
+///     named face, leaving the bending rotation `dw/dx` free (it is carried by
+///     the axial `u(z)`, not by `w`) — but ONLY on a beam-axis end face of a
+///     model whose supports name another distinct recognized face. A lone or
+///     non-beam-axis pinned face clamps instead, matching
+///     `PinnedOnTetEquivalentToFixed`; see [`face_realization`] for why that
+///     scoping is load-bearing.
+///
+///   • **Simply-supported (pin-pin) special case** — when BOTH beam-axis end
+///     faces (`"x_min"` AND `"x_max"`) are named AND every support naming an end
+///     face is `PinnedSupport`, the two end faces are realized by
+///     [`simply_supported_pin_pin_bcs`], which adds the three minimal
+///     neutral-axis anchors that the per-face rule alone cannot supply. Neither
+///     end face is clamped in that configuration, so without those anchors
+///     `K_free` is singular (see step-4's comment there for why the mixed
+///     propped-cantilever case needs no such anchors). Supports naming any OTHER
+///     face are still realized per-face and UNIONed on top — the special case
+///     re-interprets the two end faces, it never discards a support.
+///
+/// **Why the kind matters here, even though a face-pin equals a face-clamp on a
+/// solid tet body** (`reify-solver-elastic/src/shell_boundary.rs:133-140`,
+/// `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`): that equivalence is
+/// about a *single* face's DOF count in the static path. Two fully-clamped END
+/// FACES are a genuinely different STRUCTURE from two pinned ones — the
+/// clamped-clamped fundamental is `(4.730041/π)² = 2.267×` the simply-supported
+/// one. Until task 6663 this function discriminated on the target face NAMES
+/// only and threw the kind away, so two `FixedSupport`s silently produced the
+/// bit-identical pinned-pinned BC set (measured: 391.049 Hz for both, against
+/// the clamped-clamped analytic 900.7 Hz).
 ///
 /// Takes only the node coordinates (`&[[f64; 3]]`) of the discretization the
 /// trampoline hands to [`solve_modal_core`] — BC selection is coordinate-only and
@@ -2721,48 +3747,362 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 /// (no half-populated `BeamMesh` sentinel needed for the P2 path). The DOF indices
 /// line up with the solve's mesh because both index the same node set.
 /// `length`/`width`/`height` still parameterize the face-coordinate thresholds.
-/// Duplicate DOFs (a corner shared by two named faces) are harmless —
-/// `solve_modal_core` records constraints idempotently.
+///
+/// The returned vector is **sorted by `dof` and deduplicated**. A corner node
+/// shared by two named faces is visited once per face, so the raw union repeats
+/// that node's DOFs. That is harmless for the modal solve itself
+/// (`solve_modal_core` records constraints idempotently via `is_constrained`),
+/// but the same shape debug-PANICS in `apply_dirichlet_row_elimination`
+/// (`reify-solver-elastic/src/boundary/dirichlet.rs:175-188`, "duplicate
+/// DirichletBc dof"), so the uniqueness is part of this function's contract
+/// rather than a downstream consumer's problem. Every BC here is homogeneous
+/// (`value: 0.0`), so deduplicating by `dof` alone loses nothing.
+///
+/// # Diagnostics
+///
+/// Returns a [`DirichletRealization`], not a bare vector, because the
+/// `PinnedSupport` realization decision depends on whether the model's
+/// supports name ANOTHER DISTINCT RECOGNIZED face, and would otherwise be
+/// invisible: naming or un-naming a second face elsewhere on the body
+/// silently re-realizes a pinned beam end (clamp ⇄ transverse pin), and the
+/// author's only observable would be a frequency that moved. Every such face
+/// therefore carries one `I_ModalPinnedFaceRealization` `Severity::Info`
+/// diagnostic naming what it was realized as AND why — see
+/// [`pinned_end_face_realization_diagnostics`]. Numbers are unaffected; this
+/// is a reporting channel only.
 fn build_dirichlet_bcs(
     options: &Value,
     nodes: &[[f64; 3]],
     length: f64,
     width: f64,
     height: f64,
-) -> Vec<DirichletBc> {
+) -> DirichletRealization {
     let targets = support_targets(options);
+    // Each target's realization is decided from its own [`FaceCompany`] — a
+    // face-LOCAL fact, not a model-wide count. Two hazards fall out of that one
+    // choice, and both are mechanism classes:
+    //
+    //   * A support whose target names NO recognized face constrains nothing
+    //     (`per_face_bcs` skips it through this same [`face_bound`] predicate),
+    //     so it must not give another face company — otherwise a typo, or the
+    //     stdlib's own `param target : String = ""` default, flips a
+    //     `PinnedSupport` on a beam end from a clamp to a transverse-only pin,
+    //     turning a well-posed cantilever into a mechanism. Pinned by
+    //     `build_dirichlet_bcs_ignores_supports_that_name_no_face`.
+    //   * DUPLICATES collapse. `[Pinned("x_min"), Pinned("x_min")]` — the
+    //     ordinary copy-paste authoring error — names ONE face twice, and a
+    //     face cannot be its own company, so it stays `Alone`, restoring the
+    //     pre-6663 cantilever instead of flipping to a transverse-only pin for
+    //     the same mechanism outcome (measured: 4 surviving rigid-body modes,
+    //     reported under a mere `W_ModalRigidBodyMode` Warning). Pinned by
+    //     `build_dirichlet_bcs_ignores_duplicate_face_targets`.
+    //
+    // `PinTransverse` can fire ONLY when a beam-axis end face has another
+    // DISTINCT face's company — and every such configuration is well posed:
+    // the pin-pin special case below (both ends pinned, three neutral-axis
+    // anchors added), a propped cantilever (the other end `Fixed`, hence fully
+    // clamped), or an end pin plus a non-end face, which always clamps (see
+    // [`face_realization`]). So this closes the transverse-pin mechanism class
+    // outright rather than documenting it as a residual.
+    // `solve_generalized_eigen`'s singular-K fallback remains the backstop for
+    // a singular K_free arriving by any other route.
+    //
+    // All three shapes are pinned by tests, so the argument cannot rot silently:
+    // the pin-pin case and the propped cantilever by
+    // `build_dirichlet_bcs_discriminates_support_kind` (i)/(iv), and the third —
+    // where the whole argument rests on the non-end face being a FULL clamp — by
+    // `build_dirichlet_bcs_pins_transversely_only_on_a_supported_beam_end` (iii).
+    //
+    // A face's company is still something the author did not write on the
+    // support, which is why every pinned end face also reports what it was
+    // realized as: see [`pinned_end_face_realization_diagnostics`].
 
-    // Simply-supported (pin-pin) discriminator: BOTH beam-axis end faces named.
-    let pins_x_min = targets.iter().any(|t| t == "x_min");
-    let pins_x_max = targets.iter().any(|t| t == "x_max");
-    if pins_x_min && pins_x_max {
-        return simply_supported_pin_pin_bcs(nodes, length, height);
+    // Resolve every support's `FaceCompany` up front — ONCE per target — so
+    // the per-face realization below and the diagnostics after it read the
+    // exact same fact instead of each deriving their own; see
+    // `pinned_end_face_realization_diagnostics`'s "One pass, two consumers".
+    let companies: Vec<FaceCompany> = targets
+        .iter()
+        .map(|(_, target)| face_company(target, &targets))
+        .collect();
+    let faces: Vec<(FaceRealization, &str)> = targets
+        .iter()
+        .zip(companies.iter())
+        .map(|((kind, target), company)| {
+            (face_realization(*kind, target, company), target.as_str())
+        })
+        .collect();
+
+    // Simply-supported (pin-pin) special case: BOTH beam-axis end faces named,
+    // and every support naming an end face is Pinned. A single `FixedSupport`
+    // among them makes this a clamped or propped configuration instead, which
+    // the per-face realization below handles directly.
+    let names_face = |face: &str| targets.iter().any(|(_, t)| t == face);
+    let end_face_supports_all_pinned = targets
+        .iter()
+        .filter(|(_, t)| is_beam_axis_end_face(t))
+        .all(|(kind, _)| *kind == DeclaredSupport::Pinned);
+    let simply_supported =
+        names_face("x_min") && names_face("x_max") && end_face_supports_all_pinned;
+    let diagnostics =
+        pinned_end_face_realization_diagnostics(&targets, &companies, simply_supported);
+
+    if simply_supported {
+        // The special case re-interprets the TWO END FACES only. Every support
+        // naming another face is still realized per-face and unioned on top, so
+        // e.g. `[Pinned(x_min), Pinned(x_max), Fixed(y_min)]` is a
+        // simply-supported beam that is ALSO clamped on y_min, not a plain
+        // simply-supported beam with the y_min clamp silently discarded.
+        let mut bcs = simply_supported_pin_pin_bcs(nodes, length, height);
+        let others: Vec<(FaceRealization, &str)> = faces
+            .iter()
+            .copied()
+            .filter(|(_, t)| !is_beam_axis_end_face(t))
+            .collect();
+        bcs.extend(per_face_bcs(&others, nodes, length, width, height));
+        return DirichletRealization { bcs: normalize_bcs(bcs), diagnostics };
     }
 
-    // General "clamp the named face" realization (cantilever root clamp).
+    DirichletRealization {
+        bcs: normalize_bcs(per_face_bcs(&faces, nodes, length, width, height)),
+        diagnostics,
+    }
+}
+
+/// What [`build_dirichlet_bcs`] realized: the Dirichlet set itself, plus the
+/// advisory diagnostics explaining any realization the author cannot read off
+/// their own declaration.
+///
+/// A struct rather than a bare `Vec<DirichletBc>` because the `PinnedSupport`
+/// realization is decided per-face via [`face_company`], so the two halves
+/// must be produced from the SAME per-target [`FaceCompany`] vector:
+/// [`build_dirichlet_bcs`] computes it once and shares it with
+/// [`pinned_end_face_realization_diagnostics`], so the note cannot drift from
+/// the DOFs that were actually emitted — a sibling function recomputing the
+/// decision from scratch is precisely the silent-BC-reinterpretation class
+/// task 6663 exists to close.
+struct DirichletRealization {
+    /// The homogeneous Dirichlet set: sorted by `dof` and deduplicated.
+    bcs: Vec<DirichletBc>,
+    /// `Severity::Info` notes about context-dependent realizations. Empty for
+    /// every model whose supports are all `FixedSupport`, and for every
+    /// `PinnedSupport` that names no beam-axis end face — those realizations are
+    /// unconditional and need no explanation.
+    diagnostics: Vec<Diagnostic>,
+}
+
+/// One `I_ModalPinnedFaceRealization` `Severity::Info` diagnostic per DISTINCT
+/// beam-axis end face carrying a `PinnedSupport`, naming what that face was
+/// realized as and WHY.
+///
+/// # Why this exists
+///
+/// [`face_realization`] decides what a `PinnedSupport` on a beam end constrains
+/// from whether the model's supports name another distinct recognized face,
+/// i.e. from something the author did NOT write on that support. Going from
+/// `[Pinned("x_min")]` to `[Pinned("x_min"), Fixed("y_min")]` re-realizes
+/// x_min from a full 3-DOF clamp to a Z-only transverse pin, and vice versa on
+/// removal — a change of idealization on a face that was never edited.
+/// Without a diagnostic the only observable is a frequency that moved, which
+/// is the same silent-BC-reinterpretation failure mode this task closes,
+/// merely narrowed from "the kind is ignored" to "the kind is read in a
+/// context you cannot see".
+///
+/// The scoping argument in [`face_realization`] stands: no reachable
+/// `PinTransverse` configuration is a mechanism. This does not change any
+/// number; it puts the face-company-dependence in the same diagnostic stream
+/// the rest of the modal solve reports through, so the flip is legible in
+/// BOTH directions (pinned as a transverse pin, and pinned-therefore-clamped).
+///
+/// # One pass, two consumers
+///
+/// `companies` is the SAME per-target [`FaceCompany`] vector
+/// [`build_dirichlet_bcs`] computed to decide the DOFs (`face_company` is
+/// called once per target, there, not here), so the message below is read
+/// off the exact fact that drove the realization rather than a second call
+/// to `face_company` that could in principle disagree. `WithAnotherFace`'s
+/// payload is also what lets the message name the specific other face
+/// (review suggestion 4), instead of merely asserting that one exists.
+///
+/// # What is reported, and what is not
+///
+/// One note per distinct face, not per support: `[Pinned("x_min"),
+/// Pinned("x_min")]` is one face (the same `face_bound` predicate the decision
+/// itself reads, so the message can never disagree with the decision it
+/// describes) and gets one note. `FixedSupport` is silent — it clamps
+/// unconditionally, so there is nothing context-dependent to explain. A
+/// `PinnedSupport` on a NON-end face is silent for the same reason (it always
+/// clamps). A `PinnedSupport` whose target names no recognized face is silent
+/// because it selects nothing at all.
+fn pinned_end_face_realization_diagnostics(
+    targets: &[(DeclaredSupport, String)],
+    companies: &[FaceCompany],
+    simply_supported: bool,
+) -> Vec<Diagnostic> {
+    let mut seen: BTreeSet<(usize, bool)> = BTreeSet::new();
+    let mut out = Vec::new();
+    for ((kind, target), company) in targets.iter().zip(companies.iter()) {
+        if *kind != DeclaredSupport::Pinned || !is_beam_axis_end_face(target) {
+            continue;
+        }
+        let Some(bound) = face_bound(target) else {
+            continue;
+        };
+        if !seen.insert(bound) {
+            continue;
+        }
+        let message = if simply_supported {
+            format!(
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
+                 transverse (Z) pin — the simply-supported beam idealization — because BOTH \
+                 beam-axis end faces are pinned; three minimal neutral-axis anchors are added \
+                 so K_free is not singular. The same declaration clamps all 3 translational \
+                 DOFs when it is the only face the model's supports name."
+            )
+        } else if let FaceCompany::WithAnotherFace(other) = company {
+            format!(
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
+                 transverse (Z) pin — the simply-supported beam idealization — because the \
+                 model's supports also name \"{other}\". Were this the only face named, the \
+                 SAME declaration would clamp all 3 translational DOFs instead and the \
+                 fundamental would rise."
+            )
+        } else {
+            format!(
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") clamps all 3 \
+                 translational DOFs, because it is the only face the model's supports name (a \
+                 lone transverse pin is a mechanism). Naming a second distinct face would \
+                 re-realize this one as a transverse (Z) pin — the simply-supported beam \
+                 idealization — and the fundamental would drop."
+            )
+        };
+        out.push(Diagnostic::info(message));
+    }
+    out
+}
+
+/// Realize each `(what, face)` pair independently: select the face's nodes by
+/// coordinate and emit that realization's DOFs.
+///
+/// Per-face and order-independent by construction, so a third support ADDS a
+/// face rather than reinterpreting the whole model. (The pre-6663 discriminator
+/// did the opposite: a set like `[x_min, x_max, y_min]` silently DROPPED y_min
+/// and flipped the whole model to pin-pin, with no diagnostic. A target outside
+/// the six recognized face names still selects nothing — that gap is unchanged
+/// here — but it can no longer cause the rest of the model to be reinterpreted,
+/// nor, since it no longer counts as a support upstream, another face's
+/// realization to be flipped.)
+///
+/// # Scope of that claim
+///
+/// It is about THIS function: given `(realization, face)` pairs, each pair is
+/// selected and emitted independently of the others. It is NOT a whole-pipeline
+/// claim, because the upstream realization DECISION is still context-dependent:
+/// [`face_realization`] takes a [`FaceCompany`], so adding a support **that
+/// names a second DISTINCT recognized face** can flip a `Pinned` beam-end face
+/// from a clamp to a transverse-only pin without that face being mentioned
+/// again. That is a deliberate, documented trade-off (see [`face_realization`]'s
+/// "Why `Pinned` is not Z-only, always"), not an oversight — and, since review
+/// suggestion 1, a REPORTED one: every pinned beam-end face carries an
+/// `I_ModalPinnedFaceRealization` Info diagnostic naming which way it went and
+/// why ([`pinned_end_face_realization_diagnostics`]), so the flip is legible
+/// without re-reading this paragraph. It still means "adds rather than
+/// reinterprets" holds for face SELECTION and DOF emission, not for
+/// the choice of realization. Two inputs that used to perturb that decision no
+/// longer can, because face identity runs over DISTINCT FACES via
+/// [`face_bound`]: a support naming NO recognized face cannot give another
+/// face company, and a support DUPLICATING a face already named adds no OTHER
+/// face to be company for.
+///
+/// The result is a raw union: repeats are possible when two faces share a corner
+/// node, so callers must pass it through [`normalize_bcs`].
+fn per_face_bcs(
+    faces: &[(FaceRealization, &str)],
+    nodes: &[[f64; 3]],
+    length: f64,
+    width: f64,
+    height: f64,
+) -> Vec<DirichletBc> {
     let eps = 1e-9_f64;
+    let extent = [length, width, height];
     let mut bcs = Vec::new();
-    for target in &targets {
+    for (realization, target) in faces {
+        // Face-name vocabulary lives in ONE place ([`face_bound`]), shared with
+        // `face_company` in `build_dirichlet_bcs`, so the set of names that can
+        // select nodes and the set that can influence a realization cannot
+        // drift apart. An unrecognized name selects nothing, exactly as the
+        // former inline `_ => false` arm did.
+        let Some((axis, is_max)) = face_bound(target) else {
+            continue;
+        };
         for (n, coord) in nodes.iter().enumerate() {
-            let on_face = match target.as_str() {
-                "x_min" => coord[0] <= eps,
-                "x_max" => coord[0] >= length - eps,
-                "y_min" => coord[1] <= eps,
-                "y_max" => coord[1] >= width - eps,
-                "z_min" => coord[2] <= eps,
-                "z_max" => coord[2] >= height - eps,
-                _ => false,
+            let on_face = if is_max {
+                coord[axis] >= extent[axis] - eps
+            } else {
+                coord[axis] <= eps
             };
-            if on_face {
-                for axis in 0..3 {
-                    bcs.push(DirichletBc {
-                        dof: 3 * n + axis,
-                        value: 0.0,
-                    });
+            if !on_face {
+                continue;
+            }
+            match realization {
+                // Clamp: all three translational DOFs on this face's node.
+                FaceRealization::ClampAllDofs => {
+                    for axis in 0..3 {
+                        bcs.push(DirichletBc {
+                            dof: 3 * n + axis,
+                            value: 0.0,
+                        });
+                    }
                 }
+                // Simple support: the transverse (Z) DOF only, so the bending
+                // rotation at the support stays free.
+                //
+                // NOTE the deliberate ASYMMETRY with the pin-pin branch in
+                // `build_dirichlet_bcs`, which adds three minimal neutral-axis
+                // anchors on top of its Z pins. That branch needs them because a
+                // simply-supported beam is a WELL-POSED structure whose 2-D
+                // bending idealization the anchors do not disturb — they sit on
+                // the neutral axis, on the vertical modes' own node line.
+                //
+                // No such anchors belong here, and none are needed:
+                // `face_realization` scopes `PinTransverse` to a beam-axis end
+                // face of a model naming a second DISTINCT face, and
+                // `build_dirichlet_bcs` argues in its own body comment that
+                // every such configuration is well posed. The three mechanism
+                // shapes that could once reach this arm are all closed
+                // upstream — a LONE pin, an OFF-AXIS pin pair, and (since face
+                // identity now runs through `face_company`/`face_bound`) a pin
+                // whose only company is a support naming no recognized face or
+                // DUPLICATING the same one.
+                //
+                // Should a singular K_free still arrive here by some route this
+                // reasoning does not cover, the intended outcome is unchanged:
+                // NOT invented anchors, which would return plausible-looking
+                // frequencies for a structure that has none — the exact
+                // silent-wrong-answer class task 6663 exists to close — but the
+                // singular-K fallback in `solve_generalized_eigen`, which routes
+                // it to the graceful `W_ModalRigidBodyMode` path rather than the
+                // shift-invert Cholesky.
+                FaceRealization::PinTransverse => bcs.push(DirichletBc {
+                    dof: 3 * n + 2,
+                    value: 0.0,
+                }),
             }
         }
     }
+    bcs
+}
+
+/// Sort a homogeneous Dirichlet set by `dof` and drop repeats.
+///
+/// Required by `apply_dirichlet_row_elimination`'s debug assertion
+/// (`reify-solver-elastic/src/boundary/dirichlet.rs:175-188`), which panics on a
+/// duplicate `dof`, even though `solve_modal_core`'s own `is_constrained` map is
+/// idempotent. Every BC [`build_dirichlet_bcs`] emits carries `value: 0.0`, so
+/// collapsing by `dof` alone can never discard a distinct prescribed value.
+fn normalize_bcs(mut bcs: Vec<DirichletBc>) -> Vec<DirichletBc> {
+    bcs.sort_by_key(|b| b.dof);
+    bcs.dedup_by_key(|b| b.dof);
     bcs
 }
 
@@ -2892,10 +4232,217 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     nearest
 }
 
-/// Collect the `target` face names from the options' `boundary_conditions` list
-/// (`FixedSupport { target : String }` instances). Non-StructureInstance entries
-/// and entries without a string `target` are skipped.
-fn support_targets(options: &Value) -> Vec<String> {
+/// The support kind as **declared in the DSL**, read off
+/// `StructureInstance.type_name` by [`support_targets`].
+///
+/// `FixedSupport` and `PinnedSupport` are declared with IDENTICAL field shapes
+/// (`param target : String = ""`, crates/reify-compiler/stdlib/fea_multi_case.ri
+/// :355 and :380), so the `target` field alone cannot tell them apart — the kind
+/// has to be read off the instance's `type_name` (task 6663).
+///
+/// **Deliberately NOT named `SupportKind`.** `reify_solver_elastic::SupportKind`
+/// (re-exported from that crate's `lib.rs`, and this module already imports
+/// several items from it) has the same two variant names but different
+/// semantics: there, `Pinned` on a tet body IS a 3-DOF clamp
+/// (`shell_boundary.rs`, `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`).
+/// Here the variant records only what the author WROTE; what it constrains is
+/// [`FaceRealization`], decided by [`face_realization`]. Keeping the two names
+/// distinct stops a future reader from folding this enum into the existing
+/// `use reify_solver_elastic::{…}` list and silently changing the meaning.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DeclaredSupport {
+    /// `FixedSupport` (and every unrecognized support type name).
+    Fixed,
+    /// `PinnedSupport`.
+    Pinned,
+}
+
+/// What a support actually constrains on its target face, after
+/// [`face_realization`] has interpreted the declared kind in context.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FaceRealization {
+    /// Clamp all three translational DOFs on every node of the face. This is
+    /// also how a *pinned* face is realized everywhere else in the system
+    /// (`PinnedOnTetEquivalentToFixed`), so it is the default, not the exception.
+    ClampAllDofs,
+    /// Pin the transverse (Z) DOF only, leaving the bending rotation `dw/dx`
+    /// free. The simply-supported BEAM idealization — see [`face_realization`]
+    /// for why it is scoped rather than applied to every `PinnedSupport`.
+    PinTransverse,
+}
+
+/// The two beam-axis end faces. The simply-supported idealization is about
+/// these and only these: a "pin" on any other face is not a beam end support.
+fn is_beam_axis_end_face(target: &str) -> bool {
+    target == "x_min" || target == "x_max"
+}
+
+/// Which coordinate bound a target face name selects: the axis index
+/// (`0 = x`, `1 = y`, `2 = z`) and whether it is the MAX end of that axis'
+/// extent. `None` for any name outside the six recognized faces.
+///
+/// This is the SINGLE place the face-name vocabulary is written down. Two
+/// callers depend on it agreeing with itself:
+///   * [`per_face_bcs`] selects a face's nodes through it, and
+///   * [`face_company`] compares faces' bounds through it to decide whether a
+///     `PinnedSupport` on a beam end realizes as a transverse pin or a clamp.
+///
+/// Keeping both on one predicate is what stops a support that can select NO
+/// node from silently changing another face's realization: before task 6663's
+/// amendment the decision read `targets.len()`, so `[Pinned("x_min"),
+/// Fixed("<typo>")]` — or the stdlib's own `param target : String = ""`
+/// default — counted as two supports and flipped `x_min` from a clamp
+/// (a well-posed cantilever) to a Z-only pin (a 4-rigid-body-mode mechanism).
+///
+/// The `(axis, is_max)` return is also what makes face identity independent of
+/// spelling: identifying a face by the bound it selects, rather than by its
+/// target string, is what makes `[Pinned("x_min"), Pinned("x_min")]`'s second
+/// entry resolve to the SAME face as the first rather than another one, so
+/// [`face_company`] reports it `Alone` rather than in company.
+fn face_bound(target: &str) -> Option<(usize, bool)> {
+    match target {
+        "x_min" => Some((0, false)),
+        "x_max" => Some((0, true)),
+        "y_min" => Some((1, false)),
+        "y_max" => Some((1, true)),
+        "z_min" => Some((2, false)),
+        "z_max" => Some((2, true)),
+        _ => None,
+    }
+}
+
+/// Whether the model's supports name a recognized face OTHER than `target`'s
+/// own — the face-LOCAL fact [`face_realization`] decides a `PinnedSupport`
+/// beam end's transverse-pin eligibility from, in place of a model-wide count.
+///
+/// Not `Copy` (review suggestion 4): `WithAnotherFace` carries the OTHER
+/// face's target name, so [`pinned_end_face_realization_diagnostics`] can
+/// name it in the note instead of only asserting that it exists.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum FaceCompany {
+    /// No support names a recognized face other than this one's own.
+    Alone,
+    /// At least one support names a DISTINCT recognized face — this is its
+    /// target string, as declared (the first one found, when there are
+    /// several).
+    WithAnotherFace(String),
+}
+
+/// Decide `target`'s [`FaceCompany`]: whether `targets` names a recognized
+/// face other than `target`'s own, identified by [`face_bound`] rather than by
+/// spelling.
+///
+/// # Precondition
+///
+/// `target` is expected to be the target of one of the entries in `targets` —
+/// both call sites ask this only of a face that is itself one of the model's
+/// declared support targets ([`build_dirichlet_bcs`] maps over `targets`
+/// itself to build `companies`, and
+/// [`pinned_end_face_realization_diagnostics`] receives that same vector
+/// zipped with `targets`). The function still returns for a `target` outside
+/// that list, but nothing relies on that answer meaning anything — see
+/// `face_company_identifies_faces_by_bound` for the cases that matter.
+///
+/// The KIND each support declared is deliberately not read here — company is
+/// about which faces are RECOGNIZED, not about what any of them constrain;
+/// [`face_realization`] is what reads the kind. Identifying a face by the
+/// coordinate bound [`face_bound`] resolves it to, rather than by its target
+/// string, is what makes a duplicate spelling of `target` not count as
+/// "another face" (it resolves to the same bound as `target`'s own) and an
+/// unrecognized or empty target no face at all (`face_bound` returns `None`,
+/// which cannot equal anything).
+fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceCompany {
+    let own = face_bound(target);
+    match targets
+        .iter()
+        .find(|(_, t)| face_bound(t).is_some_and(|b| Some(b) != own))
+    {
+        Some((_, other)) => FaceCompany::WithAnotherFace(other.clone()),
+        None => FaceCompany::Alone,
+    }
+}
+
+/// Decide what `kind` constrains on `target`, given whether the model's
+/// supports name another DISTINCT RECOGNIZED face (`company` — see
+/// [`face_company`], which reads [`face_bound`]; a support that can select no
+/// node contributes no face, and a support naming the SAME face as `target`
+/// gives it no OTHER face's company, because neither may flip `target`'s own
+/// realization).
+///
+/// `Fixed` always clamps. `Pinned` realizes as a transverse (Z) pin ONLY on a
+/// beam-axis end face that has another DISTINCT face's company; otherwise it
+/// clamps like every other pinned face in the system.
+///
+/// Because that decision reads a fact the author did not write on the
+/// support, [`build_dirichlet_bcs`] reports it: every pinned beam-end face
+/// gets an `I_ModalPinnedFaceRealization` Info diagnostic in BOTH directions
+/// (see [`pinned_end_face_realization_diagnostics`]). The rules below decide
+/// the realization; that diagnostic is what makes the decision legible.
+///
+/// # Why `Pinned` is not "Z-only, always"
+///
+/// The Z-only realization is a property of the simply-supported BEAM
+/// idealization, not of the `PinnedSupport` kind. Everywhere else in the system
+/// a pin on a solid tet body is a full 3-DOF clamp
+/// (`reify-solver-elastic/src/shell_boundary.rs`,
+/// `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`; the static path's
+/// `loads_supports_to_bc_node_sets` clamps all three DOFs for any support kind).
+/// Applying Z-only per face unconditionally would make the same DSL word mean
+/// two different things in two solvers, and would regress two configurations
+/// that used to return a real answer into ≈ 0 Hz mechanisms reported under a
+/// mere Warning:
+///
+///   * `[PinnedSupport("x_min")]` alone — a LONE support is the model's only
+///     restraint, so a transverse-only pin is a mechanism by construction
+///     (measured: four surviving rigid-body modes). Pre-6663 this returned the
+///     cantilever answer, which is also what `PinnedOnTetEquivalentToFixed`
+///     says a single pinned tet face means. Clamping restores that.
+///   * `[PinnedSupport("y_min"), PinnedSupport("y_max")]` — neither face is a
+///     beam end, so Z-pinning both leaves the beam free to slide axially.
+///
+/// Both propped configurations the task cares about are unaffected: the
+/// pin-pin special case in [`build_dirichlet_bcs`] handles two pinned end
+/// faces, and `[Fixed("x_min"), Pinned("x_max")]` still realizes x_max as a
+/// genuine transverse-only prop (two distinct faces, beam-axis end face).
+///
+/// # Why company is about FACES and not about supports
+///
+/// A duplicated support — `[Pinned("x_min"), Pinned("x_min")]`, the ordinary
+/// copy-paste authoring error — names one face twice. Reading SUPPORTS as
+/// company made that a two-support model and flipped x_min to `PinTransverse`,
+/// i.e. turned a well-posed cantilever into a 4-rigid-body-mode mechanism
+/// whose ≈ 0 Hz modes come back under a mere `W_ModalRigidBodyMode` Warning.
+/// Reading distinct FACES as company makes the duplicate `Alone` again (the
+/// pre-6663 clamp) and, as [`build_dirichlet_bcs`] argues in its own comment,
+/// leaves NO reachable `PinTransverse` configuration that is a mechanism: a
+/// second distinct face is either the other beam end (pin-pin special case, or
+/// `Fixed` and therefore clamped) or a non-end face, which always clamps.
+fn face_realization(kind: DeclaredSupport, target: &str, company: &FaceCompany) -> FaceRealization {
+    match kind {
+        DeclaredSupport::Fixed => FaceRealization::ClampAllDofs,
+        DeclaredSupport::Pinned
+            if is_beam_axis_end_face(target)
+                && matches!(company, FaceCompany::WithAnotherFace(_)) =>
+        {
+            FaceRealization::PinTransverse
+        }
+        DeclaredSupport::Pinned => FaceRealization::ClampAllDofs,
+    }
+}
+
+/// Collect the `(declared kind, target face name)` pairs from the options'
+/// `boundary_conditions` list. Non-StructureInstance entries and entries without
+/// a string `target` are skipped.
+///
+/// The kind is read off `StructureInstance.type_name`: `"PinnedSupport"` maps to
+/// [`DeclaredSupport::Pinned`], and EVERY other type name to
+/// [`DeclaredSupport::Fixed`].
+/// Defaulting unknown names to `Fixed` is what keeps every pre-task-6663
+/// configuration bit-for-bit identical except the two-`FixedSupport` one that was
+/// the bug. Note that `RollerSupport`/`DisplacementSupport` are still name-
+/// dispatched builtins returning a `Value::Map`, which this function already
+/// skips because it requires a `Value::StructureInstance`.
+fn support_targets(options: &Value) -> Vec<(DeclaredSupport, String)> {
     let mut targets = Vec::new();
     if let Value::StructureInstance(data) = options
         && let Some(Value::List(items)) = data.fields.get("boundary_conditions")
@@ -2904,7 +4451,12 @@ fn support_targets(options: &Value) -> Vec<String> {
             if let Value::StructureInstance(support) = item
                 && let Some(Value::String(target)) = support.fields.get("target")
             {
-                targets.push(target.clone());
+                let kind = if support.type_name == "PinnedSupport" {
+                    DeclaredSupport::Pinned
+                } else {
+                    DeclaredSupport::Fixed
+                };
+                targets.push((kind, target.clone()));
             }
         }
     }
@@ -2960,18 +4512,35 @@ mod tests {
     use reify_stdlib::modal::trampoline::{ModalCacheKey, TransientCacheKey};
     use reify_stdlib::modal::transient::uniform_time_grid;
 
+    use std::collections::HashSet;
+
     use super::{
-        ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
-        TransientCache, assemble_mechanism_km, assemble_modal_km, build_beam_mesh,
-        build_dirichlet_bcs, degenerate_displacement_history, degenerate_modal_result,
-        displacement_at_trampoline, eigensolve_modal, extract_damping,
-        extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        mode_shape_value, nearest_node, placeholder_part, read_real_list, read_scalar_si,
-        resolve_location_node, run_modal_analysis, run_transient_response,
-        simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
+        BeamMesh, DENSE_FALLBACK_MAX_DIM, DampingKind, DeclaredSupport, FaceCompany,
+        FaceRealization,
+        ModalAnalysisCache, ModalAssembly,
+        ModalCoreResult, ModalDampingPlan, ModalMesh, ModalTrampolineRun, TransientCache,
+        assemble_mechanism_km,
+        assemble_modal_km, build_beam_mesh, build_dirichlet_bcs, classify_damping,
+        degenerate_displacement_history, degenerate_modal_result, displacement_at_trampoline,
+        eigensolve_modal, extract_density_or_degenerate, extract_eigen_knobs,
+        extract_loss_factor, extract_reference_direction, face_company, face_realization,
+        frobenius_norm,
+        mode_shape_value,
+        nearest_node,
+        placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
+        resolve_location_node, rigid_body_mode_diagnostic, run_modal_analysis,
+        run_transient_response,
+        ModalSolveFault, shift_window_is_reportable, simply_supported_pin_pin_bcs,
+        solve_generalized_eigen,
+        solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
+    /// The 1-D Laplacian pencil and its closed form come from the solver crate's
+    /// `#[doc(hidden)] pub` test-support seam — the same seam this module already
+    /// imports `promote_tets_to_p2` through — so the fixture and its formula have
+    /// ONE definition across the four test sites that drive them.
+    use reify_solver_elastic::eigensolve::test_support::{laplacian_lambda, laplacian_pencil};
 
     /// `aᵀ · M · b` for the free×free mass matrix `M` (sparse CSR row matvec then
     /// dot). Test-local invariant probe; the production normalization path
@@ -3903,6 +5472,1128 @@ mod tests {
         );
     }
 
+    /// Amendment (review suggestions 1 + 4): the shared body of the two
+    /// over-ceiling degeneracy tests below.
+    ///
+    /// `pinned_only_large_mesh_does_not_exhaust_memory` and
+    /// `unconstrained_large_mesh_force_dense_still_respects_ceiling` reach the
+    /// same branch of [`solve_generalized_eigen`] by the two different routes its
+    /// doc advertises, and were near-verbatim copies of each other: same mesh,
+    /// same knobs, same preconditions, same three assertion groups. Only the BC
+    /// vector differs, so only the BC vector stays at the call site.
+    ///
+    /// Builds the 1.0 × 0.05 × 0.1 m mesh both routes need (large enough that
+    /// `n_free` clears [`DENSE_FALLBACK_MAX_DIM`] by a wide margin), solves with
+    /// the production default knobs, and asserts the full over-ceiling contract:
+    ///
+    ///   1. NO eigenpairs are returned — the branch degenerates rather than
+    ///      densifying an `n_free²` system (`solve_eigen_dense` allocates ≈ 32·n²
+    ///      bytes and costs O(n³)).
+    ///   2. The explanatory `W_ModalRigidBodyMode` ceiling Warning is present and
+    ///      names the offending `n_free`, so an empty spectrum is never silent.
+    ///   3. The companion `E_ModalNoModesComputed` **Error** is present — the
+    ///      amendment for review suggestion 2. A no-modes outcome must not pass
+    ///      an `errors.is_empty()` gate, because stdlib `first_frequency` indexes
+    ///      `modes[0]` and an out-of-bounds index is a silent `Undef`.
+    ///   4. Backstop: wall clock. Not a benchmark — the point is that the O(n³)
+    ///      dense path was genuinely SKIPPED, not merely relabelled, so a future
+    ///      regression that re-densified while still emitting the right text
+    ///      would be caught here.
+    fn over_ceiling_mesh() -> BeamMesh {
+        build_beam_mesh(1.0_f64, 0.05_f64, 0.1_f64)
+    }
+
+    /// See [`over_ceiling_mesh`] for what this asserts and why. `label` names the
+    /// route under test so a failure says which one broke.
+    fn assert_over_ceiling_degenerate(mesh: &BeamMesh, bcs: &[DirichletBc], label: &str) {
+        let n_free = 3 * mesh.nodes.len() - bcs.len();
+        assert!(
+            n_free > DENSE_FALLBACK_MAX_DIM,
+            "[{label}] fixture must sit ABOVE the dense-fallback ceiling \
+             ({DENSE_FALLBACK_MAX_DIM}) for the guard to be under test; \
+             got n_free = {n_free}",
+        );
+
+        // Production default knobs (the trampoline's own).
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 10,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
+
+        let started = std::time::Instant::now();
+        let result: ModalCoreResult = solve_modal_core(
+            ModalMesh::P1(mesh),
+            STEEL_DENSITY,
+            &steel(),
+            [0.0, 0.0, 1.0],
+            bcs,
+            &eigen_opts,
+        );
+        let elapsed = started.elapsed();
+
+        // (1) The degenerate outcome itself.
+        assert!(
+            result.frequencies.is_empty(),
+            "[{label}] above the dense-fallback ceiling the singular solve must \
+             return no eigenpairs rather than densifying a {n_free}² system; got \
+             {} frequencies: {:?}",
+            result.frequencies.len(),
+            result.frequencies,
+        );
+
+        // (2) The specific ceiling Warning — not merely the shared
+        //     `W_ModalRigidBodyMode` prefix, which the per-mode near-zero loop
+        //     also emits and which cannot fire here (there are no modes to
+        //     inspect).
+        let ceiling_diag = result
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.severity == Severity::Warning
+                    && d.message.contains("exceeds the dense-fallback ceiling")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "[{label}] expected the dense-fallback-ceiling Warning; got {:?}",
+                    result.diagnostics,
+                )
+            });
+        assert!(
+            ceiling_diag.message.starts_with("W_ModalRigidBodyMode"),
+            "[{label}] the ceiling diagnostic must keep the W_ModalRigidBodyMode \
+             prefix that assertions and consumer grouping keys are keyed on; got {:?}",
+            ceiling_diag.message,
+        );
+        assert!(
+            ceiling_diag.message.contains(&n_free.to_string()),
+            "[{label}] the ceiling diagnostic must name the offending n_free = \
+             {n_free}; got {:?}",
+            ceiling_diag.message,
+        );
+
+        // (3) Amendment (review suggestion 2): the companion ERROR. Severity, not
+        //     text, is what stops a no-modes result from being walked past by an
+        //     `errors.is_empty()` gate, so this asserts the severity explicitly
+        //     rather than only the code.
+        let error_diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.message.starts_with("E_ModalNoModesComputed"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "[{label}] a no-modes outcome must raise an \
+                     E_ModalNoModesComputed diagnostic — a Warning alone lets an \
+                     Undef frequency cell pass every errors.is_empty() gate; got {:?}",
+                    result.diagnostics,
+                )
+            });
+        assert_eq!(
+            error_diag.severity,
+            Severity::Error,
+            "[{label}] E_ModalNoModesComputed must be Error severity (that IS the \
+             point of it); got {:?}",
+            error_diag,
+        );
+        assert!(
+            error_diag.message.contains(&n_free.to_string()),
+            "[{label}] the no-modes Error must name the offending n_free = {n_free}; \
+             got {:?}",
+            error_diag.message,
+        );
+
+        // (4) Backstop only — see `over_ceiling_mesh`'s doc.
+        assert!(
+            elapsed < std::time::Duration::from_secs(60),
+            "[{label}] the ceiling guard must not densify a large system; took {elapsed:?}",
+        );
+    }
+
+    /// The Dirichlet set a transverse-only pin on the `x_min` face emits: the Z
+    /// DOF of every node on that face and nothing else.
+    ///
+    /// **Amendment (review suggestion 1): built by hand, deliberately.** The two
+    /// tests below are about a DOWNSTREAM contract — `solve_modal_core` must
+    /// degrade gracefully on a singular `K_free`, whatever produced it — and that
+    /// contract is a solver-layer one. Until this amendment they reached it
+    /// through the DSL, with `[Pinned("x_min"), Pinned("x_min")]`: a duplicated
+    /// support kept the SUPPORT count above 1, so `face_realization` returned
+    /// `PinTransverse` on a singly-supported model. That input now clamps (the
+    /// duplicate resolves to the SAME face via `face_company` — see
+    /// `build_dirichlet_bcs_ignores_duplicate_face_targets`), and no DSL input
+    /// reaches this shape any more, which is exactly the point of that fix.
+    ///
+    /// Constructing the vector directly keeps the solver contract under test
+    /// without re-opening the modelling hole that used to be the only way to
+    /// express it. The emitted set is bit-identical to what the pre-amendment
+    /// fixture produced through `build_dirichlet_bcs`, so the measurements quoted
+    /// in the tests below still describe exactly this input.
+    fn z_only_x_min_bcs(mesh: &BeamMesh) -> Vec<DirichletBc> {
+        mesh.nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, xyz)| xyz[0] <= 1e-9)
+            .map(|(n, _)| DirichletBc {
+                dof: 3 * n + 2,
+                value: 0.0,
+            })
+            .collect()
+    }
+
+    /// Task 6663 / review blocker (a): a transverse-pin-ONLY support set must
+    /// not panic.
+    ///
+    /// `per_face_bcs`'s `FaceRealization::PinTransverse` branch emits Z-only
+    /// constraints and adds NO rigid-body anchors (deliberately — see its NOTE;
+    /// such a set is genuinely a mechanism and anchors must not be invented for
+    /// it). `eigensolve_modal`'s guard is
+    /// `n_dofs - n_free < 6`, which counts CONSTRAINED DOFs rather than
+    /// rigid-body modes actually removed: one Z DOF per face node here is
+    /// 14 ≥ 6, so `force_dense` stays false, the solve takes the shift-invert
+    /// path, and its up-front Cholesky `.expect(...)` PANICS on the singular
+    /// `K_free`.
+    ///
+    /// MEASURED pre-fix on exactly this BC set (debug):
+    /// `n_dofs = 84  n_constrained = 14  bcs dofs = [2, 8, 14, 20, 26, 32] …`
+    /// (Z-only, stride 6) → `panicked at eigensolve.rs:660: eigensolve: K must
+    /// be SPD; sp_cholesky failed … NonPositivePivot { index: 67 }`.
+    ///
+    /// Same geometry as
+    /// `solve_modal_core_unconstrained_default_n_modes_does_not_panic`, which
+    /// covers the 0-constrained-DOF sibling case that the count-based guard
+    /// *does* catch.
+    ///
+    /// **Where the BCs come from** (amendment, review suggestion 1): from
+    /// [`z_only_x_min_bcs`], not from `build_dirichlet_bcs`. See that helper for
+    /// why — in short, this test's subject is the solver's response to a singular
+    /// `K_free`, and the DSL spelling that used to produce one is now (correctly)
+    /// unreachable. The set is bit-identical either way.
+    #[test]
+    fn pinned_only_single_face_does_not_panic() {
+        let mesh = build_beam_mesh(0.02_f64, 0.05_f64, 0.1_f64);
+
+        let bcs = z_only_x_min_bcs(&mesh);
+        assert!(
+            bcs.len() >= 6,
+            "fixture must constrain ≥ 6 DOFs so the count-based under-constraint \
+             guard does NOT fire (that is the whole point); got {}",
+            bcs.len(),
+        );
+        assert!(
+            bcs.iter().all(|b| b.dof % 3 == 2),
+            "fixture must be transverse (Z) only — that is what leaves K_free \
+             singular while constraining ≥ 6 DOFs",
+        );
+        let n_free = 3 * mesh.nodes.len() - bcs.len();
+        assert!(
+            n_free > 64,
+            "fixture must exceed the dense-regime threshold so the shift-invert \
+             path is selected on size; got n_free = {n_free}",
+        );
+        // Amendment (review suggestion 5): this fixture pins the side of the
+        // ceiling BELOW `DENSE_FALLBACK_MAX_DIM`, where the graceful dense
+        // fallback is still taken and modes ARE returned. Its sibling,
+        // `pinned_only_large_mesh_does_not_exhaust_memory`, pins the side above.
+        assert!(
+            n_free < DENSE_FALLBACK_MAX_DIM,
+            "fixture must sit BELOW the dense-fallback ceiling ({DENSE_FALLBACK_MAX_DIM}) \
+             so the graceful dense fallback is exercised; got n_free = {n_free}",
+        );
+
+        // Production default knobs (the trampoline's own).
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 10,
+            tol: 1e-8,
+            max_iters: 200,
+            sigma: 0.0,
+        };
+
+        let result: ModalCoreResult = solve_modal_core(
+            ModalMesh::P1(&mesh),
+            STEEL_DENSITY,
+            &steel(),
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &eigen_opts,
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "a pinned-only (under-constrained) solve must still return modes, \
+             not panic",
+        );
+        let has_rigid_warning = result.diagnostics.iter().any(|d| {
+            d.severity == Severity::Warning && d.message.starts_with("W_ModalRigidBodyMode")
+        });
+        assert!(
+            has_rigid_warning,
+            "expected a W_ModalRigidBodyMode Warning for the pinned-only model \
+             (measured: 4 surviving rigid-body modes — X translation, Y \
+             translation, in-plane Z-rotation and the bending-plane Y-rotation); \
+             got {:?}",
+            result.diagnostics,
+        );
+        // Amendment (review suggestion 5): BELOW the ceiling the degenerate
+        // no-eigenpairs path must NOT be taken, so the explanatory ceiling
+        // diagnostic must be absent. Without this the test would still pass if
+        // the ceiling were mis-set low enough to swallow this fixture too.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("exceeds the dense-fallback ceiling")),
+            "below the ceiling the graceful dense fallback must run — no \
+             ceiling diagnostic expected; got {:?}",
+            result.diagnostics,
+        );
+        // Amendment (review suggestion 2): and no no-modes Error either — modes
+        // WERE computed here, so the Error must stay scoped to the empty-spectrum
+        // outcome rather than firing on any under-constrained model.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ModalNoModesComputed")),
+            "modes were returned, so the no-modes Error must NOT fire; got {:?}",
+            result.diagnostics,
+        );
+    }
+
+    /// Task 6663 / review blocker (b): the singular-K fallback must not trade a
+    /// panic for an OOM.
+    ///
+    /// `solve_eigen_dense` allocates four `n × n` `Mat`s plus three `Col`s
+    /// (≈ 32·n² bytes) and costs O(n³), so the naive fix — "on Cholesky failure
+    /// just fall back to dense" — is harmless at the ~70-DOF scale of
+    /// [`pinned_only_single_face_does_not_panic`] but a resource bomb at real
+    /// mesh sizes (the reviewer's release repro reports a pivot failure at index
+    /// 25345; 32·25345² ≈ 20.6 GB, a guaranteed OOM, i.e. strictly WORSE than
+    /// today's panic, which the trampoline at least catches into `f1 = Undef`).
+    ///
+    /// This fixture is `n_free = 2548` (MEASURED: `n_nodes = 854`,
+    /// `n_dofs = 2562`, `n_constrained = 14`), comfortably above any defensible
+    /// dense-fallback ceiling, so it pins that the guarded path degrades
+    /// gracefully instead of densifying. Pre-fix it panics at the same
+    /// `eigensolve.rs:660` (`NonPositivePivot { index: 2542 }`) in ~221 ms — RED
+    /// as a fast panic, not as a hang.
+    ///
+    /// This is route 1 into the over-ceiling branch — `try_solve_eigen_shift_invert`
+    /// MEASURES K as non-SPD and returns `None`. It constrains 14 DOFs, so
+    /// `under_constrained` is false and `force_dense` never becomes true here;
+    /// `unconstrained_large_mesh_force_dense_still_respects_ceiling` covers
+    /// route 2. The shared contract lives in [`assert_over_ceiling_degenerate`].
+    ///
+    /// BCs come from [`z_only_x_min_bcs`] rather than `build_dirichlet_bcs` —
+    /// see that helper (amendment, review suggestion 1).
+    #[test]
+    fn pinned_only_large_mesh_does_not_exhaust_memory() {
+        let mesh = over_ceiling_mesh();
+        let bcs = z_only_x_min_bcs(&mesh);
+        let n_free = 3 * mesh.nodes.len() - bcs.len();
+        assert!(
+            n_free > 2000,
+            "fixture must be large enough that a dense fallback would be \
+             unacceptable; got n_free = {n_free}",
+        );
+        assert!(
+            bcs.iter().all(|b| b.dof % 3 == 2),
+            "route 1 needs a Z-only set: K_free must be SINGULAR while ≥ 6 DOFs \
+             are constrained, so that force_dense stays FALSE and the branch is \
+             reached by measurement rather than by the count guard",
+        );
+
+        assert_over_ceiling_degenerate(&mesh, &bcs, "route 1: measured non-SPD K_free");
+    }
+
+    /// Task 6663 / review suggestion 4: the OTHER route into the degenerate
+    /// no-eigenpairs branch — `force_dense == true` — must hit the same ceiling.
+    ///
+    /// [`solve_generalized_eigen`] can reach the over-ceiling branch two ways,
+    /// and its doc advertises both:
+    ///
+    ///   1. `try_solve_eigen_shift_invert` measures K as non-SPD and returns
+    ///      `None`. That is what `pinned_only_large_mesh_does_not_exhaust_memory`
+    ///      exercises.
+    ///   2. `force_dense` short-circuits the factorization attempt entirely
+    ///      (constrained DOFs < `RIGID_BODY_DOFS`, the common no-supports error).
+    ///      The doc claims routing this through the SAME ceiling "closes a
+    ///      pre-existing hazard for free: before task 6663, a no-supports model
+    ///      on a large mesh set `force_dense` and walked straight into the dense
+    ///      allocation".
+    ///
+    /// Route 2 was the untested one. An EMPTY BC set on the same 1.0 m mesh gives
+    /// 0 constrained DOFs (so `force_dense` is true) and n_free far above the
+    /// ceiling — precisely the `force_dense && n > DENSE_FALLBACK_MAX_DIM` corner.
+    /// Without this test, a regression that restored `if force_dense { dense }`
+    /// AHEAD of the ceiling check would reinstate the resource bomb silently:
+    /// every existing test either sits below the ceiling or arrives via route 1.
+    #[test]
+    fn unconstrained_large_mesh_force_dense_still_respects_ceiling() {
+        let mesh = over_ceiling_mesh();
+
+        // No supports at all: 0 constrained DOFs => `under_constrained` (and so
+        // `force_dense`) is true, which is what distinguishes this from the
+        // pinned-only fixture above.
+        let bcs: Vec<DirichletBc> = Vec::new();
+
+        assert_over_ceiling_degenerate(&mesh, &bcs, "route 2: force_dense (no supports)");
+    }
+
+    // -----------------------------------------------------------------------
+    // β (#7259): a σ that lands on an eigenvalue of the modal pencil
+    // -----------------------------------------------------------------------
+
+    /// β (#7259): a σ landing ON an eigenvalue of the pencil comes back from
+    /// [`solve_generalized_eigen`] as a RETURNED, typed outcome — not a panic,
+    /// and not folded into `singular_k_over_ceiling`.
+    ///
+    /// # The arm is reachable from ordinary `.ri` input
+    ///
+    /// Each link re-checked against this tree rather than assumed:
+    ///
+    /// - `ModalOptions` declares `param sigma : Real = 0.0` as a deliberately
+    ///   UNCONSTRAINED, user-settable parameter
+    ///   (`crates/reify-compiler/stdlib/modal_analysis.ri`, whose sibling note
+    ///   records the "explicitly NOT constrained" discipline);
+    /// - [`extract_eigen_knobs`] returns any FINITE user value verbatim — pinned
+    ///   by `extract_eigen_knobs_reads_fields_and_falls_back`, which asserts
+    ///   `(7, 1e-7, 50, 2.5)` for a `sigma: 2.5` input;
+    /// - that value is written straight into the `EigenSolverOptions` literal
+    ///   [`run_modal_analysis`] builds, and reaches [`solve_generalized_eigen`]
+    ///   with NO clamping anywhere on the path.
+    ///
+    /// Before this diff the Lanczos path IGNORED σ, so the plumbed value was
+    /// inert and the arm really was unreachable — which is what the "unreachable
+    /// today" comment this diff deletes recorded, correctly, at the time. β makes
+    /// σ live on that path, and a live σ turns a dead field into a reachable
+    /// failure.
+    ///
+    /// The value SHAPE matters too: a `.ri` integer literal (`sigma: 2`) arrives
+    /// as `Value::Int` and falls back to 0.0 — the trap
+    /// `buckling_option_unsupported.rs` already pins for the sibling knob — so
+    /// the reachable surface is a Real literal such as `sigma: 2.5`, which is the
+    /// shape the knobs test uses and the shape a user actually writes.
+    #[test]
+    fn shift_landing_on_an_eigenvalue_is_returned_not_panicked() {
+        const N: usize = 80;
+        let (k, m) = laplacian_pencil(N);
+        let opts = EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-10,
+            max_iters: 1000,
+            // Exactly λ₃, computed in f64, so `K − σM` is genuinely singular
+            // rather than merely ill-conditioned.
+            sigma: laplacian_lambda(N, 3),
+        };
+        // K is SPD, so `KNotSpd` cannot fire and confound the result; and
+        // n = 80 > max(64, 2·n_modes) = 64, so the small-model dense arm — which
+        // forms no `K − σM` at all, and on which C6 is satisfied vacuously — is
+        // genuinely bypassed.
+        assert!(
+            N > 64.max(2 * opts.n_modes),
+            "the fixture must bypass the small-model dense arm, or it tests \
+             nothing about the shifted factorization",
+        );
+
+        let outcome = solve_generalized_eigen(&k, &m, opts.clone(), false);
+
+        // One assertion, two claims — which is the point of the sum type. It
+        // must NAME the offending σ (so the caller can say WHICH shift was
+        // refused), and it must not be `SingularKOverCeiling`, which δ (#7261)
+        // forbids here by name: that fault's remedy is "add supports", and this
+        // model's supports are perfectly fine.
+        assert_eq!(
+            outcome.fault,
+            ModalSolveFault::ShiftAtEigenvalue(opts.sigma),
+            "a refused shift must be carried out of band as its own fault",
+        );
+
+        // The degenerate result itself: this branch computed nothing, and says so
+        // rather than handing back a plausible-looking spectrum.
+        assert!(
+            outcome.result.eigenvalues.is_empty(),
+            "a refused shift must yield NO eigenpairs; got {:?}",
+            outcome.result.eigenvalues,
+        );
+        assert_eq!(outcome.result.n_converged, 0);
+        assert!(!outcome.result.converged);
+        assert_eq!(
+            outcome.result.shift, opts.sigma,
+            "the degenerate result must still report the σ that was attempted",
+        );
+        assert!(
+            outcome.result.shift_skipped_modes,
+            "no spectrum was computed here, so C5 forbids ESTABLISHING `false` — \
+             the conservative answer is the only one this branch has evidence for",
+        );
+    }
+
+    /// The step-14 pencil wrapped in the smallest [`ModalAssembly`] that
+    /// [`eigensolve_modal`] accepts, so the refusal can be driven through the
+    /// DIAGNOSTIC-PRODUCING path and not only through the solver call.
+    ///
+    /// `eigensolve_modal` reads `K`/`M` over `3·n_nodes` DOFs and projects out
+    /// the constrained ones, so the free block is sized backwards from the pencil
+    /// wanted: 29 nodes → 87 DOFs, minus the 7 TRAILING DOFs the BCs pin →
+    /// `n_free = 80`. The free block of a tridiagonal matrix under a trailing
+    /// constraint set is its leading principal submatrix, so `K_free` is exactly
+    /// `tridiag(−1, 2, −1)` at 80 and `M_free` exactly `I` — the closed form
+    /// `λ_k = 2(1 − cos(kπ/81))` survives the projection intact, which is what
+    /// still lets σ be placed exactly on λ₃.
+    ///
+    /// SEVEN constrained DOFs, not six: `n_free = 80` needs `n_dofs ≡ 0 (mod 3)`
+    /// and 87 is the smallest such size above 86. Any count ≥ `RIGID_BODY_DOFS`
+    /// would do — what matters is that `under_constrained` stays FALSE, because
+    /// the cheap no-supports fast path would otherwise set `force_dense` and
+    /// bypass the shifted factorization entirely, leaving the fixture testing
+    /// nothing.
+    fn laplacian_modal_assembly() -> (ModalAssembly, Vec<DirichletBc>) {
+        laplacian_modal_assembly_sized(29, 80)
+    }
+
+    /// [`laplacian_modal_assembly`] at a caller-chosen size, so a test can pick
+    /// which DISPATCH ARM of [`solve_generalized_eigen`] it exercises — the two
+    /// arms compute `shift_skipped_modes` by structurally different predicates
+    /// (absence-based and exact on the dense arm, Cholesky/LU-based and
+    /// conservative on the Lanczos arm), so one arm's coverage is not the
+    /// other's.
+    ///
+    /// The constraint set is always the TRAILING `n_dofs − n_free` DOFs, which
+    /// keeps `K_free` the leading principal submatrix of the tridiagonal and so
+    /// keeps the closed form [`laplacian_lambda`]`(n_free, k)` exact.
+    fn laplacian_modal_assembly_sized(
+        n_nodes: usize,
+        n_free: usize,
+    ) -> (ModalAssembly, Vec<DirichletBc>) {
+        let n_dofs = 3 * n_nodes;
+        let (k_full, m_full) = laplacian_pencil(n_dofs);
+        let bcs: Vec<DirichletBc> = (n_free..n_dofs)
+            .map(|dof| DirichletBc { dof, value: 0.0 })
+            .collect();
+        assert!(
+            n_dofs - bcs.len() == n_free && bcs.len() >= 6,
+            "the fixture must leave n_free = {n_free} free DOFs while keeping \
+             `under_constrained` false",
+        );
+        let assembly = ModalAssembly {
+            mass_matrix_norm: frobenius_norm(&m_full),
+            stiffness_matrix_norm: frobenius_norm(&k_full),
+            k_full,
+            m_full,
+            n_nodes,
+        };
+        (assembly, bcs)
+    }
+
+    /// β (#7259): a σ on an eigenvalue reaches the AUTHOR as an `Error`, and as
+    /// neither of the two diagnoses that would be confidently wrong.
+    ///
+    /// The out-of-band carrier from step-15 is invisible until something says
+    /// so, and an empty mode set that raises nothing is a SILENT WRONG ANSWER:
+    /// every frequency reads `Undef` (stdlib `first_frequency` is
+    /// `result.modes[0].frequency`, and an out-of-bounds index is `Undef`) while
+    /// `errors.is_empty()` still passes. That is the failure
+    /// `E_ModalNoModesComputed` was itself introduced to close, so the refusal is
+    /// not optional polish.
+    ///
+    /// # The negative half is the point
+    ///
+    /// `W_ModalRigidBodyMode` and `E_ModalNoModesComputed` both tell an author to
+    /// "add supports that remove all six rigid-body modes"; `W_ModalConvergence`
+    /// tells them to "raise max_iters/tol or lower n_modes". This model's
+    /// supports are fine and its budget is ample — its only fault is where σ was
+    /// placed — so each of the three is a confidently wrong remedy, which is
+    /// exactly what δ (#7261) forbids by name. Asserting only the positive half
+    /// would pass on an implementation that emitted the new Error ALONGSIDE all
+    /// three, which is the likeliest way to get this subtly wrong.
+    ///
+    /// # Severity, not wording
+    ///
+    /// The refusal must be an `Error`: INV-SF-2 (`error-severity-exits-nonzero`)
+    /// is what makes `reify eval` exit non-zero, and a refusal that exits 0 is
+    /// not a refusal. The assertions key on the message PREFIX plus the attached
+    /// `DiagnosticCode` — the convention the file's existing
+    /// `message.starts_with("E_ModalNoModesComputed")` assertions already follow
+    /// — never on the full prose, which δ will extend.
+    #[test]
+    fn shift_on_an_eigenvalue_refuses_without_blaming_the_supports() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 3);
+        let eigen_opts = EigenSolverOptions {
+            n_modes: 2,
+            tol: 1e-10,
+            max_iters: 1000,
+            sigma,
+        };
+
+        let result = eigensolve_modal(&assembly, [0.0, 0.0, 1.0], &bcs, &eigen_opts);
+
+        let errors: Vec<&Diagnostic> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a refused shift must raise EXACTLY ONE Error — the refusal itself, \
+             and none of the under-constrained diagnoses; got {:?}",
+            result.diagnostics,
+        );
+        let refusal = errors[0];
+        assert!(
+            refusal.message.starts_with("E_ShiftAtEigenvalue:"),
+            "the refusal must carry the E_ShiftAtEigenvalue prefix consumers key \
+             on; got {:?}",
+            refusal.message,
+        );
+        assert!(
+            refusal.message.contains(&sigma.to_string()),
+            "the refusal must NAME the offending σ = {sigma} so the author knows \
+             which shift to move; got {:?}",
+            refusal.message,
+        );
+        assert_eq!(
+            refusal.code,
+            Some(reify_core::DiagnosticCode::ShiftAtEigenvalue),
+            "the refusal must carry the code α minted for exactly this consumer, \
+             so a machine reader need not parse the prose; got {:?}",
+            refusal.code,
+        );
+        assert_eq!(
+            refusal.severity,
+            Severity::Error,
+            "INV-SF-2: a refusal that exits 0 is not a refusal",
+        );
+
+        // The negative half.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("W_ModalRigidBodyMode")),
+            "this model's supports are fine — σ's placement is the fault — so no \
+             rigid-body diagnosis may fire; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ModalNoModesComputed")),
+            "the no-modes Error tells an author to add supports, which is the \
+             wrong remedy for a misplaced σ; got {:?}",
+            result.diagnostics,
+        );
+        // The THIRD wrong remedy, and the easiest to ship by accident: a refused
+        // solve also has `converged == false`, so the convergence-shortfall
+        // warning would otherwise fire beside the refusal and advise "raise
+        // max_iters/tol or lower n_modes" — advice that cannot help a σ sitting
+        // on an eigenvalue, and that contradicts the refusal standing next to it.
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("W_ModalConvergence")),
+            "a refused solve is not a PARTIAL one, and none of max_iters/tol/\
+             n_modes is the remedy for a misplaced σ; got {:?}",
+            result.diagnostics,
+        );
+
+        // σ = 0 CONTROL, same fixture: the refusal must be specific to where σ
+        // was put, not raised by every shifted-capable solve.
+        let control = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                sigma: 0.0,
+                ..eigen_opts
+            },
+        );
+        assert!(
+            !control
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ShiftAtEigenvalue")),
+            "σ = 0 on the same pencil is a healthy solve; got {:?}",
+            control.diagnostics,
+        );
+        assert!(
+            !control.frequencies.is_empty(),
+            "the control must actually solve, or it cannot witness that the \
+             refusal is about σ rather than about the fixture",
+        );
+    }
+
+    /// Every `W_ShiftSkippedModes` diagnostic on a modal result, keyed on the
+    /// typed code rather than on prose — the convention this file's existing
+    /// shift assertions already follow.
+    fn shift_skipped_warnings(result: &ModalCoreResult) -> Vec<&Diagnostic> {
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::ShiftSkippedModes))
+            .collect()
+    }
+
+    /// δ (#7261): the shift-provenance warning must not stand beside a solve
+    /// that returned NOTHING.
+    ///
+    /// `solve_generalized_eigen` sets `shift_skipped_modes` from
+    /// `conservative_shift_provenance(sigma)` — i.e. `sigma != 0.0` — on the
+    /// refused branch, because that branch computed no spectrum and C5 forbids
+    /// ESTABLISHING `false` without evidence. So the flag is `true` here while
+    /// the result holds ZERO eigenpairs.
+    ///
+    /// Emitting "the result is a window around sigma" beside "the solve returned
+    /// nothing" is a confidently wrong statement about a result that does not
+    /// exist — the same defect class as `W_ModalConvergence` standing beside the
+    /// refusal and advising "raise max_iters", which β already fences off. The
+    /// gate therefore keys on the FAULT, not on the flag and not on σ.
+    ///
+    /// The `E_ShiftAtEigenvalue` half is asserted too, so this test cannot pass
+    /// by the refusal itself having regressed into a silent success.
+    #[test]
+    fn shift_skipped_modes_is_not_claimed_beside_a_refused_solve() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 3);
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            result.frequencies.is_empty(),
+            "the premise of this test is a solve that returned nothing; got {:?}",
+            result.frequencies,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ShiftAtEigenvalue)),
+            "the refusal must still be raised, or this test passes for the wrong \
+             reason; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "a refused solve holds no eigenpairs, so it cannot be described as a \
+             window around σ; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): σ = 0 can never raise the shift-provenance warning.
+    ///
+    /// `shift_provenance_from_factorization` and `conservative_shift_provenance`
+    /// both start from `sigma != 0.0`, so the flag is unconditionally `false` on
+    /// an unshifted solve. Pins that the warning is about WHERE σ was put, not
+    /// raised by every shift-capable solve — and asserts the control actually
+    /// solved, since a silent empty result would witness nothing.
+    #[test]
+    fn shift_skipped_modes_is_silent_at_sigma_zero() {
+        let (assembly, bcs) = laplacian_modal_assembly();
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma: 0.0,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "the control must actually solve, or it witnesses nothing",
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "an unshifted solve skips nothing by construction; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): THE DISCRIMINATING NEGATIVE — σ ≠ 0 below the first mode is
+    /// silent.
+    ///
+    /// With `0 < σ < λ₁`, `K − σM` stays positive definite, so Cholesky
+    /// SUCCEEDS and `shift_provenance_from_factorization` ESTABLISHES `false`
+    /// from real evidence rather than defaulting to it. Nothing was skipped:
+    /// the returned set is still the bottom of the spectrum.
+    ///
+    /// A naive `if sigma != 0.0` emission would wrongly fire here. This test is
+    /// what pins that δ READS the C5 flag rather than re-deriving a rule of its
+    /// own from σ, and it is the guard rail that keeps the fault gate from being
+    /// written too wide.
+    #[test]
+    fn shift_skipped_modes_is_silent_for_a_shift_below_the_first_mode() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = laplacian_lambda(N_FREE, 1) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "a shift below λ₁ is a healthy solve and must return modes; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "no eigenvalue lies between 0 and σ = {sigma}, so nothing was \
+             skipped; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// δ (#7261): the positive case at unit granularity, independent of the FEA
+    /// fixture.
+    ///
+    /// σ placed strictly BETWEEN λ₃ and λ₄ with `n_modes = 2` makes `K − σM`
+    /// indefinite: Cholesky fails, LU wins, and
+    /// `shift_provenance_from_factorization` reports `true` — while the solve
+    /// still returns modes, so there is a real result to describe as a window.
+    /// The midpoint keeps σ off both eigenvalues, so this exercises the skipped
+    /// path rather than β's refusal.
+    #[test]
+    fn shift_skipped_modes_warns_once_for_a_shift_above_the_first_mode() {
+        const N_FREE: usize = 80;
+        let (assembly, bcs) = laplacian_modal_assembly();
+        let sigma = (laplacian_lambda(N_FREE, 3) + laplacian_lambda(N_FREE, 4)) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert!(
+            !result.frequencies.is_empty(),
+            "this is a SUCCESSFUL shifted solve — the window it returns is the \
+             thing the warning describes; got {:?}",
+            result.diagnostics,
+        );
+
+        let warnings = shift_skipped_warnings(&result);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "a skipped-mode window must be reported EXACTLY once; got {:?}",
+            result.diagnostics,
+        );
+        assert_eq!(
+            warnings[0].severity,
+            Severity::Warning,
+            "inspecting a band around σ is legitimate, so this stays advisory",
+        );
+        assert!(
+            warnings[0].message.starts_with("W_ShiftSkippedModes:"),
+            "consumers key on the prefix, not the prose; got {:?}",
+            warnings[0].message,
+        );
+        assert!(
+            warnings[0].message.contains(&sigma.to_string()),
+            "the warning must NAME σ = {sigma} so a reader never has to infer \
+             which shift produced the window; got {:?}",
+            warnings[0].message,
+        );
+    }
+
+    /// Amendment (suggestion 1): the window claim is gated on a RESULT THAT
+    /// EXISTS, over the whole input cube.
+    ///
+    /// Asserted on [`shift_window_is_reportable`] directly, for the same reason
+    /// [`rigid_body_mode_diagnostic`] is: one corner — `fault == None` with a
+    /// `true` flag and ZERO modes — is not reachable through `eigensolve_modal`
+    /// today, because `try_solve_eigen_shift_invert` folds a zero-converged
+    /// shifted solve into `ShiftAtEigenvalue` (`shift_is_numerically_singular`
+    /// answers `true` for an empty eigenvalue list). MEASURED: every starved
+    /// shifted solve reachable from here — σ ∈ {5, 10, 10², 10⁴, 10⁸} on the
+    /// n_free = 80 pencil at `tol = 1e-300, max_iters = 1` — came back carrying
+    /// `E_ShiftAtEigenvalue`, never an empty success.
+    ///
+    /// Driving the predicate directly is therefore the only way to pin that
+    /// corner, and pinning it is the point: it is what makes the emptiness test
+    /// survive #7617 splitting that refusal's two causes, after which the corner
+    /// goes live. The two REACHABLE empty results keep their own end-to-end
+    /// tests below.
+    #[test]
+    fn shift_window_is_reportable_only_for_a_non_empty_result_at_no_fault() {
+        let faults = [
+            ModalSolveFault::None,
+            ModalSolveFault::SingularKOverCeiling,
+            ModalSolveFault::ShiftAtEigenvalue(2.5),
+        ];
+        for flag in [false, true] {
+            for fault in faults {
+                for n_modes_returned in [0_usize, 1, 7] {
+                    let expected =
+                        flag && fault == ModalSolveFault::None && n_modes_returned > 0;
+                    assert_eq!(
+                        shift_window_is_reportable(flag, fault, n_modes_returned),
+                        expected,
+                        "flag = {flag}, fault = {fault:?}, modes = {n_modes_returned}: \
+                         a window claim is legitimate ONLY when the C5 flag is set, \
+                         nothing faulted, and there is a mode set to describe",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Amendment (suggestion 3): the OTHER empty-at-σ≠0 result — the
+    /// over-ceiling degenerate return — is suppressed too.
+    ///
+    /// `solve_generalized_eigen`'s last arm sets `shift_skipped_modes` from
+    /// `conservative_shift_provenance(σ)` exactly as the refusal does, so the
+    /// flag is `true` here while the result holds no eigenpairs. This is the arm
+    /// where the suppression matters MOST: it already pushes a
+    /// `W_ModalRigidBodyMode` AND an `E_ModalNoModesComputed`, both saying "add
+    /// supports", so a leaked window claim would stack a third, contradictory
+    /// remedy on top of them.
+    ///
+    /// Driven with fewer than `RIGID_BODY_DOFS` constrained DOFs (which sets
+    /// `force_dense`) above [`DENSE_FALLBACK_MAX_DIM`], the two conditions that
+    /// arm requires. Two-sided like its refusal sibling: the Error is asserted
+    /// PRESENT so this cannot pass by the degenerate return having regressed
+    /// into a silent success.
+    #[test]
+    fn shift_skipped_modes_is_not_claimed_beside_an_over_ceiling_result() {
+        // 350 nodes → 1050 free DOFs > DENSE_FALLBACK_MAX_DIM = 1024, with ZERO
+        // constrained DOFs so `under_constrained` (< 6) sets `force_dense`.
+        const N_NODES: usize = 350;
+        let n_dofs = 3 * N_NODES;
+        assert!(
+            n_dofs > DENSE_FALLBACK_MAX_DIM,
+            "the fixture must sit ABOVE the dense-fallback ceiling",
+        );
+        let (k_full, m_full) = laplacian_pencil(n_dofs);
+        let assembly = ModalAssembly {
+            mass_matrix_norm: frobenius_norm(&m_full),
+            stiffness_matrix_norm: frobenius_norm(&k_full),
+            k_full,
+            m_full,
+            n_nodes: N_NODES,
+        };
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &[],
+            &EigenSolverOptions {
+                n_modes: 2,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma: 1.5,
+            },
+        );
+
+        assert!(
+            result.frequencies.is_empty(),
+            "the premise of this test is a degenerate return with no modes; got {:?}",
+            result.frequencies,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("E_ModalNoModesComputed")),
+            "the over-ceiling refusal must still be raised, or this test passes \
+             for the wrong reason; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            shift_skipped_warnings(&result).is_empty(),
+            "this result holds no eigenpairs and already carries an \"add \
+             supports\" remedy; a window claim would be a third, contradictory \
+             one; got {:?}",
+            shift_skipped_warnings(&result),
+        );
+    }
+
+    /// Amendment (suggestion 4): the DENSE arm's provenance reaches the warning
+    /// too.
+    ///
+    /// The two dispatch arms compute `shift_skipped_modes` by structurally
+    /// different predicates — the dense arm's
+    /// `any_eigenvalue_skipped_between_zero_and_shift` is ABSENCE-based and
+    /// exact, the Lanczos arm's `shift_provenance_from_factorization` is
+    /// Cholesky/LU-based and conservative. Every other test here (and the
+    /// committed `.ri` fixture pair, deliberately sized to n_free = 504) routes
+    /// to the Lanczos arm, so without this one the dense half of the emission is
+    /// wired but unwitnessed.
+    ///
+    /// `n_free = 63 ≤ max(64, 2·n_modes)` takes the small-model dense arm before
+    /// any factorization is attempted. σ between λ₃ and λ₄ with `n_modes = 2`
+    /// selects {λ₃, λ₄} and leaves λ₁, λ₂ inside `(0, σ)` and ABSENT — exactly
+    /// the condition that predicate tests.
+    #[test]
+    fn shift_skipped_modes_warns_once_on_the_dense_path() {
+        const N_NODES: usize = 23;
+        const N_FREE: usize = 63;
+        const N_MODES: usize = 2;
+        assert!(
+            N_FREE <= 64.max(2 * N_MODES),
+            "the fixture must take the SMALL-MODEL DENSE arm, or it witnesses \
+             the same Lanczos predicate every other test already covers",
+        );
+        let (assembly, bcs) = laplacian_modal_assembly_sized(N_NODES, N_FREE);
+        let sigma = (laplacian_lambda(N_FREE, 3) + laplacian_lambda(N_FREE, 4)) / 2.0;
+
+        let result = eigensolve_modal(
+            &assembly,
+            [0.0, 0.0, 1.0],
+            &bcs,
+            &EigenSolverOptions {
+                n_modes: N_MODES,
+                tol: 1e-10,
+                max_iters: 1000,
+                sigma,
+            },
+        );
+
+        assert_eq!(
+            result.frequencies.len(),
+            N_MODES,
+            "the dense arm returns the whole spectrum and selects from it, so \
+             this is a SUCCESSFUL solve with a real window to describe; got {:?}",
+            result.diagnostics,
+        );
+        let warnings = shift_skipped_warnings(&result);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "λ₁ and λ₂ lie in (0, σ) and are absent from the selected set, so \
+             the dense path's exact predicate must report the window EXACTLY \
+             once; got {:?}",
+            result.diagnostics,
+        );
+        assert!(
+            warnings[0].message.contains(&sigma.to_string()),
+            "the warning must NAME σ = {sigma} on this arm too; got {:?}",
+            warnings[0].message,
+        );
+    }
+
+    /// The exact σ = 0 rendering of [`rigid_body_mode_diagnostic`], as every
+    /// existing caller and assertion reads it today. Any change to
+    /// `RIGID_BODY_OMEGA_TOL`, to the `{omega:.3e}` / `{tol:.1e}` formats or to
+    /// the clause order moves this string, which is the point.
+    const RIGID_BODY_MESSAGE_AT_SIGMA_ZERO: &str =
+        "W_ModalRigidBodyMode: mode 0 has near-zero angular frequency \
+         ω = 0.000e0 rad/s (≤ 1.0e0); the model \
+         may be under-constrained (rigid-body or spurious mode).";
+
+    /// δ (#7261): the UNSHIFTED rigid-body message does not move.
+    ///
+    /// Asserted as full equality rather than by prefix: this is a regression
+    /// floor for every existing consumer of the unshifted path, and step-8's
+    /// optional shift clause must be strictly additive.
+    #[test]
+    fn rigid_body_diagnostic_at_sigma_zero_is_unchanged() {
+        let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, 0.0);
+        assert_eq!(
+            d.message, RIGID_BODY_MESSAGE_AT_SIGMA_ZERO,
+            "the σ = 0 rendering is today's, byte for byte",
+        );
+    }
+
+    /// δ (#7261): at σ ≠ 0, "add supports" must not be the standing remedy.
+    ///
+    /// MEASURED on the `shift_invert_modal_*` fixture geometry: with σ set to
+    /// that model's own λ₁ (13996484663.660404), `reify eval` returns
+    /// `f1 = 0 Hz` and emits the rigid-body warning above. The model's supports
+    /// are perfectly fine — the zero mode is a spurious artifact of a
+    /// near-singular `K − σM` — so the σ-blind loop hands the author a remedy
+    /// that is wrong for a fault entirely about WHERE σ was put. That is the
+    /// confidently-wrong-diagnosis class this leaf is forbidden to create, and
+    /// it is reachable only because β + δ made σ live.
+    ///
+    /// The `W_ModalRigidBodyMode:` prefix and the leading clause are KEPT — β's
+    /// negative assertions and consumer grouping keys depend on them — and the
+    /// shift note is APPENDED. The appended prose itself is not asserted, only
+    /// that σ is named in it: the remedy's wording is free to improve.
+    #[test]
+    fn rigid_body_diagnostic_at_a_shifted_solve_names_the_shift() {
+        let sigma = 13996484663.660404_f64;
+        let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, sigma);
+
+        assert!(
+            d.message.starts_with("W_ModalRigidBodyMode:"),
+            "the prefix is a consumer grouping key and must survive; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.starts_with(RIGID_BODY_MESSAGE_AT_SIGMA_ZERO),
+            "the shift note must EXTEND the one template, not replace it — two \
+             templates for one condition drift; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.contains(&sigma.to_string()),
+            "the appended clause must NAME σ = {sigma}, or the author cannot tell \
+             which shift to move; got {:?}",
+            d.message,
+        );
+        assert!(
+            d.message.len() > RIGID_BODY_MESSAGE_AT_SIGMA_ZERO.len(),
+            "σ ≠ 0 must say strictly MORE than σ = 0; got {:?}",
+            d.message,
+        );
+    }
+
+    /// δ (#7261): severity and code are unchanged at both shifts.
+    ///
+    /// This stays the advisory it is, and α minted exactly THREE codes for this
+    /// PRD — `ShiftSkippedModes`, `ShiftAtEigenvalue` and
+    /// `FirstModeNotInShiftedResult`. This is none of them; do not invent a
+    /// fourth.
+    #[test]
+    fn rigid_body_diagnostic_stays_an_uncoded_warning_at_every_shift() {
+        for sigma in [0.0, 13996484663.660404_f64] {
+            let d = rigid_body_mode_diagnostic(0, 0.0, 1.0, sigma);
+            assert_eq!(
+                d.severity,
+                Severity::Warning,
+                "σ = {sigma}: this stays advisory",
+            );
+            assert_eq!(d.code, None, "σ = {sigma}: no fourth code is minted here");
+        }
+    }
+
     /// Build a minimal `ElasticMaterial`-shaped `Value::StructureInstance` with
     /// the usual elastic fields, optionally carrying a `density` scalar. Mirrors
     /// the runtime material shape the trampoline reads (cf. buckling's
@@ -3935,6 +6626,34 @@ mod tests {
             fields: fields.into_iter().collect(),
         }))
     }
+
+    /// [`material_with_density`] plus a `loss_factor`, i.e. a material that
+    /// conforms to `trait Damped` (materials_fea.ri, task #6877) — the input
+    /// `MaterialDamping` requires. `Steel_AISI_1045`'s real η is 0.0006.
+    ///
+    /// Kept separate from [`material_with_density`] rather than adding an
+    /// `Option` param to it: every existing caller of that helper is asserting
+    /// behaviour for a material that does NOT conform to `Damped`, which is a
+    /// meaningful state (it is the B8 rejection case), so widening it would
+    /// blur exactly the distinction task #6878 turns on.
+    fn damped_material(eta: f64) -> Value {
+        let Value::StructureInstance(mut data) = material_with_density(Some(STEEL_DENSITY)) else {
+            unreachable!("material_with_density returns a StructureInstance")
+        };
+        data.type_name = "Steel_AISI_1045".to_string();
+        data.fields.insert("loss_factor".to_string(), Value::Real(eta));
+        Value::StructureInstance(data)
+    }
+
+    /// The plan every descriptor that contributes NO damping resolves to
+    /// (`Absent` / `NoDamping`, and the `Unsupported` degrade). Named once so
+    /// the B4 "pre-#6878 descriptors are byte-identical" assertions read as one
+    /// claim rather than three coincident struct literals.
+    const UNDAMPED_PLAN: ModalDampingPlan = ModalDampingPlan {
+        zeta_material: 0.0,
+        alpha: 0.0,
+        beta: 0.0,
+    };
 
     /// Assert the density-guard short-circuit: the returned outcome is a
     /// `Completed` carrying (a) an `Error` diagnostic whose message starts
@@ -4047,14 +6766,42 @@ mod tests {
         )
     }
 
+    /// A `PinnedSupport { target }` instance — same field shape as
+    /// [`fixed_support`], differing ONLY in `type_name`, which is exactly why
+    /// `support_targets` has to read the kind off `type_name` (task 6663).
+    fn pinned_support(target: &str) -> Value {
+        struct_instance(
+            "PinnedSupport",
+            vec![("target".to_string(), Value::String(target.to_string()))],
+        )
+    }
+
     /// A `RayleighDamping { alpha, beta }` instance — the damped shape
-    /// `extract_damping` discriminates by `type_name`.
+    /// [`classify_damping`] discriminates by `type_name`.
+    ///
+    /// Fields are DIMENSIONED (`Frequency`, `Time`) to match both the stdlib
+    /// declaration (task #6093) and what the migrated corpus evaluates to, so
+    /// these fixtures cannot pass on a shape real input no longer produces.
+    /// `read_scalar_si` stays deliberately tolerant of bare `Real`; gating it
+    /// belongs to docs/prds/v0_6/dimension-checked-readers.md.
     fn rayleigh_damping(alpha: f64, beta: f64) -> Value {
         struct_instance(
             "RayleighDamping",
             vec![
-                ("alpha".to_string(), Value::Real(alpha)),
-                ("beta".to_string(), Value::Real(beta)),
+                (
+                    "alpha".to_string(),
+                    Value::Scalar {
+                        si_value: alpha,
+                        dimension: DimensionVector::FREQUENCY,
+                    },
+                ),
+                (
+                    "beta".to_string(),
+                    Value::Scalar {
+                        si_value: beta,
+                        dimension: DimensionVector::TIME,
+                    },
+                ),
             ],
         )
     }
@@ -4062,6 +6809,123 @@ mod tests {
     /// Assemble a `ModalOptions`-shaped instance from the given fields.
     fn modal_options(fields: Vec<(String, Value)>) -> Value {
         struct_instance("ModalOptions", fields)
+    }
+
+    /// Amendment (review suggestion 3): the shared fixture every
+    /// `build_dirichlet_bcs_*` unit test used to re-declare verbatim — the same
+    /// 20 × 50 × 100 mm beam mesh, and the same "wrap these supports in a
+    /// `ModalOptions` and collect the emitted `dof`s" closure.
+    ///
+    /// Four tests carried byte-identical copies of that prologue, so a change to
+    /// the options shape or to the mesh had to be made in four places. Hoisting
+    /// it also makes the mesh a single documented choice rather than a repeated
+    /// literal: `build_beam_mesh` derives `nx` from `length / height`, so these
+    /// extents give a short, thick beam (nx = 1, nz = 6) whose x_min / x_max /
+    /// y_min faces all carry many nodes and SHARE corner nodes — which is what
+    /// makes the dedup and superset assertions real signals.
+    struct BcFixture {
+        mesh: BeamMesh,
+        length: f64,
+        width: f64,
+        height: f64,
+    }
+
+    impl BcFixture {
+        fn new() -> Self {
+            let length = 0.02_f64;
+            let width = 0.05_f64;
+            let height = 0.1_f64;
+            Self {
+                mesh: build_beam_mesh(length, width, height),
+                length,
+                width,
+                height,
+            }
+        }
+
+        fn n_nodes(&self) -> usize {
+            self.mesh.nodes.len()
+        }
+
+        /// The DOF indices [`build_dirichlet_bcs`] constrains for `supports`,
+        /// wrapped in `ModalOptions.boundary_conditions` exactly as the
+        /// trampoline presents them.
+        fn dof_set(&self, supports: Vec<Value>) -> HashSet<usize> {
+            let opts = modal_options(vec![(
+                "boundary_conditions".to_string(),
+                Value::List(supports),
+            )]);
+            build_dirichlet_bcs(
+                &opts,
+                &self.mesh.nodes,
+                self.length,
+                self.width,
+                self.height,
+            )
+            .bcs
+            .iter()
+            .map(|b| b.dof)
+            .collect()
+        }
+
+        /// The `I_ModalPinnedFaceRealization` messages [`build_dirichlet_bcs`]
+        /// emits for `supports`, in emission order.
+        fn realization_notes(&self, supports: Vec<Value>) -> Vec<String> {
+            let opts = modal_options(vec![(
+                "boundary_conditions".to_string(),
+                Value::List(supports),
+            )]);
+            build_dirichlet_bcs(
+                &opts,
+                &self.mesh.nodes,
+                self.length,
+                self.width,
+                self.height,
+            )
+            .diagnostics
+            .into_iter()
+            .inspect(|d| {
+                assert_eq!(
+                    d.severity,
+                    Severity::Info,
+                    "a BC-realization note must be advisory, never a Warning/Error: {d:?}",
+                );
+            })
+            .map(|d| d.message)
+            .collect()
+        }
+
+        fn on_x_min(&self, n: usize) -> bool {
+            self.mesh.nodes[n][0] <= BC_FIXTURE_EPS
+        }
+
+        fn on_x_max(&self, n: usize) -> bool {
+            self.mesh.nodes[n][0] >= self.length - BC_FIXTURE_EPS
+        }
+
+        /// Either beam-axis end face.
+        fn on_end(&self, n: usize) -> bool {
+            self.on_x_min(n) || self.on_x_max(n)
+        }
+
+        fn on_y_min(&self, n: usize) -> bool {
+            self.mesh.nodes[n][1] <= BC_FIXTURE_EPS
+        }
+    }
+
+    /// Coordinate tolerance for the face predicates above — the same `1e-9` the
+    /// production selector in `per_face_bcs` uses.
+    const BC_FIXTURE_EPS: f64 = 1e-9;
+
+    /// Node `n` has all three translational DOFs constrained (a full clamp).
+    fn clamped(set: &HashSet<usize>, n: usize) -> bool {
+        set.contains(&(3 * n)) && set.contains(&(3 * n + 1)) && set.contains(&(3 * n + 2))
+    }
+
+    /// Node `n` has ONLY its transverse (Z) DOF constrained — impossible under a
+    /// full clamp, so this is the discriminator between the two realizations.
+    fn z_only(set: &HashSet<usize>, n: usize) -> bool {
+        set.contains(&(3 * n + 2)) && !set.contains(&(3 * n)) && !set.contains(&(3 * n + 1))
     }
 
     /// A `Length` scalar (SI metres), as the trampoline reads geometry inputs.
@@ -4105,6 +6969,90 @@ mod tests {
         assert_eq!(extract_eigen_knobs(&Value::Undef), (10, 1e-9, 200, 0.0));
     }
 
+    /// δ (#7261): the λ-space σ read must not silently become 0.0 for a value
+    /// shape a user actually writes.
+    ///
+    /// A `Real`-typed `.ri` param does not arrive as one Rust variant. A
+    /// literal `sigma: 2` arrives as [`Value::Int`], and a value that has been
+    /// through the dimensional machinery arrives as a DIMENSIONLESS
+    /// [`Value::Scalar`] — the shape the `tolerated` idiom in
+    /// [`extract_loss_factor`] exists for, one knob up in this same file.
+    /// Reading only [`Value::Real`] drops both to the default, which is the
+    /// silent-drop class this PRD exists to close (`buckling.rs` documents and
+    /// handles exactly this trap for the sibling knob, and β's own rustdoc
+    /// records it by name).
+    ///
+    /// A FREQUENCY-dimensioned `Scalar` is deliberately NOT honored — see the
+    /// case below.
+    ///
+    /// Every row also asserts the other three knobs, so the widening is provably
+    /// scoped to σ: the table is over the σ shape ONLY, with `n_modes`/`tol`/
+    /// `max_iters` held at fixed non-default values that must come back
+    /// unchanged.
+    #[test]
+    fn extract_eigen_knobs_sigma_value_shapes() {
+        /// The three non-σ knobs, held at non-default values so a regression in
+        /// their handling cannot hide behind a default.
+        fn with_sigma(sigma: Option<Value>) -> Value {
+            let mut fields = vec![
+                ("n_modes".to_string(), Value::Int(7)),
+                ("tol".to_string(), Value::Real(1e-7)),
+                ("max_iters".to_string(), Value::Int(50)),
+            ];
+            if let Some(sigma) = sigma {
+                fields.push(("sigma".to_string(), sigma));
+            }
+            modal_options(fields)
+        }
+        let dimensionless = |si_value: f64| Value::Scalar {
+            si_value,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+
+        let cases: Vec<(&str, Option<Value>, f64)> = vec![
+            // The regression floor: the shape that already worked.
+            ("Real", Some(Value::Real(2.5)), 2.5),
+            // A `.ri` integer literal `sigma: 2`. RED before the widening.
+            ("Int", Some(Value::Int(2)), 2.0),
+            // A dimensionless Scalar, NEGATIVE: `ModalOptions` declares σ
+            // "explicitly NOT constrained" because a negative shift targets the
+            // negative side of the spectrum, so the sign must round-trip rather
+            // than being clamped away. RED before the widening.
+            ("Scalar<dimensionless>", Some(dimensionless(-1.5)), -1.5),
+            // REFUSED, and the default is the right answer. That shape is
+            // #6097's future `shift_frequency : Frequency` surface; reading
+            // 300 Hz as λ = 300 would be a silent 4π²-and-square error —
+            // strictly WORSE than dropping the value, because a wrong shift
+            // returns a plausible-looking spectrum from the wrong band.
+            // Converting it here would also duplicate #6097's scope and
+            // manufacture the INV-AD-4 angle crossing this branch deliberately
+            // does not have.
+            (
+                "Scalar<frequency>",
+                Some(Value::Scalar {
+                    si_value: 300.0,
+                    dimension: DimensionVector::FREQUENCY,
+                }),
+                0.0,
+            ),
+            // The finite guard survives the widening: an infinite or NaN σ
+            // would poison `K − σM`.
+            ("Real(inf)", Some(Value::Real(f64::INFINITY)), 0.0),
+            ("Real(NaN)", Some(Value::Real(f64::NAN)), 0.0),
+            // Existing fallbacks, unchanged.
+            ("absent", None, 0.0),
+        ];
+
+        for (label, sigma, expected) in cases {
+            assert_eq!(
+                extract_eigen_knobs(&with_sigma(sigma)),
+                (7, 1e-7, 50, expected),
+                "sigma shape {label}: expected σ = {expected} with the other three \
+                 knobs untouched",
+            );
+        }
+    }
+
     /// Amendment (suggestion 2): `extract_reference_direction` normalizes the
     /// vector and falls back to the bending default `[0,0,1]` for missing /
     /// zero-norm / non-struct inputs.
@@ -4135,78 +7083,980 @@ mod tests {
         assert_eq!(extract_reference_direction(&Value::Undef), [0.0, 0.0, 1.0]);
     }
 
-    /// Amendment (suggestion 2): `extract_damping` returns the Rayleigh
-    /// coefficients only for a `RayleighDamping` instance; `NoDamping`, a missing
-    /// field, and a non-struct all read as the undamped `(0, 0)`.
+    /// `read_scalar_si`'s BARE-`Value::Real` tolerance on the Rayleigh
+    /// coefficients, asserted through the PRODUCTION seam (task #6093
+    /// amendment; re-targeted onto `classify_damping` by the #6878 amendment
+    /// pass, which deleted the test-only `extract_damping` view this used to be
+    /// written against — a witness that pins a `#[cfg(test)]` helper cannot
+    /// detect a shipped-behaviour regression).
+    ///
+    /// Once the `rayleigh_damping` builder above migrated to dimensioned fields
+    /// — correctly, since real input no longer produces the bare shape —
+    /// nothing else in this crate exercised that arm, so an edit making the
+    /// reader reject a bare `Real` would have passed the whole in-crate suite
+    /// while the builder's docstring still claimed the tolerance was deliberate
+    /// and preserved. Tightening it is a decision owned by
+    /// `docs/prds/v0_6/dimension-checked-readers.md`; until that lands
+    /// deliberately, this is the witness.
+    ///
+    /// Scoped to exactly that: the classifier's discrimination between
+    /// `Rayleigh` / `NoDamping` / `Absent` is pinned once, by
+    /// `mechanism_modal_warns_on_unsupported_damping_descriptor`'s Case C, and
+    /// is deliberately not restated here.
     #[test]
-    fn extract_damping_discriminates_rayleigh_from_none() {
-        let damped = modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
-        assert_eq!(extract_damping(&damped), (0.5, 1e-6));
-
-        let nodamp = modal_options(vec![(
-            "damping".to_string(),
-            struct_instance("NoDamping", vec![]),
-        )]);
-        assert_eq!(extract_damping(&nodamp), (0.0, 0.0));
-
-        assert_eq!(extract_damping(&modal_options(vec![])), (0.0, 0.0));
-        assert_eq!(extract_damping(&Value::Undef), (0.0, 0.0));
-    }
-
-    /// Amendment (suggestion 2): `build_dirichlet_bcs` selects the pin-pin
-    /// realization iff BOTH beam-axis end faces are named, otherwise clamps the
-    /// named face(s).
-    #[test]
-    fn build_dirichlet_bcs_selects_pin_pin_vs_clamp() {
-        let length = 0.02_f64;
-        let width = 0.05_f64;
-        let height = 0.1_f64;
-        let mesh = build_beam_mesh(length, width, height);
-        let eps = 1e-9_f64;
-        let on_x_min = |n: usize| mesh.nodes[n][0] <= eps;
-        let on_end = |n: usize| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps;
-
-        // (a) Both x_min AND x_max named → pin-pin: some end-face node has ONLY
-        //     its Z DOF constrained (X and Y free) — impossible under a full
-        //     clamp, which constrains all three.
-        let pin_opts = modal_options(vec![(
-            "boundary_conditions".to_string(),
-            Value::List(vec![fixed_support("x_min"), fixed_support("x_max")]),
-        )]);
-        let pin_set: std::collections::HashSet<usize> =
-            build_dirichlet_bcs(&pin_opts, &mesh.nodes, length, width, height)
-                .iter()
-                .map(|b| b.dof)
-                .collect();
-        let z_only_end_node = (0..mesh.nodes.len()).any(|n| {
-            on_end(n)
-                && pin_set.contains(&(3 * n + 2))
-                && !pin_set.contains(&(3 * n))
-                && !pin_set.contains(&(3 * n + 1))
-        });
-        assert!(
-            z_only_end_node,
-            "pin-pin must leave an end-face node with only Z constrained"
+    fn classify_damping_tolerates_bare_real_rayleigh_coefficients() {
+        let dimensioned =
+            modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
+        assert_eq!(
+            classify_damping(&dimensioned),
+            DampingKind::Rayleigh {
+                alpha: 0.5,
+                beta: 1e-6
+            }
         );
 
-        // (b) Only x_min named → clamp: every x_min node has all three DOFs.
-        let clamp_opts = modal_options(vec![(
-            "boundary_conditions".to_string(),
-            Value::List(vec![fixed_support("x_min")]),
+        // Legacy bare-`Real` damping fields still read identically to the
+        // dimensioned shape — the reader is dimension-blind by construction.
+        let bare = modal_options(vec![(
+            "damping".to_string(),
+            struct_instance(
+                "RayleighDamping",
+                vec![
+                    ("alpha".to_string(), Value::Real(0.5)),
+                    ("beta".to_string(), Value::Real(1e-6)),
+                ],
+            ),
         )]);
-        let clamp_set: std::collections::HashSet<usize> =
-            build_dirichlet_bcs(&clamp_opts, &mesh.nodes, length, width, height)
-                .iter()
-                .map(|b| b.dof)
-                .collect();
-        let all_x_min_clamped = (0..mesh.nodes.len()).filter(|&n| on_x_min(n)).all(|n| {
-            clamp_set.contains(&(3 * n))
-                && clamp_set.contains(&(3 * n + 1))
-                && clamp_set.contains(&(3 * n + 2))
-        });
+        assert_eq!(
+            classify_damping(&bare),
+            classify_damping(&dimensioned),
+            "classify_damping must fold bare Value::Real fields to the same \
+             (alpha, beta) as the dimensioned Value::Scalar fields — \
+             read_scalar_si's tolerance is deliberate and is not this task's \
+             to tighten (docs/prds/v0_6/dimension-checked-readers.md)"
+        );
+    }
+
+    /// Task #6878 (PRD leaf β) step-5: `extract_loss_factor` reads the
+    /// per-material hysteretic loss factor η off a material value.
+    ///
+    /// ## Why this helper is deliberately NON-defensive
+    ///
+    /// Its neighbour [`extract_isotropic_material`] reads a MISSING field as
+    /// `0.0`, and that is correct there: the type-checker guarantees
+    /// `youngs_modulus` / `poisson_ratio` are present on any real
+    /// `ElasticMaterial`, so the floor is unreachable defensive scaffolding.
+    ///
+    /// Here the opposite is true and it is MEASURED, not assumed.
+    /// `modal_analysis(material : ElasticMaterial, …)`
+    /// (`crates/reify-compiler/stdlib/modal_analysis_fns.ri`) does NOT require
+    /// `Damped`, so a material with no `loss_factor` reaches the solver and the
+    /// compiler cannot catch it — a probe `structure def PlainSteel :
+    /// ElasticMaterial { … }` type-checks and evaluates clean today. The absence
+    /// of the field is therefore a real, reachable, AUTHOR-CAUSED condition, and
+    /// it IS the signal: it means "this material does not conform to `Damped`".
+    /// Folding it to `0.0` would reconstruct precisely the silent ζ = 0 that PRD
+    /// §C6 forbids, and would do it in the one place designed to prevent it.
+    ///
+    /// Hence `Option<f64>`, and hence the η = 0 case below: an explicitly
+    /// undamped CONFORMER (`loss_factor = 0.0` → `Some(0.0)`) must stay
+    /// distinguishable from a NON-conformer (`None`). A bare `f64` cannot carry
+    /// that distinction, and collapsing them is the single most likely way to
+    /// get this wrong.
+    ///
+    /// The numeric-spelling arms mirror [`read_scalar_si`]'s tolerated shapes:
+    /// `loss_factor : Real` is dimensionless, but a `Value::Scalar` spelling
+    /// must not be mis-read as absent. The rejection arms are what
+    /// `read_scalar_si` alone cannot give — its `_ => 0.0` floor is exactly the
+    /// behaviour that must NOT fire here, and its DIMENSION-BLINDNESS is the
+    /// second thing it cannot give: it takes `si_value` off any `Scalar`
+    /// whatsoever, so both sides of the dimension gate are asserted below
+    /// (DIMENSIONLESS accepted, PRESSURE rejected). Without the rejection arm a
+    /// dimensioned `loss_factor` would silently become ζ = η/2.
+    ///
+    /// RED before step-6: `extract_loss_factor` does not exist.
+    #[test]
+    fn extract_loss_factor_reads_conformers_and_rejects_non_conformers() {
+        /// A material-shaped instance carrying exactly the given `loss_factor`
+        /// value. `Steel_AISI_1045`'s real η is 0.0006 (materials_fea.ri).
+        fn material_with(loss_factor: Value) -> Value {
+            struct_instance(
+                "Steel_AISI_1045",
+                vec![("loss_factor".to_string(), loss_factor)],
+            )
+        }
+
+        // ── ACCEPTED: the numeric spellings a stdlib `Real` field can take ──
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Real(0.0006))),
+            Some(0.0006),
+            "a `Real` loss_factor — the shape Steel_AISI_1045 actually \
+             evaluates to — must read back exactly"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Int(0))),
+            Some(0.0),
+            "an `Int` loss_factor must read as a conforming material, not as \
+             absent"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Scalar {
+                si_value: 0.02,
+                dimension: DimensionVector::DIMENSIONLESS,
+            })),
+            Some(0.02),
+            "a dimensionless `Scalar` spelling must read as a conforming \
+             material — `loss_factor : Real` is dimensionless, but a Scalar \
+             spelling must not be mistaken for absence (mirrors \
+             read_scalar_si's tolerated shapes)"
+        );
+
+        // η = 0 IS A CONFORMER. This is the boundary most likely to be wrongly
+        // folded into the rejection: an explicitly undamped `Damped` material is
+        // a completely different author intent from a material that never
+        // declared a loss factor at all, even though both give ζ_material = 0.
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Real(0.0))),
+            Some(0.0),
+            "η = 0.0 is an explicitly UNDAMPED CONFORMER and must NOT collapse \
+             to None — a `Damped` material that declares zero loss is valid \
+             input, not a rejection"
+        );
+
+        // ── REJECTED: every shape that is not a usable loss factor ──────────
+        assert_eq!(
+            extract_loss_factor(&struct_instance(
+                "PlainSteel",
+                vec![
+                    ("youngs_modulus".to_string(), Value::Real(2.05e11)),
+                    ("poisson_ratio".to_string(), Value::Real(0.29)),
+                ],
+            )),
+            None,
+            "a StructureInstance with NO loss_factor field is the B8 case: an \
+             ElasticMaterial that does not conform to `Damped`. This is THE \
+             signal — it must be None, never Some(0.0)"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::String("0.02".to_string()))),
+            None,
+            "a present but non-numeric loss_factor must be None — \
+             read_scalar_si's `_ => 0.0` floor is precisely what must not fire \
+             here"
+        );
+        assert_eq!(
+            extract_loss_factor(&material_with(Value::Scalar {
+                si_value: 0.02,
+                dimension: DimensionVector::PRESSURE,
+            })),
+            None,
+            "a DIMENSIONED loss_factor must be None — `loss_factor : Real` is \
+             dimensionless, and read_scalar_si is dimension-blind, so an \
+             ungated Scalar arm would read 0.02 Pa straight through as η and \
+             fabricate ζ = 0.01 for it. The dimension gate is the fence"
+        );
+        assert_eq!(
+            extract_loss_factor(&Value::Undef),
+            None,
+            "a non-StructureInstance material value must be None"
+        );
+
+        // A hand-built value can carry a negative or non-finite η past the
+        // `constraint loss_factor >= 0` on `trait Damped` (that constraint is a
+        // CHECK-time gate on the author surface, not a runtime one). The
+        // trampoline must not propagate such a value into ζ = η/2, so it is
+        // rejected here rather than producing a negative or NaN damping ratio.
+        for bad in [-1e-6, -0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                extract_loss_factor(&material_with(Value::Real(bad))),
+                None,
+                "a negative or non-finite η ({bad}) must be rejected — \
+                 `trait Damped`'s `constraint loss_factor >= 0` is the \
+                 check-time gate, but the trampoline must not propagate a \
+                 negative or NaN ζ if a hand-built value slips past it"
+            );
+        }
+    }
+
+    /// Task #6878 (PRD leaf β) step-3: `classify_damping` gains its
+    /// `MaterialDamping` arm, and the arm carries the RECURSIVELY-classified
+    /// `extra` companion rather than a pre-flattened `(α, β)` pair.
+    ///
+    /// `MaterialDamping` selects the modal-strain-energy value source for
+    /// `Mode.damping_ratio`; its `extra : DampingDescriptor` slot is the
+    /// ADDITIVE companion (ζ = ζ_MSE + ζ_extra). Because that slot is
+    /// TRAIT-typed it accepts any refinement — including one this trampoline
+    /// does not implement, and including a nested `MaterialDamping`. Flattening
+    /// it at classification time would reproduce exactly the lossy-view defect
+    /// #6875 split this classifier out to fix: the producer could no longer tell
+    /// "the author declared no extra damping" from "the author declared an extra
+    /// descriptor we silently dropped". So the nested
+    /// descriptor is CARRIED, and every sub-case below asserts the carried
+    /// classification, never just the outer variant.
+    ///
+    /// The final arm asserts where the composition ACTUALLY happens: the
+    /// classifier carries the descriptor, and `plan_modal_damping` — the seam
+    /// `run_modal_analysis` consumes — is what turns it into the
+    /// (ζ_material, α, β) triple. Pinning that separates "the classifier
+    /// carries, it does not evaluate" from "the new variant accidentally leaked
+    /// its MSE term into the Rayleigh coefficients". (It was originally written
+    /// against the lossy `extract_damping` view; the #6878 amendment pass
+    /// deleted that `#[cfg(test)]` helper and re-targeted the claim here, since
+    /// a helper compiled out of the shipped build cannot witness a
+    /// shipped-behaviour regression.)
+    ///
+    /// RED before step-4: `DampingKind::Material` does not exist, so this does
+    /// not compile.
+    #[test]
+    fn classify_damping_material_arm_carries_recursive_extra() {
+        /// `MaterialDamping { … }` options value, from the `extra` field list.
+        fn material_options(extra: Vec<(String, Value)>) -> Value {
+            modal_options(vec![(
+                "damping".to_string(),
+                struct_instance("MaterialDamping", extra),
+            )])
+        }
+
+        // (i) `extra` ABSENT. The stdlib declares
+        // `param extra : DampingDescriptor = NoDamping()`, so a value that came
+        // through the author surface ALWAYS carries a `NoDamping`. This arm is
+        // therefore about a hand-built / malformed value, and the chosen mapping
+        // is asserted explicitly rather than left to inference: a missing field
+        // classifies as `Absent`, exactly as the outer wrapper maps a missing
+        // `damping` field. `Absent` and `NoDamping` are both silent and both
+        // contribute ζ_extra = 0, so nothing observable rides on which one this
+        // is — but the trampoline must not ASSUME a well-formed value, and an
+        // arm that silently invented `NoDamping` here would be claiming to have
+        // seen a default that was never written.
+        match classify_damping(&material_options(vec![])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::Absent,
+                "a MaterialDamping with NO `extra` field must classify its \
+                 companion as Absent — the trampoline must not assume the \
+                 stdlib default was materialized"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // (ii) `extra: NoDamping()` — the stdlib default, i.e. what every real
+        // author-surface `MaterialDamping()` actually carries.
+        match classify_damping(&material_options(vec![(
+            "extra".to_string(),
+            struct_instance("NoDamping", vec![]),
+        )])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::NoDamping,
+                "the stdlib `NoDamping()` default must classify as NoDamping \
+                 inside the Material arm"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // (iii) `extra: RayleighDamping(α, β)` — the composition case B7 pins
+        // at the author surface. The coefficients must survive classification
+        // intact, because the producer calls `rayleigh_damping_ratio` on them
+        // verbatim.
+        match classify_damping(&material_options(vec![(
+            "extra".to_string(),
+            rayleigh_damping(0.5, 1e-6),
+        )])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::Rayleigh {
+                    alpha: 0.5,
+                    beta: 1e-6
+                },
+                "a RayleighDamping in `extra` position must classify through \
+                 the SAME discriminator as one in top-level position, carrying \
+                 its (α, β) — the recursion is what guarantees that"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // (iv) `extra: <a refinement this trampoline does not implement>`. The
+        // nested descriptor is carried, never flattened away: its runtime
+        // type_name is what step-12's `W_ModalDampingUnsupportedExtra` names.
+        match classify_damping(&material_options(vec![(
+            "extra".to_string(),
+            struct_instance("HystereticDamping", vec![]),
+        )])) {
+            DampingKind::Material { extra } => assert_eq!(
+                *extra,
+                DampingKind::Unsupported("HystereticDamping".to_string()),
+                "an unimplemented descriptor in `extra` position must be \
+                 CARRIED as Unsupported(type_name), not flattened to \
+                 NoDamping — otherwise the producer cannot tell a declared-and- \
+                 dropped companion from an absent one (INV-SF-3)"
+            ),
+            other => panic!("expected Material, got {other:?}"),
+        }
+
+        // The classifier CARRIES; `plan_modal_damping` COMPOSES. The MSE term
+        // reaches `Mode.damping_ratio` as the plan's `zeta_material` — a
+        // separate channel from (α, β), which carry the `extra` companion's
+        // coefficients verbatim. The two must not be conflated: an edit that
+        // folded η/2 into `alpha` would still give the right ζ at one ω and the
+        // wrong ζ at every other, since only the Rayleigh half scales with ω.
+        let (plan, diagnostics) = plan_modal_damping(
+            &material_options(vec![("extra".to_string(), rayleigh_damping(0.5, 1e-6))]),
+            &damped_material(0.0006),
+        )
+        .expect("a MaterialDamping over a conforming Damped material must plan");
+        assert_eq!(
+            plan,
+            ModalDampingPlan {
+                zeta_material: 0.0003,
+                alpha: 0.5,
+                beta: 1e-6,
+            },
+            "MaterialDamping must compose as η/2 in `zeta_material` PLUS the \
+             `extra` companion's (α, β) — carried on separate channels, never \
+             flattened into one pair"
+        );
         assert!(
-            all_x_min_clamped,
+            diagnostics.is_empty(),
+            "a Rayleigh `extra` is fully honoured, so the plan must be silent; \
+             got {diagnostics:?}"
+        );
+    }
+
+
+    /// Task 6663: `build_dirichlet_bcs` realizes each named face independently
+    /// and KIND-AWARELY. Four cases over `build_beam_mesh` node coordinates:
+    ///
+    ///   (i)   two `PinnedSupport`s on x_min+x_max → pin-pin (some end-face node
+    ///         has ONLY its Z DOF constrained);
+    ///   (ii)  two `FixedSupport`s on x_min+x_max → clamped-clamped (EVERY node
+    ///         of BOTH end faces has all three DOFs, and NO end-face node is
+    ///         Z-only) — the defect this task fixes: this input used to return
+    ///         the bit-identical pin-pin set;
+    ///   (iii) one `FixedSupport` on x_min → the cantilever, unchanged;
+    ///   (iv)  `[FixedSupport("x_min"), PinnedSupport("x_max")]` → a genuine
+    ///         propped cantilever (x_min fully clamped, x_max Z-only).
+    ///
+    /// Supersedes `build_dirichlet_bcs_selects_pin_pin_vs_clamp`, which fed two
+    /// `fixed_support(...)` and asserted the pin-pin set — i.e. PINNED THE DEFECT.
+    #[test]
+    fn build_dirichlet_bcs_discriminates_support_kind() {
+        let f = BcFixture::new();
+        let (on_x_min, on_x_max, on_end) = (
+            |n: usize| f.on_x_min(n),
+            |n: usize| f.on_x_max(n),
+            |n: usize| f.on_end(n),
+        );
+        let dof_set = |supports: Vec<Value>| f.dof_set(supports);
+
+        // (i) Two PINNED supports naming both end faces → pin-pin: some end-face
+        //     node has ONLY its Z DOF constrained (X and Y free) — impossible
+        //     under a full clamp, which constrains all three.
+        let pin_pin = dof_set(vec![pinned_support("x_min"), pinned_support("x_max")]);
+        assert!(
+            (0..f.n_nodes()).any(|n| on_end(n) && z_only(&pin_pin, n)),
+            "pin-pin must leave an end-face node with only Z constrained",
+        );
+
+        // (ii) Two FIXED supports naming both end faces → clamped-clamped: every
+        //      node of BOTH end faces carries all three DOFs, and NO end-face
+        //      node is Z-only. Before task 6663 this input returned the pin-pin
+        //      set above verbatim (measured: an identical 391.049 Hz).
+        let fix_fix = dof_set(vec![fixed_support("x_min"), fixed_support("x_max")]);
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| on_end(n))
+                .all(|n| clamped(&fix_fix, n)),
+            "two FixedSupports must clamp all three DOFs on every node of BOTH end faces",
+        );
+        assert!(
+            !(0..f.n_nodes()).any(|n| on_end(n) && z_only(&fix_fix, n)),
+            "two FixedSupports must NOT degrade to the pin-pin realization \
+             (no end-face node may be Z-only)",
+        );
+
+        // (iii) One FixedSupport on x_min → the cantilever: every x_min node
+        //       fully clamped, no x_max node touched. Unchanged by task 6663.
+        let cantilever = dof_set(vec![fixed_support("x_min")]);
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| on_x_min(n))
+                .all(|n| clamped(&cantilever, n)),
             "clamp realization must constrain all three DOFs on every x_min node",
+        );
+        assert!(
+            !(0..f.n_nodes())
+                .filter(|&n| on_x_max(n) && !on_x_min(n))
+                .any(|n| (0..3).any(|a| cantilever.contains(&(3 * n + a)))),
+            "a lone x_min support must leave the x_max face entirely free",
+        );
+
+        // (iv) Mixed [Fixed(x_min), Pinned(x_max)] → a genuine propped
+        //      cantilever: x_min fully clamped, x_max Z-only (X/Y free).
+        let propped = dof_set(vec![fixed_support("x_min"), pinned_support("x_max")]);
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| on_x_min(n))
+                .all(|n| clamped(&propped, n)),
+            "propped cantilever must fully clamp every x_min node",
+        );
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| on_x_max(n) && !on_x_min(n))
+                .all(|n| z_only(&propped, n)),
+            "propped cantilever must constrain Z ONLY on the pinned x_max face",
+        );
+    }
+
+    /// Amendment (review suggestion 1): the pin-pin special case must never
+    /// DISCARD a support that names some other face.
+    ///
+    /// `[Pinned(x_min), Pinned(x_max), Fixed(y_min)]` satisfies the special
+    /// case's predicate (both end faces named, every end-face support pinned),
+    /// and the first cut of the task-6663 fix returned
+    /// `simply_supported_pin_pin_bcs(...)` wholesale from that branch — silently
+    /// throwing the `y_min` clamp away with no diagnostic, for a beam that is
+    /// pinned at both ends AND clamped on a side face. That is the same
+    /// silent-wrong-answer class as the original defect, only reached through
+    /// the `PinnedSupport` spelling instead of the `FixedSupport` one.
+    ///
+    /// The fix realizes the two END FACES by the special case and UNIONs the
+    /// per-face realization of every other support on top. Asserted as: the
+    /// three-support set is a strict SUPERSET of the plain pin-pin set (so the
+    /// simply-supported realization is bit-preserved — no anchor moved, nothing
+    /// dropped) that additionally clamps all three DOFs on every `y_min` node.
+    #[test]
+    fn build_dirichlet_bcs_pin_pin_special_case_does_not_discard_other_faces() {
+        let f = BcFixture::new();
+        let (on_y_min, on_end) = (|n: usize| f.on_y_min(n), |n: usize| f.on_end(n));
+        let dof_set = |supports: Vec<Value>| f.dof_set(supports);
+
+        let pin_pin = dof_set(vec![pinned_support("x_min"), pinned_support("x_max")]);
+        let pin_pin_plus_side = dof_set(vec![
+            pinned_support("x_min"),
+            pinned_support("x_max"),
+            fixed_support("y_min"),
+        ]);
+
+        // Fixture sanity: the y_min face exists and is not already fully covered
+        // by the pin-pin set, so "superset" below is a real signal.
+        assert!(
+            (0..f.n_nodes()).any(on_y_min),
+            "fixture must have y_min face nodes",
+        );
+
+        // (1) Nothing from the simply-supported realization is lost or moved.
+        assert!(
+            pin_pin.is_subset(&pin_pin_plus_side),
+            "adding a third support must not perturb the simply-supported \
+             realization; missing DOFs: {:?}",
+            pin_pin.difference(&pin_pin_plus_side).collect::<Vec<_>>(),
+        );
+
+        // (2) The third support is actually realized: every y_min node is fully
+        //     clamped. Pre-amendment this set was bit-identical to `pin_pin`.
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| on_y_min(n))
+                .all(|n| clamped(&pin_pin_plus_side, n)),
+            "the FixedSupport(\"y_min\") must clamp all three DOFs on every \
+             y_min node — the pin-pin special case must not discard it",
+        );
+        assert!(
+            pin_pin_plus_side.len() > pin_pin.len(),
+            "the three-support set must be strictly larger than the pin-pin set \
+             ({} vs {}) — an equal size means the y_min clamp was dropped",
+            pin_pin_plus_side.len(),
+            pin_pin.len(),
+        );
+
+        // (3) The end faces still read as simple supports, not clamps: some
+        //     end-face node off y_min keeps X and Y free.
+        assert!(
+            (0..f.n_nodes())
+                .any(|n| on_end(n) && !on_y_min(n) && z_only(&pin_pin_plus_side, n)),
+            "the end faces must stay simply supported (some off-y_min end-face \
+             node with only Z constrained)",
+        );
+    }
+
+    /// Amendment (review suggestion 2): a `PinnedSupport` realizes as a
+    /// transverse-only pin ONLY where the simply-supported BEAM idealization
+    /// applies — a beam-axis end face of a model that carries another support.
+    /// Everywhere else it clamps, matching `PinnedOnTetEquivalentToFixed`
+    /// (`reify-solver-elastic/src/shell_boundary.rs`) and the static path.
+    ///
+    /// Two configurations regress into ≈ 0 Hz mechanisms under an
+    /// unconditional Z-only rule, and both are pinned here:
+    ///
+    ///   (i)  `[Pinned("x_min")]` — a LONE support, whose Z-only realization
+    ///        leaves four rigid-body modes. Pre-6663 this returned the
+    ///        cantilever answer; the amendment restores that, so the set is
+    ///        asserted EQUAL to `[Fixed("x_min")]`'s.
+    ///   (ii) `[Pinned("y_min"), Pinned("y_max")]` — neither face is a beam end,
+    ///        so Z-pinning both leaves the beam free to slide axially. Both
+    ///        faces clamp instead.
+    ///
+    /// Case (iii), added by review suggestion 4, is the other side: the beam-end
+    /// pin that DOES realize as transverse-only, in the one shape the
+    /// no-mechanism argument depends on rather than merely illustrates —
+    /// `[Pinned("x_min"), Fixed("y_min")]`, where the second face is a non-end
+    /// face and must therefore be a FULL clamp for the model to be well posed.
+    ///
+    /// The propped case `[Fixed("x_min"), Pinned("x_max")]` (covered by
+    /// `build_dirichlet_bcs_discriminates_support_kind` case (iv)) is the
+    /// counterexample that keeps this scoping from collapsing into "Pinned
+    /// always clamps": there, x_max IS transverse-only.
+    #[test]
+    fn build_dirichlet_bcs_pins_transversely_only_on_a_supported_beam_end() {
+        let f = BcFixture::new();
+        let dof_set = |supports: Vec<Value>| f.dof_set(supports);
+
+        // (i) A lone PinnedSupport is the model's only restraint, so it must
+        //     fully clamp — bit-identical to the FixedSupport spelling, i.e.
+        //     the pre-6663 cantilever answer rather than a 4-mode mechanism.
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min")]),
+            dof_set(vec![fixed_support("x_min")]),
+            "a LONE PinnedSupport must clamp its face (PinnedOnTetEquivalentToFixed), \
+             not degrade the model to a transverse-only mechanism",
+        );
+
+        // (ii) Non-beam-axis pinned faces clamp too: Z-pinning y_min + y_max
+        //      would leave the beam free to slide along its own axis.
+        let side_pins = dof_set(vec![pinned_support("y_min"), pinned_support("y_max")]);
+        let side_clamps = dof_set(vec![fixed_support("y_min"), fixed_support("y_max")]);
+        assert_eq!(
+            side_pins, side_clamps,
+            "PinnedSupports on non-beam-axis faces must clamp all three DOFs",
+        );
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| f.on_y_min(n))
+                .all(|n| clamped(&side_pins, n)),
+            "every y_min node must carry all three DOFs",
+        );
+
+        // (iii) Amendment (review suggestion 4): `[Pinned("x_min"),
+        //       Fixed("y_min")]` — the third and last shape that can reach
+        //       `PinTransverse`, and the ONE the no-mechanism argument rests
+        //       entirely on. `build_dirichlet_bcs`'s body comment enumerates
+        //       three: the pin-pin special case (covered by
+        //       `build_dirichlet_bcs_discriminates_support_kind` case (i)), the
+        //       propped cantilever (case (iv)) and "an end pin plus a non-end
+        //       face, which always clamps" — this one, previously untested.
+        //
+        //       Both halves must hold TOGETHER. x_min being a bare Z pin is only
+        //       well posed because y_min removes the remaining rigid-body modes;
+        //       an edit to `face_realization` that made a non-end `Fixed` face
+        //       anything less than a full clamp would leave the model a
+        //       mechanism whose ≈ 0 Hz modes come back under a mere Warning,
+        //       with nothing else in this module red.
+        let end_pin_plus_side = dof_set(vec![pinned_support("x_min"), fixed_support("y_min")]);
+        let off_y_min_x_min: Vec<usize> = (0..f.n_nodes())
+            .filter(|&n| f.on_x_min(n) && !f.on_y_min(n))
+            .collect();
+        assert!(
+            !off_y_min_x_min.is_empty(),
+            "the fixture must have x_min nodes off the y_min edge for this case to say anything",
+        );
+        assert!(
+            off_y_min_x_min
+                .iter()
+                .all(|&n| z_only(&end_pin_plus_side, n)),
+            "every x_min node off y_min must be transverse-only (Z): a beam-end PinnedSupport \
+             in a model naming a second distinct face is the simply-supported idealization",
+        );
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| f.on_y_min(n))
+                .all(|n| clamped(&end_pin_plus_side, n)),
+            "every y_min node must be FULLY clamped — that is the only thing removing the \
+             rigid-body modes the transverse-only x_min pin leaves behind",
+        );
+    }
+
+    /// Amendment (review suggestion 1): the context-dependent `PinnedSupport`
+    /// realization must be VISIBLE, in both directions.
+    ///
+    /// [`face_realization`] decides what a pinned beam end constrains from
+    /// whether the model's supports name another distinct recognized face, so
+    /// naming or un-naming an unrelated support elsewhere on the body
+    /// re-realizes a face the author never edited. The DOF sets asserted
+    /// throughout this module pin that the decision is CORRECT; this pins that
+    /// it is REPORTED, so the author's only observable is not a frequency that
+    /// moved.
+    ///
+    /// Three realizations, three messages, and the pairing is what matters: the
+    /// same declaration `PinnedSupport("x_min")` reports "clamps all 3
+    /// translational DOFs" alone and "transverse (Z) pin" once a second face is
+    /// named. `FixedSupport` stays silent (its realization is unconditional).
+    #[test]
+    fn build_dirichlet_bcs_reports_context_dependent_pinned_realization() {
+        let f = BcFixture::new();
+        let notes = |supports: Vec<Value>| f.realization_notes(supports);
+
+        // (a) The flip's CLAMP side: a lone pinned beam end.
+        let lone = notes(vec![pinned_support("x_min")]);
+        assert_eq!(
+            lone.len(),
+            1,
+            "a lone pinned beam end must report exactly one realization note; got {lone:?}",
+        );
+        assert!(
+            lone[0].starts_with("I_ModalPinnedFaceRealization:")
+                && lone[0].contains("x_min")
+                && lone[0].contains("clamps all 3 translational DOFs"),
+            "the lone-face note must say the pin CLAMPED, and name the face: {:?}",
+            lone[0],
+        );
+
+        // (b) The flip's PIN side — the same declaration, one unrelated support
+        //     added on a face that is never mentioned again. This is the
+        //     silent-reinterpretation the note exists to make legible.
+        let flipped = notes(vec![pinned_support("x_min"), fixed_support("y_min")]);
+        assert_eq!(
+            flipped.len(),
+            1,
+            "only the PINNED face is explained; FixedSupport clamps unconditionally and needs \
+             no note. got {flipped:?}",
+        );
+        assert!(
+            flipped[0].contains("x_min") && flipped[0].contains("transverse (Z) pin"),
+            "adding an unrelated support must report x_min as a transverse pin: {:?}",
+            flipped[0],
+        );
+        assert!(
+            flipped[0].contains("y_min"),
+            "the transverse-pin note must name the SPECIFIC other face that triggered the \
+             realization (review suggestion 4) — not merely assert one exists, leaving the \
+             author to map that back onto their own declaration: {:?}",
+            flipped[0],
+        );
+        assert_ne!(
+            lone[0], flipped[0],
+            "the two realizations of the SAME declaration must not report identically — that \
+             is the whole point of the note",
+        );
+
+        // Amendment (review suggestion 1, optional cross-check): the note and
+        // the DOFs it describes must agree, because both are now read off the
+        // SAME `FaceCompany` rather than two separate derivations.
+        let flipped_dofs = f.dof_set(vec![pinned_support("x_min"), fixed_support("y_min")]);
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| f.on_x_min(n) && !f.on_y_min(n))
+                .all(|n| z_only(&flipped_dofs, n)),
+            "the model whose note says 'transverse (Z) pin' must be the model whose x_min \
+             DOF set is actually Z-only",
+        );
+
+        // (c) The pin-pin special case names both ends, and says the anchors are
+        //     what keeps it well posed.
+        let pin_pin = notes(vec![pinned_support("x_min"), pinned_support("x_max")]);
+        assert_eq!(
+            pin_pin.len(),
+            2,
+            "both pinned end faces must be explained; got {pin_pin:?}",
+        );
+        assert!(
+            pin_pin.iter().any(|m| m.contains("x_min"))
+                && pin_pin.iter().any(|m| m.contains("x_max"))
+                && pin_pin.iter().all(|m| m.contains("neutral-axis anchors")),
+            "the simply-supported notes must name both faces and the anchors: {pin_pin:?}",
+        );
+
+        // (d) Silence where there is nothing context-dependent to explain: an
+        //     all-Fixed model, and a pinned NON-end face (which always clamps).
+        assert!(
+            notes(vec![fixed_support("x_min"), fixed_support("x_max")]).is_empty(),
+            "FixedSupport realizations are unconditional and must emit no notes",
+        );
+        assert!(
+            notes(vec![pinned_support("y_min"), pinned_support("y_max")]).is_empty(),
+            "a PinnedSupport on a non-beam-axis face always clamps — no company-dependence, \
+             so no note",
+        );
+
+        // (e) One note per distinct FACE, not per support — the same `face_bound`
+        //     predicate the realization decision itself reads, so the message
+        //     can never disagree with the decision it describes.
+        let duplicated = notes(vec![pinned_support("x_min"), pinned_support("x_min")]);
+        assert_eq!(
+            duplicated.len(),
+            1,
+            "a duplicated support names ONE face and must produce ONE note; got {duplicated:?}",
+        );
+        assert_eq!(
+            duplicated[0], lone[0],
+            "a duplicated support is still a lone face, so it must report the CLAMP realization \
+             — matching `build_dirichlet_bcs_ignores_duplicate_face_targets`",
+        );
+    }
+
+    /// Amendment (review suggestion 3): a support that names NO recognized face
+    /// must not vote on another face's realization.
+    ///
+    /// `support_targets` collects every `StructureInstance` carrying a *string*
+    /// `target`, including the stdlib's own `param target : String = ""` default
+    /// and any typo'd or static-path name (`"root"`). Before this amendment
+    /// `build_dirichlet_bcs` counted those into `n_supports`, so
+    /// `[Pinned("x_min"), Fixed("")]` reached `face_realization` as a
+    /// TWO-support model and flipped x_min from a full clamp (a well-posed
+    /// cantilever, the pre-6663 answer) to a transverse-only Z pin — four
+    /// surviving rigid-body modes, reported under a mere Warning. That vote
+    /// now runs through [`face_company`]/[`face_bound`], the same predicate
+    /// `per_face_bcs` selects nodes with, so a support that can contribute no
+    /// DOF cannot reinterpret one either.
+    ///
+    /// Sibling exclusion, added later by review suggestion 1: face identity is
+    /// resolved by [`face_bound`], not by spelling, so a support DUPLICATING a
+    /// face already named is excluded on the same principle — it contributes
+    /// no NEW face to vote with. See
+    /// [`build_dirichlet_bcs_ignores_duplicate_face_targets`]. Between the two,
+    /// `PinTransverse` is unreachable for any singly-supported model.
+    ///
+    /// Asserted as set EQUALITY against the lone-`Fixed("x_min")` spelling —
+    /// the strongest available statement, since the extra support contributes
+    /// nothing and must therefore change nothing.
+    #[test]
+    fn build_dirichlet_bcs_ignores_supports_that_name_no_face() {
+        let f = BcFixture::new();
+        let dof_set = |supports: Vec<Value>| f.dof_set(supports);
+
+        let cantilever = dof_set(vec![fixed_support("x_min")]);
+        assert!(
+            !cantilever.is_empty(),
+            "the reference cantilever clamp must constrain something",
+        );
+
+        // The stdlib default `target : String = ""` — the spelling an author
+        // gets by writing a bare `FixedSupport()`.
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min"), fixed_support("")]),
+            cantilever,
+            "a support with the stdlib's empty default target selects no node, so it must \
+             not flip Pinned(x_min) from a clamp to a transverse-only pin",
+        );
+
+        // A typo / a static-path selector name that means nothing to the modal
+        // coordinate selector.
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min"), fixed_support("root")]),
+            cantilever,
+            "a support whose target names no recognized face must not change another \
+             face's realization",
+        );
+
+        // Symmetric guard on the pinned spelling of the non-selecting support,
+        // so the rule is about the TARGET, not about the kind that carries it.
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min"), pinned_support("nope")]),
+            cantilever,
+            "the exclusion is a property of the unrecognized target, not of the support kind",
+        );
+
+        // And the counterexample that keeps this from collapsing into "Pinned
+        // always clamps": a second support that DOES name a face still counts.
+        assert_ne!(
+            dof_set(vec![pinned_support("x_min"), fixed_support("x_max")]),
+            cantilever,
+            "a second support that names a RECOGNIZED face must still count toward the \
+             transverse-pin scoping",
+        );
+    }
+
+    /// Amendment (review suggestion 1): a support DUPLICATING a face another
+    /// support already names must not vote on that face's realization either.
+    ///
+    /// `[PinnedSupport("x_min"), PinnedSupport("x_min")]` is the ordinary
+    /// copy-paste authoring error, and it is the LAST input that could reach
+    /// [`FaceRealization::PinTransverse`] as a mechanism. The count in
+    /// [`build_dirichlet_bcs`] used to be over SUPPORTS, so the duplicate read as
+    /// a two-support model and flipped x_min from a full clamp to a Z-only pin —
+    /// a well-posed cantilever silently becoming a 4-rigid-body-mode mechanism
+    /// whose ≈ 0 Hz modes come back under a mere `W_ModalRigidBodyMode` Warning.
+    /// Resolving faces by their bound (via [`face_bound`], which identifies a
+    /// face by the coordinate bound it selects rather than by its spelling)
+    /// collapses the duplicate back to one face and restores the pre-6663 clamp.
+    ///
+    /// Asserted as set EQUALITY against the lone-`Fixed("x_min")` cantilever, the
+    /// same shape [`build_dirichlet_bcs_ignores_supports_that_name_no_face`] uses
+    /// for its sibling exclusion: the second support contributes no NEW face, so
+    /// it must change nothing.
+    ///
+    /// With this and the no-face exclusion in place, `PinTransverse` is
+    /// reachable only from a beam end plus a second DISTINCT face — always the
+    /// pin-pin special case, a propped cantilever, or an end pin beside a
+    /// fully-clamped non-end face. None of those is a mechanism, which is why
+    /// the mechanism fixtures in this module now build their singular BC sets by
+    /// hand rather than through the DSL.
+    #[test]
+    fn build_dirichlet_bcs_ignores_duplicate_face_targets() {
+        let f = BcFixture::new();
+        let dof_set = |supports: Vec<Value>| f.dof_set(supports);
+
+        let cantilever = dof_set(vec![fixed_support("x_min")]);
+        assert!(
+            !cantilever.is_empty(),
+            "the reference cantilever clamp must constrain something",
+        );
+
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min"), pinned_support("x_min")]),
+            cantilever,
+            "two PinnedSupports naming the SAME face name one face, so the model is \
+             still singly supported and must CLAMP — not degrade to a transverse-only \
+             mechanism",
+        );
+
+        // Same face, mixed spellings: `Fixed` clamps unconditionally, so this
+        // pins that the collapse is about face IDENTITY (via `face_bound`) and
+        // not about the pair of supports happening to be identical.
+        assert_eq!(
+            dof_set(vec![pinned_support("x_min"), fixed_support("x_min")]),
+            cantilever,
+            "a Pinned and a Fixed support naming the same face still name ONE face",
+        );
+
+        // Every duplicate node of the face is fully clamped, stated directly
+        // rather than only through the set equality above.
+        let dup = dof_set(vec![pinned_support("x_min"), pinned_support("x_min")]);
+        assert!(
+            (0..f.n_nodes())
+                .filter(|&n| f.on_x_min(n))
+                .all(|n| clamped(&dup, n)),
+            "every x_min node must carry all three DOFs under the duplicated support",
+        );
+        assert!(
+            !(0..f.n_nodes()).any(|n| f.on_x_min(n) && z_only(&dup, n)),
+            "no x_min node may be Z-only — that is the mechanism this closes",
+        );
+    }
+
+    /// Task 6980 (concern 1): the realization decision is face-LOCAL — it
+    /// reads only whether THIS face has company, never a model-wide tally.
+    /// This is invisible through `build_dirichlet_bcs` (see
+    /// `face_company_identifies_faces_by_bound` for why), so it is pinned
+    /// directly against [`face_realization`]'s full decision table.
+    ///
+    /// The `WithAnotherFace` payload (review suggestion 4) is irrelevant to
+    /// this decision — `face_realization` only matches the variant, never the
+    /// face it names — so every case below reuses the same placeholder value.
+    #[test]
+    fn face_realization_decides_from_its_own_faces_company() {
+        let with_another = FaceCompany::WithAnotherFace("y_min".to_string());
+        assert_eq!(
+            face_realization(DeclaredSupport::Pinned, "x_min", &FaceCompany::Alone),
+            FaceRealization::ClampAllDofs,
+            "a lone pinned beam end must clamp — a transverse-only pin alone is a mechanism",
+        );
+        assert_eq!(
+            face_realization(DeclaredSupport::Pinned, "x_min", &with_another),
+            FaceRealization::PinTransverse,
+            "a pinned beam end WITH another recognized face must pin transversely",
+        );
+        assert_eq!(
+            face_realization(DeclaredSupport::Pinned, "y_min", &with_another),
+            FaceRealization::ClampAllDofs,
+            "a non-beam-axis face clamps regardless of company — only a beam-axis end face \
+             is ever eligible for a transverse pin",
+        );
+        assert_eq!(
+            face_realization(DeclaredSupport::Fixed, "x_min", &FaceCompany::Alone),
+            FaceRealization::ClampAllDofs,
+            "FixedSupport clamps unconditionally when alone",
+        );
+        assert_eq!(
+            face_realization(DeclaredSupport::Fixed, "x_min", &with_another),
+            FaceRealization::ClampAllDofs,
+            "FixedSupport clamps unconditionally WithAnotherFace too — the kind, not the \
+             company, decides for Fixed",
+        );
+    }
+
+    /// Task 6980 (concern 1), narrowed by review suggestion 3: pins
+    /// `face_company` directly against every input shape its two call sites
+    /// can actually produce — `target` is always one of `targets` there (see
+    /// the precondition on [`face_company`]'s own doc).
+    ///
+    /// An earlier version of this test also asserted
+    /// `face_company("x_min", &[fixed_target("y_min")])` — i.e. asked about a
+    /// target that names no support of its own — as "the" proof that the
+    /// decision is face-local rather than a model-wide tally. Review
+    /// suggestion 3 pointed out that input violates the precondition above:
+    /// neither call site can construct it, so it discriminated between two
+    /// IMPLEMENTATIONS no caller can tell apart, not between two BEHAVIORS.
+    /// Dropped rather than kept as a documented precondition violation — the
+    /// cases below already cover everything a real `targets` list can put in
+    /// front of this function.
+    #[test]
+    fn face_company_identifies_faces_by_bound() {
+        let pinned_target = |t: &str| (DeclaredSupport::Pinned, t.to_string());
+        let fixed_target = |t: &str| (DeclaredSupport::Fixed, t.to_string());
+
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min")]),
+            FaceCompany::Alone,
+            "a lone support names no face OTHER than its own",
+        );
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min"), pinned_target("x_min")]),
+            FaceCompany::Alone,
+            "a duplicate names no face OTHER than the target's own — the ordinary \
+             copy-paste error must not flip a cantilever into a mechanism",
+        );
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min"), fixed_target("")]),
+            FaceCompany::Alone,
+            "an unrecognized/empty target names no face at all and cannot vote",
+        );
+        assert_eq!(
+            face_company("x_min", &[pinned_target("x_min"), fixed_target("y_min")]),
+            FaceCompany::WithAnotherFace("y_min".to_string()),
+            "y_min is a distinct recognized face from x_min's own, and the company names it",
+        );
+        assert_eq!(
+            face_company("y_min", &[pinned_target("x_min"), fixed_target("y_min")]),
+            FaceCompany::WithAnotherFace("x_min".to_string()),
+            "the same list, decided for the OTHER target: x_min is company for y_min too",
+        );
+    }
+
+    /// Task 6663: the per-face realization must emit each DOF at most once.
+    ///
+    /// A corner node shared by two named faces is visited once per face, so the
+    /// un-deduped union emits several `DirichletBc`s for the same `dof`. That is
+    /// harmless for the modal solve (`solve_modal_core`'s `is_constrained` map is
+    /// idempotent) but the same shape debug-PANICS in
+    /// `reify-solver-elastic/src/boundary/dirichlet.rs:175-188`
+    /// ("duplicate DirichletBc dof"), so the emitted vector must be unique.
+    #[test]
+    fn build_dirichlet_bcs_emits_no_duplicate_dofs() {
+        let f = BcFixture::new();
+
+        // x_min and y_min share an entire edge of nodes, so the un-deduped
+        // union emits those nodes' DOFs twice. This test reads the RAW
+        // `Vec<DirichletBc>` rather than [`BcFixture::dof_set`], because a
+        // `HashSet` of dofs is exactly what would hide the duplicates.
+        let opts = modal_options(vec![(
+            "boundary_conditions".to_string(),
+            Value::List(vec![fixed_support("x_min"), fixed_support("y_min")]),
+        )]);
+        let bcs = build_dirichlet_bcs(&opts, &f.mesh.nodes, f.length, f.width, f.height).bcs;
+
+        let mut seen = HashSet::new();
+        let dups: Vec<usize> = bcs
+            .iter()
+            .filter(|b| !seen.insert(b.dof))
+            .map(|b| b.dof)
+            .collect();
+        assert!(
+            dups.is_empty(),
+            "build_dirichlet_bcs emitted {} duplicate dof(s) out of {} constraints \
+             for a face set sharing corner nodes: {:?}",
+            dups.len(),
+            bcs.len(),
+            dups,
         );
     }
 
@@ -4358,6 +8208,1010 @@ mod tests {
             "true finite nearest node must win over both +infinity and \
              -infinity node coordinates"
         );
+    }
+
+    /// Task #6878 (PRD leaf β) step-11: close the INV-SF-3 hole the recursive
+    /// `extra` slot opens.
+    ///
+    /// `param extra : DampingDescriptor` is TRAIT-typed, so it accepts any
+    /// refinement — including one the trampoline does not implement, and
+    /// including a nested `MaterialDamping`. `plan_modal_damping` maps both to
+    /// `(alpha, beta) = (0, 0)`, which without a diagnostic would silently drop a
+    /// DECLARED additive intent: exactly the shape #6875 was filed to eliminate
+    /// one level up, reintroduced one level down.
+    ///
+    /// A WARNING and not an Error, deliberately. The MSE half IS honoured
+    /// (ζ = η/2 is applied and the solve completes), so this is a PARTIAL
+    /// degrade, not a failure — the same family as
+    /// `W_MechanismModalUnsupportedDamping`, which also reports "your declared
+    /// intent is not applied" over a solve that otherwise succeeded. Contrast
+    /// `E_ModalDampingMaterialNotDamped`, an Error precisely because there the
+    /// declared intent cannot be honoured AT ALL.
+    ///
+    /// The nested-`MaterialDamping` case warns IDENTICALLY rather than recursing
+    /// into a second η/2 term: additive composition of a descriptor with itself is
+    /// not a defined semantics in PRD §C5, and silently doubling ζ would be a
+    /// worse answer than declining with a warning.
+    ///
+    /// The SILENCE half is what makes the warning a signal rather than noise:
+    /// `extra: NoDamping()` (the stdlib default, i.e. what every real
+    /// author-surface `MaterialDamping()` carries) and `extra: RayleighDamping`
+    /// must be completely silent, and the code must not fire at all for
+    /// `NoDamping` / `RayleighDamping` / absent TOP-level descriptors.
+    ///
+    /// RED before step-12: the code does not exist, and step-8 drops the nested
+    /// descriptor silently.
+    #[test]
+    fn trampoline_warns_when_material_dampings_extra_is_unsupported() {
+        const CODE: &str = "W_ModalDampingUnsupportedExtra";
+
+        /// Solve the shared damped fixture under `damping`, returning the modes
+        /// and diagnostics.
+        fn solve(damping: Option<Value>) -> (Vec<Value>, Vec<Diagnostic>) {
+            let mut option_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(d) = damping {
+                option_fields.push(("damping".to_string(), d));
+            }
+            let value_inputs = vec![
+                damped_material(0.0006),
+                length_scalar(0.02),
+                length_scalar(0.05),
+                length_scalar(0.1),
+                modal_options(option_fields),
+            ];
+            let outcome = solve_modal_analysis_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected a Completed outcome");
+            };
+            let Value::StructureInstance(data) = &result else {
+                panic!("expected a ModalResult StructureInstance, got {result:?}")
+            };
+            let Some(Value::List(modes)) = data.fields.get("modes") else {
+                panic!("ModalResult.modes must be a List")
+            };
+            (modes.clone(), diagnostics)
+        }
+
+        /// `MaterialDamping { extra }`.
+        fn material_with_extra(extra: Value) -> Value {
+            struct_instance("MaterialDamping", vec![("extra".to_string(), extra)])
+        }
+
+        // ── THE WARNING. Two nested descriptors that cannot be honoured. ─────
+        for (label, extra, expected_name) in [
+            (
+                "an unimplemented refinement",
+                struct_instance("HystereticDamping", vec![]),
+                "HystereticDamping",
+            ),
+            (
+                "a nested MaterialDamping",
+                struct_instance("MaterialDamping", vec![]),
+                "MaterialDamping",
+            ),
+        ] {
+            let (modes, diagnostics) = solve(Some(material_with_extra(extra)));
+
+            // (i) The MSE half IS honoured — a partial degrade, not a failure.
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "{label}: an unsupported `extra` must NOT abort the solve — the \
+                 MSE half is applied and only the companion is dropped; got \
+                 {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+            let expected_zeta = 0.0006 / 2.0;
+            for (i, mode) in modes.iter().enumerate() {
+                let Value::StructureInstance(m) = mode else {
+                    panic!("{label}: mode {i} must be a Mode StructureInstance")
+                };
+                let Some(Value::Real(zeta)) = m.fields.get("damping_ratio") else {
+                    panic!("{label}: mode {i} damping_ratio must be a Real")
+                };
+                assert!(
+                    (zeta - expected_zeta).abs() / expected_zeta < 1e-9,
+                    "{label}: mode {i} ζ must be the MSE half alone, η/2 = \
+                     {expected_zeta} (the `extra` companion contributes 0); got \
+                     {zeta}"
+                );
+            }
+
+            // (ii) EXACTLY ONE coded Warning, NAMING the nested descriptor.
+            let coded: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+                .collect();
+            assert_eq!(
+                coded.len(),
+                1,
+                "{label}: expected exactly one {CODE} Warning — zero means the \
+                 declared additive intent was dropped SILENTLY, which is the \
+                 INV-SF-3 shape this task exists to close; got {diagnostics:?}"
+            );
+            assert!(
+                coded[0].message.contains(expected_name),
+                "{label}: the warning must NAME the nested descriptor's runtime \
+                 type so the author can locate the dropped companion; got: {}",
+                coded[0].message
+            );
+        }
+
+        // ── THE SILENCE HALF. ───────────────────────────────────────────────
+        for (label, damping) in [
+            (
+                "extra: NoDamping (the stdlib default)",
+                Some(material_with_extra(struct_instance("NoDamping", vec![]))),
+            ),
+            (
+                "extra: RayleighDamping",
+                Some(material_with_extra(rayleigh_damping(0.0, 1e-4))),
+            ),
+            (
+                "bare MaterialDamping (no extra field)",
+                Some(struct_instance("MaterialDamping", vec![])),
+            ),
+            (
+                "top-level NoDamping",
+                Some(struct_instance("NoDamping", vec![])),
+            ),
+            ("top-level RayleighDamping", Some(rayleigh_damping(0.0, 1e-4))),
+            ("absent damping field", None),
+        ] {
+            let (modes, diagnostics) = solve(damping);
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "{label}: must emit NO {CODE} diagnostic — the warning is a \
+                 signal only if the honourable cases are silent; got \
+                 {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+        }
+    }
+
+    /// Amendment (reviewer suggestion 3): the FEA path must degrade LOUDLY for a
+    /// TOP-LEVEL descriptor it does not implement, not only for a nested one.
+    ///
+    /// `run_mechanism_modal` has warned here since #6875
+    /// (`W_MechanismModalUnsupportedDamping`), and step-12 above made the FEA
+    /// path warn for an unhonourable `MaterialDamping.extra`. That left the FEA
+    /// path mute for the TOP-level case alone — warning one level down while
+    /// staying silent one level up, which is both the INV-SF-3 shape and an
+    /// inconsistency with its own sibling producer. The numbers are unchanged
+    /// (ζ = 0, full modes list, no Error); only the silence is.
+    ///
+    /// A WARNING, not an Error, because the solve genuinely succeeds — the
+    /// frequencies are correct and only the damping intent is dropped. Same
+    /// family as `W_ModalDampingUnsupportedExtra` and
+    /// `W_MechanismModalUnsupportedDamping`; contrast
+    /// `E_ModalDampingMaterialNotDamped`, an Error because there the declared
+    /// intent cannot be honoured at all.
+    ///
+    /// The code is deliberately NOT a prefix of `W_ModalDampingUnsupportedExtra`
+    /// (and vice versa), so the `contains`-based assertions this file uses cannot
+    /// conflate the two altitudes; the silence half below asserts exactly that
+    /// separation in both directions.
+    #[test]
+    fn trampoline_warns_when_the_top_level_damping_descriptor_is_unsupported() {
+        const CODE: &str = "W_ModalDampingUnsupportedDescriptor";
+        const EXTRA_CODE: &str = "W_ModalDampingUnsupportedExtra";
+
+        /// Solve the shared damped fixture under `damping`, returning the modes
+        /// and diagnostics. `None` omits the field entirely (the `Absent` case).
+        fn solve(damping: Option<Value>) -> (Vec<Value>, Vec<Diagnostic>) {
+            let mut option_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(d) = damping {
+                option_fields.push(("damping".to_string(), d));
+            }
+            let value_inputs = vec![
+                damped_material(0.0006),
+                length_scalar(0.02),
+                length_scalar(0.05),
+                length_scalar(0.1),
+                modal_options(option_fields),
+            ];
+            let outcome = solve_modal_analysis_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected a Completed outcome");
+            };
+            let Value::StructureInstance(data) = &result else {
+                panic!("expected a ModalResult StructureInstance, got {result:?}")
+            };
+            let Some(Value::List(modes)) = data.fields.get("modes") else {
+                panic!("ModalResult.modes must be a List")
+            };
+            (modes.clone(), diagnostics)
+        }
+
+        // ── THE WARNING. ────────────────────────────────────────────────────
+        let unsupported = struct_instance(
+            "HystereticDamping",
+            vec![("loss_factor".to_string(), Value::Real(0.02))],
+        );
+        let (modes, diagnostics) = solve(Some(unsupported));
+
+        // (i) The solve still SUCCEEDS — this is a degrade, not a failure.
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "an unimplemented top-level descriptor must NOT abort the solve — \
+             the frequencies are correct and only the damping is dropped; got \
+             {diagnostics:?}"
+        );
+        assert!(!modes.is_empty(), "must still return a full modes list");
+
+        // (ii) EXACTLY ONE coded Warning, NAMING the offending descriptor.
+        let coded: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+            .collect();
+        assert_eq!(
+            coded.len(),
+            1,
+            "expected exactly one {CODE} Warning — zero means the FEA path \
+             dropped a declared damping descriptor SILENTLY (INV-SF-3), which \
+             is what its mechanism sibling has reported since #6875; got \
+             {diagnostics:?}"
+        );
+        assert!(
+            coded[0].message.contains("HystereticDamping"),
+            "the warning must NAME the offending descriptor's runtime type so \
+             the author can locate the dropped intent; got: {}",
+            coded[0].message
+        );
+
+        // (iii) The degrade is HONEST downstream: ζ really is 0 for every mode.
+        // Without this the warning could coexist with a partially-applied
+        // descriptor, which is a worse shape than either alone.
+        for (i, mode) in modes.iter().enumerate() {
+            let Value::StructureInstance(m) = mode else {
+                panic!("mode {i} must be a Mode StructureInstance")
+            };
+            assert_eq!(
+                m.fields.get("damping_ratio"),
+                Some(&Value::Real(0.0)),
+                "mode {i}: an unimplemented descriptor must report ζ = 0 \
+                 exactly — the warning is what makes that honest"
+            );
+        }
+
+        // (iv) The two altitudes must not be conflated: a TOP-level unsupported
+        // descriptor is not an `extra` one.
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains(EXTRA_CODE)),
+            "a top-level unsupported descriptor must NOT also emit \
+             {EXTRA_CODE}; got {diagnostics:?}"
+        );
+
+        // ── THE SILENCE HALF. ───────────────────────────────────────────────
+        // Without it the warning is noise. Note the `MaterialDamping { extra }`
+        // arm: it emits the EXTRA code and must not additionally emit this one,
+        // which is the other direction of the (iv) separation above.
+        for (label, damping) in [
+            (
+                "top-level NoDamping",
+                Some(struct_instance("NoDamping", vec![])),
+            ),
+            (
+                "top-level RayleighDamping",
+                Some(rayleigh_damping(0.0, 1e-4)),
+            ),
+            (
+                "top-level MaterialDamping",
+                Some(struct_instance("MaterialDamping", vec![])),
+            ),
+            (
+                "MaterialDamping with an unsupported extra",
+                Some(struct_instance(
+                    "MaterialDamping",
+                    vec![(
+                        "extra".to_string(),
+                        struct_instance("HystereticDamping", vec![]),
+                    )],
+                )),
+            ),
+            ("absent damping field", None),
+        ] {
+            let (modes, diagnostics) = solve(damping);
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "{label}: must emit NO {CODE} diagnostic — the warning is a \
+                 signal only if the honourable and the one-level-down cases are \
+                 silent; got {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+        }
+    }
+
+    /// Task #6878 (PRD leaf β) step-9(c): the in-crate twin of B8's loud coded
+    /// rejection, plus the boundary the author-surface e2e cannot reach.
+    ///
+    /// A `MaterialDamping` solve over a material that does not conform to
+    /// `trait Damped` must be a LOUD eval-time Error naming the material and the
+    /// fix — never modes carrying a silent `damping_ratio = 0` (PRD §C6,
+    /// INV-SF-2/SF-6).
+    ///
+    /// ## The boundary only this altitude can pin
+    ///
+    /// A material carrying `loss_factor = 0.0` is a CONFORMING, explicitly
+    /// UNDAMPED material and must be ACCEPTED (ζ = 0 + ζ_extra, no Error). That
+    /// is the case most likely to be wrongly folded into the rejection, since it
+    /// produces the same ζ as the rejected case; only [`extract_loss_factor`]'s
+    /// `Option` keeps them apart. The author-surface e2e cannot reach it without
+    /// a second `structure def`, so it is pinned here where the material value is
+    /// built by hand.
+    ///
+    /// ## INV-SF-2
+    ///
+    /// The clause asserting `Severity::Error` IS the nonzero-exit assertion:
+    /// `cmd_eval`'s severity gate turns any Error-severity diagnostic into a
+    /// process exit code of 1 — verified independently on this branch by
+    /// observing `reify eval` return 1 on an `E_ModalNoModesComputed` Error.
+    ///
+    /// RED before step-10: measured on this branch, this exact shape yields a
+    /// full modes list with ζ = 0 and zero diagnostics.
+    #[test]
+    fn trampoline_rejects_material_damping_over_a_non_damped_material() {
+        const CODE: &str = "E_ModalDampingMaterialNotDamped";
+
+        /// Solve with an arbitrary material value and damping descriptor.
+        /// `damping: None` omits the field entirely — the `Absent` case, which
+        /// is a distinct classification from an explicit `NoDamping()`.
+        fn solve(material: Value, damping: Option<Value>) -> (Vec<Value>, Vec<Diagnostic>) {
+            let mut option_fields = vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ];
+            if let Some(d) = damping {
+                option_fields.push(("damping".to_string(), d));
+            }
+            let value_inputs = vec![
+                material,
+                length_scalar(0.02),
+                length_scalar(0.05),
+                length_scalar(0.1),
+                modal_options(option_fields),
+            ];
+            let outcome = solve_modal_analysis_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected a Completed outcome");
+            };
+            let Value::StructureInstance(data) = &result else {
+                panic!("expected a ModalResult StructureInstance, got {result:?}")
+            };
+            let Some(Value::List(modes)) = data.fields.get("modes") else {
+                panic!("ModalResult.modes must be a List")
+            };
+            (modes.clone(), diagnostics)
+        }
+
+        // ── THE REJECTION. A material with a density (so the more fundamental
+        // E_ModalNoMassMatrix guard passes) but NO loss_factor. ──────────────
+        {
+            let (modes, diagnostics) = solve(
+                material_with_density(Some(STEEL_DENSITY)),
+                Some(struct_instance("MaterialDamping", vec![])),
+            );
+
+            let errors: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect();
+            assert_eq!(
+                errors.len(),
+                1,
+                "expected EXACTLY ONE Error-severity diagnostic — zero means the \
+                 silent ζ = 0 defect is live, more than one means the guard did \
+                 not short-circuit; got {diagnostics:?}"
+            );
+            let message = &errors[0].message;
+            assert!(
+                message.starts_with(CODE),
+                "the diagnostic must start with the message-prefix code `{CODE}`; \
+                 got: {message}"
+            );
+            // NAMES THE MATERIAL. `material_with_density`'s type_name is
+            // `ElasticMaterial`, which is what an author would see.
+            assert!(
+                message.contains("ElasticMaterial"),
+                "the diagnostic must name the offending material's runtime type \
+                 so the author can locate it; got: {message}"
+            );
+            // NAMES THE FIX.
+            for needle in ["DampedMaterial", "loss_factor"] {
+                assert!(
+                    message.contains(needle),
+                    "the diagnostic must name the fix — it must mention \
+                     `{needle}`; got: {message}"
+                );
+            }
+            // DEGENERATE RESULT, not modes carrying ζ = 0. B8's normative
+            // wording is "eval error naming the material; NOT damping_ratio = 0".
+            assert!(
+                modes.is_empty(),
+                "the rejection must return the DEGENERATE empty-modes result — a \
+                 consumer reading ModalResult without inspecting diagnostics \
+                 would otherwise be back in the silent-zero shape (PRD §C6); got \
+                 {} modes",
+                modes.len()
+            );
+        }
+
+        // ── THE BOUNDARY: η = 0.0 is a CONFORMER and must be ACCEPTED. ───────
+        {
+            let (modes, diagnostics) = solve(
+                damped_material(0.0),
+                Some(struct_instance(
+                    "MaterialDamping",
+                    vec![("extra".to_string(), rayleigh_damping(0.0, 1e-4))],
+                )),
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "a material declaring `loss_factor = 0.0` CONFORMS to `Damped` — \
+                 it is explicitly undamped, not non-conforming — and must NOT be \
+                 rejected; got {diagnostics:?}"
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "an explicitly-undamped conforming material is a VALID solve and \
+                 must produce no Error at all; got {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "an explicitly-undamped conforming material must still return a \
+                 full modes list — a guard that degenerates a valid solve is \
+                 worse than no guard"
+            );
+            // ζ = η/2 + ζ_extra = 0 + β·ω/2, i.e. the extra companion alone.
+            let Value::StructureInstance(m) = &modes[0] else {
+                panic!("mode 0 must be a Mode StructureInstance")
+            };
+            let Some(Value::Scalar { si_value: f, .. }) = m.fields.get("frequency") else {
+                panic!("mode 0 frequency must be a Scalar")
+            };
+            let expected = rayleigh_damping_ratio(0.0, 1e-4, 2.0 * std::f64::consts::PI * f);
+            assert!(expected > 0.0, "the fixture β must give a nonzero ζ_extra");
+            let Some(Value::Real(zeta)) = m.fields.get("damping_ratio") else {
+                panic!("mode 0 damping_ratio must be a Real")
+            };
+            assert!(
+                (zeta - expected).abs() / expected < 1e-9,
+                "with η = 0 the MSE half contributes exactly 0, so ζ must be the \
+                 `extra` companion alone: expected {expected}, got {zeta}"
+            );
+        }
+
+        // ── THE SILENCE HALF: the same non-conforming material is perfectly
+        // usable under every descriptor that does not need a loss factor. ────
+        for (label, damping) in [
+            ("NoDamping", Some(struct_instance("NoDamping", vec![]))),
+            ("RayleighDamping", Some(rayleigh_damping(0.0, 1e-4))),
+            ("absent", None),
+        ] {
+            let (modes, diagnostics) = solve(material_with_density(Some(STEEL_DENSITY)), damping);
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                "{label}: a material with no loss_factor is perfectly valid under \
+                 a descriptor that does not need one — the rejection must key on \
+                 the DESCRIPTOR as well as on conformance; got {diagnostics:?}"
+            );
+            assert!(
+                !modes.is_empty(),
+                "{label}: must still return a full modes list"
+            );
+        }
+    }
+
+    /// Solve the shared #6878 CANTILEVER fixture (20 x 50 x 100 mm steel beam,
+    /// `FixedSupport(target: "x_min")`, `n_modes = 3`) built from a `Damped`
+    /// material of loss factor `eta`, under `damping`, returning `(f, ζ)` per mode.
+    ///
+    /// Shared by the step-7 additive-composition twin and the step-15 near-zero-band
+    /// pin's part (d), so the "the floor swallowed no flexible mode" check runs
+    /// against literally the same fixture the B5/B7 identities are asserted on
+    /// rather than a copy that could drift away from it.
+    ///
+    /// The `f > 1.0 Hz` physical-band guard is part of the fixture's contract: this
+    /// beam is fully constrained at x_min, so a 0 Hz mode here would mean the BCs
+    /// silently stopped being realized and would make every ζ identity vacuously
+    /// satisfiable at ζ = 0. The near-zero band is covered by the separate
+    /// UNCONSTRAINED fixture in
+    /// [`trampoline_floors_material_damping_for_rigid_body_modes`], which is a
+    /// different model, not a relaxation of this one.
+    fn solve_damped_cantilever(eta: f64, damping: Value) -> Vec<(f64, f64)> {
+        let value_inputs = vec![
+            damped_material(eta),
+            length_scalar(0.02),
+            length_scalar(0.05),
+            length_scalar(0.1),
+            modal_options(vec![
+                ("n_modes".to_string(), Value::Int(3)),
+                (
+                    "boundary_conditions".to_string(),
+                    Value::List(vec![fixed_support("x_min")]),
+                ),
+                ("damping".to_string(), damping),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ]),
+        ];
+        let outcome = solve_modal_analysis_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
+            panic!("expected a Completed outcome");
+        };
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "a well-formed damped solve must produce no Error diagnostics; \
+             got {diagnostics:?}",
+        );
+        let Value::StructureInstance(data) = &result else {
+            panic!("expected a ModalResult StructureInstance, got {result:?}")
+        };
+        let Some(Value::List(modes)) = data.fields.get("modes") else {
+            panic!("ModalResult.modes must be a List")
+        };
+        assert!(!modes.is_empty(), "a happy-path solve must return ≥ 1 mode");
+        modes
+            .iter()
+            .enumerate()
+            .map(|(i, mode)| {
+                let Value::StructureInstance(m) = mode else {
+                    panic!("mode {i} must be a Mode StructureInstance")
+                };
+                let f = match m.fields.get("frequency") {
+                    Some(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                    other => {
+                        panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}")
+                    }
+                };
+                let zeta = match m.fields.get("damping_ratio") {
+                    Some(Value::Real(z)) => *z,
+                    other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+                };
+                // Physical-band guard: a 0 Hz rigid mode would make every ζ
+                // identity below vacuously satisfiable at ζ = 0.
+                assert!(
+                    f.is_finite() && f > 1.0,
+                    "mode {i} frequency {f} Hz must be finite and > 1 Hz"
+                );
+                (f, zeta)
+            })
+            .collect()
+    }
+
+    /// Task #6878 (PRD leaf β) step-7: the in-crate twin of the three author-
+    /// surface arms in
+    /// `crates/reify-eval/tests/harness_modal/modal_material_damping_e2e.rs`,
+    /// driving [`run_modal_analysis`] directly on hand-built `Value` inputs.
+    ///
+    /// Pinning the seam at BOTH altitudes is what makes a failure localise: if
+    /// this passes and the e2e fails, the defect is in the author surface
+    /// (stdlib declaration, ctor lowering, cell wiring); if both fail, it is in
+    /// the producer. The e2e cannot be replaced by this test — it is the only
+    /// thing that proves an author writing `damping: MaterialDamping()` reaches
+    /// this code at all — and this test cannot be replaced by the e2e, because
+    /// it runs in a fraction of the e2e's wall clock and so is the fast signal.
+    ///
+    /// The four arms share ONE geometry and ONE material, so the only thing that
+    /// varies between them is the descriptor:
+    ///   - `NoDamping`       → ζ == 0.0 exactly            (B4 regression)
+    ///   - `RayleighDamping` → ζ == β·ω/2                  (B4 regression)
+    ///   - `MaterialDamping` → ζ == η/2, mode-independent  (B5, RED before step-8)
+    ///   - `MaterialDamping{extra: Rayleigh}`
+    ///     → ζ == η/2 + β·ω/2                              (B7, RED before step-8)
+    ///
+    /// η comes from the fixture constant the material is BUILT from rather than
+    /// a transcribed literal, and ω is recomputed from the SAME f64 the producer
+    /// wrote into `Mode.frequency`, so 1e-9 relative is an fp-associativity
+    /// guard rather than a fitted tolerance — same discipline as the e2e.
+    ///
+    /// RED before step-8: measured on this branch, both MaterialDamping arms
+    /// yield ζ = 0 for every mode with zero diagnostics.
+    #[test]
+    fn trampoline_composes_material_damping_additively_with_extra() {
+        const ETA: f64 = 0.0006;
+        const BETA: f64 = 1e-4;
+
+        // The fixture solve is a module-level helper so step-15's part (d)
+        // runs against THIS fixture rather than a copy of it.
+        let solve = |damping: Value| solve_damped_cantilever(ETA, damping);
+
+        let rayleigh = || rayleigh_damping(0.0, BETA);
+        let none = solve(struct_instance("NoDamping", vec![]));
+        let rayl = solve(rayleigh());
+        let mat = solve(struct_instance("MaterialDamping", vec![]));
+        let both = solve(struct_instance(
+            "MaterialDamping",
+            vec![("extra".to_string(), rayleigh())],
+        ));
+
+        assert_eq!(
+            none.len(),
+            mat.len(),
+            "every arm must return the same mode count — they differ only in \
+             the damping descriptor, which is applied after the eigensolve"
+        );
+
+        let zeta_material = ETA / 2.0;
+        for (i, (&(f_none, z_none), &(f_mat, z_mat))) in none.iter().zip(mat.iter()).enumerate() {
+            let (f_rayl, z_rayl) = rayl[i];
+            let (f_both, z_both) = both[i];
+
+            // ── B4 (regression, green from the start) ───────────────────────
+            assert_eq!(
+                z_none, 0.0,
+                "mode {i}: NoDamping must give ζ exactly 0.0, got {z_none}"
+            );
+            let omega = 2.0 * std::f64::consts::PI * f_rayl;
+            let zeta_extra = rayleigh_damping_ratio(0.0, BETA, omega);
+            assert!(
+                zeta_extra > 0.0,
+                "mode {i}: the fixture β must give a nonzero Rayleigh ζ"
+            );
+            assert!(
+                (z_rayl - zeta_extra).abs() / zeta_extra < 1e-9,
+                "mode {i}: RayleighDamping ζ {z_rayl} must equal the closed form \
+                 {zeta_extra} — #6878 must not perturb the pre-existing path"
+            );
+            // Damping is applied after the eigensolve, so it must not move a
+            // single frequency bit on ANY arm.
+            for (label, f) in [("rayl", f_rayl), ("mat", f_mat), ("both", f_both)] {
+                assert_eq!(
+                    f, f_none,
+                    "mode {i}: the `{label}` arm's frequency must be BIT-FOR-BIT \
+                     equal to the undamped one — damping never touches the \
+                     eigensolve, and the assembly cache key deliberately \
+                     excludes it"
+                );
+            }
+
+            // ── B5: ζ = η/2 exactly, and mode-INDEPENDENT ───────────────────
+            assert!(
+                z_mat > 0.0,
+                "mode {i}: MaterialDamping must give a POSITIVE ζ (expected \
+                 η/2 = {zeta_material}), got {z_mat}. Exactly 0 means the \
+                 producer silently dropped the descriptor (INV-SF-3)"
+            );
+            assert!(
+                (z_mat - zeta_material).abs() / zeta_material < 1e-9,
+                "mode {i}: MaterialDamping ζ {z_mat} must equal η/2 = \
+                 {zeta_material}. With ONE material the modal-strain-energy \
+                 ratio is ≡ 1 for any mode shape (PRD §C5), so this is an \
+                 algebraic identity, not a converged value"
+            );
+            assert_eq!(
+                z_mat, mat[0].1,
+                "mode {i}: ζ_material must be MODE-INDEPENDENT — the degenerate \
+                 energy ratio is 1 for every φ, so all modes must agree \
+                 bit-for-bit"
+            );
+
+            // ── B7: additive composition, two independent statements ────────
+            let expected = zeta_material + zeta_extra;
+            assert!(
+                (z_both - expected).abs() / expected < 1e-9,
+                "mode {i}: MaterialDamping(extra: Rayleigh) ζ {z_both} must \
+                 equal η/2 + ζ_extra = {zeta_material} + {zeta_extra} = \
+                 {expected}"
+            );
+            let delta = z_both - z_mat;
+            assert!(
+                (delta - z_rayl).abs() / z_rayl < 1e-9,
+                "mode {i}: composition must be ADDITIVE — ζ_both − ζ_mat = \
+                 {delta} must equal the standalone ζ_rayl = {z_rayl}. This claim \
+                 is independent of either closed form"
+            );
+        }
+    }
+
+    /// Task #6878 (PRD leaf β) step-15: producer-altitude coverage for the
+    /// NEAR-ZERO-ω band under `MaterialDamping` — the arm every other fixture in
+    /// this suite structurally excludes, because both the in-crate step-7 twin
+    /// and its e2e counterpart assert `f > 1.0 Hz` in a physical-band guard.
+    ///
+    /// MEASURED on this machine (42 modes requested and emitted, bare
+    /// `MaterialDamping()` over a `Damped` steel with η = 0.0006 ⇒ η/2 = 3e-4):
+    ///
+    /// ```text
+    ///   modes 0–3   f == 0.0 EXACTLY (the λ ≤ 0 clamp)   → ζ = 0
+    ///   mode  4     f = 9.500896147742872e-4 Hz          → ζ = 3e-4
+    ///   mode  5     f = 1.4744505133453335e-3 Hz         → ζ = 3e-4
+    ///   modes 6–41  f = 1.676e4 … 1.222e5 Hz (flexible)  → ζ = 3e-4
+    ///   6 × W_ModalRigidBodyMode (modes 0–5), no Error
+    /// ```
+    ///
+    /// FOUR modes land at exactly `f == 0.0`, so the reviewer's case is pinned
+    /// here end-to-end and not only at helper altitude — assertion (c) below
+    /// asserts ζ == 0.0 on each of them by index. Their COUNT is deliberately
+    /// not asserted: the sign of a rigid-body eigenvalue is numerical noise and
+    /// not architecture-stable, so only their EXISTENCE and their ζ are pinned.
+    ///
+    /// Modes 4 and 5 are the reason the two near-zero thresholds must not be
+    /// conflated: `is_rigid_body_mode(ω, 1.0)` flags them (ω ≈ 6e-3 / 9e-3 rad/s,
+    /// hence six warnings), but both sit far ABOVE `MIN_OMEGA_FOR_DAMPING = 1e-9`,
+    /// so they correctly receive the full η/2. The floor is a singularity guard,
+    /// not the rigid-body *diagnostic* tolerance.
+    ///
+    /// The expectation is written OUT LONGHAND rather than by calling
+    /// `total_damping_ratio`: routing the assertion through the same helper the
+    /// producer calls would make it a tautology that a producer re-inlining
+    /// `zeta_material + rayleigh_damping_ratio(..)` — the step-8 defect — would
+    /// still pass.
+    ///
+    /// Discrimination CHECKED, not assumed: reverting [`run_modal_analysis`]'s
+    /// per-mode `total_damping_ratio(..)` call to the step-8
+    /// `plan.zeta_material + rayleigh_damping_ratio(..)` form makes this test
+    /// RED at mode 0, so it genuinely pins the floor rather than passing on both
+    /// sides of the fix. (The revert was local and is not committed.)
+    #[test]
+    fn trampoline_floors_material_damping_for_rigid_body_modes() {
+        const ETA: f64 = 0.0006;
+
+        // UNCONSTRAINED (empty BCs) — a free 3-D body admits six rigid-body
+        // modes (ω ≈ 0). Recipe lifted from
+        // `solve_modal_core_flags_rigid_body_modes_when_unconstrained`, which
+        // measures that it exposes them: n_modes ≥ n_free/2 forces the dense
+        // generalized regime, which handles the singular `K_free` without the
+        // shift-invert Cholesky panic.
+        let (length, width, height) = (0.02_f64, 0.05_f64, 0.1_f64);
+        let n_free = 3 * build_beam_mesh(length, width, height).nodes.len();
+
+        let value_inputs = vec![
+            damped_material(ETA),
+            length_scalar(length),
+            length_scalar(width),
+            length_scalar(height),
+            modal_options(vec![
+                ("n_modes".to_string(), Value::Int((n_free / 2) as i64)),
+                // Empty — the whole point of the fixture.
+                ("boundary_conditions".to_string(), Value::List(vec![])),
+                (
+                    "damping".to_string(),
+                    struct_instance("MaterialDamping", vec![]),
+                ),
+                (
+                    "reference_direction".to_string(),
+                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                ),
+            ]),
+        ];
+
+        let outcome = solve_modal_analysis_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed {
+            result,
+            diagnostics,
+            ..
+        } = outcome
+        else {
+            panic!("expected a Completed outcome");
+        };
+
+        // Extend the step-9 silence arm onto this fixture: the material CONFORMS
+        // to `Damped` and the `extra` is the `NoDamping()` default, so the new
+        // floor path must not smuggle in either coded diagnostic. Only
+        // `W_ModalRigidBodyMode` is expected here.
+        for code in [
+            "E_ModalDampingMaterialNotDamped",
+            "W_ModalDampingUnsupportedExtra",
+        ] {
+            assert!(
+                !diagnostics.iter().any(|d| d.message.starts_with(code)),
+                "unconstrained MaterialDamping solve over a conforming material \
+                 must not emit {code}; got {diagnostics:?}"
+            );
+        }
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "an unconstrained solve is a WARNING condition, not an Error; \
+             got {diagnostics:?}"
+        );
+
+        let Value::StructureInstance(data) = &result else {
+            panic!("expected a ModalResult StructureInstance, got {result:?}")
+        };
+        let Some(Value::List(modes)) = data.fields.get("modes") else {
+            panic!("ModalResult.modes must be a List")
+        };
+        assert!(!modes.is_empty(), "the solve must return ≥ 1 mode");
+
+        let per_mode: Vec<(f64, f64)> = modes
+            .iter()
+            .enumerate()
+            .map(|(i, mode)| {
+                let Value::StructureInstance(m) = mode else {
+                    panic!("mode {i} must be a Mode StructureInstance")
+                };
+                let f = match m.fields.get("frequency") {
+                    Some(Value::Scalar {
+                        si_value,
+                        dimension,
+                    }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                    other => panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}"),
+                };
+                let zeta = match m.fields.get("damping_ratio") {
+                    Some(Value::Real(z)) => *z,
+                    other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+                };
+                (f, zeta)
+            })
+            .collect();
+
+        // (a) THE INVARIANT, over EVERY emitted mode. Longhand on purpose.
+        let omega_of = |f: f64| 2.0 * std::f64::consts::PI * f;
+        for (i, &(f, zeta)) in per_mode.iter().enumerate() {
+            let omega = omega_of(f);
+            // Bare `MaterialDamping()` ⇒ (α, β) = (0, 0), so the Rayleigh half is
+            // written out with its own zero coefficients rather than dropped —
+            // the shape of the composed formula is part of what is being pinned.
+            let expected = if omega.abs() <= 1e-9 {
+                0.0
+            } else {
+                ETA / 2.0 + (0.0 + 0.0 * omega * omega) / (2.0 * omega)
+            };
+            if expected == 0.0 {
+                assert_eq!(
+                    zeta, 0.0,
+                    "mode {i} (f = {f} Hz, ω = {omega}) is under the ω-floor: it \
+                     stores no strain energy, so the modal-strain-energy ratio is \
+                     0/0 — UNDEFINED, not 1 — and ζ must be exactly 0, not η/2"
+                );
+            } else {
+                assert!(
+                    (zeta - expected).abs() / expected < 1e-9,
+                    "mode {i} (f = {f} Hz) is above the ω-floor: ζ {zeta} must \
+                     equal η/2 = {expected}"
+                );
+            }
+        }
+
+        // (b) NON-VACUITY of the near-zero regime. Without this a future change
+        // that quietly stops returning rigid modes would leave (a) silently
+        // passing over a purely flexible spectrum. 1.0 rad/s is the sibling
+        // test's measured tolerance, sitting in the gap between the rigid modes
+        // and the first flexible one.
+        let rigid_count = per_mode
+            .iter()
+            .filter(|&&(f, _)| is_rigid_body_mode(omega_of(f), 1.0))
+            .count();
+        assert!(
+            rigid_count >= 1,
+            "fixture must expose ≥1 near-zero mode or (a) is vacuous; got {rigid_count}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("W_ModalRigidBodyMode")),
+            "the fixture must be the under-constrained one it claims to be; \
+             got {diagnostics:?}"
+        );
+
+        // (c) The reviewer's EXACT case, observed at producer altitude: a mode
+        // whose frequency is exactly 0.0 (the `eigenvalue_to_frequency_hz`
+        // λ ≤ 0 clamp) reports ζ = 0, not η/2. Measured: four such modes here.
+        // Their COUNT is numerical noise (the sign of a rigid-body eigenvalue is
+        // not architecture-stable), so only their EXISTENCE and their ζ are
+        // asserted — never how many there are.
+        let exact_zero: Vec<usize> = per_mode
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(f, _))| f == 0.0)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            !exact_zero.is_empty(),
+            "expected ≥1 mode at exactly f == 0.0 on this fixture (measured: 4); \
+             got {per_mode:?}"
+        );
+        for &i in &exact_zero {
+            assert_eq!(
+                per_mode[i].1,
+                0.0,
+                "mode {i} has f == 0.0 exactly — ζ must be exactly 0.0"
+            );
+        }
+
+        // (d) The PHYSICAL BAND is UNAFFECTED — the floor swallowed no flexible
+        // mode. Same helper, so this runs against literally the step-7 fixture.
+        let cantilever = solve_damped_cantilever(ETA, struct_instance("MaterialDamping", vec![]));
+        assert!(!cantilever.is_empty(), "the cantilever fixture must return modes");
+        for (i, &(f, zeta)) in cantilever.iter().enumerate() {
+            assert!(
+                (zeta - ETA / 2.0).abs() / (ETA / 2.0) < 1e-9,
+                "constrained mode {i} (f = {f} Hz) must still get exactly η/2 = \
+                 {}; got {zeta}",
+                ETA / 2.0
+            );
+        }
     }
 
     /// Amendment (suggestion 2): `solve_modal_analysis_trampoline` happy path — a
@@ -5363,9 +10217,114 @@ mod tests {
         }
     }
 
+    /// The 2-mode, 3-node `displacement_at` reconstruction fixture, shared by
+    /// `displacement_at_reconstructs_phi_projected_series` and
+    /// `displacement_at_series_entries_are_length_dimensioned`.
+    ///
+    /// Extracted so the mode shapes, the modal-coordinate series and the
+    /// hand-derived projection coefficients exist exactly ONCE. As two
+    /// copy-pasted fixtures they could be retuned in one test and not the other,
+    /// leaving the second asserting stale magnitudes while its own docs claimed
+    /// to re-verify "the same closed-form Φ-projection" as the first.
+    ///
+    /// Node layout: `MODE0_SHAPE` / `MODE1_SHAPE` are full-DOF flat xyz triples
+    /// (3·n_nodes = 9 ⇒ 3 nodes). Node 2 carries the largest ‖Φ₀‖ and is
+    /// therefore the fundamental antinode a NON-numeric location resolves to;
+    /// node 1 is a distinct, lower-deflection node. So querying "1" and "tip"
+    /// resolves to different nodes and must yield different series.
+    struct TwoModeTipFixture {
+        /// The `DisplacementTimeHistory` to feed `displacement_at_trampoline`.
+        history: Value,
+        /// ξ₀(tⱼ) — mode-0 modal coordinates, one entry per timestep.
+        mc0: Vec<f64>,
+        /// ξ₁(tⱼ) — mode-1 modal coordinates, one entry per timestep.
+        mc1: Vec<f64>,
+        /// Timestep count (= `t_samples.len()` = each `mcᵢ.len()`).
+        n_times: usize,
+    }
+
+    impl TwoModeTipFixture {
+        /// Full-DOF mode shapes: flat xyz per node, 3 nodes each.
+        const MODE0_SHAPE: [f64; 9] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0];
+        const MODE1_SHAPE: [f64; 9] = [0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4];
+
+        /// The query direction ẑ — the bending axis.
+        const DIR: [f64; 3] = [0.0, 0.0, 1.0];
+
+        /// Projection coefficients (Φ₀[node]·ẑ, Φ₁[node]·ẑ) at node 1 — the
+        /// explicit numeric-index case.
+        const NODE1_COEFFS: (f64, f64) = (0.5, -0.7);
+        /// The same at node 2, the fundamental antinode a non-numeric location
+        /// resolves to.
+        const ANTINODE_COEFFS: (f64, f64) = (1.0, 0.4);
+
+        /// The z component of a full-DOF flat-xyz `shape` at `node`.
+        fn z_at(shape: &[f64; 9], node: usize) -> f64 {
+            shape[node * 3 + 2]
+        }
+
+        fn new() -> Self {
+            let mode0 = mode_struct(40.0, 0.01, &Self::MODE0_SHAPE);
+            let mode1 = mode_struct(250.0, 0.02, &Self::MODE1_SHAPE);
+            let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+
+            let mc0 = vec![1.0, 2.0, 3.0, 4.0];
+            let mc1 = vec![0.1, 0.2, 0.3, 0.4];
+            let t_samples_s = [0.0, 0.01, 0.02, 0.03];
+            let history =
+                displacement_history(modal_result, &t_samples_s, &[mc0.clone(), mc1.clone()]);
+
+            // The coefficients above are hand-derived from the shape arrays; pin
+            // that derivation here so retuning a shape cannot silently leave the
+            // coefficients — and with them BOTH tests' expectations — describing
+            // the old fixture. `direction` is ẑ, so the projection Φᵢ[node]·ẑ is
+            // exactly each shape's z component at that node.
+            assert_eq!(
+                Self::NODE1_COEFFS,
+                (
+                    Self::z_at(&Self::MODE0_SHAPE, 1),
+                    Self::z_at(&Self::MODE1_SHAPE, 1)
+                ),
+                "NODE1_COEFFS must stay the z components of each mode shape at node 1"
+            );
+            assert_eq!(
+                Self::ANTINODE_COEFFS,
+                (
+                    Self::z_at(&Self::MODE0_SHAPE, 2),
+                    Self::z_at(&Self::MODE1_SHAPE, 2)
+                ),
+                "ANTINODE_COEFFS must stay the z components of each mode shape at node 2"
+            );
+
+            // Node 2 must genuinely be the fundamental antinode (max ‖Φ₀‖), or
+            // the "tip" cases below would silently resolve elsewhere.
+            let phi0_z = |node| Self::z_at(&Self::MODE0_SHAPE, node).abs();
+            assert!(
+                phi0_z(2) > phi0_z(0) && phi0_z(2) > phi0_z(1),
+                "node 2 must be the strict max-‖Φ₀‖ antinode"
+            );
+
+            Self {
+                history,
+                mc0,
+                mc1,
+                n_times: t_samples_s.len(),
+            }
+        }
+
+        /// The closed-form expectation u[j] = c0·mc0[j] + c1·mc1[j] — the same
+        /// mode-order summation `reconstruct_series` performs, over the same
+        /// coordinates, in the same order.
+        fn expected_series(&self, (c0, c1): (f64, f64)) -> Vec<f64> {
+            (0..self.n_times)
+                .map(|j| c0 * self.mc0[j] + c1 * self.mc1[j])
+                .collect()
+        }
+    }
+
     /// step-15 (RED → GREEN in step-16): `displacement_at` reconstructs the exact
     /// Φ-projected single-location series u(tⱼ) = Σᵢ (Φᵢ[node]·dir)·mode_coords[i][j],
-    /// returning a non-Undef `List<Real>` (PRD §5.2) — covering the task's
+    /// returning a non-Undef `List<Length>` (PRD §5.2) — covering the task's
     /// "displacement_at returns the Φ-projected time history, not Undef" premise.
     ///
     /// A 2-mode DisplacementTimeHistory with known per-node Φ shapes and known
@@ -5373,7 +10332,7 @@ mod tests {
     ///   - a NUMERIC "1" → explicit node index 1, and
     ///   - a NON-NUMERIC "tip" → the fundamental antinode (node 2, max ‖Φ₀‖).
     ///
-    /// Each returns a finite `List<Real>` of length n_times equal to the
+    /// Each returns a finite `List<Length>` of length n_times equal to the
     /// closed-form reconstruction. The two cases resolve to DIFFERENT nodes
     /// (1 vs 2) and so yield different series — proving the resolver discriminates
     /// explicit-index from antinode.
@@ -5381,27 +10340,16 @@ mod tests {
     /// RED: the step-10 stub returns an empty list (length 0, not n_times).
     #[test]
     fn displacement_at_reconstructs_phi_projected_series() {
-        // node 2 is the fundamental antinode (max ‖Φ₀‖); node 1 is a distinct,
-        // lower-deflection node, so "1" and "tip" must give different series.
-        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
-        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
-        let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+        let fx = TwoModeTipFixture::new();
+        let n_times = fx.n_times;
 
-        let mc0 = vec![1.0, 2.0, 3.0, 4.0];
-        let mc1 = vec![0.1, 0.2, 0.3, 0.4];
-        let mode_coords = vec![mc0.clone(), mc1.clone()];
-        let t_samples_s = [0.0, 0.01, 0.02, 0.03];
-        let n_times = t_samples_s.len();
-        let history = displacement_history(modal_result, &t_samples_s, &mode_coords);
-
-        let dir = [0.0, 0.0, 1.0];
-
-        // Invoke the trampoline for `location` and return the List<Real> as Vec<f64>.
+        // Invoke the trampoline for `location` and return the List<Length> as
+        // Vec<f64> of SI metres (`read_scalar_si` tolerates either spelling).
         let query = |location: &str| -> Vec<f64> {
             let value_inputs = vec![
-                history.clone(),
+                fx.history.clone(),
                 Value::String(location.to_string()),
-                vec3_value(dir),
+                vec3_value(TwoModeTipFixture::DIR),
             ];
             let outcome = displacement_at_trampoline(
                 &value_inputs,
@@ -5435,21 +10383,13 @@ mod tests {
                     );
                     items.iter().map(read_scalar_si).collect()
                 }
-                other => panic!("displacement_at must return a Value::List(Real); got {other:?}"),
+                other => panic!("displacement_at must return a Value::List; got {other:?}"),
             }
-        };
-
-        // Closed-form expectation u[j] = c0·mc0[j] + c1·mc1[j] (same mode-order
-        // summation as `reconstruct_series`).
-        let expect = |c0: f64, c1: f64| -> Vec<f64> {
-            (0..n_times)
-                .map(|j| c0 * mc0[j] + c1 * mc1[j])
-                .collect::<Vec<_>>()
         };
 
         // Case A — numeric "1" → node 1: c0 = Φ₀[1]·ẑ = 0.5, c1 = Φ₁[1]·ẑ = -0.7.
         let got_node1 = query("1");
-        let want_node1 = expect(0.5, -0.7);
+        let want_node1 = fx.expected_series(TwoModeTipFixture::NODE1_COEFFS);
         for (j, (g, w)) in got_node1.iter().zip(want_node1.iter()).enumerate() {
             assert!(
                 (g - w).abs() < 1e-12,
@@ -5460,7 +10400,7 @@ mod tests {
         // Case B — non-numeric "tip" → antinode node 2: c0 = Φ₀[2]·ẑ = 1.0,
         // c1 = Φ₁[2]·ẑ = 0.4.
         let got_tip = query("tip");
-        let want_tip = expect(1.0, 0.4);
+        let want_tip = fx.expected_series(TwoModeTipFixture::ANTINODE_COEFFS);
         for (j, (g, w)) in got_tip.iter().zip(want_tip.iter()).enumerate() {
             assert!(
                 (g - w).abs() < 1e-12,
@@ -5473,6 +10413,95 @@ mod tests {
             got_node1, got_tip,
             "numeric index and antinode must resolve distinctly"
         );
+    }
+
+    /// Every entry of the emitted series must be a LENGTH-dimensioned
+    /// `Value::Scalar`, not a bare `Value::Real` (#6094) — the runtime half of
+    /// the `-> List<Length>` declaration whose derivation lives at
+    /// `reify-compiler/stdlib/modal_analysis_fns.ri` :: `displacement_at`.
+    ///
+    /// Why this cannot be folded into the compile-side pin
+    /// (`reify-compiler/tests/modal_mechanism_compile.rs`, nested module
+    /// `modal_analysis_fns_stdlib_compile`): the `.ri`
+    /// declared return type and the trampoline's emitted `Value` are checked
+    /// NOWHERE against each other. `ComputeNodeData` carries no type slot,
+    /// `ComputeOutcome::Completed` carries an untyped `Value`, and no
+    /// `FnReturnTypeMismatch` diagnostic exists — return types are deliberately
+    /// NOT a dimensional checksum (docs/prds/v0_6/units-physical-constants.md).
+    /// So retyping the declaration to `List<Length>` provably cannot green this
+    /// test, and vice versa; the two halves must be pinned independently or one
+    /// silently drifts, which is how the original `List<Real>`/`Value::Real`
+    /// pair arose.
+    ///
+    /// The magnitudes are re-asserted against the same closed-form Φ-projection
+    /// as the neighbouring `displacement_at_reconstructs_phi_projected_series`,
+    /// so the dimension change is proven not to have perturbed the values: SI
+    /// base unit for LENGTH is metres and `reconstruct_series` already produces
+    /// metres, making this a pure re-wrap with no numeric conversion. "The same"
+    /// is literal, not a claim: both tests read `TwoModeTipFixture`, so neither
+    /// can be retuned without the other following.
+    #[test]
+    fn displacement_at_series_entries_are_length_dimensioned() {
+        let fx = TwoModeTipFixture::new();
+
+        // Non-numeric "tip" → antinode node 2: c0 = Φ₀[2]·ẑ = 1.0, c1 = Φ₁[2]·ẑ = 0.4.
+        let value_inputs = vec![
+            fx.history.clone(),
+            Value::String("tip".to_string()),
+            vec3_value(TwoModeTipFixture::DIR),
+        ];
+        let outcome = displacement_at_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed { result, .. } = outcome else {
+            panic!("expected a Completed outcome");
+        };
+
+        let Value::List(items) = result else {
+            panic!("displacement_at must return a Value::List; got {result:?}");
+        };
+
+        // Non-vacuity guard: an empty list would make the per-entry loop below
+        // pass trivially.
+        assert!(
+            !items.is_empty(),
+            "displacement_at must not return an empty list"
+        );
+        assert_eq!(items.len(), fx.n_times, "series length must equal n_times");
+
+        // u[j] = c0·mc0[j] + c1·mc1[j] — the same summation `reconstruct_series`
+        // does, read off the SHARED fixture so it cannot drift from the sibling
+        // test's expectation.
+        let want = fx.expected_series(TwoModeTipFixture::ANTINODE_COEFFS);
+
+        for (j, item) in items.iter().enumerate() {
+            let Value::Scalar {
+                si_value,
+                dimension,
+            } = item
+            else {
+                panic!(
+                    "series[{j}] must be a Length-dimensioned Value::Scalar, not a bare \
+                     Real (#6094; derivation at stdlib/modal_analysis_fns.ri :: \
+                     displacement_at); got {item:?}"
+                );
+            };
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "series[{j}] must carry the LENGTH dimension; got {dimension:?}"
+            );
+            assert!(
+                (si_value - want[j]).abs() < 1e-12,
+                "series[{j}] magnitude must be unperturbed by the re-wrap: got \
+                 {si_value} m, want {} m",
+                want[j]
+            );
+        }
     }
 
     /// Amendment (reviewer suggestion 4): pin the out-of-range numeric-index
@@ -6693,6 +11722,578 @@ mod tests {
             Some(&Value::Undef),
             "mechanism_modal path must emit Value::Undef topology (no attributed mesh)"
         );
+    }
+
+    /// Task #6875 step-3 (RED → GREEN in step-4): the mechanism-modal producer
+    /// honors `ModalOptions.damping` per mode AND echoes the descriptor itself
+    /// back on `ModalResult.damping`, exactly as the FEA path does.
+    ///
+    /// The echo is a distinct behaviour from the per-mode ζ landed in step-2:
+    /// step-2 only touched `Mode.damping_ratio`, so this test is still RED on
+    /// its `damping` assertions until step-4 replaces the hardcoded
+    /// `("damping", Value::Undef)` in the step-(6) result_fields map.
+    ///
+    /// Case A pins that ζ is genuinely *per mode* (a two-body mechanism whose
+    /// modes have different ω must get different ζ), so a single hoisted
+    /// constant cannot pass. Cases B and C pin the two silent-undamped
+    /// classifications, including the absent-descriptor path that keeps
+    /// `printer_z_compliant_mount.ri` bit-identical.
+    #[test]
+    fn mechanism_modal_echoes_damping_descriptor_and_per_mode_zeta() {
+        use std::f64::consts::PI;
+
+        /// Drive the trampoline and unwrap to the `ModalResult` fields, asserting
+        /// a Completed outcome with no Error diagnostics.
+        fn run(mech: Value, options: Value) -> (Box<StructureInstanceData>, Vec<Diagnostic>) {
+            let value_inputs = vec![mech, options];
+            let outcome = solve_mechanism_modal_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected Completed outcome");
+            };
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "must not produce Error diagnostics; got {diagnostics:?}",
+            );
+            match result {
+                Value::StructureInstance(d) => {
+                    assert_eq!(d.type_name, "ModalResult");
+                    (d, diagnostics)
+                }
+                other => panic!("expected ModalResult StructureInstance, got {other:?}"),
+            }
+        }
+
+        /// Read the `modes` list off a ModalResult.
+        fn modes_of(data: &StructureInstanceData) -> &Vec<Value> {
+            match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("modes must be a List; got {other:?}"),
+            }
+        }
+
+        /// Read `(frequency_hz, damping_ratio)` off a `Mode`, asserting the
+        /// frequency is a dimensioned `Scalar<Frequency>` and ζ is a `Real`.
+        fn mode_f_and_zeta(mode: &Value, i: usize) -> (f64, f64) {
+            let m = match mode {
+                Value::StructureInstance(d) => d,
+                other => panic!("modes[{i}] must be a Mode StructureInstance; got {other:?}"),
+            };
+            assert_eq!(m.type_name, "Mode");
+            let f = match m.fields.get("frequency") {
+                Some(Value::Scalar {
+                    si_value,
+                    dimension,
+                }) if *dimension == DimensionVector::FREQUENCY => *si_value,
+                other => panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}"),
+            };
+            let zeta = match m.fields.get("damping_ratio") {
+                Some(Value::Real(z)) => *z,
+                other => panic!("mode {i} damping_ratio must be Real; got {other:?}"),
+            };
+            (f, zeta)
+        }
+
+        // ── Case A: damped, two bodies (direct n_dof = 2 solve, no anchor pad) ─
+        // k0/m0 = 500 and k1/m1 = 500_000 — two decades apart in ω, so a
+        // per-mode ζ is unmistakably distinguishable from a hoisted constant.
+        // (α, β) reuse the FEA-path fixture's shape: a nonzero α so the
+        // stiffness-proportional and mass-proportional terms both contribute.
+        {
+            let alpha = 0.5_f64;
+            let beta = 1e-4_f64;
+            let mech = two_body_mechanism(
+                mass_props_solid(2.0),
+                flexure_joint(1_000.0),
+                mass_props_solid(0.1),
+                flexure_joint(50_000.0),
+            );
+            let options =
+                modal_options(vec![("damping".to_string(), rayleigh_damping(alpha, beta))]);
+            let (data, _diags) = run(mech, options);
+
+            let modes = modes_of(&data);
+            assert!(
+                modes.len() >= 2,
+                "Case A: 2-DOF solve must return ≥ 2 modes"
+            );
+
+            let mut zetas: Vec<f64> = Vec::new();
+            for (i, mode) in modes.iter().enumerate() {
+                let (f, zeta) = mode_f_and_zeta(mode, i);
+                assert!(
+                    f.is_finite() && f > 0.0,
+                    "Case A: mode {i} frequency {f} must be finite > 0"
+                );
+                // The identity, recomputed from the SAME f64 the producer wrote
+                // into Mode.frequency — both sides evaluate the same expression
+                // on the same bits, so only fp associativity can separate them.
+                // 1e-12 is the band the landed FEA-path assertion
+                // (`trampoline_shapes_modal_result_with_rayleigh_damping`) uses;
+                // no new threshold is introduced here.
+                let omega = 2.0 * PI * f;
+                let expected = rayleigh_damping_ratio(alpha, beta, omega);
+                assert!(
+                    expected > 0.0,
+                    "Case A: fixture (α, β) must give nonzero ζ (≠ NoDamping)"
+                );
+                assert!(
+                    (zeta - expected).abs() < 1e-12,
+                    "Case A: mode {i} damping_ratio {zeta} != Rayleigh {expected} \
+                     (α={alpha}, β={beta}, ω={omega})",
+                );
+                zetas.push(zeta);
+            }
+
+            // Per-mode, not a hoisted constant: the two modes have different ω
+            // and therefore must have different ζ.
+            assert!(
+                (zetas[0] - zetas[1]).abs() > 0.0,
+                "Case A: modes at different ω must have different ζ; a single \
+                 hoisted constant would give {zetas:?}",
+            );
+
+            // ── THE STEP-3 RED ────────────────────────────────────────────────
+            // ModalResult.damping must echo the caller's descriptor verbatim,
+            // as `run_modal_analysis` does via `field_or`. RED while the
+            // mechanism producer hardcodes Value::Undef.
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&rayleigh_damping(alpha, beta)),
+                "Case A: ModalResult.damping must echo the caller's \
+                 RayleighDamping descriptor, not Value::Undef; got {:?}",
+                data.fields.get("damping"),
+            );
+        }
+
+        // ── Case B: explicit `NoDamping` — undamped, but still echoed ─────────
+        {
+            let no_damping = struct_instance("NoDamping", vec![]);
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let options = modal_options(vec![("damping".to_string(), no_damping.clone())]);
+            let (data, _diags) = run(mech, options);
+
+            let modes = modes_of(&data);
+            assert!(!modes.is_empty(), "Case B: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let (_f, zeta) = mode_f_and_zeta(mode, i);
+                assert_eq!(
+                    zeta, 0.0,
+                    "Case B: NoDamping must give exactly ζ = 0 for mode {i}"
+                );
+            }
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&no_damping),
+                "Case B: ModalResult.damping must echo the NoDamping instance, \
+                 not Value::Undef; got {:?}",
+                data.fields.get("damping"),
+            );
+        }
+
+        // ── Case C: absent descriptor — the `ModalOptions()` default ──────────
+        // This is what `examples/flexures/printer_z_compliant_mount.ri` passes,
+        // and it must stay bit-identical to the pre-#6875 output: ζ = 0 and a
+        // `Value::Undef` damping echo (the `field_or` fallback).
+        {
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let options = struct_instance("ModalOptions", vec![]);
+            let (data, _diags) = run(mech, options);
+
+            let modes = modes_of(&data);
+            assert!(!modes.is_empty(), "Case C: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let (_f, zeta) = mode_f_and_zeta(mode, i);
+                assert_eq!(
+                    zeta, 0.0,
+                    "Case C: an absent damping descriptor must give exactly \
+                     ζ = 0 for mode {i}"
+                );
+            }
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&Value::Undef),
+                "Case C: an absent damping descriptor must echo Value::Undef \
+                 (the field_or fallback) — this is the bit-identical-output \
+                 guarantee for printer_z_compliant_mount.ri"
+            );
+        }
+    }
+
+    /// Task #6875 step-5 (RED → GREEN in step-6): an unrecognised
+    /// `DampingDescriptor` refinement must be reported, never silently zeroed.
+    ///
+    /// The original `(α, β)`-only read discriminated on the runtime `type_name`
+    /// and returned `(0.0, 0.0)` for *anything* that is not `RayleighDamping` —
+    /// correct for `NoDamping` (genuinely undamped) but silently wrong for a
+    /// descriptor the trampoline simply does not implement. Routing the
+    /// mechanism path through that lossy view alone would reproduce the
+    /// INV-SF-3 silent-failure shape one descriptor later, so the seam was
+    /// split: `classify_damping` carries an explicit `Unsupported(type_name)`
+    /// classification that the producer turns into a coded warning. (The lossy
+    /// view itself, `extract_damping`, was deleted by the #6878 amendment pass
+    /// once no production caller remained.)
+    ///
+    /// Case B is what makes the warning a signal rather than noise: the
+    /// supported descriptors must stay completely silent. Case D covers the
+    /// `DampingKind::Material` arm, which is UNDEFINED rather than merely
+    /// unimplemented on this path and must not partially apply its `extra`
+    /// companion.
+    ///
+    /// FIXTURE RETARGETED, task #6878. This test originally used the literal
+    /// `"MaterialDamping"` as its stand-in for an unimplemented descriptor,
+    /// because the damped-modal-bonded-heterogeneous capability manifest
+    /// (`docs/prds/v0_6/`, §β) named it as the next one to land. #6878 LANDED
+    /// it: `classify_damping` now has a `MaterialDamping` arm, so that literal
+    /// would classify as `Material` and this test would go red on Case A and
+    /// Case C — not because the fallthrough broke, but because the fixture
+    /// stopped being a fallthrough. The type_name is therefore now
+    /// `"HystereticDamping"`, which stays genuinely unimplemented. Every
+    /// assertion and the test's purpose are unchanged: it pins the
+    /// `Unsupported` fallthrough and the `W_MechanismModalUnsupportedDamping`
+    /// warning, and both survive #6878 intact (the mechanism path's
+    /// `Material` arm deliberately keeps emitting that same warning — see
+    /// [`run_mechanism_modal`]). A future task that implements
+    /// `HystereticDamping` must retarget this fixture again, not delete it.
+    #[test]
+    fn mechanism_modal_warns_on_unsupported_damping_descriptor() {
+        /// Drive the trampoline, asserting a Completed outcome, and return the
+        /// `ModalResult` fields plus the diagnostics.
+        fn run(mech: Value, options: Value) -> (Box<StructureInstanceData>, Vec<Diagnostic>) {
+            let value_inputs = vec![mech, options];
+            let outcome = solve_mechanism_modal_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            let ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            } = outcome
+            else {
+                panic!("expected Completed outcome");
+            };
+            match result {
+                Value::StructureInstance(d) => (d, diagnostics),
+                other => panic!("expected ModalResult StructureInstance, got {other:?}"),
+            }
+        }
+
+        const CODE: &str = "W_MechanismModalUnsupportedDamping";
+
+        // ── Case A: a descriptor this trampoline does not implement ──────────
+        {
+            let unsupported = struct_instance(
+                "HystereticDamping",
+                vec![("loss_factor".to_string(), Value::Real(0.02))],
+            );
+            let options = modal_options(vec![("damping".to_string(), unsupported.clone())]);
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let (data, diagnostics) = run(mech, options);
+
+            // A merely-unsupported descriptor must not abort the solve — the
+            // frequencies are still correct, only the damping intent is dropped.
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "Case A: an unsupported descriptor must not produce an Error; \
+                 got {diagnostics:?}",
+            );
+
+            let coded: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+                .collect();
+            assert_eq!(
+                coded.len(),
+                1,
+                "Case A: expected exactly one {CODE} Warning; got {diagnostics:?}",
+            );
+
+            // The author must be able to locate the dropped intent, so the
+            // offending descriptor's runtime type name appears in the message
+            // (mirroring the body-index naming in W_MechanismModalRotationalDOF).
+            assert!(
+                coded[0].message.contains("HystereticDamping"),
+                "Case A: the warning must name the offending descriptor type so \
+                 the author can locate the dropped intent; got: {}",
+                coded[0].message,
+            );
+
+            // The degrade must stay honest downstream: ζ really is 0 (we did not
+            // apply the descriptor), and the descriptor is echoed back verbatim
+            // rather than swallowed.
+            let modes = match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("Case A: modes must be a List; got {other:?}"),
+            };
+            assert!(!modes.is_empty(), "Case A: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let m = match mode {
+                    Value::StructureInstance(d) => d,
+                    other => panic!("Case A: modes[{i}] must be a Mode; got {other:?}"),
+                };
+                assert_eq!(
+                    m.fields.get("damping_ratio"),
+                    Some(&Value::Real(0.0)),
+                    "Case A: an unsupported descriptor must report ζ = 0 for \
+                     mode {i} — the warning is what makes that honest",
+                );
+            }
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&unsupported),
+                "Case A: ModalResult.damping must echo the unsupported \
+                 descriptor verbatim — it is reported back, never swallowed"
+            );
+        }
+
+        // ── Case B: the supported set must stay SILENT ───────────────────────
+        // Without this, the warning would be noise rather than signal.
+        {
+            let supported = [
+                (
+                    "RayleighDamping",
+                    modal_options(vec![("damping".to_string(), rayleigh_damping(0.0, 1e-4))]),
+                ),
+                (
+                    "NoDamping",
+                    modal_options(vec![(
+                        "damping".to_string(),
+                        struct_instance("NoDamping", vec![]),
+                    )]),
+                ),
+                ("absent", struct_instance("ModalOptions", vec![])),
+            ];
+            for (label, options) in supported {
+                let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+                let (_data, diagnostics) = run(mech, options);
+                assert!(
+                    !diagnostics.iter().any(|d| d.message.contains(CODE)),
+                    "Case B/{label}: a supported damping descriptor must emit no \
+                     {CODE} diagnostic; got {diagnostics:?}",
+                );
+            }
+        }
+
+        // ── Case C: the classifier seam's own contract ───────────────────────
+        // `classify_damping` is the single extension point both producers
+        // inherit; pin its four classifications directly so a future descriptor
+        // arm has one obvious place to land.
+        {
+            assert!(
+                matches!(
+                    classify_damping(&modal_options(vec![(
+                        "damping".to_string(),
+                        rayleigh_damping(0.5, 1e-6),
+                    )])),
+                    DampingKind::Rayleigh { alpha, beta } if alpha == 0.5 && beta == 1e-6
+                ),
+                "Case C: a RayleighDamping descriptor must classify as \
+                 Rayleigh carrying its (α, β)"
+            );
+            assert!(
+                matches!(
+                    classify_damping(&modal_options(vec![(
+                        "damping".to_string(),
+                        struct_instance("NoDamping", vec![]),
+                    )])),
+                    DampingKind::NoDamping
+                ),
+                "Case C: an explicit NoDamping marker must classify distinctly \
+                 from an absent field — both are silent, but they are different \
+                 author intents"
+            );
+            assert!(
+                matches!(
+                    classify_damping(&struct_instance("ModalOptions", vec![])),
+                    DampingKind::Absent
+                ),
+                "Case C: a missing damping field must classify as Absent"
+            );
+            assert!(
+                matches!(classify_damping(&Value::Undef), DampingKind::Absent),
+                "Case C: a non-StructureInstance options value must classify as \
+                 Absent, not Unsupported"
+            );
+            match classify_damping(&modal_options(vec![(
+                "damping".to_string(),
+                struct_instance(
+                    "HystereticDamping",
+                    vec![("loss_factor".to_string(), Value::Real(0.02))],
+                ),
+            )])) {
+                DampingKind::Unsupported(type_name) => assert_eq!(
+                    type_name, "HystereticDamping",
+                    "Case C: Unsupported must carry the offending runtime \
+                     type_name so the producer can name it in a diagnostic"
+                ),
+                other => panic!(
+                    "Case C: an unimplemented DampingDescriptor refinement must \
+                     classify as Unsupported, got {other:?}"
+                ),
+            }
+
+            // The FEA seam must be bit-for-bit unchanged — asserted at the
+            // PRODUCTION altitude. This block previously pinned the test-only
+            // `extract_damping` view; the #6878 amendment pass deleted that
+            // helper (a `#[cfg(test)]` fn is compiled out of the shipped build,
+            // so a "seam unchanged" claim written against it is a claim about
+            // test-only code). `plan_modal_damping` is what `run_modal_analysis`
+            // actually consumes, so the same four inputs are re-asserted there:
+            // every pre-#6878 descriptor must plan to ζ_material = 0 with
+            // exactly the (α, β) the classifier carried, and silently.
+            //
+            // The material argument is passed as `Value::Undef` on purpose: none
+            // of these four descriptors reads it, so this also pins that a
+            // non-`MaterialDamping` solve never rejects on the material.
+            let plan_of = |options: Value| match plan_modal_damping(&options, &Value::Undef) {
+                Ok((plan, diagnostics)) => {
+                    assert!(
+                        diagnostics.is_empty(),
+                        "Case C: a pre-#6878 descriptor must plan silently; \
+                         got {diagnostics:?}"
+                    );
+                    plan
+                }
+                Err(_) => panic!(
+                    "Case C: a pre-#6878 descriptor must never be rejected, \
+                     whatever the material"
+                ),
+            };
+            assert_eq!(
+                plan_of(modal_options(vec![(
+                    "damping".to_string(),
+                    rayleigh_damping(0.5, 1e-6),
+                )])),
+                ModalDampingPlan {
+                    zeta_material: 0.0,
+                    alpha: 0.5,
+                    beta: 1e-6,
+                },
+                "Case C: RayleighDamping must still plan to its (α, β) with no \
+                 material term"
+            );
+            assert_eq!(
+                plan_of(modal_options(vec![(
+                    "damping".to_string(),
+                    struct_instance("NoDamping", vec![]),
+                )])),
+                UNDAMPED_PLAN,
+                "Case C: NoDamping must still plan to the undamped triple"
+            );
+            assert_eq!(
+                plan_of(modal_options(vec![])),
+                UNDAMPED_PLAN,
+                "Case C: an absent damping field must still plan to the \
+                 undamped triple"
+            );
+            assert_eq!(
+                plan_of(Value::Undef),
+                UNDAMPED_PLAN,
+                "Case C: a non-struct options value must still plan to the \
+                 undamped triple"
+            );
+        }
+
+        // ── Case D: `MaterialDamping` on the mechanism path ──────────────────
+        // Added in the #6878 amendment pass. Case A's fixture was retargeted
+        // off the literal "MaterialDamping" (see the doc comment above), which
+        // removed the only value in the repo that reached
+        // `run_mechanism_modal`'s `DampingKind::Material` arm — leaving that
+        // arm's warning body and its `(0.0, 0.0)` return untested, on the very
+        // producer whose loud-degrade contract this test exists to pin.
+        //
+        // The declared `extra` companion is a RayleighDamping the mechanism path
+        // could evaluate perfectly well. Not applying it is the arm's stated
+        // contract: reporting PART of a declared additive total while looking
+        // like a successful solve is a strictly worse silent-failure shape than
+        // reporting 0 under a loud warning. Clause (iii) is what pins that
+        // choice — it would fail if a future edit "helpfully" honoured `extra`.
+        {
+            let material_damping = struct_instance(
+                "MaterialDamping",
+                vec![("extra".to_string(), rayleigh_damping(0.0, 1e-4))],
+            );
+            let options = modal_options(vec![("damping".to_string(), material_damping.clone())]);
+            let mech = one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0));
+            let (data, diagnostics) = run(mech, options);
+
+            // (i) A descriptor that is UNDEFINED here — a lumped model has no
+            // elements and so no modal strain energy to weight — still must not
+            // abort the solve. The frequencies are unaffected by damping.
+            assert!(
+                !diagnostics.iter().any(|d| d.severity == Severity::Error),
+                "Case D: MaterialDamping must degrade with a Warning, not an \
+                 Error — the eigensolve itself is unaffected; got {diagnostics:?}",
+            );
+
+            // (ii) EXACTLY ONE coded Warning, naming the descriptor. Same code
+            // as Case A: from the author's seat both are "this path does not
+            // implement your descriptor", so they are deliberately one family
+            // rather than two codes to learn.
+            let coded: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning && d.message.contains(CODE))
+                .collect();
+            assert_eq!(
+                coded.len(),
+                1,
+                "Case D: expected exactly one {CODE} Warning; got {diagnostics:?}",
+            );
+            assert!(
+                coded[0].message.contains("MaterialDamping"),
+                "Case D: the warning must name the offending descriptor type; \
+                 got: {}",
+                coded[0].message,
+            );
+
+            // (iii) THE CONTRACT: the declared `extra` companion is deliberately
+            // NOT partially applied. Every ζ is exactly 0, not the β·ω/2 the
+            // companion alone would give.
+            let modes = match data.fields.get("modes") {
+                Some(Value::List(m)) => m,
+                other => panic!("Case D: modes must be a List; got {other:?}"),
+            };
+            assert!(!modes.is_empty(), "Case D: must return ≥ 1 mode");
+            for (i, mode) in modes.iter().enumerate() {
+                let m = match mode {
+                    Value::StructureInstance(d) => d,
+                    other => panic!("Case D: modes[{i}] must be a Mode; got {other:?}"),
+                };
+                assert_eq!(
+                    m.fields.get("damping_ratio"),
+                    Some(&Value::Real(0.0)),
+                    "Case D: mode {i} must report ζ = 0 EXACTLY. The declared \
+                     `extra: RayleighDamping(β = 1e-4)` is honourable on this \
+                     path in isolation, so a nonzero ζ here means the arm \
+                     partially applied a declared additive total — reporting \
+                     half an intent under the guise of a successful solve.",
+                );
+            }
+
+            // (iv) The descriptor is echoed back verbatim, never swallowed —
+            // the warning tells the author it was dropped, and the echo lets
+            // them confirm what the solver actually saw.
+            assert_eq!(
+                data.fields.get("damping"),
+                Some(&material_damping),
+                "Case D: ModalResult.damping must echo the MaterialDamping \
+                 descriptor verbatim, including its `extra` companion"
+            );
+        }
     }
 
     /// step-1 (RED → GREEN in step-2): `frequency_ascending_order` returns the

@@ -52,8 +52,14 @@ fn compile_and_build_occt(source: &str) -> Option<reify_eval::BuildResult> {
 }
 
 /// Assert `value` is a `Value::Scalar` of dimension `dim` whose `si_value` is
-/// within 1e-6 relative of `expected` (which must be non-zero).
-fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64, what: &str) {
+/// within `tol` relative of `expected` (which must be non-zero).
+fn assert_scalar_rel_tol(
+    value: Option<&Value>,
+    dim: DimensionVector,
+    expected: f64,
+    tol: f64,
+    what: &str,
+) {
     match value {
         Some(Value::Scalar {
             si_value,
@@ -65,13 +71,20 @@ fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64,
             );
             let rel = (si_value - expected).abs() / expected.abs();
             assert!(
-                rel < 1e-6,
-                "{what}: si_value {si_value:.12} not within 1e-6 relative of \
+                rel < tol,
+                "{what}: si_value {si_value:.12} not within {tol:.1e} relative of \
                  {expected:.12} (rel={rel:.3e})"
             );
         }
         other => panic!("{what}: expected Value::Scalar{{{dim:?}}}, got {other:?}"),
     }
+}
+
+/// Assert `value` is a `Value::Scalar` of dimension `dim` whose `si_value` is
+/// within 1e-6 relative of `expected` (which must be non-zero). Thin wrapper
+/// over [`assert_scalar_rel_tol`] at the default 1e-6 tolerance.
+fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64, what: &str) {
+    assert_scalar_rel_tol(value, dim, expected, 1e-6, what);
 }
 
 /// Assert `value` is a `Value::Point` of exactly 3 length-dimensioned scalar
@@ -193,6 +206,244 @@ fn volume_dispatch_box_sphere_cylinder() {
         cyl_v,
         "volume(cylinder(10mm,20mm))",
     );
+}
+
+// ── volume() with an INLINE geometry-call argument (task 5345) ────────────────
+
+/// Whole-handle query over an INLINE geometry call, with NO intermediate
+/// geometry `let`: `volume(torus(...))` / `volume(box(...))`. On base these
+/// value cells resolve to `Value::Undef` because `resolve_geometry_handle_arg`
+/// cannot map an inline `FunctionCall` arg to a `named_steps` handle. The
+/// compile-time hoist (task 5345) desugars the inline call into a synthetic
+/// geometry let so the query routes through the identical OCCT dispatch as the
+/// let-bound form. `VolInlineTorus` also pins the "structure whose ONLY
+/// geometry lives inside a query arg" case (no product geometry of its own).
+const VOLUME_INLINE_SOURCE: &str = r#"
+structure def VolInlineTorus {
+    let v = volume(torus(20mm, 5mm))
+}
+structure def VolInlineBox {
+    let v = volume(box(10mm, 20mm, 30mm))
+}
+"#;
+
+/// `volume(torus(20mm,5mm))` inline dispatches to OCCT and yields
+/// `Scalar<Volume>` = 2·π²·R·r² = 2·π²·0.02·0.005² ≈ 9.8696e-6 m³ (asserted at
+/// 2% relative — comfortable slack over the identical-handle let-bound path,
+/// which already yields this exactly). The `volume(box(10,20,30)mm)` inline
+/// sanity case pins a non-torus primitive at the analytic 6.0e-6 m³.
+///
+/// RED on base: both inline-arg cells resolve to `Value::Undef` (the inline
+/// `torus(...)` / `box(...)` arg never gets realized to a kernel handle), so
+/// the numeric assertions fail.
+#[test]
+fn volume_inline_arg_dispatch_torus() {
+    let Some(result) = compile_and_build_occt(VOLUME_INLINE_SOURCE) else {
+        return;
+    };
+
+    let torus_v = 2.0 * std::f64::consts::PI.powi(2) * 0.020 * 0.005_f64.powi(2);
+    assert_scalar_rel_tol(
+        result.values.get(&ValueCellId::new("VolInlineTorus", "v")),
+        DimensionVector::VOLUME,
+        torus_v,
+        2e-2,
+        "volume(torus(20mm,5mm)) inline",
+    );
+
+    // Non-torus primitive sanity: box volume is analytically exact.
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("VolInlineBox", "v")),
+        DimensionVector::VOLUME,
+        0.010 * 0.020 * 0.030,
+        "volume(box(10,20,30)mm) inline",
+    );
+}
+
+// ── centroid()/area() with an INLINE geometry-call argument (task 5345) ───────
+
+/// Inline-arg analogues of the `centroid()` and `area()` whole-handle queries,
+/// each mirroring a let-bound test below with the geometry constructor moved
+/// INLINE into the query call (no intermediate geometry `let`). Both route
+/// through the compile-time hoist to the identical OCCT dispatch as the
+/// let-bound `centroid_dispatch_box_is_origin` / `area_dispatch_box_sphere_cylinder`.
+const QUERY_INLINE_SOURCE: &str = r#"
+structure def CentroidInlineBox {
+    let c = centroid(box(10mm, 20mm, 30mm))
+}
+structure def AreaInlineSphere {
+    let a = area(sphere(10mm))
+}
+"#;
+
+/// `centroid(box(10,20,30)mm)` inline → `Point3<Length>` `(0,0,0)` (box is
+/// origin-centered), and `area(sphere(10mm))` inline → `Scalar<Area>` =
+/// 4·π·0.010² ≈ 1.256637e-3 m². Both dispatch to real OCCT via the desugared
+/// synthetic geometry let; on base they resolve to `Value::Undef`.
+#[test]
+fn centroid_and_area_inline_arg_dispatch() {
+    let Some(result) = compile_and_build_occt(QUERY_INLINE_SOURCE) else {
+        return;
+    };
+
+    assert_point_abs(
+        result.values.get(&ValueCellId::new("CentroidInlineBox", "c")),
+        [0.0, 0.0, 0.0],
+        1e-6,
+        "centroid(box(10,20,30)mm) inline",
+    );
+
+    let sphere_a = 4.0 * std::f64::consts::PI * 0.010_f64.powi(2);
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("AreaInlineSphere", "a")),
+        DimensionVector::AREA,
+        sphere_a,
+        "area(sphere(10mm)) inline",
+    );
+}
+
+/// Inline-vs-let equivalence (task 5345): the INLINE `volume(cylinder(...))`
+/// value cell must equal the LET-bound `let g = cylinder(...); volume(g)` cell.
+/// The compile-time hoist desugars the former into exactly the latter, so both
+/// route to the identical OCCT Volume query on an identical cylinder handle and
+/// must agree to floating-point tolerance. This demonstrably preserves the
+/// working named-cell path (and, transitively, the `param:Solid`
+/// `spec-shape-physical` path exercised by `spec_shape_physical_mass_and_centroid`).
+const VOL_CYL_INLINE_VS_LET_SOURCE: &str = r#"
+structure def VolCylLet {
+    let g = cylinder(10mm, 20mm)
+    let v = volume(g)
+}
+structure def VolCylInline {
+    let v = volume(cylinder(10mm, 20mm))
+}
+"#;
+
+#[test]
+fn volume_inline_equals_let_bound_cylinder() {
+    let Some(result) = compile_and_build_occt(VOL_CYL_INLINE_VS_LET_SOURCE) else {
+        return;
+    };
+
+    // Read the working let-bound value, then assert the inline cell matches IT
+    // (not merely the analytic constant) so the equivalence with the preserved
+    // named-cell path is pinned directly.
+    let let_v = match result.values.get(&ValueCellId::new("VolCylLet", "v")) {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        other => panic!("VolCylLet.v should be Scalar<Volume>, got {other:?}"),
+    };
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("VolCylInline", "v")),
+        DimensionVector::VOLUME,
+        let_v,
+        "volume(cylinder(10mm,20mm)) inline == let-bound",
+    );
+}
+
+// ── mixed product geometry + inline query (task 5345 review round 3) ────────
+
+/// A structure carrying BOTH real product geometry and an inline geometry
+/// query — the ONLY shape in which the hoist can change pre-existing export
+/// behaviour, and the shape in which it regressed.
+///
+/// The hoisted `__geoq_0` torus was initially minted as an ordinary product
+/// realization. Eval's `non_final_realization_indices` keeps only the
+/// highest-indexed realization with a terminal handle, and the desugarer
+/// inserts `__geoq_0` immediately before its consuming member, so `body`->r0 /
+/// `__geoq_0`->r1 made the measurement torus the "final" body: the user's real
+/// 50mm box vanished from STEP/STL/3MF with no diagnostic, while the
+/// tessellation walk (which passed no skip set) still showed both — a phantom
+/// solid in the viewer. `RealizationDecl::is_query_only` fixes both halves.
+///
+/// Asserted in BOTH declaration orders because the failure was order-dependent.
+const MIXED_PRODUCT_AND_INLINE_QUERY_BODY_FIRST: &str = r#"
+structure def Part {
+    let body = box(50mm, 50mm, 50mm)
+    let v = volume(torus(20mm, 5mm))
+}
+"#;
+
+const MIXED_PRODUCT_AND_INLINE_QUERY_QUERY_FIRST: &str = r#"
+structure def Part {
+    let v = volume(torus(20mm, 5mm))
+    let body = box(50mm, 50mm, 50mm)
+}
+"#;
+
+/// Triangle count of a binary STL payload (`80`-byte header, then a `u32` LE
+/// facet count). Returns `None` for a payload too short to carry the count.
+fn binary_stl_triangle_count(bytes: &[u8]) -> Option<u32> {
+    let n = bytes.get(80..84)?;
+    Some(u32::from_le_bytes([n[0], n[1], n[2], n[3]]))
+}
+
+/// Build `source` to STL and assert (a) `Part.v` is the analytic torus volume
+/// and (b) the exported mesh is the 12-triangle BOX, not the torus.
+///
+/// A box tessellates to exactly 12 triangles (2 per planar face); a
+/// `torus(20mm,5mm)` needs hundreds, so the facet count is an unambiguous
+/// discriminator that does not depend on parsing STEP entities.
+fn assert_mixed_exports_the_box(source: &str, label: &str) {
+    let compiled = parse_and_compile_with_stdlib(source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "{label}: fixture should compile clean, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping real-OCCT assertions: OCCT not available");
+        return;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let result = engine.build(&compiled, ExportFormat::Stl);
+
+    // (a) The measurement still works: 2·π²·R·r² = 2π²·0.02·0.005².
+    let torus_v = 2.0 * std::f64::consts::PI.powi(2) * 0.020 * 0.005_f64.powi(2);
+    assert_scalar_rel_tol(
+        result.values.get(&ValueCellId::new("Part", "v")),
+        DimensionVector::VOLUME,
+        torus_v,
+        0.02,
+        &format!("{label}: volume(torus(20mm,5mm)) inline alongside real product geometry"),
+    );
+
+    // (b) The user's real `body` box is what gets exported — the hoisted
+    // measurement torus must never displace it, and must not be exported
+    // alongside it either.
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{label}: build should emit no error diagnostics, got: {errors:#?}"
+    );
+    let bytes = result
+        .geometry_output
+        .as_ref()
+        .unwrap_or_else(|| panic!("{label}: expected STL geometry output for `body`"));
+    let facets = binary_stl_triangle_count(bytes)
+        .unwrap_or_else(|| panic!("{label}: STL payload too short ({} bytes)", bytes.len()));
+    assert_eq!(
+        facets, 12,
+        "{label}: exported mesh should be the 12-facet 50mm box `body`; {facets} facets means \
+         the hoisted `__geoq_0` torus displaced (or joined) the real product geometry"
+    );
+}
+
+#[test]
+fn mixed_product_geometry_and_inline_query_exports_real_body_declared_first() {
+    assert_mixed_exports_the_box(MIXED_PRODUCT_AND_INLINE_QUERY_BODY_FIRST, "body first");
+}
+
+#[test]
+fn mixed_product_geometry_and_inline_query_exports_real_body_declared_last() {
+    assert_mixed_exports_the_box(MIXED_PRODUCT_AND_INLINE_QUERY_QUERY_FIRST, "query first");
 }
 
 // ── area() ──────────────────────────────────────────────────────────────────

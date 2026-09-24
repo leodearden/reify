@@ -11,7 +11,7 @@
 //!   `examples/differential_field_ops.ri`  (include_str! compile error).
 //! GREEN: after step-2 the test binary compiles and all assertions pass.
 
-use reify_core::{Severity, Type, ValueCellId};
+use reify_core::{DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::{FieldSourceKind, Satisfaction, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -79,6 +79,15 @@ fn extract_sampled_field_data(result: &Value, field: &str) -> Vec<f64> {
 ///       α/solve_elastic_static_e2e.rs:814-875; reused verbatim here).
 ///       Also asserts `DifferentialFieldOps.g_mag` is finite and > 0 (γ
 ///       magnitude signal, non-trivial under load) and < 1 (small-strain bound).
+///   (d2) PHASE 1 / HALF 1 of ruling #6164 — `result.curl` is a
+///       `Value::Field{source:Sampled}` with `domain == Point3<Length>`,
+///       `codomain == Vector3<Real>` (DIMENSIONLESS — decided, not defaulted),
+///       all-finite data, and `len() == 3 * n_grid_nodes`.
+///   (d3) PHASE 1 / HALF 2 of ruling #6164 — `result.rotation` is a
+///       `Value::Field{source:Sampled}` with `codomain == Vector3<Angle>` and
+///       `rotation[i] == curl[i] / 2` bit-exactly (0 ULP), plus the harness-side
+///       degree comparison against the small-strain bound implied by the
+///       already-validated `constraint g_mag < 1.0`.
 ///   (e) PHASE 2 — `DifferentialFieldOps.lap_max` ≈ 2.0 within 1e-9
 ///       (max of laplacian(f) where f(x)=x²; exact on quadratics).
 ///       `DifferentialFieldOps.grad_max` ≈ 3.0 within 1e-9
@@ -186,8 +195,8 @@ fn differential_field_ops_integration_gate() {
     let check_result = engine.check(&compiled);
     assert_eq!(
         check_result.constraint_results.len(),
-        8,
-        "expected exactly 8 constraint results (matching the 8 `constraint` \
+        10,
+        "expected exactly 10 constraint results (matching the 10 `constraint` \
          statements in differential_field_ops.ri), got {} — a regression may \
          have silently dropped constraint registration or evaluation",
         check_result.constraint_results.len()
@@ -336,6 +345,234 @@ fn differential_field_ops_integration_gate() {
         "g_mag = {} must be < 1.0 (small-strain engineering bound)",
         g_mag
     );
+
+    // ── (d2) HALF 1 of ruling #6164 — `result.curl` stays DIMENSIONLESS ──────
+    //
+    // This pin closes a verified gap: before #6164 there were ZERO curl pins in
+    // this gate.  It characterizes already-shipped behaviour and is GREEN on
+    // arrival — its value is that a future retype of `ElasticResult.curl` to an
+    // angle-typed codomain now fails LOUDLY here.  That is HALF 1's whole point:
+    // curl is dimensionless BY DECISION, not by default.  ∇×u is Length/Length,
+    // the derivative algebra stays quotient-pure, and `result.curl` must remain
+    // type-identical to `curl(result.displacement)`.
+    let curl_val = extract_field(result_val, "curl")
+        .unwrap_or_else(|| panic!("field 'curl' not found in DifferentialFieldOps.result"));
+    let (curl_domain, curl_codomain) = match &curl_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "curl source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!(
+            "DifferentialFieldOps.result.curl must be Value::Field, got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        curl_domain,
+        Type::point3(Type::length()),
+        "curl domain must be Point3<Length>"
+    );
+    assert_eq!(
+        curl_codomain,
+        Type::vec3(Type::dimensionless_scalar()),
+        "curl codomain must be Vector3<Real> — DIMENSIONLESS BY DECISION \
+         (ruling #6164 HALF 1). If this assertion is failing because someone \
+         retyped curl to Vector3<Angle>, that is a revert of #6164, not a fix: \
+         the radian belongs at the `rotation` crossing below, not in the \
+         derivative algebra."
+    );
+
+    let curl_data = extract_sampled_field_data(result_val, "curl");
+    assert_eq!(
+        curl_data.len(),
+        3 * n_grid_nodes,
+        "curl data must have 3 components per grid node ({} nodes)",
+        n_grid_nodes
+    );
+    for (k, &c) in curl_data.iter().enumerate() {
+        assert!(c.is_finite(), "curl data[{}] = {} is not finite", k, c);
+    }
+
+    // ── (d3) HALF 2 of ruling #6164 — `result.rotation` IS the crossing ──────
+    //
+    // `rotation` = ∇×u / 2 is the designated crossing where the radian enters
+    // explicitly.  Note the asymmetry against (d2) directly above: same domain,
+    // same grid, same node count, componentwise exactly half the data — and a
+    // DIFFERENT codomain quantity.  That contrast is the entire ruling.
+    let rot_val = extract_field(result_val, "rotation")
+        .unwrap_or_else(|| panic!("field 'rotation' not found in DifferentialFieldOps.result"));
+    let (rot_domain, rot_codomain) = match &rot_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            ..
+        } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "rotation source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!(
+            "DifferentialFieldOps.result.rotation must be Value::Field, got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        rot_domain,
+        Type::point3(Type::length()),
+        "rotation domain must be Point3<Length>"
+    );
+    assert_eq!(
+        rot_codomain,
+        Type::vec3(Type::angle()),
+        "rotation codomain must be Vector3<Angle> — the designated crossing \
+         (ruling #6164 HALF 2)"
+    );
+
+    let rot_data = extract_sampled_field_data(result_val, "rotation");
+    assert_eq!(
+        rot_data.len(),
+        curl_data.len(),
+        "rotation must share curl's grid exactly ({} vs {} components)",
+        rot_data.len(),
+        curl_data.len()
+    );
+
+    // BIT-EXACT ×½ identity, asserted at 0 ULP.
+    //
+    // G6 numeric-premise discipline (the example file states this convention
+    // itself, above its `g_mag` bound): this is not a guessed tolerance, it is
+    // an exactness claim.  IEEE-754 division by 2.0 only decrements the
+    // exponent, so it is exact for every normal operand; subnormal
+    // underflow is unreachable at
+    // physical strain magnitudes (|∇×u| here is ~1e-3, and halving reaches the
+    // subnormal range only below ~1e-308).  Do NOT soften this to a tolerance.
+    for (i, (&r, &c)) in rot_data.iter().zip(curl_data.iter()).enumerate() {
+        assert_eq!(
+            r,
+            c / 2.0,
+            "rotation[{}] = {:e} must be EXACTLY curl[{}]/2 = {:e} (0 ULP)",
+            i,
+            r,
+            i,
+            c / 2.0
+        );
+    }
+
+    // Whole-FIELD degree comparison.  It lives here because it reduces over the
+    // raw SampledField buffer, which .ri cannot reach — NOT for want of a
+    // degree comparison in-language.  The example now also carries
+    // `constraint rot_probe > 0.001deg` / `< 0.5deg` at its single probe point:
+    // `magnitude` of a sampled Vector3<Angle> is an Angle SCALAR, and a
+    // scalar/`deg`-literal comparison type-checks and evaluates.  What remains
+    // dead is Vector3 COMPONENT access (`.x`, `v[0]` and `norm(v) < 5deg` were
+    // all probed dead), which a per-component in-language assertion would need.
+    //
+    // The bound is NOT invented.  It is RIGOROUSLY IMPLIED by the example's
+    // already-validated `constraint g_mag < 1.0`, asserted directly above:
+    // g_mag = max‖∇u‖ < 1, and each rotation component is
+    //   |ω_i| = |(∇×u)_i| / 2 = |∂u_j/∂x_k − ∂u_k/∂x_j| / 2 ≤ ‖∇u‖ < 1 rad.
+    // 1 rad ≈ 57.29578°, so the assertion compares against
+    // `1.0_f64.to_degrees()` rather than a hand-picked degree constant.
+    //
+    // A TIGHTER bound would need a MEASUREMENT, and per the example's own G6
+    // rule the measured value would have to be recorded here as its basis.
+    // None is asserted, so none is claimed.
+    let max_rot_rad = rot_data.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+    assert!(
+        max_rot_rad.is_finite(),
+        "max|rotation| must be finite, got {}",
+        max_rot_rad
+    );
+    assert!(
+        max_rot_rad > 0.0,
+        "max|rotation| = {:e} is effectively zero — no rotation signal under load",
+        max_rot_rad
+    );
+    let max_rot_deg = max_rot_rad.to_degrees();
+    assert!(
+        max_rot_deg < 1.0_f64.to_degrees(),
+        "max|rotation| = {}° must be below the small-strain bound of {}° \
+         (= 1 rad), which follows from the validated g_mag < 1.0 via \
+         |ω| = |∇×u|/2 ≤ ‖∇u‖",
+        max_rot_deg,
+        1.0_f64.to_degrees()
+    );
+
+    // ── (d4) The .ri-side crossing signal is REAL, not silently Undef ────────
+    //
+    // `examples/differential_field_ops.ri` binds
+    //   let rot_probe = rotation_probe(sample(result.rotation, point3(500mm, 50mm, 50mm)))
+    // where `fn rotation_probe(v: Vector3<Angle>) -> Angle`.  That call boundary
+    // is the whole user-observable signal: it proves `Vector3<Angle>` is accepted
+    // as a user-function PARAMETER type, the one position in the capability chain
+    // no existing stdlib or example code exercises.
+    //
+    // This assertion is load-bearing rather than decorative: an out-of-bounds
+    // sample returns `Value::Undef` (`sample_at_point`'s bounds-reject path), and a
+    // hollow Undef would sail past the no-Error-diagnostics check at (a) above,
+    // leaving the .ri pin asserting nothing.  Pinning the ANGLE dimension here
+    // also confirms the rad tag survives the round trip out through the call
+    // boundary, not just into it.
+    let rot_probe_cell = ValueCellId::new("DifferentialFieldOps", "rot_probe");
+    let rot_probe_val = eval_result
+        .values
+        .get(&rot_probe_cell)
+        .unwrap_or_else(|| panic!("cell DifferentialFieldOps.rot_probe not found"));
+    match rot_probe_val {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::ANGLE,
+                "rot_probe = rotation_probe(sample(result.rotation, ..)) must be \
+                 ANGLE-dimensioned — the radian must survive the Vector3<Angle> \
+                 call boundary in both directions (ruling #6164)"
+            );
+            assert!(
+                si_value.is_finite() && *si_value > 0.0,
+                "rot_probe = {} must be finite and > 0 — a zero or non-finite \
+                 value means the sample point fell outside the cantilever bounds \
+                 and the .ri pin is hollow",
+                si_value
+            );
+            // Cross-check against the field data read directly above: the probe
+            // is magnitude() of ONE sampled node's rotation vector, so it cannot
+            // exceed the max |component| times sqrt(3) over the whole grid.
+            assert!(
+                *si_value <= max_rot_rad * 3.0_f64.sqrt() + 1e-12,
+                "rot_probe = {} exceeds sqrt(3)·max|rotation component| = {} — \
+                 the probe is not sampling the same field",
+                si_value,
+                max_rot_rad * 3.0_f64.sqrt()
+            );
+        }
+        Value::Undef => panic!(
+            "rot_probe is Value::Undef — the sample point is outside the \
+             cantilever bounds, which silently hollows out the .ri crossing pin"
+        ),
+        other => panic!("rot_probe must be a Scalar[ANGLE], got: {:?}", other),
+    }
+
+    // No `orient_exp(rotation)` assertion sits beside (d3)/(d4) on purpose:
+    // `orient_exp`'s dimension gate in `reify-stdlib`'s `orientation` module
+    // still returns `Value::Undef` for an ANGLE argument until ruling #6080
+    // lands, so such an assertion could only pin `Undef`. #6080 owns that gate
+    // and this channel needs no edit when it lands.
 
     // ── (e) Phase 2 — exact polynomial fixture assertions ────────────────────
     //

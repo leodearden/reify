@@ -31,7 +31,11 @@
 use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
-use reify_core::{DiagnosticCode, Severity};
+use reify_constraints::relate_solve::{
+    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
+    partition_driving_set, pose_from_frame,
+};
+use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
     realize_operand_datums, solve_relate_scope, trace_to_ground,
@@ -285,15 +289,24 @@ fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
 // `crates/reify-eval/src/relate_solve.rs` — RED-by-missing-symbol (the file fails to
 // compile against the absent function/type).
 
-/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate{}` block
-/// holds the two §1 driving relations (concentric + flush) plus one extra `third`
-/// relation. Pure test data — the B2 redundant-remainder + B3 conflict variants.
-/// Built from the SAME self-contained primitives as
+/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate {}` block
+/// holds exactly `members`, in declaration order — optionally preceded by a
+/// top-level `fn` declaration (`extra_fn`, e.g. a `Relation`-typed wrapper like
+/// `fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }`). Pure test data —
+/// the ONE fixture builder every bolt_plate-shaped relate-solve test in this file
+/// is built from (SPOT: `Bolt`/`Plate`/`BoltPlate` is written exactly once). Built
+/// from the SAME self-contained primitives as
 /// `examples/geometric_relations/bolt_plate.ri`.
-fn bolt_plate_with_third(third: &str) -> String {
+fn bolt_plate_scope_source(extra_fn: Option<&str>, members: &[&str]) -> String {
+    let extra_fn = match extra_fn {
+        Some(f) => format!("{f}\n\n"),
+        None => String::new(),
+    };
+    let relate_block: Vec<String> = members.iter().map(|m| format!("        {m}")).collect();
+    let relate_block = relate_block.join("\n");
     format!(
         r#"
-structure Bolt {{
+{extra_fn}structure Bolt {{
     let shank = cylinder(3mm, 20mm)
     let shank_axis : Axis = shank.axis
     let seat = rectangle(12mm, 12mm)
@@ -312,13 +325,45 @@ structure BoltPlate {{
     sub bolt : Bolt at auto
     sub plate : Plate
     relate {{
-        concentric(bolt.shank_axis, plate.hole_axis)
-        flush(bolt.seat_plane, plate.top_plane)
-        {third}
+{relate_block}
     }}
 }}
 "#
     )
+}
+
+/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate{}` block
+/// holds the two §1 driving relations (concentric + flush) plus one extra `third`
+/// relation. Pure test data — the B2 redundant-remainder + B3 conflict variants.
+/// A thin wrapper over [`bolt_plate_scope_source`] — byte-identical to its
+/// pre-generalization body, so every existing call site is unaffected.
+fn bolt_plate_with_third(third: &str) -> String {
+    bolt_plate_scope_source(
+        None,
+        &[
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            "flush(bolt.seat_plane, plate.top_plane)",
+            third,
+        ],
+    )
+}
+
+/// The `Relation`-typed wrapper every task-7050 un-consumable-member fixture below
+/// builds from (SPOT: written once rather than re-typed per test) — a call to a
+/// user-defined `fn ... -> Relation` function type-checks to `Type::Relation` (the
+/// compiler accepts it inside a `relate {}` block) but is not itself a direct
+/// geometric-relation `FunctionCall`, so the solve cannot build a `RelationInstance`
+/// from it.
+const MATE_FN: &str = "fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }";
+/// A call to [`MATE_FN`] — the un-consumable relate member itself.
+const MATE_CALL: &str = "mate(bolt.shank_axis, plate.hole_axis)";
+
+/// The diagnostics among `diags` carrying `code` — the
+/// `.iter().filter(|d| d.code == Some(code)).collect()` shape every task-7050
+/// diagnostic-code assertion below needs, whether `diags` is a `RelateSolution`'s
+/// diagnostics or a compiled module's own.
+fn diags_with_code(diags: &[Diagnostic], code: DiagnosticCode) -> Vec<&Diagnostic> {
+    diags.iter().filter(|d| d.code == Some(code)).collect()
 }
 
 /// An identity placeholder seed Frame for the bolt's `at auto` unknown (the local
@@ -430,6 +475,70 @@ fn remainder_violated_relation_emits_diagnostic() {
     assert!(
         errors.iter().any(|m| m.contains("perpendicular")),
         "the assertion diagnostic must name the violated relation `perpendicular`, got: {errors:?}"
+    );
+}
+
+/// Pins the instance→source crossing's SECOND consumer: the redundant-remainder
+/// `colocated` check (`operand_refs(built.relation(i))` /
+/// `operand_refs(built.relation(d))`), distinct from
+/// `conflict_diagnostic_unshifted_by_a_non_call_relate_member`'s
+/// `SolveResult::Infeasible` path — a wrong, non-panicking outcome that test alone
+/// does not pin. Same shape as that test's baseline/shifted pair: prepend the
+/// unconsumable member and assert the emitted diagnostic is byte-identical to the
+/// unshifted baseline.
+#[test]
+fn remainder_conflict_unshifted_by_a_non_call_relate_member() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping remainder_conflict_unshifted_by_a_non_call_relate_member: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    const CONCENTRIC: &str = "concentric(bolt.shank_axis, plate.hole_axis)";
+    const FLUSH: &str = "flush(bolt.seat_plane, plate.top_plane)";
+    const PERPENDICULAR: &str = "perpendicular(bolt.shank_axis, plate.hole_axis)";
+
+    let baseline_source = bolt_plate_with_third(PERPENDICULAR);
+    let shifted_source =
+        bolt_plate_scope_source(Some(MATE_FN), &[MATE_CALL, CONCENTRIC, FLUSH, PERPENDICULAR]);
+
+    let baseline_solution = solve_bolt_plate(&baseline_source);
+    let shifted_solution = solve_bolt_plate(&shifted_source);
+
+    // The solve itself is unaffected by the leading skipped member.
+    assert_eq!(shifted_solution.driving, 2, "concentric + flush are still the driving set");
+    assert_eq!(
+        shifted_solution.redundant, 1,
+        "perpendicular is still the rank-redundant remainder"
+    );
+
+    // The single Error diagnostic naming the violated remainder relation.
+    let violated_message = |solution: &RelateSolution, label: &str| -> String {
+        let matches: Vec<&str> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.message.contains("perpendicular"))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "{label}: expected exactly one Error diagnostic naming `perpendicular`, got: {:?}",
+            solution.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        matches[0].to_string()
+    };
+    let baseline_msg = violated_message(&baseline_solution, "baseline");
+    let shifted_msg = violated_message(&shifted_solution, "shifted");
+
+    // An unconsumable member shifts NOTHING in the `colocated` crossing either —
+    // the redundant-remainder conflict diagnostic is identical to the baseline.
+    assert_eq!(
+        shifted_msg, baseline_msg,
+        "a relate member the solve cannot consume must not change the redundant- \
+         remainder conflict diagnostic"
     );
 }
 
@@ -876,6 +985,839 @@ fn global_float_example_emits_b6_diagnostic() {
             && float_diag.message.contains("ground a part"),
         "the B6 message guides the fix; got: {}",
         float_diag.message
+    );
+}
+
+// ─── step-7 (task 5540) — the tangent acceptance e2e ─────────────────────────
+//
+// The committed `examples/geometric_relations/tangent_roller.ri` worked example is
+// the acceptance fixture for 3D assembly-relate `tangent`. It places one `at auto`
+// roller against two grounded anchors with BOTH curated cylinder combos live in a
+// single scope:
+//
+//   * `tangent(roller.axis, base.top_plane, 5mm)` — cylinder/plane, codimension 2
+//     (one ROTATIONAL row pinning the roller axis perpendicular to the plane normal,
+//     one TRANSLATIONAL row pinning the signed axis-origin-to-plane distance to the
+//     radius), and
+//   * `tangent(roller.axis, idler.axis, 5mm, 7mm)` — cylinder/cylinder, codimension
+//     1 (the axis line-to-line distance equals |r1 + r2| = 12 mm).
+//
+// ⇒ spent 3, residual 3 (slide along the roller's own axis, spin about it, and the
+// remaining in-plane swing about the plane normal, which is a null direction of the
+// cylinder/cylinder row at the witness).
+//
+// **Why this test exists.** Before this task `tangent` produced NO Jacobian rows at
+// all: `residual_dispatch` fell through to the catch-all, `relation_jacobian`
+// returned an empty row set, `partition_driving_set` filed the relation as redundant
+// with `rank_contribution: 0`, and the post-solve `max_relation_residual` verification
+// read a flat `0.0`. A `.ri` author asking for tangency got a build that succeeded,
+// a placement that ignored the request, and not one diagnostic. Every assertion below
+// is chosen so that silent no-solve FAILS it rather than passing vacuously — in
+// particular (c) pins the exact per-relation codimensions (a no-row relation measures
+// rank 0) and (e) measures the placement geometrically (a self-consistently wrong
+// residual converges just as happily as a right one).
+
+/// Read the committed tangent-roller worked example so the acceptance e2e exercises
+/// the SAME source a user would `reify build` — no drift between test and example.
+/// `CARGO_MANIFEST_DIR` is `crates/reify-eval`; `../../examples/...` is the
+/// workspace-root example dir. Mirrors [`bolt_plate_source`].
+fn tangent_roller_source() -> String {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/geometric_relations/tangent_roller.ri"
+    );
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read tangent example {path}: {e}"))
+}
+
+/// The roller's radius in SI metres, as the fixture declares it (`5mm`).
+const ROLLER_RADIUS_M: f64 = 0.005;
+/// The idler's radius in SI metres, as the fixture declares it (`7mm`).
+const IDLER_RADIUS_M: f64 = 0.007;
+
+/// An identity placeholder seed Frame for the roller's `at auto` unknown (the local
+/// datums are pose-independent, so the realization ignores it — see step-5).
+fn identity_roller_seeds() -> HashMap<String, Value> {
+    [("roller".to_string(), seed_frame([0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]))]
+        .into_iter()
+        .collect()
+}
+
+/// A `Value::Point`'s coordinates in SI metres.
+fn point_m(v: &Value) -> [f64; 3] {
+    let Value::Point(cs) = v else {
+        panic!("expected Value::Point, got {v:?}");
+    };
+    let mut o = [0.0_f64; 3];
+    for (i, c) in cs.iter().take(3).enumerate() {
+        o[i] = c.as_f64().unwrap_or(f64::NAN);
+    }
+    o
+}
+
+/// A `Value::Direction`'s components (unit, dimensionless).
+fn dir_xyz(v: &Value) -> [f64; 3] {
+    let Value::Direction { x, y, z } = v else {
+        panic!("expected Value::Direction, got {v:?}");
+    };
+    [*x, *y, *z]
+}
+
+/// A realized `Value::Axis`'s `(origin_m, unit_direction)`.
+fn axis_parts(v: &Value) -> ([f64; 3], [f64; 3]) {
+    let Value::Axis { origin, direction } = v else {
+        panic!("expected Value::Axis, got {v:?}");
+    };
+    (point_m(origin), dir_xyz(direction))
+}
+
+/// A realized `Value::Plane`'s `(origin_m, unit_normal)`.
+fn plane_parts(v: &Value) -> ([f64; 3], [f64; 3]) {
+    let Value::Plane { origin, normal } = v else {
+        panic!("expected Value::Plane, got {v:?}");
+    };
+    (point_m(origin), dir_xyz(normal))
+}
+
+/// A `Value::Frame`'s basis quaternion as `[w, x, y, z]`.
+fn frame_basis_quat(v: &Value) -> [f64; 4] {
+    let Value::Frame { basis, .. } = v else {
+        panic!("expected Value::Frame, got {v:?}");
+    };
+    let Value::Orientation { w, x, y, z } = basis.as_ref() else {
+        panic!("frame basis must be a Value::Orientation, got {basis:?}");
+    };
+    [*w, *x, *y, *z]
+}
+
+/// Rotate `v` by the unit quaternion `q = [w, x, y, z]` (`q ⊗ v ⊗ q*`).
+fn rotate_by_quat(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
+    let [w, x, y, z] = q;
+    let u = [x, y, z];
+    let uv = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let uuv = [
+        u[1] * uv[2] - u[2] * uv[1],
+        u[2] * uv[0] - u[0] * uv[2],
+        u[0] * uv[1] - u[1] * uv[0],
+    ];
+    [
+        v[0] + 2.0 * (w * uv[0] + uuv[0]),
+        v[1] + 2.0 * (w * uv[1] + uuv[1]),
+        v[2] + 2.0 * (w * uv[2] + uuv[2]),
+    ]
+}
+
+/// Place a LOCAL axis datum by the solved assembly Frame: rotate its origin and
+/// direction by the Frame basis, then offset the origin by the Frame origin. This is
+/// the same rigid placement the surfacing walk's `ApplyTransform` performs, recomputed
+/// INDEPENDENTLY here so assertion (e) measures the geometry rather than re-asking the
+/// solver whether it converged.
+fn place_axis(pose: &Value, local_axis: &Value) -> ([f64; 3], [f64; 3]) {
+    let (lo, ld) = axis_parts(local_axis);
+    let q = frame_basis_quat(pose);
+    let t = frame_origin_m(pose);
+    let ro = rotate_by_quat(q, lo);
+    (
+        [ro[0] + t[0], ro[1] + t[1], ro[2] + t[2]],
+        rotate_by_quat(q, ld),
+    )
+}
+
+/// Distance between the lines `oa + s·ua` and `ob + s·ub` (the common-normal distance
+/// for skew lines, the perpendicular offset when parallel). Recomputed here rather than
+/// reused from the solver so the geometric check is independent of the residual under
+/// test.
+fn line_line_distance_m(
+    oa: [f64; 3],
+    ua: [f64; 3],
+    ob: [f64; 3],
+    ub: [f64; 3],
+) -> f64 {
+    let w = [ob[0] - oa[0], ob[1] - oa[1], ob[2] - oa[2]];
+    let n = [
+        ua[1] * ub[2] - ua[2] * ub[1],
+        ua[2] * ub[0] - ua[0] * ub[2],
+        ua[0] * ub[1] - ua[1] * ub[0],
+    ];
+    let nn = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if nn < 1e-12 {
+        // Parallel: the perpendicular offset of `ob` from the line through `oa`.
+        let un = (ua[0] * ua[0] + ua[1] * ua[1] + ua[2] * ua[2]).sqrt();
+        let uh = [ua[0] / un, ua[1] / un, ua[2] / un];
+        let d = w[0] * uh[0] + w[1] * uh[1] + w[2] * uh[2];
+        let p = [w[0] - d * uh[0], w[1] - d * uh[1], w[2] - d * uh[2]];
+        (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
+    } else {
+        ((w[0] * n[0] + w[1] * n[1] + w[2] * n[2]) / nn).abs()
+    }
+}
+
+/// Rebuild the fixture's two tangent [`RelationInstance`]s over the realized datums,
+/// in source order. `reify_eval`'s `build_relation_instances` is private, so the
+/// residual-verification assertion (b) and the per-relation rank assertion (c)
+/// reconstruct the same instances here — the operand order and the trailing-scalar
+/// radius transport are exactly what the eval layer builds (`sub: Some(..)` for a
+/// datum operand, `sub: None` for a metric one).
+fn tangent_relation_instances(realized: &RealizedDatums) -> Vec<RelationInstance> {
+    let datum = |sub: &str, member: &str| Operand {
+        sub: Some(sub.to_string()),
+        datum: realized
+            .get(sub, member)
+            .unwrap_or_else(|| panic!("the realization must carry {sub}.{member}"))
+            .clone(),
+    };
+    let radius = |r: f64| Operand {
+        sub: None,
+        datum: Value::Real(r),
+    };
+    vec![
+        // tangent(roller.axis, base.top_plane, 5mm) — cylinder/plane.
+        RelationInstance {
+            name: "tangent".to_string(),
+            operands: vec![
+                datum("roller", "axis"),
+                datum("base", "top_plane"),
+                radius(ROLLER_RADIUS_M),
+            ],
+            nominal_delta_dof: None,
+        },
+        // tangent(roller.axis, idler.axis, 5mm, 7mm) — cylinder/cylinder, external.
+        RelationInstance {
+            name: "tangent".to_string(),
+            operands: vec![
+                datum("roller", "axis"),
+                datum("idler", "axis"),
+                radius(ROLLER_RADIUS_M),
+                radius(IDLER_RADIUS_M),
+            ],
+            nominal_delta_dof: None,
+        },
+    ]
+}
+
+/// step-7 — the committed tangent-roller example solves, builds, and the tangency it
+/// asks for actually HOLDS at the solved placement (task 5540 acceptance).
+#[test]
+fn tangent_roller_example_solves_places_and_holds_tangency() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping tangent_roller_example_solves_places_and_holds_tangency: OCCT not available"
+        );
+        return;
+    }
+
+    let source = tangent_roller_source();
+    let module = compile_source_with_stdlib(&source);
+    let compile_errors: Vec<&str> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "the committed tangent example must compile cleanly against the tangent operand \
+         policing, got: {compile_errors:?}"
+    );
+
+    let rig = template(&module, "RollerRig");
+    let scope: RelateScope = collect_relate_scope(rig);
+    assert_eq!(
+        scope.relations.len(),
+        2,
+        "the RollerRig scope carries both tangent relations"
+    );
+
+    let mut engine = occt_engine();
+    let realized = realize_operand_datums(&scope, &module, &mut engine, &identity_roller_seeds());
+    let solution = solve_relate_scope(&scope, &realized);
+
+    // ── (a) the `at auto` roller receives a solved pose; the anchors do not ──────
+    let roller_pose = solution
+        .poses
+        .get("roller")
+        .expect("the `at auto` roller sub must receive a solved Frame");
+    assert!(
+        matches!(roller_pose, Value::Frame { .. }),
+        "the solved roller pose is a Value::Frame, got {roller_pose:?}"
+    );
+    assert!(
+        !solution.poses.contains_key("base") && !solution.poses.contains_key("idler"),
+        "the grounded base/idler anchors are never solver-placed, got poses for {:?}",
+        solution.poses.keys().collect::<Vec<_>>()
+    );
+
+    // ── (b) the solve CONVERGED and the tangency holds within the assertion tol ──
+    //
+    // This is THE assertion the pre-task silent no-solve would have passed vacuously:
+    // with no residual rows `max_relation_residual` reads a flat 0.0 whatever the
+    // placement. It is meaningful only because (c) proves the rows exist and (e)
+    // proves they measure the right geometry.
+    let solve_errors: Vec<&str> = solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        solve_errors.is_empty(),
+        "the tangent solve must raise no error diagnostics, got: {solve_errors:?}"
+    );
+    let instances = tangent_relation_instances(&realized);
+    let unknown = FrameUnknown {
+        sub: "roller".to_string(),
+        free: false,
+    };
+    let solved_pose = pose_from_frame(roller_pose)
+        .expect("the solved roller Frame must convert back to a Pose");
+    let residual = max_relation_residual(&instances, &unknown, &solved_pose);
+    let tol = RelateTolerance::kernel_default();
+    assert!(
+        residual < tol.assertion(),
+        "both tangency relations must hold at the solved placement: residual {residual:e} \
+         exceeds the assertion tolerance {:e}",
+        tol.assertion()
+    );
+
+    // ── (c) DOF accounting is OPERAND-CONDITIONAL, per relation ─────────────────
+    //
+    // The exact integers, not a range: cylinder/plane is codimension 2 and
+    // cylinder/cylinder codimension 1, so the scope spends 3 and leaves 3. A silent
+    // no-solve measures individual_rank 0 for BOTH.
+    let partition =
+        partition_driving_set(&instances, &unknown, &Pose::identity(), tol.solver_convergence());
+    assert_eq!(
+        partition.per_relation[0].individual_rank, 2,
+        "tangent(cylinder, plane) is codimension 2 — one rotational row (axis ⟂ normal) \
+         plus one translational row (signed distance = radius)"
+    );
+    assert_eq!(
+        partition.per_relation[1].individual_rank, 1,
+        "tangent(cylinder, cylinder) is codimension 1 — the axis line-to-line distance"
+    );
+    assert_eq!(solution.spent, 3, "cylinder/plane(2) + cylinder/cylinder(1) spends 3 DOF");
+    assert_eq!(
+        solution.free, 3,
+        "3 residual DOF: slide along the roller axis, spin about it, and swing about \
+         the plane normal"
+    );
+    assert_eq!(solution.driving, 2, "both tangent relations are driving");
+    assert_eq!(solution.redundant, 0, "neither tangent relation is redundant");
+
+    // ── (d) the STEP build writes back the same solved pose ─────────────────────
+    let result = engine.build(&module, ExportFormat::Step);
+    let build_errors: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "the tangent example must build end-to-end with no errors, got: {build_errors:?}"
+    );
+    let roller_cell = auto_pose_cell("RollerRig", "roller");
+    let built_pose = result.values.get(&roller_cell).unwrap_or_else(|| {
+        panic!("the `at auto` roller must have a solved auto-pose Frame under {roller_cell:?}")
+    });
+    assert!(
+        matches!(built_pose, Value::Frame { .. }),
+        "the roller's written-back auto-pose must be a Value::Frame, got {built_pose:?}"
+    );
+    for anchor in ["base", "idler"] {
+        assert!(
+            result
+                .values
+                .get(&auto_pose_cell("RollerRig", anchor))
+                .is_none(),
+            "the grounded `{anchor}` sub must NOT receive an auto-pose Frame"
+        );
+    }
+    let built_o = frame_origin_m(built_pose);
+    let solved_o = frame_origin_m(roller_pose);
+    for k in 0..3 {
+        assert!(
+            (built_o[k] - solved_o[k]).abs() < 1e-6,
+            "the build's placement must agree with the direct solve at axis {k}: \
+             built {built_o:?} vs solved {solved_o:?}"
+        );
+    }
+
+    // ── (e) the placement is geometrically CORRECT, not merely converged ────────
+    //
+    // Convergence alone cannot catch a residual that is self-consistently wrong (a
+    // sign flip, a dropped radius, a distance measured to the wrong datum). So place
+    // the roller's LOCAL axis by the solved Frame independently and measure the two
+    // tangency quantities directly against the declared radii.
+    let (ro, rd) = place_axis(built_pose, realized.get("roller", "axis").expect("roller axis"));
+    let (po, pn) = plane_parts(realized.get("base", "top_plane").expect("base plane"));
+    let (io, id) = axis_parts(realized.get("idler", "axis").expect("idler axis"));
+
+    // The cylinder/plane rotational row: the placed roller axis lies IN the plane's
+    // directions, i.e. perpendicular to its normal. Without this row the cylinder can
+    // tilt out of tangency at exactly zero translational residual.
+    let axis_dot_normal = rd[0] * pn[0] + rd[1] * pn[1] + rd[2] * pn[2];
+    assert!(
+        axis_dot_normal.abs() < 1e-6,
+        "the placed roller axis must be perpendicular to the base plane normal \
+         (dot = {axis_dot_normal:e}); a tilted axis is not tangent"
+    );
+
+    // The cylinder/plane translational row: the signed axis-origin-to-plane distance
+    // equals the roller radius.
+    let plane_gap = (ro[0] - po[0]) * pn[0] + (ro[1] - po[1]) * pn[1] + (ro[2] - po[2]) * pn[2];
+    assert!(
+        (plane_gap - ROLLER_RADIUS_M).abs() < 1e-6,
+        "the placed roller axis must sit exactly one radius ({ROLLER_RADIUS_M} m) off the \
+         base plane, measured {plane_gap} m"
+    );
+
+    // The cylinder/cylinder row: the axis line-to-line distance equals r1 + r2 (both
+    // radii positive ⇒ EXTERNAL tangency).
+    let centre_distance = line_line_distance_m(ro, rd, io, id);
+    let expected = ROLLER_RADIUS_M + IDLER_RADIUS_M;
+    assert!(
+        (centre_distance - expected).abs() < 1e-6,
+        "the placed roller axis must stand r1 + r2 = {expected} m from the idler axis \
+         (external tangency), measured {centre_distance} m"
+    );
+}
+
+// ─── task 7050 — a non-FunctionCall relate member must not corrupt diagnostics ───
+//
+// `Relation` is a first-class nameable type — a user-defined wrapper such as
+// `fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }` type-checks and is
+// accepted inside a `relate {}` block — so a relate member need not be a bare
+// geometric-relation `FunctionCall`; it can be a `CompiledExprKind::UserFunctionCall`
+// the solve cannot build a [`RelationInstance`] for.
+//
+// `build_relation_instances`'s `filter_map` silently DROPPED such a member, making
+// `instances` SHORTER than `scope.relations`. Pre-fix, `solve_relate_scope` and
+// `conflict_diagnostic` nonetheless cross from an INSTANCE position back to
+// `scope.relations` using that SAME position as if it were a source index — so
+// from the first dropped member onward the two addressings disagree, and the
+// conflict diagnostic's name, subjects and shares-a-datum test are all read off
+// the WRONG relation.
+//
+// step-1 (below) pins the invariant an unconsumable member must satisfy: it must
+// change NOTHING about the conflict diagnostic a scope without it would produce.
+// step-3 pins the complementary invariant — the drop itself must be diagnosed, not
+// silent (INV-SF-3) — and step-5 pins that the diagnosis survives the B6
+// global-float short-circuit.
+
+/// A relate member the solve cannot consume (a user-defined `Relation`-typed
+/// wrapper) must not change WHICH relation the conflict diagnostic names.
+#[test]
+fn conflict_diagnostic_unshifted_by_a_non_call_relate_member() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping conflict_diagnostic_unshifted_by_a_non_call_relate_member: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    const CONCENTRIC: &str = "concentric(bolt.shank_axis, plate.hole_axis)";
+    const PERPENDICULAR: &str = "perpendicular(bolt.shank_axis, plate.hole_axis)";
+    const FLUSH: &str = "flush(bolt.seat_plane, plate.top_plane)";
+
+    let baseline_source = bolt_plate_scope_source(None, &[CONCENTRIC, PERPENDICULAR, FLUSH]);
+    let shifted_source = bolt_plate_scope_source(
+        Some(MATE_FN),
+        &[MATE_CALL, CONCENTRIC, PERPENDICULAR, FLUSH],
+    );
+
+    // (p1) the shifted module compiles with NO Error-severity diagnostics — the
+    // non-call member is a supported authoring surface, accepted by the compiler.
+    let shifted_module = compile_source_with_stdlib(&shifted_source);
+    let shifted_compile_errors: Vec<&str> = shifted_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        shifted_compile_errors.is_empty(),
+        "the shifted module (leading `mate(...)` relate member) must compile with no \
+         Error diagnostics, got: {shifted_compile_errors:?}"
+    );
+
+    // (p2) the collected scope carries all 4 members; the leading one is NOT a
+    // FunctionCall (the solve cannot build a RelationInstance for it) yet still
+    // type-checks to Type::Relation (the reachability premise).
+    let shifted_bp = template(&shifted_module, "BoltPlate");
+    let shifted_scope = collect_relate_scope(shifted_bp);
+    assert_eq!(
+        shifted_scope.relations.len(),
+        4,
+        "the shifted scope must collect all 4 relate-block members, got kinds {:?}",
+        shifted_scope.relations.iter().map(|r| format!("{:?}", r.kind)).collect::<Vec<_>>()
+    );
+    assert!(
+        !matches!(shifted_scope.relations[0].kind, CompiledExprKind::FunctionCall { .. }),
+        "the leading `mate(...)` member must NOT be a FunctionCall, got {:?}",
+        shifted_scope.relations[0].kind
+    );
+    assert_eq!(
+        shifted_scope.relations[0].result_type,
+        Type::Relation,
+        "the leading `mate(...)` member must type-check to Type::Relation, got {:?}",
+        shifted_scope.relations[0].result_type
+    );
+
+    let baseline_solution = solve_bolt_plate(&baseline_source);
+    let shifted_solution = solve_bolt_plate(&shifted_source);
+
+    // The single Error diagnostic whose message opens with "conflicting relations".
+    let conflict_message = |solution: &RelateSolution, label: &str| -> String {
+        let matches: Vec<&str> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error && d.message.starts_with("conflicting relations")
+            })
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "{label}: expected exactly one 'conflicting relations' Error diagnostic, got: {:?}",
+            solution.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        matches[0].to_string()
+    };
+
+    let baseline_msg = conflict_message(&baseline_solution, "baseline");
+    let shifted_msg = conflict_message(&shifted_solution, "shifted");
+
+    // (a) the shifted diagnostic names BOTH mutually-inconsistent relations …
+    assert!(
+        shifted_msg.contains("perpendicular") && shifted_msg.contains("concentric"),
+        "the conflict diagnostic must name both `perpendicular` and `concentric`, \
+         got: {shifted_msg:?}"
+    );
+    // (b) … and excludes `flush`, the consistent, independent driving relation.
+    assert!(
+        !shifted_msg.contains("flush"),
+        "the consistent, independent `flush` relation must be excluded from the \
+         minimal conflict set, got: {shifted_msg:?}"
+    );
+    // (c) `perpendicular` — the newest-declared member OF THE CONFLICT SET — is
+    //     flagged as the primary conflict.
+    assert!(
+        shifted_msg.contains("`perpendicular` is")
+            && (shifted_msg.contains("newest") || shifted_msg.contains("primary")),
+        "`perpendicular` must be flagged as the newest-declared/primary conflict, \
+         got: {shifted_msg:?}"
+    );
+    // (d) the primary's rendered subjects are perpendicular's REAL operands …
+    assert!(
+        shifted_msg.contains("`perpendicular` requires bolt.shank_axis and plate.hole_axis"),
+        "the primary conflict's rendered subjects must be perpendicular's own \
+         operands (bolt.shank_axis, plate.hole_axis), got: {shifted_msg:?}"
+    );
+    // … NOT flush's operands (which the misaligned read would substitute in).
+    assert!(
+        !shifted_msg.contains("bolt.seat_plane") && !shifted_msg.contains("plate.top_plane"),
+        "flush's operands must not appear in the conflict diagnostic, got: {shifted_msg:?}"
+    );
+    // (e) an unconsumable member shifts NOTHING — the message is identical to the
+    //     baseline scope that never had one.
+    assert_eq!(
+        shifted_msg, baseline_msg,
+        "a relate member the solve cannot consume must not change the conflict diagnostic"
+    );
+}
+
+/// A relate member no pass can consume is DIAGNOSED, not silently dropped
+/// (INV-SF-3, `docs/legibility/design-invariants.md`: a declaration is either
+/// consumed by a solve/verify pass this run, or generates a diagnostic naming why
+/// not).
+#[test]
+fn non_call_relate_member_is_diagnosed_not_silently_dropped() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_call_relate_member_is_diagnosed_not_silently_dropped: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    // Leading `mate(...)` (position 1) + the two §1 driving relations. This scope
+    // solves cleanly today — the bolt is placed and `solution.diagnostics` is
+    // EMPTY, which is exactly the silent skip this step closes.
+    let source = bolt_plate_scope_source(
+        Some(MATE_FN),
+        &[
+            MATE_CALL,
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            "flush(bolt.seat_plane, plate.top_plane)",
+        ],
+    );
+
+    let solution = solve_bolt_plate(&source);
+
+    // (a) at least one Error-severity diagnostic exists — the skip is no longer silent.
+    assert!(
+        solution.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "an un-consumable relate member must raise an Error diagnostic, got none \
+         (solution.diagnostics = {:?})",
+        solution.diagnostics
+    );
+
+    // (b)+(c) exactly one diagnostic carries RelateExpectsRelation and identifies
+    // the un-consumed member's 1-based declaration position (member 1) as a call
+    // the relate-solve cannot verify.
+    let skip_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        skip_diags.len(),
+        1,
+        "expected exactly one RelateExpectsRelation diagnostic, got: {:?}",
+        solution.diagnostics
+    );
+    let skip = skip_diags[0];
+    assert_eq!(
+        skip.severity,
+        Severity::Error,
+        "the un-consumed-member diagnostic must be Error severity, got {:?}",
+        skip.severity
+    );
+    assert!(
+        skip.message.contains("member 1"),
+        "the diagnostic must identify the un-consumed member's 1-based declaration \
+         position (member 1), got: {:?}",
+        skip.message
+    );
+    assert!(
+        skip.message.contains("cannot verify"),
+        "the diagnostic must say the relate-solve cannot verify the member, got: {:?}",
+        skip.message
+    );
+
+    // (d) the report is about the skipped member, nothing else.
+    assert!(
+        !skip.message.contains("concentric") && !skip.message.contains("flush"),
+        "the un-consumed-member diagnostic must not name the consumable relations, \
+         got: {:?}",
+        skip.message
+    );
+
+    // (e) diagnosing the skip does not disturb the solve that DID run.
+    assert_eq!(
+        solution.driving, 2,
+        "concentric + flush are still the driving set, unaffected by the skip"
+    );
+    assert!(
+        matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the bolt must still receive a solved Frame despite the skip diagnostic"
+    );
+}
+
+/// The B6 global-float short-circuit must not MASK the un-consumable member: both
+/// diagnostics must fire, distinct.
+#[test]
+fn non_call_relate_member_is_diagnosed_even_when_the_assembly_floats() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_call_relate_member_is_diagnosed_even_when_the_assembly_floats: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    // The relate block holds ONLY `mate(...)` — `trace_to_ground` also skips
+    // non-FunctionCall members, so the auto `bolt` reaches no anchor and the B6
+    // global-float short-circuit fires before any instance is built.
+    let source = bolt_plate_scope_source(Some(MATE_FN), &[MATE_CALL]);
+
+    let solution = solve_bolt_plate(&source);
+
+    // (a) B6 still fires — this step must not weaken the existing global-float
+    //     contract.
+    let float_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::AssemblyGlobalFloat);
+    assert_eq!(
+        float_diags.len(),
+        1,
+        "the B6 global-float diagnostic must still fire, got: {:?}",
+        solution.diagnostics
+    );
+
+    // (b) the un-consumable-member diagnostic is ALSO present, naming position 1.
+    let skip_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        skip_diags.len(),
+        1,
+        "the un-consumable-member diagnostic must fire even when the assembly \
+         floats, got: {:?}",
+        solution.diagnostics
+    );
+    assert!(
+        skip_diags[0].message.contains("member 1"),
+        "the skip diagnostic must name the member's 1-based declaration position \
+         (member 1), got: {:?}",
+        skip_diags[0].message
+    );
+
+    // (c) the two are DISTINCT diagnostics — the float error is not repurposed to
+    //     carry the skip message.
+    assert_ne!(
+        float_diags[0].message, skip_diags[0].message,
+        "the B6 float diagnostic and the skip diagnostic must be distinct messages"
+    );
+    assert_eq!(
+        solution.diagnostics.len(),
+        2,
+        "exactly the B6 float diagnostic + the skip diagnostic, nothing else, got: {:?}",
+        solution.diagnostics
+    );
+}
+
+/// The skip-detection/diagnosis logic is pure (kernel-free): it branches on
+/// `CompiledExprKind`/`result_type` alone, never on `realized`. Unlike its
+/// OCCT-gated neighbours, this test needs no kernel, so it is real coverage in a
+/// kernel-less build. Same fixture as
+/// `non_call_relate_member_is_diagnosed_even_when_the_assembly_floats`, but drives
+/// `solve_relate_scope` directly against `RealizedDatums::default()`.
+#[test]
+fn non_call_relate_member_is_diagnosed_without_a_kernel() {
+    let source = bolt_plate_scope_source(Some(MATE_FN), &[MATE_CALL]);
+    let module = compile_source_with_stdlib(&source);
+    let bp = template(&module, "BoltPlate");
+    let scope = collect_relate_scope(bp);
+
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+
+    let skip_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        skip_diags.len(),
+        1,
+        "the un-consumable-member diagnostic must fire with no geometry kernel \
+         involved, got: {:?}",
+        solution.diagnostics
+    );
+    assert!(
+        skip_diags[0].message.contains("member 1"),
+        "the skip diagnostic must name the member's 1-based declaration position \
+         (member 1), got: {:?}",
+        skip_diags[0].message
+    );
+}
+
+/// The reported member position is the DECLARATION index, not a skip-ordinal
+/// counter over just the skipped members (indistinguishable from that in a fixture
+/// where the unconsumable member always sits at index 0). Interleaves two
+/// `mate(...)` members with the two real driving relations —
+/// `[concentric, mate, flush, mate]` — so the reported positions (2 and 4) can only
+/// come from the declaration index.
+#[test]
+fn non_call_relate_member_position_is_the_declaration_index_not_a_skip_ordinal() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_call_relate_member_position_is_the_declaration_index_not_a_skip_ordinal: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    let source = bolt_plate_scope_source(
+        Some(MATE_FN),
+        &[
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            MATE_CALL,
+            "flush(bolt.seat_plane, plate.top_plane)",
+            MATE_CALL,
+        ],
+    );
+
+    let solution = solve_bolt_plate(&source);
+
+    // The solve itself is unaffected — the two CONSUMED relations (positions 1, 3)
+    // are still the driving set and the bolt is still placed.
+    assert_eq!(solution.driving, 2, "concentric + flush are still the driving set");
+    assert!(
+        matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the bolt must still receive a solved Frame"
+    );
+
+    let skip_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        skip_diags.len(),
+        2,
+        "expected exactly two RelateExpectsRelation diagnostics (one per skipped \
+         `mate(...)` member), got: {:?}",
+        solution.diagnostics
+    );
+    assert!(
+        skip_diags.iter().any(|d| d.message.contains("member 2")),
+        "one skip diagnostic must name declaration position 2 (the FIRST \
+         `mate(...)`, right after the leading `concentric`), got: {:?}",
+        skip_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        skip_diags.iter().any(|d| d.message.contains("member 4")),
+        "one skip diagnostic must name declaration position 4 (the SECOND \
+         `mate(...)`, last in the block), got: {:?}",
+        skip_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        !skip_diags
+            .iter()
+            .any(|d| d.message.contains("member 1") || d.message.contains("member 3")),
+        "neither skip diagnostic may name position 1 or 3 — those are the CONSUMED \
+         concentric/flush members, got: {:?}",
+        skip_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// `unconsumable_relation_diagnostic` must fire ONLY for a `Type::Relation` member
+/// the solve still can't build an instance for. A member the compiler already
+/// rejected as NOT `Type::Relation` (`check_relate_relations`,
+/// `crates/reify-compiler/src/entity.rs`) already carries an accurate
+/// `RelateExpectsRelation` diagnostic there; a second, differently-worded one would
+/// contradict it. Kernel-free: skip detection never touches `realized`, and the
+/// relate block's only member is not a `FunctionCall`, so B6's global-float
+/// short-circuit fires before any datum would be read.
+#[test]
+fn non_relation_typed_member_is_left_to_the_compilers_own_diagnostic() {
+    let source = bolt_plate_scope_source(None, &["1mm == 1mm"]);
+    let module = compile_source_with_stdlib(&source);
+
+    // The compiler's own check already flags this member — a `Bool`, not a
+    // `Relation` — with `RelateExpectsRelation` (`check_relate_relations`).
+    let compiler_diags =
+        diags_with_code(&module.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        compiler_diags.len(),
+        1,
+        "the compiler must flag the non-Relation relate member once, got: {:?}",
+        module.diagnostics
+    );
+
+    let bp = template(&module, "BoltPlate");
+    let scope = collect_relate_scope(bp);
+    assert_eq!(scope.relations.len(), 1, "the ill-typed member is still threaded onto the scope");
+    assert_ne!(
+        scope.relations[0].result_type,
+        Type::Relation,
+        "the member must type-check to something other than Relation (Bool), got {:?}",
+        scope.relations[0].result_type
+    );
+
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+
+    // The eval side must NOT also diagnose it — a second, differently-worded
+    // RelateExpectsRelation diagnostic would contradict the compiler's.
+    let eval_skip_diags =
+        diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert!(
+        eval_skip_diags.is_empty(),
+        "a non-Relation-typed relate member is already diagnosed by the compiler; \
+         the relate-solve must not pile a second RelateExpectsRelation diagnostic \
+         on top, got: {:?}",
+        eval_skip_diags
     );
 }
 

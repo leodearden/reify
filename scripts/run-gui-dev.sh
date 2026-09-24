@@ -4,15 +4,55 @@
 # Usage: scripts/run-gui-dev.sh <file.ri>
 #
 # Performs every build step needed to launch reify-gui in dev mode:
-#   1. Install gui/sidecar/ npm deps (tsup needs typescript at runtime).
-#   2. Build the sidecar (idempotent; ~20ms tsup bundle).
-#   3. Install gui/ npm deps (vite needs them).
-#   4. Start the vite dev server in the background and wait for :${REIFY_VITE_PORT:-1420}.
-#   5. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
-#   6. Export REIFY_DEBUG=1 + OCCT LD_LIBRARY_PATH.
-#   7. Run target/debug/reify-gui <file.ri> as a backgrounded child and
+#   1. Validate args, then PREFLIGHT: refuse a launch that is already known to
+#      fail (no display; the vite port already served) BEFORE any expensive
+#      step. Bypass the whole block with REIFY_GUI_SKIP_PREFLIGHT=1.
+#   2. Install gui/sidecar/ npm deps (tsup needs typescript at runtime).
+#   3. Build the sidecar (idempotent; ~20ms tsup bundle).
+#   4. Install gui/ npm deps (vite needs them).
+#   5. Start the vite dev server in its own PROCESS GROUP, with stdin detached
+#      from the terminal, and wait for :${REIFY_VITE_PORT:-1420}.
+#   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
+#   7. Export REIFY_DEBUG=1, the OCCT/tbb LD_LIBRARY_PATH and the WebKit
+#      renderer default.
+#   8. Run target/debug/reify-gui <file.ri> as a backgrounded child and
 #      `wait`, so SIGTERM/SIGINT to this script reach the trap which reaps
-#      both vite and reify-gui.
+#      both the vite process GROUP and reify-gui.
+#
+# ---------------------------------------------------------------------------
+# Environment contract
+# ---------------------------------------------------------------------------
+# The display preflight and the two env defaults below are IMPLEMENTED in
+# scripts/lib_gui_launch.sh, sourced by this script and by run-gui.sh so the
+# two launchers cannot drift apart on them. This block is the contract; that
+# lib is the mechanism.
+#
+# LD_LIBRARY_PATH  An inherited value is PRESERVED — entries are never scrubbed
+#                  or reordered — but /opt/reify-deps/tbb-pin is prepended
+#                  AHEAD of it. This is load-bearing: the loader searches
+#                  LD_LIBRARY_PATH before DT_RUNPATH, so a caller value naming
+#                  /usr/lib/x86_64-linux-gnu would otherwise bind the system
+#                  libtbb 12.11 over the deps 12.18 and defeat #5192's
+#                  mechanism A''. A one-line notice is emitted only when a
+#                  non-empty value was actually inherited.
+#
+# WEBKIT_DISABLE_DMABUF_RENDERER
+#                  Defaults to 1 (mirrors gui/test/visual/lib_e2e_smoke.sh
+#                  §2b). Without it, WebKitGTK aborts on an NVIDIA host with
+#                  "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
+#                  Export 0 to restore the DMABUF path where it works.
+#
+# vite stdin       The dev server is spawned with stdin redirected from
+#                  /dev/null, so vite's interactive CLI shortcuts (r/u/o/q) are
+#                  unavailable BY DESIGN. Without the redirect, job control
+#                  would hand the backgrounded vite this script's controlling
+#                  terminal and the kernel could stop it with SIGTTIN/SIGTTOU
+#                  — see §4.
+#
+# REIFY_GUI_SKIP_PREFLIGHT
+#                  Set to 1 to skip the display and vite-port preflights. They
+#                  run before any build, so this is the break-glass for an
+#                  unusual environment (e.g. a deliberately headless run).
 #
 # IMPORTANT: this script does NOT `exec` the GUI binary. `exec` would replace
 # the shell process with the binary, killing the trap that reaps vite.
@@ -22,6 +62,15 @@
 # vite is reaped).
 
 set -euo pipefail
+
+# Resolve this script's directory up-front so the shared launch helpers can be
+# sourced BEFORE anything touches LD_LIBRARY_PATH — lib_gui_launch.sh snapshots
+# the caller's value at source time, and a late source would report "nothing
+# inherited" for a value this script had set itself. REPO_ROOT is derived from
+# SCRIPT_DIR below, after argument validation.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib_gui_launch.sh
+source "$SCRIPT_DIR/lib_gui_launch.sh"
 
 # -- 1. Validate args ---------------------------------------------------------
 if [ "$#" -lt 1 ]; then
@@ -48,13 +97,23 @@ esac
 [ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
 
 # Resolve repo root from this script's path so the script works from any cwd.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Vite dev server port: default 1420, overridable via REIFY_VITE_PORT.
 # Used by tests/infra/test_run_gui_scripts.sh Test 25 to avoid collisions
 # with another worktree's vite already bound to :1420. See task 2308.
+#
+# TEST-ONLY KNOB — do NOT advertise it as a remedy for an occupied port.
+# It is honoured by the vite spawn (§4) and the readiness poll (§5) ONLY.
+# The launched binary does not read it: gui/src-tauri/tauri.conf.json pins
+# `"devUrl": "http://localhost:1420"`, which tauri bakes into reify-gui at
+# COMPILE time, and nothing under gui/src-tauri/src/ reads REIFY_VITE_PORT.
+# So overriding it for a real launch moves OUR vite off :1420 while reify-gui
+# still loads :1420 — i.e. the foreign listener that prompted the override,
+# or a connection-refused window — and the launcher reports success anyway.
+# Making it user-facing requires the GUI-side half first (a build-time devUrl
+# override via TAURI_CONFIG, or reading the env var in the Rust shell).
 REIFY_VITE_PORT="${REIFY_VITE_PORT:-1420}"
 
 # Debug server port: default 3939, overridable via REIFY_DEBUG_PORT.
@@ -62,6 +121,57 @@ REIFY_VITE_PORT="${REIFY_VITE_PORT:-1420}"
 # Exported so reify-gui binds the chosen port and the sidecar inherits it.
 REIFY_DEBUG_PORT="${REIFY_DEBUG_PORT:-3939}"
 export REIFY_DEBUG_PORT
+
+# -- 1b. Preflight: refuse to run into a known-bad launch --------------------
+# These checks are deliberately the FIRST thing after arg/port resolution and
+# before every expensive step (npm install, sidecar build, vite spawn, and a
+# cargo build that can take minutes). Each failure below is one a user would
+# otherwise only see after that wait.
+#
+# Set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass the whole block (break-glass).
+if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
+    # Display — shared with scripts/run-gui.sh, so the check and its message
+    # live in scripts/lib_gui_launch.sh (including the note on why we do NOT
+    # probe EGL). It prints its own error and returns 1; the exit is ours.
+    gui_launch_preflight_display || exit 1
+
+    # Vite port occupancy. Dev-mode only — run-gui.sh serves gui/dist and has
+    # no vite — so this half stays here rather than in the shared lib.
+    #
+    # §5's readiness loop calls curl BEFORE checking
+    # `kill -0 "$VITE_PID"`, so a FOREIGN listener on this port makes curl
+    # succeed on iteration 1 — while the vite we spawn has already exited on
+    # vite.config.ts's `strictPort: true`. The script would then pair a fresh
+    # reify-gui with a stale, unrelated vite serving another worktree's build.
+    # A pre-spawn occupancy check is the only ordering that closes that.
+    #
+    # `|| true` keeps the probe set -e-safe: a FAILING curl is the normal,
+    # healthy path (nothing is listening yet).
+    _preflight_port_rc=0
+    curl -fsS --max-time 2 "http://127.0.0.1:$REIFY_VITE_PORT/" >/dev/null 2>&1 \
+        || _preflight_port_rc=$?
+    if [ "$_preflight_port_rc" -eq 0 ]; then
+        echo "Error: vite port $REIFY_VITE_PORT is already in use — something is already serving http://127.0.0.1:$REIFY_VITE_PORT/" >&2
+        # Best-effort listener pid. `ss` is not guaranteed present, and its
+        # absence must never fail the script — the message above already
+        # stands on its own.
+        _preflight_listener=""
+        if command -v ss >/dev/null 2>&1; then
+            _preflight_listener="$(ss -ltnpH "sport = :$REIFY_VITE_PORT" 2>/dev/null \
+                | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
+        fi
+        if [ -n "$_preflight_listener" ]; then
+            # Freeing the port is the ONLY remedy offered on purpose: see the
+            # REIFY_VITE_PORT comment at §1 — reify-gui's devUrl is baked to
+            # :1420 at compile time, so relocating vite would leave the GUI
+            # pointed at this very listener.
+            echo "  Listener pid $_preflight_listener (\`ls -l /proc/$_preflight_listener/cwd\` shows which worktree it serves); free it with \`kill $_preflight_listener\`." >&2
+        else
+            echo "  Free the port before retrying." >&2
+        fi
+        exit 1
+    fi
+fi
 
 # -- 2. Install sidecar npm deps ---------------------------------------------
 # build-sidecar.sh runs `npx tsup`, which requires `typescript` to be present
@@ -84,11 +194,59 @@ echo "==> Installing gui dependencies..."
 # EXIT trap's `kill "$VITE_PID"` may signal the subshell while leaving the
 # real npm/vite process alive — vite then keeps :1420 bound and the next dev
 # run fails to start. With pushd/popd, `$!` points directly at npm.
+#
+# We additionally spawn npm in its OWN PROCESS GROUP, via the `set -m` idiom
+# borrowed from lib_proc_reaper.sh's reaper_run_in_pgroup. Under monitor mode
+# bash puts a background job in a fresh group whose PGID equals `$!`, so
+# VITE_PID doubles as the PGID and cleanup() can signal the whole tree. Without
+# it, `npm run dev` forks an intermediate `sh -c` which forks the node/vite
+# process that actually holds the port, and that GRANDCHILD outlives every
+# signal cleanup() can address (see the note there).
+#
+# The `</dev/null` on the spawn below is LOAD-BEARING — it must not later be
+# deleted as cosmetic. Bash gives an asynchronous command /dev/null stdin only
+# while job control is OFF, so the `set -m` above would otherwise hand the
+# backgrounded vite our CONTROLLING TERMINAL while leaving it in a BACKGROUND
+# process group. vite 6 gates its CLI shortcuts on `process.stdin.isTTY`
+# (`if (!server.httpServer || !process.stdin.isTTY || process.env.CI) return;`)
+# and then builds a readline over stdin, so the dev server would READ that tty:
+# any keystroke stops it with SIGTTIN, and its raw-mode tcsetattr stops it with
+# SIGTTOU even with no input at all. A STOPPED vite freezes HMR and the dev
+# server while `kill -0 "$VITE_PID"` still SUCCEEDS, so §5's vite-death branch
+# never fires and we wait 30s on a frozen server; in the `set -m`-unavailable
+# fallback a stopped vite also ignores cleanup()'s plain `kill`/`pkill -P`
+# TERM, leaving the port squatted — the exact failure the process group above
+# set out to fix. The redirect additionally makes isTTY false, so vite skips
+# bindCLIShortcuts entirely and both stop paths close at the source. Pinned by
+# tests/infra/test_run_gui_scripts.sh Test 31, which drives the launcher under
+# a pty (the suite has no tty of its own, so nothing else can see this). #7254
 echo "==> Starting vite dev server on :$REIFY_VITE_PORT..."
+# Save the caller's monitor-mode state so we restore exactly what we found.
+_had_monitor=0
+case $- in *m*) _had_monitor=1 ;; esac
+set -m 2>/dev/null || true
+VITE_PGROUP=0
+case $- in *m*) VITE_PGROUP=1 ;; esac
+if [ "$VITE_PGROUP" -eq 0 ]; then
+    # Monitor mode unavailable: npm shares OUR process group, so a group kill
+    # would signal this script too. cleanup() falls back to `pkill -P` in that
+    # case — degraded (the grandchild can survive), so say so out loud.
+    #
+    # BELT-AND-BRACES, WITH NO KNOWN TRIGGER — and therefore UNTESTED. `set -m`
+    # has no documented failure mode in bash on Linux, and none was found:
+    # measured here, monitor mode turns on in a plain non-interactive shell,
+    # with stdin piped, and under `setsid` with no controlling terminal. So
+    # nothing in tests/infra/test_run_gui_scripts.sh reaches this branch or the
+    # matching one in cleanup(). Keep it as insurance, but do NOT route new
+    # logic through it believing it is exercised — if you need it to work,
+    # write the test that drives it first.
+    echo "Warning: 'set -m' unavailable; vite teardown degraded to direct children only — a vite grandchild may survive and keep :$REIFY_VITE_PORT bound" >&2
+fi
 pushd gui >/dev/null
-npm run dev -- --port "$REIFY_VITE_PORT" &
+npm run dev -- --port "$REIFY_VITE_PORT" </dev/null &
 VITE_PID=$!
 popd >/dev/null
+if [ "$_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
 
 # Install cleanup trap to reap BOTH vite and reify-gui on every termination
 # path. This MUST stay active for the whole script — we deliberately do NOT
@@ -100,18 +258,50 @@ popd >/dev/null
 # trap but orphans reify-gui — the window survives, displays "Connection
 # refused" once vite dies, and squats on resources.
 #
-# We reap descendants first via `pkill -P "$VITE_PID"`: npm typically forks
-# vite as a child, and signaling only npm can leave vite holding the port.
-# `pkill -P` is best-effort (may not be on every system); the `|| true` keeps
-# the trap robust under set -e.
+# We reap vite by PROCESS GROUP, not by pid. `npm run dev` forks an
+# intermediate `sh -c` which forks the node/vite process that actually holds the
+# port, so `pkill -P "$VITE_PID"` — which reaches npm's DIRECT children only —
+# leaves that grandchild alive; it then squats on the port and the next dev run
+# fails to start. A process group persists while ANY member lives and its PGID
+# survives re-parenting, so the group kill still reaches the grandchild after
+# npm itself has exited. TERM first, then a short grace, then KILL.
+#
+# The grace is ~2s rather than lib_proc_reaper.sh's 10s default: this is an
+# interactive launcher, and a Ctrl-C that takes ten seconds to return the
+# prompt reads as a hang.
+#
+# `pkill -P "$VITE_PID"` + `kill "$VITE_PID"` are RETAINED as the fallback for
+# the case where `set -m` was unavailable and VITE_PID is therefore not a PGID
+# of our own making — there, a group kill would target our own group, so we must
+# not attempt one. That branch is belt-and-braces with NO KNOWN TRIGGER and is
+# UNTESTED — see the note at the `set -m` spawn above. Its stated property
+# (`pkill -P` reaches npm's direct children only, so the grandchild can survive)
+# is reasoned from the process shape, not measured, precisely because nothing
+# can drive it.
+#
+# The group-kill path above IS measured: Test 30 drives it, and a three-level
+# npm->sh->node-shaped tree tore down in 7-108ms over three runs here (0-1 poll
+# iterations) — comfortably inside the 2s grace, so the loop below returns
+# almost immediately rather than paying the grace in full.
 GUI_PID=""
 cleanup() {
     if [ -n "$GUI_PID" ]; then
         kill "$GUI_PID" 2>/dev/null || true
         wait "$GUI_PID" 2>/dev/null || true
     fi
-    pkill -P "$VITE_PID" 2>/dev/null || true
-    kill "$VITE_PID" 2>/dev/null || true
+    if [ "${VITE_PGROUP:-0}" -eq 1 ]; then
+        kill -TERM -- -"$VITE_PID" 2>/dev/null || true
+        # Bounded grace: poll so a fast exit returns promptly instead of always
+        # paying the full 2s.
+        for _ in $(seq 1 20); do
+            kill -0 -- -"$VITE_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -KILL -- -"$VITE_PID" 2>/dev/null || true
+    else
+        pkill -P "$VITE_PID" 2>/dev/null || true
+        kill "$VITE_PID" 2>/dev/null || true
+    fi
     wait "$VITE_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -161,6 +351,15 @@ SNAP_OCCT_LIB="/snap/freecad/current/usr/lib"
 if [ -d "$SNAP_OCCT_LIB" ]; then
     export LD_LIBRARY_PATH="$SNAP_OCCT_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
+
+# The oneTBB LD_LIBRARY_PATH pin + the WebKit renderer default, shared with
+# scripts/run-gui.sh — see scripts/lib_gui_launch.sh for both rationales.
+#
+# MUST come after the snap prepend above: gui_launch_env_pin PREPENDS the pin
+# dir, so anything that edits LD_LIBRARY_PATH afterwards would land ahead of it
+# and defeat #5192's pin. It is deliberately not nested in the snap conditional
+# either — the snap dir does not exist on a PPA host.
+gui_launch_env_pin
 
 # -- 8. Run reify-gui as a backgrounded CHILD (not exec) ---------------------
 # Critical: do NOT use `exec` here — `exec` replaces the shell process with
