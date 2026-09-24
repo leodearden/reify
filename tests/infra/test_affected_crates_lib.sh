@@ -677,7 +677,13 @@ assert "_REIFY_DAG_GATE_CRATE names the crate that hosts the DAG gate (crates/<c
 # python3 is already a hard dependency of this suite via _reify_compile_closure.
 _check_gate_crate_is_workspace_member() {
     echo "_REIFY_DAG_GATE_CRATE=[$_REIFY_DAG_GATE_CRATE]"
-    ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline --no-deps 2>/dev/null ) \
+    local meta
+    if ! meta="$(cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline --no-deps)" \
+        || [ -z "$meta" ]; then
+        echo "cargo metadata failed — workspace membership was never checked"
+        return 1
+    fi
+    printf '%s\n' "$meta" \
         | python3 -c 'import json,sys; meta=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in {p["name"] for p in meta["packages"]} else 1)' \
             "$_REIFY_DAG_GATE_CRATE"
 }
