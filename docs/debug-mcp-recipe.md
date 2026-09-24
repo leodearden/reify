@@ -132,7 +132,7 @@ gate *decides* is caught without a GUI — only the live *execution* needs one.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `get_diagnostics` | `{}` | `{compile:[], compileCount, lsp:[], lspCount}` |
+| `get_diagnostics` | `{}` | `{compile:[], tessellation:[], compileCount, tessellationCount}` |
 | `ui_outline` | `{}` | `{outline:[…], count}` — rendered DOM tree summary |
 
 ### R3 — Selectors & console
@@ -221,6 +221,20 @@ back-compat contract) is tracked by #6564.
 | `completion_at` | `{line, col}` | `{itemCount, items:[…]}` |
 | `definition_at` | `{line, col}` | `{range:{start,end}, uri}` |
 
+### W — AI write tools (task 5097)
+
+| Tool | Args | Returns |
+|------|------|---------|
+| `reify_set_parameter` | `{cell_id, value}` | `{success, new_value, unit, diagnostics}` — `value` is a unit-bearing literal (`'120mm'`); rewrites the parameter's default literal in the `.ri` on disk |
+| `reify_update_source` | `{file_path, content}` | `{success, diagnostics_count, diagnostics}` — active file only, in memory; writes no disk |
+| `reify_open_file` | `{file_path}` | `{success, source}` |
+| `reify_save_file` | `{file_path?}` | `{success}` — saves the active file when `file_path` is omitted |
+| `reify_export` | `{format, output_path}` | `{success, path}` — `format` is `step`, `stp` or `stl` |
+
+Their write semantics are specified in
+[debug-mcp-contract.md](debug-mcp-contract.md) §0 "AI write tools" and are not
+restated here.
+
 ---
 
 ## 4. /verify recipe
@@ -282,3 +296,27 @@ Known in-band error strings from `wait_for_idle`:
 
 See [docs/debug-mcp-contract.md](debug-mcp-contract.md) §2a for the full
 transport and error-envelope specification.
+
+---
+
+## 7. The in-app assistant's tool surface
+
+The GUI's Claude sidecar calls this server's tools as `mcp__reify-debug__<name>`.
+Its system prompt, `gui/sidecar/src/system-prompt.ts`, advertises a curated,
+design-facing subset of `tool_defs()`: tools to inspect the design, to change it
+(including the five AI write tools, §3 W) and to look at the result. That file
+is the list; it is not restated here.
+
+Every other tool stays callable, because `ALLOWED_TOOLS` in
+`gui/sidecar/src/session.ts` grants the whole `mcp__reify-debug__*` glob, but is
+deliberately not advertised.
+
+`gui/src/__tests__/sidecarPromptParity.test.ts` enforces the split. A new
+`ToolDef` must be named in the prompt or added to that file's
+`NOT_ADVERTISED_TO_SIDECAR`, or the gui suite goes red (see the checklist in
+[debug-mcp-contract.md](debug-mcp-contract.md) §1 "Defining a new tool").
+
+**Reachability caveat.** The sidecar reaches these tools only while the GUI runs
+with `REIFY_DEBUG=1`, because `gui/src-tauri/src/main.rs` spawns the debug
+server only then. Release launches (`scripts/run-gui.sh`) have none, yet the
+prompt still advertises them. This is known and tracked by #7816.

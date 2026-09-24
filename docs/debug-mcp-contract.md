@@ -403,6 +403,16 @@ entry and therefore do **not** appear in `tools/list`.
   — each entry must actually exhibit its asymmetry, so a stale allowlist cannot
   silently mask real drift.
 
+`gui/src/__tests__/sidecarPromptParity.test.ts` (task 7049) guards the in-app
+assistant's `SYSTEM_PROMPT` (`gui/sidecar/src/system-prompt.ts`) against the
+same registry:
+- Every `mcp__reify-debug__<name>` the prompt names is served by `tool_defs()`.
+- Every `tool_defs()` tool is either advertised in the prompt or listed in
+  `NOT_ADVERTISED_TO_SIDECAR`.
+- That allowlist is self-checked: no stale entries, no entries the prompt
+  names anyway, and no duplicates.
+- The five AI write tools are advertised.
+
 ---
 
 ## §1 Tool-def → dispatch → handler wiring
@@ -452,6 +462,14 @@ A new frontend-mediated tool requires three coordinated changes:
      building each tool's params object out of its own `input_schema`
      property names (and, separately, out of just its `required` list) and
      feeding it through the extractor the handler calls.
+
+5. **Every new `ToolDef` — frontend-mediated or write tool — is classified for
+   the in-app assistant** (task 7049). If it is design-facing, name it in the
+   tool table in `gui/sidecar/src/system-prompt.ts`; otherwise list it in
+   `NOT_ADVERTISED_TO_SIDECAR` in
+   `gui/src/__tests__/sidecarPromptParity.test.ts`, under the group that says
+   why it is withheld. That guard reds on an unclassified tool, a stale
+   withheld entry, or a withheld tool the prompt mentions.
 
 ### Dispatch flow
 
