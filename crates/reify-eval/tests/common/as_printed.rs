@@ -2,9 +2,9 @@
 
 //! Shared FDM as-printed fixture builders for `reify-eval` integration tests.
 //!
-//! Each public item carries `#[allow(dead_code)]` because this module recompiles
-//! into every `mod common;` test binary; binaries that don't use any as-printed
-//! helper would otherwise trip the `dead_code` lint (mirrors `alloc_counter.rs`).
+//! Each public item carries `#[allow(dead_code)]` because its consumers are the
+//! submodules of `harness_fea_solver_e2e`, the sole `mod common;` root, and each uses
+//! only a subset of these helpers.
 
 use reify_core::DimensionVector;
 use reify_ir::{Mesh, PersistentMap, StructureInstanceData, StructureTypeId, Value};

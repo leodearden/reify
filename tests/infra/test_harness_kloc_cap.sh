@@ -1411,7 +1411,7 @@ mkdir -p "$_s1e2_dir/common"
     printf 'mod does_not_exist;\n'
 } > "$_s1e2_dir/harness_sib.rs"                                   # root: 4 lines
 # (iii) transitivity: common/mod.rs itself declares a submodule (this is the
-#       live reify-eval shape — common/mod.rs declares alloc_counter/as_printed).
+#       live reify-eval shape — common/mod.rs declares as_printed).
 #       `mod.rs` resolves a bare `mod sub;` against its OWN directory.
 {
     printf 'pub mod sub;\n'
