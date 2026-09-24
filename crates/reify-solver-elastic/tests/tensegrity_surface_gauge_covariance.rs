@@ -596,12 +596,8 @@ fn build_catenoid_tube_with_decoupled_cable_pair() -> DecoupledPairFixture {
 /// against that row's own magnitude — one global `max` over rows lets the
 /// stiffened pair loosen every membrane row's stop test.
 ///
-/// MEASURED RED against the ratio-of-maxes criterion: the λ-solve's nodes
-/// differ from the base solve's by 7.928e-5 (iso) / 4.045e-4 (aniso), the
-/// λ-solve stopping after 33 vs 99 (iso) and 49 vs 396 (aniso) iterations.
-/// A per-row criterion makes the difference 0.0, bit-exact. Only [`LAMBDA`]
-/// is exercised: at [`LAMBDA_SMALL`] the pair's rows never dominate, so that
-/// direction measures 0.0 under both criteria and does not discriminate.
+/// Only [`LAMBDA`] is exercised: at [`LAMBDA_SMALL`] the pair's rows never
+/// dominate, so that direction cannot discriminate. Measurements: task 7046.
 fn check_decoupled_subsystem_gauge_invariance(
     context: &str,
     solve: impl Fn(&DecoupledPairFixture, &[f64]) -> (bool, Vec<[f64; 3]>),

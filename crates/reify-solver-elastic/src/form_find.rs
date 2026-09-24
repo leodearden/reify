@@ -497,11 +497,12 @@ fn solve_reduced(
 /// Relative residual above which [`is_singular_reduced_solve`] rejects a
 /// solve: the per-row residual against `1 +` the ANCHORS' coordinate scale
 /// (the reduced system's input). Backward-stable LU keeps `|r| ≲ eps·|D|·|x̂|`,
-/// so a solved-scale normaliser would pin the ratio at ~eps and never fire;
-/// against the input scale it grows with `|x̂|/|x_a|`, which a numerically
-/// singular `D_ff` inflates. Coordinates do not scale with `(q, σ)`, so the
-/// verdict stays gauge-free. Healthy solves measure ~1e-16, a near-singular
-/// one ~1e-3 (`near_singular_reduced_stiffness_is_rejected_at_every_gauge`).
+/// so the ratio stays ~eps on a healthy solve but grows with `|x̂|/|x_a|`, which
+/// a numerically singular `D_ff` inflates (against the solved scale it would
+/// stay ~eps and never fire). Coordinates do not scale with `(q, σ)`, so the
+/// verdict is gauge-free. Pinned by
+/// `near_singular_reduced_stiffness_is_rejected_at_every_gauge`; measured
+/// margins: task 7046.
 const REDUCED_SOLVE_RESIDUAL_REL_TOL: f64 = 1e-6;
 
 /// Post-solve guard for [`solve_reduced`]: true when the solved geometry must
@@ -1339,16 +1340,14 @@ mod tests {
         );
     }
 
-    // (b2) TASK 7046 REVIEW — a NUMERICALLY singular D_ff must be reported
-    // too, identically at every gauge. MEASURED RED: near the critical strut
-    // LU returns FINITE |x| ≈ 7.5e13, so only the residual branch can reject.
-    // Its per-row residual 2^-8 ≈ 3.9e-3 is 6.5e-4 against the anchors' scale
-    // (651× REDUCED_SOLVE_RESIDUAL_REL_TOL) but 5.2e-17 against the solved
-    // scale, which returned Ok; the pre-7046 guard rejected at λ = 1 and 2^20
-    // only. The control measures 7.4e-17. The residual is rounding noise on
-    // huge coordinates (an x-aligned chain gave an exact 0 at δ = 1e-11, hence
-    // the generic anchors): if a faer upgrade zeroes it, re-pick δ from a
-    // measured sweep — never loosen the guard.
+    // (b2) TASK 7046 — a NUMERICALLY singular D_ff must be reported too,
+    // identically at every gauge, while the control (half the critical strut
+    // density) stays Ok. LU returns finite but huge (~1e13) coordinates, so
+    // the residual branch rejects, and structurally rather than by rounding
+    // luck: at that size f0's free terms `2·x0 − x1` lie on a dyadic grid G
+    // (their ulp), and A0.y = 1/3 has no finite binary expansion, so f0's
+    // y-row cannot balance to better than G/3 under any LU kernel.
+    // Measurements: task 7046.
     #[test]
     fn near_singular_reduced_stiffness_is_rejected_at_every_gauge() {
         // The strut is a rank-1 update of the cable-only D_ff, singular at
@@ -1356,12 +1355,12 @@ mod tests {
         const CRITICAL_STRUT_Q: f64 = -0.25;
         const TWO_POW_20: f64 = 1_048_576.0;
         let nodes = vec![
-            [1.0, 0.0, 0.0],  // free f0
-            [2.0, 0.0, 0.0],  // free f1
-            [3.0, 0.0, 0.0],  // free f2
-            [4.0, 0.0, 0.0],  // free f3
-            [0.0, 1.0, -2.0], // anchor A0
-            [5.0, -3.0, 4.0], // anchor A1
+            [1.0, 0.0, 0.0],        // free f0
+            [2.0, 0.0, 0.0],        // free f1
+            [3.0, 0.0, 0.0],        // free f2
+            [4.0, 0.0, 0.0],        // free f3
+            [0.0, 1.0 / 3.0, -2.0], // anchor A0, y off every dyadic grid
+            [5.0, -3.0, 4.0],       // anchor A1
         ];
         // A0 —cable— f0 —cable— f1 —STRUT— f2 —cable— f3 —cable— A1
         let members = [(1, 2), (4, 0), (0, 1), (2, 3), (3, 5)];
@@ -1945,16 +1944,12 @@ mod tests {
     }
 
     // (h) TASK 7046 — the singular-solve verdict must be identical at every
-    // uniform gauge. This pins the pure predicate's gauge invariance on an
-    // EXACT residual: test (c)'s chain at power-of-two λ, where `D_λ = λ·D`
-    // exactly. (b2) covers the end-to-end near-singular case.
-    //
-    // MEASURED RED against the pre-7046 guard `residual > 1e-6·(1 + rhs_scale)`:
-    // the off-equilibrium geometry (per-row relative residual 2^-13 ≈ 1.2e-4,
-    // garbage) is rejected at λ = 1 (residual 2^-9 > 4e-6) and λ = 2^20
-    // (2048 > 3.15) but ACCEPTED at λ = 2^-20 (2^-29 ≈ 1.9e-9 < 1.0000029e-6):
-    // the additive 1.0 blinds the guard as λ → 0. The exact solution is the
-    // non-vacuity control, accepted at every λ.
+    // uniform gauge (an absolute term in the guard goes blind as λ → 0). This
+    // pins the pure predicate on an EXACT residual: test (c)'s chain at
+    // power-of-two λ, where `D_λ = λ·D` exactly. The off-equilibrium geometry
+    // is rejected and the exact solution (non-vacuity control) accepted at
+    // every λ. (b2) covers the end-to-end near-singular case; measurements:
+    // task 7046.
     #[test]
     fn singular_solve_verdict_is_invariant_under_uniform_force_density_scaling() {
         const BASE_Q: f64 = 1.0;
