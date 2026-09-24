@@ -620,13 +620,13 @@ pub(crate) const DEEP_RECURSION_DEPTH: u32 = 2048;
 /// Recurse ~16 MiB ONLY if we genuinely landed on the expected large-stack
 /// thread; otherwise report where we actually are, without recursing.
 ///
-/// "Invoked through a large-stack helper" does NOT by itself imply "runs on a
-/// large stack": every helper documents an INLINE-degradation arm that hands the
-/// closure back to the CALLER's default-size stack — `run_on_large_stack` when
-/// the OS refuses the 256 MiB mapping, `run_on_worker` additionally when the
-/// queue is dead. Recursing there overflows and SIGABRTs the whole test binary,
-/// taking every other test's result with it (observed while driving task 5772's
-/// step-3 RED, where a panicking job had killed the worker).
+/// "Submitted to a lane" does NOT by itself imply "runs on a large stack": each
+/// lane documents a degraded arm that runs the work on a DEFAULT-size stack when
+/// the OS refuses the 256 MiB mapping — `post` on a spawned default-stack
+/// thread, `dispatch_async` inline on the awaiting frame. Recursing there
+/// overflows and SIGABRTs the whole test binary, taking every other test's
+/// result with it (observed while driving task 5772's step-3 RED, where a
+/// panicking job had killed the worker).
 ///
 /// Checking first is what makes `large_stack_tests`' "no violent RED" claim true
 /// by CONSTRUCTION rather than by assumption: a degraded helper now yields a
