@@ -15,11 +15,15 @@
 //! test must be registered in `_RUST_COUPLED_RI_FIXTURES` in
 //! `scripts/verify.sh`.
 
+use std::sync::OnceLock;
+
 use reify_core::{Severity, ValueCellId};
 use reify_eval::EvalResult;
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::Value;
 use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
+
+use crate::numeric_cell::as_f64;
 
 const PROBE: &str = "MechanismLumpedFieldsProbe";
 
@@ -46,15 +50,10 @@ structure def MechanismLumpedFieldsProbe {
 }
 "#;
 
-/// Read an `f64` out of a numeric value cell (`Real` / `Int` / dimensioned
-/// `Scalar`), panicking on anything else so a shape regression fails loudly.
-fn num(v: &Value) -> f64 {
-    match v {
-        Value::Real(r) => *r,
-        Value::Int(n) => *n as f64,
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected a numeric cell, got {other:?}"),
-    }
+/// [`SOURCE`] compiled and evaluated once for every test in this module.
+fn probe_result() -> &'static EvalResult {
+    static PROBE_RESULT: OnceLock<EvalResult> = OnceLock::new();
+    PROBE_RESULT.get_or_init(eval_probe)
 }
 
 /// Compile and evaluate [`SOURCE`], asserting neither step reports an error.
@@ -94,10 +93,9 @@ fn cell<'a>(eval_result: &'a EvalResult, name: &str) -> &'a Value {
 
 #[test]
 fn mechanism_modal_lumped_fields_are_honest_undef_at_author_surface() {
-    let eval_result = eval_probe();
-    let cell = |name: &str| cell(&eval_result, name);
+    let cell = |name: &str| cell(probe_result(), name);
 
-    let f = num(cell("z_first_mode_hz"));
+    let f = as_f64(cell("z_first_mode_hz"));
     assert!(
         f.is_finite() && f > 1.0 && f < 1000.0,
         "first mode frequency {f} Hz must be finite and in 1..1000 Hz, or the \
@@ -132,8 +130,7 @@ fn mechanism_modal_lumped_fields_are_honest_undef_at_author_surface() {
 /// `crates/reify-stdlib/src/flexures/compound.rs`), hence the 1e-9 band on ‖K‖.
 #[test]
 fn mechanism_modal_lumped_matrix_norms_are_the_physical_m_and_k_at_author_surface() {
-    let eval_result = eval_probe();
-    let num_cell = |name: &str| num(cell(&eval_result, name));
+    let num_cell = |name: &str| as_f64(cell(probe_result(), name));
     let rel_err = |got: f64, expected: f64| (got - expected).abs() / expected;
 
     let mass = num_cell("z_carriage_mass");
