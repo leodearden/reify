@@ -900,11 +900,12 @@ fn children_or_none(children: Vec<DocumentSymbol>) -> Option<Vec<DocumentSymbol>
 /// and match-arm ([`reify_ast::MemberDecl::MatchArmDeclGroup`]) members are
 /// FLATTENED up to the owning declaration's children — no synthetic guard nodes —
 /// so guarded and match-arm params/lets stay discoverable for symbol-jump. Named
-/// members map as: param→FIELD, let→VARIABLE, sub→OBJECT, port→INTERFACE; subs
-/// and ports form true nested nodes (a sub's specialization body and a port's
-/// internal members become grandchildren). Unlabeled constraints, connects,
-/// chains, minimize/maximize, and meta blocks have no stable identifier to jump
-/// to and are skipped.
+/// members map as: param→FIELD, let→VARIABLE, sub→OBJECT, port→INTERFACE,
+/// sketch→NAMESPACE (body nested); subs, ports and sketches form true nested
+/// nodes (a sub's specialization body, a port's internal members and a sketch's
+/// body become grandchildren — a sketch body is block-scoped, so it is never
+/// flattened). Unlabeled constraints, connects, chains, minimize/maximize, and
+/// meta blocks have no stable identifier to jump to and are skipped.
 ///
 /// Recursion is bounded by [`reify_ast::MAX_MEMBER_NESTING_DEPTH`] to prevent
 /// stack overflow on pathological input, matching the AST member-walk helpers.
@@ -977,8 +978,19 @@ fn members_to_symbols_depth(
                 name_selection_range(source, port.span, &port.name),
                 children_or_none(members_to_symbols_depth(source, &port.members, depth + 1)),
             )),
-            // Constraints/connects/chains/minimize/maximize/meta are not emitted
-            // here — they have no stable identifier to jump to.
+            // A sketch is a named region enclosing its own declarations; its
+            // body nests rather than flattening, because sketch-local names are
+            // not visible outside the block.
+            MemberDecl::Sketch(sketch) => symbols.push(make_symbol(
+                &sketch.name,
+                SymbolKind::NAMESPACE,
+                span_to_range(source, sketch.span),
+                name_selection_range(source, sketch.span, &sketch.name),
+                children_or_none(members_to_symbols_depth(source, &sketch.members, depth + 1)),
+            )),
+            // Constraints/connects/chains/minimize/maximize/meta/relate carry no
+            // identifier of their own to jump to; associated types and fns are
+            // named but not outlined as members.
             _ => {}
         }
     }
