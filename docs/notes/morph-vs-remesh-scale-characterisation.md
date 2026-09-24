@@ -109,8 +109,9 @@ which is exactly the "pinned-surface scale" its own `# Complexity` note names
 as the case where a column-indexed mirror is needed. The CG solve is at most
 ~3% of the leg (rule-of-three bound on 0/104 samples; 208 iterations). Fix:
 task #7834. Expected post-fix n=18 morph leg: single-digit seconds — roughly
-par with gmsh, not 10x faster. Re-measurement is #7834's acceptance step and
-will be appended below.
+par with gmsh, not 10x faster. The re-measurement, #7834's acceptance step, is
+recorded in [After the Dirichlet fix](#after-the-dirichlet-fix-7834-2026-09-24)
+below.
 
 The two curves cross just above the 10K scale, which is why a measurement taken
 only at 10K would have supported the PRD's premise and a measurement at 100K
@@ -195,3 +196,97 @@ magnitude; they do not pin a threshold. Nothing here should be promoted to a
 CI-blocking bound without repetition and the statistics the harness deliberately
 does not collect. The 100K result is large enough (63x, on a +0.3% pairing) that
 run-to-run variance cannot plausibly account for its SIGN.
+
+## After the Dirichlet fix (#7834, 2026-09-24)
+
+Re-measured after `apply_dirichlet_row_elimination` moved from a per-BC scan of
+every row to a once-per-call index of the constrained columns — O(nnz + n) per
+call, independent of the number of prescribed DOFs. Recorded 2026-09-24 at
+commit `5496aca9f3` (the #7834 branch head when measured: the rewrite plus its
+guards and docs) on the same AMD Ryzen 9 3950X (16 cores / 32 threads), gmsh
+4.15.2 from `/opt/reify-deps`, **release profile**, `--test-threads=1`:
+
+```text
+cargo test -p reify-mesh-morph --test morph_scale_characterisation --release -- --ignored --nocapture --test-threads=1
+```
+
+Nothing in the harness, fixture, mesh sizes, CG options or modes changed. The
+host was shared and quiesced for neither run. Load averages (1 / 5 / 15 min, on
+32 hardware threads) were 80.34 / 150.47 / 143.20 before run 1, 70.08 / 139.06 /
+139.66 after it, 64.62 / 128.97 / 136.24 before run 2 and 69.85 / 125.95 /
+135.09 after it. Both runs are shown in the order taken; neither was selected.
+
+Verbatim harness output, with the `[task-6638] ` prefix stripped and each PAIR
+line wrapped after its `mismatch=` field as in the 2026-08-26 block (the
+continuation is otherwise unaltered, `(gmsh mesh_size=…)` suffix included).
+Run 1:
+
+```text
+surface n=8   volume_tets=9936    surface_tris=1884    surface_verts=944
+surface n=18  volume_tets=108756  surface_tris=9284    surface_verts=4644
+gmsh ladder input: the n=18 surface (9284 tris) for every rung
+gmsh  mesh_size=0.060 tets=2786     nodes=2590     wall=984.760822ms Ok
+gmsh  mesh_size=0.045 tets=5009     nodes=3732     wall=1.125640838s Ok
+gmsh  mesh_size=0.035 tets=9079     nodes=5481     wall=982.074543ms Ok
+gmsh  mesh_size=0.028 tets=15633    nodes=7922     wall= 1.10055991s Ok
+gmsh  mesh_size=0.022 tets=30922    nodes=13201    wall=1.095318884s Ok
+gmsh  mesh_size=0.017 tets=63121    nodes=22297    wall=1.082351434s Ok
+gmsh  mesh_size=0.014 tets=109078   nodes=34748    wall=1.626825202s Ok
+morph n=8   tets=9936     nodes=2169     dof=6507     wall=261.709984ms Ok
+morph n=18  tets=108756   nodes=20539    dof=61617    wall=5.646647045s Ok
+PAIR  n=8   morph_tets=9936     gmsh_tets=9079     mismatch=-8.6%
+            morph_wall=261.709984ms gmsh_wall=982.074543ms gmsh/morph=3.75x (gmsh mesh_size=0.035)
+PAIR  n=18  morph_tets=108756   gmsh_tets=109078   mismatch=+0.3%
+            morph_wall=5.646647045s gmsh_wall=1.626825202s gmsh/morph=0.29x (gmsh mesh_size=0.014)
+```
+
+Run 2, taken immediately after:
+
+```text
+surface n=8   volume_tets=9936    surface_tris=1884    surface_verts=944
+surface n=18  volume_tets=108756  surface_tris=9284    surface_verts=4644
+gmsh ladder input: the n=18 surface (9284 tris) for every rung
+gmsh  mesh_size=0.060 tets=2786     nodes=2590     wall=974.128269ms Ok
+gmsh  mesh_size=0.045 tets=5009     nodes=3732     wall=1.425027622s Ok
+gmsh  mesh_size=0.035 tets=9079     nodes=5481     wall=1.428426511s Ok
+gmsh  mesh_size=0.028 tets=15633    nodes=7922     wall=850.924793ms Ok
+gmsh  mesh_size=0.022 tets=30922    nodes=13201    wall=1.095975131s Ok
+gmsh  mesh_size=0.017 tets=63121    nodes=22297    wall=2.702342281s Ok
+gmsh  mesh_size=0.014 tets=109078   nodes=34748    wall=1.811810987s Ok
+morph n=8   tets=9936     nodes=2169     dof=6507     wall=311.490648ms Ok
+morph n=18  tets=108756   nodes=20539    dof=61617    wall= 6.19706894s Ok
+PAIR  n=8   morph_tets=9936     gmsh_tets=9079     mismatch=-8.6%
+            morph_wall=311.490648ms gmsh_wall=1.428426511s gmsh/morph=4.59x (gmsh mesh_size=0.035)
+PAIR  n=18  morph_tets=108756   gmsh_tets=109078   mismatch=+0.3%
+            morph_wall= 6.19706894s gmsh_wall=1.811810987s gmsh/morph=0.29x (gmsh mesh_size=0.014)
+```
+
+Reading:
+
+- **The 100K morph leg fell by more than an order of magnitude**: 5.65 s and
+  6.20 s, against 123.98 s under release on 2026-08-26 (roughly 20x less) and
+  156.1 s on the loaded host of the 2026-09-23 profile. The 10K leg fell too:
+  262 ms and 311 ms, against 536.9 ms. The drop is the size the 2026-09-23
+  profile predicted, with 100 of 104 samples in the routine this fix rewrote.
+  But no profile of the post-fix leg was taken, and the harness has no
+  assembly/solve split, so nothing here attributes the remaining seconds
+  between assembly, BC elimination and CG.
+- **At 100K the morph is still slower than the remesh.** The +0.3% pairing
+  (108,756 vs 109,078 tets) gives `gmsh/morph = 0.29x` in both runs: the morph
+  takes ~3.5x as long as single-threaded gmsh, where before it took ~63x as
+  long. The sign is unchanged; the order of magnitude is not.
+- **At 10K the morph now wins.** The -8.6% pairing (9,936 vs 9,079 tets) gives
+  `gmsh/morph = 3.75x` and `4.59x`, a margin that now exceeds the count
+  mismatch. But the paired gmsh rung sits in the fixed-setup regime described in
+  [Reading the ladder honestly](#reading-the-ladder-honestly), so read this as
+  "the morph wins at 10K", not as a multiplier. The dev profile was not
+  re-measured.
+- **The "single-digit seconds, roughly par, not 10x faster" expectation held,
+  in its "possibly slower" form.** The 100K leg is single-digit seconds and
+  nowhere near 10x faster than the remesh. "Roughly par" holds only in order of
+  magnitude: the morph remains ~3.5x slower. So #2953's >=10x-faster premise is
+  still unmet at 100K. It is no longer inverted by more than an order of
+  magnitude, but it is still on the wrong side of 1x.
+
+As everywhere in this note: quote the sign and the order of magnitude, and
+re-measure the multiplier.
