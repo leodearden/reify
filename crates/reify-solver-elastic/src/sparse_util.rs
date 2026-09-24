@@ -33,7 +33,8 @@ pub(crate) fn find_in_row(
 
 #[cfg(test)]
 mod tests {
-    use super::find_in_row;
+    use super::{ColumnEntry, ColumnSlots, find_in_row};
+    use faer::sparse::SymbolicSparseRowMat;
 
     // col_idx slice shared by several tests: columns 10, 20, 30, 40, 50
     // The full row occupies slots [2, 7) — i.e. start=2, end=7.
@@ -105,5 +106,95 @@ mod tests {
     fn single_element_row_miss() {
         let col_idx: &[usize] = &[0, 42, 0];
         assert_eq!(find_in_row(col_idx, 1, 2, 7), None);
+    }
+
+    // ColumnSlots — 4×4 pattern shared by several tests, the same layout as
+    // the Dirichlet row-range-boundaries test:
+    //   row 0 → slots 0..2 (cols [0, 2])
+    //   row 1 → slots 2..4 (cols [1, 3])
+    //   row 2 → slots 4..7 (cols [0, 2, 3])
+    //   row 3 → slots 7..9 (cols [2, 3])
+    fn boundaries_pattern() -> SymbolicSparseRowMat<usize> {
+        SymbolicSparseRowMat::<usize>::new_checked(
+            4,
+            4,
+            vec![0, 2, 4, 7, 9],
+            None,
+            vec![0, 2, 1, 3, 0, 2, 3, 2, 3],
+        )
+    }
+
+    fn entry(row: usize, slot: usize) -> ColumnEntry {
+        ColumnEntry { row, slot }
+    }
+
+    // (i) Every stored entry of a chosen column, as ABSOLUTE slots, rows
+    //     ascending. A row-relative slot would report K[3][2] as {3, 0}; row 1
+    //     stores no column 2 and must be skipped.
+    #[test]
+    fn chosen_columns_list_every_stored_entry_as_absolute_slots_rows_ascending() {
+        let pattern = boundaries_pattern();
+        let columns = ColumnSlots::new(pattern.as_ref(), [1, 2, 3]);
+        assert_eq!(columns.column(2), [entry(0, 1), entry(2, 5), entry(3, 7)]);
+        assert_eq!(columns.column(3), [entry(1, 3), entry(2, 6), entry(3, 8)]);
+        assert_eq!(columns.column(1), [entry(1, 2)]);
+    }
+
+    // (j) Memory is spent only on requested columns: columns 0 and 3 both
+    //     store entries, but only column 2 was chosen.
+    #[test]
+    fn unchosen_column_reads_as_empty() {
+        let pattern = boundaries_pattern();
+        let columns = ColumnSlots::new(pattern.as_ref(), [2]);
+        assert!(columns.column(0).is_empty(), "{:?}", columns.column(0));
+        assert!(columns.column(3).is_empty(), "{:?}", columns.column(3));
+    }
+
+    // (k) A chosen column with no stored entry — the Dirichlet
+    //     missing-diagonal case — reads as empty.
+    #[test]
+    fn chosen_column_without_stored_entries_is_empty() {
+        let pattern =
+            SymbolicSparseRowMat::<usize>::new_checked(3, 3, vec![0, 1, 2, 2], None, vec![0, 1]);
+        let columns = ColumnSlots::new(pattern.as_ref(), [2]);
+        assert!(columns.column(2).is_empty(), "{:?}", columns.column(2));
+    }
+
+    // (l) Choosing a column twice indexes it once — no doubled entries.
+    #[test]
+    fn choosing_a_column_twice_indexes_it_once() {
+        let pattern = boundaries_pattern();
+        let once = ColumnSlots::new(pattern.as_ref(), [2]);
+        let twice = ColumnSlots::new(pattern.as_ref(), [2, 2]);
+        assert_eq!(twice.column(2), once.column(2));
+    }
+
+    // (m) Unlike find_in_row, the index does not depend on sorted col_idx:
+    //     row 0 stores cols [2, 0], and every entry still carries its true
+    //     slot, rows ascending.
+    #[test]
+    fn rows_stay_ascending_when_col_idx_is_unsorted_within_rows() {
+        //   row 0 → slots 0..2 (cols [2, 0], out of order)
+        //   row 1 → slots 2..4 (cols [0, 1])
+        //   row 2 → slot  4    (cols [2])
+        let pattern = SymbolicSparseRowMat::<usize>::new_unsorted_checked(
+            3,
+            3,
+            vec![0, 2, 4, 5],
+            None,
+            vec![2, 0, 0, 1, 2],
+        );
+        let columns = ColumnSlots::new(pattern.as_ref(), [0, 2]);
+        assert_eq!(columns.column(0), [entry(0, 1), entry(1, 2)]);
+        assert_eq!(columns.column(2), [entry(0, 0), entry(2, 4)]);
+    }
+
+    // (n) A chosen column outside the pattern panics descriptively rather
+    //     than with a bare index-out-of-bounds.
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn out_of_range_column_panics() {
+        let pattern = boundaries_pattern();
+        let _ = ColumnSlots::new(pattern.as_ref(), [4]);
     }
 }
