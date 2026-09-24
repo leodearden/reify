@@ -111,12 +111,13 @@ registry task, this one is called out as the exception — in the manifest's own
 module doc as well as at the entry — rather than filed under the nearest
 plausible τ. Assigning it a row owner is follow-up ticket
 `tkt_0RT1CF3Q06BNRBRGCS970CVB75`; #6014 needs it resolved before it can delete
-the fallback.
+the fallback (resolved below, #7035).
 
 **Resolution (2026-09-24, #7035).** Owner: τ-queries/selectors, as an
 `EnginePostProcess` row (`Const(Type::Bool)`, `Exact(2)`, basis
 `Ruling("#7035")`), per `docs/prds/v0_6/builtin-signature-registry.md` §3
-decision 4 and §9. The assignment is enforced by a delivered_check on #6944 and
+decision 4 and §9. The assignment is enforced by a delivered_check on τ8
+(#6010, coalesced into #6944) and
 by `eval_deferred_names_are_disjoint_from_every_registered_family`. Correction to
 property 1 above: the fallback's mistyping WAS observable. Every call site draws
 `warning: constraint expression has type <Subject>, expected Bool`, measured on
