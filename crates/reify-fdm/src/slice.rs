@@ -427,12 +427,13 @@ pub fn slice_body(
 /// the canonical serialization the determinism-locked golden compares against.
 ///
 /// The output is **byte-stable run-to-run** for a given Toolpath: every `f64` is
-/// rendered at fixed 6-decimal precision (identical parses → identical bytes),
-/// fields appear in a fixed order, and a [`Toolpath`] holds only order-stable
-/// `Vec`s (adjacency is sorted+deduped by ζ; there is no HashMap/HashSet
-/// iteration in the output). Float formatting and decimal→`f64` parsing are both
-/// platform-independent in Rust, so the snapshot is portable across hosts. This
-/// is a faithful textual projection, **not** a lossless round-trip format.
+/// rendered at fixed 6-decimal precision (identical parses → identical bytes;
+/// an unobserved `nominal_temp` renders as `none`), fields appear in a fixed
+/// order, and a [`Toolpath`] holds only order-stable `Vec`s (adjacency is
+/// sorted+deduped by ζ; there is no HashMap/HashSet iteration in the output).
+/// Float formatting and decimal→`f64` parsing are both platform-independent in
+/// Rust, so the snapshot is portable across hosts. This is a faithful textual
+/// projection, **not** a lossless round-trip format.
 pub fn serialize_toolpath_canonical(tp: &Toolpath) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -450,7 +451,7 @@ pub fn serialize_toolpath_canonical(tp: &Toolpath) -> String {
             h = fmt6(b.height),
             li = b.layer_index,
             lz = fmt6(b.layer_z),
-            nt = fmt6(b.nominal_temp.unwrap_or(0.0)),
+            nt = b.nominal_temp.map_or_else(|| "none".to_owned(), fmt6),
             sp = fmt6(b.speed),
         );
         let _ = write!(out, "    centerline {}", b.centerline.len());
