@@ -362,3 +362,114 @@ pub(crate) fn visible_realization_keys(state: &crate::types::GuiState) -> Vec<St
         .map(|m| m.entity_path.clone())
         .collect()
 }
+
+// ── Task 7442: observing the evaluation queue ────────────────────────────────
+
+/// A `GuiState` with nothing in it.
+pub(crate) fn empty_gui_state() -> crate::types::GuiState {
+    crate::types::GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    }
+}
+
+/// A `GuiState` holding only the given `(cell_id, value)` parameter values —
+/// enough to tell snapshots apart through their deltas.
+pub(crate) fn gui_state_with_values(values: &[(&str, &str)]) -> crate::types::GuiState {
+    let value = |(cell_id, value): &(&str, &str)| crate::types::ValueData {
+        cell_id: cell_id.to_string(),
+        name: cell_id.rsplit('.').next().unwrap_or(cell_id).to_string(),
+        value: value.to_string(),
+        unit: "mm".to_string(),
+        determinacy: "determined".to_string(),
+        entity_path: cell_id.split('.').next().unwrap_or("").to_string(),
+        kind: "Param".to_string(),
+        freshness: "final".to_string(),
+        reason: None,
+        last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
+    };
+    crate::types::GuiState {
+        values: values.iter().map(value).collect(),
+        ..empty_gui_state()
+    }
+}
+
+/// One call an [`crate::eval_queue::EvalObserver`] received.
+#[derive(Debug, Clone)]
+pub(crate) enum Observed {
+    Activity(crate::eval_queue::EvalActivity),
+    Delta(crate::diff::StateDelta),
+}
+
+/// An [`Observed`] call and the name of the thread that made it.
+#[derive(Debug, Clone)]
+pub(crate) struct Observation {
+    pub(crate) observed: Observed,
+    pub(crate) thread: Option<String>,
+}
+
+/// An [`crate::eval_queue::EvalObserver`] that records every call, in order.
+#[derive(Default)]
+pub(crate) struct RecordingObserver {
+    observations: Mutex<Vec<Observation>>,
+}
+
+impl RecordingObserver {
+    pub(crate) fn observations(&self) -> Vec<Observation> {
+        self.observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn activities(&self) -> Vec<crate::eval_queue::EvalActivity> {
+        self.observations()
+            .into_iter()
+            .filter_map(|o| match o.observed {
+                Observed::Activity(activity) => Some(activity),
+                Observed::Delta(_) => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn deltas(&self) -> Vec<crate::diff::StateDelta> {
+        self.observations()
+            .into_iter()
+            .filter_map(|o| match o.observed {
+                Observed::Delta(delta) => Some(delta),
+                Observed::Activity(_) => None,
+            })
+            .collect()
+    }
+
+    fn record(&self, observed: Observed) {
+        let thread = std::thread::current().name().map(str::to_owned);
+        self.observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Observation { observed, thread });
+    }
+}
+
+impl crate::eval_queue::EvalObserver for RecordingObserver {
+    fn activity(&self, activity: crate::eval_queue::EvalActivity) {
+        self.record(Observed::Activity(activity));
+    }
+
+    fn delta(&self, delta: &crate::diff::StateDelta) {
+        self.record(Observed::Delta(delta.clone()));
+    }
+}

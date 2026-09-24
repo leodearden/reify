@@ -1,6 +1,11 @@
 //! Tests for [`crate::eval_queue`].
 
-use crate::eval_queue::{EditIdentity, EditLedger, EditOrder};
+use std::sync::{Arc, Mutex};
+
+use crate::diff::{StateDelta, advance_baseline, compute_delta, diff_gui_state};
+use crate::eval_queue::{EditIdentity, EditLedger, EditOrder, SnapshotPublisher};
+use crate::tests::test_helpers::{RecordingObserver, gui_state_with_values};
+use crate::types::GuiState;
 
 // ── Edit identity: which queued edit a newer one makes redundant ─────────────
 
@@ -138,4 +143,120 @@ fn the_ledger_admits_other_epochs_other_cells_and_every_disk_reload() {
     assert!(ledger.admit(&preview("B", 1)));
     assert!(ledger.admit(&disk("p.ri")));
     assert!(ledger.admit(&disk("p.ri")));
+}
+
+// ── SnapshotPublisher: evaluation results become frontend deltas ─────────────
+
+fn json(delta: &StateDelta) -> serde_json::Value {
+    serde_json::to_value(delta).expect("a delta serializes")
+}
+
+/// A two-cell snapshot, so a diff (only the changed width) and a full delta
+/// (both cells) are told apart.
+fn bracket(width: &str) -> GuiState {
+    gui_state_with_values(&[("Bracket.width", width), ("Bracket.height", "50")])
+}
+
+type Baseline = Arc<Mutex<Option<GuiState>>>;
+
+fn publisher() -> (SnapshotPublisher, Baseline, Arc<RecordingObserver>) {
+    let baseline: Baseline = Arc::new(Mutex::new(None));
+    let observer = Arc::new(RecordingObserver::default());
+    let publisher = SnapshotPublisher::new(Arc::clone(&baseline), observer.clone());
+    (publisher, baseline, observer)
+}
+
+fn baseline_now(baseline: &Baseline) -> Option<GuiState> {
+    baseline.lock().expect("baseline lock").clone()
+}
+
+#[test]
+fn the_first_publish_observes_a_full_delta_and_becomes_the_baseline() {
+    let (publisher, baseline, observer) = publisher();
+    let state = bracket("80");
+
+    assert!(publisher.publish(1, state.clone()));
+
+    let observations = observer.observations();
+    assert_eq!(observations.len(), 1, "exactly one delta, and no activity");
+    assert_eq!(
+        observations[0].thread.as_deref(),
+        std::thread::current().name(),
+        "the delta is observed on the publishing thread"
+    );
+    assert!(observer.activities().is_empty());
+    assert_eq!(json(&observer.deltas()[0]), json(&StateDelta::full(&state)));
+    assert_eq!(baseline_now(&baseline), Some(state));
+}
+
+#[test]
+fn a_later_publish_observes_only_the_diff() {
+    let (publisher, baseline, observer) = publisher();
+    let (first, second) = (bracket("80"), bracket("120"));
+
+    assert!(publisher.publish(1, first.clone()));
+    assert!(publisher.publish(2, second.clone()));
+
+    let deltas = observer.deltas();
+    assert_eq!(json(&deltas[1]), json(&diff_gui_state(&first, &second)));
+    assert_eq!(baseline_now(&baseline), Some(second));
+}
+
+/// INV-GUI-2: the debug server advances the same baseline through
+/// `compute_delta`, and the next publish must diff against what it left.
+#[test]
+fn a_publish_diffs_against_a_baseline_advanced_by_another_writer() {
+    let (publisher, baseline, observer) = publisher();
+    let (external, next) = (bracket("100"), bracket("120"));
+
+    assert!(publisher.publish(1, bracket("80")));
+    let _ = compute_delta(&baseline, &external);
+    assert!(publisher.publish(2, next.clone()));
+
+    let deltas = observer.deltas();
+    assert_eq!(json(&deltas[1]), json(&diff_gui_state(&external, &next)));
+}
+
+/// Deltas never go backwards: a publish whose generation is not newer than the
+/// last published one is refused without observing a delta or touching the
+/// baseline.
+#[test]
+fn a_publish_that_is_not_newer_is_refused_and_touches_nothing() {
+    let (publisher, baseline, observer) = publisher();
+    let newest = bracket("90");
+
+    assert!(publisher.publish(9, newest.clone()));
+    assert!(
+        !publisher.publish(7, bracket("70")),
+        "an older generation must be refused"
+    );
+    assert!(
+        !publisher.publish(9, bracket("99")),
+        "a repeated generation must be refused"
+    );
+
+    assert_eq!(observer.deltas().len(), 1);
+    assert_eq!(baseline_now(&baseline), Some(newest));
+}
+
+#[test]
+fn advance_baseline_returns_the_delta_compute_delta_would_and_moves_the_state_in() {
+    let (old, new) = (bracket("80"), bracket("120"));
+    let via_compute = Mutex::new(Some(old.clone()));
+    let via_advance = Mutex::new(Some(old));
+
+    let expected = compute_delta(&via_compute, &new);
+    let actual = advance_baseline(&via_advance, new.clone());
+
+    assert_eq!(json(&actual), json(&expected));
+    assert_eq!(
+        via_advance.lock().expect("baseline lock").as_ref(),
+        Some(&new)
+    );
+
+    let empty = Mutex::new(None);
+    assert_eq!(
+        json(&advance_baseline(&empty, new.clone())),
+        json(&StateDelta::full(&new))
+    );
 }
