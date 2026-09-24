@@ -1,5 +1,6 @@
 // TARGET fixture for constrained-2d-sketch.md task α (grammar producer).
-// EXPECTED TO FAIL parse until α lands; α's signal is this fixture parsing clean.
+// α's signal is this fixture parsing clean, which it does since α (task 5506);
+// compile still rejects the sketch block as "not yet supported" until γ (#5508).
 structure def Extrusion2020 {
     param slot_w : Length = 6.2mm
     param length : Length = 100mm

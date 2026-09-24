@@ -3721,7 +3721,7 @@ impl<'a> Lowering<'a> {
 
         let mut members = Vec::new();
         let mut cursor = node.walk();
-        for child in node.children(&mut cursor).collect::<Vec<_>>() {
+        for child in node.children(&mut cursor) {
             match child.kind() {
                 "let_declaration" => {
                     if let Some(decl) = self.lower_let(child) {
