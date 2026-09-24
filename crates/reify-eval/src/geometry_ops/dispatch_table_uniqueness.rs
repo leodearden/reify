@@ -1,21 +1,8 @@
-//! Runtime uniqueness backstop for the production `*_COMPILERS` dispatch tables.
-//!
-//! `geometry_ops.rs`'s `lock_dispatch_table!` macro catches a *count* mismatch
-//! between a table and its `Kind::VARIANT_COUNT` at compile time, but a table with
-//! exactly the right number of rows and a duplicate-with-omission edit (two rows for
-//! one variant, zero for another) passes that check silently — the same gap that was
-//! closed for `ModifyKind::CASES` in `geometry_modify.rs` by
-//! `single_geom_target_kinds_cases_table_unique_variant_set`. This module applies the
-//! same fix to the seven production dispatch tables themselves: collect each table's
-//! key column into a `HashSet` and assert the set's size still equals
-//! `Kind::VARIANT_COUNT`.
-//!
-//! A sibling file rather than an addition to `tests.rs`: the checks here are a small,
-//! self-contained concern, and `tests.rs` (already 30k+ lines) has its own
-//! `compile_geometry_op_registry_completeness` covering the adjacent "every variant
-//! has *some* registered compiler" property — this module covers the orthogonal "no
-//! variant is registered twice while another goes unregistered" property instead of
-//! growing that file further.
+//! Runtime uniqueness backstop for the production `*_COMPILERS` dispatch tables: for
+//! each table, asserts its key column has exactly `Kind::VARIANT_COUNT` distinct keys
+//! (no variant registered twice while another goes unregistered). Same check
+//! `geometry_modify.rs` runs for `ModifyKind::CASES` in
+//! `single_geom_target_kinds_cases_table_unique_variant_set`.
 
 use super::*;
 use std::collections::HashSet;
