@@ -707,13 +707,10 @@ fn global_float_diagnostic(floating: &[String]) -> Diagnostic {
 ///
 /// Replaces a SILENT drop with the INV-SF-3 diagnostic
 /// (`docs/legibility/design-invariants.md`: a declaration is either consumed by
-/// a solve/verify pass this run, or generates a diagnostic naming why not) — but
-/// only for scopes that reach this function at all. A relate scope with no `at
-/// auto` sub never calls it (`solve_scopes`'s qualifying filter, and this file's
-/// own early return, both skip such a scope before any relation is inspected), so
-/// the same authoring mistake there is still silently dropped; closing that gap
-/// belongs to the compiler's `check_relate_relations`, which sees every relate
-/// block regardless of auto subs (deferred to #7495).
+/// a solve/verify pass this run, or generates a diagnostic naming why not) on the
+/// auto-ful arm. A relate scope with no `at auto` sub never reaches this: its
+/// members are decided by [`verify_static_scope`], which counts the same member
+/// as unverifiable rather than dropping it.
 fn unconsumable_relation_diagnostic(source: usize) -> Diagnostic {
     let position = source + 1;
     Diagnostic::error(format!(
