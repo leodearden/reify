@@ -743,3 +743,85 @@ structure def C : T {}
         );
     }
 }
+
+// ── (#6505) Trait-generic param slots are dispatch wildcards (tier-3 gate held open) ──
+
+fn assert_dispatch_resolves_without_site_diagnostic(source: &str, member: &str) {
+    let module = compile_source(source);
+
+    let site_diagnostics: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.code,
+                Some(DiagnosticCode::TraitMethodUnknown) | Some(DiagnosticCode::AmbiguousCall)
+            )
+        })
+        .collect();
+    assert!(
+        site_diagnostics.is_empty(),
+        "dispatch must resolve without TraitMethodUnknown/AmbiguousCall; \
+         all diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    let assembly = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("compiled module should contain an Assembly template");
+    let cell = assembly
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == member)
+        .unwrap_or_else(|| panic!("Assembly should have a let binding '{member}'"));
+    let expr = cell
+        .default_expr
+        .as_ref()
+        .unwrap_or_else(|| panic!("'{member}' should have a compiled default expr"));
+    assert!(
+        matches!(expr.kind, CompiledExprKind::UserFunctionCall { .. }),
+        "'{member}' should lower to UserFunctionCall, not a poison literal; got: {:?}",
+        expr.kind
+    );
+}
+
+/// A slot typed by a TRAIT-level type param (`trait Boxed<T>`) matches any
+/// argument: the candidate's own fn-level type-param list is empty, so a
+/// free-fn-style `!f.type_params.is_empty()` gate would reject the slot and
+/// cascade a TraitMethodUnknown onto the root cause. Pins the tier-3
+/// `is_generic` gate held open at expr.rs's trait-assoc-fn filter (#6505).
+#[test]
+fn dispatch_trait_generic_type_param_slot_is_a_wildcard() {
+    let source = r#"
+trait Boxed<T> {
+    fn put(self, x: T) -> Real { 1.0 }
+}
+structure def BoltBox : Boxed<Length> {}
+structure def Assembly {
+    sub bx : BoltBox
+    let got = bx.(Boxed::put)(5mm)
+}
+"#;
+    assert_dispatch_resolves_without_site_diagnostic(source, "got");
+}
+
+/// A slot typed by a TRAIT-level dimension param (`trait Gauge<Q: Dimension>`,
+/// `Scalar<Q>`) matches any argument, for the same reason as the type-param
+/// case: the candidate's fn-level type-param list is empty, so gating on it
+/// would reject the slot. Pins the tier-3 `is_generic` gate held open (#6505).
+#[test]
+fn dispatch_trait_generic_dim_param_slot_is_a_wildcard() {
+    let source = r#"
+trait Gauge<Q: Dimension> {
+    fn read(self, x: Scalar<Q>) -> Real { 1.0 }
+}
+structure def G : Gauge<Length> {}
+structure def Assembly {
+    sub g : G
+    let got = g.(Gauge::read)(5mm)
+}
+"#;
+    assert_dispatch_resolves_without_site_diagnostic(source, "got");
+}
