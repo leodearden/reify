@@ -46,7 +46,7 @@
 
 use faer::sparse::SparseRowMat;
 
-use crate::sparse_util::find_in_row;
+use crate::sparse_util::{ColumnEntry, ColumnSlots};
 
 /// A prescribed-displacement boundary condition at a single degree of freedom.
 ///
@@ -82,12 +82,11 @@ pub struct DirichletBc {
 /// overwritten.  Callers may therefore reuse the same K/f allocation across
 /// multiple solves.
 ///
-/// The input `K` must have at most one stored entry per `(row, col)` pair —
-/// the standard CSR uniqueness invariant satisfied by all faer
-/// [`SparseRowMat`] matrices assembled via `try_new_from_triplets` and by
-/// [`assemble_global_stiffness`].  The fused column-scan stops at the first
-/// match per row; a matrix with duplicate column entries would leave one copy
-/// un-zeroed and produce a silently wrong result.
+/// The input `K` must be canonical CSR: strictly increasing column indices
+/// within each row, i.e. sorted and free of duplicate `(row, col)` entries, as
+/// [`SparseRowMat::try_new_from_triplets`] and
+/// [`assemble_global_stiffness`](crate::assembly::assemble_global_stiffness)
+/// produce.  A duplicated entry makes the result unspecified.
 ///
 /// # Symmetry preservation
 ///
@@ -117,12 +116,14 @@ pub struct DirichletBc {
 ///
 /// # Complexity
 ///
-/// O(nnz × |bcs|) where nnz is the number of stored entries in K. Each BC
-/// drives one full row-scan to locate the column-i entries. For FEA matrices
-/// (O(n) nnz, |bcs| ≪ n) this is dominated by the global solve cost and is
-/// not a bottleneck in practice. At pinned-surface scale (|bcs| ~ O(n)),
-/// a precomputed CSC mirror would reduce work to O(nnz_col_i) per BC; that
-/// optimisation is left for a future pass when profiling warrants it.
+/// O(nnz + n) per call, independent of |bcs|, where nnz is the number of
+/// stored entries in K. One counting pass indexes the stored entries of the
+/// constrained columns; each BC then costs O(stored entries of row `i` and of
+/// column `i`), which sums to at most 2·nnz over distinct DOFs. Extra memory
+/// is O(n + stored entries of the constrained columns), freed on return.
+/// Debug builds add O(nnz + |bcs|·log|bcs|) of checks. The pinned-surface
+/// case — a morph prescribing every surface DOF — is measured in
+/// `docs/notes/morph-vs-remesh-scale-characterisation.md`.
 ///
 /// # Panics
 ///
@@ -134,11 +135,9 @@ pub struct DirichletBc {
 /// - No explicit diagonal entry `K[bc.dof][bc.dof]` stored — all
 ///   FEA-assembled K matrices satisfy this (per Task 2916); a missing diagonal
 ///   indicates a non-FEA-assembled input.
-/// - In debug builds, panics if `K` has unsorted (or duplicate) column
-///   indices within any row — `col_idx[start..end]` must be strictly
-///   increasing. **Release builds silently produce wrong results** (binary
-///   search on unsorted data returns unspecified Ok/Err — sort col_idx, e.g.
-///   via `try_new_from_triplets`, before calling).
+/// - In debug builds, panics if `K` is not canonical CSR — unsorted or
+///   duplicate column indices within any row. Release builds do not check,
+///   and the result is then unspecified.
 pub fn apply_dirichlet_row_elimination(
     k: &mut SparseRowMat<usize, f64>,
     f: &mut [f64],
@@ -187,15 +186,12 @@ pub fn apply_dirichlet_row_elimination(
         }
     }
 
-    // Debug-only: walk all rows and assert strictly-increasing col_idx.
-    // binary_search on an unsorted slice returns an unspecified result
-    // (Rust std: "If the slice is not sorted, the returned result is
-    // unspecified and meaningless") — the diag_found assert below only
-    // catches the diagonal-row miss; off-diagonal corruption (wrong K[j][i]
-    // zeroed or wrong f[j] subtracted) is silent. Surface it eagerly here.
-    // O(nnz) total per call, paid only in debug builds. Asserting strictly
-    // increasing (`<`) also catches duplicate (row, col) entries, which
-    // break find_in_row's binary_search uniqueness assumption.
+    // Debug-only: assert the canonical-CSR precondition — strictly increasing
+    // col_idx within every row, which rules out both unsorted rows and
+    // duplicate (row, col) entries. The column walk below would visit each
+    // copy of a duplicated entry (a duplicated diagonal then sums to 2.0)
+    // without any symptom, so surface the violation eagerly here. O(nnz)
+    // total per call, paid only in debug builds.
     #[cfg(debug_assertions)]
     {
         let sym = k.symbolic();
@@ -219,27 +215,24 @@ pub fn apply_dirichlet_row_elimination(
         }
     }
 
+    // Built only after every check above, so an out-of-range dof reaches the
+    // descriptive DirichletBc assert rather than ColumnSlots' own.
+    let columns = ColumnSlots::new(k.symbolic(), bcs.iter().map(|bc| bc.dof));
+    let (sym, vals) = k.parts_mut();
+    let row_ptr = sym.row_ptr();
+
     for bc in bcs {
         let i = bc.dof;
         let u = bc.value;
 
-        let (sym, vals) = k.parts_mut();
-        let row_ptr = sym.row_ptr();
-        let col_idx = sym.col_idx();
-        let n = sym.nrows();
-
         // Step 2: zero row i — set every stored value in row i to 0.0.
-        // Must precede the fused loop: the diagonal K[i][i] is zeroed here
-        // and then unconditionally set to 1.0 inside the loop (step 4).
-        // Running this fill after the loop would clobber that write.
+        // Must precede the column walk: the diagonal K[i][i] is zeroed here
+        // and then unconditionally set to 1.0 inside the walk (step 4).
+        // Running this fill after the walk would clobber that write.
         vals[row_ptr[i]..row_ptr[i + 1]].fill(0.0);
 
-        // Fused steps 1, 3, and 4: single pass over all rows.
-        // Complexity: O(nnz) per BC (scans all n rows once); see the function-level
-        // `# Complexity` note for guidance on when this becomes a bottleneck.
-        //
-        // For each row j, locate the stored K[j][i] entry (at most one per
-        // row in CSR — the uniqueness invariant required by this function):
+        // Fused steps 1, 3, and 4: walk the stored entries of column i, rows
+        // ascending (at most one per row — the canonical-CSR precondition):
         //
         // • j ≠ i: read K[j][i], subtract into f[j] (step 1), then zero the
         //   stored entry (step 3). Reading before writing preserves the
@@ -250,23 +243,17 @@ pub fn apply_dirichlet_row_elimination(
         //   f[i] is overwritten unconditionally by step 5, so the
         //   column-into-RHS term is skipped for the diagonal row.
         let mut diag_found = false;
-        // CSR col_idx is sorted within each row (faer SymbolicSparseRowMat soft
-        // invariant); binary_search is O(log nnz_per_row).
-        for j in 0..n {
-            let start = row_ptr[j];
-            let end = row_ptr[j + 1];
-            if let Some(idx) = find_in_row(col_idx, start, end, i) {
-                if j == i {
-                    // Diagonal: was zeroed by step 2; set to 1.0 (step 4).
-                    vals[idx] = 1.0;
-                    diag_found = true;
-                } else {
-                    // Off-diagonal column i entry:
-                    // step 1 — read K[j][i], subtract into f[j] before zeroing;
-                    // step 3 — zero the stored entry.
-                    f[j] -= vals[idx] * u;
-                    vals[idx] = 0.0;
-                }
+        for &ColumnEntry { row: j, slot } in columns.column(i) {
+            if j == i {
+                // Diagonal: was zeroed by step 2; set to 1.0 (step 4).
+                vals[slot] = 1.0;
+                diag_found = true;
+            } else {
+                // Off-diagonal column i entry:
+                // step 1 — read K[j][i], subtract into f[j] before zeroing;
+                // step 3 — zero the stored entry.
+                f[j] -= vals[slot] * u;
+                vals[slot] = 0.0;
             }
         }
 
@@ -831,7 +818,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Step 3: binary_search regression — sparse CSR with non-trivial offsets
+    // Column elimination at row-range boundaries — sparse CSR with
+    // non-trivial offsets
     // -----------------------------------------------------------------------
 
     /// Applies `apply_dirichlet_row_elimination` to a SPARSE 4×4 CSR where
@@ -839,7 +827,7 @@ mod tests {
     ///
     /// Fixture (BC: dof=2, value=0.5):
     ///   Row 0: cols [0,2] — K[0][2] at offset 1 (end of row-0 range).
-    ///   Row 1: cols [1,3] — K[1][2] absent → Err arm → row 1 is bit-identical.
+    ///   Row 1: cols [1,3] — K[1][2] absent → row 1 is bit-identical.
     ///   Row 2: cols [0,2,3] — K[2][2] diagonal at offset 1 (middle of range).
     ///   Row 3: cols [2,3] — K[3][2] at offset 0 (start of row-3 range).
     ///
@@ -850,11 +838,14 @@ mod tests {
     ///   Row 3: slots [7..9]  → col_idx=[2,3]
     ///
     /// Pins:
-    /// - `start + rel` at offset 1 (row 0: start=0, rel=1 → slot 1 for K[0][2]).
-    /// - `start + rel` at offset 0 (row 3: start=7, rel=0 → slot 7 for K[3][2]).
-    ///   Using `rel` alone would give slot 0 — corrupting K[0][0] silently.
-    /// - Err-arm skip (row 1: binary_search([1,3], 2) → Err(1) → no change).
-    /// - Diagonal at non-boundary offset (row 2: start=4, rel=1 → slot 5).
+    /// - the absolute slot at offset 1 (row 0 starts at slot 0 → slot 1 for
+    ///   K[0][2]).
+    /// - the absolute slot at offset 0 (row 3 starts at slot 7 → slot 7 for
+    ///   K[3][2]). A row-relative offset would give slot 0 — corrupting
+    ///   K[0][0] silently.
+    /// - a row that stores no column-2 entry is skipped (row 1 → no change).
+    /// - the diagonal at a non-boundary offset (row 2 starts at slot 4 →
+    ///   slot 5).
     #[test]
     fn apply_dirichlet_to_sparse_csr_with_target_at_row_range_boundaries_eliminates_column_correctly()
      {
@@ -893,9 +884,9 @@ mod tests {
         let u = 0.5_f64;
 
         // ── Row 0: K[0][2] zeroed; f[0] adjusted ─────────────────────────────
-        // K[0][2] was at slot offset 1 in row 0's range (start=0, rel=1 → idx=1).
-        // Using `rel` alone (=1) would correctly index idx=1 here, but for row 3
-        // (start=7, rel=0) bare `rel` gives idx=0, corrupting K[0][0].
+        // K[0][2] is at offset 1 in row 0's range, i.e. absolute slot 1. A
+        // row-relative offset happens to coincide here (row 0 starts at slot
+        // 0), but for row 3 it would give slot 0, corrupting K[0][0].
         assert_eq!(
             read(&k, 0, 2),
             0.0,
@@ -915,12 +906,12 @@ mod tests {
             k_before[0][2],
         );
 
-        // ── Row 1: bit-identical to pre-call snapshot (Err arm, K[1][2] absent) ─
+        // ── Row 1: bit-identical to pre-call snapshot (K[1][2] absent) ─────────
         for col in 0..n {
             assert_eq!(
                 read(&k, 1, col).to_bits(),
                 k_before[1][col].to_bits(),
-                "K[1][{col}] must be bit-identical (K[1][2] absent → Err arm)"
+                "K[1][{col}] must be bit-identical (K[1][2] absent)"
             );
         }
         assert_eq!(
@@ -930,7 +921,7 @@ mod tests {
         );
 
         // ── Row 2: diagonal set; row zeroed by step-2 ────────────────────────
-        // Step-2 zeros all of row 2 before the per-row scan; the diagonal arm
+        // Step-2 zeros all of row 2 before the column walk; the diagonal arm
         // then writes K[2][2]=1.0 at offset 1 of row-2's stored range (slot 5).
         assert_eq!(
             read(&k, 2, 2).to_bits(),
@@ -950,9 +941,10 @@ mod tests {
         assert_eq!(f[2].to_bits(), u.to_bits(), "f[2] must be u=0.5 (pinned)");
 
         // ── Row 3: K[3][2] zeroed; f[3] adjusted ────────────────────────────
-        // K[3][2] is at slot offset 0 in row 3's range (start=7, rel=0 → idx=7).
-        // A buggy impl using `rel` (=0) instead of `start + rel` (=7) would
-        // silently write to vals[0] = K[0][0] and leave K[3][2] intact.
+        // K[3][2] is at offset 0 in row 3's range, i.e. absolute slot 7. A
+        // buggy impl using the row-relative offset (0) instead of the absolute
+        // slot (7) would silently write to vals[0] = K[0][0] and leave K[3][2]
+        // intact.
         assert_eq!(
             read(&k, 3, 2),
             0.0,
@@ -991,7 +983,7 @@ mod tests {
     /// `apply_dirichlet_row_elimination` intact.
     ///
     /// The new `#[cfg(debug_assertions)]` sorted-col_idx walk at function
-    /// entry must fire before any `binary_search` work, producing a panic
+    /// entry must fire before any elimination work, producing a panic
     /// message that contains "unsorted".
     ///
     /// Gated by `#[cfg(debug_assertions)]` so `cargo test --release` does
@@ -1023,7 +1015,7 @@ mod tests {
         let mut k = SparseRowMat::<usize, f64>::new(symbolic, vec![1.0, 2.0, 3.0, 4.0]);
         let mut f = vec![0.0_f64; 3];
         // BC at dof=0; the sorted-col_idx debug check runs at function entry
-        // and fires on row 0 before any binary_search work.
+        // and fires on row 0 before any elimination work.
         apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: 0, value: 0.0 }]);
     }
 
@@ -1060,8 +1052,8 @@ mod tests {
     /// column indices within a row, not merely out-of-order pairs.
     ///
     /// Fixture: 3×3 CSR where row 0 has col_idx `[0, 0]` — a duplicate
-    /// column, which breaks `find_in_row`'s binary_search uniqueness
-    /// assumption and is caught by `w[0] < w[1]` (0 < 0 is false).
+    /// column, which violates the canonical-CSR precondition and is caught
+    /// by `w[0] < w[1]` (0 < 0 is false).
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "unsorted")]

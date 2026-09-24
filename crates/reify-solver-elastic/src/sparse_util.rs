@@ -1,18 +1,24 @@
 //! Shared sparse-matrix helpers for the elastic solver kernel.
 //!
 //! This module collects small utilities that operate on faer's CSR
-//! representation (`col_idx`, `row_ptr`, `vals` slices) and are reused across
-//! multiple call sites — currently [`find_in_row`], which is shared between
-//! the Dirichlet boundary-condition eliminator and the MPC row eliminator.
+//! representation (`col_idx`, `row_ptr`, `vals` slices):
+//!
+//! - [`find_in_row`] locates one stored entry of a row by binary search; the
+//!   MPC row eliminator uses it.
+//! - [`ColumnSlots`] indexes the stored entries of chosen columns; the
+//!   Dirichlet boundary-condition eliminator uses it to walk a constrained
+//!   column without scanning every row.
 //!
 //! # Invariants
 //!
-//! All helpers here assume faer's **soft invariant**: column indices within
+//! [`find_in_row`] assumes faer's **soft invariant**: column indices within
 //! each CSR row are sorted in ascending order.  Callers that build their `K`
 //! via `faer::sparse::SparseRowMat::try_new_from_triplets` get this for free.
 //! Violating the invariant causes silent wrong results (binary search finds a
 //! spurious hit or misses a valid one); callers that cannot guarantee sortedness
-//! must sort before calling.
+//! must sort before calling.  [`ColumnSlots`] does not depend on it.
+
+use faer::sparse::SymbolicSparseRowMatRef;
 
 /// Returns the absolute slot index in `col_idx` (and the matching `vals` slot)
 /// for the stored entry at column `target` within CSR row `[start, end)`, or
@@ -29,6 +35,84 @@ pub(crate) fn find_in_row(
         .binary_search(&target)
         .ok()
         .map(|rel| start + rel)
+}
+
+/// One stored entry of a CSR column: its `row`, and its `slot` — the ABSOLUTE
+/// index into the matrix's `col_idx` and value arrays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ColumnEntry {
+    pub(crate) row: usize,
+    pub(crate) slot: usize,
+}
+
+/// Column-wise index of a CSR pattern, built only for the columns a caller
+/// chooses: the column access a row-major matrix lacks, without mirroring the
+/// whole matrix.
+///
+/// [`column`](Self::column) lists every stored entry of a chosen column, rows
+/// ascending, each as a [`ColumnEntry`] with an absolute slot. An unchosen
+/// column reads as empty. Building costs O(nnz + ncols) time and
+/// O(ncols + stored entries of the chosen columns) memory, and does not depend
+/// on sorted `col_idx`.
+pub(crate) struct ColumnSlots {
+    /// `col_start[c]..col_start[c + 1]` is column `c`'s range in `entries`.
+    col_start: Vec<usize>,
+    entries: Vec<ColumnEntry>,
+}
+
+impl ColumnSlots {
+    /// Indexes the stored entries of `columns` in `pattern`. Choosing a column
+    /// more than once indexes it once.
+    ///
+    /// # Panics
+    ///
+    /// If any chosen column is `>= pattern.ncols()`.
+    pub(crate) fn new(
+        pattern: SymbolicSparseRowMatRef<'_, usize>,
+        columns: impl IntoIterator<Item = usize>,
+    ) -> Self {
+        let ncols = pattern.ncols();
+        let mut chosen = vec![false; ncols];
+        for col in columns {
+            assert!(
+                col < ncols,
+                "ColumnSlots: column {col} is out of range for a pattern with {ncols} columns",
+            );
+            chosen[col] = true;
+        }
+
+        let col_idx = pattern.col_idx();
+        let mut col_start = vec![0; ncols + 1];
+        for row in 0..pattern.nrows() {
+            for &col in &col_idx[pattern.row_range(row)] {
+                if chosen[col] {
+                    col_start[col + 1] += 1;
+                }
+            }
+        }
+        for col in 0..ncols {
+            col_start[col + 1] += col_start[col];
+        }
+
+        let mut cursor = col_start[..ncols].to_vec();
+        let mut entries = vec![ColumnEntry { row: 0, slot: 0 }; col_start[ncols]];
+        for row in 0..pattern.nrows() {
+            for slot in pattern.row_range(row) {
+                let col = col_idx[slot];
+                if chosen[col] {
+                    entries[cursor[col]] = ColumnEntry { row, slot };
+                    cursor[col] += 1;
+                }
+            }
+        }
+        Self { col_start, entries }
+    }
+
+    /// The stored entries of column `col`, rows ascending; empty when `col`
+    /// was not chosen or stores nothing.
+    pub(crate) fn column(&self, col: usize) -> &[ColumnEntry] {
+        &self.entries[self.col_start[col]..self.col_start[col + 1]]
+    }
 }
 
 #[cfg(test)]
