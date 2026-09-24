@@ -1,4 +1,5 @@
 import { rmSync, writeFileSync } from 'node:fs'
+import type { Reporter } from 'vitest/node'
 
 // Detects the worker->host RPC starvation signature in a vitest run (task 7630).
 //
@@ -188,7 +189,10 @@ export function classifyWorkerRpcFlake(
 /**
  * The part of vitest's TestModule this reporter reads. Declared structurally
  * rather than imported so the adapter depends on four members instead of
- * vitest's whole reported-task surface.
+ * vitest's whole reported-task surface. vitest registers the reporter by path,
+ * so `implements Reporter` below is the only thing that makes tsc check the
+ * real TestModule against this declaration: a renamed member fails typecheck
+ * instead of throwing inside onTestRunEnd.
  */
 export interface ReportedModule extends ReportedSuite {
   readonly moduleId: string
@@ -268,7 +272,7 @@ const collectFailedTests = (
     })),
   )
 
-export default class WorkerRpcFlakeReporter {
+export default class WorkerRpcFlakeReporter implements Reporter {
   private readonly out: FlakeReporterOutput
 
   constructor(output: Partial<FlakeReporterOutput> = {}) {
