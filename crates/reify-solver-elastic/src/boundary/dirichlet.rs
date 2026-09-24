@@ -1129,4 +1129,258 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Differential guard: bit-identity with the documented algorithm
+    // -----------------------------------------------------------------------
+
+    /// The spec `apply_dirichlet_row_elimination` must reproduce bit for bit:
+    /// a literal transcription of the module doc's five steps that reads and
+    /// writes K only through faer's public `get_mut`, so it shares no
+    /// mechanics with the production routine. Every access is a search, for
+    /// O(|bcs| · n · log nnz_row) in total — fixture-sized inputs only.
+    fn reference_row_elimination(
+        k: &mut SparseRowMat<usize, f64>,
+        f: &mut [f64],
+        bcs: &[DirichletBc],
+    ) {
+        for bc in bcs {
+            let (i, u) = (bc.dof, bc.value);
+            // Step 2: zero row i.
+            for c in 0..k.ncols() {
+                if let Some(v) = k.get_mut(i, c) {
+                    *v = 0.0;
+                }
+            }
+            // Steps 1, 3 and 4: walk column i, rows ascending.
+            for j in 0..k.nrows() {
+                if let Some(v) = k.get_mut(j, i) {
+                    if j == i {
+                        *v = 1.0;
+                    } else {
+                        f[j] -= *v * u;
+                        *v = 0.0;
+                    }
+                }
+            }
+            // Step 5: pin the RHS.
+            f[i] = u;
+        }
+    }
+
+    /// Runs the production routine and [`reference_row_elimination`] on
+    /// clones of `k` and `f`, then asserts that every stored K value and every
+    /// `f` entry agree by `to_bits()`, naming the first mismatch.
+    fn assert_bit_identical_to_reference(
+        k: &SparseRowMat<usize, f64>,
+        f: &[f64],
+        bcs: &[DirichletBc],
+    ) {
+        let (mut k_production, mut f_production) = (k.clone(), f.to_vec());
+        apply_dirichlet_row_elimination(&mut k_production, &mut f_production, bcs);
+        let (mut k_reference, mut f_reference) = (k.clone(), f.to_vec());
+        reference_row_elimination(&mut k_reference, &mut f_reference, bcs);
+
+        let first_k_mismatch = k_production
+            .val()
+            .iter()
+            .zip(k_reference.val())
+            .position(|(p, r)| p.to_bits() != r.to_bits());
+        if let Some(slot) = first_k_mismatch {
+            let row_starts = k.symbolic().row_ptr();
+            let row = row_starts.partition_point(|&start| start <= slot) - 1;
+            let col = k.symbolic().col_idx()[slot];
+            panic!(
+                "K value slot {slot} (K[{row}][{col}]): production {:?} but reference {:?}",
+                k_production.val()[slot],
+                k_reference.val()[slot],
+            );
+        }
+        let first_f_mismatch = f_production
+            .iter()
+            .zip(&f_reference)
+            .position(|(p, r)| p.to_bits() != r.to_bits());
+        if let Some(row) = first_f_mismatch {
+            panic!(
+                "f[{row}]: production {:?} but reference {:?}",
+                f_production[row], f_reference[row],
+            );
+        }
+    }
+
+    /// Deterministic pseudo-random f64 for `seed` (a splitmix64 finalizer):
+    /// either sign, magnitudes from 0.01 to just under 200, and an exact
+    /// `±0.0` for roughly one seed in 37.
+    fn mixed_sign_value(seed: u64) -> f64 {
+        const SCALES: [f64; 5] = [0.01, 0.1, 1.0, 10.0, 100.0];
+        let mut h = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        h ^= h >> 31;
+        let negative = h & 1 == 1;
+        if h.is_multiple_of(37) {
+            return if negative { -0.0 } else { 0.0 };
+        }
+        let magnitude = (1.0 + (h >> 40) as f64 / (1u64 << 24) as f64) * SCALES[(h % 5) as usize];
+        if negative { -magnitude } else { magnitude }
+    }
+
+    /// Synthetic canonical CSR (`n × n`) with a structurally UNsymmetric
+    /// pattern: a stored diagonal on every row, mirrored band couplings at
+    /// offsets ±1, ±3 and ±17, plus a one-directional coupling
+    /// `(r, (5r + 2) mod n)` per row. Each stored value is
+    /// [`mixed_sign_value`] of its `(row, col)`.
+    fn synthetic_unsymmetric_csr(n: usize) -> SparseRowMat<usize, f64> {
+        use faer::sparse::Triplet;
+        use std::collections::BTreeSet;
+
+        let mut pattern = BTreeSet::new();
+        for r in 0..n {
+            pattern.insert((r, r));
+            for offset in [1, 3, 17] {
+                if r + offset < n {
+                    pattern.insert((r, r + offset));
+                    pattern.insert((r + offset, r));
+                }
+            }
+            pattern.insert((r, (5 * r + 2) % n));
+        }
+        let triplets: Vec<Triplet<usize, usize, f64>> = pattern
+            .into_iter()
+            .map(|(r, c)| Triplet::new(r, c, mixed_sign_value(((r as u64) << 32) | c as u64)))
+            .collect();
+        SparseRowMat::try_new_from_triplets(n, n, &triplets).expect("distinct in-range triplets")
+    }
+
+    /// Guard, green on arrival: it was written before the O(nnz) column-walk
+    /// rewrite of the elimination loop, and its value is forward protection —
+    /// that rewrite, and any later one, must reproduce every bit.
+    ///
+    /// Fixture: the FEA-assembled 15 × 15 shared-face K with 9 of its 15 DOFs
+    /// pinned in non-monotone slice order, homogeneous, positive and negative
+    /// values over two orders of magnitude, and a mixed-sign f.
+    #[test]
+    fn elimination_matches_reference_bit_for_bit_on_fea_assembled_k() {
+        let k = two_element_shared_face_k();
+        let f = [
+            0.5, -1.25, 3.0, -0.75, 2.5, -4.0, 1.75, -0.25, 6.0, -3.5, 0.125, -2.0, 1.0, -5.5,
+            0.625,
+        ];
+        let bcs = [
+            (7, 0.02),
+            (0, 0.0),
+            (12, -1.5),
+            (3, 0.3),
+            (14, -0.07),
+            (9, 0.0),
+            (1, 2.0),
+            (11, -0.4),
+            (5, 0.0),
+        ]
+        .map(|(dof, value)| DirichletBc { dof, value });
+
+        assert_bit_identical_to_reference(&k, &f, &bcs);
+    }
+
+    /// Guard, green on arrival: it was written before the O(nnz) column-walk
+    /// rewrite of the elimination loop, and its value is forward protection —
+    /// that rewrite, and any later one, must reproduce every bit.
+    ///
+    /// Fixture: the morph's pinned-surface proportion — 40% of the DOFs of a
+    /// structurally unsymmetric synthetic system, pinned in stride-permuted
+    /// slice order, every 4th BC homogeneous. The anti-vacuity asserts prove
+    /// the fixture can see what a rewrite might break: the order of the
+    /// several subtractions an unconstrained `f[j]` receives, BC–BC coupling,
+    /// and a column that does not mirror its row.
+    #[test]
+    fn elimination_matches_reference_bit_for_bit_at_pinned_surface_proportion() {
+        const N: usize = 240;
+        const PINNED: usize = 96;
+        // gcd(97, 240) = 1, so t ↦ (97·t + 11) mod 240 never repeats a DOF.
+        const STRIDE: usize = 97;
+        const RHS_SEEDS: u64 = 1 << 62;
+        const BC_VALUE_SEEDS: u64 = 1 << 63;
+
+        let k = synthetic_unsymmetric_csr(N);
+        let f: Vec<f64> = (0..N)
+            .map(|j| mixed_sign_value(RHS_SEEDS | j as u64))
+            .collect();
+        let bcs: Vec<DirichletBc> = (0..PINNED)
+            .map(|t| DirichletBc {
+                dof: (STRIDE * t + 11) % N,
+                value: if t % 4 == 3 {
+                    0.0
+                } else {
+                    mixed_sign_value(BC_VALUE_SEEDS | t as u64)
+                },
+            })
+            .collect();
+
+        let mut constrained = vec![false; N];
+        for bc in &bcs {
+            constrained[bc.dof] = true;
+        }
+        assert_eq!(
+            constrained.iter().filter(|&&c| c).count(),
+            PINNED,
+            "pinned DOFs must be distinct",
+        );
+        let pattern = k.symbolic();
+        let constrained_off_diagonal_columns = |j: usize| {
+            pattern
+                .col_idx_of_row(j)
+                .filter(|&c| c != j && constrained[c])
+                .count()
+        };
+        assert!(
+            (0..N).any(|j| !constrained[j] && constrained_off_diagonal_columns(j) >= 2),
+            "vacuous fixture: no unconstrained row stores two constrained columns, so the \
+             order of the subtractions into f[j] is unobservable",
+        );
+        assert!(
+            (0..N).any(|j| constrained[j] && constrained_off_diagonal_columns(j) >= 1),
+            "vacuous fixture: no constrained row stores another constrained column, so \
+             there is no BC–BC coupling",
+        );
+        assert!(
+            (0..N).any(|i| constrained[i]
+                && (0..N).any(|j| k.get(j, i).is_some() && k.get(i, j).is_none())),
+            "vacuous fixture: every constrained column mirrors its row, so reading column i \
+             off row i would go unnoticed",
+        );
+
+        assert_bit_identical_to_reference(&k, &f, &bcs);
+    }
+
+    /// Guard, green on arrival: it was written before the O(nnz) column-walk
+    /// rewrite of the elimination loop, and its value is forward protection —
+    /// that rewrite, and any later one, must reproduce every bit.
+    ///
+    /// Signed-zero probe: `-0.0 - (-1.0 · 0.0) = +0.0`, so a homogeneous BC's
+    /// column-into-RHS subtraction is observable. A rewrite that skips
+    /// homogeneous BCs or zero entries leaves `f[1] = -0.0`.
+    #[test]
+    fn homogeneous_bc_still_performs_its_column_into_rhs_subtraction() {
+        use faer::sparse::Triplet;
+
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 0, 2.0),
+            Triplet::new(0, 1, -1.0),
+            Triplet::new(1, 0, -1.0),
+            Triplet::new(1, 1, 2.0),
+            Triplet::new(2, 2, 2.0),
+        ];
+        let mut k: SparseRowMat<usize, f64> =
+            SparseRowMat::try_new_from_triplets(3, 3, &triplets).expect("valid triplets");
+        let mut f = [5.0, -0.0, 7.0];
+
+        apply_dirichlet_row_elimination(&mut k, &mut f, &[DirichletBc { dof: 0, value: 0.0 }]);
+
+        assert_eq!(
+            f[1].to_bits(),
+            0.0_f64.to_bits(),
+            "f[1] = {:?}; expected +0.0 = -0.0 - (-1.0 * 0.0)",
+            f[1],
+        );
+    }
 }
