@@ -646,6 +646,209 @@ fn dispatch_recovers_a_handed_back_job_inline_on_the_caller() {
     );
 }
 
+// ── Fire-and-forget ENGINE-lane submission (task 7442) ───────────────────────
+//
+// `post_to_worker` queues a job without waiting for it, so an async command
+// never parks a thread on engine work. Nobody waits on a posted job, so these
+// tests synchronise through channels the jobs report on.
+
+/// Bound on every wait for a posted job. It is NOT a timing assertion: it only
+/// turns a wedged lane into a failing test instead of a hung test binary.
+const ANTI_WEDGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The `ThreadId` and name of the calling thread.
+fn this_thread() -> (std::thread::ThreadId, Option<String>) {
+    let thread = std::thread::current();
+    (thread.id(), thread.name().map(str::to_owned))
+}
+
+/// Post a probe to the ENGINE lane and return the thread it ran on.
+fn engine_lane_thread() -> std::thread::ThreadId {
+    let (tx, rx) = std::sync::mpsc::channel();
+    crate::large_stack::post_to_worker(move || {
+        let _ = tx.send(std::thread::current().id());
+    })
+    .expect("posting to the ENGINE lane must succeed");
+    rx.recv_timeout(ANTI_WEDGE)
+        .expect("a probe posted to the ENGINE lane must run")
+}
+
+/// The job runs on the persistent ENGINE lane, and `post_to_worker` returns
+/// while the job is still blocked — the job only proceeds once the test has
+/// seen `post_to_worker` return.
+#[test]
+fn post_to_worker_runs_on_the_engine_lane_and_returns_before_the_job_finishes() {
+    use crate::large_stack::{WORKER_THREAD_NAME, post_to_worker};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let caller = std::thread::current().id();
+    let post_returned = Arc::new(AtomicBool::new(false));
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (report_tx, report_rx) = std::sync::mpsc::channel();
+
+    let seen_by_job = Arc::clone(&post_returned);
+    post_to_worker(move || {
+        let released = release_rx.recv_timeout(ANTI_WEDGE).is_ok();
+        let returned_first = released && seen_by_job.load(Ordering::SeqCst);
+        let _ = report_tx.send((this_thread(), returned_first));
+    })
+    .expect("posting to the ENGINE lane must succeed");
+    post_returned.store(true, Ordering::SeqCst);
+    let _ = release_tx.send(());
+
+    let ((ran_on, name), returned_first) = report_rx
+        .recv_timeout(ANTI_WEDGE)
+        .expect("the posted job must run and report");
+    assert_ne!(ran_on, caller, "the job must not run inline on the caller");
+    assert_eq!(
+        name.as_deref(),
+        Some(WORKER_THREAD_NAME),
+        "the job must run on the persistent ENGINE lane"
+    );
+    assert!(
+        returned_first,
+        "post_to_worker must return before its job finishes, not wait for it"
+    );
+}
+
+/// A panicking posted job is contained on the lane: the SAME lane thread keeps
+/// serving (`ThreadId`s are never reused, so equality proves survival).
+#[test]
+fn the_engine_lane_survives_a_panicking_posted_job() {
+    use crate::large_stack::post_to_worker;
+
+    let before = engine_lane_thread();
+    post_to_worker(|| panic!("posted boom")).expect("posting a panicking job must succeed");
+    let after = engine_lane_thread();
+
+    assert_ne!(
+        before,
+        std::thread::current().id(),
+        "the probe must run on the lane, not inline on the caller"
+    );
+    assert_eq!(
+        after, before,
+        "the SAME lane thread must survive a panicking posted job"
+    );
+}
+
+/// A posted job gets the lane's large stack.
+#[test]
+fn post_to_worker_survives_deep_recursion_over_default_stack() {
+    use crate::large_stack::{WORKER_THREAD_NAME, post_to_worker};
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    post_to_worker(move || {
+        let _ = tx.send(deep_recurse_if_on_thread(
+            WORKER_THREAD_NAME,
+            DEEP_RECURSION_DEPTH,
+        ));
+    })
+    .expect("posting to the ENGINE lane must succeed");
+
+    let depth_reached = rx
+        .recv_timeout(ANTI_WEDGE)
+        .expect("the posted job must run and report")
+        .unwrap_or_else(|why| panic!("{why}"));
+    assert_eq!(
+        depth_reached,
+        u64::from(DEEP_RECURSION_DEPTH) + 1,
+        "deep recursion must run to completion on the ENGINE lane's large stack"
+    );
+}
+
+/// With no lane (the OS refused its mapping) the job still runs on a spawned
+/// thread — never inline, because a poster may be a tokio worker, where OCCT's
+/// synchronous kernel handle panics.
+#[test]
+fn post_without_a_lane_runs_the_job_on_a_spawned_engine_thread() {
+    use crate::large_stack::{ENGINE_THREAD_NAME, post};
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    post(
+        None,
+        Box::new(move || {
+            let _ = tx.send(this_thread());
+        }),
+    )
+    .expect("the no-lane arm must still accept the job");
+
+    let (ran_on, name) = rx.recv_timeout(ANTI_WEDGE).expect("the job must run");
+    assert_ne!(
+        ran_on,
+        std::thread::current().id(),
+        "the job must never run inline on the poster"
+    );
+    assert_eq!(name.as_deref(), Some(ENGINE_THREAD_NAME));
+}
+
+/// A job handed back by a dead lane still runs, on a spawned engine thread
+/// rather than inline on the poster.
+#[test]
+fn post_hands_a_job_refused_by_a_dead_lane_to_a_spawned_engine_thread() {
+    use crate::large_stack::{ENGINE_THREAD_NAME, JobSender, post};
+
+    let (lane_tx, lane_rx) = std::sync::mpsc::channel();
+    drop(lane_rx);
+    let dead = JobSender::new("dead-lane", lane_tx);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    post(
+        Some(&dead),
+        Box::new(move || {
+            let _ = tx.send(this_thread());
+        }),
+    )
+    .expect("a job refused by a dead lane must be recovered, not dropped");
+
+    let (ran_on, name) = rx.recv_timeout(ANTI_WEDGE).expect("the job must run");
+    assert_ne!(
+        ran_on,
+        std::thread::current().id(),
+        "the recovered job must never run inline on the poster"
+    );
+    assert_eq!(name.as_deref(), Some(ENGINE_THREAD_NAME));
+}
+
+/// A job running ON the ENGINE lane may post to that same lane: posting never
+/// waits, so — unlike the waiting seams pinned by
+/// `submitting_to_your_own_lane_panics_loudly_instead_of_wedging_it` — it
+/// cannot wedge the single consumer. The inner job runs after the outer one
+/// returns, on the same thread.
+#[test]
+fn a_job_on_the_engine_lane_may_post_to_its_own_lane() {
+    use crate::large_stack::post_to_worker;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let inner_tx = tx.clone();
+    post_to_worker(move || {
+        let posted = post_to_worker(move || {
+            let _ = inner_tx.send(("inner", std::thread::current().id(), true));
+        });
+        let _ = tx.send(("outer", std::thread::current().id(), posted.is_ok()));
+    })
+    .expect("posting to the ENGINE lane must succeed");
+
+    let (first, outer_thread, posted_ok) =
+        rx.recv_timeout(ANTI_WEDGE).expect("the outer job must run");
+    let (second, inner_thread, _) = rx
+        .recv_timeout(ANTI_WEDGE)
+        .expect("the inner job must run — a wedged lane never reaches it");
+
+    assert!(posted_ok, "posting from the lane to itself must succeed");
+    assert_eq!(
+        (first, second),
+        ("outer", "inner"),
+        "the inner job must be queued behind the outer one, not run inline"
+    );
+    assert_ne!(outer_thread, std::thread::current().id());
+    assert_eq!(
+        inner_thread, outer_thread,
+        "the inner job must run on the same ENGINE lane thread"
+    );
+}
+
 // ── Named LANES: one mechanism, two instances (task 5772) ────────────────────
 //
 // `lsp_request` also needs a large stack, and the task asks for ONE worker
