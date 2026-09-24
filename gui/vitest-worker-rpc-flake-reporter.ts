@@ -128,17 +128,17 @@ const isExplainedSuite = (suite: FailedSuiteRecord, holdsFailedTest: ReadonlySet
  *    timeout or, carrying no error of its own, it holds the vetted failed
  *    test — and every unhandled error is an RPC timeout. One error arising any
  *    other way, even beside an RPC timeout in the same module, vetoes the whole
- *    run, so a real defect coinciding with a starvation event is never absorbed.
+ *    run, so a defect that REPORTS itself is never absorbed.
  *  - Every suite reached a terminal state and the run was not interrupted.
  *    The rules above reason only about failures that were REPORTED; this one
  *    closes the same hole for suites that never RAN, which a dying forks pool
  *    leaves behind. Without it a retry of the two failures could green a gate
  *    that silently skipped twenty more.
  *
- * The one defect these rules CAN classify is a genuine HANG, and only when it
- * coincides with independent suite-level starvation (task 7833). Scope below
- * always re-runs the hung test's module, so a deterministic hang recurs on the
- * one bounded retry and escalates red.
+ * The one defect these rules CAN classify is a genuine HANG, which reports only
+ * a timeout, and only when it coincides with independent suite-level
+ * starvation (task 7833). Scope below always re-runs the hung test's module,
+ * so a deterministic hang recurs on the one bounded retry and escalates red.
  *
  * SCOPE is decided separately, and by ATTRIBUTABILITY rather than by counting.
  * A run-level failure has no module to attribute it to: the `snapshotSaved` RPC

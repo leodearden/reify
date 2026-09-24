@@ -19,12 +19,9 @@
 #
 # THIS IS NOT A BLANKET RETRY, and deliberately not a timeout bump. It fires
 # only when gui/vitest-worker-rpc-flake-reporter.ts has classified the run as
-# unambiguously that event — every failed suite carrying an RPC timeout or
-# failing only by a test that timed out (or hit an RPC timeout) alongside such
-# a suite, and no unexplained unhandled error. A genuine defect is therefore
-# either never classified (an assertion failure always vetoes) or re-run by the
-# one bounded retry, where a deterministic one fails again and escalates. The
-# classification arrives as a JSON artifact, the one seam between the two
+# unambiguously that event. The rules, and the safety argument for retrying
+# on them, are stated once, in the docblock of classifyWorkerRpcFlake there.
+# The classification arrives as a JSON artifact, the one seam between the two
 # halves; no vitest output is ever parsed. The artifact's ABSENCE is what
 # vetoes a retry, so an unclassified failure propagates verbatim. The retry is
 # bounded to one and is announced on stdout whether or not it rescues the run,
