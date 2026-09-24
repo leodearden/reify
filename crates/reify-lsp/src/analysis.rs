@@ -3544,6 +3544,49 @@ mod tests {
         assert_selection_on_name(source, guarded);
     }
 
+    /// A `sketch { … }` block is a named region: it appears in the outline as a
+    /// NAMESPACE whose body NESTS under it. Sketch-local names are not visible
+    /// outside the block (PRD `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1),
+    /// so — unlike guarded members — they are not flattened up to the structure.
+    #[test]
+    fn compute_document_symbols_nests_sketch_body_under_the_sketch() {
+        use tower_lsp::lsp_types::SymbolKind;
+        let source = "structure def T {\n    param w : Length = 5mm\n    sketch profile {\n        let a = point(0mm, 0mm)\n        fix(a)\n    }\n}";
+        let parsed = parse_one_clean(source, "test");
+        let symbols = compute_document_symbols_from_parsed(&parsed, source);
+        assert_eq!(symbols.len(), 1, "one structure → one top-level symbol");
+        let children = symbols[0]
+            .children
+            .as_ref()
+            .expect("T should have children");
+
+        let shape = |syms: &[DocumentSymbol]| -> Vec<(String, SymbolKind)> {
+            syms.iter().map(|s| (s.name.clone(), s.kind)).collect()
+        };
+        assert_eq!(
+            shape(children),
+            vec![
+                ("w".to_string(), SymbolKind::FIELD),
+                ("profile".to_string(), SymbolKind::NAMESPACE),
+            ],
+            "the structure's children, in source order, are the param and the sketch — \
+             the sketch-local `a` must not be flattened up to the structure"
+        );
+
+        let profile = &children[1];
+        assert_selection_on_name(source, profile);
+        let profile_children = profile
+            .children
+            .as_ref()
+            .expect("the sketch's body members must nest under it");
+        assert_eq!(
+            shape(profile_children),
+            vec![("a".to_string(), SymbolKind::VARIABLE)],
+            "the sketch body's `let a` nests under the sketch; the bare relation `fix(a)` \
+             has no identifier and emits nothing"
+        );
+    }
+
     // --- step-11: injectable document-symbol core over a shared ParsedModule ---
 
     /// `compute_document_symbols_from_parsed`, fed a `ParsedModule` built once
