@@ -3879,6 +3879,14 @@ struct DirichletRealization {
     diagnostics: Vec<Diagnostic>,
 }
 
+/// What a `PinnedSupport` on a beam-axis end face is realized as whenever it is
+/// not clamped ([`FaceRealization::PinTransverse`]), in the words every
+/// `I_ModalPinnedFaceRealization` note uses — spelled once so the three notes
+/// cannot drift apart from each other or from the realized DOFs.
+const PINNED_BEAM_END_REALIZATION: &str = "a transverse (Z) pin across the face plus a lateral \
+     (Y) anchor at its neutral-axis node — the simply-supported beam idealization, both bending \
+     rotations free";
+
 /// One `I_ModalPinnedFaceRealization` `Severity::Info` diagnostic per DISTINCT
 /// beam-axis end face carrying a `PinnedSupport`, naming what that face was
 /// realized as and WHY.
@@ -3942,27 +3950,26 @@ fn pinned_end_face_realization_diagnostics(
         }
         let message = if simply_supported {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
-                 transverse (Z) pin — the simply-supported beam idealization — because BOTH \
-                 beam-axis end faces are pinned; three minimal neutral-axis anchors are added \
-                 so K_free is not singular. The same declaration clamps all 3 translational \
-                 DOFs when it is the only face the model's supports name."
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as \
+                 {PINNED_BEAM_END_REALIZATION}, because BOTH beam-axis end faces are pinned; \
+                 ONE axial (X) anchor is added at the x_min neutral-axis node so K_free is not \
+                 singular. The same declaration clamps all 3 translational DOFs when it is the \
+                 only face the model's supports name."
             )
         } else if let FaceCompany::WithAnotherFace(other) = company {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as a \
-                 transverse (Z) pin — the simply-supported beam idealization — because the \
-                 model's supports also name \"{other}\". Were this the only face named, the \
-                 SAME declaration would clamp all 3 translational DOFs instead and the \
-                 fundamental would rise."
+                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as \
+                 {PINNED_BEAM_END_REALIZATION}, because the model's supports also name \
+                 \"{other}\". Were this the only face named, the SAME declaration would clamp \
+                 all 3 translational DOFs instead and the fundamental would rise."
             )
         } else {
             format!(
                 "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") clamps all 3 \
                  translational DOFs, because it is the only face the model's supports name (a \
-                 lone transverse pin is a mechanism). Naming a second distinct face would \
-                 re-realize this one as a transverse (Z) pin — the simply-supported beam \
-                 idealization — and the fundamental would drop."
+                 lone simple support is a mechanism). Naming a second distinct face would \
+                 re-realize this one as {PINNED_BEAM_END_REALIZATION}, and the fundamental \
+                 would drop."
             )
         };
         out.push(Diagnostic::info(message));
