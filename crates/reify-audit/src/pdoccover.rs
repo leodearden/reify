@@ -259,6 +259,7 @@
 //! relaxing the floor restores the exact silent-false-clean failure the guard
 //! exists to prevent.
 
+use crate::scan_util::{allow_marker_body, contains_word, find_word_boundary_token, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -312,13 +313,6 @@ const ALLOW_TOKEN: &str = "pdoccover:allow";
 
 /// The identifier suffix that marks a const as a builtin-name registry.
 const REGISTRY_SUFFIX: &str = "_NAMES";
-
-/// `true` when `b` is an ASCII word byte (`[A-Za-z0-9_]`) — the alphabet for
-/// the hand-rolled `\b` word-boundary checks, matching `ptodo::is_word_byte`
-/// so `union` is never satisfied by `disunion` / `union_all` / `reunion`.
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
 
 /// Strip a trailing `// …` line comment from `line`, returning the code part.
 ///
@@ -429,33 +423,21 @@ fn strip_block_comments<'a>(line: &'a str, depth: &mut usize) -> Cow<'a, str> {
     Cow::Owned(String::from_utf8_lossy(&out).into_owned())
 }
 
-/// Byte offset of a word-boundary-delimited [`ALLOW_TOKEN`] in `line`.
-///
-/// Left-boundary-checked so the token is never matched as the tail of a longer
-/// word (`xxpdoccover:allow`). The legacy unprefixed `doccover:allow` is a
-/// *suffix* of the prefixed token, so it simply never matches — the 2026-07-25
-/// rename means no code path consumes it.
-fn find_allow_token(line: &str) -> Option<usize> {
-    let bytes = line.as_bytes();
-    let mut start = 0;
-    loop {
-        let rel = line[start..].find(ALLOW_TOKEN)?;
-        let idx = start + rel;
-        if idx == 0 || !is_word_byte(bytes[idx - 1]) {
-            return Some(idx);
-        }
-        start = idx + ALLOW_TOKEN.len();
-    }
-}
-
 /// `true` when `line` carries a `pdoccover:allow` marker at all — with or
 /// without a reason body.
+///
+/// The lookup is left-boundary-checked (see
+/// [`crate::scan_util::find_word_boundary_token`]), so [`ALLOW_TOKEN`] is
+/// never matched as the tail of a longer word (`xxpdoccover:allow`). The
+/// legacy unprefixed `doccover:allow` is a *suffix* of the prefixed token, so
+/// it simply never matches — the 2026-07-25 rename means no code path
+/// consumes it.
 ///
 /// Paired with [`allow_marker_reason`]: present-but-reasonless is exactly the
 /// `allow-missing-reason` trigger, and a reasonless marker confers no
 /// exemption (PRD design decision 7 — no un-reviewable escape hatch).
 fn allow_marker_present(line: &str) -> bool {
-    find_allow_token(line).is_some()
+    find_word_boundary_token(line, ALLOW_TOKEN).is_some()
 }
 
 /// `true` when `line` (already comment-stripped) is an attribute line such as
@@ -957,11 +939,12 @@ fn declaration_position_idents(code: &str) -> Vec<&str> {
 /// Reason body of a `pdoccover:allow` marker on `line`, or `None` when the
 /// line carries no marker or the body is blank after trimming.
 ///
-/// Contract mirrors `ptodo::g_allow_marker_body`: locate the token, skip one
-/// optional separator (em dash `—`, ASCII hyphen `-`, or colon `:`), and
-/// return the trimmed remainder only when it is non-blank. A `None` return on
-/// a line that DOES carry the token is what the caller turns into an
-/// `allow-missing-reason` finding — a reasonless escape hatch is never
+/// The grammar is [`crate::scan_util::allow_marker_body`]'s, applied to this
+/// detector's own [`ALLOW_TOKEN`]: locate the token, drop a trailing comment
+/// terminator, skip one optional separator (em dash `—`, ASCII hyphen `-`, or
+/// colon `:`), and return the trimmed remainder only when it is non-blank. A
+/// `None` return on a line that DOES carry the token is what the caller turns
+/// into an `allow-missing-reason` finding — a reasonless escape hatch is never
 /// silently honoured (PRD design decision 7).
 ///
 /// Only the prefixed [`ALLOW_TOKEN`] is recognised. Because the legacy
@@ -969,81 +952,21 @@ fn declaration_position_idents(code: &str) -> Vec<&str> {
 /// left-boundary-checked: the byte before the token must not be a word byte,
 /// so `// doccover:allow — x` does NOT match `pdoccover:allow`… and neither
 /// does any other suffix collision.
-// G-allow: consumed in-module by extract_registries/chunk_call_mentions and by unit tests; pub for symmetry with ptodo::g_allow_marker_body, whose contract it mirrors.
-pub fn allow_marker_reason(line: &str) -> Option<&str> {
-    let idx = find_allow_token(line)?;
-    let body = &line[idx + ALLOW_TOKEN.len()..];
-    // Drop a trailing comment terminator BEFORE looking at the separator.
-    // A chunk-side marker naturally lives in an HTML comment (invisible in
-    // rendered markdown), and `-->` starts with the ASCII-hyphen separator:
-    // without this, `<!-- pdoccover:allow -->` would parse as a well-formed
-    // marker whose reason is `->` and would silently suppress a real claim.
-    // `*/` is the same hazard for a Rust block comment.
-    let body = body.trim_end();
-    let body = body
-        .strip_suffix("-->")
-        .or_else(|| body.strip_suffix("*/"))
-        .unwrap_or(body);
-    let body = body.trim();
-    // One optional separator.
-    let body = body
-        .strip_prefix('—')
-        .or_else(|| body.strip_prefix('-'))
-        .or_else(|| body.strip_prefix(':'))
-        .unwrap_or(body);
-    let body = body.trim();
-    if body.is_empty() { None } else { Some(body) }
-}
-
-/// `true` when `needle` occurs in `haystack` delimited by word boundaries on
-/// BOTH sides — a hand-rolled `\b<needle>\b`.
-///
-/// The boundary alphabet is [`is_word_byte`]'s `[A-Za-z0-9_]`, matching
-/// `ptodo.rs`. Both sides matter: `union`, `union_all` and `intersection` are
-/// all real registry entries, so a one-sided match would let `union_all`'s
-/// documentation silently vouch for `union` and under-report coverage.
-///
-/// Case-sensitive — Reify builtin names are snake_case, and a prose `Union` is
-/// not the builtin.
-///
-/// UTF-8-safe on BOTH arguments. Neither is assumed ASCII: `haystack` is chunk
-/// prose (`§`, `→`, em dashes) and `needle` is whatever a `*_NAMES` registry
-/// happens to hold. A match index is always a char boundary — the needle's
-/// first byte is either ASCII or a UTF-8 lead byte, and neither can occur mid
-/// char — but the boundary-rejected RETRY must still step by a whole char, or a
-/// non-ASCII needle would slice into a continuation byte and panic. A detector
-/// whose contract is "unreadable input is skipped fail-safe (no finding, no
-/// panic)" must not have a panic reachable from corpus content.
-fn contains_word(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return false;
-    }
-    let hb = haystack.as_bytes();
-    let mut start = 0;
-    while let Some(rel) = haystack[start..].find(needle) {
-        let idx = start + rel;
-        let after = idx + needle.len();
-        let left_ok = idx == 0 || !is_word_byte(hb[idx - 1]);
-        let right_ok = after >= hb.len() || !is_word_byte(hb[after]);
-        if left_ok && right_ok {
-            return true;
-        }
-        // Advance past this occurrence's first CHARACTER, not past the whole
-        // needle: overlapping occurrences must still be considered, but a
-        // one-BYTE step would land inside a multibyte char whenever `needle`
-        // starts with one and the next `haystack[start..]` slice would panic.
-        start = idx + haystack[idx..].chars().next().map_or(1, char::len_utf8);
-        if start >= haystack.len() {
-            break;
-        }
-    }
-    false
+fn allow_marker_reason(line: &str) -> Option<&str> {
+    allow_marker_body(line, ALLOW_TOKEN)
 }
 
 /// Subset of `names` that is word-boundary-mentioned in ≥1 chunk source.
 ///
 /// `chunk_sources` are pre-read `(path, content)` pairs so the matcher stays
 /// pure and unit-testable without disk access.
+///
+/// Matching is [`crate::scan_util::contains_word`]'s; see its doc for the
+/// boundary alphabet, the case-sensitivity and the UTF-8 contract. This lane
+/// is where each of the three is exercised rather than assumed: `content` is
+/// chunk prose (`§`, `→`, em dashes), `name` is whatever a `*_NAMES` registry
+/// holds — for a units registry, routinely `µm` or `°C` — and the names are
+/// snake_case builtins, so a prose `Union` must not vouch for `union`.
 ///
 /// Deliberately format-agnostic: no markdown parser, no heading/fence/table
 /// awareness. A name mentioned anywhere in any chunk — code span, fence,
@@ -1556,14 +1479,6 @@ fn parse_baseline(content: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Read `path` under `ctx.project_root`, or `None` when unreadable.
-///
-/// Fail-safe by construction: an unreadable file is skipped, never escalated
-/// into a finding and never a panic (`pdssentinel::check`'s contract).
-fn read_relative(ctx: &AuditContext<'_>, path: &str) -> Option<String> {
-    std::fs::read_to_string(ctx.project_root.join(path)).ok()
-}
-
 /// `true` when `path` is a documentation chunk in the MCP corpus.
 fn is_chunk_path(path: &str) -> bool {
     path.starts_with(CHUNKS_PREFIX) && path.ends_with(".md")
@@ -1584,7 +1499,7 @@ fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
     tracked.sort();
 
     let registries = if tracked.iter().any(|p| p == UNITS_PATH) {
-        read_relative(ctx, UNITS_PATH)
+        ctx.read_relative(UNITS_PATH)
             .map(|src| extract_registries(&src))
             .unwrap_or_default()
     } else {
@@ -1594,11 +1509,11 @@ fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
     let chunk_sources: Vec<(String, String)> = tracked
         .iter()
         .filter(|p| is_chunk_path(p))
-        .filter_map(|p| read_relative(ctx, p).map(|c| (p.clone(), c)))
+        .filter_map(|p| ctx.read_relative(p).map(|c| (p.clone(), c)))
         .collect();
 
     let baseline = if tracked.iter().any(|p| p == BASELINE_PATH) {
-        read_relative(ctx, BASELINE_PATH)
+        ctx.read_relative(BASELINE_PATH)
             .map(|c| parse_baseline(&c))
             .unwrap_or_default()
     } else {
@@ -1627,7 +1542,7 @@ fn load_oracle_sources(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<(String, 
         .tracked
         .iter()
         .filter(|p| in_oracle_scope(p))
-        .filter_map(|p| read_relative(ctx, p).map(|c| (p.clone(), c)))
+        .filter_map(|p| ctx.read_relative(p).map(|c| (p.clone(), c)))
         .collect()
 }
 
@@ -2436,8 +2351,12 @@ mod tests {
     }
 
     /// A reasonless marker (bare, or a separator with a blank body) yields
-    /// `None` — which is what makes `allow-missing-reason` fall out naturally,
-    /// mirroring `ptodo::g_allow_marker_body`'s blank-body contract.
+    /// `None` — which is what makes `allow-missing-reason` fall out naturally.
+    ///
+    /// The blank-body rejection is `scan_util::allow_marker_body`'s own
+    /// contract, and PTODO's G-allow grammar deliberately does NOT share it:
+    /// `scan_util`'s `g_allow_grammar_deliberately_diverges_from_shared_marker_body`
+    /// measures `// G-allow: -` keeping its body there and losing it here.
     #[test]
     fn allow_marker_reason_none_for_blank_body() {
         for line in [
@@ -2621,32 +2540,6 @@ mod tests {
             got.is_empty(),
             "`intersection_all` must not vouch for `intersection`; got {got:?}"
         );
-    }
-
-    /// The boundary-rejected retry must step by a whole CHARACTER.
-    ///
-    /// `units.rs` is a *units* file, so a non-ASCII registry entry (`"µm"`,
-    /// `"°C"`) is entirely plausible; one such entry plus one non-boundary
-    /// occurrence anywhere in ~8MB of chunk prose used to turn the whole
-    /// detector into a `byte index is not a char boundary` panic — a
-    /// fail-safe-by-contract scanner taken down by corpus content.
-    #[test]
-    fn contains_word_retry_is_char_stepped_not_byte_stepped() {
-        // First occurrence is boundary-rejected (`a` on its left), so the
-        // matcher retries from INSIDE the two-byte `µ`. A one-byte step panics
-        // here; a char step finds the real occurrence that follows.
-        assert!(
-            contains_word("aµm µm", "µm"),
-            "the standalone `µm` must be found after retrying past the \
-             boundary-rejected `aµm`"
-        );
-        // Same retry path, nothing to find afterwards — must return false, not
-        // panic.
-        assert!(!contains_word("aµm", "µm"));
-        // A multibyte needle whose only occurrence is boundary-clean.
-        assert!(contains_word("size °C max", "°C"));
-        // A multibyte HAYSTACK with an ASCII needle still matches normally.
-        assert!(contains_word("§ union → ok", "union"));
     }
 
     /// A non-identifier registry token never reaches the census, so it can

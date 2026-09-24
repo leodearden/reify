@@ -924,6 +924,62 @@ pub enum GeometryOp {
         z2: f64,
     },
     /// Create a circular arc wire.
+    ///
+    /// `start_angle`/`end_angle` are SI RADIANS — see [`GeometryOp::Rotate`]
+    /// for the full angular unit contract (INV-AD-4; #6184). They cross to
+    /// OCCT completely unconverted, where they are the CURVE PARAMETERS of the
+    /// `Geom_Circle` handed to `BRepBuilderAPI_MakeEdge(circle, U1, U2)` in
+    /// `make_arc_wire` (`reify-kernel-occt/cpp/occt_wrapper.cpp`). For a
+    /// `Geom_Circle` that parameter space IS radians, by OCCT's own
+    /// parameterisation rather than by an explicit angle argument — so a full
+    /// circle is `2.0 * PI`, not 360. Pinned end to end by
+    /// `export_step_declares_si_radians_for_wireframe_curve_parameters`
+    /// (`reify-kernel-occt/src/handle.rs`), which reads the two angles back out
+    /// of the exported STEP `TRIMMED_CURVE` as its `PARAMETER_VALUE` bounds.
+    /// Arc — not [`GeometryOp::Helix`] — is the wireframe op on that path.
+    ///
+    /// **Why these two carry no `_rad` suffix.** These are crate-local Rust
+    /// identifiers and the enum derives no serde, so a rename is
+    /// COMPILE-CHECKED: it would break loudly at every construct and
+    /// destructure site — eval's shorthand struct literal, the kernel's
+    /// dispatch arm, the tests — never silently. What it would also do is
+    /// diverge from two INDEPENDENT identifiers that merely spell the same:
+    /// the untyped string key of the compiler→eval boundary (`compile_curve_op`
+    /// in `reify-compiler/src/geometry_curve.rs` mints them as owned literals;
+    /// `curve_arc` in `reify-eval/src/geometry_ops.rs` looks them up by name),
+    /// and the published `arc(...)` signature in
+    /// `docs/reify-stdlib-reference.md`. No `.ri` source names them — the
+    /// compiler checks an exact 9-argument count and assigns those keys
+    /// POSITIONALLY — so no design file is involved either way. Churn plus
+    /// cosmetic divergence, in exchange for a suffix: the rename was
+    /// CONSIDERED AND DECLINED (#6521), so the absence is a recorded decision,
+    /// not an oversight, and `Rotate`'s "the `_rad` suffix IS the contract" is
+    /// discharged HERE, by this comment, instead. The eval gate below does not
+    /// supersede the question either: `required_angle_args` hands back
+    /// `[f64; N]`, so these two fields are still raw SI-radian `f64` past it
+    /// and a `_rad` suffix would still be type-accurate.
+    ///
+    /// **GATED at eval.** A dimensioned `90deg` literal is resolved to radians
+    /// in the units layer (`reify-core/src/units.rs`: `deg` = PI/180 tagged
+    /// `DimensionVector::ANGLE`), and a BARE number is REJECTED rather than
+    /// read silently as radians: `curve_arc` (`reify-eval/src/geometry_ops.rs`)
+    /// reads BOTH positions through `required_angle_args(["start_angle",
+    /// "end_angle"], ..)`, which classifies each against `angle_spec()` and,
+    /// on a dimensionless one, pushes the contract-C1 `Diagnostic::error`
+    /// coded `DimensionedArgRejected` ("expects Angle, got Real; pass a
+    /// dimensioned angle such as `45deg` or `1.5rad`") and drops the op. It is
+    /// the GROUP reader, so a pair of bare angles is named in ONE rebuild
+    /// rather than one slot per rebuild. What reaches these two fields FROM
+    /// EVAL is therefore always an ACCEPTED SI-radian magnitude — but
+    /// directly-constructed IR bypasses the gate entirely, and the kernel's
+    /// `Arc` dispatch (`reify-kernel-occt/src/lib.rs`) validates only `radius`
+    /// and `axis`, so a non-finite angle from hand-built IR reaches
+    /// `make_arc_wire` unchecked.
+    ///
+    /// Landed under #6924, which delivered leaves γ/δ/ε of
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` in one pass;
+    /// chartered by #5779 (leaf γ, these two positions) and #5780 (leaf δ,
+    /// [`GeometryOp::Draft`]'s angle).
     Arc {
         center: [f64; 3],
         radius: f64,
@@ -932,6 +988,39 @@ pub enum GeometryOp {
         axis: [f64; 3],
     },
     /// Create a helix wire.
+    ///
+    /// **No angular value crosses this boundary** (INV-AD-4; #6521) — that
+    /// absence is the declaration, not an omission of one. `radius`, `pitch`
+    /// and `height` are all LENGTHS, and all three are length-GATED at eval by
+    /// `required_length_args` in `curve_helix`
+    /// (`reify-eval/src/geometry_ops.rs`), whose note already records that
+    /// `pitch` is a length PER TURN rather than an angle. The turn count is the
+    /// dimensionless ratio `height / pitch`, so INV-AD-4's crossing clause is
+    /// not triggered here.
+    ///
+    /// **The only angle is internal to the C++ and is RADIANS.**
+    /// `make_helix_wire` (`reify-kernel-occt/cpp/occt_wrapper.cpp`) derives
+    /// `n_turns = height / pitch` and then a total sweep `u_length = n_turns *
+    /// 2.0 * M_PI` in the u-parameter of a `Geom_CylindricalSurface`, whose
+    /// (u, v) space that source annotates "u = angle". The `2*PI` — not 360 —
+    /// is what makes it radians (doctrine D4,
+    /// `docs/prds/v0_6/angle-dimension-completion.md`). It is a DERIVED
+    /// INTERNAL quantity, so it is declared for the reader rather than gated:
+    /// there is no angular argument here to gate.
+    ///
+    /// **Helix is not on the wireframe STEP angle path AS EXERCISED TODAY**;
+    /// [`GeometryOp::Arc`] is. #6184's wireframe pin
+    /// (`export_step_declares_si_radians_for_wireframe_curve_parameters`,
+    /// `reify-kernel-occt/src/handle.rs`) is fixtured on an arc, and no test in
+    /// the tree exports a helix handle. That is a statement about the FIXTURES,
+    /// not a property of the system: `OcctKernel::export`
+    /// (`reify-kernel-occt/src/lib.rs`) is shape-type agnostic — it resolves
+    /// any handle through `get_shape` and hands it straight to
+    /// `ffi::export_step` — so a helix WIRE can be exported directly, exactly
+    /// as that pin exports a bare arc wire, at which point its pcurve on the
+    /// `Geom_CylindricalSurface` carries the radian u-parameter above into the
+    /// STEP output. In practice a helix usually reaches STEP as BRep instead,
+    /// after being consumed as a sweep/pipe spine into a solid.
     Helix {
         radius: f64,
         pitch: f64,
@@ -958,6 +1047,52 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         /// Curated face selection. Empty = all draftable faces (3-arg back-compat).
         faces: Vec<GeometryHandleId>,
+        /// Draft angle. The `Value`'s SI magnitude is RADIANS — see
+        /// [`GeometryOp::Rotate`] for the full angular unit contract
+        /// (INV-AD-4; #6184).
+        ///
+        /// This position is weaker than every site #6184 touched: being a
+        /// `Value` rather than an `f64`, it carries neither a `_rad` suffix nor
+        /// an f64's implied convention, so the contract has nowhere to live but
+        /// here. The kernel DISCARDS the dimension tag — `extract_f64`
+        /// in the `GeometryOp::Draft` dispatch arm
+        /// (`reify-kernel-occt/src/lib.rs`) takes the SI magnitude and hands
+        /// the bare f64 to `BRepOffsetAPI_DraftAngle::Add`, which reads
+        /// radians. `Value::angle(x)` and `Value::Real(x)` are therefore
+        /// DELIBERATELY equivalent here, not accidentally so: pinned at the
+        /// `Value` layer by `angle_and_real_agree_bit_exactly_under_as_f64`
+        /// (`reify-ir/src/value.rs`) and at real OCCT output by
+        /// `draft_angle_dimensioned_matches_bare_real_volume`
+        /// (`reify-kernel-occt/src/lib.rs`).
+        ///
+        /// Since the gate below landed, that equivalence reaches only
+        /// DIRECTLY-CONSTRUCTED IR — which is exactly what both pins build.
+        /// `required_angle_value` re-wraps the ACCEPTED radians through
+        /// `reify_ir::Value::angle`, so a bare `Value::Real` no longer arrives
+        /// here from eval at all. The equivalence still holds and still
+        /// matters — it is what lets the kernel read this field with a
+        /// tag-blind `extract_f64`, and lets a test hand-build the op either
+        /// way — but it is no longer what decides how an author's bare number
+        /// is read.
+        ///
+        /// **Not pinned:** that a draft angle of `0.1` means 0.1 RADIANS
+        /// rather than 0.1 degrees. Both tests above prove tag-transparency,
+        /// not magnitude, and `draft_angle_on_box` is a smoke test that
+        /// tolerates `OperationFailed`. The radian-vs-degree separation is
+        /// ~57x, so a behavioural pin is achievable — it needs a measured
+        /// numeric oracle over OCCT draft geometry, and is filed as #7119
+        /// rather than guessed at here.
+        ///
+        /// **GATED at eval**, like [`GeometryOp::Arc`]'s two angles: a bare
+        /// number is REJECTED, not read silently as radians. `modify_draft`
+        /// (`reify-eval/src/geometry_ops.rs`) reads this slot through
+        /// `required_angle_value("angle", ..)`, above the plane resolution —
+        /// leaf δ's breadcrumb there records why that ONE read is the whole
+        /// gate, and that the `eval_arg` closure it replaced "died with the
+        /// change", so no ungated route from eval into this field survives.
+        /// Landed under #6924; chartered by #5780, leaf δ of
+        /// `docs/prds/v0_6/angle-units-surface-convergence.md`, whose C1
+        /// gated-position list carries this position and Arc's together.
         angle: Value,
         plane: GeometryHandleId,
     },
@@ -4329,6 +4464,76 @@ pub trait KernelAttributeHook: Send + Sync {
     ) -> Result<KernelAttributeOutcome, QueryError>;
 }
 
+/// A kernel-agnostic **request** for the spatial resolution at which a
+/// [`Mesh`] should be sampled into a voxel grid (task 6560).
+///
+/// # What this is (and is not)
+///
+/// This is a *request*, not a set of OpenVDB parameters: it says what the
+/// caller needs resolved, and leaves the kernel to derive its own native
+/// settings (voxel size, narrow-band width, …) from it. That is why it lives
+/// in `reify-ir` rather than following the bare-scalar precedent of
+/// [`GeometryKernel::realize_mesh_from_voxel`] (geometry.rs ~line 4882),
+/// whose signature takes bare `f64`/`bool` args only because the type it
+/// would otherwise name — `MarchingCubesOptions` — is owned by
+/// `reify-kernel-openvdb`, which depends on `reify-eval` → `reify-ir`;
+/// naming it in the trait would be a reverse dependency (a cycle).
+/// `VoxelResolution` carries no kernel-specific vocabulary, so defining it
+/// here lets `reify-eval` and every kernel crate name it directly with no
+/// cycle and no bare-scalar tuple to keep in sync.
+///
+/// # Units — model space, SI metres
+///
+/// Every length this type carries is a MODEL-SPACE length in the mesh's own
+/// units, i.e. SI metres per [`Mesh::vertices`]. The shells PRD states its
+/// motivating dimensions in millimetres; every worked example below converts
+/// them rather than passing them through, because a millimetre figure handed
+/// over verbatim is a silent 1000x error — `MinFeature(1.0)` meaning "1 mm"
+/// actually asks for a 1 metre feature. Leaving the unit unstated is what
+/// [`Mesh`] records as "the root ambiguity that produced the 1000x STEP/3MF
+/// unit mislabel".
+///
+/// # Why this exists
+///
+/// The only voxelization resolution policy before this type was
+/// `MeshToVoxelOptions::honest_floor` — `voxel_size = longest_extent / 64`,
+/// derived purely from the bounding box. For the shells PRD's own motivating
+/// case (`docs/prds/v0_4/structural-analysis-shells.md`, "Background" — a
+/// 1 mm flexure in a 100 mm part, which in model space is `MinFeature(0.001)`
+/// on a 0.1 m body) that yields 0.001_5625 m/voxel (1.5625 mm) and the
+/// feature is entirely sub-voxel. `VoxelResolution` is the seam through
+/// which a caller that KNOWS its thinnest feature can ask for a grid that
+/// actually resolves it.
+///
+/// # No `Eq` / `Hash`
+///
+/// Two variants carry `f64`, which is only `PartialEq`. This matches the
+/// house rule already followed by `MeshToVoxelOptions`,
+/// `MarchingCubesOptions` and `TessellateOptions` in the kernel crates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VoxelResolution {
+    /// Today's default: let the kernel derive the voxel size from the mesh's
+    /// bounding box alone (`MeshToVoxelOptions::honest_floor`'s
+    /// `longest_extent / VOXELS_PER_LONGEST_AXIS`). Bit-identical to the
+    /// pre-6560 behaviour, so every existing caller that does not care about
+    /// resolution keeps the grid it always got.
+    HonestFloor,
+    /// An explicit voxel side length, in the mesh's own units (SI metres, per
+    /// [`Mesh::vertices`]). The kernel uses it verbatim after validating that
+    /// it is finite, strictly positive, and within the kernel's dense-grid
+    /// budget.
+    TargetVoxelSize(f64),
+    /// The thinnest feature that MUST be resolved, in the mesh's own units.
+    /// The kernel derives a voxel size fine enough to resolve a feature of
+    /// this size (openvdb: `t / MIN_FEATURE_VOXELS_ACROSS`). Prefer this over
+    /// [`Self::TargetVoxelSize`] when the caller knows a physical dimension
+    /// (a wall thickness, a flexure width) but not a grid spacing.
+    ///
+    /// A model-space length, per the "Units" section above: a 1 mm wall is
+    /// `MinFeature(0.001)`, NOT `MinFeature(1.0)`.
+    MinFeature(f64),
+}
+
 /// Trait for geometry kernels. Lives in reify-types for dependency inversion —
 /// implemented in reify-kernel-occt, consumed by reify-eval via reify-geometry.
 pub trait GeometryKernel: Send + Sync {
@@ -4670,6 +4875,51 @@ pub trait GeometryKernel: Send + Sync {
             "{} does not accept Mesh inputs",
             std::any::type_name::<Self>()
         )))
+    }
+
+    /// Ingest a [`Mesh`] at a caller-requested spatial resolution
+    /// (task 6560 — the v0.4-shells `BRep→Voxel` resolution seam).
+    ///
+    /// # Contract
+    ///
+    /// Semantically identical to [`Self::ingest_mesh`] except that the kernel
+    /// is told what resolution the caller needs. A kernel whose native
+    /// representation has no notion of spatial resolution (OCCT's B-reps,
+    /// Manifold's meshes, Fidget's implicit SDFs, mocks, stubs) has nothing
+    /// to honour, so the **default body ignores `resolution` and delegates to
+    /// [`Self::ingest_mesh`]**.
+    ///
+    /// That delegation — rather than the `Err(OperationFailed)` default used
+    /// by [`Self::ingest_mesh`] itself — is deliberate and is the reason this
+    /// method could be added without touching a single other kernel, stub or
+    /// mock in the workspace: a resolution request is *advisory*, so a kernel
+    /// that cannot act on one must degrade to plain ingest, not to failure.
+    /// Contrast [`Self::register_mesh_handle`], which delegates for the same
+    /// structural reason.
+    ///
+    /// `OpenVdbKernel` is the only current KERNEL-level override: it maps
+    /// `resolution` through `MeshToVoxelOptions::for_resolution` to a voxel
+    /// size and narrow-band width before calling its `meshToVolume`
+    /// primitive, and rejects a request that is non-finite, non-positive,
+    /// coarser than the body's thinnest bounding-box extent, or beyond its
+    /// dense-grid budget (`Err(GeometryError::OperationFailed(_))`, with the
+    /// offending value named in the message).
+    /// `reify_geometry::SingleKernelHolder` additionally overrides it as a
+    /// pure delegating pass-through — it honours no request itself, but must
+    /// forward one rather than inherit the default, which would route through
+    /// its own `ingest_mesh` override and drop `resolution` silently.
+    ///
+    /// # Object safety
+    ///
+    /// `Self` appears only in the `&mut self` receiver, so the trait stays
+    /// object-safe and `Box<dyn GeometryKernel>` call sites keep compiling.
+    fn ingest_mesh_at_resolution(
+        &mut self,
+        mesh: &Mesh,
+        resolution: VoxelResolution,
+    ) -> Result<GeometryHandle, GeometryError> {
+        let _ = resolution;
+        self.ingest_mesh(mesh)
     }
 
     /// Register a [`Mesh`] directly as an honestly-Mesh-repr handle, WITHOUT
@@ -10608,6 +10858,123 @@ mod tests {
                 "expected Err(OperationFailed(_)) from trait-object ingest_mesh; got {other:?}"
             ),
         }
+    }
+
+    /// RED (task 6560, step-1) — the DEFAULT body of
+    /// `GeometryKernel::ingest_mesh_at_resolution` delegates to
+    /// [`GeometryKernel::ingest_mesh`] with the mesh unmodified, and the method
+    /// stays object-safe.
+    ///
+    /// That is the compile-time contract keeping every other kernel, stub and
+    /// mock in the workspace unchanged: a kernel that cannot honour a
+    /// resolution request simply never overrides the method, and the delegation
+    /// makes the request a no-op rather than a hard error. `OpenVdbKernel` is
+    /// the only kernel that overrides it (task 6560, step-8);
+    /// `reify_geometry::SingleKernelHolder` also overrides it, as a pure
+    /// delegating pass-through (step-12).
+    ///
+    /// `VoxelResolution`'s own `Copy`/`PartialEq`/`Debug` derives are exercised
+    /// by the bindings and assertions below rather than asserted separately —
+    /// pinning what `#[derive]` expands to would test rustc, not this crate.
+    #[test]
+    fn ingest_mesh_at_resolution_default_delegates_to_ingest_mesh() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// In-test kernel that overrides ONLY `ingest_mesh`: it counts calls
+        /// and records the vertex count of the mesh it was handed, returning
+        /// a handle whose id encodes the call ordinal. Every other trait
+        /// member uses the not-supported default or a stub error, following
+        /// the in-file `CountingKernel` / `StubKernel` shape.
+        struct RecordingIngestKernel {
+            ingest_calls: AtomicUsize,
+            last_vertex_len: AtomicUsize,
+        }
+
+        impl GeometryKernel for RecordingIngestKernel {
+            fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+                Err(GeometryError::OperationFailed("stub".into()))
+            }
+            fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+                Err(QueryError::QueryFailed("stub".into()))
+            }
+            fn export(
+                &self,
+                _h: GeometryHandleId,
+                _f: ExportFormat,
+                _w: &mut dyn std::io::Write,
+            ) -> Result<(), ExportError> {
+                Err(ExportError::FormatError("stub".into()))
+            }
+            fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+                Err(TessError::TessellationFailed("stub".into()))
+            }
+            fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+                let ordinal = self.ingest_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                self.last_vertex_len
+                    .store(mesh.vertices.len(), Ordering::SeqCst);
+                Ok(GeometryHandle {
+                    id: GeometryHandleId(ordinal as u64),
+                    repr: None,
+                })
+            }
+        }
+
+        // One request of each variant. Binding all three by value and reusing
+        // them in the loop below is what keeps `Copy` compile-enforced.
+        let honest: VoxelResolution = VoxelResolution::HonestFloor;
+        let target = VoxelResolution::TargetVoxelSize(0.25);
+        let feature = VoxelResolution::MinFeature(1.0);
+        assert_ne!(
+            VoxelResolution::MinFeature(1.0),
+            VoxelResolution::MinFeature(2.0),
+            "the payload must participate in equality, or a resolution log \
+             cannot tell two requests apart"
+        );
+
+        // The default body delegates to `ingest_mesh`, ignoring the resolution.
+        let mut kernel = RecordingIngestKernel {
+            ingest_calls: AtomicUsize::new(0),
+            last_vertex_len: AtomicUsize::new(0),
+        };
+        let mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+
+        for (i, resolution) in [honest, target, feature].into_iter().enumerate() {
+            let handle = kernel
+                .ingest_mesh_at_resolution(&mesh, resolution)
+                .unwrap_or_else(|e| panic!("default must delegate to ingest_mesh; got {e:?}"));
+            assert_eq!(
+                kernel.ingest_calls.load(Ordering::SeqCst),
+                i + 1,
+                "each ingest_mesh_at_resolution call must reach ingest_mesh exactly once \
+                 (resolution {resolution:?})"
+            );
+            assert_eq!(
+                handle.id,
+                GeometryHandleId((i + 1) as u64),
+                "the handle must be exactly what ingest_mesh returned"
+            );
+            assert_eq!(
+                kernel.last_vertex_len.load(Ordering::SeqCst),
+                9,
+                "the mesh must be forwarded unmodified"
+            );
+        }
+
+        // The seam is object-safe: reachable through `Box<dyn GeometryKernel>`.
+        let mut boxed: Box<dyn GeometryKernel> = Box::new(RecordingIngestKernel {
+            ingest_calls: AtomicUsize::new(0),
+            last_vertex_len: AtomicUsize::new(0),
+        });
+        assert!(
+            boxed
+                .ingest_mesh_at_resolution(&mesh, VoxelResolution::MinFeature(1.0))
+                .is_ok(),
+            "ingest_mesh_at_resolution must remain callable through a trait object"
+        );
     }
 
     /// Default `densify_grid_to_sampled` returns `Err(QueryError::QueryFailed(_))`

@@ -536,7 +536,27 @@ fn undef_subject_propagates_through_every_documented_combinator() {
 /// could hold this ratchet green past the very event it exists to catch. The
 /// chunk's warning says specifically "`some(c) => ...` is a **parse error**", so
 /// that is what gets pinned: `parsed.errors` (the parse layer by construction,
-/// no message-shape guessing), naming the offending arm.
+/// no message-shape guessing), LOCATED at the offending arm.
+///
+/// That second assertion pins a SPAN, not a message substring. It formerly read
+/// `e.message.contains("some(v)") || e.message.contains("match")`, which was only ever
+/// satisfiable because `lower_members`' `"ERROR"` arm pushed
+/// `format!("syntax error: {}", node_text(child))` — the message matched because it
+/// echoed the source back, so the pin rested on an accident of the diagnostic's shape
+/// rather than on the property it claims to hold. Task #5392 (INV-SF-7
+/// `parse-is-value-faithful`, docs/legibility/design-invariants.md) removed that echo,
+/// replacing the whole-declaration blob span with a token-precise one — measured here,
+/// bytes 78..79, exactly the payload binder `v` inside `some(v)`. The syntax-layer pin on
+/// that guarantee lives in `reify-syntax`'s
+/// `fn_body_separator_ambiguity_tests::an_unanchorable_fault_is_reported_with_a_token_precise_span`.
+///
+/// The span form is STRICTLY STRONGER for this test's own stated purpose. An echoed blob
+/// covering the whole declaration also "contained" the substring `match`, so the old form
+/// could not actually distinguish the arm from the wrapper; a narrow span *inside* the
+/// `match` expression cannot be produced by a future typing error on
+/// `param c : Option<Length>` or a resolution error on the wrapper — precisely the confound
+/// the paragraph above says this test exists to guard against. It also stops the ratchet
+/// depending on generic-message wording.
 ///
 /// The final assertion uses the non-panicking `_allow_parse_errors` variant
 /// deliberately: the plain `compile_source_with_stdlib` panics on parse errors,
@@ -558,15 +578,32 @@ fn option_payload_binding_pattern_still_fails_to_parse() {
          production), but the source parsed clean. If F4 has landed, the \
          `## Option Type` warning in enums.md must be rewritten in this same diff."
     );
+    // Offsets via `str::find`, never hard-coded, so reformatting the fixture above cannot
+    // silently move the window this assertion checks.
+    let match_start = source
+        .find("match c")
+        .expect("fixture must contain 'match c'") as u32;
+    let match_end = (source
+        .find("0mm }")
+        .expect("fixture must contain the match's final arm '0mm }'")
+        + "0mm }".len()) as u32;
+    let spans: Vec<(u32, u32)> = parsed
+        .errors
+        .iter()
+        .map(|e| (e.span.start, e.span.end))
+        .collect();
     assert!(
-        parsed
-            .errors
-            .iter()
-            .any(|e| e.message.contains("some(v)") || e.message.contains("match")),
-        "the parse error must be about the payload-binding match arm, not some \
+        parsed.errors.iter().any(|e| {
+            e.span.start >= match_start
+                && e.span.end <= match_end
+                && e.span.end - e.span.start <= 40
+        }),
+        "the parse error must be LOCATED at the payload-binding match arm, not at some \
          unrelated part of the wrapper — the sibling positive tests already prove \
-         `param c : Option<Length> = ...` parses and compiles clean. \
-         Parse errors seen: {messages:#?}"
+         `param c : Option<Length> = ...` parses and compiles clean. Expected a span inside \
+         the `match` expression (bytes {match_start}..{match_end}) that is at most 40 bytes \
+         wide, so a whole-declaration blob cannot satisfy it. \
+         Parse errors seen: {messages:#?} at spans {spans:?}"
     );
 
     // And that rejection must survive into the compiled module's diagnostics as

@@ -1119,6 +1119,85 @@ mod cli {
         );
     }
 
+    /// End-to-end regression for the same defect
+    /// `real_git_ops::try_is_gitignored_answers_for_a_leading_dash_path` pins
+    /// at the seam: a `metadata.files` entry beginning with `-` must not
+    /// silence the gitignore filter for the rest of the run.
+    ///
+    /// Deliberately a REAL git repo, not the non-git tempdir the two
+    /// breadcrumb tests above use: there every `check-ignore` exits 128 and the
+    /// filter is legitimately unavailable, so the defect cannot show. Here git
+    /// is healthy, and the only thing that can make the second entry read as
+    /// "not ignored" is the FIRST entry having latched the instance.
+    ///
+    /// `files` is a Vec iterated in order, so the leading-dash entry is probed
+    /// first by construction.
+    #[test]
+    fn leading_dash_metadata_file_does_not_suppress_gitignored_finding() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+
+        // A committed .gitignore plus a genuinely-ignored build artefact.
+        std::fs::write(dir.join(".gitignore"), "build/generated.rs\n").expect("write .gitignore");
+        std::fs::create_dir_all(dir.join("build")).expect("create build dir");
+        std::fs::write(dir.join("build/generated.rs"), "// generated\n")
+            .expect("write generated.rs");
+
+        let tasks = vec![task_fixture_with_files(
+            "7113",
+            "in-progress",
+            None,
+            None,
+            &["--weird-file", "build/generated.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+        git_init_commit_all(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task",
+                "7113",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --task 7113 --pre-done");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("reify-audit: git check-ignore exited"),
+            "a leading-dash declared entry must be passed to git as a path, so a \
+             HEALTHY repo emits no check-ignore breadcrumb at all; full \
+             stderr:\n{stderr}"
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        let gitignored = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5MetadataFilesGitignored")
+                && f["task_id"].as_str() == Some("7113")
+        });
+        assert!(
+            gitignored.is_some(),
+            "the genuinely-gitignored second entry must still be flagged after a \
+             leading-dash first entry; findings:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            serde_json::to_string(gitignored.unwrap())
+                .expect("serialize finding")
+                .contains("build/generated.rs"),
+            "the finding must name the ignored entry; got:\n{:#}",
+            gitignored.unwrap()
+        );
+    }
+
     /// Duplicate flags follow last-wins semantics.
     ///
     /// The pre-done hook wrapper (`scripts/reify-audit-predone-wrapper.sh`)
@@ -2523,6 +2602,364 @@ mod cli {
         assert!(
             !stderr.contains("lanes degraded"),
             "override DB is present → no degradation; stderr:\n{stderr}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // PDIAG — codes-mandatory ratchet (INV-SF-6, task #5405)
+    //
+    // SELF-MATCH DISCIPLINE. Every literal `Diagnostic::error(` /
+    // `Diagnostic::warning(` / `pdiag:allow` token lives in the fixture
+    // FILES under `tests/fixtures/pdiag/`, never in this source. This file is
+    // doubly out of PDIAG's own sweep (a `tests` path segment AND the
+    // `crates/reify-audit/` scope exclusion), so nothing here could go RED
+    // today — but `test_reify_audit_ptodo.sh` keeps the same discipline
+    // explicitly, and a detector whose tests seed its own corpus is one
+    // scope change away from ratcheting against itself.
+    // -------------------------------------------------------------------
+
+    /// `reify-audit --pattern PDIAG` over the fixture tree.
+    ///
+    /// The fixture root becomes the project root, so the fixtures' tracked
+    /// paths (`crates/reify-eval/src/…`, `crates/reify-compiler/src/…`) land
+    /// inside the sweep. No `pdiag-baseline.txt` is lifted, so the manifest is
+    /// EMPTY — deliberately the fail-loud direction: every code-less file
+    /// surfaces as a `NewFile` High rather than passing vacuously.
+    ///
+    /// Three claims, in order of what would break first:
+    ///
+    /// 1. `--pattern PDIAG` is ACCEPTED. Exit 125 (`ERROR_EXIT`) is the
+    ///    unknown-`--pattern` arg-parse failure, so asserting `!= 125` is the
+    ///    literal "the detector is reachable from the binary" claim.
+    /// 2. The exit code is the count of High FINDINGS — one per code-less
+    ///    file, not one per site. The fixture tree holds 4 code-less sites
+    ///    across 3 files, so exit 3 (not 4) is what pins the ratchet as
+    ///    per-file.
+    /// 3. The coded, escaped and out-of-scope fixtures contribute NOTHING.
+    /// 4. `scenario06_escape_leak.rs` is counted. It holds one unreviewed
+    ///    code-less site immediately above a reviewed `pdiag:allow`, so it is
+    ///    the end-to-end proof that an opt-out cannot reach backwards over the
+    ///    site above it — the hard-gate bypass no other test in this suite saw.
+    ///
+    /// RED until the dispatch arm and the `--pattern` token validator are
+    /// wired in `src/bin/reify-audit.rs`; until then every assertion fails on
+    /// the arg error.
+    #[test]
+    fn pdiag_fixture_tree_hard_gates_code_less_files_and_suppresses_the_rest() {
+        // Repo dir holds ONLY the committed fixtures (so ls-files is exactly
+        // the fixture set); the tasks-file/runs-db live in a separate aux dir
+        // so they are never tracked and never enumerated by the sweep.
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag");
+        copy_dir_recursive(&fixtures, repo.path());
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--pattern",
+                "PDIAG",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit --pattern PDIAG on fixture tree");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        // (1) The token is a known --pattern value.
+        assert_ne!(
+            out.status.code(),
+            Some(125),
+            "`--pattern PDIAG` must be an accepted token, not an arg-parse error \
+             (125 = ERROR_EXIT)\nstderr: {stderr}"
+        );
+
+        // (2) Exit code = High-severity finding count = one per code-less FILE.
+        assert_eq!(
+            out.status.code(),
+            Some(3),
+            "PDIAG fixture sweep must exit 3 — one NewFile High per code-less file \
+             (scenario01 has 1 site, scenario05 has 2, scenario06 has 1 unreviewed site \
+             above its reviewed escape; 4 sites but 3 files)\nstderr: {stderr}"
+        );
+
+        let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            3,
+            "PDIAG fixture sweep must emit exactly 3 findings; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        for f in &findings {
+            assert_eq!(
+                f["pattern"].as_str(),
+                Some("PDiag"),
+                "every fixture finding must be PDiag; got:\n{f:#}"
+            );
+            assert_eq!(
+                f["severity"].as_str(),
+                Some("High"),
+                "a NewFile verdict is the hard gate — it must be High; got:\n{f:#}"
+            );
+        }
+
+        // (3) Exactly the two code-less files, keyed by path. Membership is
+        // asserted as a set, so the coded / escaped / `tests`-segment fixtures
+        // being absent is the same assertion as these two being present.
+        let mut keyed: Vec<&str> =
+            findings.iter().filter_map(|f| f["task_id"].as_str()).collect();
+        keyed.sort_unstable();
+        assert_eq!(
+            keyed,
+            vec![
+                "crates/reify-compiler/src/scenario05_codeless_pair.rs",
+                "crates/reify-eval/src/scenario01_codeless.rs",
+                "crates/reify-eval/src/scenario06_escape_leak.rs",
+            ],
+            "only the code-less swept files may be keyed — the coded, escaped and \
+             `tests`-segment fixtures must each contribute nothing, while scenario06 \
+             MUST be keyed: its unreviewed site sits inside the forward window of the \
+             reviewed opt-out below it, and an escape that reaches backwards over it is \
+             a silent INV-SF-6 hard-gate bypass\nstderr: {stderr}"
+        );
+
+        // Every hard-gate summary must route the reader to the policy doc;
+        // `tests/infra/test_reify_audit_pdiag.sh` greps for the same string.
+        for f in &findings {
+            let summary = f["summary"].as_str().unwrap_or_default();
+            assert!(
+                summary.contains("docs/notes/diagnostic-severity-policy.md"),
+                "a High finding must cite the remediation doc; got: {summary:?}"
+            );
+        }
+    }
+
+    /// PDIAG is OPT-IN: a bare sweep with no `--pattern` must NOT run it.
+    ///
+    /// Load-bearing, not stylistic. `reify-audit`'s exit code IS the
+    /// High-severity finding count, and PDIAG's `Exceeded`/`NewFile` verdicts
+    /// are High by design. Joining the default sweep (the `is_none_or` shape
+    /// P1/P2/P5/PTODO use) would make every bare `reify-audit` invocation —
+    /// the /audit skill, `test_reify_audit_predone_wrapper.sh`, anything else
+    /// that omits `--pattern` — start exiting nonzero the moment this
+    /// ratchet drifted, coupling unrelated infra to it. So the predicate is
+    /// `is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER.
+    #[test]
+    fn pdiag_does_not_join_the_default_all_detector_sweep() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag");
+        copy_dir_recursive(&fixtures, repo.path());
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--since",
+                "1970-01-01",
+                "--no-jcodemunch",
+                "--project-root",
+                repo.path().to_str().unwrap(),
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit with no --pattern on the PDIAG fixture tree");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.iter().all(|f| f["pattern"].as_str() != Some("PDiag")),
+            "a bare sweep must not run PDIAG — its High findings would move the exit code \
+             for every consumer that omits --pattern; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+    }
+
+    /// Build the incremental-ratchet fixture source: the committed header
+    /// followed by `n` copies of the committed single-site block, each copy's
+    /// `__N__` placeholder replaced by its index.
+    ///
+    /// Both halves live in `tests/fixtures/pdiag_ratchet/` rather than inline
+    /// here, so the swept anchor token never appears in this source
+    /// (SELF-MATCH DISCIPLINE, as above). One copy is one code-less site, so
+    /// the file's code-less count is exactly `n`.
+    fn pdiag_ratchet_source(n: u32) -> String {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag_ratchet");
+        let header = std::fs::read_to_string(dir.join("header.rs.template"))
+            .expect("read pdiag_ratchet/header.rs.template");
+        let block = std::fs::read_to_string(dir.join("site_block.rs.template"))
+            .expect("read pdiag_ratchet/site_block.rs.template");
+        let mut out = header;
+        for i in 0..n {
+            out.push_str(&block.replace("__N__", &i.to_string()));
+        }
+        out
+    }
+
+    /// The ratchet's load-bearing direction: a file ALREADY in the committed
+    /// baseline that gains ONE more code-less site turns the gate RED.
+    ///
+    /// This is PRD §8 boundary row 8 end to end, and no other test reaches it.
+    /// The fixture-tree sweep above only exercises `NewFile` against an EMPTY
+    /// baseline — it would still pass if the ratchet compared presence rather
+    /// than counts. Here the manifest is the REAL committed
+    /// `pdiag-baseline.txt`, lifted verbatim into a throwaway repo, and the
+    /// only thing that changes between the two halves is one extra site in one
+    /// already-baselined file.
+    ///
+    /// Both halves matter and neither alone is sufficient:
+    ///
+    /// - Half 1 (live == baseline) must exit 0. Without it, half 2's non-zero
+    ///   exit would be unattributable — a detector that flagged the file
+    ///   unconditionally would pass half 2 for entirely the wrong reason.
+    /// - Half 2 (live == baseline + 1) must exit 1 with exactly one High.
+    ///
+    /// The ~65 other baseline rows have no file in the fixture tree, so they
+    /// surface as `OrphanRow` verdicts — deliberately Medium, hence
+    /// exit-neutral, which is itself worth pinning: if slack verdicts were
+    /// High, every opportunistic fix and every file deletion would become
+    /// merge-blocking, and half 1 would not exit 0.
+    #[test]
+    fn pdiag_ratchet_fires_when_a_baselined_file_gains_one_more_code_less_site() {
+        let repo = tempfile::tempdir().expect("create repo tempdir");
+        let aux = tempfile::tempdir().expect("create aux tempdir");
+
+        // Lift the REAL committed manifest — not a synthetic stand-in, so the
+        // test also fails if the shipped manifest stops parsing.
+        let baseline_text = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("pdiag-baseline.txt"),
+        )
+        .expect("read the committed crates/reify-audit/pdiag-baseline.txt");
+        let baseline = reify_audit::pdiag::parse_baseline(&baseline_text)
+            .expect("the committed pdiag-baseline.txt must parse");
+
+        // Any row proves the claim; the first is simply deterministic. Reading
+        // the path and count out of the manifest (rather than hard-coding one)
+        // keeps this test alive as rows shrink under opportunistic migration.
+        let (path, allowed) = baseline
+            .iter()
+            .next()
+            .map(|(p, c)| (p.clone(), *c))
+            .expect(
+                "the committed pdiag-baseline.txt has no rows, so there is no already-baselined \
+                 file to overrun — if the backlog genuinely reached zero, rewrite this test \
+                 against a synthetic one-row manifest rather than deleting it",
+            );
+
+        let manifest = repo.path().join("crates/reify-audit/pdiag-baseline.txt");
+        std::fs::create_dir_all(manifest.parent().unwrap()).expect("create manifest dir");
+        std::fs::write(&manifest, &baseline_text).expect("write lifted manifest");
+
+        // The source file lands at the row's own repo-relative path, so the
+        // detector matches it to that row. `parse_baseline` rejects any row
+        // outside `is_swept_path`, so the path is in-scope by construction.
+        let src = repo.path().join(&path);
+        std::fs::create_dir_all(src.parent().unwrap()).expect("create source dir");
+        std::fs::write(&src, pdiag_ratchet_source(allowed)).expect("write at-baseline source");
+
+        git_init_commit_all(repo.path());
+
+        let tasks_file = write_tasks_json(aux.path(), &[]);
+        let runs_db = write_empty_runs_db(aux.path());
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = || {
+            Command::new(bin)
+                .args([
+                    "--pattern",
+                    "PDIAG",
+                    "--no-jcodemunch",
+                    "--project-root",
+                    repo.path().to_str().unwrap(),
+                    "--tasks-file",
+                    tasks_file.to_str().unwrap(),
+                    "--runs-db",
+                    runs_db.to_str().unwrap(),
+                ])
+                .output()
+                .expect("invoke reify-audit --pattern PDIAG on the ratchet fixture")
+        };
+
+        // --- half 1: exactly at the baseline row → no verdict → exit 0 ------
+        let at = run();
+        let at_stderr = String::from_utf8_lossy(&at.stderr);
+        assert_eq!(
+            at.status.code(),
+            Some(0),
+            "{path} at exactly its baseline allowance of {allowed} must produce NO High finding \
+             (the ~{} other rows are exit-neutral OrphanRow Mediums)\nstderr: {at_stderr}",
+            baseline.len().saturating_sub(1)
+        );
+
+        // --- half 2: one more site → Exceeded → exit 1 ----------------------
+        // Only the file's CONTENT changes; `git ls-files` reads the index, so
+        // the path stays tracked without re-adding.
+        std::fs::write(&src, pdiag_ratchet_source(allowed + 1))
+            .expect("write one-over-baseline source");
+
+        let over = run();
+        let over_stderr = String::from_utf8_lossy(&over.stderr);
+        assert_eq!(
+            over.status.code(),
+            Some(1),
+            "{path} going from {allowed} to {} code-less site(s) must be exactly one High \
+             (Exceeded) → exit 1\nstderr: {over_stderr}",
+            allowed + 1
+        );
+
+        let findings = parse_findings_from_stderr(&over_stderr);
+        let highs: Vec<&serde_json::Value> = findings
+            .iter()
+            .filter(|f| f["severity"].as_str() == Some("High"))
+            .collect();
+        assert_eq!(
+            highs.len(),
+            1,
+            "exactly one High — the overrun file, and nothing else; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+
+        let high = highs[0];
+        assert_eq!(
+            high["pattern"].as_str(),
+            Some("PDiag"),
+            "the overrun finding must be PDiag; got:\n{high:#}"
+        );
+        assert_eq!(
+            high["task_id"].as_str(),
+            Some(path.as_str()),
+            "the overrun finding must be keyed by the offending path; got:\n{high:#}"
+        );
+
+        // A hard gate that names neither the file nor the remedy is a dead
+        // end; `tests/infra/test_reify_audit_pdiag.sh` greps for the same doc.
+        let summary = high["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains(path.as_str()),
+            "the Exceeded summary must name the offending file; got: {summary:?}"
+        );
+        assert!(
+            summary.contains("docs/notes/diagnostic-severity-policy.md"),
+            "the Exceeded summary must cite the remediation doc; got: {summary:?}"
         );
     }
 }

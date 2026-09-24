@@ -17,9 +17,9 @@
 mod p1 {
 
 use reify_audit::{
-    AuditContext, ChangedSymbol, DeadSymbol, DoneProvenance, EvidenceRef, Finding, JCodemunchOps,
-    LayerViolation, MockGitOps, MockJCodemunchOps, Pattern, Severity, SymbolReference,
-    TaskMetadata, UntestedSymbol, p1_producer_orphan,
+    AuditContext, ChangedSymbol, DeadSymbol, DeclSuppression, DoneProvenance, EvidenceRef, Finding,
+    JCodemunchOps, LayerViolation, MockGitOps, MockJCodemunchOps, Pattern, Severity,
+    SymbolReference, TaskMetadata, UntestedSymbol, p1_producer_orphan,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -61,16 +61,16 @@ fn task_sha(task_id: &str) -> String {
     format!("sha_{task_id}")
 }
 
-/// Build a `ChangedSymbol` with no suppression metadata (the orphan-candidate
-/// default); individual tests flip `has_*` / `g_allow_marker` as needed.
+/// Build a `ChangedSymbol` whose declaration was LOCATED and carries no
+/// opt-out — the orphan-candidate default, and what every P1 test that does
+/// not say otherwise means. Tests override `suppression` to opt out, or set it
+/// to `None` to model a declaration that was never located.
 fn changed_symbol(name: &str, file: &str) -> ChangedSymbol {
     ChangedSymbol {
         name: name.to_string(),
         file: file.to_string(),
         line: 42,
-        has_allow_dead_code: false,
-        has_cfg_test: false,
-        g_allow_marker: None,
+        suppression: Some(DeclSuppression::default()),
     }
 }
 
@@ -90,22 +90,45 @@ mod tests {
         // one test file rather than two.
         let _: Pattern = Pattern::P1ProducerOrphan;
 
-        // ChangedSymbol / SymbolReference: destructure every field by name.
+        // ChangedSymbol / DeclSuppression / SymbolReference: destructure every
+        // field by name.
         let ChangedSymbol {
             name: _,
             file: _,
             line: _,
-            has_allow_dead_code: _,
-            has_cfg_test: _,
-            g_allow_marker: _,
+            suppression: _,
         } = ChangedSymbol {
             name: "new_widget".to_string(),
             file: "crates/reify-x/src/widget.rs".to_string(),
             line: 42,
-            has_allow_dead_code: false,
-            has_cfg_test: false,
-            g_allow_marker: None,
+            suppression: Some(DeclSuppression::default()),
         };
+        let DeclSuppression {
+            has_allow_dead_code: _,
+            has_cfg_test: _,
+            g_allow_marker: _,
+        } = DeclSuppression::default();
+
+        // `suppression` is three-state, and `decl_located` is the accessor for
+        // the state a consumer must branch on BEFORE asking about opt-outs.
+        assert!(
+            !ChangedSymbol {
+                suppression: None,
+                ..changed_symbol("unlocatable", "crates/reify-x/src/widget.rs")
+            }
+            .decl_located(),
+            "`suppression: None` means the declaration was never located, so no \
+             opt-out judgement was possible",
+        );
+        assert!(
+            ChangedSymbol {
+                suppression: Some(DeclSuppression::default()),
+                ..changed_symbol("located", "crates/reify-x/src/widget.rs")
+            }
+            .decl_located(),
+            "`Some(DeclSuppression::default())` means the declaration WAS read \
+             and carries no opt-out — a different answer from `None`",
+        );
         let SymbolReference { file: _, line: _ } = SymbolReference {
             file: "crates/reify-y/src/uses_widget.rs".to_string(),
             line: 7,
@@ -479,13 +502,19 @@ mod tests {
             &sha,
             vec![
                 ChangedSymbol {
-                    g_allow_marker: Some(
+                    suppression: Some(DeclSuppression {
+                        g_allow_marker: Some(
                         "F-infra T-4 CLI consumer (crates/reify-audit-cli)".to_string(),
                     ),
+                        ..Default::default()
+                    }),
                     ..changed_symbol("marked_widget", "crates/reify-x/src/marked.rs")
                 },
                 ChangedSymbol {
-                    g_allow_marker: Some(String::new()),
+                    suppression: Some(DeclSuppression {
+                        g_allow_marker: Some(String::new()),
+                        ..Default::default()
+                    }),
                     ..changed_symbol("blank_marked_widget", "crates/reify-x/src/blank.rs")
                 },
             ],
@@ -563,11 +592,17 @@ mod tests {
             &sha,
             vec![
                 ChangedSymbol {
-                    has_allow_dead_code: true,
+                    suppression: Some(DeclSuppression {
+                        has_allow_dead_code: true,
+                        ..Default::default()
+                    }),
                     ..changed_symbol("dead_widget", "crates/reify-x/src/dead.rs")
                 },
                 ChangedSymbol {
-                    has_cfg_test: true,
+                    suppression: Some(DeclSuppression {
+                        has_cfg_test: true,
+                        ..Default::default()
+                    }),
                     ..changed_symbol("cfg_test_widget", "crates/reify-x/src/cfgt.rs")
                 },
                 changed_symbol("live_widget", "crates/reify-x/src/live.rs"),
@@ -1241,17 +1276,26 @@ mod tests {
                 changed_symbol("solve_closed_chain", "crates/reify-stdlib/src/dynamics/closed_chain.rs"),
                 // (ii) has_allow_dead_code — suppressed
                 ChangedSymbol {
-                    has_allow_dead_code: true,
+                    suppression: Some(DeclSuppression {
+                        has_allow_dead_code: true,
+                        ..Default::default()
+                    }),
                     ..changed_symbol("stdlib_dead", "crates/reify-stdlib/src/dynamics/dead.rs")
                 },
                 // (iii) non-blank g_allow_marker — suppressed
                 ChangedSymbol {
-                    g_allow_marker: Some("in-flight; consumer task 4146".to_string()),
+                    suppression: Some(DeclSuppression {
+                        g_allow_marker: Some("in-flight; consumer task 4146".to_string()),
+                        ..Default::default()
+                    }),
                     ..changed_symbol("stdlib_marked", "crates/reify-stdlib/src/dynamics/marked.rs")
                 },
                 // (iv) has_cfg_test — suppressed
                 ChangedSymbol {
-                    has_cfg_test: true,
+                    suppression: Some(DeclSuppression {
+                        has_cfg_test: true,
+                        ..Default::default()
+                    }),
                     ..changed_symbol("stdlib_cfgtest", "crates/reify-stdlib/src/dynamics/cfgtest.rs")
                 },
             ],
@@ -1319,6 +1363,167 @@ mod tests {
         assert!(
             f.summary.contains("solve_closed_chain"),
             "surviving finding must name solve_closed_chain; got summary: {:?}",
+            f.summary
+        );
+    }
+
+    /// A declaration the enrichment pass never located carries NO opt-out
+    /// judgement — `suppression: None` means "could not check", not "the
+    /// author declined every opt-out". Reporting it turns a jcodemunch
+    /// grammar drift, a stale index, or an unreadable file into a
+    /// false-positive over every intentionally suppressed symbol.
+    ///
+    /// Two symbols in ONE task, asserted as a PARTITION of the finding set:
+    /// a test that only checked the unlocatable symbol's absence would also
+    /// pass under a guard that suppressed everything, which is the opposite
+    /// failure. The located sibling differs from it in exactly the one field
+    /// under test, so the surviving finding pins that the guard is narrow.
+    #[test]
+    fn unlocatable_declaration_is_not_reported_as_an_orphan() {
+        let done_at = NOW - 15 * DAY;
+        let sha = task_sha("7600");
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            &format!("{sha}^1"),
+            &sha,
+            vec![
+                ChangedSymbol {
+                    suppression: None,
+                    ..changed_symbol("unlocatable_widget", "crates/reify-x/src/unlocatable.rs")
+                },
+                changed_symbol("located_widget", "crates/reify-x/src/located.rs"),
+            ],
+        );
+        // No caller for either, so the caller guard cannot be what suppresses.
+        jc.set_find_references(
+            "crates/reify-x/src/unlocatable.rs",
+            "unlocatable_widget",
+            vec![],
+        );
+        jc.set_find_references("crates/reify-x/src/located.rs", "located_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7600".to_string(),
+            done_meta("7600", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the located symbol must still be flagged and the unlocatable one \
+             must not; got {findings:?}",
+        );
+        let f = &findings[0];
+        assert_eq!(f.severity, Severity::Medium, "15 days > 14-day grace → Medium");
+        assert!(
+            f.summary.contains("located_widget"),
+            "the surviving finding must be the LOCATED symbol's; got summary: {:?}",
+            f.summary
+        );
+        assert!(
+            f.evidence.iter().any(|e| matches!(
+                e,
+                EvidenceRef::File { path } if path == "crates/reify-x/src/located.rs"
+            )),
+            "surviving finding must cite located.rs; got {:?}",
+            f.evidence
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.summary.contains("unlocatable_widget")),
+            "a symbol whose declaration was never located must not be reported \
+             — its author may well have written `#[allow(dead_code)]`; got \
+             {findings:?}",
+        );
+    }
+
+    /// The skip PRECEDES the severity computation rather than merely
+    /// downgrading Medium to Low.
+    ///
+    /// Inside the grace window a surviving symbol is Low, so a guard that only
+    /// downgraded would leave the unlocatable symbol indistinguishable from
+    /// the located one here — both Low, two findings. Exactly one finding is
+    /// what separates "skipped" from "downgraded", and no assertion in the
+    /// past-the-window sibling above can tell them apart.
+    #[test]
+    fn unlocatable_declaration_is_skipped_even_inside_the_grace_window() {
+        let done_at = NOW - DAY;
+        let sha = task_sha("7601");
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            &format!("{sha}^1"),
+            &sha,
+            vec![
+                ChangedSymbol {
+                    suppression: None,
+                    ..changed_symbol("unlocatable_widget", "crates/reify-x/src/unlocatable.rs")
+                },
+                changed_symbol("located_widget", "crates/reify-x/src/located.rs"),
+            ],
+        );
+        jc.set_find_references(
+            "crates/reify-x/src/unlocatable.rs",
+            "unlocatable_widget",
+            vec![],
+        );
+        jc.set_find_references("crates/reify-x/src/located.rs", "located_widget", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "7601".to_string(),
+            done_meta("7601", done_at, Some("docs/x.md")),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "an unlocatable declaration is SKIPPED, not downgraded — a \
+             downgrade would leave two Low findings here; got {findings:?}",
+        );
+        let f = &findings[0];
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "1 day is inside the 14-day grace window; got {:?}",
+            f.severity
+        );
+        assert!(
+            f.summary.contains("located_widget"),
+            "the surviving finding must be the LOCATED symbol's; got summary: {:?}",
             f.summary
         );
     }

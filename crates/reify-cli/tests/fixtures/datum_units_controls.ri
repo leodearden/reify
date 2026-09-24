@@ -1,0 +1,32 @@
+// datum_units_controls.ri — CLI eval fixture: the POSITIVE CONTROL for
+// units-length ε (task 5746, R11).
+//
+// The dimensioned datum path must be entirely undisturbed by the gate. This is
+// the anti-vacuity half of the end-to-end assertion: without it, a `make_plane`
+// / `make_axis` that rejected EVERYTHING would satisfy the two rejection
+// fixtures perfectly.
+//
+// `reify eval` exits 0 and prints the output measured against the real
+// `target/debug/reify` binary and reproduced in cli_eval_datum_units.rs:
+//   plane(point(0 m, 0 m, 0.005 m), vec(0, 0, 1))
+//   axis(point(0 m, 0 m, 0 m), vec(1, 0, 0))
+//
+// The plane offset is deliberately NON-ZERO. With `plane_xy(0mm)` the whole
+// origin triple is three indistinguishable zeros, so the row cannot tell a
+// correct `offset_index` from a wrong or hardcoded one; `5mm` puts the offset
+// in a slot only `plane_xy` should fill. It also makes the dimension MIRRORING
+// legible rather than merely present: the two SYNTHESIZED components print as
+// `0 m`, not a bare `0`, beside a distinct dimensioned third.
+//
+// Both rows show the SCOPE LOCK — the synthesized unit normal / direction stays
+// dimensionless (`vec(0, 0, 1)` / `vec(1, 0, 0)`), because a unit vector
+// legitimately has bare components (D3).
+//
+// Declares its module explicitly, matching its two sibling fixtures.
+
+module datum_units_controls
+
+structure def DatumUnitsControls {
+    let p = plane_xy(5mm)
+    let a = axis_x(point3(0mm, 0mm, 0mm))
+}

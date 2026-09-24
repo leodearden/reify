@@ -345,7 +345,7 @@ task 5465 promoted.
 **Migrate the corpus first, then land the gate; workspace green at every commit.** This is
 the template `real-dimensionless-unification.md:64` established and the reason candidate 4
 was chosen over candidates 1–3. The measurement instrument and the migration's own proof are
-the same object: `crates/reify-compiler/tests/examples_smoke.rs:198`
+the same object: `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs:198`
 `no_example_emits_ctor_field_conformance_diagnostics` — a corpus-wide, severity-blind,
 zero-tolerance gate over every `.ri` under `examples/` (≥40 files, `:215-220`), which
 accumulates and reports **all** violations in one panic rather than failing fast.
@@ -1120,7 +1120,7 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
 
 - **Modules:** `crates/reify-compiler/src/conformance/mod.rs`,
   `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
-  `crates/reify-compiler/tests/examples_smoke.rs`.
+  `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`.
 - **Work:** the §4.1 predicate arm; the D4-5 `ScalarParam` fence via
   `is_numeric_placeholder_leaf`; the D4-6 migration hint; rewrite the `examples_smoke` panic
   message (§4.3 trap); add the I1–I8 value floors (§7.1).

@@ -46,7 +46,9 @@
 # `tests/` SIBLING because it was deliberately NOT moved — the shared `common`
 # helper at `crates/<c>/tests/common/mod.rs`. There a bare `mod common;` is
 # correct precisely BECAUSE crate-root-relative resolution lands on it
-# (harness_cli, harness_occt, harness_fea_solver_e2e do this; harness_langcore
+# (harness_cli, harness_fea_solver_e2e, harness_occt_measurement do this —
+# harness_occt itself dropped its bare `mod common;` in the #7466 split, which
+# moved the include to the new sibling along with its consumers; harness_langcore
 # and harness_patterns spell the equivalent `#[path = "common/mod.rs"]`, and
 # harness_selective_demand does the same for `common/differential.rs`). The
 # rule is therefore scoped: `#[path]` is mandatory for every former-standalone
@@ -349,43 +351,25 @@ CAP_LINES=20000
 # below), so an ARRIVING unit is red while a unit LEAVING the set is free.
 WARN_PCT=90
 
-# Units currently between the WARN line and the cap. A SHRINKING ratchet in
-# the same spirit as harness-layout-baseline.manifest: a unit may LEAVE this
-# list freely (that is progress and must never turn the gate red), but a unit
-# ARRIVING must be added deliberately in the same diff -- which is exactly the
-# "surface the squeeze before it breaks" signal task #6121 added the WARN tier
-# for. harness_syntax.rs measured 18957/20000 = 94.8% as of task #6121; it is
-# listed here because it is outside that task's scope, NOT because it is
-# acceptable — the remedy is still rule (a)'s split, and that split is #7040.
+# Units currently between the WARN line and the cap: a SHRINKING ratchet, in the
+# same spirit as harness-layout-baseline.manifest. A unit may LEAVE this list
+# freely (that is progress and must never turn the gate red), but a unit
+# ARRIVING is red until it is added here IN THE SAME DIFF that pushes it over
+# the line -- the "surface the squeeze before it breaks" signal task #6121 added
+# the WARN tier for. Section 5d enforces that against the live tree, and also
+# reds a row whose file left the disk; Section 4c pins the same rule against
+# hermetic fixtures, so an empty list leaves it enforced rather than vacuous.
 #
-# THE CITE IS LOAD-BEARING, not decoration. Departure from the warn set is free
-# (a) and the stale-row PRUNE note is advisory (c), so nothing in this guard
-# will ever nag about a listed row again: absent a live pointer to the work it
-# defers, harness_syntax would sit just under the line until it broke the cap —
-# precisely the innocent-author ambush the WARN tier exists to prevent. So when
-# #7040 reaches a terminal state, this row must be re-justified or dropped, not
-# silently re-inherited. A bare `#NNNN` in prose is the repo's citation form and
-# does not itself create a PTODO marker; what the ratchet reds is an UNBACKED
-# tracked-elsewhere CLAIM, which is why an earlier draft of the WARN_PCT comment
-# above was rejected — a cite that resolves to a live task is the fix for that,
-# not an omission.
+# A row added here MUST carry a live `#NNNN` cite to the split that will retire
+# it -- rule (a)'s split, never a CAP_LINES bump -- and must be re-justified or
+# dropped once that cite reaches a terminal state. The cite is load-bearing:
+# departure is free and the stale-row PRUNE note is advisory, so nothing else in
+# this guard will nag about a listed row again.
 #
-# Kept in-script rather than in a new manifest file because this guard already
-# carries its comparable constant sets in-script (_HL_OVERRIDE_STEMS via the
-# shared lib, CAP_LINES, WARN_PCT), so no new file, loader or drift-gate is
-# needed. Enforced as a SUBSET in Section 5d, which also reports the prune
-# direction the subset check is blind to: an advisory `PRUNE:` note for a row
-# that stopped WARNing, and a RED for a row whose file is no longer on disk.
-# harness_occt.rs measured 19020/20000 = 95% at task #6619 (root 154 + 17707
-# across 55 module files + 1159 external via the bare `mod common;`). Listed
-# for the same reason as harness_syntax above and NOT because it is acceptable:
-# the remedy is still rule (a)'s split, and that split is #7466. On bare
-# main the unit already measured 17737, 263 lines under the warn line, so the
-# crate was crossing on its next test-bearing commit regardless of #6619.
-_KLOC_WARN_KNOWN=(
-    "crates/reify-syntax/tests/harness_syntax.rs"
-    "crates/reify-kernel-occt/tests/harness_occt.rs"
-)
+# Empty is the healthy end state. The array stays DECLARED because Section 5d
+# expands it under `set -u`, and lives in-script beside CAP_LINES and WARN_PCT
+# rather than in a manifest file.
+_KLOC_WARN_KNOWN=()
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both
@@ -1920,15 +1904,18 @@ assert "4b: at cap=10000 the 19000-line unit emits no WARN line" \
 # end state.
 #
 # Fixtures are synthetic SCAN TRANSCRIPTS (not scans): the classifier's input is
-# text plus a root dir, so there is nothing to gain from generating 19000-line
-# files here — Section 4b already owns the line->WARN half of the contract, and
-# these cases are about what happens AFTER a WARN line exists.
+# text plus a root dir, and Section 4b already owns the line->WARN half of the
+# contract. The one exception is the EMITTER SEAM case, which runs the real
+# driver once so that `_s4c_warn` — the hand-written WARN line every other case
+# here is built from — is pinned to the grammar the detector actually emits,
+# rather than trusted to still match it.
 # ===========================================================================
 echo ""
 echo "--- Section 4c: WARN-set shrinking ratchet (hermetic) ---"
 
 # A synthetic repo root: two harness files that EXIST, and one path deliberately
-# never created (the DEAD case).
+# never created (the DEAD case). The EMITTER SEAM case adds a third, over-warn
+# unit beside them.
 _s4c_root="$(mktemp -d)"; _TMPDIRS+=("$_s4c_root")
 mkdir -p "$_s4c_root/crates/synthcrate/tests"
 : > "$_s4c_root/crates/synthcrate/tests/harness_a.rs"
@@ -1955,6 +1942,33 @@ _s4c_run() {
 _s4c_rows_are() {
     test "$(_warn_ratchet_rows "$_s4c_out" "$1")" = "$2"
 }
+
+# --- EMITTER SEAM. `_s4c_warn` is a COPY of the detector's WARN grammar, and
+# every case below is built from it. If the copy drifted from the emitter — a
+# field renamed or reordered there, Section 4b's regexes updated to match, this
+# helper not — those cases would stay green against a line the detector no
+# longer emits while Section 5d misread the real one. So drive the SAME driver
+# whose output Section 5d classifies over a real over-warn unit laid out as
+# crates/<crate>/tests/, and pin both halves of the seam: the copy is
+# byte-identical to what was emitted, and the classifier reads the emitted
+# transcript (PASS/SUMMARY lines included) as it reads the copy. ---
+_s4c_emit_row="crates/synthcrate/tests/harness_emitted.rs"
+awk 'BEGIN { for (i = 0; i < 19000; i++) print "// x" }' > "$_s4c_root/$_s4c_emit_row"
+_s4c_emit_baseline="$(mktemp)"; _TMPDIRS+=("$_s4c_emit_baseline")
+_s4c_scan="$(run_harness_layout_scan "$_s4c_emit_baseline" 20000 \
+    "synthcrate:$_s4c_root/crates/synthcrate/tests" 2>/dev/null)" || true
+_s4c_emitted_warn="$(printf '%s\n' "$_s4c_scan" | grep -E '^HARNESS_KLOC_CAP WARN ' || true)"
+assert "4c: EMITTER SEAM — _s4c_warn is byte-identical to the WARN line the real driver emits for the same unit" \
+    test "$_s4c_emitted_warn" = "$(_s4c_warn "$_s4c_root/$_s4c_emit_row")"
+_s4c_run
+assert "4c: EMITTER SEAM — the classifier counts and parses exactly the one emitted WARN (EMITTED 1, PARSED 1)" \
+    test "$(_warn_ratchet_rows "$_s4c_out" EMITTED)/$(_warn_ratchet_rows "$_s4c_out" PARSED)" = "1/1"
+assert "4c: EMITTER SEAM — the emitted file= normalises to the repo-relative row and is UNKNOWN, gating (rc 1)" \
+    bash -c 'test "$1" = "$2" && test "$3" -eq 1' _ \
+        "$(_warn_ratchet_rows "$_s4c_out" UNKNOWN)" "$_s4c_emit_row" "$_s4c_rc"
+_s4c_run "$_s4c_emit_row"
+assert "4c: EMITTER SEAM — acknowledging that repo-relative row silences the emitted WARN (rc 0)" \
+    test "$_s4c_rc" -eq 0
 
 # --- (i) a live WARN absent from the known set is RED ---
 _s4c_scan="$(_s4c_warn "$_s4c_root/$_s4c_a")"
@@ -2217,10 +2231,7 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # WARN tier now covers. Same remedy applied, again a split rather than a cap
 # raise: the `stress_*` group left for harness_stress_scenarios (task #6121),
 # leaving 16118 = 104 root + 15623 module (36 files) + 391 external (80.6%) and
-# a new 3378-line unit (70 root + 3308 module + 0 external, 16.9%). The tightest
-# live unit is now crates/reify-syntax/tests/harness_syntax.rs at 18957 = 148
-# root + 18739 module + 70 external (94.8%) — the sole member of
-# _KLOC_WARN_KNOWN, ratcheted by Section 5d.
+# a new 3378-line unit (70 root + 3308 module + 0 external, 16.9%).
 #
 # Every figure in this paragraph is a LIVE `harness_layout_unit_lines` reading:
 # the pre-split one taken at this branch's base (bf5b91d9de), the rest at the
@@ -2228,6 +2239,13 @@ assert "5b: at least one live harness has root<500 lines yet aggregate>10000 lin
 # quoted (19265 / 15951) because that plan measured an earlier base and main
 # has since added a 43rd module file to the dir — the split's ~3.3 kLOC delta is
 # unaffected, only the absolute totals moved.
+#
+# The tightest live unit is whatever `harness_layout_unit_lines` reports the
+# largest `total` for: re-measure rather than reading one off this comment,
+# whose figures above are dated readings, not current state. Every unit above
+# WARN_PCT must be an acknowledged member of _KLOC_WARN_KNOWN (Section 5d's
+# subset ratchet), and the remedy for a unit approaching the cap is always rule
+# (a)'s SPLIT.
 
 # ===========================================================================
 # Section 5c: live non-vacuity of the EXTERNAL attribution — the out-of-module-

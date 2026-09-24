@@ -12,9 +12,12 @@
 //   crank a = 40 mm, coupler b = 120 mm, rocker c = 116.282484506 mm,
 //   ground d = 140 mm   (s+l = 40+140 = 180 ≤ p+q = 116.28+120 ≈ 236 ✓ Grashof)
 //
-// Assembled config at θ_crank=45° (coupler straight):
+// ANALYTIC assembled config at θ_crank=45° (coupler straight), with the rocker
+// ground pivot at its intended X=140mm:
 //   θ_rocker     = atan2(113.137, 113.137−140) ≈ 1.8039163646188838 rad
 //   θ_rocker_tip = θ_crank − θ_rocker           ≈ −1.0185182012214355 rad
+// These are the loop's true zeros and are what B7 (c) asserts.  They are NOT
+// what this file's `s` cell computes — see "Snapshot ordering note" below.
 //
 // ── Relate-mount ─────────────────────────────────────────────────────────────
 // `rocker_anchor` is a grounded sub (not `at auto`) whose geometry sits at
@@ -24,14 +27,39 @@
 // engine_build seam writes `j_rocker.origin = Transform(I, (0.14,0,0))`.
 //
 // The relate-written origin is equivalent to `revolute(axis_z, ..., point3(140mm,0,0))`,
-// so the loop geometry is unchanged and the Grashof closure angles apply.
+// so the POST-seam loop geometry is unchanged and the Grashof closure angles
+// apply to it.  They do not apply to the pre-seam geometry the `s` cell sees.
 //
 // ── Snapshot ordering note ────────────────────────────────────────────────────
-// The snapshot cell `s` is included as a demonstration.  Currently it evaluates
-// before the engine_build seam writes `j_rocker.origin` (DD3 ordering; a
-// seam-aware re-eval pass is a future follow-up), so `s` may be Value::Undef.
-// The B7 test (relate_mounted_joint_sweep_e2e.rs) uses `solve_loop_closure`
-// directly with the post-seam joint values to prove Newton convergence.
+// The snapshot cell `s` is a DEMONSTRATION OF THE API, not a demonstration of
+// the Grashof closure.  Three things have to be kept apart:
+//
+//  (i)   The ANALYTIC assembled configuration — the (1.8039, −1.0185) rad pair
+//        above.  Those are the loop's exact zeros with j_rocker's ground pivot
+//        at X=140mm, and they are what B7 (c) asserts via loop_residual_twist.
+//
+//  (ii)  What THIS FILE's `s` cell computes: a well-formed Snapshot Map
+//        (kind / bodies / free_values, no is_singular key; it is NOT
+//        Value::Undef) whose free_values are θ_rocker = π/4 and
+//        θ_rocker_tip ≈ 0, in chain_b order [j_rocker, j_rocker_tip].
+//
+//  (iii) WHY they differ — the DD3 seam ordering.  `s` evaluates BEFORE the
+//        engine_build seam writes `j_rocker.origin`, so at snapshot time the
+//        rocker's ground pivot sits at the WORLD ORIGIN, not at X=140mm.  The
+//        rocker chain then reaches only c = 116.282mm from the origin while the
+//        crank+coupler chain reaches 40+120 = 160mm, so the loop is infeasible
+//        by 43.7mm and Newton returns the least-squares point: it aligns the
+//        rocker with the coupler-tip direction (θ_rocker = π/4, which also
+//        nulls the orientation residual, leaving θ_rocker_tip ≈ 0).  Both
+//        values sit OUTSIDE their declared ranges — the solver seeds from the
+//        range midpoint but does not clamp to it.
+//
+// So `s` is NOT representative of the assembled 4-bar, and this file must not
+// be read as showing the Grashof closure converging.  A seam-aware re-eval pass
+// is the future follow-up that would make it so.  The B7 test
+// (relate_mounted_joint_sweep_e2e.rs) instead calls `solve_loop_closure`
+// directly with the POST-seam joint values, which do carry the 140mm origin, to
+// prove Newton convergence.
 //
 // Acceptance criterion mirror:
 //   crates/reify-eval/tests/relate_mounted_joint_sweep_e2e.rs
@@ -109,7 +137,26 @@ structure RelateMountedFourbar {
     //   j_coupler_tip → j_coupler      (coupler tip, b = 120 mm)
     //   j_rocker      → world          (ground pivot D at X=140 mm via origin)
     //   j_rocker_tip  → j_rocker       (rocker tip, c = 116.282 mm)
+    //
     // Closing edge: j_coupler_tip with parent j_rocker_tip → loop_closures += 1.
+    // The recorded chain pair is ASYMMETRIC — the closing joint is composed
+    // exactly once, on the spanning-tree side only:
+    //   chain_a = [j_crank, j_coupler, j_coupler_tip]   reaches pivot C from A
+    //   chain_b = [j_rocker, j_rocker_tip]              reaches pivot C from D
+    // The asymmetry is load-bearing: a term on BOTH sides does not cancel, it
+    // conjugates the residual, relocating the closure from pivot C to pivot B
+    // — a whole link away, leaving this Grashof loop with no exact zero.
+    //
+    // The closing edge below is a PARENT-CONFLICT edge (j_coupler_tip already
+    // has j_coupler as its recorded parent), so it is a rigid 0-DOF TIE from
+    // `parent` to `at` whose transform is the closing call's `pose`, and the
+    // closure reads `T_tree(at) == T(parent) . pose`.  The 4-arg form leaves
+    // `pose` at the identity, so here the tie is simply
+    // `T(j_coupler_tip via chain_a) == T(j_rocker_tip)` — pivot C reached both
+    // ways.  The "closing" body itself therefore rides on chain_b's terminal
+    // frame, which equals chain_a's exactly when the loop closes.  (A rigid
+    // platform spanning two pivots would give the tie a non-identity `pose`;
+    // this loop needs none.)
     let m0 = mechanism()
     let m1 = body(m0, "crank",       j_crank)
     let m2 = body(m1, "coupler",     j_coupler,     j_crank)
@@ -125,9 +172,12 @@ structure RelateMountedFourbar {
     // (j_rocker, j_rocker_tip) free for Newton.  The narrow ranges above give
     // midpoints (~1.8 rad, ~−1.0 rad) near the closure angles so Newton converges.
     //
-    // Note: this snapshot evaluates before the seam writes j_rocker.origin (DD3
-    // ordering), so it may produce Value::Undef.  The B7 Rust test uses
-    // solve_loop_closure directly with the post-seam values to prove closure.
+    // Note: this snapshot evaluates BEFORE the seam writes j_rocker.origin (DD3
+    // ordering), so it does NOT reach the analytic assembly — it converges to
+    // the least-squares point (π/4, ≈0) rad of a loop whose rocker ground
+    // pivot is still at the world origin.  See "Snapshot ordering note"
+    // at the top of this file.  The B7 Rust test uses solve_loop_closure
+    // directly with the post-seam values to prove the real closure.
     let s = snapshot(m, [
         bind(j_crank,       0.7853981633974483rad),
         bind(j_coupler,     0rad),

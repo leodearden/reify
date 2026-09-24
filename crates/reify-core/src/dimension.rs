@@ -325,7 +325,7 @@ impl DimensionVector {
     ///
     /// Do not "fix" a future collision by adding another alias row. A
     /// dimension-checked reader compares vectors, not names — `accept_arg` keys
-    /// on `*dimension == spec.dimension` (`reify-eval/src/arg_acceptance.rs`) and
+    /// on `*dimension == spec.dimension` (`crates/reify-ir/src/arg_acceptance.rs`) and
     /// `ArgSpec.type_name` is display-only — so an alias row cannot separate two
     /// quantities that share a vector. That is the ruling's core argument, and it
     /// is pinned executably by the separation tests in
@@ -552,11 +552,12 @@ pub const FORCE: DimensionVector = {
 ///   direction (linear scan forward).
 ///
 /// Both directions are FIRST-MATCH, which is why ENTRY ORDER IS LOAD-BEARING: an
-/// alias row (`TranslationalStiffness`, `Curvature`, `Momentum`, `Torque`) is placed
+/// alias row (`TranslationalStiffness`, `Curvature`, `Momentum`) is placed
 /// AFTER the canonical row it shares a vector with, so `canonical_name()` keeps
 /// returning the canonical name while the alias name still resolves in the
 /// name→dim direction. Inserting one BEFORE its canonical row would silently
-/// change every reverse-lookup consumer's output.
+/// change every reverse-lookup consumer's output. (`Torque` is no longer an
+/// alias — see the `DimensionVector::TORQUE` docs.)
 ///
 /// **`DIMENSIONLESS` is intentionally excluded.** `canonical_name` returns `None` for
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`

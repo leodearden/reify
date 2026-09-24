@@ -4,6 +4,8 @@
 
 use reify_ast::*;
 
+use crate::parse_error_lookup::only_error_starting_with;
+
 /// Helper: parse source and return declarations and errors.
 fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     let module = reify_syntax::parse(
@@ -196,6 +198,11 @@ fn parse_constraint_def_body_syntax_error() {
         "expected an error message containing 'syntax error in constraint body', got: {:?}",
         errors
     );
+    // INV-SF-7, task #6156: an excerpt already inside the snippet bound is reproduced verbatim.
+    assert_eq!(
+        only_error_starting_with(&errors, "syntax error in constraint body").message,
+        "syntax error in constraint body: >="
+    );
     // The constraint def should still be constructed (with empty predicates).
     assert_eq!(
         decls.len(),
@@ -266,4 +273,110 @@ fn parse_constraint_def_error_param() {
         }
         other => panic!("expected Declaration::Constraint, got {:?}", other),
     }
+}
+
+// ── A body ERROR is one line, located at its first unexpected token ──
+//
+// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #6156.
+
+/// A multi-line recovery blob is reported as ONE line, starting at line 3's `) (`.
+///
+/// The location assertion pins the flat-body policy. Recovery nests only LATER debris (line 5's
+/// `( (`) in inner `ERROR`s, so an innermost-fault walk would report only on line 5 and drop
+/// line 3's break.
+#[test]
+fn multi_line_body_error_is_one_line_at_its_first_unexpected_token() {
+    let source = "constraint def Eq {\n  param x: Length\n  x > 0 ) (\n    x < 10mm\n    x != 3mm ( (\n  x > 1mm\n}\n";
+    let (_, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "syntax error in constraint body");
+    assert!(
+        !error.message.contains('\n'),
+        "expected a single-line diagnostic, got: {errors:?}"
+    );
+    assert_eq!(error.message, "syntax error in constraint body: ) (…");
+    assert_eq!(error.span.start as usize, source.find(") (").unwrap());
+}
+
+/// Recovery folds line 4's `x` into the `ERROR` begun by line 3's `param = =`; the report still
+/// belongs where that `ERROR` starts, not at the absorbed `x`.
+#[test]
+fn body_error_is_located_at_its_start_not_at_absorbed_debris() {
+    let source = "constraint def Eq {\n  param x: Length\n  param = =\n  x > 0\n}\n";
+    let (_, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "syntax error in constraint body");
+    assert!(
+        !error.message.contains('\n'),
+        "expected a single-line diagnostic, got: {errors:?}"
+    );
+    assert_eq!(error.message, "syntax error in constraint body: param = =…");
+    assert_eq!(error.span.start as usize, source.find("param = =").unwrap());
+}
+
+// ── A faulty predicate is refused and diagnosed; a faulty let is diagnosed ──
+//
+// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #6156: a CST
+// fault inside a constraint def must never lower into a predicate the source does not state, nor
+// vanish without a diagnostic.
+
+/// The single constraint definition `decls` must consist of.
+#[track_caller]
+fn sole_constraint(decls: &[Declaration]) -> &ConstraintDef {
+    match decls {
+        [Declaration::Constraint(c)] => c,
+        other => panic!("expected exactly one constraint def, got {other:?}"),
+    }
+}
+
+/// A stray `)` must not fuse a predicate with the next line's. Measured before the guard: zero
+/// diagnostics, and a second predicate lowered as `(x < 10mm) > 1mm`.
+#[test]
+fn faulty_predicate_is_refused_and_diagnosed() {
+    let source = "constraint def Eq {\n  param x: Length\n  x > 0\n  x < 10mm )\n  x > 1mm\n}\n";
+    let (decls, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "invalid constraint predicate");
+    assert_eq!(error.message, "invalid constraint predicate: x < 10mm )…");
+    let stray_paren = source.find("10mm )").unwrap() + "10mm ".len();
+    assert_eq!(error.span.start as usize, stray_paren);
+    assert_eq!(
+        sole_constraint(&decls).predicates.len(),
+        1,
+        "only `x > 0` may lower, got: {decls:?}"
+    );
+}
+
+/// An unclosed call must not absorb the next line as an argument. Measured before the guard:
+/// zero diagnostics, and one predicate `x > f(1, x < 10mm)` closed by a MISSING `)`.
+#[test]
+fn unclosed_call_predicate_is_refused_and_diagnosed() {
+    let source = "constraint def Eq {\n  param x: Length\n  x > f(1,\n  x < 10mm\n}\n";
+    let (decls, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "invalid constraint predicate");
+    assert_eq!(error.message, "invalid constraint predicate: x > f(1,…");
+    assert!(
+        sole_constraint(&decls).predicates.is_empty(),
+        "no predicate may lower, got: {decls:?}"
+    );
+}
+
+/// Lets are ignored in a constraint def, but a faulty one is still reported. Measured before the
+/// guard: zero diagnostics, while the `x > 0` predicate vanished into the let's recovery.
+#[test]
+fn faulty_let_is_diagnosed() {
+    let source = "constraint def Eq {\n  param x: Length\n  let y = )\n  x > 0\n}\n";
+    let (_, errors) = parse_decls(source);
+    let error = only_error_starting_with(&errors, "invalid constraint let");
+    assert_eq!(error.message, "invalid constraint let: let y = )…");
+    assert_eq!(error.span.start as usize, source.find("= )").unwrap() + 2);
+}
+
+/// Control: a well-formed let and well-formed predicates stay silent and lower in full.
+#[test]
+fn well_formed_let_and_predicates_stay_silent() {
+    let source =
+        "constraint def Eq {\n  param x: Length\n  let y = x * 2\n  x > 0\n  y < 10mm\n}\n";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {errors:?}");
+    let constraint = sole_constraint(&decls);
+    assert_eq!(constraint.params.len(), 1);
+    assert_eq!(constraint.predicates.len(), 2);
 }

@@ -54,7 +54,7 @@
 use reify_ir::Value;
 
 use crate::eval_builtin;
-use crate::loop_closure_value::JointValue;
+use crate::loop_closure_value::{JointKind, JointValue};
 
 /// Fold a chain of joint Maps into a single composed Transform.
 ///
@@ -190,31 +190,26 @@ fn twist_map_to_array(twist_map: &Value) -> Option<[f64; 6]> {
 ///
 /// KCC-γ (PRD §5.2) widened this from `Option<f64>` to `Option<JointValue>`
 /// so multi-DOF kinds (planar, spherical, cylindrical) participate in the
-/// chain machinery and the loop-closure Newton solver.  The explicit
-/// per-arm dispatch is retained so a future kind addition cannot silently
-/// drift; the JOINT_KINDS-iteration partition test in this module's
-/// `tests` block loud-fails any unhandled kind.
+/// chain machinery and the loop-closure Newton solver.  The kind is read
+/// through [`joint_kind`] and dispatched on the typed [`JointKind`], so an
+/// added kind is a compile error here rather than a silent `None`.
 pub fn joint_range_midpoint(joint: &Value) -> Option<JointValue> {
     let map = match joint {
         Value::Map(m) => m,
         _ => return None,
     };
-    let kind = match map.get(&Value::String("kind".to_string())) {
-        Some(Value::String(s)) => s.as_str(),
-        _ => return None,
-    };
-    match kind {
-        "prismatic" | "revolute" => {
+    match joint_kind(joint)? {
+        JointKind::Prismatic | JointKind::Revolute => {
             let mid = range_midpoint(map, "range")?;
             Some(JointValue::Scalar(mid))
         }
-        "coupling" => {
+        JointKind::Coupling => {
             let parent = map.get(&Value::String("parent".to_string()))?;
             joint_range_midpoint(parent)
         }
         // 0-DOF — empty free-variable space; no midpoint to seed.
-        "fixed" => None,
-        "planar" => {
+        JointKind::Fixed => None,
+        JointKind::Planar => {
             let mid_x = range_midpoint(map, "range_x")?;
             let mid_y = range_midpoint(map, "range_y")?;
             let mid_theta = range_midpoint(map, "range_theta")?;
@@ -222,13 +217,12 @@ pub fn joint_range_midpoint(joint: &Value) -> Option<JointValue> {
         }
         // Axis-isotropic: identity quaternion is the canonical seed regardless
         // of `range_angle` (which bounds the rotation magnitude downstream).
-        "spherical" => Some(JointValue::Sphere([1.0, 0.0, 0.0, 0.0])),
-        "cylindrical" => {
+        JointKind::Spherical => Some(JointValue::Sphere([1.0, 0.0, 0.0, 0.0])),
+        JointKind::Cylindrical => {
             let mid_d = range_midpoint(map, "translation_range")?;
             let mid_theta = range_midpoint(map, "rotation_range")?;
             Some(JointValue::Cyl([mid_d, mid_theta]))
         }
-        _ => None,
     }
 }
 
@@ -509,16 +503,19 @@ pub type LoopClosureSolverInputs = (
 ///   * `chain_b`         — the joints in `path_b` with the world sentinel
 ///     stripped.
 ///   * `vals_b_initial`  — initial-guess SI values for `chain_b`. Joints with
-///     a direct binding entry use the bound value; otherwise the range midpoint.
+///     a direct binding entry use the bound value; otherwise they resolve
+///     through the same `resolve_joint_value` ladder as `chain_a`
+///     (coupling → parent, `fixed` → `0.0` sentinel, else range midpoint).
 ///   * `free_b`          — positions in `chain_b` whose joints are free
-///     (no direct binding entry); the solver iterates these.
+///     (no direct binding entry AND not the 0-DOF `fixed` kind); the solver
+///     iterates these.
 ///
 /// Returns `None` on:
 ///   * non-Map record,
 ///   * missing/non-List `path_a` or `path_b`,
 ///   * either path empty or missing the leading world sentinel,
-///   * any chain joint that has no resolvable SI value (no binding,
-///     no midpoint — e.g. multi-DOF kinds, malformed Maps).
+///   * any chain joint that has no resolvable SI value (no binding, not
+///     0-DOF, no midpoint — e.g. malformed Maps, unbounded ranges).
 ///
 /// The world sentinel at chain head is identified by `kind = "world"`
 /// (matching `mechanism::is_world`) and dropped before composition — the
@@ -558,42 +555,116 @@ pub fn extract_loop_closure_chains(
     }
 
     // chain_b is the closing side: a joint with a *direct* binding entry
-    // is a fixed initial value; any joint without a direct binding becomes
-    // a free index, seeded from its range midpoint.  Coupling and fixed
-    // arms intentionally fall through the direct-lookup branch — multi-loop
-    // coupling is out of v0.2 scope (see plan design-decisions §4).
+    // is a fixed initial value; any joint without a direct binding is
+    // resolved the same way chain_a's are, and becomes a free index unless
+    // it is a 0-DOF link.
     //
-    // **Asymmetry note (v0.2 limitation).**  `chain_a` resolves via
-    // `resolve_joint_value`, which carries a fixed-joint sentinel arm
-    // (returns `Some(JointValue::Scalar(0.0))`).  `chain_b`'s unbound-joint
-    // fallback uses `joint_range_midpoint` directly, which returns `None`
-    // for fixed joints — so a fixed joint appearing in `path_b` without a
-    // direct binding would collapse the whole record to None and the
-    // snapshot to Undef.  In practice the mechanism builder does not place
-    // fixed joints on closing paths (the closing edge always references a
-    // motion joint to drive the solver), so this asymmetry is a latent
-    // shape constraint rather than a live bug.  A future v0.3 refactor
-    // can route this fallback through `resolve_joint_value` (and skip the
-    // index from `free_b` when the result is the fixed sentinel) once a
-    // real fixture demands fixed joints in path_b.
+    // **Symmetry note (task 7186).**  Both sides now resolve through the
+    // SAME helper, `resolve_joint_value` — which layers direct binding,
+    // coupling-tracks-parent recursion, the `fixed` 0-DOF sentinel, and the
+    // range-midpoint fallback.  The two sides still differ in exactly one
+    // respect, and it is the intended one: chain_b additionally records
+    // which of its entries the solver may iterate.  A 0-DOF link in EITHER
+    // path contributes its transform (`origin ∘ identity`) to the residual
+    // without contributing a free variable, which is what lets
+    // `mechanism::append_body` carry a closing call's `pose` into the
+    // closure as a synthetic `{ kind: "fixed", origin: <pose> }` rigid link.
+    //
+    // That link occurs on chain_b ONLY.  `pose` on a closing call is the
+    // transform of the rigid 0-DOF TIE `parent --pose--> at`, so the residual
+    // is `T_tree(at) == T(parent) ∘ pose` — one pose, on the closing side.
+    // `path_a` is joint-only (pinned by
+    // `first_recorded_body_pose_stays_out_of_path_a` in mechanism.rs).  The
+    // `EITHER` above is a property of this resolver, not a shape
+    // `append_body` produces: it means a hand-built chain_a carrying such a
+    // link would still resolve.
+    //
+    // **Caveat — an unbound `coupling` in chain_b is UNDER-CONSTRAINED.**
+    // `is_zero_dof_joint` answers for `JointKind::Fixed` alone, so an unbound
+    // coupling lands in `free_b` and Newton iterates it as an INDEPENDENT
+    // variable: its ratio/offset relative to its parent is ignored, and the
+    // parent-tracked value `resolve_joint_value` returns serves only as the
+    // initial seed.  `bind` / `dim` / `sweep` reject that same joint outright
+    // via `make_nondriving_joint_error` ("nondriving_joint", joints.rs); the
+    // closure path does not reject it, it merely fails to enforce the
+    // coupling relation.  Honouring the ratio needs the coupled value
+    // re-derived INSIDE each Newton step, which this resolver — which
+    // computes `vals_b_initial` once, before the solve — cannot express.
+    // Tracked as #7497; the behaviour above is PINNED by
+    // `extract_loop_closure_chains_iterates_an_unbound_coupling_in_path_b`,
+    // so closing that gap reds a named test rather than drifting silently.
     let mut vals_b_initial = Vec::with_capacity(chain_b.len());
     let mut free_b: Vec<usize> = Vec::new();
     for (i, joint) in chain_b.iter().enumerate() {
         if let Some(v_jv) = direct_binding_value(joint, bindings) {
             vals_b_initial.push(v_jv);
         } else {
-            // KCC-γ step-10: `joint_range_midpoint` now returns
-            // `Option<JointValue>` — multi-DOF kinds (planar / spherical /
+            // KCC-γ step-10: multi-DOF kinds (planar / spherical /
             // cylindrical) produce per-DOF surfaces that flow directly into
             // the widened `Vec<JointValue>` solver-input shape.  The
             // f64-shim that collapsed multi-DOF midpoints to None is gone.
-            let mid_jv = joint_range_midpoint(joint)?;
-            vals_b_initial.push(mid_jv);
-            free_b.push(i);
+            //
+            // `resolve_joint_value` re-checks the direct binding first; that
+            // lookup is known to have missed here, so control always reaches
+            // its coupling / fixed / midpoint arms.  A non-fixed joint with
+            // no binding and no resolvable range still short-circuits the
+            // whole call to None, exactly as the old `joint_range_midpoint?`
+            // did.
+            let jv = resolve_joint_value(joint, bindings)?;
+            vals_b_initial.push(jv);
+            // Free-variable membership is decided by the joint's declared
+            // KIND, not by the resolved value: a genuinely free prismatic
+            // whose range midpoint happens to be 0.0 must stay free, so
+            // matching on `JointValue::Scalar(0.0)` would be wrong.
+            if !is_zero_dof_joint(joint) {
+                free_b.push(i);
+            }
         }
     }
 
     Some((chain_a, vals_a, chain_b, vals_b_initial, free_b))
+}
+
+/// Read a joint Map's declared `kind` as the typed [`JointKind`].
+///
+/// SPOT for this module's kind DISCRIMINATION — [`is_zero_dof_joint`] and
+/// [`joint_range_midpoint`] both dispatch through it, so the fixed/coupling
+/// split lives in one place rather than in scattered `== "fixed"` literals, and
+/// an added kind is a compile error in `joint_range_midpoint`'s typed match.
+///
+/// It is NOT the SPOT for the per-kind VALUE encodings ([`value_for_joint`],
+/// [`jointvalue_from_bound_value`]): those match the kind string jointly with a
+/// [`JointValue`] payload, so a kind rename touches them too.
+///
+/// Returns `None` for a non-Map, a missing or non-String `kind` field, or a
+/// string [`JointKind::from_str`] does not recognise. All three collapse to the
+/// same "no typed kind" answer because every caller here handles an
+/// unrecognised joint exactly as it handles a recognised one it has no arm for.
+fn joint_kind(joint: &Value) -> Option<JointKind> {
+    match joint {
+        Value::Map(m) => match m.get(&Value::String("kind".to_string())) {
+            Some(Value::String(s)) => JointKind::from_str(s),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Returns `true` when `joint` is the 0-DOF [`JointKind::Fixed`] kind — a rigid
+/// link that contributes a transform to a chain but no free variable to the
+/// solver.
+///
+/// Read from the joint Map's declared `kind` rather than inferred from a
+/// resolved `JointValue::Scalar(0.0)`: the fixed sentinel and a genuinely
+/// free prismatic seeded at a 0.0 midpoint are indistinguishable by value.
+///
+/// `JointKind::Coupling` is deliberately NOT included, even though its DOF is
+/// derived rather than independent: excluding it from `free_b` would freeze it
+/// at its seed instead of tracking its parent, which is a different wrong
+/// answer, not a fix. See the coupling caveat in
+/// [`extract_loop_closure_chains`].
+fn is_zero_dof_joint(joint: &Value) -> bool {
+    matches!(joint_kind(joint), Some(JointKind::Fixed))
 }
 
 /// Strip the leading world sentinel from a path (`[world, j_1, ..., j_k]` →
@@ -753,19 +824,16 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
     if let Some(v) = direct_binding_value(joint, bindings) {
         return Some(v);
     }
-    if let Value::Map(map) = joint {
-        let kind = match map.get(&Value::String("kind".to_string())) {
-            Some(Value::String(s)) => s.as_str(),
-            _ => return None,
-        };
-        if kind == "coupling"
-            && let Some(parent) = map.get(&Value::String("parent".to_string()))
-        {
-            return resolve_joint_value(parent, bindings);
+    match joint_kind(joint) {
+        Some(JointKind::Coupling) => {
+            if let Value::Map(map) = joint
+                && let Some(parent) = map.get(&Value::String("parent".to_string()))
+            {
+                return resolve_joint_value(parent, bindings);
+            }
         }
-        if kind == "fixed" {
-            return Some(JointValue::Scalar(0.0));
-        }
+        Some(JointKind::Fixed) => return Some(JointValue::Scalar(0.0)),
+        _ => {}
     }
     joint_range_midpoint(joint)
 }
@@ -784,8 +852,21 @@ fn resolve_joint_value(joint: &Value, bindings: &[Value]) -> Option<JointValue> 
 /// (a world-rooted prefix joint) is perturbed consistently in both chains,
 /// yielding the correct total derivative.
 ///
-/// The closing joint — not being a tree `at` joint — is never passed as a
-/// target and therefore never perturbed; its direction is removed by
+/// The closing joint is **not** excluded from `target_joints`. In the
+/// parent-conflict shape it IS a spanning-tree `at` joint — its
+/// first-recorded edge is precisely what made the second edge a conflict —
+/// so `closed_chain_inverse_dynamics` passes it like any other tree joint.
+/// The in-tree witness is
+/// `closed_chain_idyn_e2e.rs::closed_4bar_live_constraint_rank`, which lists
+/// `j_coupler_tip` in its `target_joints` under the comment
+/// "// also the closing joint".
+///
+/// Task 7186 changed **where** the closing joint is perturbed, not whether.
+/// It now occurs exactly once, at the tail of `chain_a`, so its column is the
+/// derivative through `chain_a` alone.  Before 7186 it was appended to
+/// `chain_b` as well, and the perturb-every-occurrence rule above
+/// differentiated both copies together.  Its absorbed directions are still
+/// removed downstream by
 /// [`reduce_constraint_rank`](crate::dynamics::closed_chain::reduce_constraint_rank).
 ///
 /// # Parameters
@@ -2023,6 +2104,34 @@ mod tests {
         Value::Map(m)
     }
 
+    /// Build a synthetic 0-DOF rigid link — the shape
+    /// `mechanism::append_body` appends to a closure path to carry a body's
+    /// `pose` into the residual (task 7186 defect B).
+    ///
+    /// Delegates to the production constructor so these tests consume the
+    /// SAME shape the builder emits; the literal Map is pinned once, by
+    /// `mechanism::tests::pose_link_is_a_fixed_kind_map_carrying_the_pose_as_origin`.
+    fn fixed_link(pose: Value) -> Value {
+        crate::mechanism::pose_link(&pose)
+    }
+
+    /// A pure-translation `Value::Transform` of `len_m` along +X.
+    fn translate_x_transform(len_m: f64) -> Value {
+        Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(len_m),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        }
+    }
+
     /// `extract_loop_closure_chains` returns the expected five-vector tuple
     /// for a record with `path_a = [world, jA]` (driven by a bound length
     /// of 0.5m) and `path_b = [world, jB]` (free — no binding entry).
@@ -2094,6 +2203,136 @@ mod tests {
             ),
         }
         assert_eq!(free_b, vec![0], "free_b should mark jB (index 0) as free");
+    }
+
+    /// **Task 7186, precondition for defect B.** An UNBOUND `fixed` joint in
+    /// `path_b` must resolve to the 0-DOF sentinel instead of collapsing the
+    /// whole record to `None`, and must NOT become a solver free variable.
+    ///
+    /// Defect B encodes a closing body's `pose` as a synthetic 0-DOF rigid
+    /// link — `Value::Map { kind: "fixed", origin: <pose> }` — appended to
+    /// `path_b`. Nothing binds that synthetic link, so before this fix the
+    /// closing-side fallback (`joint_range_midpoint`, which returns `None`
+    /// for `fixed`) short-circuited `extract_loop_closure_chains` to `None`
+    /// and the whole snapshot to `Undef`. The pre-existing "Asymmetry note
+    /// (v0.2 limitation)" comment named this exact refactor and deferred it
+    /// "once a real fixture demands fixed joints in path_b" — the synthetic
+    /// pose link IS that fixture.
+    #[test]
+    fn extract_loop_closure_chains_admits_unbound_fixed_joint_in_path_b() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let bind_a = eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]);
+        let bindings = vec![bind_a];
+
+        // A synthetic 0-DOF rigid link carrying a non-identity pose.
+        let link = fixed_link(translate_x_transform(0.2));
+
+        let record = loop_closure_record(
+            vec![world_sentinel(), j_a.clone()],
+            vec![world_sentinel(), j_b.clone(), link.clone()],
+            j_a.clone(),
+        );
+
+        let (_chain_a, _vals_a, chain_b, vals_b_initial, free_b) =
+            super::extract_loop_closure_chains(&record, &bindings).expect(
+                "an unbound 0-DOF `fixed` link in path_b must resolve, not collapse \
+                 the record to None",
+            );
+
+        assert_eq!(chain_b, vec![j_b.clone(), link.clone()]);
+        assert_eq!(vals_b_initial.len(), 2);
+        match &vals_b_initial[1] {
+            JointValue::Scalar(s) => assert!(
+                s.abs() < 1e-12,
+                "the fixed link must take the 0-DOF sentinel Scalar(0.0), got Scalar({s})"
+            ),
+            other => panic!("expected JointValue::Scalar(0.0) for the fixed link, got {other:?}"),
+        }
+        assert!(
+            !free_b.contains(&1),
+            "a 0-DOF link contributes no free variable — free_b must not contain \
+             index 1, got {free_b:?}"
+        );
+        assert!(
+            free_b.contains(&0),
+            "the unbound prismatic jB is still free — free_b must contain index 0, \
+             got {free_b:?}"
+        );
+    }
+
+    /// **Pins the coupling caveat (#7497), not an endorsement of it.** An
+    /// unbound `coupling` in `path_b` is UNDER-CONSTRAINED: `is_zero_dof_joint`
+    /// answers only for `JointKind::Fixed`, so the coupling lands in `free_b`
+    /// and Newton iterates it as an INDEPENDENT variable — its ratio and offset
+    /// relative to its parent are never enforced, and the parent-tracked value
+    /// `resolve_joint_value` returns serves only as the seed.
+    ///
+    /// Both halves are asserted so that closing #7497 reds this test
+    /// deliberately rather than changing the answer silently:
+    ///   * the seed TRACKS the bound parent (0.4 m), unscaled by the 2.0 ratio
+    ///     — `resolve_joint_value`'s coupling arm returns the parent's value
+    ///     verbatim, and it is a seed, not a constraint;
+    ///   * `free_b` CONTAINS the coupling's index.
+    ///
+    /// Excluding couplings from `free_b` instead would freeze one at its seed
+    /// rather than tracking its parent — a different wrong answer, not a fix —
+    /// so the real remedy re-derives the coupled value inside each Newton step.
+    #[test]
+    fn extract_loop_closure_chains_iterates_an_unbound_coupling_in_path_b() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        // The coupling's parent, bound — so the seed is demonstrably
+        // parent-derived rather than the coupling's own range midpoint.
+        let j_p = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_c = eval_builtin("couple", &[j_p.clone(), Value::Real(2.0)]);
+        let bindings = vec![
+            eval_builtin("bind", &[j_a.clone(), Value::length(0.5)]),
+            eval_builtin("bind", &[j_p.clone(), Value::length(0.4)]),
+        ];
+
+        let record = loop_closure_record(
+            vec![world_sentinel(), j_a.clone()],
+            vec![world_sentinel(), j_c.clone()],
+            j_a.clone(),
+        );
+
+        let (_chain_a, _vals_a, chain_b, vals_b_initial, free_b) =
+            super::extract_loop_closure_chains(&record, &bindings)
+                .expect("an unbound coupling in path_b must resolve through its parent");
+
+        assert_eq!(chain_b, vec![j_c.clone()]);
+        match &vals_b_initial[0] {
+            JointValue::Scalar(s) => assert!(
+                (s - 0.4).abs() < 1e-12,
+                "the coupling seeds from its BOUND parent (0.4), with the 2.0 \
+                 ratio not applied, got Scalar({s})"
+            ),
+            other => panic!("expected JointValue::Scalar(0.4), got {other:?}"),
+        }
+        assert_eq!(
+            free_b,
+            vec![0],
+            "under-constrained today (#7497): the coupling is iterated \
+             as an independent free variable, got {free_b:?}"
+        );
+    }
+
+    /// A synthetic 0-DOF link evaluates to exactly its `origin` pose under
+    /// the unmodified chain machinery — the whole basis of the defect-B
+    /// encoding. `transform_at` computes the per-kind motion first and then
+    /// applies `origin ∘ motion` uniformly outside every arm
+    /// (joints.rs, PRD §7.2); the `fixed` arm's motion is the identity, so
+    /// `origin ∘ I = origin`.
+    #[test]
+    fn chain_transform_over_a_fixed_link_yields_its_origin_pose() {
+        let pose = translate_x_transform(0.2);
+        let link = fixed_link(pose.clone());
+        let t = super::chain_transform(&[link], &[JointValue::Scalar(0.0)])
+            .expect("chain_transform must resolve a single 0-DOF link");
+        assert_eq!(
+            t, pose,
+            "a fixed link with origin = pose must compose to exactly that pose"
+        );
     }
 
     /// KCC-γ step-9: `extract_loop_closure_chains` must populate

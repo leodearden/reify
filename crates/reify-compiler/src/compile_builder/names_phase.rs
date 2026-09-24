@@ -21,28 +21,34 @@
 //!
 //! All inputs required for construction are available before `phase_functions`:
 //! - `ctx.seen_entity_names` — populated by `pre_pass::collect_decl_refs`
-//! - `trait_refs` — populated by `pre_pass::collect_decl_refs`
-//! - `prelude.trait_defs` / `prelude.templates` — from the caller's prelude
+//! - `trait_refs` / `fn_refs` — populated by `pre_pass::collect_decl_refs`
+//! - `prelude.trait_defs` / `prelude.templates` / `prelude.functions` — from the
+//!   caller's prelude
 
-use reify_ast::TraitDecl;
+use reify_ast::{FnDef, TraitDecl};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
 
-/// Pre-compute the trait-name and structure/occurrence-name sets and store
-/// them on `ctx` for consumption by downstream phases.
+/// Pre-compute the trait-name, structure/occurrence-name and declared-fn-name
+/// sets and store them on `ctx` for consumption by downstream phases.
 ///
 /// **Must be called** after `aliases_phase::phase_aliases` and **before**
 /// `enums_phase::resolve_enum_variant_payloads` (which reads the name sets to
 /// resolve variant field types) and `functions_phase::phase_functions`.
 ///
-/// Mirrors the construction logic previously local to `phase_traits` (lines
-/// 71-97 of the original `traits_phase.rs`) verbatim, so the sets are
-/// semantically identical — they just live on `ctx` instead of a local let.
+/// The first two sets mirror the construction logic previously local to
+/// `phase_traits` (lines 71-97 of the original `traits_phase.rs`) verbatim, so
+/// they are semantically identical — they just live on `ctx` instead of a local
+/// let. `declared_fn_names` (task #5371) joined them because it has the same
+/// shape and the same two consumers, and because it must be complete before the
+/// first fn BODY compiles — which is precisely what deriving it inside
+/// `phase_functions` could not guarantee.
 pub(crate) fn build_resolution_names(
     ctx: &mut CompilationCtx,
     prelude: &[&CompiledModule],
     trait_refs: &[&TraitDecl],
+    fn_refs: &[&FnDef],
 ) {
     // Trait names: local declarations (from syntax) + every prelude trait def.
     // Collected before compile_trait runs so trait members whose types reference
@@ -72,6 +78,24 @@ pub(crate) fn build_resolution_names(
             prelude
                 .iter()
                 .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
+        )
+        .collect();
+
+    // Declared fn names: every local `fn` declaration + every prelude function.
+    //
+    // Taken from the DECLARATION list, so the set is order-independent and
+    // complete before `phase_functions` compiles the first body — unlike
+    // `ctx.functions`, which that loop grows in source order, and unlike
+    // `ctx.resolution_functions`, which only exists once the loop has finished.
+    // `CompilationCtx::declared_fn_names` documents why that distinction is the
+    // whole reason the set exists.
+    ctx.declared_fn_names = fn_refs
+        .iter()
+        .map(|f| f.name.clone())
+        .chain(
+            prelude
+                .iter()
+                .flat_map(|m| m.functions.iter().map(|f| f.name.clone())),
         )
         .collect();
 }

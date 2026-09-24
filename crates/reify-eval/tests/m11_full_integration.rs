@@ -199,7 +199,25 @@ fn full_v01_template_structure() {
     );
 }
 
-/// Verify check_full() returns no Violated entries — all constraints Satisfied.
+/// Number of `Indeterminate` constraint entries `integration_full_v01.ri` is
+/// *expected* to carry under a solver-less engine: the two `load_free`
+/// brackets. See [`full_v01_all_constraints_satisfied`].
+const FULL_V01_EXPECTED_INDETERMINATE: usize = 2;
+
+/// Verify check_full() returns no Violated entries, and that exactly the two
+/// expected `load_free` brackets are Indeterminate.
+///
+/// Not the stricter "every entry is Satisfied" this replaced (#5417):
+/// `Assembly` declares `minimize load_free` over `param load_free : Length =
+/// auto(free)` and must carry `constraint load_free >= 0mm` / `<= 1000mm` or
+/// #5417's own `E_OBJECTIVE_UNCONSUMED` fires on a published example; under the
+/// deliberately solver-less `make_simple_engine()` an `auto(free)` cell never
+/// resolves, so both brackets read `Indeterminate` by construction. The count
+/// is pinned rather than loosened to a bare "no Violated" so a future silent
+/// drift that leaves a *third* constraint `Indeterminate` still reddens, and
+/// pinned by count rather than by name because these two entries carry
+/// `label: None` and their `Assembly#constraint[N]` ids are index-shaped —
+/// brittle against any further edit to the example.
 #[test]
 fn full_v01_all_constraints_satisfied() {
     let check_result = check_full();
@@ -207,15 +225,32 @@ fn full_v01_all_constraints_satisfied() {
         !check_result.constraint_results.is_empty(),
         "check_full() should return at least one constraint result"
     );
-    for entry in &check_result.constraint_results {
-        assert_eq!(
-            entry.satisfaction,
-            Satisfaction::Satisfied,
-            "constraint {} should be Satisfied, got {:?}",
-            entry.id,
-            entry.satisfaction
-        );
-    }
+
+    let violated: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction == Satisfaction::Violated)
+        .map(|e| e.id.to_string())
+        .collect();
+    assert!(
+        violated.is_empty(),
+        "no constraint should be Violated, got {violated:?}"
+    );
+
+    let unsatisfied: Vec<_> = check_result
+        .constraint_results
+        .iter()
+        .filter(|e| e.satisfaction != Satisfaction::Satisfied)
+        .map(|e| format!("{} => {:?}", e.id, e.satisfaction))
+        .collect();
+    assert_eq!(
+        unsatisfied.len(),
+        FULL_V01_EXPECTED_INDETERMINATE,
+        "expected exactly {FULL_V01_EXPECTED_INDETERMINATE} non-Satisfied \
+         constraints (the `load_free` brackets, Indeterminate under the \
+         solver-less make_simple_engine — #5417), got {}: {unsatisfied:?}",
+        unsatisfied.len()
+    );
 }
 
 /// Verify total constraint count from check_full() >= 40.

@@ -1,5 +1,7 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::RwLock;
@@ -10,6 +12,19 @@ use tower_lsp::{Client, LanguageServer};
 use crate::diagnostics::EvalState;
 use crate::document::DocumentStore;
 
+/// One server log line, addressed to the client rather than to a stream.
+///
+/// Defined in [`crate::diagnostics`], beside the pipeline that produces
+/// them, and re-exported here for the transport that consumes them. Hosting
+/// the type in this module instead made the two mutually dependent: `server`
+/// already depends on `diagnostics` for [`EvalState`] and
+/// `compute_diagnostics_with_state`, so `diagnostics` naming
+/// `crate::server::LogLine` forced the pipeline to name the transport module
+/// it otherwise knows nothing about.
+///
+/// The public path `reify_lsp::server::LogLine` is unchanged by that move.
+pub use crate::diagnostics::LogLine;
+
 /// Trait for emitting server-initiated notifications to the frontend.
 ///
 /// Replaces direct use of `tower_lsp::Client` for notifications, so the
@@ -17,9 +32,46 @@ use crate::document::DocumentStore;
 /// - `NoOpSink` (tests and backward compatibility)
 /// - `ClientSink` (stdio/TCP mode via tower-lsp)
 /// - `TauriNotificationSink` (in-process Tauri mode)
+///
+/// Covers BOTH server-to-client channels the language server uses:
+/// diagnostics for a document, and server log lines. They share this one
+/// trait because they share exactly the same three-way transport
+/// polymorphism — a second trait would duplicate that axis without adding a
+/// dimension of variability (task #6329).
 pub trait NotificationSink: Send + Sync {
     /// Publish diagnostics for the given document.
     fn publish_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>, version: Option<i32>);
+
+    /// Emit a server log line to the client.
+    ///
+    /// Required, deliberately NOT defaulted to a no-op: a default body would
+    /// let a new sink silently swallow every server log line, which is the
+    /// exact failure this channel exists to remove. Requiring it makes the
+    /// compiler force each implementation — including the one outside this
+    /// crate, `TauriNotificationSink` in `gui/src-tauri/src/main.rs` — to
+    /// decide explicitly.
+    ///
+    /// Callers must invoke this OUTSIDE every `ServerState` write-lock
+    /// scope: the call dispatches into an arbitrary implementation (the
+    /// Tauri one re-enters the GUI event bus), so holding the lock across it
+    /// would queue every other `did_open`/`did_change`/`did_close` behind
+    /// third-party code.
+    ///
+    /// WHAT ENFORCES IT, exactly. The server has three log sites and two
+    /// probe tests, each observing the write lock at the moment a line
+    /// arrives:
+    /// `log_message_is_never_called_while_the_state_write_lock_is_held`
+    /// (`crates/reify-lsp/tests/in_process_bridge.rs`) covers `did_change`'s
+    /// unknown-URI line, and
+    /// `eval_state_poison_recovery_is_reported_on_the_log_channel` (this
+    /// file) covers [`ReifyLanguageServer::lock_eval_state`]'s notice. The
+    /// third site — the diagnostics pipeline's own lines — has no trigger
+    /// reachable from the public handler surface (it needs `EvalState`
+    /// internals), so it is not probed directly; it fires from the same
+    /// [`ReifyLanguageServer::evaluate_and_forward_logs`] body as the second,
+    /// which acquires no `ServerState` lock, so the second probe's verdict
+    /// is the third's as well.
+    fn log_message(&self, line: LogLine);
 }
 
 /// A no-op sink that discards all notifications.
@@ -28,12 +80,15 @@ pub struct NoOpSink;
 impl NotificationSink for NoOpSink {
     fn publish_diagnostics(&self, _uri: Url, _diagnostics: Vec<Diagnostic>, _version: Option<i32>) {
     }
+
+    fn log_message(&self, _line: LogLine) {}
 }
 
 /// A sink that wraps the tower-lsp [`Client`] for stdio/TCP mode.
 ///
-/// Since [`NotificationSink`] methods are synchronous but `Client.publish_diagnostics()`
-/// is async, this implementation spawns a fire-and-forget tokio task for each call.
+/// Since [`NotificationSink`] methods are synchronous but the corresponding
+/// `Client` methods (`publish_diagnostics`, `log_message`) are async, this
+/// implementation spawns a fire-and-forget tokio task for each call.
 pub struct ClientSink {
     client: Client,
 }
@@ -50,6 +105,13 @@ impl NotificationSink for ClientSink {
         let client = self.client.clone();
         tokio::spawn(async move {
             client.publish_diagnostics(uri, diagnostics, version).await;
+        });
+    }
+
+    fn log_message(&self, line: LogLine) {
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            client.log_message(line.typ, line.message).await;
         });
     }
 }
@@ -100,6 +162,11 @@ pub struct ReifyLanguageServer {
     eval_state: Arc<Mutex<EvalState>>,
     /// Notification sink for server-initiated messages (diagnostics, etc.).
     sink: Arc<dyn NotificationSink>,
+    /// Latched once the poisoned-`eval_state` recovery notice has been sent.
+    /// See [`ReifyLanguageServer::lock_eval_state`] for why the notice is
+    /// reported once rather than per recovery. Shared across clones, since
+    /// the `eval_state` it describes is.
+    eval_state_poison_reported: Arc<AtomicBool>,
 }
 
 impl ReifyLanguageServer {
@@ -121,6 +188,7 @@ impl ReifyLanguageServer {
             })),
             eval_state: Arc::new(Mutex::new(EvalState::new())),
             sink,
+            eval_state_poison_reported: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -129,10 +197,164 @@ impl ReifyLanguageServer {
         &self.state
     }
 
+    /// Lock `eval_state`, recovering from a poisoned mutex and reporting the
+    /// recovery to the client ONCE.
+    ///
+    /// A poisoned lock means a prior panic ran inside the evaluator. The
+    /// recovery itself (`e.into_inner()`) is unconditional — dropping every
+    /// subsequent keystroke on the floor would be a strictly worse outcome
+    /// than continuing with state a panic left behind — so the notice is the
+    /// only way a user learns it happened.
+    ///
+    /// WHY THE NOTICE IS LATCHED: `PoisonError::into_inner` does not clear
+    /// the flag, so a `std::sync::Mutex` stays poisoned for the life of the
+    /// process. An unlatched notice would therefore push a fresh
+    /// client-visible ERROR line onto the protocol channel on every
+    /// subsequent `did_open`/`did_change` — i.e. on every keystroke, forever
+    /// — drowning the very log surface a user consults to find out what
+    /// broke. That is the unbounded-repetition hazard `did_change`'s
+    /// unknown-URI line was analysed for and found not to have (one line per
+    /// distinct client mistake, pinned by
+    /// `lsp_repeated_unknown_uri_didchange_logs_over_the_protocol_channel_without_wedging`);
+    /// here the repetition tracks nothing at all — one panic, one fact — so
+    /// the latch is what makes the argument transfer. The line says so, so a
+    /// reader cannot mistake later silent recoveries for later health.
+    ///
+    /// `swap` rather than load-then-store: under a multi-threaded runtime two
+    /// handlers can recover concurrently, and exactly one must report.
+    /// `Relaxed` suffices — the latch orders nothing but itself.
+    ///
+    /// `MessageType::ERROR`, not WARNING: this is a server fault, unlike
+    /// `did_change`'s unknown-URI notice, which reports a client protocol
+    /// violation. Pinned by
+    /// `eval_state_poison_recovery_is_reported_on_the_log_channel`, which
+    /// drives both handlers and asserts exactly one notice.
+    ///
+    /// Shared by `did_open` and `did_change` so the recovery semantics, the
+    /// wording and the severity have exactly one spelling. Both callers
+    /// invoke it outside every [`ServerState`] write-lock scope — see
+    /// [`NotificationSink::log_message`]'s contract.
+    fn lock_eval_state(&self) -> std::sync::MutexGuard<'_, EvalState> {
+        self.eval_state.lock().unwrap_or_else(|e| {
+            let already_reported = self
+                .eval_state_poison_reported
+                .swap(true, Ordering::Relaxed);
+            if !already_reported {
+                self.sink.log_message(LogLine {
+                    typ: MessageType::ERROR,
+                    message: "eval_state lock poisoned, recovering (reported once: the mutex \
+                              stays poisoned, so later edits recover silently)"
+                        .to_string(),
+                });
+            }
+            e.into_inner()
+        })
+    }
+
+    /// Run the diagnostics pipeline for `text`/`uri` and forward the log
+    /// lines it returns, yielding the diagnostics to publish.
+    ///
+    /// The one spelling of what `did_open` and `did_change` both do between
+    /// their two brief [`ServerState`] write-lock scopes. Extracted so the
+    /// ordering discipline below has a single home rather than a copy per
+    /// handler free to drift.
+    ///
+    /// THE DISCIPLINE: this body acquires no [`ServerState`] lock at all, so
+    /// both of its log sites — `lock_eval_state`'s poisoned-mutex notice and
+    /// the pipeline's own lines — inherit the lock state of whatever call
+    /// site invokes it, and inherit it identically. The `eval_state` guard is
+    /// dropped before the forwarding loop for the same reason one rung down:
+    /// a sink implementation is arbitrary code (in the GUI it re-enters the
+    /// Tauri event bus) and must not be run under any lock this server holds.
+    /// See [`NotificationSink::log_message`].
+    fn evaluate_and_forward_logs(&self, text: &str, uri: &Url) -> Vec<Diagnostic> {
+        let (diagnostics, log_messages) = {
+            let mut eval_state = self.lock_eval_state();
+            let result =
+                crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, text, uri);
+            (result.diagnostics, result.log_messages)
+        };
+        for line in log_messages {
+            self.sink.log_message(line);
+        }
+        diagnostics
+    }
+
     /// Access eval_state (for testing, e.g. poison recovery tests).
     #[cfg(test)]
     pub(crate) fn eval_state(&self) -> &Arc<Mutex<EvalState>> {
         &self.eval_state
+    }
+}
+
+/// Maximum number of CHARACTERS of a client-controlled string echoed into
+/// a server log line. Named for the helper's generality (`truncate_for_log`
+/// is not URI-specific), not for its one caller today.
+///
+/// The bound's ORIGINAL justification was pipe capacity: while the line
+/// went to stderr, a single write had to fit a kernel-shrunk single-page
+/// (4096 B) pipe, and 256 chars is at most 1024 bytes of payload plus a
+/// ~75-byte prefix/marker (task #6162). That justification expired when
+/// task #6329 moved the line onto `window/logMessage`. A second,
+/// independent one did not: the string is entirely client-controlled and
+/// unbounded, so echoing it back in full is gratuitous amplification of a
+/// client's own bug, paid for by every client that DOES drain the channel.
+/// The hazard is still a byte budget, so a future second call site or a
+/// larger bound should re-derive the bytes-per-char worst case rather than
+/// assume this figure carries over.
+const LOG_STR_MAX_CHARS: usize = 256;
+
+/// Worst-case byte length of [`truncate_for_log`]'s return value when the
+/// input needs truncating: [`LOG_STR_MAX_CHARS`] UTF-8 characters at up to
+/// 4 bytes each, plus the `"...[truncated, N bytes total]"` marker suffix
+/// (bounded at 48 bytes, generously covering every decimal digit of a
+/// 64-bit `usize`). Marked `pub` — unlike `LOG_STR_MAX_CHARS` — specifically
+/// so an out-of-crate regression guard
+/// (`crates/reify-cli/tests/harness_cli_surface/cli_lsp_protocol.rs`'s
+/// bounded-`window/logMessage` e2e assertions) can derive its bound from
+/// this crate's actual truncation budget instead of hand-transcribing a
+/// copy: a future bump of `LOG_STR_MAX_CHARS` then mechanically raises that
+/// bound too, instead of silently leaving a stale hand-derived number
+/// under-covering the real worst case (task #6162 amendment review; task
+/// #6329 re-pointed that guard from stderr onto the protocol channel, and
+/// moved the file from the since-split `harness_cli/`).
+pub const LOG_STR_MAX_BYTES: usize = LOG_STR_MAX_CHARS * 4 + 48;
+
+/// Truncate a client-controlled string to at most [`LOG_STR_MAX_CHARS`]
+/// characters before it is echoed into a log line.
+///
+/// Exists because `did_change`'s unknown-URI diagnostic formats the
+/// client-supplied URI directly into a server log line, and that URI is
+/// unbounded and entirely attacker/bug-controlled: a misbehaving client can
+/// send an arbitrarily large `textDocument/didChange` for a never-opened
+/// URI. While the line went to stderr, that meant a single write large
+/// enough to fill (and block on) a kernel-shrunk pipe, stalling the writer
+/// thread (task #6162); since task #6329 routed it to `window/logMessage`
+/// it means reflecting 160 KiB of a client's own bug back at every client
+/// that does drain the channel. The same bound answers both.
+///
+/// Uses `char_indices().nth(N)` rather than a byte-length check plus a
+/// hand-rolled `is_char_boundary` walk: `char_indices().nth(N)` yields the
+/// byte offset of the `(N+1)`-th character, which is a char boundary by
+/// construction, so the resulting slice can never panic on a multi-byte
+/// codepoint straddling the cut point.
+///
+/// Returns `Cow<'_, str>` rather than `String` so the common (non-truncating)
+/// path — the overwhelming majority of calls, since most URIs are far
+/// shorter than [`LOG_STR_MAX_CHARS`] — borrows the input instead of paying
+/// for a heap copy it immediately discards into a `format!`. Both the
+/// production call site (formatted into the [`LogLine`] handed to
+/// [`NotificationSink::log_message`]) and the unit test's `assert_eq!`s
+/// against `&str`/`String` work unchanged, since `Cow<str>` implements
+/// `Display` and `PartialEq` against both.
+fn truncate_for_log(s: &str) -> Cow<'_, str> {
+    match s.char_indices().nth(LOG_STR_MAX_CHARS) {
+        None => Cow::Borrowed(s),
+        Some((cut, _)) => Cow::Owned(format!(
+            "{}...[truncated, {} bytes total]",
+            &s[..cut],
+            s.len()
+        )),
     }
 }
 
@@ -206,17 +428,10 @@ impl LanguageServer for ReifyLanguageServer {
             state.documents.open(uri.clone(), text.clone(), version);
         }
 
-        // Eval runs outside the RwLock, using only the eval_state Mutex.
-        // Recovers from poisoned lock (e.g., prior panic during eval).
-        let diagnostics = {
-            let mut eval_state = self.eval_state.lock().unwrap_or_else(|e| {
-                eprintln!("eval_state lock poisoned, recovering");
-                e.into_inner()
-            });
-            let result =
-                crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
-            result.diagnostics
-        };
+        // Eval and the forwarding of its log lines run outside the RwLock,
+        // using only the eval_state Mutex — see `evaluate_and_forward_logs`,
+        // which is the single spelling of this step for both handlers.
+        let diagnostics = self.evaluate_and_forward_logs(&text, &uri);
 
         // Brief write lock: capture diagnostics
         {
@@ -240,25 +455,73 @@ impl LanguageServer for ReifyLanguageServer {
             None => return,
         };
 
-        // Brief write lock: update the document
-        {
+        // Brief write lock: update the document. The lock guards ONLY the
+        // store mutation — every log call below runs AFTER this guard drops
+        // (task #6162), enforced by
+        // `log_message_is_never_called_while_the_state_write_lock_is_held`
+        // in crates/reify-lsp/tests/in_process_bridge.rs.
+        //
+        // The hazard is now WORSE than when #6162 narrowed this scope: the
+        // call below is no longer a known-cheap `eprintln!` but a virtual
+        // dispatch into an arbitrary `NotificationSink` implementation —
+        // today `TauriNotificationSink`, which re-enters the GUI event bus.
+        // Holding this lock across it would queue every other
+        // did_open/did_change/did_close behind third-party code.
+        let known = {
             let mut state = self.state.write().await;
-            if !state.documents.update(&uri, text.clone(), version) {
-                eprintln!("[reify-lsp] didChange for unknown URI: {}", uri);
-            }
+            state.documents.update(&uri, text.clone(), version)
+        };
+        if !known {
+            // The channel is a `window/logMessage` notification on the same
+            // stdout JSON-RPC stream the client must already drain to receive
+            // responses (task #6329). `ClientSink` hands it to a spawned
+            // task, so this call neither blocks this handler nor takes any
+            // process-global lock — the `eprintln!`/`pipe_write`/`io::Stderr`
+            // hazards #6162 contained are gone rather than merely bounded.
+            //
+            // Truncation is RETAINED, on a different justification: the URI
+            // is entirely client-controlled and unbounded, and reflecting
+            // 160 KiB of a client's own bug back at every client that DOES
+            // drain the channel is gratuitous amplification. See
+            // `LOG_STR_MAX_CHARS`.
+            //
+            // WHAT REMAINS: a client that never drains stdout accumulates
+            // queued notifications. That is a pre-existing property of the
+            // one `publishDiagnostics` per didChange already sent on this
+            // path, so the log line adds no NEW hazard class — hence no
+            // per-URI rate limiter, which would buy a budget the diagnostics
+            // path spends anyway at the cost of per-URI mutable state. Pinned
+            // end-to-end by cli_lsp_protocol.rs's
+            // `lsp_repeated_unknown_uri_didchange_logs_over_the_protocol_channel_without_wedging`.
+            // If volume ever does become a concern, the limiter belongs at
+            // the sink — one policy for all log sites — not bolted onto this
+            // call site.
+            //
+            // ONE DELIBERATE RESIDUAL: diagnostics/eval_guard.rs's
+            // `SkippedEval::report_to_log` still writes to stderr. Out of
+            // scope for #6329 because `skip_reason` has three production
+            // entry points and two of them (the stateless
+            // `compute_diagnostics`, and `AnalysisContext::from_parsed`)
+            // have no channel to route to — deciding how a sinkless pure
+            // entry point reports is a separate design question. The hazard
+            // class above is already absent there regardless: that site is
+            // throttled by `LAST_REPORTED_SKIP` to one line per distinct
+            // (content hash, offending cell), so client-controlled unbounded
+            // repetition cannot occur. Tracked by follow-up ticket
+            // tkt_0RTP61GCD8ZNWFYCPH9Q3AZYCR.
+            self.sink.log_message(LogLine {
+                typ: MessageType::WARNING,
+                message: format!(
+                    "[reify-lsp] didChange for unknown URI: {}",
+                    truncate_for_log(uri.as_str())
+                ),
+            });
         }
 
-        // Eval runs outside the RwLock, using only the eval_state Mutex.
-        // Recovers from poisoned lock (e.g., prior panic during eval).
-        let diagnostics = {
-            let mut eval_state = self.eval_state.lock().unwrap_or_else(|e| {
-                eprintln!("eval_state lock poisoned, recovering");
-                e.into_inner()
-            });
-            let result =
-                crate::diagnostics::compute_diagnostics_with_state(&mut eval_state, &text, &uri);
-            result.diagnostics
-        };
+        // Eval and the forwarding of its log lines run outside the RwLock,
+        // using only the eval_state Mutex — see `evaluate_and_forward_logs`,
+        // which is the single spelling of this step for both handlers.
+        let diagnostics = self.evaluate_and_forward_logs(&text, &uri);
 
         // Brief write lock: capture diagnostics
         {
@@ -659,22 +922,33 @@ impl LanguageServer for ReifyLanguageServer {
 /// Test support types exported for cross-crate test use.
 ///
 /// Contains [`RecordingSink`], a [`NotificationSink`] implementation that
-/// captures all `publish_diagnostics` calls for assertion in tests.
+/// captures all `publish_diagnostics` and `log_message` calls for assertion
+/// in tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex, OnceLock};
 
-    use tower_lsp::lsp_types::{Diagnostic, Url};
+    use tokio::sync::RwLock;
+    use tower_lsp::lsp_types::{Diagnostic, MessageType, Url};
 
-    use super::NotificationSink;
+    use super::{LogLine, NotificationSink, ServerState};
 
-    /// A recording sink that captures all `publish_diagnostics` calls.
+    /// A recording sink that captures all `publish_diagnostics` and
+    /// `log_message` calls.
     ///
-    /// Use `take_calls()` to inspect what was recorded.
+    /// Use `take_calls()` / `take_log_calls()` to inspect what was recorded.
+    /// The two channels are recorded separately rather than interleaved in
+    /// one log: no test needs their relative order, and separate accessors
+    /// let each caller assert on its own channel without filtering.
     #[derive(Default)]
     pub struct RecordingSink {
         #[allow(clippy::type_complexity)]
         calls: Mutex<Vec<(Url, Vec<Diagnostic>, Option<i32>)>>,
+        /// `(severity, message, write-lock-was-free)`, in arrival order. The
+        /// third element is `None` unless [`RecordingSink::probe_state`] was
+        /// called — see there.
+        log_calls: Mutex<Vec<(MessageType, String, Option<bool>)>>,
+        probed_state: OnceLock<Arc<RwLock<ServerState>>>,
     }
 
     impl NotificationSink for RecordingSink {
@@ -686,12 +960,58 @@ pub mod test_support {
         ) {
             self.calls.lock().unwrap().push((uri, diagnostics, version));
         }
+
+        fn log_message(&self, line: LogLine) {
+            let write_lock_was_free = self
+                .probed_state
+                .get()
+                .map(|state| state.try_write().is_ok());
+            self.log_calls
+                .lock()
+                .unwrap()
+                .push((line.typ, line.message, write_lock_was_free));
+        }
     }
 
     impl RecordingSink {
-        /// Return a clone of all recorded calls.
+        /// Return a clone of all recorded `publish_diagnostics` calls.
         pub fn take_calls(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i32>)> {
             self.calls.lock().unwrap().clone()
+        }
+
+        /// Start recording, for every subsequent `log_message` call,
+        /// whether `state`'s WRITE lock was free when the call arrived.
+        ///
+        /// Opt-in and one-shot, because the sink must exist BEFORE the
+        /// server whose lock it probes: `LspService::new` takes a closure
+        /// that builds the server from a `Client`, and the sink is moved
+        /// into that closure, so the state can only be injected afterwards
+        /// — and only by the tests actually asking the ordering question
+        /// [`NotificationSink::log_message`]'s contract poses.
+        ///
+        /// `try_write().is_ok()` is a deterministic observation, not a
+        /// timing tolerance, for a `#[tokio::test]` that spawns nothing:
+        /// the current_thread flavor leaves nobody to contend, so it
+        /// succeeds if and only if the guard had already dropped.
+        pub fn probe_state(&self, state: Arc<RwLock<ServerState>>) {
+            assert!(
+                self.probed_state.set(state).is_ok(),
+                "RecordingSink::probe_state must be called at most once, before any request"
+            );
+        }
+
+        /// Return a clone of all recorded `log_message` calls, as
+        /// `(severity, message, write-lock-was-free)` triples. The third
+        /// element is `None` unless [`RecordingSink::probe_state`] was
+        /// called before the calls were recorded.
+        ///
+        /// Recorded as a tuple rather than as [`LogLine`] so the result is
+        /// `Clone` without [`LogLine`] having to be — the production type
+        /// is moved into a transport by every real sink and has no reason
+        /// to be duplicable.
+        #[allow(clippy::type_complexity)]
+        pub fn take_log_calls(&self) -> Vec<(MessageType, String, Option<bool>)> {
+            self.log_calls.lock().unwrap().clone()
         }
     }
 }
@@ -2336,6 +2656,149 @@ mod tests {
         );
     }
 
+    /// Companion to `server_recovers_from_eval_state_lock_poisoning` above:
+    /// recovery must also be REPORTED — over the protocol channel rather
+    /// than to stderr (task #6329), and exactly ONCE however many handlers
+    /// go on to recover.
+    ///
+    /// Same poisoning technique as that test, verbatim — clone the
+    /// `eval_state` Arc, panic a thread while it holds the lock, join, and
+    /// confirm `lock().is_err()`. The differences are the sink
+    /// (`RecordingSink`, so log lines are observable at all) and that BOTH
+    /// `did_open` and `did_change` are driven.
+    ///
+    /// Driving both is what makes the count load-bearing in two directions
+    /// at once. `lock_eval_state` is shared, so a zero here means recovery
+    /// stopped reporting at all; a two means the latch is gone and the
+    /// notice is back to firing per recovery — which, since
+    /// `PoisonError::into_inner` never clears the flag, means once per
+    /// keystroke for the life of the process. See `lock_eval_state`.
+    ///
+    /// ERROR, not WARNING: a poisoned `eval_state` means a prior panic ran
+    /// inside the evaluator. That is strictly more serious than a client
+    /// sending a bad URI (which is `MessageType::WARNING`), and flattening
+    /// the two onto one level would throw away the only signal a user has
+    /// that the server, rather than their document, is what went wrong.
+    ///
+    /// Keeps the sibling test's "diagnostics were captured" check so this
+    /// test cannot pass by having broken recovery and merely logged about
+    /// it — and that check runs after BOTH handlers, so the silent second
+    /// recovery the latch introduces is proven still to be a recovery.
+    ///
+    /// Also the ORDERING probe for this log site, via
+    /// `RecordingSink::probe_state`. Co-located rather than split into its
+    /// own test because the poisoning dance above is the whole cost of the
+    /// scenario, and a second copy of it would be two tests obliged to stay
+    /// in lockstep for one extra assertion. Its sibling probe lives in
+    /// `crates/reify-lsp/tests/in_process_bridge.rs`
+    /// (`log_message_is_never_called_while_the_state_write_lock_is_held`),
+    /// which covers `did_change`'s unknown-URI site; between them they cover
+    /// both log sites reachable from the public handler surface, and the
+    /// third inherits this one's verdict — see
+    /// [`NotificationSink::log_message`].
+    #[tokio::test]
+    async fn eval_state_poison_recovery_is_reported_on_the_log_channel() {
+        let sink = Arc::new(RecordingSink::default());
+        let (service, _socket) =
+            LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone()));
+        let server = service.inner();
+        sink.probe_state(server.state().clone());
+        let uri = test_uri();
+
+        // Poison the eval_state Mutex by panicking while holding the lock.
+        let eval_state_arc = server.eval_state().clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = eval_state_arc.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        });
+        let _ = handle.join();
+        assert!(
+            server.eval_state().lock().is_err(),
+            "lock should be poisoned after panic"
+        );
+
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: reify_test_support::bracket_source().to_string(),
+                },
+            })
+            .await;
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: reify_test_support::bracket_source().to_string(),
+                }],
+            })
+            .await;
+
+        let log_calls = sink.take_log_calls();
+        let recoveries: Vec<_> = log_calls
+            .iter()
+            .filter(|(_, message, _)| message.contains("eval_state lock poisoned, recovering"))
+            .collect();
+        assert_eq!(
+            recoveries.len(),
+            1,
+            "expected EXACTLY ONE poisoned-lock recovery notice across both handlers, \
+             delivered over the sink rather than written to stderr (task #6329). Zero means \
+             recovery stopped reporting; two means the latch in `lock_eval_state` is gone and \
+             a permanently poisoned mutex now emits a client-visible ERROR per keystroke. \
+             Got log calls: {log_calls:?}"
+        );
+        for (typ, message, _) in &recoveries {
+            assert_eq!(
+                *typ,
+                MessageType::ERROR,
+                "a poisoned eval_state means a prior panic ran inside the evaluator — it must \
+                 be reported at ERROR, not flattened onto the WARNING level an unknown-URI \
+                 didChange uses. Got {typ:?} for: {message}"
+            );
+        }
+
+        // THE ORDERING INVARIANT at this log site: `lock_eval_state` reports
+        // recovery from inside `evaluate_and_forward_logs`, which both
+        // handlers call between their two brief `state` write-lock scopes.
+        // A call arriving with that lock held would queue every other
+        // did_open/did_change/did_close behind an arbitrary sink
+        // implementation — in the GUI, one that re-enters the Tauri event
+        // bus. Non-vacuous by the count assertion above.
+        let while_locked: Vec<_> = log_calls
+            .iter()
+            .filter(|(_, _, write_lock_was_free)| *write_lock_was_free == Some(false))
+            .collect();
+        assert!(
+            while_locked.is_empty(),
+            "a NotificationSink::log_message call ran while the `state` WRITE lock was held. \
+             Every server log site must dispatch outside that lock (see \
+             NotificationSink::log_message) — move the offending call out of the write-lock \
+             block. Offending calls: {while_locked:?}"
+        );
+
+        // Recovery itself, not merely the report of it, still happened.
+        let state = server.state().read().await;
+        let captured = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be captured even after poison recovery");
+        let errors: Vec<_> = captured
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "valid source should have no errors after poison recovery, got: {errors:?}"
+        );
+    }
+
     #[tokio::test]
     async fn did_close_removes_document_from_store() {
         let (service, _socket) = test_service();
@@ -3390,6 +3853,76 @@ structure Assembly {
         assert!(
             edit.changes.is_some_and(|c| c.contains_key(&uri)),
             "the legacy changes map is preserved for undeclared clients"
+        );
+    }
+
+    // --- task #6162: bound the client-controlled URI in the did_change
+    // unknown-URI log line ---
+
+    #[test]
+    fn truncate_for_log_bounds_long_input_and_never_splits_a_codepoint() {
+        // (a) short input passes through verbatim, unchanged.
+        assert_eq!(truncate_for_log("file:///tmp/a.ri"), "file:///tmp/a.ri");
+        assert_eq!(truncate_for_log(""), "");
+
+        // (b) boundary: an input of EXACTLY LOG_STR_MAX_CHARS chars is
+        // returned verbatim, not truncated. This is the off-by-one that
+        // `char_indices().nth()` gets right and a naive `len() > MAX` guard
+        // gets wrong.
+        let exactly_max: String = "a".repeat(LOG_STR_MAX_CHARS);
+        assert_eq!(truncate_for_log(&exactly_max), exactly_max);
+
+        // (c) one char over the boundary: keeps EXACTLY the first 256 chars
+        // and reports the exact byte length (257) in the marker. Exact
+        // `assert_eq!` against the whole expected string, not `starts_with`
+        // — `starts_with` is satisfied by any output that keeps *at least*
+        // 256 chars, so it would not catch an off-by-one that changed
+        // `nth(LOG_STR_MAX_CHARS)` to keep one char too many.
+        let one_over: String = "a".repeat(LOG_STR_MAX_CHARS + 1);
+        let truncated = truncate_for_log(&one_over);
+        assert_eq!(
+            truncated,
+            format!(
+                "{}...[truncated, 257 bytes total]",
+                "a".repeat(LOG_STR_MAX_CHARS)
+            )
+        );
+
+        // (d) multi-byte safety: 300 repetitions of a 3-byte codepoint
+        // (900 bytes total). A naive `&s[..256]` byte slice would PANIC
+        // here, since byte offset 256 falls mid-codepoint — that is the
+        // regression this case exists to catch. The result must keep
+        // exactly 256 CHARS of prefix (not more, not fewer) and report the
+        // true byte length in the marker.
+        let multi_byte: String = "\u{2318}".repeat(300);
+        assert_eq!(multi_byte.len(), 900);
+        let truncated_multi = truncate_for_log(&multi_byte);
+        assert_eq!(
+            truncated_multi
+                .chars()
+                .take_while(|&c| c == '\u{2318}')
+                .count(),
+            LOG_STR_MAX_CHARS,
+            "must keep exactly {LOG_STR_MAX_CHARS} chars of prefix, got: {truncated_multi}"
+        );
+        assert!(
+            truncated_multi.contains("[truncated, 900 bytes total]"),
+            "expected 900-byte marker, got: {truncated_multi}"
+        );
+
+        // (e) the measured payload shape from the bug report: a huge
+        // client-controlled URI must collapse to a small, bounded line.
+        let huge = format!("file:///tmp/{}.ri", "a".repeat(160 * 1024));
+        let truncated_huge = truncate_for_log(&huge);
+        assert!(
+            truncated_huge.len() < 1024,
+            "truncated huge URI should be well under 1 KiB, got {} bytes",
+            truncated_huge.len()
+        );
+        assert!(
+            truncated_huge.contains(&format!("[truncated, {} bytes total]", huge.len())),
+            "expected marker reporting the true input length {}, got: {truncated_huge}",
+            huge.len()
         );
     }
 }

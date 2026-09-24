@@ -46,6 +46,10 @@
 //!   layer, the family table in `crates/reify-eval/src/arg_acceptance.rs` —
 //!   the canonical enumeration of every position routed through the eval-layer
 //!   LENGTH chokepoint.
+//! - The Euler builtins' `convention` slot (task #6082) — `orient_euler` and
+//!   `orient_to_euler`. SO(3) builtins, not geometry; like `generate` they host
+//!   here only because the mechanism is name-keyed and generic. They are the
+//!   table's only `ExpectedArg::Enum` slots.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
@@ -74,8 +78,8 @@
 //!   decree — `revolve`'s and `rotate_around`'s `angle`, `draft`'s `angle`.
 //!   The pre-existing ANGLE `tol` slots are that PRD's inheritance, not a
 //!   precedent to extend; adding a new one here would be a scope violation.
-//!   It is also why those slots carry no migration hint: the eval layer has
-//!   none to mirror, and PRD 3 owns closing both halves together.
+//!   It is also why those slots still carry no migration hint: eval gained one
+//!   at leaf β, and PRD 3 closes the compile half at leaf ζ (task 5782).
 //! - **Polymorphic and coercing slots stay out.** Math args (no fixed
 //!   dimension), the `dir` Vec3 slot (accepts list literals like `[0,0,1]`
 //!   that coerce), and Range slots (`edges_by_length` / `faces_by_area`).
@@ -300,6 +304,26 @@ pub(crate) enum ExpectedArg {
         /// Human-readable type name for diagnostic messages (always `"Int"`).
         type_name: &'static str,
     },
+    /// A specific declared enum type, matched by name against `Type::Enum(_)`
+    /// (the Euler builtins' `convention` slot, task #6082).
+    ///
+    /// No `enum_defs` plumbing is needed to make this sound: `expr.rs`'s
+    /// `EnumAccess` arm validates the variant against
+    /// `reify_ir::EnumDef::contains_variant` before it ever produces a
+    /// `Type::Enum(_)`, so a value of this type is already guaranteed to name a
+    /// DECLARED enum with an EXISTING variant. This slot only has to pin WHICH
+    /// enum — an `OutputFormat` value in a convention slot is the mismatch it
+    /// exists to catch, alongside the `String` that motivated it.
+    ///
+    /// Like `Int`, carries no `migration_hint`: there is no dimensioned-literal
+    /// spelling to migrate to, so [`emit_mismatch`] is passed `None`.
+    Enum {
+        /// The required enum type name (e.g. `"EulerConvention"`).
+        enum_name: &'static str,
+        /// Human-readable type name for diagnostic messages (normally the same
+        /// as `enum_name`).
+        type_name: &'static str,
+    },
 }
 
 /// Build one LENGTH slot — the shape every Contract C length position shares.
@@ -415,15 +439,13 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::ANGLE,
                 type_name: "Angle",
-                // No migration hint, deliberately: the eval layer has no
-                // `angle_spec` hint either, and this check exists to MIRROR
-                // that layer's wording (PRD decision D9), not to get ahead of
-                // it. Closing the ANGLE gap is PRD 3's by binding seam decree,
-                // and it owns BOTH halves together — adding one here alone
-                // would make the layers disagree in the other direction.
-                // Pinned by `angle_slot_rejection_carries_no_migration_hint`.
-                // Prose rather than a TODO on purpose: a TODO must cite a live
-                // task under the PTODO grammar, and PRD 3 has no task id yet.
+                // No migration hint, deliberately: eval HAS carried
+                // `ANGLE_MIGRATION_HINT` since PRD 3 leaf β, and bringing these
+                // slots onto that template is leaf ζ (task 5782), not this
+                // layer's to anticipate — adding one early reds
+                // `angle_slot_rejection_carries_no_migration_hint`, which pins
+                // the un-hinted wording on purpose. (Prose, not a
+                // `TODO(#5782)`: a new ptodo fingerprint for no gain.)
                 migration_hint: None,
             },
         }],
@@ -987,6 +1009,51 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(1, "semi_minor"),
         ] },
 
+        // ── Euler builtins: the convention is an enum, not a String (#6082) ──
+        // orient_euler(convention, a, b, c) — a CONSTRUCTOR, so the convention
+        // comes FIRST and selects the meaning of the three angles that follow
+        // (R_xyz(a, b, c) notation).
+        //
+        // arg0: convention → EulerConvention.
+        // args1-3: the three angles — deliberately UNCHECKED. They are
+        //   semantically ANGLE, but an ANGLE slot would break a live call site
+        //   today: `kinematic_stdlib_smoke.rs` passes bare Reals (0.1, 0.2,
+        //   0.3), not rad-suffixed literals, so the slot would turn a valid
+        //   call into a hard compile error and drag a separable
+        //   dimensioned-literal migration into #6082. Same decision-4
+        //   gradualism as the rest of the table; adding the ANGLE slots means
+        //   migrating those call sites first.
+        //
+        // The arity guard is forward-compat, matching `linear_pattern`'s: 4 is
+        // the only accepted arity today (the eval arm returns Undef otherwise),
+        // so without it a future overload would silently inherit a slot at an
+        // index that denotes a different parameter.
+        "orient_euler" if arg_count == 4 => &[CheckableArg {
+            index: 0,
+            name: "convention",
+            expected: ExpectedArg::Enum {
+                enum_name: "EulerConvention",
+                type_name: "EulerConvention",
+            },
+        }],
+
+        // orient_to_euler(q, convention) — a DECOMPOSER, so it is SUBJECT-first
+        // like its siblings orient_log(q) / orient_to_axis_angle(q) /
+        // orient_inverse(q), which puts the convention at arg 1. The asymmetry
+        // with the constructor above is deliberate; see #6082 and the comment
+        // on the `EulerConvention` declaration in `stdlib/geometry_traits.ri`.
+        //
+        // arg0: q — the Orientation subject, unchecked (arg0 is never a slot).
+        // arg1: convention → EulerConvention.
+        "orient_to_euler" if arg_count == 2 => &[CheckableArg {
+            index: 1,
+            name: "convention",
+            expected: ExpectedArg::Enum {
+                enum_name: "EulerConvention",
+                type_name: "EulerConvention",
+            },
+        }],
+
         // All other names: empty (no dimensioned-scalar arg to check).
         _ => &[],
     }
@@ -1033,8 +1100,11 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// Concretely, for a LENGTH slot:
 /// `"box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
-/// The ANGLE slots render the un-hinted form, because the eval layer has no
-/// angle hint to mirror; PRD 3 owns closing both halves together.
+/// The ANGLE slots render the un-hinted form. That is the one place the two
+/// layers knowingly disagree: eval's angle path gained `ANGLE_MIGRATION_HINT`
+/// with PRD 3 leaf β, and PRD 3 leaf ζ (task 5782) brings these slots onto the
+/// same template. Until ζ lands, an angle rejection reads with a repair
+/// instruction at eval and without one at compile time.
 ///
 /// `{builtin}` is the SURFACE call name — the identifier the author actually
 /// typed. The eval layer instead renders its prefix from the LOWERED kind
@@ -1164,6 +1234,33 @@ pub(crate) fn check_builtin_arg_types(
                         type_name,
                         other,
                         *migration_hint,
+                        call_span,
+                        diagnostics,
+                    );
+                }
+            },
+
+            ExpectedArg::Enum {
+                enum_name,
+                type_name,
+            } => match &arg.result_type {
+                // Gradualism: poison + unresolved pass silently.
+                Type::Error | Type::TypeParam(_) => continue,
+
+                // Correct — a value of the required enum type. The variant is
+                // already validated upstream (see `ExpectedArg::Enum`).
+                Type::Enum(actual) if actual == enum_name => continue,
+
+                // Any other concrete type — a `String` (the form task #6082
+                // removed), or an enum of the wrong type — is a definite
+                // mismatch.
+                other => {
+                    emit_mismatch(
+                        name,
+                        slot.name,
+                        type_name,
+                        other,
+                        None,
                         call_span,
                         diagnostics,
                     );
@@ -1338,7 +1435,12 @@ mod tests {
     /// to close: a key added to one copy and not the other would make
     /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] vacuous for
     /// precisely that key, a silent false GREEN.
-    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate"];
+    ///
+    /// Task #6082 added the two Euler builtins for the same structural reason:
+    /// `orient_*` belongs to no units.rs family slice either, so without these
+    /// entries the completeness arm would stay silently vacuous for their
+    /// `convention` slots.
+    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate", "orient_euler", "orient_to_euler"];
 
     /// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
     /// members of `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` (task 5652).
@@ -1417,6 +1519,11 @@ mod tests {
         "generate",
         "linear_pattern",
         "linear_pattern_2d",
+        // Task #6082 — SO(3) builtins, not topology selectors, and members of
+        // no units.rs family slice; their `convention` slot is the table's
+        // only ExpectedArg::Enum.
+        "orient_euler",
+        "orient_to_euler",
         // Task 5750 — primitives.
         "box",
         "box_centered",
@@ -1478,7 +1585,8 @@ mod tests {
             expected: ExpectedArg::Scalar {
                 dimension: DimensionVector::ANGLE,
                 type_name: "Angle",
-                // Mirrors the table: eval has no angle hint, so neither has this.
+                // Mirrors the table, which stays un-hinted until PRD 3 leaf ζ
+                // (task 5782) — eval HAS carried an angle hint since leaf β.
                 migration_hint: None,
             },
         }
@@ -3892,10 +4000,22 @@ mod tests {
     ///
     /// The FINDING-2 guard therefore covers the geometry-LOWERING families —
     /// task 5750's subject, and the 26 arity-agnostic arms that motivated the
-    /// finding — and NOT task 4493/3994's selector family. Nobody should read the
-    /// guard as broader than that. The nine selectors plus `generate` are also
-    /// the names least exposed to the hazard: none is overloaded today, and a
-    /// value-form overload is a producer-side notion (task 5351).
+    /// finding — and NOT task 4493/3994's selector family, nor task #6082's two
+    /// Euler builtins. Nobody should read the guard as broader than that. The
+    /// nine selectors plus `generate` are also the names least exposed to the
+    /// hazard: none is overloaded today, and a value-form overload is a
+    /// producer-side notion (task 5351).
+    ///
+    /// The two Euler builtins are unobservable for a DIFFERENT reason worth
+    /// stating, because it is not the selectors': they have no lowering arm at
+    /// all. Both are pure eval-builtins dispatched through
+    /// `reify_stdlib::eval_builtin`, which answers a wrong-arity call with
+    /// `Value::Undef` at EVAL time rather than a compile diagnostic — so there
+    /// is no arity check for the probe to observe. They are also the one pair
+    /// here that does NOT rely on this exemption for its safety: both arms carry
+    /// an explicit `if arg_count ==` guard (4 and 2), which is the stronger fix
+    /// the agnostic-arm rule asks for, so their slot indices cannot fire on the
+    /// wrong argument even if a future overload appears.
     const ARITY_UNOBSERVABLE_SLOT_KEYS: &[&str] = &[
         // The nine geometry topology selectors (task 4493).
         "center_of_mass",
@@ -3909,6 +4029,13 @@ mod tests {
         "extremal_by_centroid",
         // The task-3994 list combinator, the table's lone `Int` count slot.
         "generate",
+        // The two Euler builtins (task #6082), the table's only
+        // `ExpectedArg::Enum` slots. MEASURED, not assumed: the probe reports
+        // {0..=14} for both — every arity accepted, i.e. no arity diagnostic at
+        // any of them — the same full-set signature as the nine selectors above
+        // and unlike a ledgered name such as `fillet` ({2, 3}).
+        "orient_euler",
+        "orient_to_euler",
     ];
 
     /// Names that legitimately accept MORE THAN ONE arity while being served by

@@ -12,8 +12,23 @@
 //! `binary(…)`/`test(=…)` selector naming a former id must be updated; verify.sh's failed-only
 //! retry is unaffected — it derives `test(=…)` at run time from its own attempt-0 and refuses
 //! on tree drift (see `scripts/verify.sh` retry_failed_only).
+//!
+//! Task #6082 lands `euler_convention_surface.rs` here rather than as a top-level
+//! standalone `tests/euler_convention_surface.rs` (flagged
+//! `reason=unregistered-standalone` by scripts/check-harness-baseline-registration.sh;
+//! the sanctioned remedy is consolidation, NOT a new grandfather row — SUPERSEDED, Leo
+//! 2026-07-22, esc-5056-11). It is a geometry-domain surface test: the compile-and-eval
+//! contract of the `EulerConvention` enum and the two orientation builtins it selects
+//! for. It is deliberately NOT folded into `harness_fea_solver_e2e` alongside the other
+//! eval-side consumer of those builtins (`kinematic_stdlib_smoke.rs`): that unit is
+//! within ~700 lines of the 20 kLOC C1 cap (tests/infra/test_harness_kloc_cap.sh), while
+//! this one has ample headroom.
 #[path = "harness_geometry/dimensionless_sub_pose_diagnostic_e2e.rs"]
 mod dimensionless_sub_pose_diagnostic_e2e;
+#[path = "harness_geometry/empty_boolean_result_diagnostic_e2e.rs"]
+mod empty_boolean_result_diagnostic_e2e;
+#[path = "harness_geometry/euler_convention_surface.rs"]
+mod euler_convention_surface;
 #[path = "harness_geometry/geometry_conditional_e2e.rs"]
 mod geometry_conditional_e2e;
 #[path = "harness_geometry/geometry_dispatch_registry_guard.rs"]
@@ -48,9 +63,13 @@ mod symbolic_geometry_eval;
 mod symbolic_selector_composition_eval;
 #[path = "harness_geometry/symbolic_selector_eval.rs"]
 mod symbolic_selector_eval;
+#[path = "harness_geometry/transform_translation_length_units_e2e.rs"]
+mod transform_translation_length_units_e2e;
 #[path = "harness_geometry/trait_assoc_fn_cylinder.rs"]
 mod trait_assoc_fn_cylinder;
 #[path = "harness_geometry/trait_assoc_fn_static_e2e.rs"]
 mod trait_assoc_fn_static_e2e;
 #[path = "harness_geometry/trait_merge_eval.rs"]
 mod trait_merge_eval;
+#[path = "harness_geometry/units_length_closure_guard.rs"]
+mod units_length_closure_guard;

@@ -1632,37 +1632,46 @@ mod tests {
     //   - List length == steps
     //   - Each Snapshot Map's free_values matches the per-step solved
     //     configuration
-    //   - Solved free var is monotonic in the swept driver (continuity
-    //     check — warm-start preserves the local minimum the cold solve
-    //     would have found, no jumps)
     //
-    // Fixture (2-prismatic-X closed loop):
-    //   jA: prismatic +X, range 0..1m   (driver, swept by `sweep()`)
-    //   jB: prismatic +X, range 0..2m
-    //   Body A at jA, parent=world      → joint_parents = {jA: world}
-    //   Body B at jB, parent=world      → {jA: world, jB: world}
-    //   Body C at jB, parent=jA         → closing edge: jB's existing parent
-    //                                     was world, new is jA → loop_closure
-    //                                     record with path_a=[world, jB] and
-    //                                     path_b=[world, jA, jB].  jA is
-    //                                     directly bound (sweep), so chain_b's
-    //                                     index 0 (jA) drops from free_b;
-    //                                     chain_b's index 1 (jB) is the only
-    //                                     free var.
+    // Fixture (3-prismatic-X closed loop):
+    //   jA: prismatic +X, range 0..1m    (driver, swept by `sweep()`)
+    //   jX: prismatic +X, range 0..0.5m  (tree-side, unbound → midpoint 0.25m)
+    //   jB: prismatic +X, range 0..2m    (the closing side's free var)
+    //   Body A at jA, parent=world       → joint_parents = {jA: world}
+    //   Body B at jX, parent=jA          → {jA: world, jX: jA}
+    //   Body C at jB, parent=world       → {jA: world, jX: jA, jB: world}
+    //   Body D at jX, parent=jB          → closing edge: jX's existing parent
+    //                                      is jA, new is jB → loop_closure
+    //                                      record with path_a=[world, jA, jX]
+    //                                      and path_b=[world, jB].  jA is
+    //                                      directly bound (sweep) and jX is
+    //                                      resolved on the tree side, so
+    //                                      chain_b = [jB] and its index 0 is
+    //                                      the only free var.
     // Closure equation (composing pure +X prismatic transforms):
     //   chain_a translation = chain_b translation
-    //   midpoint(jB)         = jA_driver + jB_free_in_chain_b
-    //   1.0                  = driver + x      →  x = 1.0 - driver
-    // For driver ∈ [0, 1]m, solved jB ∈ [1.0, 0.0]m — strictly monotonic
-    // decreasing.  Pins both the warm-start threading AND the per-step
-    // free_values shape.
+    //   jA_driver + midpoint(jX) = jB_free
+    //   driver    + 0.25         = x      →  x = driver + 0.25
+    // For driver ∈ [0, 1]m, solved jB ∈ [0.25, 1.25]m.  Pins both the
+    // warm-start threading AND the per-step free_values shape.
+    //
+    // The free variable must live on a genuine two-deep closing-side walk:
+    // the closing joint is composed on `path_a` alone, so a two-joint loop
+    // closing jB onto itself would leave `chain_b = [jA]`, directly bound by
+    // the sweep, with no free variable for a warm start to thread.  Cold seed
+    // for jB is its own range midpoint (1.0 m), distinct from every solved
+    // value except at driver = 0.75, so the warm-start signal is preserved.
+    //
+    // What this fixture CANNOT show: its closing residual is 1-D and linear,
+    // so Newton has a unique root per step and a cold solve lands on the same
+    // value.  The per-step closed-form assertion below is therefore the whole
+    // check; a monotonicity assertion is deliberately not kept alongside it,
+    // since that assertion pins each step to within 1e-6 m of a prediction
+    // whose consecutive values are 0.25 m apart and so already implies it.
 
     /// Closed-chain sweep produces N snapshots, each with non-empty
-    /// `free_values` whose single leaf varies monotonically with the
-    /// swept driver.  The continuity check is the warm-start signal —
-    /// without warm-start, the cold solver might converge to a
-    /// secondary minimum (or fail to converge in pathological cases),
-    /// breaking monotonicity.
+    /// `free_values` whose single leaf matches the closed-form closure
+    /// prediction for that step's driver value.
     #[test]
     fn sweep_threads_warm_start_through_closed_chain_steps() {
         let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
@@ -1673,6 +1682,20 @@ mod tests {
                 Value::Range {
                     lower: Some(Box::new(Value::length(0.0))),
                     upper: Some(Box::new(Value::length(2.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+
+        // jX: tree-side joint, structurally distinct from jA and jB by range.
+        let j_x = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(0.0))),
+                    upper: Some(Box::new(Value::length(0.5))),
                     lower_inclusive: true,
                     upper_inclusive: true,
                 },
@@ -1690,24 +1713,35 @@ mod tests {
                 world.clone(),
             ],
         );
+        // Body B at jX, parent jA — the tree-side leg of the loop.
         let m2 = eval_builtin(
             "body",
             &[
                 m1,
                 Value::String("solidB".to_string()),
-                j_b.clone(),
-                world.clone(),
+                j_x.clone(),
+                j_a.clone(),
             ],
         );
-        // Closing edge: body C at jB, parent jA — jB's existing parent
-        // is world, so this differs and produces a loop_closure record.
-        let m3 = eval_builtin(
+        let m2b = eval_builtin(
             "body",
             &[
                 m2,
                 Value::String("solidC".to_string()),
                 j_b.clone(),
-                j_a.clone(),
+                world.clone(),
+            ],
+        );
+        // Closing edge: body D at jX, parent jB — jX's existing parent
+        // is jA, so this differs and produces a loop_closure record with
+        // path_a = [world, jA, jX] and path_b = [world, jB].
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2b,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
             ],
         );
 
@@ -1739,11 +1773,9 @@ mod tests {
         };
         assert_eq!(snaps.len(), 5, "sweep must produce 5 snapshots");
 
-        // Per-step free_values shape + monotonicity check.  Expected
-        // solved jB = 1.0 - driver, so as driver increases 0→1, solved
-        // jB decreases 1.0→0.0.  We assert strict-monotonic-decreasing
-        // across consecutive steps; tolerance 1µm absorbs solver wobble.
-        let mut prev_solved: Option<f64> = None;
+        // Per-step free_values shape + closure prediction.  Expected
+        // solved jB = driver + 0.25, so as driver increases 0→1, solved
+        // jB increases 0.25→1.25.
         for (i, snap) in snaps.iter().enumerate() {
             let smap = match snap {
                 Value::Map(m) => m,
@@ -1774,22 +1806,14 @@ mod tests {
                 Value::Real(r) => *r,
                 other => panic!("snap {i} leaf must be Real, got {:?}", other),
             };
-            // Expected: 1.0 - driver where driver = i / 4.0 m for 5 steps over [0,1].
+            // Expected: driver + midpoint(jX) where driver = i / 4.0 m for
+            // 5 steps over [0,1] and midpoint(jX) = 0.25 m.
             let driver = (i as f64) / 4.0;
-            let expected = 1.0 - driver;
+            let expected = driver + 0.25;
             assert!(
                 (solved - expected).abs() < 1e-6,
                 "snap {i}: solved jB={solved} must match closure prediction {expected} (driver={driver})"
             );
-            // Monotonic-decreasing check (strict; warm-start should hit
-            // the same continuous branch the cold solve found).
-            if let Some(p) = prev_solved {
-                assert!(
-                    solved < p + 1e-6,
-                    "snap {i}: solved jB={solved} must be ≤ previous {p} (monotonic decreasing)"
-                );
-            }
-            prev_solved = Some(solved);
         }
     }
 

@@ -25,5 +25,23 @@
 //!
 //! Future corpus-wide gates (over other curated `.ri` directories, or further
 //! `examples/best_practices/` assertions) belong in this unit.
+//!
+//! Task #7431 took that invitation: `eval_invariant_corpus_sweep` is the second
+//! corpus-wide gate here, and the first over reify-eval's `.ri` INVARIANT corpus
+//! (fixtures + examples + one explicit prd-gate leaf) rather than a single
+//! curated examples directory. It unifies two formerly separate 24-shard sweeps
+//! into one — see its own header. Unlike the absorbed standalone above, it DOES
+//! need a helper, so this root declares `common/eval_gate_support.rs` by
+//! `#[path]`; that narrow file, not the 312-line `common/mod.rs`, is what gets
+//! charged to this unit, so the no-`mod common;` reasoning above still holds.
 #[path = "harness_corpus_gates/best_practices_constraint_gate.rs"]
 mod best_practices_constraint_gate;
+
+#[path = "common/eval_gate_support.rs"]
+mod eval_gate_support;
+
+#[path = "harness_corpus_gates/eval_invariant_corpus_sweep.rs"]
+mod eval_invariant_corpus_sweep;
+
+#[path = "harness_corpus_gates/units_length_corpus_end_state.rs"]
+mod units_length_corpus_end_state;

@@ -20,13 +20,25 @@
 //!
 //! # Diagnostics
 //!
-//! Beyond the lifecycle/mesh-I/O surface above, this module also binds two
-//! diagnostic-only surfaces: the gmsh logger CAPTURE family
+//! Beyond the lifecycle/mesh-I/O surface above, this module binds two more:
+//! the gmsh logger CAPTURE family
 //! ([`logger_start`]/[`logger_get`]/[`logger_stop`]) and
-//! [`get_element_types`], a dim-scoped element-type census. Both exist for
-//! debugging gmsh misbehaviour from Rust, not for production control flow —
-//! they are deliberately test-only consumers (see the `// G-allow:` markers
-//! on each wrapper, which keep a future dead-code sweep from deleting them).
+//! [`get_element_types`], a dim-scoped element-type census.
+//!
+//! [`get_element_types`] exists for debugging gmsh misbehaviour from Rust,
+//! not for production control flow — its only consumer is a test, which is
+//! what the `// G-allow:` marker on it records (that marker is what keeps a
+//! future dead-code sweep from deleting an otherwise unreferenced binding).
+//!
+//! The logger family is production code as of task #6969. It backs
+//! [`crate::log_capture::LogCapture`], which
+//! [`crate::kernel_real::GmshKernel::mesh_to_volume`] arms so a meshing
+//! failure reports gmsh's own diagnosis rather than only the last ERROR
+//! line `gmshLoggerGetLastError` supplies. [`logger_get`] has a second
+//! production caller, `init::mesh_generate_with_recovery`, which
+//! reads the capture before it recycles libgmsh. Those three carry no
+//! marker: a non-test workspace caller is itself the exemption, so a marker
+//! claiming they have none would be both false and redundant.
 //!
 //! Concrete precedent: diagnosing #6200 (`classify_surfaces` at exactly 90°
 //! finding 2 model surfaces instead of 6, HXT building 206 tets while the
@@ -94,6 +106,9 @@ unsafe extern "C" {
 
     /// `void gmshOptionSetNumber(const char* name, double value, int* ierr)`
     pub fn gmshOptionSetNumber(name: *const c_char, value: f64, ierr: *mut c_int);
+
+    /// `void gmshOptionGetNumber(const char* name, double* value, int* ierr)`
+    pub fn gmshOptionGetNumber(name: *const c_char, value: *mut f64, ierr: *mut c_int);
 
     /// `void gmshModelAdd(const char* name, int* ierr)`
     pub fn gmshModelAdd(name: *const c_char, ierr: *mut c_int);
@@ -452,6 +467,44 @@ pub fn option_set_number(name: &str, value: f64) -> Result<(), GeometryError> {
         ierr,
         gmshOptionSetNumber(cname.as_ptr(), value, &mut ierr)
     )
+}
+
+/// Read a numerical option back out of gmsh's process-global option table.
+///
+/// The reader whose absence forced every pre-#6968 mesh-size guard in this
+/// crate to infer an option leak from mesh DENSITY rather than read the table:
+/// each of their docstrings states the constraint, and it was incidental
+/// rather than fundamental — `gmshOptionGetNumber` has been in the shipped
+/// `libgmsh.so` all along. A direct read is decisive where a density probe is
+/// vacuous, because `Mesh.MeshSizeExtendFromBoundary` has no measurable effect
+/// while `Mesh.MeshSizeMin == Mesh.MeshSizeMax`.
+///
+/// For OBSERVATION only. The restore discipline in
+/// [`crate::mesh_size_scope`] targets gmsh's DEFAULTS, never the values found
+/// on entry, so nothing in `src/` needs to read an option back — see that
+/// module for why "as found" is the wrong target even when it is observable.
+///
+/// An unknown option name is an `Err`, not a plausible-looking number — and
+/// that is this wrapper's doing rather than gmsh's out-param discipline.
+/// MEASURED against the shipped `libgmsh.so` 4.15.2, from a C probe that
+/// pre-seeded the out-param with `-999`:
+/// `gmshOptionGetNumber("Mesh.NoSuchOptionReify", &v, &ierr)` sets `ierr = 1`
+/// and OVERWRITES `v` with `0`. The `?` on `check_ierr` below is therefore the
+/// only thing standing between a guard and a `0.0` gmsh never supplied — a
+/// thoroughly plausible reading for `Mesh.MeshSizeMin`, which is why a wrapper
+/// that returned `value` regardless of `ierr` would make every guard built on
+/// it fail OPEN on a typo'd option name.
+pub fn option_get_number(name: &str) -> Result<f64, GeometryError> {
+    let cname = CString::new(name).map_err(|e| {
+        GeometryError::OperationFailed(format!("option_get_number: invalid CString: {e}"))
+    })?;
+    let mut value: f64 = 0.0;
+    let mut ierr: c_int = 0;
+    unsafe {
+        gmshOptionGetNumber(cname.as_ptr(), &mut value, &mut ierr);
+    }
+    check_ierr("gmshOptionGetNumber", ierr)?;
+    Ok(value)
 }
 
 /// Add a new model with the given name and make it the current model.
@@ -910,7 +963,13 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
 }
 
 /// Start capturing gmsh's Info/Warning/Progress message stream into an
-/// in-memory buffer, drained by [`logger_get`].
+/// in-memory buffer. [`logger_get`] READS that buffer without consuming it;
+/// [`logger_stop`] is the drain (measured — see both of their docs, and
+/// `tests/log_capture_tests.rs`'s guard test, which annotates twice under one
+/// arm). [`crate::log_capture::LogCapture`] rests on that split both ways: it
+/// may fold the capture into more than one error while armed, and the empty
+/// post-drop read that witnesses its stop would witness nothing if a read
+/// emptied the buffer by itself.
 ///
 /// This capture is INDEPENDENT of the `"General.Terminal"` option — every
 /// production mesher in this crate (`kernel_real::mesh_to_volume`,
@@ -923,8 +982,6 @@ pub fn get_nodes_at_entity(dim: i32, tag: i32) -> Result<(Vec<u64>, Vec<f64>), G
 /// across one `mesh_generate(3)` call with `General.Terminal = 0` — the
 /// capture buffer is a separate switch gmsh keeps regardless of that
 /// option.
-///
-// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_start() -> Result<(), GeometryError> {
     gmsh_call!("gmshLoggerStart", ierr, gmshLoggerStart(&mut ierr))
 }
@@ -934,8 +991,6 @@ pub fn logger_start() -> Result<(), GeometryError> {
 /// Measured: calling [`logger_get`] after `logger_stop` returns an empty
 /// `Vec` with `ierr=0` — stopping the logger drains the buffer, it does not
 /// merely pause capture.
-///
-// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_stop() -> Result<(), GeometryError> {
     gmsh_call!("gmshLoggerStop", ierr, gmshLoggerStop(&mut ierr))
 }
@@ -945,15 +1000,20 @@ pub fn logger_stop() -> Result<(), GeometryError> {
 ///
 /// Measured edge cases: if the logger was never started, this returns an
 /// empty `Vec` with `ierr=0` (not an error); likewise after [`logger_stop`]
-/// has drained the buffer. `gmshLoggerGet` returns a `char***` — gmsh
+/// has drained the buffer. Across a library recycle (measured on libgmsh
+/// 4.15.2, task #6969): between `gmshFinalize` and the next `gmshInitialize`
+/// this returns `ierr=1`, and AFTER the re-initialize the lines captured
+/// before the finalize are still present — the buffer outlives the library
+/// that logged into it. Gmsh documents neither, which is why
+/// `init::mesh_generate_with_recovery` reads before it tears the
+/// library down rather than relying on either. `gmshLoggerGet` returns a
+/// `char***` — gmsh
 /// allocates both the outer array of `log_n` pointers and every string it
 /// points at, so both levels are freed here (the outer array via
 /// [`take_gmsh_buf`], each string via `gmshFree`) before `check_ierr`,
 /// mirroring the free-before-check ordering in [`get_nodes_all`] and
 /// [`get_elements_by_type`] (this avoids leaking the buffers on the `ierr
 /// != 0` path, since `check_ierr` returns early via `?`).
-///
-// G-allow: gmsh diagnostics binding, consumed by tests/ffi_smoke_tests.rs — deliberately has no production caller.
 pub fn logger_get() -> Result<Vec<String>, GeometryError> {
     let mut log_ptr: *mut *mut c_char = ptr::null_mut();
     let mut log_n: usize = 0;

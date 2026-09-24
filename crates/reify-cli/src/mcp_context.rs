@@ -89,7 +89,28 @@ impl CliToolContext {
             reify_compiler::parse_with_stdlib(&source, reify_core::ModulePath::single(module_name));
 
         if !parsed.errors.is_empty() {
-            let msgs: Vec<String> = parsed.errors.iter().map(|e| e.message.clone()).collect();
+            // Render through `ParseError::render` — reached here via
+            // `ParsedModule::render_errors` — rather than cloning the bare message, so an MCP
+            // client gets `line:column: message` and can jump to the fault instead of being
+            // handed an unlocatable sentence.  INV-SF-7 `parse-is-value-faithful`
+            // (docs/legibility/design-invariants.md), task #5392: this is the third and last
+            // caller brought onto the single byte-offset → line:col converter, alongside the
+            // two loops in `reify-cli/src/main.rs`, so `render`'s "every caller reports
+            // positions the same way" doc claim is now true rather than aspirational.
+            //
+            // `source` is the exact string the spans index (read from disk immediately above
+            // and handed unmodified to `parse_with_stdlib`), so `render`'s prelude-sentinel
+            // and out-of-range-clamp branches apply unchanged.  The `Parse errors: {joined}`
+            // envelope and the `"; "` separator are deliberately unchanged so existing MCP
+            // consumers keep parsing the response.
+            //
+            // `render_errors` BATCHES rather than mapping `render` over the list: each
+            // `render` is an O(len(source)) scan from byte 0 to convert one byte offset, so a
+            // file carrying dozens of parse errors (up to 8 per `ERROR` node, several nodes
+            // per file, since #5392) would re-scan the whole source once per diagnostic.  The
+            // batched form builds the newline table once and binary-searches per error; the
+            // rendered strings are identical, so this is a cost change only.
+            let msgs = parsed.render_errors(&source);
             return Err(format!("Parse errors: {}", msgs.join("; ")));
         }
 
@@ -251,6 +272,14 @@ impl ReifyToolContext for CliToolContext {
             })?;
 
         let mut result = Vec::new();
+        // Two O(len(source)) scans from byte 0 per diagnostic — the O(diagnostics × len(source))
+        // shape `ParsedModule::render_all` batches away for parse errors, still un-batched here.
+        // The pressure grew with task #5392: `diagnose_error_node` emits up to 8 diagnostics per
+        // `ERROR` node and `forward_parse_errors` promotes each to `Severity::Error`, so this
+        // list grows with the same inputs that motivated the batching. Hoisting one
+        // `reify_core::build_line_offsets(source)` above this loop fixes it at identical output,
+        // but needs the table-based forward converter that does not exist yet — see
+        // `ParseError::render_with_offsets`, which reproduces it and says where it belongs.
         for diag in &compiled.diagnostics {
             // Use the first label's span if available, otherwise default to (1,1)
             let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first() {
@@ -2075,4 +2104,118 @@ structure AnglePin {
              LENGTH); got {width_after:?}"
         );
     }
+
+    /// RED before the `render` routing fix: the MCP `load_file` surface must report a
+    /// parse error the client can LOCATE — a `line:column`, not a bare sentence.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task
+    /// #5392.  `ParseError::render` is the single byte-offset → `line:col` converter, and
+    /// its doc comment claims it is the place "every caller" goes through "so every caller
+    /// reports positions the same way".  That claim was aspirational: `load_file` joined
+    /// bare `e.message` clones, so an MCP client got `Parse errors: syntax error in
+    /// structure body` with no file, no line and no column — precisely the
+    /// unlocatable-diagnostic class this task exists to close.
+    ///
+    /// What this pins, and what it deliberately does NOT:
+    ///
+    /// - The LINE is pinned, derived from the fixture with `str::find("@@@")` rather than
+    ///   hard-coded, because per-line locality is the guarantee INV-SF-7 needs.
+    /// - The COLUMN is only bounded to that line, not pinned to a value.  Measured on this
+    ///   branch the span starts at the innermost token tree-sitter recovers to (`valid`,
+    ///   column 13), not at the `@@@` that opens the fault (column 5); pinning the exact
+    ///   column would ratchet on a recovery detail rather than on locatability.
+    /// - The message WORDING is not pinned: the assertion is that whatever message the
+    ///   parser produced survives verbatim, so rewording the generic diagnostic cannot
+    ///   break this test.
+    ///
+    /// `reify-cli` is a binary-only package (no lib target), so this runs under
+    /// `cargo test -p reify-cli --bins`, not `--lib`.
+    #[test]
+    fn load_file_parse_error_is_reported_with_a_line_and_column() {
+        let source =
+            std::fs::read_to_string(BRACKET_PARSE_ERROR_PATH).expect("fixture must be readable");
+
+        // Derive the fault position from the fixture rather than hard-coding it, so the
+        // test tracks the fixture if its layout ever changes.
+        let fault_offset = source
+            .find("@@@")
+            .expect("fixture precondition: bracket_parse_error.ri must contain the `@@@` fault");
+        let fault_line = source[..fault_offset].matches('\n').count() + 1;
+        let fault_line_len = source
+            .lines()
+            .nth(fault_line - 1)
+            .expect("the derived fault line must exist in the fixture")
+            .len();
+
+        let err = fresh_ctx()
+            .load_file(BRACKET_PARSE_ERROR_PATH)
+            .expect_err("fixture precondition: bracket_parse_error.ri must fail to parse");
+
+        assert!(
+            err.starts_with("Parse errors: "),
+            "the `Parse errors: ` envelope must be preserved so existing MCP consumers keep \
+             parsing the response; got {err:?}"
+        );
+        assert!(
+            !err.contains('\n'),
+            "a parse-error report must stay a single line — a multi-line report means source \
+             is being echoed back at the client; got {err:?}"
+        );
+
+        let located = err
+            .strip_prefix("Parse errors: ")
+            .expect("asserted immediately above");
+        let (line_str, after_line) = located.split_once(':').unwrap_or_else(|| {
+            panic!(
+                "expected a `line:column: message` prefix on the MCP parse-error report so a \
+                 client can jump straight to the fault; got {err:?}"
+            )
+        });
+        let (col_str, message) = after_line.split_once(':').unwrap_or_else(|| {
+            panic!(
+                "expected a `line:column: message` prefix — found a line but no column; \
+                 got {err:?}"
+            )
+        });
+        let line: usize = line_str.parse().unwrap_or_else(|_| {
+            panic!("the report's leading field must be a 1-based line number; got {err:?}")
+        });
+        let col: usize = col_str.parse().unwrap_or_else(|_| {
+            panic!("the report's second field must be a 1-based column number; got {err:?}")
+        });
+
+        assert_eq!(
+            line, fault_line,
+            "the report must locate the fault on the line the fixture's `@@@` sits on; \
+             got {err:?}"
+        );
+        assert!(
+            (1..=fault_line_len + 1).contains(&col),
+            "the reported column must fall inside the fault line (1..={}); got {err:?}",
+            fault_line_len + 1
+        );
+
+        // The position must be ADDED to the message, not substituted for it.  The expected
+        // text is taken from the parser here rather than hard-coded, so this asserts
+        // preservation without pinning the wording.
+        let parsed = reify_compiler::parse_with_stdlib(
+            &source,
+            reify_core::ModulePath::single("bracket_parse_error"),
+        );
+        let bare = parsed
+            .errors
+            .first()
+            .expect("fixture precondition: the fixture must produce at least one parse error")
+            .message
+            .clone();
+        assert!(
+            !bare.trim().is_empty() && err.contains(&bare),
+            "the located report must still carry the parser's own message {bare:?}; got {err:?}"
+        );
+        assert!(
+            !message.trim().is_empty(),
+            "the message must survive after the position prefix; got {err:?}"
+        );
+    }
+
 }

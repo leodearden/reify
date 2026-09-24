@@ -71,9 +71,7 @@ describe('SYSTEM_PROMPT advertises only grantable tools', () => {
     ).toEqual([]);
   });
 
-  it('no reify_* fiction survives', () => {
+  it('names no bare reify_* tool (only the mcp__reify-debug__ namespaced form is callable)', () => {
     expect(SYSTEM_PROMPT.match(/\breify_[A-Za-z0-9_]+/g)).toBeNull();
-    expect(SYSTEM_PROMPT).not.toContain('reify_set_parameter');
-    expect(SYSTEM_PROMPT).not.toContain('reify_update_source');
   });
 });

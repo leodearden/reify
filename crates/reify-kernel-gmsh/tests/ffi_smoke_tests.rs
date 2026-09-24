@@ -17,11 +17,12 @@
 
 use reify_kernel_gmsh::ffi;
 use reify_kernel_gmsh::init;
+use reify_kernel_gmsh::mesh_size_scope::{GMSH_MESH_SIZE_MAX_DEFAULT, MeshSizeScope};
 
 /// RAII reset of the process-global gmsh diagnostics state this file's
 /// logger and census tests perturb: `Mesh.ElementOrder`, `General.Terminal`,
 /// and the logger-capture buffer. Mirrors
-/// `reify_kernel_gmsh::mesh_size_clamp::MeshSizeClampReset`'s shape —
+/// `reify_kernel_gmsh::mesh_size_scope::MeshSizeScope`'s shape —
 /// [`Self::armed`] borrows the live `GMSH_LOCK` guard so `drop`'s restore
 /// FFI writes land on every exit path (assertion failure or panic included)
 /// while the lock is still held, not just the success path a trailing
@@ -507,4 +508,76 @@ fn gmsh_get_element_types_censuses_p1_then_p2_tets_on_a_meshed_box() {
     // gmshClear(), so a later test must not inherit order 2 or silenced
     // stdout/stderr from this one.
     ffi::clear().expect("ffi::clear failed (teardown)");
+}
+
+/// `option_get_number` round-trips a written value, and reports an unknown
+/// option name as an error rather than a plausible-looking number.
+///
+/// This is the reader whose absence forced every pre-#6968 mesh-size guard in
+/// this crate to infer an option leak from mesh DENSITY — see
+/// `tests/refine_volume_tests.rs` and `tests/mesh_size_option_hermeticity.rs`,
+/// whose docstrings each state the constraint. Those guards remain (a density
+/// probe fails on a leak by any route, not only via an option name a test
+/// thought to read), but a direct table read is decisive where a density probe
+/// is vacuous: `Mesh.MeshSizeExtendFromBoundary` has no measurable effect while
+/// `Mesh.MeshSizeMin == Mesh.MeshSizeMax`, which is every reachable
+/// `mesh_to_volume` path.
+///
+/// The unknown-name leg is the load-bearing one. A getter that reported
+/// "absent" as `Ok(0.0)` would make every guard built on it fail OPEN: `0.0` is
+/// a plausible reading for `Mesh.MeshSizeMin`, so a typo'd option name in a
+/// future guard would assert successfully against a value gmsh never supplied.
+#[test]
+fn option_get_number_round_trips_a_written_value_and_errors_on_an_unknown_name() {
+    let _guard = init::GMSH_LOCK
+        .lock()
+        .expect("GMSH_LOCK poisoned — a prior test panicked while holding it");
+    // Initialise BEFORE arming the scope, matching every production call site.
+    // Not cosmetic: `gmshOptionSetNumber` on an uninitialised library logs
+    // `Error : Gmsh has not been initialized`, does nothing, and still returns
+    // `ierr = 0` (measured, gmsh 4.15.2), so a scope entered above this line
+    // used to be silently inert — five stderr error lines per gate run, and
+    // the one test that reuses the production guard as a fixture exercising
+    // only its `drop` half.
+    init::ensure_initialized();
+
+    // Declared after `_guard` so it drops first: its restore lands while
+    // GMSH_LOCK is still held, on every exit path including a panic between
+    // the write below and the explicit restore. Reuses the production guard
+    // rather than a test-local copy, so the default this test leaves behind
+    // cannot drift from the one production writes.
+    let _size_scope = MeshSizeScope::entered(&_guard)
+        .expect("MeshSizeScope::entered must establish gmsh's size defaults");
+
+    // A value no production path writes, so a table left dirty by a sibling
+    // cannot make the round-trip pass by accident.
+    const DISTINCTIVE_MAX: f64 = 0.031_25;
+    ffi::option_set_number("Mesh.MeshSizeMax", DISTINCTIVE_MAX)
+        .expect("ffi::option_set_number(Mesh.MeshSizeMax) failed");
+    let read_back = ffi::option_get_number("Mesh.MeshSizeMax")
+        .expect("ffi::option_get_number(Mesh.MeshSizeMax) failed after a successful write");
+    assert_eq!(
+        read_back, DISTINCTIVE_MAX,
+        "option_get_number must return exactly what option_set_number wrote; \
+         wrote {DISTINCTIVE_MAX}, read {read_back}",
+    );
+
+    // The transition every outbound guard in this crate asserts: back to
+    // gmsh's documented default, observed rather than assumed.
+    ffi::option_set_number("Mesh.MeshSizeMax", GMSH_MESH_SIZE_MAX_DEFAULT)
+        .expect("ffi::option_set_number(Mesh.MeshSizeMax=default) failed");
+    let restored = ffi::option_get_number("Mesh.MeshSizeMax")
+        .expect("ffi::option_get_number(Mesh.MeshSizeMax) failed after the restore");
+    assert_eq!(
+        restored, GMSH_MESH_SIZE_MAX_DEFAULT,
+        "after restoring gmsh's default, option_get_number must read it back exactly; \
+         expected {GMSH_MESH_SIZE_MAX_DEFAULT}, read {restored}",
+    );
+
+    let unknown = ffi::option_get_number("Mesh.NoSuchOptionReify");
+    assert!(
+        unknown.is_err(),
+        "an unknown option name must be reported as Err, not as a plausible-looking \
+         number a guard would then assert against; got {unknown:?}",
+    );
 }

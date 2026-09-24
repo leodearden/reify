@@ -50,6 +50,10 @@ mod auto_type_arg_tests;
 mod boundary1_producer;
 #[path = "harness_syntax/cfg_import_attachment_tests.rs"]
 mod cfg_import_attachment_tests;
+#[path = "harness_syntax/check_and_lower_fault_location_tests.rs"]
+mod check_and_lower_fault_location_tests;
+#[path = "harness_syntax/check_and_lower_snippet_bound_tests.rs"]
+mod check_and_lower_snippet_bound_tests;
 #[path = "harness_syntax/connect_chain_tests.rs"]
 mod connect_chain_tests;
 #[path = "harness_syntax/constraint_def_tests.rs"]
@@ -58,12 +62,16 @@ mod constraint_def_tests;
 mod constraint_inst_tests;
 #[path = "harness_syntax/default_decl_tests.rs"]
 mod default_decl_tests;
+#[path = "harness_syntax/derived_sub_arm_parser_tests.rs"]
+mod derived_sub_arm_parser_tests;
 #[path = "harness_syntax/edge_case_tests.rs"]
 mod edge_case_tests;
 #[path = "harness_syntax/field_tests.rs"]
 mod field_tests;
 #[path = "harness_syntax/fn_body_expr_parser_tests.rs"]
 mod fn_body_expr_parser_tests;
+#[path = "harness_syntax/fn_body_separator_ambiguity_tests.rs"]
+mod fn_body_separator_ambiguity_tests;
 #[path = "harness_syntax/fn_param_default_tests.rs"]
 mod fn_param_default_tests;
 #[path = "harness_syntax/forall_statement_tests.rs"]
@@ -88,6 +96,8 @@ mod match_decl_block_parser_tests;
 mod match_decl_block_tests;
 #[path = "harness_syntax/match_tests.rs"]
 mod match_tests;
+#[path = "harness_syntax/member_continuation_ambiguity_tests.rs"]
+mod member_continuation_ambiguity_tests;
 #[path = "harness_syntax/member_span_tests.rs"]
 mod member_span_tests;
 #[path = "harness_syntax/module_decl_tests.rs"]
@@ -98,6 +108,8 @@ mod numeric_separators_grammar_tests;
 mod occurrence_tests;
 #[path = "harness_syntax/option_tests.rs"]
 mod option_tests;
+#[path = "harness_syntax/parse_error_lookup.rs"]
+mod parse_error_lookup;
 #[path = "harness_syntax/port_tests.rs"]
 mod port_tests;
 #[path = "harness_syntax/pragma_tests.rs"]

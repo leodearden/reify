@@ -22,7 +22,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
 use reify_core::VersionId;
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, Engine, RealizationReadHandle};
-use reify_ir::{OpaqueState, Value};
+use reify_ir::{OpaqueState, Value, ValueMap};
 use reify_test_support::compile_source_with_stdlib;
 
 /// Fixture: Widget with a NAMED `body` param (Solid = box) + let-bound dir/tol
@@ -146,10 +146,10 @@ fn value_eval_consumer_reads_minted_selector_finite_after_edit() {
 // `peak_deviation_at` has NO `.ri` declaration, so it resolves through the
 // undeclared-intrinsic path (`NoUserFunctions` → `FunctionCall` →
 // `eval_builtin`, see trajectory.ri's "delegate-to-undeclared-name" section)
-// with no static arg-type check. `peak_deviation_at` (reify-stdlib
-// trampoline.rs) never inspects `track`'s content — a resolved Selector `loc`
-// always yields `Real(0.0)` — so the ONLY way `peak` can be `Value::Undef` is
-// a stale pre-mint read of `loc` that was never re-evaluated.
+// with no static arg-type check. The ONLY way `peak` can be `Value::Undef` is
+// a stale pre-mint read of `loc` that was never re-evaluated (see
+// `assert_peak_resolved`'s doc comment below for the concrete resolved-value
+// derivation).
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// R3e fixture: `R3eWidget` mirrors `WIDGET_SRC` (named `body` param + `loc`
@@ -211,6 +211,30 @@ fn r3e_track_fn(
     }
 }
 
+/// Shared assertion for the `peak = peak_deviation_at(track, loc)` consumer
+/// shape used by every R3e/R3f test below. `track` is always the bare
+/// `Value::Real` `seed` passthrough from `r3e_track_fn` (registered as both
+/// `"test::r3e_track"` and `"test::r3f_track"`), never a
+/// `Value::StructureInstance`, so `track_location_series` (trampoline.rs)
+/// always bails on it and `peak_deviation_at` returns its zero fold seed —
+/// `Value::Undef` (a stale pre-mint `loc`) and `Value::Real(0.0)` are
+/// consequently the only two outcomes `peak` can reach with this fixture.
+///
+/// `peak == Real(0.0)` alone can't distinguish a genuine post-mint
+/// resolution from any other `peak_deviation_at` bail path, which returns
+/// the same zero seed — so this also asserts `loc` itself resolved to a
+/// `Value::Selector`.
+fn assert_peak_resolved(values: &ValueMap, structure_name: &str, context: &str) {
+    let peak = values.get_or_undef(&ValueCellId::new(structure_name, "peak"));
+    assert_eq!(peak, Value::Real(0.0), "{context}");
+
+    let loc = values.get_or_undef(&ValueCellId::new(structure_name, "loc"));
+    assert!(
+        matches!(loc, Value::Selector(_)),
+        "{context} — loc must resolve to a Value::Selector, got {loc:?}"
+    );
+}
+
 /// `Engine::eval` (kernel-free, no build) must yield a non-Undef value for
 /// `R3eWidget.peak` — a same-pass consumer of BOTH the `@optimized` compute
 /// node `track` and the in-walk-minted selector `loc`.
@@ -228,13 +252,12 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval() {
     engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
     let result = engine.eval(&compiled);
 
-    let cell_id = ValueCellId::new("R3eWidget", "peak");
-    let value = result.values.get_or_undef(&cell_id);
-    assert!(
-        !matches!(value, Value::Undef),
-        "R3eWidget.peak must NOT be Value::Undef after Engine::eval — \
-         the same-pass consumer of an in-walk-minted selector must be \
-         re-evaluated after the mint fires; got: {value:?}"
+    assert_peak_resolved(
+        &result.values,
+        "R3eWidget",
+        "R3eWidget.peak must resolve to the concrete peak_deviation_at \
+         result after Engine::eval (a same-pass consumer of an \
+         in-walk-minted selector must be re-evaluated after the mint fires)",
     );
 }
 
@@ -254,13 +277,12 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
     engine.register_compute_fn("test::r3e_track", r3e_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
-    let cell_id = ValueCellId::new("R3eWidget", "peak");
-    let value = result.eval_result.values.get_or_undef(&cell_id);
-    assert!(
-        !matches!(value, Value::Undef),
-        "R3eWidget.peak must NOT be Value::Undef after Engine::eval_cached — \
-         the same-pass consumer of an in-walk-minted selector must be \
-         re-evaluated after the mint fires; got: {value:?}"
+    assert_peak_resolved(
+        &result.eval_result.values,
+        "R3eWidget",
+        "R3eWidget.peak must resolve to the concrete peak_deviation_at \
+         result after Engine::eval_cached (a same-pass consumer of an \
+         in-walk-minted selector must be re-evaluated after the mint fires)",
     );
 }
 
@@ -273,6 +295,17 @@ fn value_eval_template_consumer_reads_minted_selector_finite_eval_cached() {
 /// `new_snapshot.graph.value_cells`, not a `CompiledModule`'s
 /// `TopologyTemplate`, since `edit_param` has no access to the compiled
 /// module).
+///
+/// Baselines via `engine.eval(&compiled)` on the SAME `R3E_SRC` — unlike the
+/// R3f `edit_source` test below, which needs a DISTINCT baseline module (see
+/// its doc comment) to dodge a content-hash carry-over false-green,
+/// `edit_param`'s dirty cone (`compute_dirty_cone` over the
+/// `ReverseDependencyIndex`, engine_edit.rs) is purely graph-structural, not
+/// content-hash-diffed: `width` is a real structural input to `body` → `loc`
+/// → `peak`, so editing it always places `peak` in `eval_set` and forces a
+/// genuine re-evaluation through THIS call site. There is no content-hash
+/// short-circuit here to dodge — that mechanism belongs to `edit_source`,
+/// which diffs across two DIFFERENT compiled modules.
 #[test]
 fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
     let compiled = compile_source_with_stdlib(R3E_SRC);
@@ -289,13 +322,12 @@ fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
         .edit_param(width_id, Value::length(0.012))
         .expect("edit_param must succeed after eval");
 
-    let cell_id = ValueCellId::new("R3eWidget", "peak");
-    let value = edit_result.values.get_or_undef(&cell_id);
-    assert!(
-        !matches!(value, Value::Undef),
-        "R3eWidget.peak must NOT be Value::Undef after engine_edit — \
-         the same-pass consumer of an in-walk-minted selector must be \
-         re-evaluated after the mint fires; got: {value:?}"
+    assert_peak_resolved(
+        &edit_result.values,
+        "R3eWidget",
+        "R3eWidget.peak must resolve to the concrete peak_deviation_at \
+         result after engine_edit (a same-pass consumer of an \
+         in-walk-minted selector must be re-evaluated after the mint fires)",
     );
 }
 
@@ -368,22 +400,13 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval() {
     engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
     let result = engine.eval(&compiled);
 
-    let cell_id = ValueCellId::new("R3fWidget", "peak");
-    let value = result.values.get_or_undef(&cell_id);
-    // Concrete expected value, not just non-Undef (a wrong-but-non-Undef
-    // result would otherwise pass): `peak_deviation_at`'s `location` arg is
-    // a resolved `Value::Selector`, which `read_scalar_si` rejects (it only
-    // accepts `Scalar`/`Real`/`Int`), so `deviation_series` is always empty
-    // and the `f64::max` fold over it returns its `0.0` seed unconditionally
-    // — see the module-level comment above for the full trace.
-    assert_eq!(
-        value,
-        Value::Real(0.0),
+    assert_peak_resolved(
+        &result.values,
+        "R3fWidget",
         "R3fWidget.peak must resolve to the concrete peak_deviation_at \
          result after Engine::eval (a same-pass consumer of a \
          geometry-LET-backed selector must be re-evaluated after the \
-         post-walk mint resolves it), not a stale pre-mint Undef or any \
-         other wrong-but-non-Undef value"
+         post-walk mint resolves it)",
     );
 }
 
@@ -402,19 +425,13 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_eval_cached() {
     engine.register_compute_fn("test::r3f_track", r3e_track_fn as ComputeFn);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
-    let cell_id = ValueCellId::new("R3fWidget", "peak");
-    let value = result.eval_result.values.get_or_undef(&cell_id);
-    // Concrete expected value — see the `eval()` test above for the full
-    // trace of why a resolved `loc` always makes `peak_deviation_at` yield
-    // exactly `Real(0.0)`.
-    assert_eq!(
-        value,
-        Value::Real(0.0),
+    assert_peak_resolved(
+        &result.eval_result.values,
+        "R3fWidget",
         "R3fWidget.peak must resolve to the concrete peak_deviation_at \
          result after Engine::eval_cached (a same-pass consumer of a \
          geometry-LET-backed selector must be re-evaluated after the \
-         post-walk mint resolves it), not a stale pre-mint Undef or any \
-         other wrong-but-non-Undef value"
+         post-walk mint resolves it)",
     );
 }
 
@@ -469,18 +486,12 @@ fn value_eval_geometry_let_consumer_reads_minted_selector_finite_after_source_ed
         .edit_source(&compiled)
         .expect("edit_source must succeed after eval");
 
-    let cell_id = ValueCellId::new("R3fWidget", "peak");
-    let value = edit_result.values.get_or_undef(&cell_id);
-    // Concrete expected value — see the `eval()` test above for the full
-    // trace of why a resolved `loc` always makes `peak_deviation_at` yield
-    // exactly `Real(0.0)`.
-    assert_eq!(
-        value,
-        Value::Real(0.0),
+    assert_peak_resolved(
+        &edit_result.values,
+        "R3fWidget",
         "R3fWidget.peak must resolve to the concrete peak_deviation_at \
          result after engine_edit (edit_source) (a same-pass consumer of a \
          geometry-LET-backed selector must be re-evaluated after the \
-         post-walk mint resolves it), not a stale pre-mint Undef or any \
-         other wrong-but-non-Undef value"
+         post-walk mint resolves it)",
     );
 }

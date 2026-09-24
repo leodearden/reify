@@ -273,9 +273,47 @@ impl RelateTolerance {
         self.solver_convergence
     }
 
-    /// The (loosest) post-solve assertion/dedup tolerance (metres).
+    /// The (loosest) post-solve assertion/dedup tolerance, for a row measured in
+    /// METRES. A row measured in radians or as a pure number is judged against
+    /// [`assertion_angle`](Self::assertion_angle) /
+    /// [`assertion_dimensionless`](Self::assertion_dimensionless) instead — a
+    /// residual row vector is not dimensionally homogeneous (see [`ResidualUnit`]),
+    /// so one rung cannot serve all three.
     pub fn assertion(&self) -> f64 {
         self.assertion
+    }
+
+    /// The radius (metres) at which the angular rung is defined.
+    ///
+    /// An orientation error `θ` displaces a point at radius `R` by `θ·R`, so an
+    /// angle has no length reading until a radius is named. One metre is that
+    /// reference: a feature there, mis-oriented by
+    /// [`assertion_angle`](Self::assertion_angle), is displaced by exactly
+    /// [`assertion`](Self::assertion). Naming the radius is the point — comparing
+    /// radians against the metre rung with no reference scale is a category error
+    /// however close the two numbers happen to land.
+    const ANGULAR_REFERENCE_RADIUS_M: f64 = 1.0;
+
+    /// The assertion rung for a row measured in RADIANS — the angle that displaces
+    /// a feature at [`ANGULAR_REFERENCE_RADIUS_M`](Self::ANGULAR_REFERENCE_RADIUS_M)
+    /// by the length rung. Derived from the same base length, so the three rungs
+    /// cannot drift apart under an edit to one of them.
+    pub fn assertion_angle(&self) -> f64 {
+        self.assertion / Self::ANGULAR_REFERENCE_RADIUS_M
+    }
+
+    /// The assertion rung for a DIMENSIONLESS row — a unit-vector component
+    /// difference, a dot product, or a cosine difference.
+    ///
+    /// The sine of the angular rung: every dimensionless form here measures the
+    /// sine of a misalignment between two UNIT directions (exactly, for
+    /// `perpendicular`'s dot product; to first order for the rest), so this is the
+    /// same physical misalignment expressed in the unit the row carries. It is a
+    /// meaningful rung only because those forms normalize their operands first —
+    /// an unnormalized dot scales with the operands' magnitudes, and no fixed
+    /// threshold means anything against a number that does.
+    pub fn assertion_dimensionless(&self) -> f64 {
+        self.assertion_angle().sin()
     }
 }
 
@@ -404,6 +442,22 @@ fn relation_jacobian(
 /// (one whose sub is the auto unknown) by `x`, leave anchors fixed, then dispatch
 /// on the relation name. A zero residual means the relation is satisfied at `x`.
 fn relation_residual(rel: &RelationInstance, unknown: &FrameUnknown, x: &Pose) -> Vec<f64> {
+    // The solver reads magnitudes only — it minimises the vector and differentiates it,
+    // and neither operation consults a unit. Stripping the tags here keeps every number,
+    // and therefore every convergence property, exactly as it was; only the diagnostic
+    // path ([`static_relation_residuals`]) needs to say what it measured.
+    relation_residual_rows(rel, unknown, x)
+        .into_iter()
+        .map(|row| row.value)
+        .collect()
+}
+
+/// [`relation_residual`] with each component still carrying its [`ResidualUnit`].
+fn relation_residual_rows(
+    rel: &RelationInstance,
+    unknown: &FrameUnknown,
+    x: &Pose,
+) -> Vec<ResidualRow> {
     let mut datums: Vec<(Value, bool)> = Vec::new(); // (value, moving)
     let mut scalars: Vec<f64> = Vec::new(); // metric operands, in declaration order
     for op in &rel.operands {
@@ -441,7 +495,7 @@ fn residual_dispatch(
     datums: &[(Value, bool)],
     scalar: Option<f64>,
     scalars: &[f64],
-) -> Vec<f64> {
+) -> Vec<ResidualRow> {
     let Some((a, b)) = pick_ab(datums) else {
         return Vec::new();
     };
@@ -460,8 +514,20 @@ fn residual_dispatch(
             (Some(da), Some(db)) => direction_alignment_residual(da, db, -1.0),
             _ => Vec::new(),
         },
+        // Normalize before the dot, for the reason spelled out on the `angle` arm
+        // below: `dot(da, db)` is the SINE of the misalignment only when both
+        // operands are unit-length, and `dir_of` does not guarantee that. Left
+        // unnormalized the row scales with the operands' magnitudes — harmless to
+        // the solver, whose zero set is magnitude-invariant, but not to the static
+        // verifier, which compares the row against a FIXED dimensionless rung: a
+        // scale-10 direction would inflate the residual tenfold and fail a build
+        // that is geometrically correct. A degenerate zero-length direction has no
+        // orientation ⇒ no residual row.
         "perpendicular" => match (dir_of(a), dir_of(b)) {
-            (Some(da), Some(db)) => vec![dot3(da, db)],
+            (Some(da), Some(db)) => match (unit3(da), unit3(db)) {
+                (Some(ua), Some(ub)) => vec![ResidualRow::dimensionless(dot3(ua, ub))],
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         },
         "coincident" => coincident_residual(a, b),
@@ -484,7 +550,9 @@ fn residual_dispatch(
             // one arm sensitive to operand magnitude, so it must normalize. A
             // degenerate zero-length direction has no defined angle ⇒ no residual row.
             (Some(da), Some(db), Some(theta)) => match (unit3(da), unit3(db)) {
-                (Some(ua), Some(ub)) => vec![dot3(ua, ub) - theta.cos()],
+                (Some(ua), Some(ub)) => {
+                    vec![ResidualRow::dimensionless(dot3(ua, ub) - theta.cos())]
+                }
                 _ => Vec::new(),
             },
             _ => Vec::new(),
@@ -518,29 +586,214 @@ fn pick_ab(datums: &[(Value, bool)]) -> Option<(&Value, &Value)> {
     Some((a, b))
 }
 
+/// The residual row vector of `rel` evaluated at its operands' **fixed** current
+/// placements — the STATIC witness, for a relate scope with ZERO `at auto` subs.
+///
+/// Nothing moves here: there is no Frame to solve for, only a verdict to render
+/// on the datums as they already sit. Returns the full row vector rather than a
+/// collapsed magnitude, because the caller must distinguish three outcomes, not
+/// two — see (iii).
+///
+/// # (i) Why nominating a "moving" sub does not perturb anything
+///
+/// The witness pose is [`Pose::identity`], under which [`transform_datum`] is a
+/// provable no-op: `rotate` short-circuits on `angle < 1e-12` and returns its
+/// input unchanged, and `transform_point` adds a zero translation. So the datum
+/// nominated as moving is passed through BITWISE. The nomination is a routing
+/// device for [`pick_ab`], not a transformation.
+///
+/// # (ii) Why a sub MUST be nominated — the load-bearing subtlety
+///
+/// It is tempting to pass a sentinel [`FrameUnknown`] naming no real sub, since
+/// by construction nothing moves. That is WRONG, and wrong in both directions.
+/// [`relation_residual`] marks an operand moving iff `op.sub == unknown.sub`, and
+/// [`pick_ab`] then resolves `a` to the first MOVING operand *else*
+/// `datums.first()`, and `b` to the first NON-MOVING operand *else*
+/// `datums.last()`. With zero moving operands, `a` falls through to `datums[0]`
+/// and `b` resolves to the first non-moving operand — which is also `datums[0]`.
+/// The relation is compared against ITSELF:
+///
+/// - `concentric` / `flush` / `coincident` / `fasten` / `parallel` → identically
+///   `0.0`, i.e. every violated relation reported as satisfied; and
+/// - `perpendicular` → `d·d` = 1.0, `antiparallel` → 2.0, `distance` / `offset` →
+///   `|d|`, `angle` → `1 − cos θ` → false VIOLATIONS on correct models.
+///
+/// Only `on` / `tangent`, which read `datums` positionally, would survive it.
+///
+/// Nominating the FIRST datum operand's own sub fixes both: `a` becomes that
+/// first datum (moving, but identity-transformed, so bitwise unchanged) and `b`
+/// the first operand on a DIFFERENT sub — the genuine second operand. When both
+/// operands share one sub (`concentric(a.x, a.y)`) every datum is moving, no
+/// non-moving operand exists, and `pick_ab`'s `datums.last()` fallback is then
+/// CORRECT: last is a genuinely different operand from first.
+///
+/// That last case is why the arity guard below is on the datum COUNT rather than
+/// on the subs being distinct.
+///
+/// # (iii) An EMPTY return means UNVERIFIABLE, never satisfied
+///
+/// Callers MUST NOT read an empty row vector as "no error". It means this
+/// relation has no residual model for its name/operand-kind combination, or did
+/// not have two realized datums to compare, so its satisfaction was not DECIDED —
+/// a fact that has to be said out loud rather than folded into silence
+/// (`docs/legibility/design-invariants.md` INV-SF-3). Two sources:
+///
+/// - an uncurated relation name, or an operand shape `residual_dispatch` does not
+///   model, contributes no rows; and
+/// - fewer than two datum operands (e.g. one failed to realize and is
+///   [`Value::Undef`]) cannot be compared at all. Passing such a relation through
+///   would hit the very self-compare described in (ii) and return four exact
+///   zeros — a *confident* "satisfied" derived from missing input.
+///
+/// Collapsing this to an `f64` would render "unmodelled" and "measured zero"
+/// identically, trading the false green this function exists to kill for a
+/// quieter one.
+///
+/// Purely additive: no existing call site changes, so the auto-ful solve path is
+/// untouched.
+pub fn static_relation_residuals(rel: &RelationInstance) -> Vec<ResidualRow> {
+    // Arity guard — see (iii). Two datum operands are the minimum any residual
+    // form can compare; below that, `pick_ab` would self-compare.
+    if comparable_datum_operands(rel) < 2 {
+        return Vec::new();
+    }
+
+    // The witness sub — see (ii). The first datum operand carrying a sub.
+    let Some(sub) = rel
+        .operands
+        .iter()
+        .find(|op| is_datum(&op.datum) && op.sub.is_some())
+        .and_then(|op| op.sub.clone())
+    else {
+        // Datum operands exist but none names a sub, so no nomination can make
+        // `pick_ab` pick two distinct operands. Unverifiable rather than guessed.
+        return Vec::new();
+    };
+
+    let unknown = FrameUnknown { sub, free: false };
+    relation_residual_rows(rel, &unknown, &Pose::identity())
+}
+
+/// How many of `rel`'s operands are geometric datums a residual form could compare
+/// — the arity [`static_relation_residuals`] guards on.
+///
+/// Public because the empty row vector it produces has two sources (see that
+/// function's (iii)) and a caller that reports "unverifiable" must say WHICH one it
+/// hit. Reading the count here rather than re-deriving a guess keeps the reported
+/// reason DERIVED from the guard that actually fired: the reachable shape is the
+/// `ground(sub)` / `fix(sub)` desugar `fasten(sub.frame, self.frame)`, whose
+/// `self.frame` anchor is not a sub datum — one operand, not two. Reporting that as
+/// "no residual model for `fasten`" would be false (the Frame branch of
+/// [`coincident_residual`] models exactly that pair), and a wrong "why" undercuts
+/// the honest-non-consumption contract the caller exists to uphold.
+pub fn comparable_datum_operands(rel: &RelationInstance) -> usize {
+    rel.operands.iter().filter(|op| is_datum(&op.datum)).count()
+}
+
+// ── Residual rows and their units ────────────────────────────────────────────
+
+/// What a residual row's number MEASURES.
+///
+/// A residual row vector is NOT dimensionally homogeneous, and nothing about an
+/// `f64` says so. [`axis_coincidence_residual`] alone returns two dimensionless
+/// tilt rows followed by two metre rows; `perpendicular` and `angle` return
+/// dimensionless rows only. A caller that renders `max |row|` as millimetres
+/// therefore states a FABRICATED length whenever the dominant row is angular —
+/// the exact confidently-wrong claim the static-verification arm exists to
+/// prevent, so the unit travels WITH the number instead of being re-derived by
+/// the renderer from the relation name (which cannot work: `concentric` mixes
+/// both in one vector).
+///
+/// The unit is declared where each row is BUILT, because that is the only place
+/// it is known without re-doing [`residual_dispatch`]'s name/operand-kind
+/// dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResidualUnit {
+    /// Metres — a position delta, offset or distance error.
+    Length,
+    /// Radians — an orientation delta (the exponential-map log rows).
+    Angle,
+    /// A pure number — a direction-component difference, a dot product, or a
+    /// cosine difference. Has no length or angle reading.
+    Dimensionless,
+}
+
+/// One residual component with the unit it is measured in.
+///
+/// The solver reads only [`ResidualRow::value`] (via [`relation_residual`], which
+/// strips the tags), so tagging changes no number and no convergence behaviour.
+/// The tag exists for the DIAGNOSTIC path, which has to say what it measured.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResidualRow {
+    pub value: f64,
+    pub unit: ResidualUnit,
+}
+
+impl ResidualRow {
+    /// A row measured in metres.
+    pub fn length(value: f64) -> Self {
+        Self {
+            value,
+            unit: ResidualUnit::Length,
+        }
+    }
+
+    /// A row measured in radians.
+    pub fn angle(value: f64) -> Self {
+        Self {
+            value,
+            unit: ResidualUnit::Angle,
+        }
+    }
+
+    /// A row that is a pure number.
+    pub fn dimensionless(value: f64) -> Self {
+        Self {
+            value,
+            unit: ResidualUnit::Dimensionless,
+        }
+    }
+}
+
+/// Tag every component of `v` with one unit — for the forms whose rows are
+/// dimensionally uniform (a point delta is three lengths; a unit-vector
+/// difference is three pure numbers).
+fn rows_of(v: impl IntoIterator<Item = f64>, unit: ResidualUnit) -> Vec<ResidualRow> {
+    v.into_iter().map(|value| ResidualRow { value, unit }).collect()
+}
+
 // ── Per-relation residual forms ──────────────────────────────────────────────
 
 /// Axis-coincidence (concentric / coincident over Axis), codim 4: 2 direction
 /// (tilt) components + 2 perpendicular-position components, in the anchor's
 /// tangent frame.
-fn axis_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
+fn axis_coincidence_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
     let (Some((oa, ua)), Some((ob, ub))) = (axis_parts(a), axis_parts(b)) else {
         return Vec::new();
     };
     let (e1, e2) = tangent_frame(ub);
     let off = sub3(oa, ob);
-    vec![dot3(ua, e1), dot3(ua, e2), dot3(off, e1), dot3(off, e2)]
+    vec![
+        ResidualRow::dimensionless(dot3(ua, e1)),
+        ResidualRow::dimensionless(dot3(ua, e2)),
+        ResidualRow::length(dot3(off, e1)),
+        ResidualRow::length(dot3(off, e2)),
+    ]
 }
 
 /// Plane-coincidence (flush / coincident over Plane), codim 3: 2 normal (tilt)
 /// components + the signed offset along the anchor normal.
-fn plane_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
+fn plane_coincidence_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
     let (Some((oa, na)), Some((ob, nb))) = (plane_parts(a), plane_parts(b)) else {
         return Vec::new();
     };
     let (e1, e2) = tangent_frame(nb);
     let off = sub3(oa, ob);
-    vec![dot3(na, e1), dot3(na, e2), dot3(off, nb)]
+    vec![
+        ResidualRow::dimensionless(dot3(na, e1)),
+        ResidualRow::dimensionless(dot3(na, e2)),
+        ResidualRow::length(dot3(off, nb)),
+    ]
 }
 
 /// Signed direction alignment (parallel / antiparallel / coincident over Direction),
@@ -556,20 +809,23 @@ fn plane_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
 /// EVERY config (the third component carries only the sense/radial information, whose
 /// gradient is degenerate at the aligned solution). A degenerate (zero-length) operand
 /// has no defined direction ⇒ no residual rows.
-fn direction_alignment_residual(da: [f64; 3], db: [f64; 3], sign: f64) -> Vec<f64> {
+fn direction_alignment_residual(da: [f64; 3], db: [f64; 3], sign: f64) -> Vec<ResidualRow> {
     match (unit3(da), unit3(db)) {
-        (Some(ua), Some(ub)) => vec![
-            ua[0] - sign * ub[0],
-            ua[1] - sign * ub[1],
-            ua[2] - sign * ub[2],
-        ],
+        (Some(ua), Some(ub)) => rows_of(
+            [
+                ua[0] - sign * ub[0],
+                ua[1] - sign * ub[1],
+                ua[2] - sign * ub[2],
+            ],
+            ResidualUnit::Dimensionless,
+        ),
         _ => Vec::new(),
     }
 }
 
 /// `coincident(D, D)` dispatched by datum kind (Direction 2 / Point 3 / Plane 3 /
 /// Axis 4).
-fn coincident_residual(a: &Value, b: &Value) -> Vec<f64> {
+fn coincident_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
     match (a, b) {
         (Value::Axis { .. }, Value::Axis { .. }) => axis_coincidence_residual(a, b),
         (Value::Plane { .. }, Value::Plane { .. }) => plane_coincidence_residual(a, b),
@@ -583,7 +839,7 @@ fn coincident_residual(a: &Value, b: &Value) -> Vec<f64> {
             }
         }
         (Value::Point(_), Value::Point(_)) => match (origin_of(a), origin_of(b)) {
-            (Some(pa), Some(pb)) => sub3(pa, pb).to_vec(),
+            (Some(pa), Some(pb)) => rows_of(sub3(pa, pb), ResidualUnit::Length),
             _ => Vec::new(),
         },
         _ => Vec::new(),
@@ -597,7 +853,7 @@ fn coincident_residual(a: &Value, b: &Value) -> Vec<f64> {
 /// orientation — so a sub fastened to an anchor solves to the anchor pose (identity for
 /// a `ground(sub)` over `self.frame`). The two blocks are independent (positions vs.
 /// rotations), giving a full rank-6 Jacobian = the (3,3) kinds split.
-fn frame_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
+fn frame_coincidence_residual(a: &Value, b: &Value) -> Vec<ResidualRow> {
     let (
         Value::Frame {
             origin: oa,
@@ -629,18 +885,29 @@ fn frame_coincidence_residual(a: &Value, b: &Value) -> Vec<f64> {
     let Some(drot) = exp_map_from_orientation(&orientation_value(q_rel)) else {
         return Vec::new();
     };
-    vec![dpos[0], dpos[1], dpos[2], drot[0], drot[1], drot[2]]
+    vec![
+        ResidualRow::length(dpos[0]),
+        ResidualRow::length(dpos[1]),
+        ResidualRow::length(dpos[2]),
+        ResidualRow::angle(drot[0]),
+        ResidualRow::angle(drot[1]),
+        ResidualRow::angle(drot[2]),
+    ]
 }
 
 /// `offset(plane_a, plane_b, δ)`, codim 3: 2 normal-alignment components + the
 /// signed offset along the anchor normal minus the target separation `δ`.
-fn offset_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<f64> {
+fn offset_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<ResidualRow> {
     let (Some((oa, na)), Some((ob, nb)), Some(d)) = (plane_parts(a), plane_parts(b), scalar) else {
         return Vec::new();
     };
     let (e1, e2) = tangent_frame(nb);
     let off = sub3(oa, ob);
-    vec![dot3(na, e1), dot3(na, e2), dot3(off, nb) - d]
+    vec![
+        ResidualRow::dimensionless(dot3(na, e1)),
+        ResidualRow::dimensionless(dot3(na, e2)),
+        ResidualRow::length(dot3(off, nb) - d),
+    ]
 }
 
 /// `distance(a, b, d)` — the metric separation residual `separation(a, b) − d`,
@@ -657,21 +924,25 @@ fn offset_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<f64> {
 ///   `|(oa − ob)·nb|` (parallel planes), not the origin-to-origin separation.
 /// - **Point–Point and any mixed kinds** → straight origin-to-origin distance
 ///   `|pa − pb|` (correct for points; a documented fallback for mixed operands).
-fn distance_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<f64> {
+fn distance_residual(a: &Value, b: &Value, scalar: Option<f64>) -> Vec<ResidualRow> {
     let Some(d) = scalar else {
         return Vec::new();
     };
     match (a, b) {
         (Value::Axis { .. }, Value::Axis { .. }) => match (axis_parts(a), axis_parts(b)) {
-            (Some((oa, ua)), Some((ob, ub))) => vec![line_line_distance(oa, ua, ob, ub) - d],
+            (Some((oa, ua)), Some((ob, ub))) => {
+                vec![ResidualRow::length(line_line_distance(oa, ua, ob, ub) - d)]
+            }
             _ => Vec::new(),
         },
         (Value::Plane { .. }, Value::Plane { .. }) => match (plane_parts(a), plane_parts(b)) {
-            (Some((oa, _na)), Some((ob, nb))) => vec![dot3(sub3(oa, ob), nb).abs() - d],
+            (Some((oa, _na)), Some((ob, nb))) => {
+                vec![ResidualRow::length(dot3(sub3(oa, ob), nb).abs() - d)]
+            }
             _ => Vec::new(),
         },
         _ => match (origin_of(a), origin_of(b)) {
-            (Some(pa), Some(pb)) => vec![norm3(sub3(pa, pb)) - d],
+            (Some(pa), Some(pb)) => vec![ResidualRow::length(norm3(sub3(pa, pb)) - d)],
             _ => Vec::new(),
         },
     }
@@ -704,7 +975,7 @@ fn line_line_distance(oa: [f64; 3], ua: [f64; 3], ob: [f64; 3], ub: [f64; 3]) ->
 /// `on(point, host)` — point incidence; operand order is (point, host). Residual
 /// is the point's deviation off the host: Plane → 1 (signed normal distance),
 /// Axis → 2 (perpendicular offset), Point → 3 (coincidence).
-fn on_residual(datums: &[(Value, bool)]) -> Vec<f64> {
+fn on_residual(datums: &[(Value, bool)]) -> Vec<ResidualRow> {
     if datums.len() < 2 {
         return Vec::new();
     }
@@ -718,7 +989,7 @@ fn on_residual(datums: &[(Value, bool)]) -> Vec<f64> {
             let Some((ho, hn)) = plane_parts(host) else {
                 return Vec::new();
             };
-            vec![dot3(sub3(p, ho), hn)]
+            vec![ResidualRow::length(dot3(sub3(p, ho), hn))]
         }
         Value::Axis { .. } => {
             let Some((ho, hd)) = axis_parts(host) else {
@@ -726,10 +997,13 @@ fn on_residual(datums: &[(Value, bool)]) -> Vec<f64> {
             };
             let (e1, e2) = tangent_frame(hd);
             let off = sub3(p, ho);
-            vec![dot3(off, e1), dot3(off, e2)]
+            vec![
+                ResidualRow::length(dot3(off, e1)),
+                ResidualRow::length(dot3(off, e2)),
+            ]
         }
         Value::Point(_) => match origin_of(host) {
-            Some(hp) => sub3(p, hp).to_vec(),
+            Some(hp) => rows_of(sub3(p, hp), ResidualUnit::Length),
             None => Vec::new(),
         },
         _ => Vec::new(),
@@ -808,7 +1082,7 @@ fn tangent_combo(a: &Value, b: &Value) -> Option<TangentCombo> {
 /// Both are unreachable from `.ri`: `check_relation_arg_types` rejects the operand
 /// pair and polices the per-combo arity at compile time. The guard stays because a
 /// caller constructing a `RelationInstance` directly is not bound by that gate.
-fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<f64> {
+fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<ResidualRow> {
     if datums.len() < 2 {
         return Vec::new();
     }
@@ -826,7 +1100,9 @@ fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<f64> {
             ) else {
                 return Vec::new();
             };
-            vec![line_line_distance(oa, ua, ob, ub) - (r1 + r2).abs()]
+            vec![ResidualRow::length(
+                line_line_distance(oa, ua, ob, ub) - (r1 + r2).abs(),
+            )]
         }
         TangentCombo::CylPlane => {
             // The combo admits either order, so resolve by kind rather than slot.
@@ -843,7 +1119,10 @@ fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<f64> {
             let (Some(uhat), Some(nhat)) = (unit3(ua), unit3(np)) else {
                 return Vec::new(); // a degenerate direction has no defined tangency
             };
-            vec![dot3(uhat, nhat), dot3(sub3(oa, op), nhat) - r]
+            vec![
+                ResidualRow::dimensionless(dot3(uhat, nhat)),
+                ResidualRow::length(dot3(sub3(oa, op), nhat) - r),
+            ]
         }
         TangentCombo::SpherePlane => {
             let (centre_v, plane_v) = if matches!(a, Value::Point(_)) {
@@ -859,7 +1138,7 @@ fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<f64> {
             let Some(nhat) = unit3(np) else {
                 return Vec::new();
             };
-            vec![dot3(sub3(c, op), nhat) - r]
+            vec![ResidualRow::length(dot3(sub3(c, op), nhat) - r)]
         }
         TangentCombo::SphereSphere => {
             let (Some(pa), Some(pb), Some(&r1), Some(&r2)) = (
@@ -870,7 +1149,7 @@ fn tangent_residual(datums: &[(Value, bool)], scalars: &[f64]) -> Vec<f64> {
             ) else {
                 return Vec::new();
             };
-            vec![norm3(sub3(pa, pb)) - (r1 + r2).abs()]
+            vec![ResidualRow::length(norm3(sub3(pa, pb)) - (r1 + r2).abs())]
         }
     }
 }
