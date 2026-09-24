@@ -38,61 +38,9 @@
 //! directly; their degradation arm needs the OS to refuse a mapping, which no
 //! test can provoke, so they are left as 5357 wrote them.
 
-/// A recursive frame that pins ~8 KiB of live stack per call and USES the
-/// recursive result (non-tail), defeating tail-call optimization and dead-frame
-/// elision. `#[inline(never)]` keeps each level a real call frame; the
-/// `black_box`ed 8 KiB buffer forces the optimizer to materialize the frame.
-///
-/// `deep_recurse(n) == n + 1` (base case returns 1, each of the `n` recursive
-/// frames adds `buf[8191] == 1`), so callers get a deterministic sentinel proving
-/// the recursion ran to completion rather than being elided.
-#[inline(never)]
-fn deep_recurse(depth: u32) -> u64 {
-    // 8 KiB per frame. Touch both ends so the whole buffer is committed and the
-    // frame cannot be elided.
-    let mut buf = [0u8; 8192];
-    buf[0] = 1;
-    buf[8191] = 1;
-    let buf = std::hint::black_box(buf);
-    if depth == 0 {
-        return u64::from(buf[0]); // sentinel base == 1
-    }
-    // Use the recursive result (non-tail) so the frame stays live across the call.
-    let below = deep_recurse(depth - 1);
-    std::hint::black_box(below + u64::from(buf[8191]))
-}
-
-/// Depth for the deep-recursion survival tests: ~8 KiB/frame x 2048 ≈ 16 MiB,
-/// i.e. 8x the 2 MiB default stack (a no-`stack_size` impl overflows) and 16x
-/// under the 256 MiB `COMPILE_STACK_SIZE` constant (GREEN is reliable).
-const DEEP_RECURSION_DEPTH: u32 = 2048;
-
-/// Recurse ~16 MiB ONLY if we genuinely landed on the expected large-stack
-/// thread; otherwise report where we actually are, without recursing.
-///
-/// "Invoked through a large-stack helper" does NOT by itself imply "runs on a
-/// large stack": every helper documents an INLINE-degradation arm that hands the
-/// closure back to the CALLER's default-size stack — `run_on_large_stack` when
-/// the OS refuses the 256 MiB mapping, `run_on_worker` additionally when the
-/// queue is dead. Recursing there overflows and SIGABRTs the whole test binary,
-/// taking every other test's result with it (observed while driving task 5772's
-/// step-3 RED, where a panicking job had killed the worker).
-///
-/// Checking first is what makes the module docs' "no violent RED" claim true by
-/// CONSTRUCTION rather than by assumption: a degraded helper now yields a clean
-/// assertion failure naming the thread it ran on.
-fn deep_recurse_if_on_thread(expected_name: &'static str, depth: u32) -> Result<u64, String> {
-    let actual = std::thread::current().name().map(str::to_owned);
-    if actual.as_deref() != Some(expected_name) {
-        return Err(format!(
-            "refusing to recurse ~16 MiB on thread {actual:?}: expected the \
-             large-stack thread {expected_name:?}. The helper degraded to an \
-             inline call, so recursing here would overflow a default-size stack \
-             and abort the entire test binary."
-        ));
-    }
-    Ok(deep_recurse(depth))
-}
+use crate::tests::test_helpers::{
+    ANTI_WEDGE, DEEP_RECURSION_DEPTH, deep_recurse, deep_recurse_if_on_thread,
+};
 
 /// Render a caught panic payload as a string, so a test can assert on the
 /// ORIGINAL message rather than merely on "something panicked" — the latter is
@@ -651,10 +599,6 @@ fn dispatch_recovers_a_handed_back_job_inline_on_the_caller() {
 // `post_to_worker` queues a job without waiting for it, so an async command
 // never parks a thread on engine work. Nobody waits on a posted job, so these
 // tests synchronise through channels the jobs report on.
-
-/// Bound on every wait for a posted job. It is NOT a timing assertion: it only
-/// turns a wedged lane into a failing test instead of a hung test binary.
-const ANTI_WEDGE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The `ThreadId` and name of the calling thread.
 fn this_thread() -> (std::thread::ThreadId, Option<String>) {

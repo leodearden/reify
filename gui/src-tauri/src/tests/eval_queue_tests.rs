@@ -3,8 +3,14 @@
 use std::sync::{Arc, Mutex};
 
 use crate::diff::{StateDelta, advance_baseline, compute_delta, diff_gui_state};
-use crate::eval_queue::{EditIdentity, EditLedger, EditOrder, SnapshotPublisher};
-use crate::tests::test_helpers::{RecordingObserver, gui_state_with_values};
+use crate::eval_queue::{
+    EditIdentity, EditLedger, EditOrder, EvalActivity, EvalObserver, EvalOutcome, EvalQueue,
+    EvalRequest, EvalTicket, SnapshotPublisher,
+};
+use crate::tests::test_helpers::{
+    ANTI_WEDGE, DEEP_RECURSION_DEPTH, ManualExecutor, Observed, RecordingObserver,
+    deep_recurse_if_on_thread, gui_state_with_values,
+};
 use crate::types::GuiState;
 
 // ── Edit identity: which queued edit a newer one makes redundant ─────────────
@@ -259,4 +265,419 @@ fn advance_baseline_returns_the_delta_compute_delta_would_and_moves_the_state_in
         json(&advance_baseline(&empty, new.clone())),
         json(&StateDelta::full(&new))
     );
+}
+
+// ── EvalQueue: one front door, one drainer ────────────────────────────────────
+
+/// Poll `future` once without waiting: `Some` if it has already resolved.
+fn poll_now<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::pin::Pin::new(future).poll(&mut context) {
+        std::task::Poll::Ready(output) => Some(output),
+        std::task::Poll::Pending => None,
+    }
+}
+
+/// The reply of a ticket that must already have resolved.
+fn reply<T>(mut ticket: EvalTicket<T>) -> Result<T, String> {
+    poll_now(&mut ticket).expect("the ticket must have resolved")
+}
+
+type RunLog = Arc<Mutex<Vec<String>>>;
+
+fn log_run(log: &RunLog, label: &str) {
+    log.lock().expect("run log").push(label.to_string());
+}
+
+/// A snapshot that tells evaluations apart by one `Queue.label` value.
+fn labelled(label: &str) -> GuiState {
+    gui_state_with_values(&[("Queue.label", label)])
+}
+
+/// An edit that logs `label` when it runs and publishes a snapshot carrying it.
+fn logged_edit(log: &RunLog, identity: EditIdentity, label: &str) -> EvalRequest<()> {
+    let (log, label) = (Arc::clone(log), label.to_string());
+    EvalRequest::edit(identity, move || {
+        log_run(&log, &label);
+        EvalOutcome {
+            publish: Some(labelled(&label)),
+            reply: Ok(()),
+        }
+    })
+}
+
+/// An evaluation that logs `label`, publishes a snapshot carrying it and
+/// replies with it.
+fn logged_evaluation(log: &RunLog, label: &str) -> EvalRequest<String> {
+    let (log, label) = (Arc::clone(log), label.to_string());
+    EvalRequest::evaluation(move || {
+        log_run(&log, &label);
+        EvalOutcome {
+            publish: Some(labelled(&label)),
+            reply: Ok(label),
+        }
+    })
+}
+
+/// An engine call that logs `label` and replies with it.
+fn logged_engine_call(log: &RunLog, label: &str) -> EvalRequest<String> {
+    let (log, label) = (Arc::clone(log), label.to_string());
+    EvalRequest::engine_call(move || {
+        log_run(&log, &label);
+        Ok(label)
+    })
+}
+
+/// A queue whose drainers run on the test thread, when the test says.
+struct ManualRig {
+    queue: Arc<EvalQueue>,
+    executor: Arc<ManualExecutor>,
+    observer: Arc<RecordingObserver>,
+    log: RunLog,
+}
+
+impl ManualRig {
+    fn new() -> Self {
+        let executor = ManualExecutor::new();
+        let observer = Arc::new(RecordingObserver::default());
+        let queue = EvalQueue::with_executor(
+            executor.executor(),
+            Arc::new(Mutex::new(None)),
+            observer.clone(),
+        );
+        Self {
+            queue,
+            executor,
+            observer,
+            log: RunLog::default(),
+        }
+    }
+
+    fn edit(&self, identity: EditIdentity, label: &str) -> EvalTicket<()> {
+        self.queue.submit(logged_edit(&self.log, identity, label))
+    }
+
+    fn evaluation(&self, label: &str) -> EvalTicket<String> {
+        self.queue.submit(logged_evaluation(&self.log, label))
+    }
+
+    fn engine_call(&self, label: &str) -> EvalTicket<String> {
+        self.queue.submit(logged_engine_call(&self.log, label))
+    }
+
+    /// The labels of the jobs that ran, in order.
+    fn ran(&self) -> Vec<String> {
+        self.log.lock().expect("run log").clone()
+    }
+
+    /// What the observer saw, in order: activities by name, deltas by the
+    /// labels they carry.
+    fn timeline(&self) -> Vec<String> {
+        self.observer
+            .observations()
+            .into_iter()
+            .map(|observation| match observation.observed {
+                Observed::Activity(activity) => format!("{activity:?}"),
+                Observed::Delta(delta) => {
+                    let labels: Vec<_> = delta
+                        .changed_values
+                        .iter()
+                        .map(|v| v.value.as_str())
+                        .collect();
+                    format!("delta {}", labels.join(","))
+                }
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn edits_of_different_targets_run_and_publish_in_acceptance_order() {
+    let rig = ManualRig::new();
+    let tickets = [
+        rig.edit(preview("A", 1), "A"),
+        rig.edit(commit("B", 2), "B"),
+        rig.edit(editor("p.ri", 3), "P"),
+    ];
+    assert_eq!(
+        rig.executor.pending(),
+        1,
+        "one drainer serves the whole backlog"
+    );
+
+    rig.executor.run_pending();
+
+    assert_eq!(rig.ran(), ["A", "B", "P"]);
+    assert_eq!(
+        rig.timeline(),
+        ["Evaluating", "delta A", "delta B", "delta P", "Idle"]
+    );
+    for ticket in tickets {
+        assert_eq!(reply(ticket), Ok(()));
+    }
+}
+
+/// The previews arrive while the first edit is the running entry, the way
+/// slider frames arrive during a long evaluation.
+#[test]
+fn previews_arriving_while_an_edit_runs_coalesce_to_the_newest() {
+    let rig = ManualRig::new();
+    let arrivals = Arc::new(Mutex::new(Vec::new()));
+    let running = {
+        let queue = Arc::clone(&rig.queue);
+        let (log, arrivals) = (Arc::clone(&rig.log), Arc::clone(&arrivals));
+        rig.queue
+            .submit(EvalRequest::edit(preview("B", 1), move || {
+                for seq in 1..=5 {
+                    let label = format!("A{seq}");
+                    let ticket = queue.submit(logged_edit(&log, preview("A", seq), &label));
+                    arrivals.lock().expect("arrivals").push(ticket);
+                }
+                log_run(&log, "B");
+                EvalOutcome {
+                    publish: Some(labelled("B")),
+                    reply: Ok(()),
+                }
+            }))
+    };
+
+    rig.executor.run_pending();
+
+    assert_eq!(
+        rig.ran(),
+        ["B", "A5"],
+        "only the newest queued preview runs"
+    );
+    assert_eq!(reply(running), Ok(()));
+    let arrivals = std::mem::take(&mut *arrivals.lock().expect("arrivals"));
+    for ticket in arrivals {
+        assert_eq!(reply(ticket), Ok(()), "a superseded preview resolves Ok");
+    }
+}
+
+#[test]
+fn a_queued_commit_survives_newer_previews_of_its_cell() {
+    let rig = ManualRig::new();
+    let tickets = [
+        rig.edit(commit("A", 1), "commit"),
+        rig.edit(preview("A", 2), "frame 2"),
+        rig.edit(preview("A", 3), "frame 3"),
+    ];
+
+    rig.executor.run_pending();
+
+    assert_eq!(rig.ran(), ["commit", "frame 3"]);
+    for ticket in tickets {
+        assert_eq!(reply(ticket), Ok(()));
+    }
+}
+
+#[test]
+fn an_edit_older_than_an_admitted_one_resolves_at_once_without_running() {
+    let rig = ManualRig::new();
+    let newest = rig.edit(preview("A", 5), "A5");
+    rig.executor.run_pending();
+    let settled = rig.timeline();
+
+    let mut late = rig.edit(preview("A", 4), "A4");
+
+    assert_eq!(
+        poll_now(&mut late),
+        Some(Ok(())),
+        "a late edit resolves at once"
+    );
+    assert_eq!(rig.executor.pending(), 0, "a late edit posts no drainer");
+    assert_eq!(rig.timeline(), settled, "a late edit reports no activity");
+    assert_eq!(rig.ran(), ["A5"]);
+    assert_eq!(reply(newest), Ok(()));
+}
+
+/// A superseding edit takes its own arrival position, so it never jumps ahead
+/// of a request submitted before it; ordered requests never coalesce.
+#[test]
+fn ordered_requests_are_barriers_a_superseding_edit_never_jumps() {
+    let rig = ManualRig::new();
+    let first_edit = rig.edit(preview("A", 1), "A1");
+    let call = rig.engine_call("call");
+    let evaluation = rig.evaluation("evaluation");
+    let second_edit = rig.edit(preview("A", 2), "A2");
+    let repeated = [rig.engine_call("again"), rig.engine_call("again")];
+
+    rig.executor.run_pending();
+
+    assert_eq!(rig.ran(), ["call", "evaluation", "A2", "again", "again"]);
+    assert_eq!(reply(first_edit), Ok(()));
+    assert_eq!(reply(call), Ok("call".to_string()));
+    assert_eq!(reply(evaluation), Ok("evaluation".to_string()));
+    assert_eq!(reply(second_edit), Ok(()));
+    for ticket in repeated {
+        assert_eq!(reply(ticket), Ok("again".to_string()));
+    }
+}
+
+#[test]
+fn engine_calls_alone_never_report_activity() {
+    let rig = ManualRig::new();
+    let calls = [rig.engine_call("a"), rig.engine_call("b")];
+
+    rig.executor.run_pending();
+
+    assert!(rig.timeline().is_empty(), "got {:?}", rig.timeline());
+    for ticket in calls {
+        assert!(reply(ticket).is_ok());
+    }
+}
+
+#[test]
+fn a_busy_period_reports_evaluating_once_and_idle_after_its_last_delta() {
+    let rig = ManualRig::new();
+    let _edit = rig.edit(preview("A", 1), "A1");
+    let _call = rig.engine_call("call");
+    let _evaluation = rig.evaluation("E");
+    assert_eq!(
+        rig.timeline(),
+        ["Evaluating"],
+        "reported as the first edit is accepted"
+    );
+
+    rig.executor.run_pending();
+
+    assert_eq!(
+        rig.timeline(),
+        ["Evaluating", "delta A1", "delta E", "Idle"]
+    );
+}
+
+/// Records, at each observed delta, whether `ticket` had already resolved.
+#[derive(Default)]
+struct ReplyProbe {
+    ticket: Mutex<Option<EvalTicket<String>>>,
+    resolved_at_delta: Mutex<Vec<bool>>,
+}
+
+impl EvalObserver for ReplyProbe {
+    fn activity(&self, _: EvalActivity) {}
+
+    fn delta(&self, _: &StateDelta) {
+        let mut ticket = self.ticket.lock().expect("probe ticket");
+        let resolved = ticket.as_mut().is_some_and(|t| poll_now(t).is_some());
+        self.resolved_at_delta
+            .lock()
+            .expect("probe log")
+            .push(resolved);
+    }
+}
+
+#[test]
+fn an_evaluation_replies_only_after_its_delta_is_published() {
+    let executor = ManualExecutor::new();
+    let probe = Arc::new(ReplyProbe::default());
+    let queue = EvalQueue::with_executor(
+        executor.executor(),
+        Arc::new(Mutex::new(None)),
+        probe.clone(),
+    );
+    let ticket = queue.submit(logged_evaluation(&RunLog::default(), "E"));
+    *probe.ticket.lock().expect("probe ticket") = Some(ticket);
+
+    executor.run_pending();
+
+    assert_eq!(*probe.resolved_at_delta.lock().expect("probe log"), [false]);
+    let ticket = probe.ticket.lock().expect("probe ticket").take();
+    assert_eq!(reply(ticket.expect("ticket")), Ok("E".to_string()));
+}
+
+#[test]
+fn a_panicking_job_resolves_err_and_the_queue_carries_on() {
+    let rig = ManualRig::new();
+    let panicking = rig
+        .queue
+        .submit(EvalRequest::<()>::evaluation(|| panic!("kaboom")));
+    let next = rig.edit(preview("A", 1), "A1");
+
+    rig.executor.run_pending();
+
+    let error = reply(panicking).expect_err("a panicking job must resolve Err");
+    assert!(error.contains("kaboom"), "got {error:?}");
+    assert_eq!(reply(next), Ok(()));
+    assert_eq!(rig.ran(), ["A1"]);
+    assert_eq!(rig.observer.activities().last(), Some(&EvalActivity::Idle));
+}
+
+#[test]
+fn a_refused_drainer_resolves_the_ticket_err_and_leaves_the_queue_idle() {
+    let rig = ManualRig::new();
+    rig.executor.refuse(true);
+
+    let mut refused = rig.evaluation("refused");
+
+    assert!(matches!(poll_now(&mut refused), Some(Err(_))));
+    assert_ne!(
+        rig.observer.activities().last(),
+        Some(&EvalActivity::Evaluating),
+        "a refused request must not leave the queue busy"
+    );
+
+    rig.executor.refuse(false);
+    let next = rig.evaluation("next");
+    rig.executor.run_pending();
+    assert_eq!(reply(next), Ok("next".to_string()));
+    assert_eq!(rig.ran(), ["next"]);
+}
+
+#[tokio::test]
+async fn on_the_engine_lane_requests_run_and_publish_on_the_large_stack_lane() {
+    use crate::large_stack::WORKER_THREAD_NAME;
+
+    let observer = Arc::new(RecordingObserver::default());
+    let queue = EvalQueue::on_engine_lane(Arc::new(Mutex::new(None)), observer.clone());
+
+    let thread = queue
+        .submit(EvalRequest::engine_call(|| {
+            Ok(std::thread::current().name().map(str::to_owned))
+        }))
+        .await;
+    assert_eq!(thread, Ok(Some(WORKER_THREAD_NAME.to_string())));
+
+    let depth = queue
+        .submit(EvalRequest::engine_call(|| {
+            deep_recurse_if_on_thread(WORKER_THREAD_NAME, DEEP_RECURSION_DEPTH)
+        }))
+        .await;
+    assert_eq!(depth, Ok(u64::from(DEEP_RECURSION_DEPTH) + 1));
+
+    let published = queue
+        .submit(logged_evaluation(&RunLog::default(), "E"))
+        .await;
+    assert_eq!(published, Ok("E".to_string()));
+    let delta_threads: Vec<_> = observer
+        .observations()
+        .into_iter()
+        .filter(|o| matches!(o.observed, Observed::Delta(_)))
+        .map(|o| o.thread)
+        .collect();
+    assert_eq!(delta_threads, [Some(WORKER_THREAD_NAME.to_string())]);
+}
+
+/// `#[tokio::test]` runs a CURRENT-THREAD runtime, so the task that releases the
+/// job can only run while the test is parked awaiting the ticket: an await that
+/// blocked the thread would leave the job unreleased until its anti-wedge bound.
+#[tokio::test]
+async fn awaiting_a_ticket_does_not_block_the_runtime() {
+    let queue = EvalQueue::on_engine_lane(
+        Arc::new(Mutex::new(None)),
+        Arc::new(RecordingObserver::default()),
+    );
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+    let ticket = queue.submit(EvalRequest::engine_call(move || {
+        release_rx
+            .recv_timeout(ANTI_WEDGE)
+            .map_err(|_| "never released: awaiting the ticket blocked the runtime".to_string())
+    }));
+    tokio::spawn(async move {
+        let _ = release_tx.send(());
+    });
+
+    assert_eq!(ticket.await, Ok(()));
 }

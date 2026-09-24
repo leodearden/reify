@@ -473,3 +473,127 @@ impl crate::eval_queue::EvalObserver for RecordingObserver {
         self.record(Observed::Delta(delta.clone()));
     }
 }
+
+/// An [`crate::eval_queue::Executor`] that runs nothing until told: posted jobs
+/// wait until [`ManualExecutor::run_pending`] runs them on the calling thread.
+#[derive(Default)]
+pub(crate) struct ManualExecutor {
+    jobs: Mutex<std::collections::VecDeque<Box<dyn FnOnce() + Send>>>,
+    refusing: std::sync::atomic::AtomicBool,
+}
+
+impl ManualExecutor {
+    pub(crate) fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::default()
+    }
+
+    pub(crate) fn executor(self: &std::sync::Arc<Self>) -> crate::eval_queue::Executor {
+        let this = std::sync::Arc::clone(self);
+        std::sync::Arc::new(move |job| this.post(job))
+    }
+
+    /// Make every later post fail (`true`) or succeed again (`false`).
+    pub(crate) fn refuse(&self, refusing: bool) {
+        self.refusing
+            .store(refusing, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many posted jobs have not run yet.
+    pub(crate) fn pending(&self) -> usize {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Run posted jobs in order on this thread, including jobs posted while
+    /// they run, until none are left.
+    pub(crate) fn run_pending(&self) {
+        loop {
+            let next = self
+                .jobs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front();
+            let Some(job) = next else { return };
+            job();
+        }
+    }
+
+    fn post(&self, job: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+        if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::other("the test executor refused the job"));
+        }
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(job);
+        Ok(())
+    }
+}
+
+// ── Large-stack probes, shared by the lane and queue tests ───────────────────
+
+/// Bound on every wait for work handed to another thread. It is NOT a timing
+/// assertion: it only turns a wedged lane into a failing test instead of a hung
+/// test binary.
+pub(crate) const ANTI_WEDGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A recursive frame that pins ~8 KiB of live stack per call and USES the
+/// recursive result (non-tail), defeating tail-call optimization and dead-frame
+/// elision. `#[inline(never)]` keeps each level a real call frame; the
+/// `black_box`ed 8 KiB buffer forces the optimizer to materialize the frame.
+///
+/// `deep_recurse(n) == n + 1` (base case returns 1, each of the `n` recursive
+/// frames adds `buf[8191] == 1`), so callers get a deterministic sentinel proving
+/// the recursion ran to completion rather than being elided.
+#[inline(never)]
+pub(crate) fn deep_recurse(depth: u32) -> u64 {
+    // 8 KiB per frame. Touch both ends so the whole buffer is committed and the
+    // frame cannot be elided.
+    let mut buf = [0u8; 8192];
+    buf[0] = 1;
+    buf[8191] = 1;
+    let buf = std::hint::black_box(buf);
+    if depth == 0 {
+        return u64::from(buf[0]); // sentinel base == 1
+    }
+    // Use the recursive result (non-tail) so the frame stays live across the call.
+    let below = deep_recurse(depth - 1);
+    std::hint::black_box(below + u64::from(buf[8191]))
+}
+
+/// Depth for the deep-recursion survival tests: ~8 KiB/frame x 2048 ≈ 16 MiB,
+/// i.e. 8x the 2 MiB default stack (a no-`stack_size` impl overflows) and 16x
+/// under the 256 MiB `COMPILE_STACK_SIZE` constant (GREEN is reliable).
+pub(crate) const DEEP_RECURSION_DEPTH: u32 = 2048;
+
+/// Recurse ~16 MiB ONLY if we genuinely landed on the expected large-stack
+/// thread; otherwise report where we actually are, without recursing.
+///
+/// "Invoked through a large-stack helper" does NOT by itself imply "runs on a
+/// large stack": every helper documents an INLINE-degradation arm that hands the
+/// closure back to the CALLER's default-size stack — `run_on_large_stack` when
+/// the OS refuses the 256 MiB mapping, `run_on_worker` additionally when the
+/// queue is dead. Recursing there overflows and SIGABRTs the whole test binary,
+/// taking every other test's result with it (observed while driving task 5772's
+/// step-3 RED, where a panicking job had killed the worker).
+///
+/// Checking first is what makes `large_stack_tests`' "no violent RED" claim true
+/// by CONSTRUCTION rather than by assumption: a degraded helper now yields a
+/// clean assertion failure naming the thread it ran on.
+pub(crate) fn deep_recurse_if_on_thread(
+    expected_name: &'static str,
+    depth: u32,
+) -> Result<u64, String> {
+    let actual = std::thread::current().name().map(str::to_owned);
+    if actual.as_deref() != Some(expected_name) {
+        return Err(format!(
+            "refusing to recurse ~16 MiB on thread {actual:?}: expected the \
+             large-stack thread {expected_name:?}. The helper degraded to an \
+             inline call, so recursing here would overflow a default-size stack \
+             and abort the entire test binary."
+        ));
+    }
+    Ok(deep_recurse(depth))
+}
