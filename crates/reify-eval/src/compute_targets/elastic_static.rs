@@ -10226,6 +10226,14 @@ mod tests {
                     &make_sf("curl", 3, 500.0),
                 )),
             ),
+            // task #6183 σ: like rotation, shear_angles is not persisted, so hash
+            // identity holds only if the cache path re-derives it byte-for-byte.
+            (
+                "shear_angles".to_string(),
+                super::super::sampled_shear_angles_field(
+                    super::super::shear_angles_sf_from_gradient(&make_sf("gradient", 9, 400.0)),
+                ),
+            ),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -13762,7 +13770,7 @@ mod tests {
 
     /// Shared helper: pull the `SampledField` out of a `Value::Field { Sampled }`,
     /// asserting the source kind on the way through.
-    fn rot6164_sampled(v: &Value, what: &str) -> SampledField {
+    fn expect_sampled_field(v: &Value, what: &str) -> SampledField {
         match v {
             Value::Field { source, lambda, .. } => {
                 assert_eq!(
@@ -13783,7 +13791,7 @@ mod tests {
     // enumerated ONCE, beside `rotation_sf_from_curl` itself, so the tet path
     // and the cache-reconstruction path below cannot drift apart from each
     // other or from the wrapper unit test.
-    use super::super::assert_rotation_is_half_of;
+    use super::super::{assert_rotation_is_half_of, assert_shear_angles_project_gradient};
 
     /// (a) TET path — the live `solve_elastic_static_trampoline` tet/solid route
     /// must emit a `"rotation"` key whose SampledField is the `"curl"` field
@@ -13823,8 +13831,8 @@ mod tests {
             .get("rotation")
             .expect("tet ElasticResult must carry a rotation field (ruling #6164)");
 
-        let curl_sf = rot6164_sampled(curl_v, "curl");
-        let rot_sf = rot6164_sampled(rot_v, "rotation");
+        let curl_sf = expect_sampled_field(curl_v, "curl");
+        let rot_sf = expect_sampled_field(rot_v, "rotation");
         assert!(
             !curl_sf.data.is_empty(),
             "fixture sanity: the tet curl channel must be populated"
@@ -13948,11 +13956,11 @@ mod tests {
             panic!("value_from_elastic_result must return a StructureInstance")
         };
 
-        let curl_sf = rot6164_sampled(
+        let curl_sf = expect_sampled_field(
             d.fields.get("curl").expect("reconstructed curl field"),
             "curl",
         );
-        let rot_sf = rot6164_sampled(
+        let rot_sf = expect_sampled_field(
             d.fields
                 .get("rotation")
                 .expect("reconstructed ElasticResult must carry a rotation field (ruling #6164)"),
@@ -13973,5 +13981,170 @@ mod tests {
              path's derive from the same curl data"
         );
         assert_eq!(rot_sf.name, live.name);
+    }
+
+    // ── task #6183 σ: the `shear_angles` derivative channel ───────────────────
+    //
+    // The Voigt engineering shears (γ_yz, γ_zx, γ_xy), the second named Angle
+    // crossing. Like `rotation` it is DERIVED at wrap time (from the `gradient`
+    // SampledField) in every production path and stored in none — see
+    // `shear_angles_sf_from_gradient`. These pin all three paths.
+
+    /// (a) TET path: `"shear_angles"` is the projection of the `"gradient"`
+    /// field, bit-exactly, on the bit-identical grid. The live
+    /// `debug_assert_eq!(sampled.len(), 5)` also guards "no 6th resample entry".
+    #[test]
+    fn shear_angles_channel_tet_path_projects_gradient() {
+        let value_inputs = [
+            shell9_make_isotropic_material(200e9, 0.3),
+            shell9_make_len(1.0),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        let grad_v = fields
+            .get("gradient")
+            .expect("tet ElasticResult must carry a gradient field");
+        let shear_v = fields
+            .get("shear_angles")
+            .expect("tet ElasticResult must carry a shear_angles field (task #6183)");
+
+        let grad_sf = expect_sampled_field(grad_v, "gradient");
+        let shear_sf = expect_sampled_field(shear_v, "shear_angles");
+        assert!(
+            !grad_sf.data.is_empty(),
+            "fixture sanity: the tet gradient channel must be populated"
+        );
+        assert_shear_angles_project_gradient(&shear_sf, &grad_sf, "tet");
+
+        match shear_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::vec3(reify_core::Type::angle()),
+                "shear_angles codomain must be Vector3<Angle> (task #6183)"
+            ),
+            other => panic!("shear_angles must be Value::Field, got {other:?}"),
+        }
+        match grad_v {
+            Value::Field { codomain_type, .. } => assert_eq!(
+                *codomain_type,
+                reify_core::Type::tensor(2, 3, reify_core::Type::dimensionless_scalar()),
+                "gradient codomain must STAY Tensor<2,3,Real> — INV-AD-3: never retype \
+                 the tensor; angle readings are extracted by named channels"
+            ),
+            other => panic!("gradient must be Value::Field, got {other:?}"),
+        }
+    }
+
+    /// (b) SHELL path: `shear_angles` joins the tet-only derivative channels in
+    /// the honest-absence `Value::Undef` convention (PRD §7).
+    #[test]
+    fn shear_angles_channel_shell_path_is_undef() {
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.05),
+            shell9_make_len(0.01),
+            shell9_make_len(0.001),
+            shell9_make_point_loads(10.0),
+            shell9_make_supports(),
+            shell9_make_options("On"),
+        ];
+
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        let fields = shell9_result_fields(outcome);
+
+        assert!(
+            matches!(fields.get("curl"), Some(Value::Undef)),
+            "fixture sanity: the shell route must emit curl=Undef"
+        );
+        assert!(
+            matches!(
+                fields.get("shell_channels"),
+                Some(Value::StructureInstance(_))
+            ),
+            "fixture sanity: the shell route must emit a real ShellStress"
+        );
+
+        assert!(
+            matches!(
+                fields
+                    .get("shear_angles")
+                    .expect("shell ElasticResult must carry a shear_angles key (task #6183)"),
+                Value::Undef
+            ),
+            "shell shear_angles must be Value::Undef — honest-absence (PRD §7)"
+        );
+    }
+
+    /// (c) CACHE-RECONSTRUCTION path: a persisted record carries a `gradient`
+    /// slab and no shear slab, so `value_from_elastic_result` must derive
+    /// `shear_angles` bit-identically to the live tet path's derive.
+    #[test]
+    fn shear_angles_channel_cache_reconstruction_derives_from_gradient_slab() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        // Regular3D grid, 1 division per axis -> 2 nodes per axis -> 8 nodes.
+        let n_nodes = 8usize;
+        // Non-symmetric, non-power-of-two gradient values, so an index swap or
+        // an antisymmetric leak cannot hide behind a coincidence.
+        let gradient: Vec<f64> = (0..n_nodes * 9).map(|i| 3.0 + i as f64 * 5.0).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: gradient.clone(),
+            curl: (0..n_nodes * 3).map(|i| i as f64 * 0.5).collect(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let grad_sf = expect_sampled_field(
+            d.fields
+                .get("gradient")
+                .expect("reconstructed gradient field"),
+            "gradient",
+        );
+        let shear_sf = expect_sampled_field(
+            d.fields
+                .get("shear_angles")
+                .expect("reconstructed ElasticResult must carry a shear_angles field (task #6183)"),
+            "shear_angles",
+        );
+        assert_eq!(
+            grad_sf.data, gradient,
+            "fixture sanity: the gradient slab must round-trip unchanged"
+        );
+        assert_shear_angles_project_gradient(&shear_sf, &grad_sf, "cache");
+
+        let live = super::super::shear_angles_sf_from_gradient(&grad_sf);
+        assert_eq!(
+            shear_sf.data, live.data,
+            "cache-reconstructed shear_angles must be bit-identical to the live tet \
+             path's derive from the same gradient data"
+        );
+        assert_eq!(shear_sf.name, live.name);
     }
 }
