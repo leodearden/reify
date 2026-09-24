@@ -312,9 +312,7 @@ struct SearchContext<'a> {
     constraints: &'a [(ConstraintNodeId, CompiledExpr, HashSet<ValueCellId>)],
     auto_param_ids: &'a HashSet<ValueCellId>,
     functions: &'a [reify_ir::CompiledFunction],
-    dependent_cells: &'a [(ValueCellId, CompiledExpr)],
-    /// Parallel to `dependent_cells`: see [`exact_from_depths`].
-    exact_from: &'a [Option<usize>],
+    dependent_cells: &'a [ScheduledCell<'a>],
     /// Stop once this many solutions have been collected.
     cap: usize,
     /// Stop once this many search nodes have been visited, whether or not any
@@ -363,7 +361,7 @@ impl SolutionSink<'_> {
 
 /// The owned half of a search's inputs — what [`build_search_inputs`] produces
 /// and [`SearchContext`] borrows.
-struct SearchInputs {
+struct SearchInputs<'p> {
     variables: Vec<Variable>,
     auto_param_ids: HashSet<ValueCellId>,
     constraints: Vec<(ConstraintNodeId, CompiledExpr, HashSet<ValueCellId>)>,
@@ -371,33 +369,54 @@ struct SearchInputs {
     /// back out. See the strip's own rationale below — it is load-bearing, not
     /// hygiene.
     assignment: ValueMap,
-    /// Parallel to the problem's `dependent_cells`: see [`exact_from_depths`].
-    exact_from: Vec<Option<usize>>,
+    /// The problem's `dependent_cells`, in stored order.
+    dependent_cells: Vec<ScheduledCell<'p>>,
 }
 
-/// Per stored dependent cell, the search depth from which its value is EXACT:
-/// the deepest variable index among the autos it reads transitively (`0` if it
-/// reads none), or `None` for an unfoldable cell, which never is. Variables are
-/// searched in `auto_params` order, so an auto's depth is its index there.
+/// A stored dependent cell and the search depth from which its value is EXACT.
+struct ScheduledCell<'p> {
+    cell: &'p (ValueCellId, CompiledExpr),
+    /// The deepest searched-variable index among the autos the cell reads
+    /// transitively (`0` if it reads none), or `None` for an unfoldable cell,
+    /// which never is.
+    exact_from: Option<usize>,
+}
+
+impl ScheduledCell<'_> {
+    /// Whether a trial at `depth` must re-derive this cell: see
+    /// [`backtrack_all`]'s "Which cells a trial re-derives".
+    fn needs_rederive_at(&self, depth: usize) -> bool {
+        self.exact_from.is_none_or(|exact_from| exact_from >= depth)
+    }
+}
+
+/// Pair each of `problem`'s dependent cells with its exact-from depth, reading
+/// an auto's depth off its index in `variables` — the order the search actually
+/// visits — rather than off any other ordering of the same autos.
 ///
 /// Built once per solve: the `ConstraintSolver::solve` seam cannot carry the
 /// registry's copy of the reads map.
-fn exact_from_depths(problem: &ResolutionProblem) -> Vec<Option<usize>> {
-    let depth: HashMap<&ValueCellId, usize> = problem
-        .auto_params
+fn schedule_dependent_cells<'p>(
+    problem: &'p ResolutionProblem,
+    variables: &[Variable],
+) -> Vec<ScheduledCell<'p>> {
+    let depth: HashMap<&ValueCellId, usize> = variables
         .iter()
         .enumerate()
-        .map(|(i, p)| (&p.id, i))
+        .map(|(i, var)| (&var.id, i))
         .collect();
     let reads = dependent_cell_auto_reads(&problem.dependent_cells, &problem.auto_params);
     problem
         .dependent_cells
         .iter()
-        .map(|(id, _)| match reads.lookup(id) {
-            CellReads::Foldable(autos) => autos
-                .iter()
-                .try_fold(0, |deepest, auto| Some(deepest.max(*depth.get(auto)?))),
-            CellReads::Unfoldable(_) | CellReads::NotACell => None,
+        .map(|cell| ScheduledCell {
+            cell,
+            exact_from: match reads.lookup(&cell.0) {
+                CellReads::Foldable(autos) => autos
+                    .iter()
+                    .try_fold(0, |deepest, auto| Some(deepest.max(*depth.get(auto)?))),
+                CellReads::Unfoldable(_) | CellReads::NotACell => None,
+            },
         })
         .collect()
 }
@@ -409,7 +428,7 @@ fn exact_from_depths(problem: &ResolutionProblem) -> Vec<Option<usize>> {
 /// because the auto-id strip below is a correctness repair (task #5467) that a
 /// second, hand-copied preamble would silently omit — which is precisely how the
 /// spike this task adapts got it wrong.
-fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, String> {
+fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs<'_>, String> {
     // Build variable domains. `domain_spec`'s rejections come through here, and
     // are the ONLY error this function can produce.
     let mut variables = Vec::with_capacity(problem.auto_params.len());
@@ -481,12 +500,13 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
         assignment.remove(id);
     }
 
+    let dependent_cells = schedule_dependent_cells(problem, &variables);
     Ok(SearchInputs {
         variables,
         auto_param_ids,
         constraints,
         assignment,
-        exact_from: exact_from_depths(problem),
+        dependent_cells,
     })
 }
 
@@ -536,7 +556,7 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
 /// # Which cells a trial re-derives, and why no unwind is needed
 ///
 /// A dependent cell is EXACT from the deepest variable index among its
-/// transitive autos ([`exact_from_depths`]); an unfoldable cell never is. Each
+/// transitive autos ([`ScheduledCell`]); an unfoldable cell never is. Each
 /// trial re-derives, in stored order and before any constraint is read, every
 /// cell not yet exact at its depth, and skips the rest. A skipped cell became
 /// exact at a SHALLOWER depth: its autos are fixed on this path and no deeper
@@ -547,13 +567,16 @@ fn build_search_inputs(problem: &ResolutionProblem) -> Result<SearchInputs, Stri
 ///
 /// A not-yet-exact cell must be RE-DERIVED, never skipped or removed. Skipped,
 /// it would still hold what an ABANDONED deeper branch folded into it
-/// (`a_deeper_cell_left_over_*`, `two_autos_*_abandoned_sibling_branch`).
+/// (`a_deeper_cell_left_over_from_an_abandoned_branch_is_never_observed_at_a_shallower_depth`,
+/// `two_autos_do_not_observe_a_stale_dependent_value_from_an_abandoned_sibling_branch`).
 /// Removed, it would lose the pruning a PARTIAL derivation affords: Kleene
 /// `false and _` is `false` and `true or _` is `true`, so a cell with unassigned
 /// autos can already be defined, and that is what cuts a `false` conjunct at
-/// its own depth (`a_conjunction_behind_a_dependent_cell_*`). The skip saves one
-/// evaluation and one map insert per already-exact cell, at every depth, the
-/// leaves included.
+/// its own depth
+/// (`a_conjunction_behind_a_dependent_cell_prunes_at_its_first_false_conjunct`).
+/// The skip saves one evaluation and one map insert per already-exact cell, at
+/// every depth, the leaves included. Unobservable by design, that saving is
+/// pinned by no test; the units named here pin soundness only.
 ///
 /// A re-derived cell reads an unassigned auto as ABSENT ONLY GIVEN THE STRIPPED
 /// SEED, and the guarantor is named deliberately (task #5467):
@@ -634,9 +657,8 @@ fn backtrack_all(
             assignment,
             ctx.dependent_cells
                 .iter()
-                .zip(ctx.exact_from)
-                .filter(|(_, from)| from.is_none_or(|d| d >= var_index))
-                .map(|(cell, _)| cell),
+                .filter(|scheduled| scheduled.needs_rederive_at(var_index))
+                .map(|scheduled| scheduled.cell),
             ctx.functions,
             |id| ctx.auto_param_ids.contains(id),
             None,
@@ -786,8 +808,7 @@ impl CpSatSolver {
             constraints: &inputs.constraints,
             auto_param_ids: &inputs.auto_param_ids,
             functions: &problem.functions,
-            dependent_cells: &problem.dependent_cells,
-            exact_from: &inputs.exact_from,
+            dependent_cells: &inputs.dependent_cells,
             cap,
             node_budget,
         };
@@ -1462,8 +1483,7 @@ impl ConstraintSolver for CpSatSolver {
 //
 // Nothing here is new; the bodies and their doc comments are the originals,
 // moved verbatim except for the visibility qualifier and the `or` helper added
-// for β's disjunction fixtures. `GENEROUS_CAP`, `enumerated` and `at` moved up
-// from the β enumeration module when the #6078 locks came to need them too.
+// for β's disjunction fixtures.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod cpsat_test_fixtures {
@@ -1766,8 +1786,8 @@ mod cpsat_test_fixtures {
 // regardless — `[Bool(true), Bool(false)]` for `Type::Bool`, i.e.
 // deterministically `true`, reported as `Solved`/`unique` rather than as a
 // failure. Removing the fold reintroduces exactly that.
-// What any narrowing of that fold must keep observable (#6078) is pinned by
-// `a_deeper_cell_left_over_*`, `a_cell_exact_since_*` and `a_conjunction_*`.
+// The #6078 units at the end of this module pin what narrowing that fold to
+// the not-yet-exact cells must keep observable.
 //
 // LOCK 2 — the auto-id strip on the `current_values` seed in `solve`. Before
 // it, `assignment` started out carrying entries for auto params, so at depth k
@@ -2287,8 +2307,12 @@ mod dependent_cell_forward_check_tests {
     /// Ten `Bool` autos; `let all = a0 and a1 and … and a9`;
     /// `constraint all == true`. Re-derived per trial, `all` is `false` as soon
     /// as an assigned conjunct is, so every `false` branch dies at its own
-    /// depth: about 20 nodes for the one model. A fold that dropped or skipped
-    /// `all` until its last auto is assigned walks the whole ~2046-node tree.
+    /// depth: about 20 nodes for the one model. A fold that DROPPED `all` until
+    /// its last auto is assigned walks the whole ~2046-node tree. One that
+    /// SKIPPED it passes here: the `false` the abandoned `a9 = false` branch
+    /// leaves behind happens to prune only infeasible siblings. That mutant is
+    /// pinned by
+    /// `a_deeper_cell_left_over_from_an_abandoned_branch_is_never_observed_at_a_shallower_depth`.
     ///
     /// ANTI-VACUITY: the same conjunction written into the constraint itself,
     /// with no dependent cell, is evaluated only at the leaves; under the same
