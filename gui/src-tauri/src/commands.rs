@@ -9,6 +9,7 @@ use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
+use crate::eval_queue::{EditIdentity, EditOrder, EvalOutcome, EvalRequest};
 use crate::types::{
     DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MechanismDescriptor,
     PersistentViewState,
@@ -72,6 +73,39 @@ pub struct AppState {
 pub fn get_initial_state_impl(engine: &Mutex<EngineSession>) -> Result<GuiState, String> {
     crate::engine_lock::with_engine_lock(engine, |s| s.build_gui_state())
         .and_then(std::convert::identity)
+}
+
+/// [`get_initial_state_impl`] as a queued evaluation.
+pub fn initial_state_evaluation(engine: Arc<Mutex<EngineSession>>) -> EvalRequest<GuiState> {
+    EvalRequest::evaluation(move || publish_and_reply(get_initial_state_impl(&engine)))
+}
+
+/// Publish the state a request produced; its reply reports only success.
+fn publish_only(produced: Result<GuiState, String>) -> EvalOutcome<()> {
+    match produced {
+        Ok(state) => EvalOutcome {
+            publish: Some(state),
+            reply: Ok(()),
+        },
+        Err(message) => EvalOutcome {
+            publish: None,
+            reply: Err(message),
+        },
+    }
+}
+
+/// Publish the state a request produced, and reply with it as well.
+fn publish_and_reply(produced: Result<GuiState, String>) -> EvalOutcome<GuiState> {
+    match produced {
+        Ok(state) => EvalOutcome {
+            publish: Some(state.clone()),
+            reply: Ok(state),
+        },
+        Err(message) => EvalOutcome {
+            publish: None,
+            reply: Err(message),
+        },
+    }
 }
 
 /// A REFUSED durable parameter write, and the state the frontend must render
@@ -157,6 +191,31 @@ pub fn set_parameter_impl(
     }
 }
 
+/// [`set_parameter_impl`] as a queued durable edit.
+///
+/// A refusal is itself a state mutation — it discards any live preview — so
+/// both arms publish: otherwise the viewport would stay on geometry neither
+/// the engine nor the disk holds, with no later event to correct it.
+pub fn commit_parameter_edit(
+    engine: Arc<Mutex<EngineSession>>,
+    cell_id: String,
+    value: String,
+    order: EditOrder,
+) -> EvalRequest<()> {
+    EvalRequest::edit(EditIdentity::commit(cell_id.as_str(), order), move || {
+        match set_parameter_impl(&engine, &cell_id, &value) {
+            Ok(state) => EvalOutcome {
+                publish: Some(state),
+                reply: Ok(()),
+            },
+            Err(RefusedParameterWrite { message, restored }) => EvalOutcome {
+                publish: restored.map(|state| *state),
+                reply: Err(message),
+            },
+        }
+    })
+}
+
 /// Show a parameter value TRANSIENTLY and return updated state, without making
 /// it durable.
 ///
@@ -172,6 +231,18 @@ pub fn preview_parameter_impl(
 ) -> Result<GuiState, String> {
     crate::engine_lock::with_engine_lock(engine, |s| s.preview_parameter(cell_id, value))
         .and_then(std::convert::identity)
+}
+
+/// [`preview_parameter_impl`] as a queued transient edit.
+pub fn preview_parameter_edit(
+    engine: Arc<Mutex<EngineSession>>,
+    cell_id: String,
+    value: String,
+    order: EditOrder,
+) -> EvalRequest<()> {
+    EvalRequest::edit(EditIdentity::preview(cell_id.as_str(), order), move || {
+        publish_only(preview_parameter_impl(&engine, &cell_id, &value))
+    })
 }
 
 /// Synchronize the engine's PASSIVE observed-demand registry from the GUI's
@@ -224,41 +295,38 @@ pub fn sync_demand_impl(
 /// cleared `last_reload_error`).
 ///
 /// On failure: returns `Err(message)` (covering both compile-error and check()-panic
-/// paths) **and** records the error as the session's staleness signal via a second
-/// `with_engine_lock` call.  The second lock is panic-safe because the first call's
-/// panic was already caught and converted to `Err` by `with_engine_lock`; the second
-/// call cannot panic on a just-caught-panic session.
+/// paths) **and** records the error as the session's staleness signal — inside the
+/// failing reload's own lock, so no concurrent writer's success can land between the
+/// failure and its recording and be masked by it. Only a panicking reload records in
+/// a second acquisition, after `with_engine_lock` has converted the panic to `Err`.
 ///
-/// **Single-writer assumption:** recording staleness uses two separate lock
-/// acquisitions, so a concurrent writer (e.g. a second Tauri `update_source`
-/// command) that succeeds and clears `last_reload_error` between the two locks
-/// would have its success masked by this function re-setting the error flag.
-/// In practice both callers (the Tauri `update_source` command and the file
-/// watcher via `reload_for_watch_impl`) are single-event-driven and do not
-/// fire concurrently on the same engine instance — the Tauri command queue is
-/// single-threaded per app window and the watcher fires sequential debounced
-/// events — so this interleaving cannot occur in production.  If the calling
-/// model ever changes to allow concurrent writes, recording should be moved
-/// inside the first lock (e.g. by threading an error-recording callback into
-/// `update_source` itself).
+/// Every GUI writer is serialized by the `EvalQueue`'s single drainer; the
+/// REIFY_DEBUG debug server is still a concurrent writer
+/// (tkt_0RV0J0HK8TK4WRS6YJVYEFP93C), which the in-lock recording covers too.
 pub fn update_source_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
     content: &str,
 ) -> Result<GuiState, String> {
-    let result =
-        crate::engine_lock::with_engine_lock(engine, |s| s.update_source(path, content))
-            .and_then(std::convert::identity);
-    if let Err(ref msg) = result {
-        // Record the reload error so is_stale() / build_gui_state() reflect the failure.
-        // Ignore the Result of this second lock: it can only fail if the mutex was
-        // re-poisoned between the two calls, which is not possible here.
-        let msg_clone = msg.clone();
-        let _ = crate::engine_lock::with_engine_lock(engine, |s| {
-            s.record_reload_error(msg_clone);
-        });
+    let reloaded = crate::engine_lock::with_engine_lock(engine, |s| {
+        let reloaded = s.update_source(path, content);
+        if let Err(message) = &reloaded {
+            s.record_reload_error(message.clone());
+        }
+        reloaded
+    });
+    match reloaded {
+        Ok(reloaded) => reloaded,
+        Err(panic) => {
+            // The reload panicked before anything was recorded. A failure to
+            // record is ignored: it could only be a second panic, and the reload
+            // error is reported either way.
+            let _ = crate::engine_lock::with_engine_lock(engine, |s| {
+                s.record_reload_error(panic.clone());
+            });
+            Err(panic)
+        }
     }
-    result
 }
 
 /// Build a debug-API JSON snapshot of the engine state.
@@ -552,6 +620,20 @@ pub fn reload_for_watch_impl(
     }
 }
 
+/// [`reload_for_watch_impl`] as a queued sync of the editor's buffer for
+/// `path`.
+pub fn editor_source_edit(
+    engine: Arc<Mutex<EngineSession>>,
+    path: String,
+    content: String,
+    order: EditOrder,
+) -> EvalRequest<()> {
+    EvalRequest::edit(
+        EditIdentity::editor_source(path.as_str(), order),
+        move || publish_only(reload_for_watch_impl(&engine, &path, &content)),
+    )
+}
+
 /// [`reload_for_watch_impl`], skipped entirely when the session already holds
 /// `content` — `Ok(None)` meaning nothing was recompiled and there is nothing
 /// to emit.
@@ -584,6 +666,31 @@ pub fn reload_for_watch_if_changed_impl(
         return Ok(None);
     }
     reload_for_watch_impl(engine, path, content).map(Some)
+}
+
+/// [`reload_for_watch_if_changed_impl`] as a queued watcher reload of `path`.
+///
+/// The file is read when the reload RUNS, so a reload queued behind a long
+/// evaluation compiles the latest disk content rather than what was there when
+/// the watcher fired.
+pub fn disk_reload_edit(engine: Arc<Mutex<EngineSession>>, path: PathBuf) -> EvalRequest<()> {
+    EvalRequest::edit(EditIdentity::disk_source(path.clone()), move || {
+        let reloaded = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Error reading {}: {}", path.display(), e))
+            .and_then(|content| {
+                reload_for_watch_if_changed_impl(&engine, &path.to_string_lossy(), &content)
+            });
+        match reloaded {
+            Ok(publish) => EvalOutcome {
+                publish,
+                reply: Ok(()),
+            },
+            Err(message) => EvalOutcome {
+                publish: None,
+                reply: Err(message),
+            },
+        }
+    })
 }
 
 /// Map an export-format SPELLING to the [`reify_ir::ExportFormat`] it names.
@@ -755,6 +862,14 @@ pub fn open_file_engine_impl(
     load_initial_file_impl(engine, Path::new(&canonical))
 }
 
+/// [`open_file_engine_impl`] as a queued evaluation.
+pub fn open_file_evaluation(
+    engine: Arc<Mutex<EngineSession>>,
+    path: String,
+) -> EvalRequest<GuiState> {
+    EvalRequest::evaluation(move || publish_and_reply(open_file_engine_impl(&engine, &path)))
+}
+
 /// The ONE load-and-resolve body behind both file-open entry points: the
 /// startup **argv** launch (`main()` → here directly) and File-Open
 /// ([`open_file_engine_impl`], which canonicalises and delegates), alongside
@@ -797,6 +912,14 @@ pub fn load_initial_file_impl(
     let state = crate::engine_lock::with_engine_lock(engine, |s| load_file_into_engine(s, path))
         .and_then(std::convert::identity)?;
     Ok(state.resolve(path))
+}
+
+/// [`load_initial_file_impl`] as a queued evaluation of the argv file.
+pub fn initial_file_evaluation(
+    engine: Arc<Mutex<EngineSession>>,
+    canonical: PathBuf,
+) -> EvalRequest<GuiState> {
+    EvalRequest::evaluation(move || publish_and_reply(load_initial_file_impl(&engine, &canonical)))
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
@@ -1048,4 +1171,12 @@ pub fn set_active_fea_case_impl(
 ) -> Result<GuiState, String> {
     crate::engine_lock::with_engine_lock(engine, |s| s.set_active_fea_case(name))
         .and_then(std::convert::identity)
+}
+
+/// [`set_active_fea_case_impl`] as a queued evaluation.
+pub fn active_fea_case_evaluation(
+    engine: Arc<Mutex<EngineSession>>,
+    case: String,
+) -> EvalRequest<()> {
+    EvalRequest::evaluation(move || publish_only(set_active_fea_case_impl(&engine, &case)))
 }
