@@ -11,6 +11,117 @@
 //! Accumulates additively like the element-level primitives in
 //! [`super::neumann`] (see the `boundary` module doc).
 
+use std::collections::HashMap;
+
+use super::neumann::{FaceOrder, apply_point_load, apply_traction_load};
+
+/// The four triangular faces of a P1 tet `[a, b, c, d]`, as local indices.
+const TET_FACES: [[usize; 3]; 4] = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
+
+/// The free (single-tet) faces of `tets` whose three nodes all satisfy
+/// `in_patch`.
+///
+/// A face shared by two tets is interior and never returned, even when all
+/// its nodes are in the patch. Output follows `tets` order and, within a tet,
+/// a fixed local face order, so it is deterministic.
+pub fn free_faces_within(tets: &[[usize; 4]], in_patch: impl Fn(usize) -> bool) -> Vec<[usize; 3]> {
+    let candidates: Vec<[usize; 3]> = tets
+        .iter()
+        .flat_map(|tet| TET_FACES.map(|local| local.map(|i| tet[i])))
+        .filter(|face| face.iter().all(|&n| in_patch(n)))
+        .collect();
+    let orientation_free = |mut face: [usize; 3]| {
+        face.sort_unstable();
+        face
+    };
+    let mut tets_per_face: HashMap<[usize; 3], usize> = HashMap::with_capacity(candidates.len());
+    for &face in &candidates {
+        *tets_per_face.entry(orientation_free(face)).or_default() += 1;
+    }
+    candidates
+        .into_iter()
+        .filter(|&face| tets_per_face[&orientation_free(face)] == 1)
+        .collect()
+}
+
+/// Apply `resultant` over the patch spanned by `patch_nodes` as the uniform
+/// traction `resultant / A` on its free faces (see [`free_faces_within`]),
+/// `A` being their total area, assembled as the consistent P1 nodal load.
+///
+/// The nodal forces sum to `resultant` exactly (partition of unity), and
+/// their line of action is the patch's area centroid (the one-point face rule
+/// is exact for linear integrands). Neither depends on the triangulation.
+///
+/// A patch covering no free-face area — a single vertex (a vertex target), a
+/// collinear edge (a body whose x-extreme is an edge), or interior faces only
+/// — has no traction reading, so `resultant` is split equally over
+/// `patch_nodes` as concentrated loads. An empty patch or a zero `resultant`
+/// adds nothing.
+///
+/// # Panics
+///
+/// - `f.len() != 3 * coords.len()`.
+/// - Any patch node is `>= coords.len()`.
+pub fn apply_patch_resultant(
+    f: &mut [f64],
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    patch_nodes: &[usize],
+    resultant: [f64; 3],
+) {
+    assert!(
+        f.len() == 3 * coords.len(),
+        "apply_patch_resultant: f.len() = {} but 3 * coords.len() = {}",
+        f.len(),
+        3 * coords.len(),
+    );
+    for &n in patch_nodes {
+        assert!(
+            n < coords.len(),
+            "apply_patch_resultant: patch node {n} is out of range for coords.len() = {}",
+            coords.len(),
+        );
+    }
+    if resultant == [0.0; 3] {
+        return;
+    }
+
+    let mut in_patch = vec![false; coords.len()];
+    for &n in patch_nodes {
+        in_patch[n] = true;
+    }
+    let faces = free_faces_within(tets, |n| in_patch[n]);
+    let area: f64 = faces
+        .iter()
+        .map(|face| triangle_area(face.map(|n| coords[n])))
+        .sum();
+
+    if area > 0.0 {
+        let traction = resultant.map(|c| c / area);
+        for face in &faces {
+            let phys = face.map(|n| coords[n]);
+            apply_traction_load(f, FaceOrder::P1Tri, face, &phys, traction);
+        }
+    } else {
+        let per_node = resultant.map(|c| c / patch_nodes.len() as f64);
+        for &n in patch_nodes {
+            apply_point_load(f, n, per_node);
+        }
+    }
+}
+
+/// `½ |ab × ac|`.
+fn triangle_area([a, b, c]: [[f64; 3]; 3]) -> f64 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let normal = [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ];
+    0.5 * (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
