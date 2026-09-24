@@ -6,6 +6,7 @@ mod debug_write_tool_routing_tests;
 mod diff_tests;
 mod engine_lock_tests;
 mod engine_tests;
+mod eval_queue_tests;
 mod event_bus_tests;
 mod gui_state_macro_tests;
 mod gui_state_parity_tests;
@@ -157,7 +158,7 @@ fn every_test_module_file_is_declared() {
 
     // NON-VACUITY FLOOR — checked before the real assertion so a broken
     // path or a line-parser that silently stops matching can never make
-    // this guard pass vacuously. There are 22 on-disk candidates and 21
+    // this guard pass vacuously. There are 23 on-disk candidates and 23
     // declarations today; 15 leaves headroom for legitimate future
     // removals (mirrors the ratchet-vacuity floor in
     // `tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh`).
