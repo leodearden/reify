@@ -1,5 +1,6 @@
 use super::*;
 use crate::compile_builder::hash::hash_pragma;
+use crate::compile_builder::sketch_unsupported;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
@@ -2725,25 +2726,10 @@ pub(crate) fn compile_entity(
             // `sub … at … where {}` twin runs the SAME check in the
             // `MemberDecl::Sub` arm below. ζ (task 4386) threads the compiled
             // relations onto `TopologyTemplate.relations` for the relate-solve.
-            // A member-level `sketch { … }` block carries no compile semantics
-            // yet — constrained-2d-sketch α (task 5506) lands grammar, AST and
-            // lowering only; the `SketchTemplate` classification, the
-            // sketch-local scope and the coded `E_SKETCH_*` diagnostics are γ.
-            //
-            // Reject it LOUDLY rather than falling through to a no-op: silently
-            // dropping the block would discard every constraint the user wrote
-            // and produce a geometrically wrong part with a clean compile
-            // (INV-SF-1 / PRD §5 D14). Same shape as the `Relate` "not yet
-            // supported" arm in guards.rs. One diagnostic per BLOCK — the body
-            // is never walked, so body size cannot inflate the count.
+            // A member-level `sketch { … }` block: rejected loudly, once per
+            // block, until constrained-2d-sketch γ — see `sketch_unsupported`.
             reify_ast::MemberDecl::Sketch(sketch) => {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "sketch blocks are not yet supported \
-                         (compile lowering lands in constrained-2d-sketch task γ)",
-                    )
-                    .with_label(DiagnosticLabel::new(sketch.span, "not yet supported")),
-                );
+                diagnostics.push(sketch_unsupported::diagnostic(sketch.span));
             }
             reify_ast::MemberDecl::Relate(relate) => {
                 relations.extend(check_relate_relations(
