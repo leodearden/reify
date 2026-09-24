@@ -823,6 +823,59 @@ mod tests {
         );
     }
 
+    /// A bead with no observed temperature and one at an observed 0 °C setpoint
+    /// both marshal `nominal_temp` to 273.15 K; `nominal_temp_observed` is the
+    /// field that tells them apart.
+    #[test]
+    fn nominal_temp_observed_flag_separates_unobserved_from_observed_zero_celsius() {
+        let observed_210 = sample_toolpath().beads[0].clone();
+        let unobserved = Bead {
+            nominal_temp: None,
+            ..observed_210.clone()
+        };
+        let observed_zero = Bead {
+            nominal_temp: Some(0.0),
+            ..observed_210.clone()
+        };
+        let v = toolpath_to_value(&Toolpath {
+            beads: vec![observed_210, unobserved, observed_zero],
+            layers: Vec::new(),
+            in_layer_adjacency: Vec::new(),
+            inter_layer_adjacency: Vec::new(),
+        });
+        let beads = as_list(field(&v, "beads").expect("beads field"));
+
+        assert_eq!(
+            field(&beads[0], "nominal_temp_observed"),
+            Some(&Value::Bool(true)),
+            "bead 0 (210 °C) observed its temperature"
+        );
+
+        assert_eq!(
+            field(&beads[1], "nominal_temp_observed"),
+            Some(&Value::Bool(false)),
+            "bead 1 observed no temperature"
+        );
+        assert_scalar(
+            field(&beads[1], "nominal_temp").expect("nominal_temp field"),
+            273.15,
+            DimensionVector::TEMPERATURE,
+            "bead 1 nominal_temp (0degC not-observed sentinel)",
+        );
+
+        assert_eq!(
+            field(&beads[2], "nominal_temp_observed"),
+            Some(&Value::Bool(true)),
+            "bead 2 (heater-off 0 °C) observed its temperature"
+        );
+        assert_scalar(
+            field(&beads[2], "nominal_temp").expect("nominal_temp field"),
+            273.15,
+            DimensionVector::TEMPERATURE,
+            "bead 2 nominal_temp (observed 0 °C)",
+        );
+    }
+
     /// The two adjacency lists are marshalled into distinctly-named fields, each
     /// holding `(lo, hi)` index pairs as 2-element Int lists.
     #[test]
@@ -1186,6 +1239,11 @@ mod tests {
                 DimensionVector::TEMPERATURE,
                 &format!("bead {i} nominal_temp (M109 S210 → 210 °C)"),
             );
+            assert_eq!(
+                field(b, "nominal_temp_observed"),
+                Some(&Value::Bool(true)),
+                "bead {i} nominal_temp_observed (M109 S210 precedes every extrude)"
+            );
             assert_scalar(
                 field(b, "speed").expect("speed field"),
                 0.15,
@@ -1272,6 +1330,71 @@ mod tests {
             .map(|l| as_list(field(l, "bead_indices").expect("bead_indices field")).len())
             .sum();
         assert_eq!(owned, beads.len(), "the layers partition every bead");
+    }
+
+    /// What a design author receives for a temperature-less G-code: the
+    /// committed fixture with every `M104`/`M109` line removed, driven through
+    /// the production [`fdm_slice_dispatch`], marshals every bead as unobserved
+    /// (`nominal_temp_observed == false`) carrying the `0degC` sentinel.
+    #[cfg(unix)]
+    #[test]
+    fn temperature_less_gcode_marshals_unobserved_end_to_end() {
+        let is_temperature_command =
+            |line: &str| matches!(line.split_whitespace().next(), Some("M104" | "M109"));
+        let fixture = std::fs::read_to_string(fixture_gcode_path()).expect("read fixture");
+        assert!(
+            fixture.lines().any(is_temperature_command),
+            "premise: the fixture carries M104/M109 lines to remove"
+        );
+        let temperature_less: String = fixture
+            .lines()
+            .filter(|line| !is_temperature_command(line))
+            .map(|line| format!("{line}\n"))
+            .collect();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gcode = dir.path().join("temperature-less.gcode");
+        std::fs::write(&gcode, temperature_less).expect("write temperature-less G-code");
+        let counter = dir.path().join("run-count");
+        let stub = write_stub_script(
+            dir.path(),
+            "temperature-less-slicer.sh",
+            &emit_fixture_counting_body(&gcode, &counter),
+        );
+
+        let result = match fdm_slice_dispatch(
+            &undef_inputs(),
+            &[body_handle(0x7138)],
+            Some(&stub),
+            None,
+            &CancellationHandle::new(),
+        ) {
+            ComputeOutcome::Completed { result, .. } => result,
+            other => panic!("the stub-slicer dispatch expected Completed, got {other:?}"),
+        };
+        let runs = std::fs::read_to_string(&counter)
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        assert_eq!(runs, 1, "the stub slicer ran exactly once");
+
+        let beads = as_list(field(&result, "beads").expect("beads field"));
+        assert!(
+            !beads.is_empty(),
+            "the temperature-less G-code still deposits beads"
+        );
+        for (i, b) in beads.iter().enumerate() {
+            assert_eq!(
+                field(b, "nominal_temp_observed"),
+                Some(&Value::Bool(false)),
+                "bead {i}: no M104/M109 precedes it"
+            );
+            assert_scalar(
+                field(b, "nominal_temp").expect("nominal_temp field"),
+                273.15,
+                DimensionVector::TEMPERATURE,
+                &format!("bead {i} nominal_temp (0degC not-observed sentinel)"),
+            );
+        }
     }
 
     /// REVIEW-FIX (blocking issue 1/2, robustness_unit_mismatch): `read_slice_settings`
