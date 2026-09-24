@@ -303,8 +303,10 @@ no artificial dep edges needed. ι depends on all of them.
   rejected — a compile-time `DiagnosticCode::ArgTypeMismatch`, not an equal-valued alternative;
   `orient_to_euler(q, EulerConvention.ZYX)` (subject-first, matching sibling decomposers
   `orient_log(q)`/`orient_to_axis_angle(q)`/`orient_inverse(q)`/`transform_log(t)`) returns a 3-element
-  angle list; the convention-first `orient_to_euler(EulerConvention.ZYX, q)` now returns `Undef`.
-  Consumes landed enum-value lowering (2525/2558/4108).
+  angle list; the convention-first `orient_to_euler(EulerConvention.ZYX, q)` is rejected — a
+  compile-time `DiagnosticCode::ArgTypeMismatch` on the `convention` slot (arg 1 is `q`, a concrete
+  Orientation, not the expected enum), not an equal-valued alternative; its eval arm only reaches
+  `Undef` if diagnostics are ignored. Consumes landed enum-value lowering (2525/2558/4108).
 - **η — Plane/Axis value consumers (`mirror(g, Plane)` + `circular_pattern(g, Axis)`) + the shared
   decode helper.** Modules: `reify-compiler/src/geometry.rs`, `reify-eval/src/geometry_ops.rs`
   (+ `decode_plane`/`decode_axis`). *Signal:* `mirror(box(10mm,10mm,10mm), plane_xy(0mm))` and
