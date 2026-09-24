@@ -7658,7 +7658,7 @@ mod tests {
             dof_set(vec![pinned_support("x_min")]),
             dof_set(vec![fixed_support("x_min")]),
             "a LONE PinnedSupport must clamp its face (PinnedOnTetEquivalentToFixed), \
-             not degrade the model to a transverse-only mechanism",
+             not degrade the model to a lone simple-support mechanism",
         );
 
         // (ii) Non-beam-axis pinned faces clamp too: Z-pinning y_min + y_max
@@ -7975,7 +7975,7 @@ mod tests {
             dof_set(vec![pinned_support("x_min"), fixed_support("")]),
             cantilever,
             "a support with the stdlib's empty default target selects no node, so it must \
-             not flip Pinned(x_min) from a clamp to a transverse-only pin",
+             not flip Pinned(x_min) from a clamp to a simple support",
         );
 
         // A typo / a static-path selector name that means nothing to the modal
@@ -8045,8 +8045,8 @@ mod tests {
             dof_set(vec![pinned_support("x_min"), pinned_support("x_min")]),
             cantilever,
             "two PinnedSupports naming the SAME face name one face, so the model is \
-             still singly supported and must CLAMP — not degrade to a transverse-only \
-             mechanism",
+             still singly supported and must CLAMP — not degrade to a lone \
+             simple-support mechanism",
         );
 
         // Same face, mixed spellings: `Fixed` clamps unconditionally, so this
@@ -8088,7 +8088,7 @@ mod tests {
         assert_eq!(
             face_realization(DeclaredSupport::Pinned, "x_min", &FaceCompany::Alone),
             FaceRealization::ClampAllDofs,
-            "a lone pinned beam end must clamp — a transverse-only pin alone is a mechanism",
+            "a lone pinned beam end must clamp — a simple support alone is a mechanism",
         );
         assert_eq!(
             face_realization(DeclaredSupport::Pinned, "x_min", &with_another),
@@ -8099,7 +8099,7 @@ mod tests {
             face_realization(DeclaredSupport::Pinned, "y_min", &with_another),
             FaceRealization::ClampAllDofs,
             "a non-beam-axis face clamps regardless of company — only a beam-axis end face \
-             is ever eligible for a transverse pin",
+             is ever eligible for a simple support",
         );
         assert_eq!(
             face_realization(DeclaredSupport::Fixed, "x_min", &FaceCompany::Alone),
