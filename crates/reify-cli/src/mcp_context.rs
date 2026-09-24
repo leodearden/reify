@@ -2125,8 +2125,8 @@ structure AnglePin {
     ///   column 13), not at the `@@@` that opens the fault (column 5); pinning the exact
     ///   column would ratchet on a recovery detail rather than on locatability.
     /// - The message WORDING is not pinned: the assertion is that whatever message the
-    ///   parser produced survives verbatim, so rewording the generic diagnostic
-    ///   (follow-up #6156) cannot break this test.
+    ///   parser produced survives verbatim, so rewording the generic diagnostic cannot
+    ///   break this test.
     ///
     /// `reify-cli` is a binary-only package (no lib target), so this runs under
     /// `cargo test -p reify-cli --bins`, not `--lib`.

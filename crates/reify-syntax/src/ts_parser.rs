@@ -15,18 +15,12 @@ use fault_diagnosis::{
     MAX_DIAGNOSTICS, collect_let_anchors, faults_strictly_inside, last_let_anchor_before,
 };
 
-/// Check a child node for errors before lowering it. If the node has errors,
-/// push a parse error and return None. Otherwise, evaluate the lowering expression.
-///
-/// The `invalid <label>: ` prefix is followed by a BOUNDED excerpt of the child's source
-/// text (see [`Lowering::snippet`] — INV-SF-7, task #5392), never the raw node text.
+/// Check a child node for errors before lowering it. If the node has errors, refuse it
+/// through [`Lowering::refuse_if_faulty`] and return None. Otherwise, evaluate the lowering
+/// expression.
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
-        if $child.is_error() || $child.has_error() {
-            $self.push_error(
-                format!("invalid {}: {}", $label, $self.snippet($child)),
-                $self.span($child),
-            );
+        if $self.refuse_if_faulty($child, $label) {
             None
         } else {
             $lower
@@ -244,12 +238,40 @@ impl<'a> Lowering<'a> {
     /// missing `;` in a function body evaporate a `let` binding and change the
     /// program's value with no diagnostic at all.
     ///
-    /// Deliberately does NOT interpolate `node_text` into the message: echoing a
+    /// `message` must be one line and must never interpolate RAW `node_text`: echoing a
     /// multi-line slice of source is what made these diagnostics unreadable and
-    /// mislocated. `message` must be a fixed, one-line description.
+    /// mislocated. A bounded [`Self::snippet`] excerpt is the only permitted source text
+    /// (see [`Self::push_fault_error_with_excerpt`]).
     fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
         let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
         self.push_error(message.into(), self.span(anchor));
+    }
+
+    /// Push `<what>: <snippet(node)>`, located at `node`'s first fault by
+    /// [`Self::push_fault_error`]'s rule.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), tasks
+    /// #5392 and #6156: the excerpt says WHICH construct or text, the span says WHERE.
+    /// Spanning the whole node instead reported every fault inside a body at the start of
+    /// the construct enclosing it.
+    fn push_fault_error_with_excerpt(&self, node: tree_sitter::Node, what: &str) {
+        self.push_fault_error(node, format!("{what}: {}", self.snippet(node)));
+    }
+
+    /// Report `node` as `invalid <label>: <excerpt>` if it carries a CST fault, and return
+    /// whether it did: a faulty node's lowered AST would no longer match its source, so it
+    /// must not be lowered. This is the refusal `check_and_lower!` applies before every
+    /// lowering it guards.
+    ///
+    /// The excerpt is bounded, never the raw node text, and the report is located at the
+    /// node's first fault (see [`Self::push_fault_error_with_excerpt`] — INV-SF-7, tasks
+    /// #5392 and #6156).
+    fn refuse_if_faulty(&self, node: tree_sitter::Node, label: &str) -> bool {
+        let faulty = node.is_error() || node.has_error();
+        if faulty {
+            self.push_fault_error_with_excerpt(node, &format!("invalid {label}"));
+        }
+        faulty
     }
 
     /// Diagnose an `ERROR` node, anchoring the report to the `let` binding whose missing `;`
@@ -2017,14 +2039,21 @@ impl<'a> Lowering<'a> {
                 }
                 "let_declaration" => {
                     // let declarations in constraint def body are ignored for now
-                    // (captured in params/predicates separation; future: add lets field)
+                    // (captured in params/predicates separation; future: add lets field),
+                    // but a FAULTY let is still refused loudly: its recovery can absorb the
+                    // following predicate (INV-SF-7).
+                    self.refuse_if_faulty(child, "constraint let");
                 }
                 "constraint_def_predicate" => {
-                    if let Some(expr_node) = child.child_by_field_name("expr")
-                        && let Some(expr) = self.lower_expr(expr_node)
-                    {
-                        predicates.push(expr);
-                    }
+                    let _ = check_and_lower!(
+                        self,
+                        child,
+                        "constraint predicate",
+                        child
+                            .child_by_field_name("expr")
+                            .and_then(|e| self.lower_expr(e))
+                            .map(|p| predicates.push(p))
+                    );
                 }
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
@@ -2035,10 +2064,7 @@ impl<'a> Lowering<'a> {
                 // before the loop via child_by_field_name / lower_type_parameters.
                 "identifier" | "type_parameters" => {}
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in constraint body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in constraint body");
                 }
                 _ => self.warn_unexpected_child(child, "constraint body"),
             }
@@ -2612,9 +2638,8 @@ impl<'a> Lowering<'a> {
             // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
             // task #5392: this was the ONE member kind without a `has_error()` guard, so a
             // fault inside a member fn body evaporated silently. Routed through
-            // `lower_function_checked` rather than `check_and_lower!` so the diagnostic
-            // avoids that macro's `node_text` source echo and so a more specific inner
-            // message is not overwritten by a vague outer one. A bodyless
+            // `lower_function_checked` rather than `check_and_lower!` so a more specific
+            // inner message is not overwritten by a vague outer one. A bodyless
             // `function_signature` is well-formed and lowers to `body: None` as before —
             // the guard fires on CST faults, never on a legitimately absent body.
             "function_definition" | "function_signature" => {
@@ -2818,10 +2843,8 @@ impl<'a> Lowering<'a> {
                 }
                 "ERROR" => {
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // Shadowed by `check_and_lower!("guarded block")` in `lower_member`.
+                    self.diagnose_error_node(child, "guarded block");
                 }
                 _ => {
                     let annotations = std::mem::take(&mut pending_annotations);
@@ -3796,10 +3819,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in port body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in port body");
                 }
                 _ => self.warn_unexpected_child(child, "port body"),
             }
@@ -3931,10 +3951,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in connect body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in connect body");
                 }
                 _ => self.warn_unexpected_child(child, "connect body"),
             }
@@ -7595,8 +7612,9 @@ mod tests {
 
     #[test]
     fn lower_connect_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside connect_body.
-        // When lower_connect_body is called directly, the ERROR arm fires.
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // connect_body. When lower_connect_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
         // NOTE: we use `: BoltSet` to specify a connector_type before the brace
         // block, making `{` unambiguously the start of connect_body.  Without
         // the connector_type, the new variant_construction GLR fork (task α,
@@ -7606,20 +7624,11 @@ mod tests {
         // `{ … }` as a member-level ERROR node rather than a connect_body,
         // causing `find_node_by_kind("connect_body")` to fail.  The connector
         // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
-        let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { >= } }",
-        );
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in connect body")),
-            "expected 'syntax error in connect body', got: {:?}",
-            errors
-        );
+        let source = "structure S {\n  port a : out T\n  port b : in T\n  connect a -> b : BoltSet {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_body_with_errors(source);
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in connect body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
@@ -7748,20 +7757,14 @@ mod tests {
 
     #[test]
     fn lower_port_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside port_body.
-        // When lower_port_body is called directly, the ERROR arm should fire.
-        let errors = lower_port_body_with_errors("structure S { port a : in T { >= } }");
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in port body")),
-            "expected 'syntax error in port body', got: {:?}",
-            errors
-        );
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // port_body. When lower_port_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
+        let source = "structure S {\n  port a : in T {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_port_body_with_errors(source);
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in port body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
@@ -7816,6 +7819,24 @@ mod tests {
             "expected no errors for syntactically valid port body with comment, got: {:?}",
             errors
         );
+    }
+
+    // ── Guarded block ERROR arm ────────────────────────────────
+
+    /// A guarded block is a member list, so its `ERROR` arm takes the member-list policy
+    /// (`diagnose_error_node`): no source echo, located at the fault (INV-SF-7, task #6156).
+    ///
+    /// Only a direct call reaches this arm. Through `parse`, `lower_member` refuses a faulty
+    /// `guarded_block` via `check_and_lower!` before `lower_guarded_block` ever runs.
+    #[test]
+    fn lower_guarded_block_error_node_emits_diagnostic() {
+        let source = "structure S {\n  param x: Real = 1\n  where x > 0 {\n    let a = 1\n    ) (\n      ] [\n    let b = 2\n  }\n}\n";
+        let errors = lower_node_with_errors(source, "guarded_block", |l, n| {
+            l.lower_guarded_block(n);
+        });
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in guarded block");
+        assert_eq!(errors[0].span.start as usize, source.find(") (").unwrap());
     }
 
     // ── Constraint def defensive catch-all tests ───────────────
