@@ -281,23 +281,10 @@ _reverse_closure() {
     printf '%s\n' "$closure"
 }
 
-# _emit_affected <value>... — the single stdout writer for affected_crates.
-# Every value affected_crates prints goes through here, ALL sentinel included,
-# so the external-writer property below holds uniformly for all of them.
-#
-# It must stay a pipeline ending in an EXTERNAL command. Callers pipe
-# affected_crates into `grep -q`, which exits at its first match and leaves the
-# writer holding a closed pipe; a bash builtin writing there is SIGPIPE-KILLED
-# mid-function, which surfaces as an intermittent false negative under the
-# caller's `set -o pipefail` (a bare builtin `printf` measured 1-2 spurious
-# failures per 40-120 calls). Inside a pipeline the builtin runs in a forked
-# subshell and `sort -u` is the process holding the caller's pipe, so `sort`
-# dies instead of this shell, `|| true` absorbs it, and affected_crates'
-# documented always-return-0 still holds. `sort -u` also normalises every
-# branch to the sorted-unique output the header promises.
-#
-# _reverse_closure's own writes are exempt: its stdout is always captured by
-# $(...) below, never connected to a caller's pipe.
+# _emit_affected <value>... — affected_crates' single stdout writer, ALL
+# sentinel included; prints sorted-unique. Must stay a pipeline ending in an
+# external command, so a closed caller pipe (`grep -q` under pipefail) kills
+# `sort`, not this shell; `|| true` keeps affected_crates' always-return-0.
 _emit_affected() {
     printf '%s\n' "$@" | sort -u || true
 }
@@ -366,8 +353,11 @@ affected_crates() {
     closure="$(printf '%s\n' "${direct[@]}" | _reverse_closure)"
 
     # ALL is a sentinel, not a crate name, so a fail-wide closure is emitted
-    # unchanged and never reaches the union below. The empty case re-checks
-    # _reverse_closure's C5 rule (see its header) at this use site.
+    # unchanged and never reaches the union below. The empty test is a
+    # DELIBERATE second enforcement of the header's one-empty-print-producer
+    # invariant, unreachable while _reverse_closure keeps its own C5 rule (see
+    # its header). Not dead code: it stops a regression there from reaching
+    # verify.sh as "provably zero crates".
     if [ -z "$closure" ] || [ "$closure" = "ALL" ]; then
         _emit_affected ALL
         return 0
