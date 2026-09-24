@@ -1135,7 +1135,7 @@ G1 X20 Y20 E1.2
         assert!((bead.width - 0.45).abs() < EPS, "width from ;WIDTH:");
         assert!((bead.height - 0.2).abs() < EPS, "height from ;HEIGHT:");
         assert!((bead.layer_z - 0.2).abs() < EPS, "layer_z from G1 Z move");
-        assert!((bead.nominal_temp - 210.0).abs() < EPS, "temp from M104 S");
+        assert_eq!(bead.nominal_temp, Some(210.0), "temp from M104 S");
         assert!(
             (bead.speed - 1800.0).abs() < EPS,
             "speed = active feedrate (G1 F1800), got {}",
@@ -1155,6 +1155,84 @@ G1 X20 Y20 E1.2
         assert_eq!(layer.index, 0);
         assert!((layer.z - 0.2).abs() < EPS, "layer z = 0.2");
         assert_eq!(layer.bead_indices, vec![0], "bead 0 belongs to layer 0");
+    }
+
+    // ── nominal temperature observation ──────────────────────────────────────
+
+    /// [`SINGLE_PERIMETER`] with its `M104` line replaced by `temp_line`
+    /// (`""` drops it, leaving a G-code with no temperature command at all).
+    fn single_perimeter_with_temp_line(temp_line: &str) -> String {
+        format!(
+            "\
+M83
+{temp_line}
+G1 Z0.2 F7200
+G1 X10 Y10 F9000
+;TYPE:External perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 F1800
+G1 X20 Y10 E1.2
+G1 X20 Y20 E1.2
+"
+        )
+    }
+
+    #[test]
+    fn temperature_less_gcode_leaves_nominal_temp_unobserved() {
+        let tp = parse_prusaslicer_gcode(&single_perimeter_with_temp_line(""))
+            .expect("snippet must parse");
+
+        assert!(!tp.beads.is_empty(), "the snippet deposits beads");
+        for bead in &tp.beads {
+            assert_eq!(
+                bead.nominal_temp, None,
+                "no M104/M109 was seen, so no temperature was observed"
+            );
+        }
+    }
+
+    #[test]
+    fn m104_s0_before_extrusion_is_an_observed_zero_setpoint() {
+        let tp = parse_prusaslicer_gcode(&single_perimeter_with_temp_line("M104 S0"))
+            .expect("snippet must parse");
+
+        assert!(!tp.beads.is_empty(), "the snippet deposits beads");
+        for bead in &tp.beads {
+            assert_eq!(
+                bead.nominal_temp,
+                Some(0.0),
+                "heater-off M104 S0 is an observed setpoint, not the absence of one"
+            );
+        }
+    }
+
+    #[test]
+    fn beads_before_the_first_temperature_command_stay_unobserved() {
+        let gcode = "\
+M83
+G1 Z0.2 F7200
+G1 X10 Y10 F9000
+;TYPE:External perimeter
+;WIDTH:0.45
+;HEIGHT:0.2
+G1 X20 Y10 E1.2
+G1 X30 Y30 F9000
+M109 S215
+G1 X40 Y30 E1.2
+";
+        let tp = parse_prusaslicer_gcode(gcode).expect("snippet must parse");
+
+        assert_eq!(tp.beads.len(), 2, "the travel splits two beads");
+        assert_eq!(
+            tp.beads[0].nominal_temp, None,
+            "bead 0 is laid down before any temperature command"
+        );
+        assert_eq!(
+            tp.beads[1].nominal_temp,
+            Some(215.0),
+            "bead 1 follows M109 S215"
+        );
     }
 
     // ── step-5: bead segmentation ────────────────────────────────────────────
