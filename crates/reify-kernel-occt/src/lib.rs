@@ -8483,21 +8483,6 @@ mod tests {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(-1.0);
                 eprintln!("inner Thicken(-0.5mm) volume = {:.3e} m³ (expected ~7.29e-7 = (9mm)³)", inner_v);
-
-                // Try Difference(outer, inner)
-                let diff_result = kernel.execute(&GeometryOp::Difference {
-                    left: outer_h.id,
-                    right: inner_h.id,
-                });
-                eprintln!("Difference result: {:?}", diff_result.as_ref().map(|h| h.id));
-                if let Ok(diff_h) = diff_result {
-                    let diff_vol = kernel.query(&GeometryQuery::Volume(diff_h.id));
-                    eprintln!("Difference volume: {:?}", diff_vol);
-                    let diff_v = diff_vol.ok().and_then(|v| v.as_f64()).unwrap_or(-1.0);
-                    eprintln!("zone_profile volume = {:.3e} m³ (expected ~6e-7 for (11mm)³-(9mm)³)", diff_v);
-                } else {
-                    eprintln!("Difference failed: {:?}", diff_result.err());
-                }
             }
             Err(e) => {
                 eprintln!("negative Thicken failed: {}", e);

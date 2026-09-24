@@ -393,8 +393,8 @@ fn zone_annulus_compiles() {
 #[test]
 fn zone_profile_compiles() {
     // geometry.md documents the exactly-2-arg `zone_profile(solid, width)`
-    // form (geometry.rs:2355) — Difference(Thicken(solid, +w/2),
-    // Thicken(solid, −w/2)) via OCCT Thicken. Arg 0 is a SOLID here (unlike
+    // form (geometry.rs:2355) — Difference(OffsetSolid(solid, +w/2),
+    // OffsetSolid(solid, −w/2)). Arg 0 is a SOLID here (unlike
     // zone_slab's face). Grounding site: examples/tolerancing/gdt_zones.ri's
     // `prof_zone` cell.
     assert_compiles("zone_profile", "zone_profile(box(10mm, 10mm, 10mm), 1mm)");
