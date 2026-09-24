@@ -244,20 +244,20 @@ pub(crate) fn rotation_sf_from_curl(curl_sf: &SampledField) -> SampledField {
 /// [`sampled_field_on_grid_of`]) with no extra BVH pass. Derived at wrap time
 /// and persisted nowhere, for the same frozen-wire-header reason as
 /// [`rotation_sf_from_curl`].
-pub(crate) fn shear_angles_sf_from_gradient(grad_sf: &SampledField) -> SampledField {
-    assert!(
-        grad_sf.data.len().is_multiple_of(9),
-        "gradient SampledField '{}' must be stride-9 (one row-major 3×3 per node), \
-         got {} values",
-        grad_sf.name,
-        grad_sf.data.len()
-    );
+///
+/// `None` when `grad_sf.data` is not stride-9: the slab may come from a decoded
+/// cache record that nothing upstream stride-checks, so the caller decides
+/// whether a malformed slab is a construction bug or an absent channel.
+pub(crate) fn shear_angles_sf_from_gradient(grad_sf: &SampledField) -> Option<SampledField> {
+    if !grad_sf.data.len().is_multiple_of(9) {
+        return None;
+    }
     let shears = grad_sf
         .data
         .chunks_exact(9)
         .flat_map(|g| [g[5] + g[7], g[6] + g[2], g[1] + g[3]])
         .collect();
-    sampled_field_on_grid_of(grad_sf, "shear_angles", shears)
+    Some(sampled_field_on_grid_of(grad_sf, "shear_angles", shears))
 }
 
 /// A new `data` payload named `name` on `source`'s grid: every grid-metadata
@@ -357,17 +357,20 @@ pub(crate) fn assert_rotation_is_half_of(rot: &SampledField, curl: &SampledField
 
 /// Assert `shear` is exactly what [`shear_angles_sf_from_gradient`] must
 /// produce from `grad`: per node, the Voigt engineering shears
-/// `[g[5]+g[7], g[6]+g[2], g[1]+g[3]]` (γ_yz, γ_zx, γ_xy) of the row-major
-/// stride-9 gradient, at 0 ULP, renamed, on the bit-identical grid.
+/// (γ_yz, γ_zx, γ_xy) with γ_ij = g_ij + g_ji of the row-major stride-9
+/// gradient, at 0 ULP, renamed, on the bit-identical grid.
 ///
-/// 0 ULP holds because the expectation is the same single IEEE addition of the
-/// same two operands (addition is commutative bitwise).
+/// The oracle is written from the Voigt (i, j) index pairs, not the flattened
+/// offsets the production derive uses, so it is independent evidence of the
+/// Voigt ordering. 0 ULP holds because each expectation is the same single IEEE
+/// addition of the same two operands (addition is commutative bitwise).
 #[cfg(test)]
 pub(crate) fn assert_shear_angles_project_gradient(
     shear: &SampledField,
     grad: &SampledField,
     path: &str,
 ) {
+    const VOIGT_PAIRS: [(usize, usize); 3] = [(1, 2), (2, 0), (0, 1)];
     assert_eq!(
         grad.data.len() % 9,
         0,
@@ -381,7 +384,7 @@ pub(crate) fn assert_shear_angles_project_gradient(
     let expected: Vec<f64> = grad
         .data
         .chunks_exact(9)
-        .flat_map(|g| [g[5] + g[7], g[6] + g[2], g[1] + g[3]])
+        .flat_map(|g| VOIGT_PAIRS.map(|(i, j)| g[3 * i + j] + g[3 * j + i]))
         .collect();
     assert_eq!(
         shear.data, expected,
@@ -1078,8 +1081,8 @@ mod tests {
         );
     }
 
-    /// step-3 RED (task #6183 σ): the `shear_angles` channel on a
-    /// hand-computable PATCH fixture. A linear displacement u = A·x has
+    /// Task #6183 σ: the `shear_angles` channel on a hand-computable PATCH
+    /// fixture. A linear displacement u = A·x has
     /// ∇u ≡ A at every node, so the Voigt engineering shears are known in closed
     /// form: (γ_yz, γ_zx, γ_xy) = (A12+A21, A20+A02, A01+A10).
     ///
@@ -1090,9 +1093,6 @@ mod tests {
     /// Drives the exact production composition, pins the declared
     /// `Vector3<Angle>` codomain, then samples through the PRODUCTION sampler
     /// and compares each ANGLE component against the degree expectation.
-    ///
-    /// RED: `sampled_shear_angles_field` / `shear_angles_sf_from_gradient` do
-    /// not exist yet, so this does not compile until step-4.
     #[test]
     fn shear_angles_patch_fixture_samples_deg_derived_engineering_shears() {
         use reify_core::{DimensionVector, Type};
@@ -1121,8 +1121,9 @@ mod tests {
             oob_emitted: AtomicBool::new(false),
         };
 
-        let value =
-            super::sampled_shear_angles_field(super::shear_angles_sf_from_gradient(&grad_sf));
+        let shear_sf = super::shear_angles_sf_from_gradient(&grad_sf)
+            .expect("patch fixture gradient is stride-9");
+        let value = super::sampled_shear_angles_field(shear_sf);
         let Value::Field {
             domain_type,
             codomain_type,
@@ -1182,6 +1183,33 @@ mod tests {
             assert!(
                 (got - want).abs() <= 1e-12 * want,
                 "component {i}: expected {want}°, got {got}°"
+            );
+        }
+    }
+
+    /// A gradient slab that is not stride-9 yields `None` rather than a
+    /// mis-strided projection or a panic: a decoded cache record can carry one,
+    /// and nothing upstream of the derive checks its stride.
+    #[test]
+    fn shear_angles_derive_rejects_non_stride_9_gradient() {
+        use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
+        use std::sync::atomic::AtomicBool;
+
+        let malformed = |len: usize| SampledField {
+            name: "gradient".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0; 3],
+            bounds_max: vec![1.0; 3],
+            spacing: vec![1.0; 3],
+            axis_grids: vec![vec![0.0, 1.0]; 3],
+            interpolation: InterpolationKind::Linear,
+            data: (0..len).map(|i| i as f64).collect(),
+            oob_emitted: AtomicBool::new(false),
+        };
+        for len in [1, 8, 10, 8 * 9 - 1, 8 * 3] {
+            assert!(
+                super::shear_angles_sf_from_gradient(&malformed(len)).is_none(),
+                "a {len}-value gradient slab is not stride-9 and must yield None"
             );
         }
     }

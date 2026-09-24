@@ -1201,8 +1201,10 @@ pub fn solve_elastic_static_trampoline(
     let div_field = super::sampled_divergence_field(div_sf);
     // task #6183: `shear_angles` is DERIVED from the gradient SampledField, like
     // `rotation` from curl below (see `shear_angles_sf_from_gradient`).
-    let shear_angles_field =
-        super::sampled_shear_angles_field(super::shear_angles_sf_from_gradient(&grad_sf));
+    let shear_angles_field = super::sampled_shear_angles_field(
+        super::shear_angles_sf_from_gradient(&grad_sf)
+            .expect("live tet gradient is stride-9 by construction (resampled as 3×3 per node)"),
+    );
     let grad_field = super::sampled_gradient_field(grad_sf);
     // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
     // here rather than resampled independently — note there is deliberately NO
@@ -2492,11 +2494,13 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
     };
     // task #6183: shear_angles is derived from the SAME reconstructed gradient
     // slab, never persisted — one `build_sf` feeds both, exactly as for
-    // curl/rotation below.
+    // curl/rotation below. This is the trust boundary for the slab's stride:
+    // nothing upstream checks that a decoded gradient is stride-9, so a
+    // malformed one leaves shear_angles honestly absent instead of panicking.
     let (grad_field, shear_angles_field) = match build_sf(er.gradient.clone(), "gradient") {
         Some(sf) => {
-            let shear =
-                super::sampled_shear_angles_field(super::shear_angles_sf_from_gradient(&sf));
+            let shear = super::shear_angles_sf_from_gradient(&sf)
+                .map_or(Value::Undef, super::sampled_shear_angles_field);
             (super::sampled_gradient_field(sf), shear)
         }
         None => (Value::Undef, Value::Undef),
@@ -10250,7 +10254,8 @@ mod tests {
             (
                 "shear_angles".to_string(),
                 super::super::sampled_shear_angles_field(
-                    super::super::shear_angles_sf_from_gradient(&make_sf("gradient", 9, 400.0)),
+                    super::super::shear_angles_sf_from_gradient(&make_sf("gradient", 9, 400.0))
+                        .expect("stride-9 gradient fixture"),
                 ),
             ),
             (
@@ -14158,12 +14163,67 @@ mod tests {
         );
         assert_shear_angles_project_gradient(&shear_sf, &grad_sf, "cache");
 
-        let live = super::super::shear_angles_sf_from_gradient(&grad_sf);
+        let live = super::super::shear_angles_sf_from_gradient(&grad_sf)
+            .expect("fixture gradient slab is stride-9");
         assert_eq!(
             shear_sf.data, live.data,
             "cache-reconstructed shear_angles must be bit-identical to the live tet \
              path's derive from the same gradient data"
         );
         assert_eq!(shear_sf.name, live.name);
+    }
+
+    /// (d) CACHE-RECONSTRUCTION trust boundary: a decoded record whose
+    /// `gradient` slab is not stride-9 must not panic the evaluation. The
+    /// derived `shear_angles` is honestly absent (`Value::Undef`), while
+    /// `gradient` itself still reconstructs as before.
+    #[test]
+    fn shear_angles_channel_cache_reconstruction_malformed_gradient_is_undef() {
+        use reify_compute_contract::ElasticResult as ContractElasticResult;
+
+        let n_nodes = 8usize;
+        let malformed_gradient: Vec<f64> = (0..n_nodes * 9 - 1).map(|i| i as f64).collect();
+
+        let er = ContractElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| 1e6 + i as f64).collect(),
+            max_von_mises: 1.23e8,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0, 0.0, 0.0],
+            grid_bounds_max: [1.0, 2.0, 3.0],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64).collect(),
+            gradient: malformed_gradient.clone(),
+            curl: (0..n_nodes * 3).map(|i| i as f64 * 0.5).collect(),
+            aposteriori: None,
+        };
+
+        let value = value_from_elastic_result(&er);
+        let Value::StructureInstance(d) = &value else {
+            panic!("value_from_elastic_result must return a StructureInstance")
+        };
+
+        let grad_sf = expect_sampled_field(
+            d.fields
+                .get("gradient")
+                .expect("reconstructed gradient field"),
+            "gradient",
+        );
+        assert_eq!(
+            grad_sf.data, malformed_gradient,
+            "the gradient slab must still reconstruct unchanged"
+        );
+        assert!(
+            matches!(
+                d.fields
+                    .get("shear_angles")
+                    .expect("reconstructed ElasticResult must carry a shear_angles key"),
+                Value::Undef
+            ),
+            "a non-stride-9 gradient slab must leave shear_angles Value::Undef"
+        );
     }
 }
