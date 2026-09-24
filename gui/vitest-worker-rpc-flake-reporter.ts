@@ -17,9 +17,13 @@ import { rmSync, writeFileSync } from 'node:fs'
 // This module owns the recognition half. scripts/gui-vitest-run.sh owns the
 // recovery half and reads its decision from the artifact, never from stdout.
 
-/** One suite that failed before or during collection, as vitest reported it. */
+/** One test file that vitest reported as failed. */
 export interface FailedSuiteRecord {
   readonly filepath: string
+  /**
+   * Errors raised outside any test: at collection, and in module- and
+   * describe-level hooks. Empty when only tests inside the file failed.
+   */
   readonly errorMessages: readonly string[]
 }
 
@@ -179,11 +183,18 @@ export function classifyWorkerRpcFlake(
  * rather than imported so the adapter depends on four members instead of
  * vitest's whole reported-task surface.
  */
-export interface ReportedModule {
+export interface ReportedModule extends ReportedSuite {
   readonly moduleId: string
   state(): string
+  readonly children: {
+    allTests(state?: string): Iterable<ReportedTest>
+    allSuites(): Iterable<ReportedSuite>
+  }
+}
+
+/** The part of vitest's TestSuite this reporter reads, declared the same way. */
+export interface ReportedSuite {
   errors(): ReadonlyArray<{ message?: string }>
-  readonly children: { allTests(state?: string): Iterable<ReportedTest> }
 }
 
 /** The part of vitest's TestCase this reporter reads, declared the same way. */
@@ -229,6 +240,14 @@ const messageOf = (error: { message?: string } | undefined): string =>
 
 const relativeTo = (rootDir: string, moduleId: string): string =>
   moduleId.startsWith(`${rootDir}/`) ? moduleId.slice(rootDir.length + 1) : moduleId
+
+/**
+ * The module's own errors plus every nested describe suite's. A failed
+ * describe-level hook records its error on that suite alone, so without the
+ * fold a hook defect would read as a module with nothing wrong of its own.
+ */
+const suiteErrorMessages = (module: ReportedModule): string[] =>
+  [module, ...module.children.allSuites()].flatMap((suite) => suite.errors().map(messageOf))
 
 /** Every failed test in EVERY module, whatever state its module reports. */
 const collectFailedTests = (
@@ -291,7 +310,7 @@ export default class WorkerRpcFlakeReporter {
         .filter((module) => module.state() === 'failed')
         .map((module) => ({
           filepath: relativeTo(this.out.rootDir, module.moduleId),
-          errorMessages: module.errors().map(messageOf),
+          errorMessages: suiteErrorMessages(module),
         })),
       failedTests: collectFailedTests(this.out.rootDir, testModules),
       unhandledErrorMessages: unhandledErrors.map(messageOf),
