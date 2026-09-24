@@ -1262,6 +1262,35 @@ structure P {
     );
 }
 
+/// Obligation (7) must see an `auto` parked in a descendant's guarded group,
+/// for a `let` just as for a `param`.
+#[test]
+fn container_objective_governing_a_descendant_guarded_auto_let_is_compile_clean() {
+    let src = r#"module objective_inheritance_guarded_let
+
+structure C {
+    param g : Real = 1.0
+    where g > 0.0 {
+        let k : Length = auto(free)
+    }
+}
+
+structure P {
+    param w : Length = 3mm
+    minimize w
+    sub c : C {}
+}
+"#;
+
+    let compiled = compile_source_with_stdlib(src);
+    assert_template_has_objective(&compiled, "P");
+    assert_no_inert(
+        &compiled,
+        "P's objective is inherited by the objective-less C and governs the \
+         auto that C's where-block declares",
+    );
+}
+
 /// The shipped `examples/objective_inheritance.ri` shape with `w` made
 /// concrete, C's two bracketing constraints kept.
 ///
