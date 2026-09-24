@@ -599,6 +599,58 @@ pub(crate) static ENGINE_LANE: Lane = Lane::new(WORKER_THREAD_NAME);
 /// evaluation — see [`Lane`]'s "Why more than one lane".
 pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
 
+/// Queue `job` on the persistent ENGINE lane WITHOUT waiting for it, so the
+/// calling thread is never parked on engine work. Deliver any result through a
+/// channel the job captures. See [`post`] for the degraded arms.
+pub fn post_to_worker(job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    post(ENGINE_LANE.sender(), Box::new(job))
+}
+
+/// Queue `job` on `sender`'s lane without waiting for it — the lane-agnostic
+/// seam behind [`post_to_worker`], shaped like [`dispatch`] so the degraded arms
+/// are testable.
+///
+/// The job never runs inline on the caller, which may be a tokio worker where
+/// OCCT's synchronous kernel handle panics. With no lane (the OS refused the
+/// 256 MiB mapping) it runs on a spawned default-stack thread, since a second
+/// 256 MiB request would be refused the same way; a job handed back by a dead
+/// lane runs on [`spawn_on_large_stack`]. `Err` means no thread could be spawned
+/// and the job was dropped unrun.
+///
+/// A panic in the job is caught and logged inside the job, so it never unwinds a
+/// lane's receive loop. There is no reentrancy guard: posting never waits, so a
+/// job may post to its own lane.
+pub(crate) fn post(sender: Option<&JobSender>, job: Job) -> std::io::Result<()> {
+    let contained: Job = Box::new(move || {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+            eprintln!(
+                "Warning: a posted large-stack job panicked: {}",
+                panic_payload_message(&*payload)
+            );
+        }
+    });
+    match sender {
+        Some(sender) => match sender.send(contained) {
+            Ok(()) => Ok(()),
+            Err(std::sync::mpsc::SendError(job)) => spawn_on_large_stack(job).map(drop),
+        },
+        None => std::thread::Builder::new()
+            .name(ENGINE_THREAD_NAME.to_string())
+            .spawn(contained)
+            .map(drop),
+    }
+}
+
+/// The message a caught panic carried: `panic!("literal")` yields a `&str`
+/// payload, a formatted `panic!` a `String`.
+pub(crate) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>")
+}
+
 /// Run `f` to completion on the process-wide PERSISTENT large-stack thread,
 /// BLOCKING the caller until it returns, and hand back its value.
 ///
