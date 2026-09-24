@@ -9,8 +9,12 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
+
+use crate::diff::{StateDelta, advance_baseline};
+use crate::types::GuiState;
 
 /// Where the frontend stamped an edit: `seq` increases with every edit of one
 /// page load, and `epoch` identifies the page load.
@@ -135,5 +139,62 @@ impl EditLedger {
             marks.insert(identity.strength, order);
         }
         !late
+    }
+}
+
+/// Whether the queue has edits or evaluations in hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalActivity {
+    Evaluating,
+    Idle,
+}
+
+/// What the frontend is told about evaluation.
+pub trait EvalObserver: Send + Sync {
+    fn activity(&self, activity: EvalActivity);
+    fn delta(&self, delta: &StateDelta);
+}
+
+/// The one place evaluation results become frontend-visible deltas.
+///
+/// The baseline is the same `Arc` the debug server diffs against (INV-GUI-2):
+/// otherwise a debug-driven mutation would advance the engine without the
+/// deltas published here ever accounting for it.
+pub struct SnapshotPublisher {
+    baseline: Arc<Mutex<Option<GuiState>>>,
+    observer: Arc<dyn EvalObserver>,
+    last_generation: Mutex<Option<u64>>,
+}
+
+impl SnapshotPublisher {
+    pub fn new(baseline: Arc<Mutex<Option<GuiState>>>, observer: Arc<dyn EvalObserver>) -> Self {
+        Self {
+            baseline,
+            observer,
+            last_generation: Mutex::new(None),
+        }
+    }
+
+    /// Advance the baseline to `state` and report the delta — or, when
+    /// `generation` is not newer than the last one published, touch nothing and
+    /// return `false`, so deltas never go backwards.
+    pub fn publish(&self, generation: u64, state: GuiState) -> bool {
+        let mut last = self
+            .last_generation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(last) = *last
+            && generation <= last
+        {
+            tracing::warn!(
+                "refused to publish evaluation generation {generation}: generation {last} \
+                 was already published"
+            );
+            return false;
+        }
+        *last = Some(generation);
+        let delta = advance_baseline(&self.baseline, state);
+        self.observer.delta(&delta);
+        true
     }
 }
