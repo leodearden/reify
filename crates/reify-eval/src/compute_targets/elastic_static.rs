@@ -8039,6 +8039,65 @@ mod tests {
         );
     }
 
+    /// Task 7448: a tip resultant `F` is the uniform traction `F / A` on the
+    /// tip face, which is exactly what an x_max pressure `p` with
+    /// `F = -p·W·H·x̂` assembles — same P1 triangles, tractions equal to ~1 ulp —
+    /// so the two solves agree to deterministic-CG rounding (~1e-13 ≪ 1e-9).
+    /// Checked at the default grid and at a non-default grid of the kind the
+    /// uniform adaptive lane (`CantileverAdaptiveProblem::refine`) produces.
+    #[test]
+    fn tip_force_is_the_uniform_traction_of_its_resultant_on_the_synthetic_tip_face() {
+        let model = MaterialModel::Isotropic(IsotropicElastic {
+            youngs_modulus: 200e9,
+            poisson_ratio: 0.3,
+        });
+        let (length, width, height) = (1.0, 0.1, 0.1);
+        let p = 1.0e6;
+        let x_max_pressure = [PressureSpec {
+            magnitude: p,
+            face: "x_max".to_string(),
+            direction: "normal".to_string(),
+        }];
+        let solve = |grid_override, tip_force, pressures: &[PressureSpec]| {
+            let (result, _warm) = solve_cantilever_fea(
+                &model,
+                length,
+                width,
+                height,
+                None,
+                tip_force,
+                None,
+                pressures,
+                [0.0; 3],
+                true,
+                None,
+                None,
+                None,
+                grid_override,
+            );
+            assert!(
+                result.converged,
+                "grid {grid_override:?}: solve did not converge"
+            );
+            result.u
+        };
+
+        for grid_override in [None, Some((8, 2, 4))] {
+            let u_tip_force = solve(grid_override, [-p * width * height, 0.0, 0.0], &[]);
+            let u_pressure = solve(grid_override, [0.0; 3], &x_max_pressure);
+            let scale = u_pressure.iter().fold(0.0_f64, |m, u| m.max(u.abs()));
+            let gap = u_tip_force
+                .iter()
+                .zip(u_pressure.iter())
+                .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+            assert!(
+                gap <= 1e-9 * scale,
+                "grid {grid_override:?}: tip-force and x_max-pressure solves differ by \
+                 {gap:e} (max |u| = {scale:e})",
+            );
+        }
+    }
+
     /// step-3 RED (task δ/3780): orthotropic ConstantField cantilever tip-deflection
     /// band test at L/h = 8.
     ///
