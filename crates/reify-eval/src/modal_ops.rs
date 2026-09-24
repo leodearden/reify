@@ -3711,24 +3711,22 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 ///     cantilever root clamp (step-16), and — with BOTH end faces named — the
 ///     genuine clamped-clamped beam.
 ///
-///   • **`PinnedSupport`** — pin only the transverse (Z) DOF on every node of the
-///     named face, leaving the bending rotation `dw/dx` free (it is carried by
-///     the axial `u(z)`, not by `w`) — but ONLY on a beam-axis end face of a
-///     model whose supports name another distinct recognized face. A lone or
+///   • **`PinnedSupport`** — a simple support: pin the transverse (Z) DOF on
+///     every node of the named face plus the lateral (Y) DOF at the face's
+///     neutral-axis node, leaving both bending rotations free (see
+///     [`FaceRealization::PinTransverse`]) — but ONLY on a beam-axis end face of
+///     a model whose supports name another distinct recognized face. A lone or
 ///     non-beam-axis pinned face clamps instead, matching
 ///     `PinnedOnTetEquivalentToFixed`; see [`face_realization`] for why that
 ///     scoping is load-bearing.
 ///
 ///   • **Simply-supported (pin-pin) special case** — when BOTH beam-axis end
 ///     faces (`"x_min"` AND `"x_max"`) are named AND every support naming an end
-///     face is `PinnedSupport`, the two end faces are realized by
-///     [`simply_supported_pin_pin_bcs`], which adds the three minimal
-///     neutral-axis anchors that the per-face rule alone cannot supply. Neither
-///     end face is clamped in that configuration, so without those anchors
-///     `K_free` is singular (see step-4's comment there for why the mixed
-///     propped-cantilever case needs no such anchors). Supports naming any OTHER
-///     face are still realized per-face and UNIONed on top — the special case
-///     re-interprets the two end faces, it never discards a support.
+///     face is `PinnedSupport`, both end faces are simple supports and nothing
+///     else restrains the beam axially, so ONE axial anchor is added
+///     ([`pin_pin_axial_anchor`]). It re-interprets nothing: every face,
+///     including the two ends, is realized per-face exactly as in any other
+///     configuration.
 ///
 /// **Why the kind matters here, even though a face-pin equals a face-clamp on a
 /// solid tet body** (`reify-solver-elastic/src/shell_boundary.rs:133-140`,
@@ -3764,7 +3762,7 @@ fn extract_element_order(val: &Value) -> ElementOrder {
 /// `PinnedSupport` realization decision depends on whether the model's
 /// supports name ANOTHER DISTINCT RECOGNIZED face, and would otherwise be
 /// invisible: naming or un-naming a second face elsewhere on the body
-/// silently re-realizes a pinned beam end (clamp ⇄ transverse pin), and the
+/// silently re-realizes a pinned beam end (clamp ⇄ simple support), and the
 /// author's only observable would be a frequency that moved. Every such face
 /// therefore carries one `I_ModalPinnedFaceRealization` `Severity::Info`
 /// diagnostic naming what it was realized as AND why — see
@@ -3786,21 +3784,22 @@ fn build_dirichlet_bcs(
     //     (`per_face_bcs` skips it through this same [`face_bound`] predicate),
     //     so it must not give another face company — otherwise a typo, or the
     //     stdlib's own `param target : String = ""` default, flips a
-    //     `PinnedSupport` on a beam end from a clamp to a transverse-only pin,
+    //     `PinnedSupport` on a beam end from a clamp to a lone simple support,
     //     turning a well-posed cantilever into a mechanism. Pinned by
     //     `build_dirichlet_bcs_ignores_supports_that_name_no_face`.
     //   * DUPLICATES collapse. `[Pinned("x_min"), Pinned("x_min")]` — the
     //     ordinary copy-paste authoring error — names ONE face twice, and a
     //     face cannot be its own company, so it stays `Alone`, restoring the
-    //     pre-6663 cantilever instead of flipping to a transverse-only pin for
-    //     the same mechanism outcome (measured: 4 surviving rigid-body modes,
-    //     reported under a mere `W_ModalRigidBodyMode` Warning). Pinned by
+    //     pre-6663 cantilever instead of flipping to a lone simple support for
+    //     the same mechanism outcome (measured on the pre-7055 Z-only shape: 4
+    //     surviving rigid-body modes, reported under a mere
+    //     `W_ModalRigidBodyMode` Warning). Pinned by
     //     `build_dirichlet_bcs_ignores_duplicate_face_targets`.
     //
     // `PinTransverse` can fire ONLY when a beam-axis end face has another
     // DISTINCT face's company — and every such configuration is well posed:
-    // the pin-pin special case below (both ends pinned, three neutral-axis
-    // anchors added), a propped cantilever (the other end `Fixed`, hence fully
+    // the pin-pin special case below (both ends simple supports, one axial
+    // anchor added), a propped cantilever (the other end `Fixed`, hence fully
     // clamped), or an end pin plus a non-end face, which always clamps (see
     // [`face_realization`]). So this closes the transverse-pin mechanism class
     // outright rather than documenting it as a residual.
@@ -3835,8 +3834,9 @@ fn build_dirichlet_bcs(
 
     // Simply-supported (pin-pin) special case: BOTH beam-axis end faces named,
     // and every support naming an end face is Pinned. A single `FixedSupport`
-    // among them makes this a clamped or propped configuration instead, which
-    // the per-face realization below handles directly.
+    // among them makes this a clamped or propped configuration instead. Each
+    // pinned end has the other as company, so both are already `PinTransverse`
+    // simple supports; the special case only adds the axial anchor.
     let names_face = |face: &str| targets.iter().any(|(_, t)| t == face);
     let end_face_supports_all_pinned = targets
         .iter()
@@ -3847,24 +3847,12 @@ fn build_dirichlet_bcs(
     let diagnostics =
         pinned_end_face_realization_diagnostics(&targets, &companies, simply_supported);
 
+    let mut bcs = per_face_bcs(&faces, nodes, length, width, height);
     if simply_supported {
-        // The special case re-interprets the TWO END FACES only. Every support
-        // naming another face is still realized per-face and unioned on top, so
-        // e.g. `[Pinned(x_min), Pinned(x_max), Fixed(y_min)]` is a
-        // simply-supported beam that is ALSO clamped on y_min, not a plain
-        // simply-supported beam with the y_min clamp silently discarded.
-        let mut bcs = simply_supported_pin_pin_bcs(nodes, length, height);
-        let others: Vec<(FaceRealization, &str)> = faces
-            .iter()
-            .copied()
-            .filter(|(_, t)| !is_beam_axis_end_face(t))
-            .collect();
-        bcs.extend(per_face_bcs(&others, nodes, length, width, height));
-        return DirichletRealization { bcs: normalize_bcs(bcs), diagnostics };
+        bcs.push(pin_pin_axial_anchor(nodes, height));
     }
-
     DirichletRealization {
-        bcs: normalize_bcs(per_face_bcs(&faces, nodes, length, width, height)),
+        bcs: normalize_bcs(bcs),
         diagnostics,
     }
 }
@@ -3901,8 +3889,9 @@ struct DirichletRealization {
 /// from whether the model's supports name another distinct recognized face,
 /// i.e. from something the author did NOT write on that support. Going from
 /// `[Pinned("x_min")]` to `[Pinned("x_min"), Fixed("y_min")]` re-realizes
-/// x_min from a full 3-DOF clamp to a Z-only transverse pin, and vice versa on
-/// removal — a change of idealization on a face that was never edited.
+/// x_min from a full 3-DOF clamp to a simple support (a transverse Z pin plus
+/// a lateral Y anchor), and vice versa on removal — a change of idealization
+/// on a face that was never edited.
 /// Without a diagnostic the only observable is a frequency that moved, which
 /// is the same silent-BC-reinterpretation failure mode this task closes,
 /// merely narrowed from "the kind is ignored" to "the kind is read in a
@@ -3912,7 +3901,7 @@ struct DirichletRealization {
 /// `PinTransverse` configuration is a mechanism. This does not change any
 /// number; it puts the face-company-dependence in the same diagnostic stream
 /// the rest of the modal solve reports through, so the flip is legible in
-/// BOTH directions (pinned as a transverse pin, and pinned-therefore-clamped).
+/// BOTH directions (pinned as a simple support, and pinned-therefore-clamped).
 ///
 /// # One pass, two consumers
 ///
@@ -4000,9 +3989,10 @@ fn pinned_end_face_realization_diagnostics(
 /// claim, because the upstream realization DECISION is still context-dependent:
 /// [`face_realization`] takes a [`FaceCompany`], so adding a support **that
 /// names a second DISTINCT recognized face** can flip a `Pinned` beam-end face
-/// from a clamp to a transverse-only pin without that face being mentioned
-/// again. That is a deliberate, documented trade-off (see [`face_realization`]'s
-/// "Why `Pinned` is not Z-only, always"), not an oversight — and, since review
+/// from a clamp to a simple support (transverse pin plus lateral anchor)
+/// without that face being mentioned again. That is a deliberate, documented
+/// trade-off (see [`face_realization`]'s "Why `Pinned` is not a simple support,
+/// always"), not an oversight — and, since review
 /// suggestion 1, a REPORTED one: every pinned beam-end face carries an
 /// `I_ModalPinnedFaceRealization` Info diagnostic naming which way it went and
 /// why ([`pinned_end_face_realization_diagnostics`]), so the flip is legible
@@ -4023,8 +4013,8 @@ fn per_face_bcs(
     width: f64,
     height: f64,
 ) -> Vec<DirichletBc> {
-    let eps = 1e-9_f64;
     let extent = [length, width, height];
+    let zero_dof = |dof: usize| DirichletBc { dof, value: 0.0 };
     let mut bcs = Vec::new();
     for (realization, target) in faces {
         // Face-name vocabulary lives in ONE place ([`face_bound`]), shared with
@@ -4035,62 +4025,53 @@ fn per_face_bcs(
         let Some((axis, is_max)) = face_bound(target) else {
             continue;
         };
-        for (n, coord) in nodes.iter().enumerate() {
-            let on_face = if is_max {
-                coord[axis] >= extent[axis] - eps
-            } else {
-                coord[axis] <= eps
-            };
-            if !on_face {
-                continue;
+        let on_face = face_nodes(nodes, axis, is_max, extent[axis]);
+        match realization {
+            // Clamp: all three translational DOFs on every node of the face.
+            FaceRealization::ClampAllDofs => {
+                bcs.extend(on_face.flat_map(|n| (0..3).map(move |a| zero_dof(3 * n + a))));
             }
-            match realization {
-                // Clamp: all three translational DOFs on this face's node.
-                FaceRealization::ClampAllDofs => {
-                    for axis in 0..3 {
-                        bcs.push(DirichletBc {
-                            dof: 3 * n + axis,
-                            value: 0.0,
-                        });
-                    }
-                }
-                // Simple support: the transverse (Z) DOF only, so the bending
-                // rotation at the support stays free.
-                //
-                // NOTE the deliberate ASYMMETRY with the pin-pin branch in
-                // `build_dirichlet_bcs`, which adds three minimal neutral-axis
-                // anchors on top of its Z pins. That branch needs them because a
-                // simply-supported beam is a WELL-POSED structure whose 2-D
-                // bending idealization the anchors do not disturb — they sit on
-                // the neutral axis, on the vertical modes' own node line.
-                //
-                // No such anchors belong here, and none are needed:
-                // `face_realization` scopes `PinTransverse` to a beam-axis end
-                // face of a model naming a second DISTINCT face, and
-                // `build_dirichlet_bcs` argues in its own body comment that
-                // every such configuration is well posed. The three mechanism
-                // shapes that could once reach this arm are all closed
-                // upstream — a LONE pin, an OFF-AXIS pin pair, and (since face
-                // identity now runs through `face_company`/`face_bound`) a pin
-                // whose only company is a support naming no recognized face or
-                // DUPLICATING the same one.
-                //
-                // Should a singular K_free still arrive here by some route this
-                // reasoning does not cover, the intended outcome is unchanged:
-                // NOT invented anchors, which would return plausible-looking
-                // frequencies for a structure that has none — the exact
-                // silent-wrong-answer class task 6663 exists to close — but the
-                // singular-K fallback in `solve_generalized_eigen`, which routes
-                // it to the graceful `W_ModalRigidBodyMode` path rather than the
-                // shift-invert Cholesky.
-                FaceRealization::PinTransverse => bcs.push(DirichletBc {
-                    dof: 3 * n + 2,
-                    value: 0.0,
-                }),
+            // Simple support: Z on every node of the face, plus Y at the face's
+            // neutral-axis node. See `FaceRealization::PinTransverse` for why
+            // that leaves both bending rotations free.
+            FaceRealization::PinTransverse => {
+                debug_assert_eq!(
+                    axis, 0,
+                    "PinTransverse is a beam-END realization: `face_realization` yields it \
+                     only for a beam-axis end face, got {target:?}",
+                );
+                bcs.extend(on_face.map(|n| zero_dof(3 * n + 2)));
+                let x_face = if is_max { length } else { 0.0 };
+                bcs.push(zero_dof(
+                    3 * end_face_neutral_axis_node(nodes, x_face, height) + 1,
+                ));
             }
         }
     }
     bcs
+}
+
+/// The indices of the nodes on the face `(axis, is_max)` selects (see
+/// [`face_bound`]): coordinate `axis` within `1e-9` of `0` for a min face, or
+/// of `extent` for a max face.
+fn face_nodes(
+    nodes: &[[f64; 3]],
+    axis: usize,
+    is_max: bool,
+    extent: f64,
+) -> impl Iterator<Item = usize> + '_ {
+    let eps = 1e-9_f64;
+    nodes
+        .iter()
+        .enumerate()
+        .filter(move |(_, coord)| {
+            if is_max {
+                coord[axis] >= extent - eps
+            } else {
+                coord[axis] <= eps
+            }
+        })
+        .map(|(n, _)| n)
 }
 
 /// Sort a homogeneous Dirichlet set by `dof` and drop repeats.
@@ -4106,76 +4087,37 @@ fn normalize_bcs(mut bcs: Vec<DirichletBc>) -> Vec<DirichletBc> {
     bcs
 }
 
-/// Realize the simply-supported (pin-pin) Dirichlet BCs for the beam (step-18).
-///
-/// A simply-supported beam pins the transverse deflection at both ends while
-/// leaving the bending rotation `dw/dx` free, giving natural frequencies in the
-/// `fₙ = ((nπ)²/2π)·√(EI/ρAL⁴)` family. Realizing that in the 3-D solid model
-/// without spuriously clamping the rotation (which would yield the *fixed-fixed*
-/// family, ~2.45× higher) requires care:
-///
-///   1. **Simple supports** — pin ONLY the transverse Z DOF on every node of
-///      both end faces (`x ≈ 0` and `x ≈ L`). The bending rotation at a support
-///      is carried by the *axial* displacement `u(z) = −(z − z_c)·dw/dx`, NOT by
-///      `w`, so pinning `w` (not `u`) on the end face leaves `dw/dx` free — a
-///      genuine simple support. Pinning `w` across the full end face also removes
-///      three rigid-body modes whose `w`-field is nonzero there: the Z
-///      translation, the X-axis twist, and the global rigid Y-rotation.
-///
-///   2. **Minimal anchors** — the three rigid-body modes left after step 1 (the X
-///      translation, the Y translation, and the in-plane Z-rotation) must be
-///      removed or `K_free` is singular and the shift-invert Cholesky fails.
-///      They are killed at the two end-face NEUTRAL-axis nodes (`z = h/2`):
-///      - pin **X** at the `x_min` neutral node → removes X translation;
-///      - pin **Y** at the `x_min` AND `x_max` neutral nodes (separated by `L`
-///        along x) → removes Y translation *and* the in-plane Z-rotation
-///        (a single Y anchor cannot remove both — a rotation about the vertical
-///        axis through that one node leaves it fixed; two anchors separated in
-///        x pin the rotation too).
-///
-/// Both anchor families are non-intrusive to the vertical bending modes (the
-/// task's headline signal): the vertical mode has `u = 0` at the neutral axis
-/// (so the X anchor sits on its node line) and `v = 0` everywhere (so the Y
-/// anchors never load it). Anchoring at the neutral axis — rather than clamping
-/// `u` across a full face — is precisely what keeps the support rotation free.
-fn simply_supported_pin_pin_bcs(nodes: &[[f64; 3]], length: f64, height: f64) -> Vec<DirichletBc> {
-    // `width` is not a parameter: the Z simple-support spans the full end face by
-    // node coordinate, and the anchors sit on the y = 0 neutral-axis node line.
-    let eps = 1e-9_f64;
-    let mut bcs = Vec::new();
+/// The node every beam-end anchor sits on: the one nearest `(x, 0, h/2)` —
+/// on the end face at `x`, on the `y = 0` edge, at mid-height, the vertical
+/// bending neutral axis. The single placement rule for the lateral anchor of
+/// [`FaceRealization::PinTransverse`] and for [`pin_pin_axial_anchor`].
+fn end_face_neutral_axis_node(nodes: &[[f64; 3]], x: f64, height: f64) -> usize {
+    nearest_node(nodes, [x, 0.0, height / 2.0])
+}
 
-    // (1) Simple supports: pin the transverse (Z) DOF on both end faces.
-    for (n, coord) in nodes.iter().enumerate() {
-        let on_end = coord[0] <= eps || coord[0] >= length - eps;
-        if on_end {
-            bcs.push(DirichletBc {
-                dof: 3 * n + 2,
-                value: 0.0,
-            }); // Z (bending)
-        }
+/// The pin-pin special case's ONE extra constraint: the axial (X) DOF at the
+/// `x_min` face's neutral-axis node.
+///
+/// With both beam-axis end faces realized as simple supports
+/// ([`FaceRealization::PinTransverse`]), axial translation is the ONLY
+/// rigid-body mode left. The two faces' Z pins remove the Z translation, the
+/// X-axis twist and the rigid Y-rotation; their two Y anchors, separated by
+/// `L` along x, remove the Y translation and the rigid Z-rotation (one anchor
+/// alone could not — a rotation about the vertical axis through it leaves it
+/// fixed). Nothing restrains X, so without this anchor `K_free` is singular
+/// and the shift-invert Cholesky fails. It sits on the neutral axis, where
+/// vertical bending's `u = −(z − h/2)·dw/dx` vanishes, so it leaves the
+/// support rotation free.
+fn pin_pin_axial_anchor(nodes: &[[f64; 3]], height: f64) -> DirichletBc {
+    DirichletBc {
+        dof: 3 * end_face_neutral_axis_node(nodes, 0.0, height),
+        value: 0.0,
     }
-
-    // (2) Minimal anchors at the two end-face neutral-axis nodes (z = h/2).
-    let root = nearest_node(nodes, [0.0, 0.0, height / 2.0]);
-    let tip = nearest_node(nodes, [length, 0.0, height / 2.0]);
-    bcs.push(DirichletBc {
-        dof: 3 * root,
-        value: 0.0,
-    }); // X anchor (axial)
-    bcs.push(DirichletBc {
-        dof: 3 * root + 1,
-        value: 0.0,
-    }); // Y anchor (lateral, root)
-    bcs.push(DirichletBc {
-        dof: 3 * tip + 1,
-        value: 0.0,
-    }); // Y anchor (lateral, tip)
-    bcs
 }
 
 /// Index of the mesh node nearest `target` in Euclidean distance.
 ///
-/// Used to place the simply-supported anchors on the end-face neutral-axis nodes
+/// Used by [`end_face_neutral_axis_node`] to place the beam-end anchors
 /// robustly — by coordinate, independent of `build_beam_mesh`'s internal node
 /// numbering (mirroring the unit tests' coordinate-based face selection).
 ///
@@ -4265,9 +4207,24 @@ enum FaceRealization {
     /// also how a *pinned* face is realized everywhere else in the system
     /// (`PinnedOnTetEquivalentToFixed`), so it is the default, not the exception.
     ClampAllDofs,
-    /// Pin the transverse (Z) DOF only, leaving the bending rotation `dw/dx`
-    /// free. The simply-supported BEAM idealization — see [`face_realization`]
-    /// for why it is scoped rather than applied to every `PinnedSupport`.
+    /// A simple support on a beam-axis end face: pin the transverse (Z) DOF on
+    /// every node of the face, plus the lateral (Y) DOF at ONE node, the
+    /// face's neutral-axis node ([`end_face_neutral_axis_node`]). The
+    /// simply-supported BEAM idealization — see [`face_realization`] for why it
+    /// is scoped rather than applied to every `PinnedSupport`.
+    ///
+    /// Both bending rotations stay free. `dw/dx` at the support is carried by
+    /// the axial `u(z) = −(z − h/2)·dw/dx`, not by `w`, so pinning `w` across
+    /// the face leaves it free; `dv/dx` is likewise carried by `u`, and a Y
+    /// anchor at a single node leaves the rotation about the vertical axis
+    /// through it free. The anchor sits at `z = h/2`, where vertical bending's
+    /// Poisson lateral displacement `v = ν(z − h/2)κ(y − b/2)` vanishes, so it
+    /// does not load the vertical modes.
+    ///
+    /// The anchor is a lateral SUPPORT, not only rigid-body removal: an end
+    /// pinned in Z alone is laterally FREE, and task 7055 measured exactly
+    /// that — `[Fixed("x_min"), Pinned("x_max")]` reported a 141.70 Hz lateral
+    /// clamped-free cantilever mode as the propped cantilever's fundamental.
     PinTransverse,
 }
 
@@ -4285,7 +4242,7 @@ fn is_beam_axis_end_face(target: &str) -> bool {
 /// callers depend on it agreeing with itself:
 ///   * [`per_face_bcs`] selects a face's nodes through it, and
 ///   * [`face_company`] compares faces' bounds through it to decide whether a
-///     `PinnedSupport` on a beam end realizes as a transverse pin or a clamp.
+///     `PinnedSupport` on a beam end realizes as a simple support or a clamp.
 ///
 /// Keeping both on one predicate is what stops a support that can select NO
 /// node from silently changing another face's realization: before task 6663's
@@ -4369,9 +4326,10 @@ fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceComp
 /// gives it no OTHER face's company, because neither may flip `target`'s own
 /// realization).
 ///
-/// `Fixed` always clamps. `Pinned` realizes as a transverse (Z) pin ONLY on a
-/// beam-axis end face that has another DISTINCT face's company; otherwise it
-/// clamps like every other pinned face in the system.
+/// `Fixed` always clamps. `Pinned` realizes as a simple support
+/// ([`FaceRealization::PinTransverse`]: a transverse pin plus a lateral anchor)
+/// ONLY on a beam-axis end face that has another DISTINCT face's company;
+/// otherwise it clamps like every other pinned face in the system.
 ///
 /// Because that decision reads a fact the author did not write on the
 /// support, [`build_dirichlet_bcs`] reports it: every pinned beam-end face
@@ -4379,31 +4337,34 @@ fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceComp
 /// (see [`pinned_end_face_realization_diagnostics`]). The rules below decide
 /// the realization; that diagnostic is what makes the decision legible.
 ///
-/// # Why `Pinned` is not "Z-only, always"
+/// # Why `Pinned` is not a simple support, always
 ///
-/// The Z-only realization is a property of the simply-supported BEAM
+/// The simple-support realization is a property of the simply-supported BEAM
 /// idealization, not of the `PinnedSupport` kind. Everywhere else in the system
 /// a pin on a solid tet body is a full 3-DOF clamp
 /// (`reify-solver-elastic/src/shell_boundary.rs`,
 /// `(Tet, Pinned) => (3, 3, PinnedOnTetEquivalentToFixed)`; the static path's
 /// `loads_supports_to_bc_node_sets` clamps all three DOFs for any support kind).
-/// Applying Z-only per face unconditionally would make the same DSL word mean
+/// Applying it per face unconditionally would make the same DSL word mean
 /// two different things in two solvers, and would regress two configurations
 /// that used to return a real answer into ≈ 0 Hz mechanisms reported under a
 /// mere Warning:
 ///
 ///   * `[PinnedSupport("x_min")]` alone — a LONE support is the model's only
-///     restraint, so a transverse-only pin is a mechanism by construction
-///     (measured: four surviving rigid-body modes). Pre-6663 this returned the
-///     cantilever answer, which is also what `PinnedOnTetEquivalentToFixed`
-///     says a single pinned tet face means. Clamping restores that.
+///     restraint, and a lone simple support is a mechanism by construction:
+///     nothing restrains the X translation, nor the rotation about the
+///     vertical axis through its single lateral anchor (measured for the
+///     pre-7055 Z-only shape: four surviving rigid-body modes). Pre-6663 this
+///     returned the cantilever answer, which is also what
+///     `PinnedOnTetEquivalentToFixed` says a single pinned tet face means.
+///     Clamping restores that.
 ///   * `[PinnedSupport("y_min"), PinnedSupport("y_max")]` — neither face is a
 ///     beam end, so Z-pinning both leaves the beam free to slide axially.
 ///
 /// Both propped configurations the task cares about are unaffected: the
 /// pin-pin special case in [`build_dirichlet_bcs`] handles two pinned end
 /// faces, and `[Fixed("x_min"), Pinned("x_max")]` still realizes x_max as a
-/// genuine transverse-only prop (two distinct faces, beam-axis end face).
+/// genuine simple-support prop (two distinct faces, beam-axis end face).
 ///
 /// # Why company is about FACES and not about supports
 ///
@@ -5610,8 +5571,10 @@ mod tests {
         );
     }
 
-    /// The Dirichlet set a transverse-only pin on the `x_min` face emits: the Z
-    /// DOF of every node on that face and nothing else.
+    /// A transverse-only pin on the `x_min` face: the Z DOF of every node on
+    /// that face and nothing else — the pre-7055 `PinTransverse` shape. Today's
+    /// realization also anchors the face's lateral DOF, but this set is kept
+    /// because it is SINGULAR, which is what the solver-layer tests below need.
     ///
     /// **Amendment (review suggestion 1): built by hand, deliberately.** The two
     /// tests below are about a DOWNSTREAM contract — `solve_modal_core` must
@@ -5644,10 +5607,10 @@ mod tests {
     /// Task 6663 / review blocker (a): a transverse-pin-ONLY support set must
     /// not panic.
     ///
-    /// `per_face_bcs`'s `FaceRealization::PinTransverse` branch emits Z-only
-    /// constraints and adds NO rigid-body anchors (deliberately — see its NOTE;
-    /// such a set is genuinely a mechanism and anchors must not be invented for
-    /// it). `eigensolve_modal`'s guard is
+    /// The subject is a Z-only set on one face — the pre-7055
+    /// `FaceRealization::PinTransverse` shape, which added NO rigid-body
+    /// anchors — and such a set is genuinely a mechanism.
+    /// `eigensolve_modal`'s guard is
     /// `n_dofs - n_free < 6`, which counts CONSTRAINED DOFs rather than
     /// rigid-body modes actually removed: one Z DOF per face node here is
     /// 14 ≥ 6, so `force_dense` stays false, the solve takes the shift-invert
@@ -7583,8 +7546,9 @@ mod tests {
     /// silent-wrong-answer class as the original defect, only reached through
     /// the `PinnedSupport` spelling instead of the `FixedSupport` one.
     ///
-    /// The fix realizes the two END FACES by the special case and UNIONs the
-    /// per-face realization of every other support on top. Asserted as: the
+    /// Since task 7055 every face, the two ends included, is realized per-face
+    /// and the special case only ADDS one axial anchor, so there is no longer a
+    /// branch that could discard anything. Asserted as: the
     /// three-support set is a strict SUPERSET of the plain pin-pin set (so the
     /// simply-supported realization is bit-preserved — no anchor moved, nothing
     /// dropped) that additionally clamps all three DOFs on every `y_min` node.
