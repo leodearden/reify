@@ -622,6 +622,85 @@ SPEC
     assert "D14: the rescued run-scope run leaves no artifact behind" \
         bash -c "[ ! -f '$E2E_ARTIFACT' ]"
 
+    # Phase 7 -- THE FAILED-TEST SHAPE (task 7833, esc-7094-6), end to end. One
+    # suite starves at module load, as in Phase 1, while a second module's test
+    # body awaits something the host never serves, so that module fails with
+    # vitest's own "Test timed out", not with the RPC text.
+    #
+    # This is the ONE place a REAL TestCase.result().errors and the real
+    # test-timeout text reach the classifier, the role Phase 5 plays for
+    # SerializedError. The await is a never-settling promise, not a timer, so
+    # nothing is left pending to delay worker teardown. The bound is not tiny
+    # because vitest re-checks it AFTER a passing test resolves, and the retry
+    # must pass.
+    cat > "$E2E/gui/specs/starved.test.ts" <<'SPEC'
+import { existsSync, writeFileSync } from 'node:fs'
+const seen = process.env.E2E_SEEN_FILE as string
+if (!existsSync(seen)) {
+  writeFileSync(seen, 'x')
+  throw new Error('[vitest-worker]: Timeout calling "fetch" with "["/gui/vitest.setup.ts","web"]"')
+}
+it('passes once the host is responsive again', () => {
+  expect(1).toBe(1)
+})
+SPEC
+
+    cat > "$E2E/gui/specs/slow.test.ts" <<'SPEC'
+import { existsSync, writeFileSync } from 'node:fs'
+const seen = `${process.env.E2E_SEEN_FILE as string}.slow`
+it('awaits an import the starved host never serves', async () => {
+  if (!existsSync(seen)) {
+    writeFileSync(seen, 'x')
+    await new Promise(() => {})
+  }
+  expect(1).toBe(1)
+}, 1000)
+SPEC
+
+    rm -f "$E2E_ARTIFACT"
+    p7_rc=0
+    ( cd "$E2E/gui" && E2E_SEEN_FILE="$E2E/state-phase7" npm test ) >"$E2E/phase7.log" 2>&1 || p7_rc=$?
+
+    assert "D15: a starved suite plus a timed-out test fails the run" \
+        bash -c "[ '$p7_rc' -ne 0 ]"
+
+    assert "D16: the real reporter classifies it at SUITE scope, methods=fetch, at column 0" \
+        grep -qE '^@@REIFY_GUI_FLAKE@@ kind=worker_rpc_timeout scope=suites .*methods=fetch lineage=' "$E2E/phase7.log"
+
+    assert "D17: the artifact names BOTH failing modules, the timed-out test's included" \
+        bash -c "[ \"\$(node -e 'process.stdout.write(JSON.parse(require(\"node:fs\").readFileSync(process.argv[1],\"utf8\")).suites.slice().sort().join(\",\"))' '$E2E_ARTIFACT')\" = 'specs/slow.test.ts,specs/starved.test.ts' ]"
+
+    rm -f "$E2E_ARTIFACT"
+    p7b_rc=0
+    E2E_SEEN_FILE="$E2E/state-phase7b" "$E2E/scripts/gui-vitest-run.sh" >"$E2E/phase7b.log" 2>&1 || p7b_rc=$?
+
+    assert "D18: the runner rescues the failed-test shape with a narrowed retry" \
+        bash -c "
+            [ '$p7b_rc' -eq 0 ] &&
+            grep -qE '^@@REIFY_GUI_FLAKE@@ .*outcome=retried .*scope=suites' '$E2E/phase7b.log'
+        "
+
+    assert "D18: the retry re-ran the two failing modules, not the healthy one" \
+        bash -c "grep 'Test Files' '$E2E/phase7b.log' | tail -n1 | grep -q '2 passed (2)'"
+
+    # Phase 8 -- the same starved suite beside a GENUINE assertion failure. The
+    # starvation evidence is real, and still nothing may be retried.
+    cat > "$E2E/gui/specs/slow.test.ts" <<'SPEC'
+it('is a real defect', () => {
+  expect(1).toBe(2)
+})
+SPEC
+    rm -f "$E2E_ARTIFACT"
+    p8_rc=0
+    E2E_SEEN_FILE="$E2E/state-phase8" "$E2E/scripts/gui-vitest-run.sh" >"$E2E/phase8.log" 2>&1 || p8_rc=$?
+
+    assert "D19: an assertion failure beside a starved suite propagates, with no marker and no retry" \
+        bash -c "
+            [ '$p8_rc' -ne 0 ] &&
+            ! grep -q '@@REIFY_GUI_FLAKE@@' '$E2E/phase8.log' &&
+            [ ! -f '$E2E_ARTIFACT' ]
+        "
+
     rm -rf "$E2E"
 fi
 
