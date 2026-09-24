@@ -323,6 +323,7 @@ examples/trajectory/tots_optimal_ptp.ri :: crates/reify-compiler/tests/tots_opti
 examples/trajectory/zv_shaped_ramp.ri :: crates/reify-compiler/tests/zv_shaped_ramp_example_tests.rs
 examples/type_hygiene/type_hygiene_surface.ri :: crates/reify-compiler/tests/examples_smoke.rs
 examples/type_hygiene/type_hygiene_surface.ri :: crates/reify-compiler/tests/type_hygiene_integration_gate.rs
+gui/src-tauri/src/debug_server.rs :: crates/reify-eval/tests/harness_selective_demand/selective_demand_epsilon.rs
 gui/src-tauri/src/tests/engine_tests.rs :: crates/reify-compiler/tests/examples_smoke.rs
 gui/src-tauri/src/tests/engine_tests.rs :: crates/reify-compiler/tests/port_compile_tests.rs
 gui/src-tauri/tests/rpath_smoke.rs :: crates/reify-cli/tests/harness_cli/rpath_smoke.rs

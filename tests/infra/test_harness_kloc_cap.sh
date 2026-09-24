@@ -50,7 +50,7 @@
 # harness_occt itself dropped its bare `mod common;` in the #7466 split, which
 # moved the include to the new sibling along with its consumers; harness_langcore
 # and harness_patterns spell the equivalent `#[path = "common/mod.rs"]`, and
-# harness_selective_demand does the same for `common/differential.rs`). The
+# harness_cache does the same for `common/differential.rs`). The
 # rule is therefore scoped: `#[path]` is mandatory for every former-standalone
 # file moved under the harness directory, not for a retained `tests/` sibling.
 # Section 6 encodes exactly this scoping — a bare `mod <ident>;` is a violation
