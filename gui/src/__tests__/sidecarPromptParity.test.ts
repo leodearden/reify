@@ -13,12 +13,16 @@
  * ./debugParity.test.ts case (b), and deliberately not repeated here.
  */
 import { describe, it, expect } from 'vitest';
-import { SYSTEM_PROMPT } from '../../sidecar/src/system-prompt';
+import { ADVERTISED_DEBUG_TOOL_NAMES, SYSTEM_PROMPT } from '../../sidecar/src/system-prompt';
 import { extractToolDefNames, readDebugServerSource } from './toolDefNames';
 
 const toolDefNames = extractToolDefNames(readDebugServerSource());
 
-const promptNamed = new Set(
+/** The prompt's tool table: the tools the assistant is given a description of. */
+const advertised = new Set(ADVERTISED_DEBUG_TOOL_NAMES);
+
+/** Every reify-debug tool the rendered prompt mentions, in the table or in prose. */
+const promptMentioned = new Set(
   [...SYSTEM_PROMPT.matchAll(/mcp__reify-debug__([A-Za-z0-9_]+)/g)].map((m) => m[1]),
 );
 
@@ -81,23 +85,18 @@ const NOT_ADVERTISED_TO_SIDECAR = {
 const withheld: readonly string[] = Object.values(NOT_ADVERTISED_TO_SIDECAR).flat();
 
 describe('sidecar SYSTEM_PROMPT ↔ tool_defs() parity', () => {
-  it('(a) every reify-debug tool the prompt names is served by tool_defs()', () => {
-    expect(
-      promptNamed.size,
-      'no mcp__reify-debug__<name> token found in SYSTEM_PROMPT — the prefix this guard scans for has changed',
-    ).toBeGreaterThan(0);
-
-    const unserved = [...promptNamed].filter((n) => !toolDefNames.includes(n));
+  it('(a) every reify-debug tool the prompt mentions is served by tool_defs()', () => {
+    const unserved = [...promptMentioned].filter((n) => !toolDefNames.includes(n));
     expect(unserved, 'SYSTEM_PROMPT names reify-debug tools tool_defs() does not serve').toStrictEqual(
       [],
     );
   });
 
   it('(b) every tool_defs() tool is advertised or deliberately withheld', () => {
-    const unclassified = toolDefNames.filter((n) => !promptNamed.has(n) && !withheld.includes(n));
+    const unclassified = toolDefNames.filter((n) => !advertised.has(n) && !withheld.includes(n));
     expect(
       unclassified,
-      'unclassified tool_defs() tools: name each in gui/sidecar/src/system-prompt.ts, or add it to NOT_ADVERTISED_TO_SIDECAR in this file',
+      'unclassified tool_defs() tools: add each to the tool table in gui/sidecar/src/system-prompt.ts, or to NOT_ADVERTISED_TO_SIDECAR in this file',
     ).toStrictEqual([]);
   });
 
@@ -105,10 +104,10 @@ describe('sidecar SYSTEM_PROMPT ↔ tool_defs() parity', () => {
     const stale = withheld.filter((n) => !toolDefNames.includes(n));
     expect(stale, 'NOT_ADVERTISED_TO_SIDECAR entries tool_defs() no longer serves').toStrictEqual([]);
 
-    const contradictory = withheld.filter((n) => promptNamed.has(n));
+    const contradictory = withheld.filter((n) => advertised.has(n));
     expect(
       contradictory,
-      'NOT_ADVERTISED_TO_SIDECAR entries the prompt nevertheless names',
+      'NOT_ADVERTISED_TO_SIDECAR entries the prompt\'s tool table nevertheless advertises',
     ).toStrictEqual([]);
 
     const duplicates = withheld.filter((n, i) => withheld.indexOf(n) !== i);
@@ -123,7 +122,23 @@ describe('sidecar SYSTEM_PROMPT ↔ tool_defs() parity', () => {
       'reify_save_file',
       'reify_export',
     ];
-    const unadvertised = AI_WRITE_TOOLS.filter((n) => !promptNamed.has(n));
-    expect(unadvertised, 'AI write tools SYSTEM_PROMPT does not advertise').toStrictEqual([]);
+    const unadvertised = AI_WRITE_TOOLS.filter((n) => !advertised.has(n));
+    expect(unadvertised, 'AI write tools the prompt\'s tool table does not advertise').toStrictEqual(
+      [],
+    );
+  });
+
+  it('(e) the prompt mentions exactly the tools its table describes', () => {
+    const unrendered = [...advertised].filter((n) => !promptMentioned.has(n));
+    expect(
+      unrendered,
+      'tool-table rows absent from the rendered SYSTEM_PROMPT — the mcp__reify-debug__ prefix this guard scans for has changed',
+    ).toStrictEqual([]);
+
+    const undescribed = [...promptMentioned].filter((n) => !advertised.has(n));
+    expect(
+      undescribed,
+      'SYSTEM_PROMPT mentions reify-debug tools its tool table does not describe',
+    ).toStrictEqual([]);
   });
 });

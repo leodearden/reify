@@ -407,11 +407,13 @@ entry and therefore do **not** appear in `tools/list`.
 assistant's `SYSTEM_PROMPT` (`gui/sidecar/src/system-prompt.ts`) against the
 same registry:
 - Every `mcp__reify-debug__<name>` the prompt names is served by `tool_defs()`.
-- Every `tool_defs()` tool is either advertised in the prompt or listed in
-  `NOT_ADVERTISED_TO_SIDECAR`.
-- That allowlist is self-checked: no stale entries, no entries the prompt
-  names anyway, and no duplicates.
-- The five AI write tools are advertised.
+- Every `tool_defs()` tool is either advertised in the prompt's tool table
+  (`ADVERTISED_DEBUG_TOOL_NAMES`) or listed in `NOT_ADVERTISED_TO_SIDECAR`.
+- That allowlist is self-checked: no stale entries, no entries the table
+  advertises anyway, and no duplicates.
+- The five AI write tools are advertised in the table.
+- The prompt mentions exactly the tools its table describes, so its prose
+  cannot name a tool the assistant has no description of.
 
 ---
 

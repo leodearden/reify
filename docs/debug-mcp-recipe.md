@@ -312,7 +312,7 @@ Every other tool stays callable, because `ALLOWED_TOOLS` in
 deliberately not advertised.
 
 `gui/src/__tests__/sidecarPromptParity.test.ts` enforces the split. A new
-`ToolDef` must be named in the prompt or added to that file's
+`ToolDef` must get a row in the prompt's tool table or be added to that file's
 `NOT_ADVERTISED_TO_SIDECAR`, or the gui suite goes red (see the checklist in
 [debug-mcp-contract.md](debug-mcp-contract.md) §1 "Defining a new tool").
 

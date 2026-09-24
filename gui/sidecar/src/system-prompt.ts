@@ -2,7 +2,10 @@ export interface SystemPromptOptions {
   workingDirectory?: string;
 }
 
-/** The reify-debug MCP server's tool namespace, as session.ts's ALLOWED_TOOLS grants it. */
+/**
+ * The reify-debug MCP server's tool namespace. session.ts's ALLOWED_TOOLS must
+ * grant it; system-prompt.test.ts checks every tool the prompt names is grantable.
+ */
 const REIFY_DEBUG_PREFIX = 'mcp__reify-debug__';
 
 function debugTool(name: string): string {
@@ -108,6 +111,11 @@ const ADVERTISED_DEBUG_TOOLS: readonly AdvertisedToolGroup[] = [
   },
 ];
 
+/** The bare names ADVERTISED_DEBUG_TOOLS describes: what the assistant is told it can call. */
+export const ADVERTISED_DEBUG_TOOL_NAMES: readonly string[] = ADVERTISED_DEBUG_TOOLS.flatMap(
+  ({ tools }) => tools.map(({ name }) => name),
+);
+
 function renderToolGroups(groups: readonly AdvertisedToolGroup[]): string {
   return groups
     .map(({ heading, tools }) =>
@@ -178,7 +186,6 @@ structure def Bracket {
 /**
  * Condensed Reify language briefing and tool-usage guide for the Claude Code SDK.
  * This inline briefing is the full reference — there is no separate lookup tool.
- * ~1.5K tokens (chars/4).
  */
 export const SYSTEM_PROMPT = `${LANGUAGE_BRIEFING}
 ## Tools
