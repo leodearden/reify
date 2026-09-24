@@ -55,6 +55,7 @@ use crate::datum_projection::{
     datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
     DATUM_PROJECTION_MEMBERS,
 };
+use reify_core::overload::slot_matches_wildcard_tier;
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
 /// use at any producer site that emits a `Severity::Error` diagnostic.
@@ -6334,15 +6335,20 @@ fn compile_expr_guarded_with_expected_inner(
             // (4)+(5) Validate (trait, method) and resolve the return type via
             //         overload resolution against the arg types threaded in scope.
             //         A absent trait/method ⇒ E_TRAIT_METHOD_UNKNOWN (anti-cascade
-            //         poison). When multiple sigs exist, resolve the one whose non-self
-            //         params best match the compiled arg types using a subset of
-            //         `resolve_function_overload`'s semantics: trait-object params as
-            //         wildcards, type-param/dim-param params as wildcards (param-side
-            //         wildcard is unconditional — `CompiledAssocFnSig` does not track
-            //         `type_params`, but non-generic assoc fns always have concrete
-            //         resolved params so the unconditional check is safe in practice),
-            //         type-param-carrying args as wildcards (D4), exact-match tiebreak,
-            //         NO Int→Real. (ε #3943; amendment for reviewer suggestions §1+§2)
+            //         poison). Resolution is tier 3
+            //         (`reify_core::overload::slot_matches_wildcard_tier`) plus the
+            //         exact-match tie-break; no head tier, NO Int→Real. (ε #3943)
+            //
+            //         `is_generic` is held OPEN (#6505): `CompiledAssocFnSig` records
+            //         no type-param list, and a sig's type-param scope is fn-level ∪
+            //         trait-level (entity.rs's default-fn re-resolution when filling
+            //         `trait_assoc_fn_overloads`), so the free-fn
+            //         `!f.type_params.is_empty()` notion would misclassify a
+            //         trait-generic method as non-generic. Holding it open cannot widen
+            //         a non-generic sig: TypeParam/ScalarParam leaves only resolve from
+            //         a non-empty type-param scope. Pinned by
+            //         `dispatch_trait_generic_{type,dim}_param_slot_is_a_wildcard` in
+            //         tests/harness_traits/trait_assoc_fn_overload_tests.rs.
             let overloads = scope
                 .trait_assoc_fn_overloads
                 .get(trait_name.as_str())
@@ -6403,15 +6409,11 @@ fn compile_expr_guarded_with_expected_inner(
                     let matches: Vec<&CompiledAssocFnSig> = sigs
                         .iter()
                         .filter(|sig| {
+                            let is_generic = true;
                             sig.params.len() == arg_types.len()
                                 && sig.params.iter().zip(arg_types.iter()).all(
                                     |(param_ty, arg_ty)| {
-                                        // Wildcard hierarchy (see block comment above):
-                                        type_carries_trait_object(param_ty)
-                                            || type_carries_type_param(param_ty)
-                                            || type_carries_dim_param(param_ty)
-                                            || type_carries_type_param(arg_ty)
-                                            || param_ty == arg_ty
+                                        slot_matches_wildcard_tier(param_ty, arg_ty, is_generic)
                                     },
                                 )
                         })
