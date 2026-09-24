@@ -213,3 +213,244 @@ fn two_sketch_blocks_draw_two_diagnostics() {
         found
     );
 }
+
+// ── specialization scopes ────────────────────────────────────────────────────
+//
+// A `sub s : T { … }` specialization body and a keyed `"k" => { … }` override
+// block are member lists too, so the grammar admits a sketch block there. The
+// structure-level member loop (entity.rs) and the guarded-member loop
+// (guards.rs) never enter them, so without a dedicated rejection such a block
+// compiled with `diagnostics: []` — the INV-SF-1 silent no-op this file exists
+// to keep shut.
+
+const STRUCTURE_LEVEL_SKETCH: &str = r#"structure def T {
+    sketch profile {
+        let a = point(0mm, 0mm)
+        fix(a)
+    }
+}"#;
+
+const GUARDED_SKETCH: &str = r#"structure def T {
+    param active : Bool = true
+    where active {
+        sketch profile {
+            let a = point(0mm, 0mm)
+            fix(a)
+        }
+    }
+}"#;
+
+const SPEC_BODY_SKETCH: &str = r#"structure def Inner {
+    param w : Length = 10mm
+}
+structure def T {
+    sub s : Inner {
+        sketch profile {
+            let a = point(0mm, 0mm)
+            fix(a)
+        }
+    }
+}"#;
+
+const KEYED_OVERRIDE_SKETCH: &str = r#"structure def Inner {
+    param w : Length = 10mm
+}
+structure def T {
+    sub s : Keyed<Inner> {
+        "k" => {
+            w = 5mm
+            sketch profile {
+                let a = point(0mm, 0mm)
+                fix(a)
+            }
+        }
+    }
+}"#;
+
+const GUARDED_SPEC_BODY_SKETCH: &str = r#"structure def Inner {
+    param w : Length = 10mm
+}
+structure def T {
+    param flag : Length = 2mm
+    sub s : Inner {
+        where flag > 1mm {
+            sketch profile {
+                let a = point(0mm, 0mm)
+                fix(a)
+            }
+        }
+    }
+}"#;
+
+/// Byte range of the whole `sketch profile { … }` block in `source`: from the
+/// `sketch` keyword through its matching closing brace.
+fn sketch_block_range(source: &str) -> (u32, u32) {
+    let (start, _) = byte_range(source, "sketch profile {");
+    let mut depth = 0usize;
+    for (offset, ch) in source[start as usize..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (start, start + offset as u32 + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced sketch block in test source: {source:?}")
+}
+
+/// `source` with its sketch block cut out — the non-vacuity control that proves
+/// the surrounding scope compiles clean, so any error seen with the block in
+/// place is the block's.
+fn without_sketch_block(source: &str) -> String {
+    let (start, end) = sketch_block_range(source);
+    format!("{}{}", &source[..start as usize], &source[end as usize..])
+}
+
+/// The single sketch rejection in `source`, asserting it is the ONLY error and
+/// that the same source minus the block compiles clean.
+fn only_error_is_one_sketch_rejection(position: &str, source: &str) -> reify_core::Diagnostic {
+    let control = compile_source(&without_sketch_block(source));
+    assert!(
+        errors_only(&control).is_empty(),
+        "NON-VACUITY ({position}): the source must compile clean without its sketch block, \
+         got: {:?}",
+        control.diagnostics
+    );
+
+    let module = compile_source(source);
+    let found = sketch_unsupported_errors(&module);
+    assert_eq!(
+        found.len(),
+        1,
+        "a sketch block in a {position} must draw exactly ONE loud rejection, got {}; \
+         all diagnostics were: {:?}",
+        found.len(),
+        module.diagnostics
+    );
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "the sketch rejection must be the only error in a {position}, got: {errors:?}"
+    );
+    found[0].clone()
+}
+
+/// A sketch block directly inside a `sub … { … }` specialization body is
+/// rejected loudly, not dropped.
+#[test]
+fn sketch_block_inside_a_specialization_body_is_rejected_loudly() {
+    let diag = only_error_is_one_sketch_rejection("specialization body", SPEC_BODY_SKETCH);
+    assert_eq!(diag.severity, Severity::Error);
+}
+
+/// A sketch block inside a keyed `"k" => { … }` override block is rejected
+/// loudly — the keyed entry's overrides are a specialization scope too.
+#[test]
+fn sketch_block_inside_a_keyed_override_block_is_rejected_loudly() {
+    let diag = only_error_is_one_sketch_rejection("keyed override block", KEYED_OVERRIDE_SKETCH);
+    assert_eq!(diag.severity, Severity::Error);
+}
+
+/// A sketch block in a `where { … }` inside a specialization body — the nesting
+/// a non-recursive fix would miss.
+#[test]
+fn sketch_block_in_a_guarded_block_inside_a_specialization_body_is_rejected_loudly() {
+    let diag = only_error_is_one_sketch_rejection(
+        "guarded block inside a specialization body",
+        GUARDED_SPEC_BODY_SKETCH,
+    );
+    assert_eq!(diag.severity, Severity::Error);
+}
+
+/// The specialization-body rejection's label spans exactly the sketch block.
+#[test]
+fn the_specialization_body_rejection_label_covers_the_sketch_block() {
+    let diag = only_error_is_one_sketch_rejection("specialization body", SPEC_BODY_SKETCH);
+    let label = diag.labels.first().unwrap_or_else(|| {
+        panic!("the rejection must carry a label so the user sees WHERE: {diag:?}")
+    });
+    let (start, end) = sketch_block_range(SPEC_BODY_SKETCH);
+    assert_eq!(
+        (label.span.start, label.span.end),
+        (start, end),
+        "label must span the sketch block {:?}; diagnostic: {diag:?}",
+        &SPEC_BODY_SKETCH[start as usize..end as usize]
+    );
+}
+
+/// One block, one diagnostic, in every specialization-scope position — so a
+/// pre-pass and a member loop can never both report the same block.
+#[test]
+fn exactly_one_diagnostic_per_sketch_block_in_a_specialization_body() {
+    for (position, source) in [
+        ("specialization body", SPEC_BODY_SKETCH),
+        ("keyed override block", KEYED_OVERRIDE_SKETCH),
+        (
+            "guarded block inside a specialization body",
+            GUARDED_SPEC_BODY_SKETCH,
+        ),
+    ] {
+        let module = compile_source(source);
+        let found = sketch_unsupported_errors(&module);
+        assert_eq!(
+            found.len(),
+            1,
+            "{position}: one sketch block must draw exactly one rejection, got {}: {found:?}",
+            found.len()
+        );
+    }
+}
+
+/// An `occurrence def` body is a member list like a structure's, so a sketch
+/// block there is rejected loudly as well.
+#[test]
+fn occurrence_level_sketch_block_is_rejected_loudly() {
+    let source = r#"occurrence def O {
+    sketch profile {
+        let a = point(0mm, 0mm)
+        fix(a)
+    }
+}"#;
+    let diag = only_error_is_one_sketch_rejection("occurrence body", source);
+    assert_eq!(diag.severity, Severity::Error);
+}
+
+/// Every position that rejects a sketch block says the same thing, byte for
+/// byte — the drift detector for the rejection's single message.
+#[test]
+fn every_sketch_rejection_site_shares_one_message() {
+    let rendered: Vec<(&str, String, Vec<String>)> = [
+        ("structure level", STRUCTURE_LEVEL_SKETCH),
+        ("guarded block", GUARDED_SKETCH),
+        ("specialization body", SPEC_BODY_SKETCH),
+        ("keyed override block", KEYED_OVERRIDE_SKETCH),
+    ]
+    .into_iter()
+    .map(|(position, source)| {
+        let module = compile_source(source);
+        let found = sketch_unsupported_errors(&module);
+        let diag = found.first().unwrap_or_else(|| {
+            panic!(
+                "{position}: no sketch rejection; diagnostics: {:?}",
+                module.diagnostics
+            )
+        });
+        let labels = diag.labels.iter().map(|l| l.message.clone()).collect();
+        (position, diag.message.clone(), labels)
+    })
+    .collect();
+
+    let (_, first_message, first_labels) = &rendered[0];
+    for (position, message, labels) in &rendered[1..] {
+        assert_eq!(
+            (message, labels),
+            (first_message, first_labels),
+            "{position}'s sketch rejection must match the structure-level one byte for byte"
+        );
+    }
+}
