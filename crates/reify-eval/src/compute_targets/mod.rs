@@ -209,11 +209,10 @@ pub(crate) fn sampled_rotation_field(sf: SampledField) -> Value {
 
 /// Derive the `rotation` [`SampledField`] from the `curl` one: ω = ∇×u / 2.
 ///
-/// Clones `curl_sf`, halves every `data` entry, and renames to `"rotation"`.
-/// Every grid-metadata field (`kind`, `bounds_min`, `bounds_max`, `spacing`,
-/// `axis_grids`, `interpolation`) is carried through verbatim, so the rotation
-/// channel shares the curl channel's Regular3D grid exactly — no extra BVH
-/// resample pass, and bit-identical node coordinates.
+/// Halves every `data` entry onto a `"rotation"` field on curl's grid (see
+/// [`sampled_field_on_grid_of`]), so the rotation channel shares the curl
+/// channel's Regular3D grid exactly — no extra BVH resample pass, and
+/// bit-identical node coordinates.
 ///
 /// Halving is bit-exact: IEEE-754 division by 2.0 only decrements the exponent,
 /// so it is exact for every normal operand (subnormal underflow is unreachable
@@ -230,12 +229,73 @@ pub(crate) fn sampled_rotation_field(sf: SampledField) -> Value {
 /// that is a pure ×½ of a slab already on the wire. Deriving instead means
 /// existing cache entries gain a correct `.rotation` for free.
 pub(crate) fn rotation_sf_from_curl(curl_sf: &SampledField) -> SampledField {
-    let mut sf = curl_sf.clone();
-    sf.name = "rotation".to_string();
-    for c in sf.data.iter_mut() {
-        *c /= 2.0;
+    sampled_field_on_grid_of(
+        curl_sf,
+        "rotation",
+        curl_sf.data.iter().map(|c| c / 2.0).collect(),
+    )
+}
+
+/// Derive the `shear_angles` [`SampledField`] from the stride-9 row-major
+/// `gradient` one: per node, the Voigt-order ENGINEERING shears
+/// (γ_yz, γ_zx, γ_xy) with γ_ij = g_ij + g_ji = 2·ε_ij.
+///
+/// A linear projection of each node's ∇u, so it lands on gradient's grid (see
+/// [`sampled_field_on_grid_of`]) with no extra BVH pass. Derived at wrap time
+/// and persisted nowhere, for the same frozen-wire-header reason as
+/// [`rotation_sf_from_curl`].
+pub(crate) fn shear_angles_sf_from_gradient(grad_sf: &SampledField) -> SampledField {
+    assert!(
+        grad_sf.data.len().is_multiple_of(9),
+        "gradient SampledField '{}' must be stride-9 (one row-major 3×3 per node), \
+         got {} values",
+        grad_sf.name,
+        grad_sf.data.len()
+    );
+    let shears = grad_sf
+        .data
+        .chunks_exact(9)
+        .flat_map(|g| [g[5] + g[7], g[6] + g[2], g[1] + g[3]])
+        .collect();
+    sampled_field_on_grid_of(grad_sf, "shear_angles", shears)
+}
+
+/// A new `data` payload named `name` on `source`'s grid: every grid-metadata
+/// field is carried through verbatim, without cloning `source.data`.
+///
+/// The one constructor behind every wrap-time derived channel. The exhaustive
+/// struct literal makes a new [`SampledField`] field a compile error here.
+fn sampled_field_on_grid_of(source: &SampledField, name: &str, data: Vec<f64>) -> SampledField {
+    SampledField {
+        name: name.to_string(),
+        kind: source.kind,
+        bounds_min: source.bounds_min.clone(),
+        bounds_max: source.bounds_max.clone(),
+        spacing: source.spacing.clone(),
+        axis_grids: source.axis_grids.clone(),
+        interpolation: source.interpolation,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
     }
-    sf
+}
+
+/// Wrap a [`SampledField`] as a `shear_angles` `Value::Field`.
+///
+/// domain: `Point3<Length>`, codomain: `Vector3<Angle>` (stride 3) — matches
+/// `solver_elastic.ri` `shear_angles : Field<Point3<Length>, Vector3<Angle>>`.
+/// The payload is (γ_yz, γ_zx, γ_xy) from [`shear_angles_sf_from_gradient`].
+///
+/// A named crossing like [`sampled_rotation_field`] (whose doc explains why the
+/// declared codomain alone suffices), while [`sampled_gradient_field`] keeps its
+/// `Tensor<2,3,Real>` codomain: a tensor carries one quantity slot, so angle
+/// readings are extracted by named channels (INV-AD-3).
+pub(crate) fn sampled_shear_angles_field(sf: SampledField) -> Value {
+    Value::Field {
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::vec3(reify_core::Type::angle()),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
 }
 
 /// Assert `derived` sits bit-identically on `source`'s grid: every
@@ -267,7 +327,10 @@ pub(crate) fn assert_same_grid(derived: &SampledField, source: &SampledField, pa
     assert_eq!(&derived.bounds_max, bounds_max, "{path}: bounds_max");
     assert_eq!(&derived.spacing, spacing, "{path}: spacing");
     assert_eq!(&derived.axis_grids, axis_grids, "{path}: axis_grids");
-    assert_eq!(&derived.interpolation, interpolation, "{path}: interpolation");
+    assert_eq!(
+        &derived.interpolation, interpolation,
+        "{path}: interpolation"
+    );
 }
 
 /// Assert `rot` is exactly what [`rotation_sf_from_curl`] must produce from
@@ -325,7 +388,10 @@ pub(crate) fn assert_shear_angles_project_gradient(
         "{path}: shear_angles must be (γ_yz, γ_zx, γ_xy) = (g12+g21, g20+g02, g01+g10) \
          of the gradient, bit-exactly (0 ULP)"
     );
-    assert_eq!(shear.name, "shear_angles", "{path}: derived field is renamed");
+    assert_eq!(
+        shear.name, "shear_angles",
+        "{path}: derived field is renamed"
+    );
     assert_same_grid(shear, grad, path);
 }
 
@@ -1055,7 +1121,8 @@ mod tests {
             oob_emitted: AtomicBool::new(false),
         };
 
-        let value = super::sampled_shear_angles_field(super::shear_angles_sf_from_gradient(&grad_sf));
+        let value =
+            super::sampled_shear_angles_field(super::shear_angles_sf_from_gradient(&grad_sf));
         let Value::Field {
             domain_type,
             codomain_type,
@@ -1106,7 +1173,11 @@ mod tests {
             else {
                 panic!("component {i} must be an ANGLE-dimensioned Scalar, got {component:?}")
             };
-            assert_eq!(*dimension, DimensionVector::ANGLE, "component {i} dimension");
+            assert_eq!(
+                *dimension,
+                DimensionVector::ANGLE,
+                "component {i} dimension"
+            );
             let got = si_value.to_degrees();
             assert!(
                 (got - want).abs() <= 1e-12 * want,
