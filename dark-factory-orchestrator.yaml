@@ -702,6 +702,54 @@ budgets:
 max_turns:
   architect: 180
 
+# Every Opus session drops effort max -> xhigh (Leo, 2026-09-24): early reports on the
+# newly released Opus show max burning many times the reasoning tokens of xhigh for
+# minimal improvement in results. architect, merger and deep_reviewer always run Opus
+# (reviewer and steward already run it at high). implementer/debugger run Sonnet and
+# keep max; they reach Opus only through the routing rules below, so the rules carry
+# the xhigh. This supersedes defaults.yaml's eval-held architect max (task 2848).
+effort:
+  architect: xhigh
+  merger: xhigh
+  deep_reviewer: xhigh
+
+# A project-level `rules:` list REPLACES the fleet default list (dark-factory
+# config._deep_merge only recurses into dicts), so the four shipped rules from
+# dark-factory's orchestrator/defaults.yaml are restated verbatim except for the
+# `effort: xhigh` on each rule that routes to Opus; keep them in step with that file.
+# Hot-reloadable (green tier), like `effort:` above.
+routing:
+  rules:
+    - id: large-plan-steps
+      match:
+        role: [implementer, debugger]
+        plan_min_steps: 12
+      set:
+        model: opus
+        effort: xhigh
+        max_turns: 120
+    - id: large-plan-modules
+      match:
+        role: [implementer, debugger]
+        plan_min_modules: 3
+      set:
+        model: opus
+        effort: xhigh
+        max_turns: 120
+    - id: simple-saturated-full-path
+      match:
+        role: [architect]
+        simple_saturated: true
+      set:
+        model: opus
+    - id: retry-tier-up
+      match:
+        role: [implementer, debugger, architect]
+        min_routing_tier: 1
+      set:
+        model: "+1"
+        effort: xhigh
+
 # Per-role agent wall-clock timeout overrides (task 5157, 2026-07-08, Leo
 # approved — verify-flakiness survey follow-up, esc-4827 class).
 #
