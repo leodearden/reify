@@ -2552,4 +2552,37 @@ describe('Editor LSP per-document versions (task 7118)', () => {
       calls.findIndex((c) => c.method === 'textDocument/prepareRename'),
     );
   });
+
+  it('Shift+F12 flushes the pending didChange before asking the server for references', async () => {
+    const store = setupStore([file1]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls({ 'textDocument/references': [] });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+
+    // A Location carries no version, so answering against pre-debounce text is
+    // undetectable downstream — the flush is the only protection references has.
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeUndefined();
+
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', shiftKey: true, bubbles: true }),
+    );
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeDefined();
+    });
+    expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)!.version).toBe(2);
+
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.method === 'textDocument/references')).toBe(true);
+    });
+    expect(calls.findIndex((c) => c.method === 'textDocument/didChange')).toBeLessThan(
+      calls.findIndex((c) => c.method === 'textDocument/references'),
+    );
+  });
 });
