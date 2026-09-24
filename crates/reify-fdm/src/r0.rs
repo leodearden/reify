@@ -257,11 +257,14 @@ pub const DEFAULT_COOLING_TAU_S: f64 = 8.0;
 /// Default inter-layer bond temperature scale, °C.
 pub const DEFAULT_BOND_TEMP_SCALE_C: f64 = 60.0;
 
+/// Deposition temperature, °C, assumed when no bead in a zone's set carries an
+/// observed nominal temperature, and for a beadless toolpath.
+pub const FALLBACK_NOMINAL_TEMP_C: f64 = 210.0;
+
 // Dense fallback used when the *whole* toolpath is empty, so the field stays
 // total (every zone classifies into a material) even with no beads.
 const FALLBACK_WIDTH_MM: f64 = 0.45;
 const FALLBACK_HEIGHT_MM: f64 = 0.2;
-const FALLBACK_TEMP_C: f64 = 210.0;
 const FALLBACK_LAYER_TIME_S: f64 = 10.0;
 const FALLBACK_DIR: [f64; 3] = [1.0, 0.0, 0.0];
 
@@ -360,7 +363,8 @@ fn role_beads(toolpath: &Toolpath, role: BeadRole) -> Vec<&Bead> {
     toolpath.beads.iter().filter(|b| b.role == role).collect()
 }
 
-/// Per-zone measured deposition statistics (native mm / °C / s).
+/// Per-zone measured deposition statistics (native mm / °C / s). The mean
+/// temperature excludes beads with no observed temperature.
 struct BeadStats {
     mean_width_mm: f64,
     mean_height_mm: f64,
@@ -410,8 +414,8 @@ fn build_region(
     }
 }
 
-/// Mean width / height / temperature / per-bead deposition time + dominant
-/// direction over a bead set, or `None` if empty.
+/// Mean width / height / observed temperature / per-bead deposition time +
+/// dominant direction over a bead set, or `None` if empty.
 fn aggregate(beads: &[&Bead]) -> Option<BeadStats> {
     if beads.is_empty() {
         return None;
@@ -419,11 +423,7 @@ fn aggregate(beads: &[&Bead]) -> Option<BeadStats> {
     let n = beads.len() as f64;
     let mean_width_mm = beads.iter().map(|b| b.width).sum::<f64>() / n;
     let mean_height_mm = beads.iter().map(|b| b.height).sum::<f64>() / n;
-    let mean_temp_c = beads
-        .iter()
-        .map(|b| b.nominal_temp.unwrap_or(0.0))
-        .sum::<f64>()
-        / n;
+    let mean_temp_c = mean_observed_temp_c(beads);
 
     // Per-bead deposition time = centerline length / feedrate (mm / (mm·min⁻¹)
     // → min → s). A non-positive feedrate / zero-length bead contributes none;
@@ -454,6 +454,21 @@ fn aggregate(beads: &[&Bead]) -> Option<BeadStats> {
     })
 }
 
+/// Mean nominal temperature, °C, over the beads that observed one. A bead with
+/// no observed temperature contributes none; if none did, fall back to
+/// [`FALLBACK_NOMINAL_TEMP_C`].
+fn mean_observed_temp_c(beads: &[&Bead]) -> f64 {
+    let (total, count) = beads
+        .iter()
+        .filter_map(|b| b.nominal_temp)
+        .fold((0.0, 0u32), |(total, count), t| (total + t, count + 1));
+    if count == 0 {
+        FALLBACK_NOMINAL_TEMP_C
+    } else {
+        total / f64::from(count)
+    }
+}
+
 /// Dense default statistics when a toolpath has no part beads at all, so
 /// [`r0_region_materials`] stays **total** — every zone still classifies into a
 /// finite, build-Z-weakest material — even for a beadless toolpath.
@@ -471,7 +486,7 @@ fn fallback_stats() -> BeadStats {
     BeadStats {
         mean_width_mm: FALLBACK_WIDTH_MM,
         mean_height_mm: FALLBACK_HEIGHT_MM,
-        mean_temp_c: FALLBACK_TEMP_C,
+        mean_temp_c: FALLBACK_NOMINAL_TEMP_C,
         mean_layer_time_s: FALLBACK_LAYER_TIME_S,
         dominant_dir: FALLBACK_DIR,
     }
