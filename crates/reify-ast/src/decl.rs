@@ -2399,9 +2399,8 @@ mod member_test_fixtures {
     /// §7 C1).
     ///
     /// Unlike `relate { … }` (which holds `Vec<Expr>`), a sketch body holds a real
-    /// `Vec<MemberDecl>`, so it is the first `DescendKind::Never` variant whose
-    /// non-descent is a genuine decision rather than a vacuous one — see
-    /// `sketch_body_is_never_descended_into`.
+    /// `Vec<MemberDecl>`, so whether a walker descends into it is a genuine
+    /// per-set decision — see `sketch_body_is_descended_into_only_by_all_member_bodies`.
     pub(super) fn sketch(name: &str, members: Vec<MemberDecl>) -> MemberDecl {
         MemberDecl::Sketch(SketchDecl {
             name: name.to_string(),
@@ -3322,7 +3321,8 @@ mod member_walker_contract_tests {
             MemberRecursionSet::SPECIALIZATION_SCOPE,
             MemberRecursionSet {
                 sub_overrides: true,
-                port_body: false
+                port_body: false,
+                sketch_body: false
             },
             "walk_specialization_scope_members recurses a sub's specialization overrides \
              (body or keyed entries), not PortDecl.members"
@@ -3331,7 +3331,8 @@ mod member_walker_contract_tests {
             MemberRecursionSet::NAMED_MEMBER_LOOKUP,
             MemberRecursionSet {
                 sub_overrides: false,
-                port_body: true
+                port_body: true,
+                sketch_body: false
             },
             "find_named_member_span recurses PortDecl.members, not a sub's specialization \
              overrides"
@@ -3340,7 +3341,8 @@ mod member_walker_contract_tests {
             MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
             MemberRecursionSet {
                 sub_overrides: false,
-                port_body: false
+                port_body: false,
+                sketch_body: false
             },
             "find_param_default_span recurses neither a sub's specialization overrides nor \
              PortDecl.members"
@@ -3349,11 +3351,12 @@ mod member_walker_contract_tests {
             MemberRecursionSet::ALL_MEMBER_BODIES,
             MemberRecursionSet {
                 sub_overrides: true,
-                port_body: true
+                port_body: true,
+                sketch_body: true
             },
             "walk_all_member_bodies (priv_redundant_lint.rs's E_PRIV_REDUNDANT walk) is the \
-             MAXIMAL set: it recurses BOTH a sub's specialization overrides and \
-             PortDecl.members, because a `let`/`constraint` can carry `priv` in either body"
+             MAXIMAL set: it recurses a sub's specialization overrides, PortDecl.members \
+             AND a sketch body, because a `let`/`constraint` can carry `priv` in any of them"
         );
         assert_ne!(
             MemberRecursionSet::SPECIALIZATION_SCOPE,
@@ -3397,6 +3400,7 @@ mod member_walker_contract_tests {
         Always,
         IfSubOverrides,
         IfPortBody,
+        IfSketchBody,
         Never,
     }
 
@@ -3420,7 +3424,7 @@ mod member_walker_contract_tests {
             MemberDecl::ForallConstraint(_) => DescendKind::Never,
             MemberDecl::MatchArmDeclGroup(_) => DescendKind::Always,
             MemberDecl::Relate(_) => DescendKind::Never,
-            MemberDecl::Sketch(_) => DescendKind::Never,
+            MemberDecl::Sketch(_) => DescendKind::IfSketchBody,
         }
     }
 
@@ -3448,7 +3452,7 @@ mod member_walker_contract_tests {
 
     #[test]
     fn walk_members_recursion_matches_declared_classification() {
-        let nesting_variants: [NestingVariant; 5] = [
+        let nesting_variants: [NestingVariant; 6] = [
             (
                 "Sub",
                 || MemberDecl::Sub(sub_with_body("s", Some(vec![param("marker", (0, 40), None)]))),
@@ -3482,6 +3486,11 @@ mod member_walker_contract_tests {
                 || match_arm_group(vec![("A", param("marker", (0, 40), None))]),
                 DescendKind::Always,
             ),
+            (
+                "Sketch",
+                || sketch("profile", vec![param("marker", (0, 40), None)]),
+                DescendKind::IfSketchBody,
+            ),
         ];
         let recursion_sets: [(&str, MemberRecursionSet); 4] = [
             (
@@ -3511,6 +3520,7 @@ mod member_walker_contract_tests {
                     DescendKind::Always => true,
                     DescendKind::IfSubOverrides => set.sub_overrides,
                     DescendKind::IfPortBody => set.port_body,
+                    DescendKind::IfSketchBody => set.sketch_body,
                     DescendKind::Never => false,
                 };
                 let actual_reach = reaches_marker(build(), set);
@@ -3522,48 +3532,50 @@ mod member_walker_contract_tests {
         }
     }
 
-    /// A sketch body is NEVER descended into, under ANY recursion set
+    /// A sketch body is descended into ONLY by `ALL_MEMBER_BODIES`
     /// (constrained-2d-sketch α, task 5506).
     ///
     /// PRD `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1: sketch-local entity
     /// names "are not visible outside the block in v1", so the member-lookup,
     /// specialization-scope and param-default walkers must all stop at the
-    /// `sketch { … }` boundary — the same cell `Relate` occupies.
+    /// `sketch { … }` boundary. `ALL_MEMBER_BODIES` exists to skip no optional
+    /// body at all, so it must reach inside.
     ///
-    /// Pinned as its own test rather than as a `nesting_variants` row because
-    /// this is the FIRST `DescendKind::Never` variant that actually carries a
-    /// `Vec<MemberDecl>` body. Every other `Never` variant is trivially
-    /// non-descending (it has no member body to descend into), so their
-    /// classification is unfalsifiable; this one is a real decision and a
-    /// future walker change could silently break it. Asserting non-reach
-    /// across all three recursion sets is what makes it falsifiable.
+    /// Pinned by name beside the table-driven row above because a sketch body is
+    /// the one cell where three sets say "no" for a scoping reason rather than a
+    /// structural one; a future walker change could silently flip it.
     #[test]
-    fn sketch_body_is_never_descended_into() {
-        let recursion_sets: [(&str, MemberRecursionSet); 3] = [
+    fn sketch_body_is_descended_into_only_by_all_member_bodies() {
+        let recursion_sets: [(&str, MemberRecursionSet, bool); 4] = [
             (
                 "SPECIALIZATION_SCOPE",
                 MemberRecursionSet::SPECIALIZATION_SCOPE,
+                false,
             ),
             (
                 "NAMED_MEMBER_LOOKUP",
                 MemberRecursionSet::NAMED_MEMBER_LOOKUP,
+                false,
             ),
             (
                 "PARAM_DEFAULT_LOOKUP",
                 MemberRecursionSet::PARAM_DEFAULT_LOOKUP,
+                false,
+            ),
+            (
+                "ALL_MEMBER_BODIES",
+                MemberRecursionSet::ALL_MEMBER_BODIES,
+                true,
             ),
         ];
 
-        for (set_name, set) in recursion_sets {
+        for (set_name, set, expected_reach) in recursion_sets {
             let member = sketch("profile", vec![param("marker", (0, 40), None)]);
             assert_eq!(
-                descends_into(&member),
-                DescendKind::Never,
-                "sketch bodies must be classified Never"
-            );
-            assert!(
-                !reaches_marker(member, set),
-                "{set_name}: walk_members must not reach a param nested inside a sketch body"
+                reaches_marker(member, set),
+                expected_reach,
+                "{set_name}: walk_members must reach a param nested inside a sketch body \
+                 exactly when the set is ALL_MEMBER_BODIES"
             );
         }
     }
