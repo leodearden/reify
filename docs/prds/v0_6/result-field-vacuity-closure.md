@@ -109,6 +109,22 @@ the conventions that were already honest — §2.4. *(Amendment 2026-09-23, task
 entered the gate as allowlist entries owned by #7012 pending this ruling; the dispositions above are
 the ruling, and §7 carries them.)*
 
+**Known conflict with the no-stale-`Undef` checker (owner #7819).** A cell that reads a degraded
+field directly, such as `let pm = z_modal.modes[0].participation_mass`, is a root `Undef` whose
+only dependency is resolved, and it carries no `UndefCause`: that channel does not reach a field
+inside a compute result (C2′). `check_no_stale_undef` (`crates/reify-eval/src/invariants.rs`, the
+INV-EVAL-5 interim test and INV-SF-1 backstop) therefore reports it as causeless staleness.
+Measured 2026-09-24 on the #7012 e2e probe source
+(`crates/reify-eval/tests/harness_mechanism/mechanism_modal_lumped_fields_e2e.rs`): the checker
+flags the direct reads of `participation_mass`, `shape` and `boundary_conditions`, and exempts
+`pm + 1.0` under its unresolved-dependency clause. Nothing is red today because no corpus member
+reads a degraded field; the first `examples/` or eval-fixture file that does will red for a value
+that is correct by contract. The conflict holds for every `degraded` field, not just this family,
+and sharpens as #5399 promotes the checker to a production `W_UNDEF_UNEXPLAINED` warning (#7850 is
+the same shape on `linear_combine`'s deliberate `Undef` fields). Never clear it by restoring a
+fake: #7819 owns the design call, a structural exemption keyed on the degraded declarations or an
+`UndefCause` for degraded result fields. *(Amendment 2026-09-24, task #7012 review.)*
+
 ### 2.4 The honest convention that already exists
 
 Buckling's `pre_stress` and `degenerate_modal_result`'s `damping` use `Value::Undef` for
