@@ -248,8 +248,9 @@ pub struct RelateDecl {
 /// # Scoping
 ///
 /// Sketch-local names "are not visible outside the block in v1" (PRD §7 C1), so
-/// `walk_members` does NOT descend into `members` — see the explicit no-op arm
-/// there and the `sketch_body_is_never_descended_into` pin.
+/// only the `ALL_MEMBER_BODIES` recursion set descends into `members` — see the
+/// `sketch_body` cell of `MemberRecursionSet` and the
+/// `sketch_body_is_descended_into_only_by_all_member_bodies` pin.
 #[derive(Debug, Clone)]
 pub struct SketchDecl {
     /// The sketch's name, e.g. `profile` in `sketch profile { … }`. Required by
@@ -986,9 +987,9 @@ where
 /// the three independent hand-rolled recursion sets this module used to
 /// carry (one per walker). `GuardedGroupDecl.{members,else_members}` and
 /// `MatchArmDeclArmDecl.member` are recursed UNCONDITIONALLY by every caller
-/// today, so only the two cells that actually differ — a sub's specialization
-/// overrides (see [`sub_override_bodies`] for the two shapes they take) and
-/// `PortDecl.members` — are modeled as flags.
+/// today, so only the three cells that actually differ — a sub's specialization
+/// overrides (see [`sub_override_bodies`] for the two shapes they take),
+/// `PortDecl.members` and `SketchDecl.members` — are modeled as flags.
 ///
 /// This table is the module's canonical anti-drift artifact: every
 /// member-recursion set in this module is one of the consts below, and
@@ -997,16 +998,21 @@ where
 /// caller's visitor chooses — but it is listed here so one table carries the
 /// whole picture.
 ///
-/// | const | used by | sub overrides (`body` or keyed) | `PortDecl.members` | early exit |
-/// |---|---|---|---|---|
-/// | `SPECIALIZATION_SCOPE` | [`walk_specialization_scope_members`] | yes | no | no — `B = Infallible` pins it |
-/// | `NAMED_MEMBER_LOOKUP` | [`find_named_member_span_depth`] | no | yes | yes — first match wins |
-/// | `PARAM_DEFAULT_LOOKUP` | [`collect_param_default_candidates`] | no | no | yes — once ambiguous |
-/// | `ALL_MEMBER_BODIES` | [`walk_all_member_bodies`] | yes | yes | no — `B = Infallible` pins it |
+/// | const | used by | sub overrides (`body` or keyed) | `PortDecl.members` | sketch body | early exit |
+/// |---|---|---|---|---|---|
+/// | `SPECIALIZATION_SCOPE` | [`walk_specialization_scope_members`] | yes | no | no | no — `B = Infallible` pins it |
+/// | `NAMED_MEMBER_LOOKUP` | [`find_named_member_span_depth`] | no | yes | no | yes — first match wins |
+/// | `PARAM_DEFAULT_LOOKUP` | [`collect_param_default_candidates`] | no | no | no | yes — once ambiguous |
+/// | `ALL_MEMBER_BODIES` | [`walk_all_member_bodies`] | yes | yes | yes | no — `B = Infallible` pins it |
+///
+/// The sketch-body column is `no` for every lookup/scope set because
+/// sketch-local names are invisible outside the block (PRD
+/// `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MemberRecursionSet {
     sub_overrides: bool,
     port_body: bool,
+    sketch_body: bool,
 }
 
 impl MemberRecursionSet {
@@ -1017,6 +1023,7 @@ impl MemberRecursionSet {
     const SPECIALIZATION_SCOPE: Self = Self {
         sub_overrides: true,
         port_body: false,
+        sketch_body: false,
     };
     /// Used by `find_named_member_span_depth` (hover/goto-definition): a
     /// port-body param/let IS addressable by its bare name for these
@@ -1025,6 +1032,7 @@ impl MemberRecursionSet {
     const NAMED_MEMBER_LOOKUP: Self = Self {
         sub_overrides: false,
         port_body: true,
+        sketch_body: false,
     };
     /// Used by `collect_param_default_candidates` (cell-id resolution):
     /// neither a port-body param (addressed only by the composite
@@ -1033,14 +1041,16 @@ impl MemberRecursionSet {
     const PARAM_DEFAULT_LOOKUP: Self = Self {
         sub_overrides: false,
         port_body: false,
+        sketch_body: false,
     };
     /// Used by [`walk_all_member_bodies`] — today, `priv_redundant_lint.rs`'s
     /// E_PRIV_REDUNDANT pass, which asks "does any `let`/`constraint` anywhere
     /// under this declaration carry `priv`?" and so may skip no optional body
-    /// at all. Both cells `true`: the widest set in the table above.
+    /// at all. Every cell `true`: the widest set in the table above.
     const ALL_MEMBER_BODIES: Self = Self {
         sub_overrides: true,
         port_body: true,
+        sketch_body: true,
     };
 }
 
@@ -1091,6 +1101,14 @@ where
                     walk_members(&p.members, set, depth + 1, visitor)?;
                 }
             }
+            // Sketch bodies — descended into only when `set.sketch_body`:
+            // sketch-local names are invisible to the lookup/scope sets (PRD
+            // §7 C1), while the all-bodies set exists to skip nothing.
+            MemberDecl::Sketch(s) => {
+                if set.sketch_body {
+                    walk_members(&s.members, set, depth + 1, visitor)?;
+                }
+            }
             // Spec §8.7 + shadow_lint.rs:39-43: `where { … } else { … }`
             // members are siblings inside the enclosing scope, recursed into
             // UNCONDITIONALLY — every caller today agrees on this cell.
@@ -1125,14 +1143,7 @@ where
             | MemberDecl::MetaBlock(_)
             | MemberDecl::ForallConnect(_)
             | MemberDecl::ForallConstraint(_)
-            // Sketch bodies are NOT descended into: sketch-local names are
-            // invisible outside the block in v1 (PRD
-            // `docs/prds/v0_6/constrained-2d-sketch.md` §7 C1). Unlike the other
-            // variants in this group, `SketchDecl` DOES carry a
-            // `Vec<MemberDecl>`, so this is a real decision rather than a
-            // vacuous one — pinned by `sketch_body_is_never_descended_into`.
-            | MemberDecl::Relate(_)
-            | MemberDecl::Sketch(_) => {}
+            | MemberDecl::Relate(_) => {}
         }
     }
     ControlFlow::Continue(())
