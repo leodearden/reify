@@ -7810,8 +7810,10 @@ mod tests {
     ///
     /// Three realizations, three messages, and the pairing is what matters: the
     /// same declaration `PinnedSupport("x_min")` reports "clamps all 3
-    /// translational DOFs" alone and "transverse (Z) pin" once a second face is
-    /// named. `FixedSupport` stays silent (its realization is unconditional).
+    /// translational DOFs" alone and a "transverse (Z) pin" plus a "lateral (Y)"
+    /// anchor once a second face is named — and all three notes name that same
+    /// simple-support realization (task 7055). `FixedSupport` stays silent (its
+    /// realization is unconditional).
     #[test]
     fn build_dirichlet_bcs_reports_context_dependent_pinned_realization() {
         let f = BcFixture::new();
@@ -7831,6 +7833,11 @@ mod tests {
             "the lone-face note must say the pin CLAMPED, and name the face: {:?}",
             lone[0],
         );
+        assert!(
+            lone[0].contains("lateral (Y)"),
+            "the lone-face note's forward clause must name the FULL realization a second face              would produce — the same simple support (b) reports, lateral anchor included: {:?}",
+            lone[0],
+        );
 
         // (b) The flip's PIN side — the same declaration, one unrelated support
         //     added on a face that is never mentioned again. This is the
@@ -7843,8 +7850,10 @@ mod tests {
              no note. got {flipped:?}",
         );
         assert!(
-            flipped[0].contains("x_min") && flipped[0].contains("transverse (Z) pin"),
-            "adding an unrelated support must report x_min as a transverse pin: {:?}",
+            flipped[0].contains("x_min")
+                && flipped[0].contains("transverse (Z) pin")
+                && flipped[0].contains("lateral (Y)"),
+            "adding an unrelated support must report x_min as a simple support — a transverse              (Z) pin AND its lateral (Y) anchor, the DOFs actually realized: {:?}",
             flipped[0],
         );
         assert!(
@@ -7869,11 +7878,13 @@ mod tests {
                 .filter(|&n| f.on_x_min(n) && !f.on_y_min(n))
                 .all(|n| z_only(&flipped_dofs, n)),
             "the model whose note says 'transverse (Z) pin' must be the model whose x_min \
-             DOF set is actually Z-only",
+             DOF set is actually Z-only off the clamped y_min edge (where its lateral anchor \
+             sits)",
         );
 
-        // (c) The pin-pin special case names both ends, and says the anchors are
-        //     what keeps it well posed.
+        // (c) The pin-pin special case names both ends, and says the ONE axial
+        //     anchor it adds is what keeps it well posed; each end's lateral
+        //     anchor belongs to the per-face realization (task 7055).
         let pin_pin = notes(vec![pinned_support("x_min"), pinned_support("x_max")]);
         assert_eq!(
             pin_pin.len(),
@@ -7883,8 +7894,8 @@ mod tests {
         assert!(
             pin_pin.iter().any(|m| m.contains("x_min"))
                 && pin_pin.iter().any(|m| m.contains("x_max"))
-                && pin_pin.iter().all(|m| m.contains("neutral-axis anchors")),
-            "the simply-supported notes must name both faces and the anchors: {pin_pin:?}",
+                && pin_pin.iter().all(|m| m.contains("axial (X) anchor")),
+            "the simply-supported notes must name both faces and the axial anchor: {pin_pin:?}",
         );
 
         // (d) Silence where there is nothing context-dependent to explain: an
