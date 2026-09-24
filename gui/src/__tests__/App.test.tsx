@@ -265,10 +265,9 @@ beforeEach(() => {
   // Below: names some test overrides persistently but nothing used to restore,
   // so the override leaked into every later test (truth table row 3). Added
   // with task 6053's check (d), which fails on any override without a restore.
-  // setParameter/updateSource really return Promise<GuiState>, but the factory
-  // default resolves undefined. Restoring to that exact default (via the file's
-  // usual `bridge as any` spelling) keeps behaviour identical; substituting
-  // emptyState here would quietly change what every test sees.
+  // The edit calls return Promise<void>, so restoring the factory default
+  // (undefined, via the file's usual `bridge as any` spelling) matches
+  // production and keeps behaviour identical.
   vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
   vi.mocked((bridge as any).previewParameter).mockResolvedValue(undefined);
   vi.mocked((bridge as any).updateSource).mockResolvedValue(undefined);
