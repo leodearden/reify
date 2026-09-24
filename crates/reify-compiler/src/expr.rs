@@ -6347,7 +6347,8 @@ fn compile_expr_guarded_with_expected_inner(
             //         trait-generic method as non-generic. Holding it open cannot widen
             //         a non-generic sig: TypeParam/ScalarParam leaves only resolve from
             //         a non-empty type-param scope. Pinned by
-            //         `dispatch_trait_generic_{type,dim}_param_slot_is_a_wildcard` in
+            //         `dispatch_trait_generic_{type,dim}_param_slot_is_a_wildcard` and
+            //         `dispatch_concrete_param_slot_rejects_mismatched_arg` in
             //         tests/harness_traits/trait_assoc_fn_overload_tests.rs.
             let overloads = scope
                 .trait_assoc_fn_overloads
@@ -6406,14 +6407,18 @@ fn compile_expr_guarded_with_expected_inner(
                     if arg_types.contains(&Type::Error) {
                         return propagate_poison();
                     }
+                    let genericity_unrecorded_so_held_open = true;
                     let matches: Vec<&CompiledAssocFnSig> = sigs
                         .iter()
                         .filter(|sig| {
-                            let is_generic = true;
                             sig.params.len() == arg_types.len()
                                 && sig.params.iter().zip(arg_types.iter()).all(
                                     |(param_ty, arg_ty)| {
-                                        slot_matches_wildcard_tier(param_ty, arg_ty, is_generic)
+                                        slot_matches_wildcard_tier(
+                                            param_ty,
+                                            arg_ty,
+                                            genericity_unrecorded_so_held_open,
+                                        )
                                     },
                                 )
                         })
