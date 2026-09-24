@@ -2850,12 +2850,29 @@ const CTOR_CONFORMANCE_SITE_SEVERITY: &str = "Error";
 /// Whether `site`'s wording names the CTOR ARGUMENT it is about — the half of
 /// [`disposition_of`]'s scope statement that severity used to carry alone.
 ///
-/// Every emitter the knob governs reaches the offending argument through the
-/// ctor's own argument list and says so, either with [`ARG_PREFIX`] (α's four
-/// wordings and ε's `unknown named argument '…'`) or, for ε's arity code, with
+/// Most emitters the knob governs name the offending argument through the
+/// ctor's own argument list, either with [`ARG_PREFIX`] (α's four wordings and
+/// ε's `unknown named argument '…'`) or, for ε's arity code, with
 /// [`CTOR_ARITY_PREFIX`] — which names the def and a count instead, there being
 /// no single argument to name. The non-ctor emitters of the same codes name a
 /// composition, an overload set or a `required by param`, and so match neither.
+///
+/// # KNOWN BLIND SPOT: two knob-governed ctor families are scoped OUT
+///
+/// "Most", not "every". The leaf-trait arms of `emit_leaf_conformance_for_arg_type`
+/// (`type 'X' does not conform to trait 'T' required by param 'p'`) and its
+/// wrapper-shape arm (`type 'X' does not match wrapper shape required by param
+/// 'p' …`) are built with `diag_at(ctx.severity, …)`, so the knob DOES govern
+/// them on the ctor path — yet they match neither prefix. The fn-call entry
+/// (`check_fn_arg_conformance`) emits byte-identical wording, so no reading of
+/// the prose can separate the two paths. Consequence: a genuine ctor-field
+/// trait-conformance or wrapper-shape site resolves
+/// [`Disposition::NotApplicable`] and [`assert_no_unwaived_ctor_conformance_sites`]
+/// does not count it. Under α severity kept these in scope; δ's flip lost that.
+/// `a_ctor_path_required_by_param_site_is_scoped_out_known_blind_spot` pins the
+/// current classification so the gap is visible rather than silent. The cure is
+/// a structured ctor-vs-fn-call discriminator on the diagnostic itself, not more
+/// prose matching — tracked as a follow-up to #5306.
 ///
 /// Both prefixes are already this module's, read here rather than re-spelled:
 /// `epsilon_and_required_by_param_prose_extractors_hold_against_the_live_emitters`
@@ -3050,7 +3067,10 @@ impl Disposition {
 /// Under α the severity alone was the whole scope statement — the knob was the
 /// only Warning-severity source of these seven codes. δ (#5306) flipped it to
 /// `Error`, which is where the OTHER emitters of the same codes already were, so
-/// the second condition took over the job of separating them.
+/// the second condition took over the job of separating them. It does that job
+/// only partially: ctor-path `required by param` sites (leaf-trait and
+/// wrapper-shape) are scoped OUT alongside the fn-call ones they cannot be told
+/// apart from — see [`names_a_ctor_argument`]'s "KNOWN BLIND SPOT".
 ///
 /// # The corpus's three non-knob sites, measured
 ///
@@ -3483,6 +3503,39 @@ fn intended_rejection_claims_the_listed_param_and_not_its_neighbours() {
          alone this table would be a SKIP_SET, and a rejection fixture that grows a \
          SECOND, unintended violation would be silently swallowed"
     );
+}
+
+/// Pins [`names_a_ctor_argument`]'s KNOWN BLIND SPOT: a knob-governed
+/// ctor-path leaf-trait or wrapper-shape site — the wording
+/// `boundary13_option_trait_param_nonconforming_errors_trait_conformance`
+/// measures on `Holder(mat: NotAMaterial())` — resolves
+/// [`Disposition::NotApplicable`], because its prose is indistinguishable from
+/// the fn-call path's.
+///
+/// This asserts the CURRENT classification, not the desired one. When a
+/// structured ctor-vs-fn-call discriminator lands, this test is expected to go
+/// red and be rewritten to assert the site is in scope.
+#[test]
+fn a_ctor_path_required_by_param_site_is_scoped_out_known_blind_spot() {
+    for message in [
+        "type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'mat'",
+        "type 'Int' does not match wrapper shape required by param 'mat' (expected 'Option')",
+    ] {
+        let mut site = synth_site("examples/holder.ri", 1, "Holder", "mat", Owner::Unknown);
+        site.code = "TypeNotConformingToTrait".to_owned();
+        site.message = message.to_owned();
+        assert_eq!(site.severity, CTOR_CONFORMANCE_SITE_SEVERITY);
+
+        assert!(
+            !names_a_ctor_argument(&site),
+            "if this now holds, the blind spot is closed: update the doc and flip this test"
+        );
+        assert_eq!(
+            disposition_of(&site),
+            Disposition::NotApplicable,
+            "ctor-path `required by param` sites are currently scoped out: {message}"
+        );
+    }
 }
 
 /// A listed fixture whose diagnostic recovers NO param still resolves
