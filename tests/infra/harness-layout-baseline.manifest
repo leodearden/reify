@@ -148,8 +148,6 @@ crates/reify-eval/tests/extrude_infinite_e2e.rs
 crates/reify-eval/tests/extrude_symmetric_e2e.rs
 crates/reify-eval/tests/failed_propagation.rs
 crates/reify-eval/tests/fallback_recovery_e2e.rs
-crates/reify-eval/tests/fdm_bracket_e2e.rs
-crates/reify-eval/tests/fdm_progressive_refinement_e2e.rs
 crates/reify-eval/tests/fdm_slice_e2e.rs
 crates/reify-eval/tests/feature_accessor_eval.rs
 crates/reify-eval/tests/feature_datum_tests.rs
