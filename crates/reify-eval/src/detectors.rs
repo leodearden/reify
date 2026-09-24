@@ -6,9 +6,13 @@
 //! validation and the annotation-args materialization driver, both inline
 //! in `Engine::eval`) run on the cold `eval()` path but NOT on
 //! `eval_cached()` — a cold-only detector asymmetry — and their relative
-//! ordering is encoded only in scattered "must run before …" / "MUST run
-//! AFTER …" convention comments (e.g. `engine_eval.rs:6312`,
-//! `structural_query.rs:531,610`, `significance_filter.rs:1025,1032`).
+//! ordering is encoded only in the **scattered ordering-convention sites** —
+//! the "must run before …" / "MUST run AFTER …" comments enumerated once
+//! here, and referred to by that name from the rest of this file:
+//!
+//! - `engine_eval.rs:6312`
+//! - `structural_query.rs:531,610`
+//! - `significance_filter.rs::tests::significance_filter_does_not_false_positive_on_bit_equal_with_zero_tolerance`
 //!
 //! This module provides the REGISTRY MECHANISM that replaces both: a single
 //! shared post-pass detector registry any eval path can run identically,
@@ -86,10 +90,8 @@ pub(crate) trait PostPassDetector {
 /// run order.
 ///
 /// This is the single owner of post-pass ordering (INV-EVAL-3), replacing
-/// the scattered "must run before …" / "MUST run AFTER …" ordering-
-/// convention comments (e.g. `engine_eval.rs:6312`,
-/// `structural_query.rs:531,610`, `significance_filter.rs:1025,1032`) with
-/// one readable, explicit `Vec`.
+/// the scattered ordering-convention sites enumerated in this module's doc
+/// with one readable, explicit `Vec`.
 #[derive(Default)]
 pub(crate) struct DetectorRegistry {
     detectors: Vec<Box<dyn PostPassDetector>>,
@@ -129,9 +131,9 @@ impl DetectorRegistry {
     ///
     /// Currently registers only [`MassPropertiesPsdDetector`]. This is the
     /// single slot task μ's migrated annotation-args detector registers
-    /// into, in whatever relative order the PRD's ordering constraints
-    /// (`engine_eval.rs:6312`, `structural_query.rs:531,610`,
-    /// `significance_filter.rs:1025,1032`) dictate.
+    /// into, in whatever relative order the PRD's ordering constraints — the
+    /// scattered ordering-convention sites enumerated in this module's doc —
+    /// dictate.
     pub(crate) fn with_builtins() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(MassPropertiesPsdDetector));
@@ -439,9 +441,8 @@ mod tests {
     }
 
     /// Registration order IS run order — the single ordering core that
-    /// replaces the scattered "must run before …" / "MUST run AFTER …"
-    /// convention comments (e.g. `engine_eval.rs:6312`,
-    /// `structural_query.rs:531,610`, `significance_filter.rs:1025,1032`).
+    /// replaces the scattered ordering-convention sites enumerated in this
+    /// module's doc.
     /// Order is caller-controlled registration order, not source-file
     /// scatter: the SAME three detectors registered in two DIFFERENT orders
     /// each run — and report via `ids()` — in their own registration order.

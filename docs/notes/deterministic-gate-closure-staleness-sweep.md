@@ -1,295 +1,124 @@
-# Closure-staleness sweep runbook — `scripts/deterministic-gate-closure-staleness-sweep.sh`
+# Closure-staleness sweep — RETIRED
 
-**Task #5321 | 2026-07-26**
+**Retired by #7351, 2026-09-16.** `scripts/deterministic-gate-closure-staleness-sweep.sh` and its
+hermetic suite `tests/infra/test_deterministic_gate_closure_staleness_sweep.sh` are **deleted**,
+along with both of their manifest registrations. **Nothing in reify runs a closure-staleness sweep
+any more**, and nothing should: see **If a trigger is ever wanted again** below.
 
-Operational digest for the recurring, read-only sweep that detects tasks stranded in `blocked` /
-`in-progress` after their block premise has already resolved, and emits a machine-readable
-re-dispatch request for each confirmed hit.
-
-The **normative source is the script itself** — its `-h` usage block and its header `# Invariants:`
-list (L1–L6). This note is a digest that points at them; where the two disagree, the script wins.
+This note is kept as the tombstone. It is the only surviving written account of why seven tasks
+were cancelled, and outside citers — the #5316 runbook family and prior task records — reach it by
+path.
 
 ---
 
-## Purpose
+## What it was
 
-One sweep covering all three stranding premises, rather than a mechanism per premise.
+A recurring, **read-only, advisory** sweep (#5321, 2026-07-26) over tasks stranded in `blocked` or
+`in-progress` after their block premise had already resolved. For each confirmed hit it emitted a
+machine-readable re-dispatch request file into its `--emit-requests` directory, for a separate
+consumer to act on. It never gated anything, exited 0 on every valid invocation, and degraded a row
+it could not adjudicate to `unknown` rather than aborting. It shipped with three trigger classes;
+#7349 (2026-09-09) retired two of them at the source, leaving only `merge_verify_red`.
 
-Task #5316 shipped `docs/notes/offline-lane-red-corruption-remediation.md` — a **documentation
-runbook, with no script and no timer**. Its own "Purpose and scope" says so, and its
-Cross-references row for #5321 records the standing sweep as *"Not yet delivered"*. This script is
-therefore the family's **first executable artifact**: #5316's detection procedure is a human
-re-run trigger, and §5's "close the loop — do not leave it `blocked`" step was, until now,
-performed by hand.
+## Why it was retired
 
-The sweep is **advisory**. It never gates anything, exits 0 on every valid invocation, and
-degrades a row it cannot adjudicate to `unknown` rather than aborting.
+- **The invoker and the consumer were both already gone.** Its only invoker was dark-factory's
+  `reify-closure-staleness-sweep.timer`, disabled by hand on 2026-09-09. DF 5247 (landed
+  2026-09-13) then deleted that timer along with its service, installer and wrapper, and deleted
+  `scripts/consume_redispatch_requests.py` — the only reader of the emitted request files. So by
+  the time this sweep was deleted its surviving class had nothing running it and nothing reading
+  its output. **No need to re-check dark-factory for a timer; verified 2026-09-16:** no
+  closure-staleness or redispatch unit is installed in either systemd scope or present in
+  `/etc/systemd/system/`, none is tracked in dark-factory's tree, and `data/redispatch-requests/`
+  holds nothing but its `consumed/` archive.
+- **The surviving class carried no measured coverage.** `merge_verify_red` fired **0 times** across
+  the 15 retained nightly runs (2026-08-25 .. 2026-09-09). Retiring it costs nothing that was
+  observed to be worth anything.
+- **A task-state policy does not belong in a project repo.** This is the sharp lesson, and it is a
+  genuine counter-example to the house *reify ships the primitive, dark-factory wires the
+  invocation* seam: the primitive and the actuator **disagreed about policy** across the seam.
+  Because the seam carried *requests* rather than *decisions*, reify's policy silently won on the
+  nights the sweep ran — a primitive can override a wired invocation's deliberate refusals without
+  either side noticing.
 
-## CLI
+## The measured record — what the two retired classes actually did
 
-Run `scripts/deterministic-gate-closure-staleness-sweep.sh -h` for the flag table — it is not
-restated here. Every flag has an env counterpart, and an explicit flag always overrides its env
-knob:
+Preserved from the #7349 retirement, because it is the evidence and it exists nowhere else.
 
-| Flag | Env knob |
+Its predicate: a `blocked` task with `metadata.task_kind = deterministic` and
+`metadata.always_escalates` truthy, whose live escalation dir held no `status=pending`
+`esc-<id>-*.json`. Its action was `close`, which the consumer turned into
+`set_task_status('cancelled')` — the most destructive thing this family could do.
+
+**The premise was unsound.** The absence of a live pending escalation is simply not evidence that a
+deterministic gate task is finished; an escalation gets resolved routinely while the work it was
+filed against is still open. It also **contradicts dark-factory's own state rules**
+(`docs/task-escalation-state-spec.md`): `blocked` implies an open record **or** a gate marker, and a
+human-resolved gate deliberately **stays parked**. The sweep read that parked state as completion.
+
+**The damage.** Seven archived `gate_closure` requests, across seven distinct tasks: **6331, 6476,
+6574, 6632, 6633, 7178, 7305**. An archived request is one that was *applied*, so each is a task
+this class actually drove to `cancelled`. Five (6331, 6476, 6574, 6632, 6633) are `cancelled`
+today; 7178 and 7305 have since been moved to `done`.
+
+**Caveat — count tasks, not firings.** The archive was a per-task snapshot, not a firing log: the
+filename was `redispatch-<id>-<class>.json`, so a re-emission overwrote. It bounds the number of
+tasks **affected**, never the number of times the consumer ran. Do not read a firing count out of
+it. (The archive directory itself was untracked, so these seven ids are now the surviving record.)
+
+The third class, **`unmet_dependency`, was retired for OWNERSHIP, not correctness** — its predicate
+was right, but dark-factory's `Scheduler._phase_redispatch_stranded_blocked` already owned the same
+recovery at tick cadence, *with* two deliberate refusals (a `task_kind == 'deterministic'`
+carve-out, and an escalation-pinned veto) that reify's class lacked and therefore overrode.
+
+**The override, worked once — task 5318.** This is the single concrete instance of the
+policy-override failure argued above, and its archive is untracked and wipeable at any time, so it
+is preserved here or nowhere. `redispatch-5318-unmet_dependency.json` is stamped **2026-09-08
+03:32:41Z** (file mtime, that night's run), verdict `STALE`, evidence `all 1 dependency(ies)
+terminal: 5214=done`. Task 5318 was deliberately **parked** at that moment: `esc-5318-6` (L1,
+steward) and `esc-5318-7` (L2, auto-watcher), filed 2026-09-07 06:01:15Z and 06:06:24Z, were both
+still open, and a human ruling dismissed them at **2026-09-08 12:49:53Z** — **9h17m after** reify's
+class had already declared the task re-dispatchable. The dependency premise genuinely had resolved;
+that was never the point. DF's escalation-pinned veto existed precisely to keep a parked task
+parked, and reify's class, lacking it, overrode it ~9h early. (The archive held **15**
+`unmet_dependency` requests in all, against the seven `gate_closure` ones above.)
+
+## Surviving owners
+
+Stranded-blocked recovery did not go away with this sweep; it lives where it always belonged. Note
+that **both survivors re-pend or re-file — neither ever cancels**, which is precisely the property
+`gate_closure` lacked.
+
+| Concern | Owner |
 |---|---|
-| `--db PATH` | `REIFY_LANE_TASK_DB` |
-| `--tag TAG` | `REIFY_LANE_TASK_TAG` |
-| `--escalations DIR` | `REIFY_GATE_STALENESS_ESCALATIONS_DIR` |
-| `--repo DIR` | `REIFY_GATE_STALENESS_REPO` |
-| `--main-ref REF` | `REIFY_GATE_STALENESS_MAIN_REF` |
-| `--stale-heartbeat-min N` | `REIFY_GATE_STALENESS_HEARTBEAT_MIN` |
-| `--emit-requests DIR` | `REIFY_GATE_STALENESS_REQUESTS_DIR` |
+| Stranded `blocked` recovery, tick cadence | dark-factory `Scheduler._phase_redispatch_stranded_blocked` (DF 2408) |
+| Deterministic-recon re-filing | the harness deterministic-recon sweep |
+| Task/escalation state rules (`blocked`, gate markers, parked gates) | dark-factory `docs/task-escalation-state-spec.md` |
+| The narrow origin this over-generalised: §5's "close the gate task when the correction lands" | `docs/notes/offline-lane-red-corruption-remediation.md` |
 
-`REIFY_LANE_TASK_DB` / `REIFY_LANE_TASK_TAG` are **reused verbatim** from
-`scripts/lane-task-status.sh`'s contract — one task-DB plumbing contract in the repo, not a
-parallel one. Task ids are unique only within a tag (`tasks` is `PRIMARY KEY (tag, id)`), so every
-query the sweep issues is tag-scoped.
+That last row is the root of the whole episode. #5316 §5 stated a narrow, correct, **manual**
+closure step for one corruption-remediation flow; #5321 generalised it into a standing automated
+sweep over all deterministic gate tasks, and the generalisation is what was unsound. That closure
+step is performed **by hand**, permanently.
 
-One knob is **env-only, with no flag**: `REIFY_GATE_STALENESS_SQLITE_BIN` overrides the sqlite3-CLI
-probe, and an explicitly *empty* value forces the python3 engine. It exists because the probe
-resolves `/usr/bin/sqlite3` by absolute path, so stripping `PATH` cannot reach it — which makes it
-both the test seam for the fallback and the break-glass for an incompatible CLI.
+## If a trigger is ever wanted again
 
-## Engines and cost
+A re-verify-on-main-advance trigger is a reasonable thing to want. **File it against dark_factory,
+not reify.** It needs the merge lane's git view and the task store's resolution semantics, neither
+of which a reify-side script can see correctly — and putting it here is what produced the
+policy-override failure above. **Do not rebuild it in this repo.**
 
-The sweep issues **one query per run**, not one per candidate per oracle. Everything the
-classifiers need — the four `metadata` scalars, the Signature-1 marker count and the dependency
-roll-up — is selected alongside the candidate row, so a candidate costs zero further DB opens.
-Measured on a 50-candidate fixture: **301 sqlite3 processes before, 1 after** (the earlier shape
-re-opened the store and re-ran `WHERE tag=… AND id=… LIMIT 1` against the *same* metadata blob four
-times per row, plus a `json_each` query and a dependency join).
-
-Three properties of that query are load-bearing:
-
-- `json_extract` / `json_each` **raise** on malformed JSON, and in a whole-table query one raised
-  error kills every row rather than one. Metadata is read through a `json_valid` guard that
-  substitutes `{}`, so an unreadable blob yields empty fields — the same outcome the per-row
-  version got from a swallowed error.
-- a scalar `json_extract` of a JSON string returns the **decoded** text, which can contain a
-  newline (and in principle the US field separator). Every free-form column is flattened, so no
-  value can forge a field or row boundary in the US-separated stream.
-- every clause is tag-scoped, **including** the correlated dependency subquery (`d.tag = t.tag`).
-
-The sqlite3 CLI and the python3 stdlib engine run that **identical SQL string**, so they are
-genuinely interchangeable rather than one being a stub that enumerates rows nothing can then
-adjudicate. If neither is present — or if python3 alone is missing, which also disables the
-escalation oracle, the proposal parser and `--format json` — the sweep says so once, at startup,
-instead of silently reporting a whole run as `unknown`.
-
-## Trigger classes
-
-| Class | Scope | Premise-resolved predicate | Action |
-|---|---|---|---|
-| `gate_closure` | `blocked` only | `metadata.task_kind = deterministic` ∧ `metadata.always_escalates` truthy ∧ **every live `esc-<id>-*.json` is terminal (`resolved`/`dismissed`), or there are none** — see the terminal allowlist under Verdict vocabulary | `close` |
-| `merge_verify_red` | `blocked` **and** `in-progress` | newest `metadata.dry_run_proposals` entry is a post-merge-verify red ∧ its `main_sha` is an ancestor of `--main-ref` ∧ main has advanced past it ∧ ≥1 `files_referenced` path was touched in `main_sha..main-ref` | `reverify` |
-| `unmet_dependency` | `blocked` only | ≥1 `dependencies` row ∧ **every** `depends_on` resolves, under the same tag, to a terminal status (`done` / `cancelled`) | `redispatch` |
-
-Notes that are easy to get wrong:
-
-- **`gate_closure` emits `close`, not `redispatch`.** Per #5316 §5 the correct closure for a
-  satisfied deterministic gate is a transition to `cancelled`, not a re-run.
-- **`gate_closure` reads the LIVE escalation dir only** — never `archive*/`. An archived
-  escalation is by construction no longer gating, and the live-dir absence *is* the signal. The
-  glob matches `*.json` and never the `*.json.lock` sidecars the store also holds.
-- **`merge_verify_red` keys primarily off the `block_reason` prose prefix**
-  (`^Post-merge verification failed`), with `block_class == "merge_verify_red"` as a *confirming
-  hint*: `block_class` is present on only 2 of the 55 live `dry_run_proposals` entries, so keying
-  on it alone would miss almost every real case.
-- **Recency is keyed on `investigated_at` then `timestamp`, not on array position.** The store
-  appends without reordering and a re-investigation can rewrite an earlier entry in place, so
-  `proposals[-1]` is not reliably the newest.
-- **Reachability is checked BEFORE any diff** (#5316 §3) — see Corruption suppressors.
-- **Class precedence** is the fixed order `gate_closure > merge_verify_red > unmet_dependency`.
-  The first match is the row's primary class and the only one adjudicated; any further match is
-  disclosed in `evidence` as `also:<class>` without incrementing a counter (invariant L3). The
-  order is load-bearing, not alphabetical: letting C win over A would re-run a gate task that
-  should simply be closed.
-- **An empty dependency set is not "all satisfied"** — a `blocked` task with zero `dependencies`
-  rows is not class C at all.
-
-## Verdict vocabulary
-
-| Verdict | Meaning | Emits a request? |
-|---|---|---|
-| `STALE` | premise resolved; a confirmed hit | **yes — the only verdict that does** |
-| `UNRESOLVED` | the class matched, its premise has not resolved | no |
-| `GATED` | class A only: a live `status=pending` escalation still gates it | no |
-| `LIVE` | the liveness guard fired; no class predicate ran at all | no |
-| `CORRUPT-HOLD` | an otherwise-confirmed hit carrying a #5316 corruption flag | no — `action=human_gate` |
-| `NO-CLASS` | no trigger class matched the row at all | no |
-| `unknown` | a class matched but its **oracle** could not be read; never upgraded to `STALE` | no |
-
-Class A's escalation-status predicate is a **terminal allowlist**, not a pending-only match:
-`pending` → `GATED`, `resolved`/`dismissed` → clear, and **every other value** — a status outside
-the store's vocabulary (a schema addition on the escalation side), a JSON `null`, an empty or
-absent key, an unparseable file — is a failed oracle read that degrades the task to `unknown` with
-a `[warn]` naming the task and the offending status. A pending-only match would sink all of those
-into "clear", manufacturing `STALE` / `close` / a CANCEL request for a task whose gate may still be
-live — inverting L2 toward the sweep's single most destructive action.
-
-The allowlist only defends rows the oracle actually **reaches**, so the escalations dir is checked
-for `-r`/`-x`, not just `-d`. A dir that exists but cannot be enumerated (mode 000, a root-owned
-dir swept under a different uid, a stale mount) passes `-d` — `stat` needs `+x` on the *parent*, not
-on the dir — but then silently yields an empty glob, which would read as "zero live escalations" and
-land in "clear" without the loop body ever running. Such a dir degrades exactly like a missing one.
-
-`NO-CLASS` and `unknown` are **different answers and are counted separately.** `NO-CLASS` is a
-*complete* adjudication with a negative result — nothing failed, the row simply matches no trigger
-class. `unknown` means a class **matched** and its oracle then could not be read (a missing
-escalations dir, an unresolvable SHA, a `depends_on` that resolves to no row under the tag). On the
-live store the great majority of `blocked` / `in-progress` rows match no class at all, so folding
-them into `unknown` would swamp precisely the signal that counter exists to carry.
-
-The trailing `SWEEP:` line (table) / `summary` object (json) carries `candidates`, `gate_closure`,
-`merge_verify_red`, `unmet_dependency`, `corrupt_hold`, `live_skipped`, `no_class`, `unknown`.
-`live_skipped` and `unknown` exist so **"no hits" stays distinguishable from "could not tell"** —
-the same reason `warm-lane-audit.sh` reports `leak_unknown`.
-
-## Corruption suppressors
-
-#5316's two catalogued signatures are wired in as **flags that demote a hit**, not as a fourth
-class with its own auto-action. The catalog itself lives in
-`docs/notes/offline-lane-red-corruption-remediation.md` and is deliberately not restated here —
-one source of truth for a destructive remediation.
-
-| Flag | Signature | Check |
-|---|---|---|
-| `corrupt_autofile` | Sig 1 — help-text-as-failing-tests | any `metadata.failing_tests` entry containing a marker from `_CORRUPT_AUTOFILE_MARKERS` (the single source of truth for the marker set, in the script) |
-| `misattributed_provenance` | Sig 2 | `metadata.done_provenance.commit` resolves but is **not an ancestor** of `--main-ref`. The ancestry probe runs against the **pre-resolved** `--main-ref` SHA, and an unresolvable `--main-ref` yields **no provenance flag at all** — a `[warn]` and a degrade. `merge-base --is-ancestor` exits non-zero both for genuine non-ancestry and for a second argument that does not resolve, so handing it a raw ref name would let a *missing* oracle read as positive evidence of corruption |
-| `provenance_unresolvable` | Sig 2 | `metadata.done_provenance.commit` does not resolve in `--repo` at all — held conservatively, not cleared. A `--repo`-only check: unaffected by `--main-ref`, and still flagged when there is no ancestry oracle |
-
-⚠️ **Reachability, never diff inspection.** #5316 records that `git show --stat` alone
-**mis-cleared #5264**: a discarded duplicate merge shows a perfectly plausible diff and fails only
-the ancestor test. The sweep therefore runs `git rev-parse --verify` and then
-`git merge-base --is-ancestor` — and nothing else clears a recorded provenance SHA.
-
-A flag on a row whose verdict would otherwise be `STALE` rewrites it to `CORRUPT-HOLD` /
-`human_gate`, counts it in `corrupt_hold` **instead of** its class counter, and suppresses its
-request (invariant L5). Rationale: a corrupt record has an untrustworthy block premise, so
-auto-re-dispatching it would act on a false premise, and #5316 §4 establishes that remediation
-there is a mandatory human git-history adjudication a detector "could flag but not perform".
-
-Flags are still computed and reported on **non-stale** rows, so #5316's audit coverage is not lost
-for records that are corrupt but not yet stranded.
-
-## Invariants
-
-Keyed to the script's header `# Invariants:` block, which is authoritative:
-
-- **L1** — the liveness guard is the first predicate for every candidate and short-circuits: a
-  fresh heartbeat is never a hit and never yields a request, and an **unparseable** heartbeat
-  degrades to `LIVE`, never to eligible. The guard does not key on the heartbeat alone — with
-  **no** heartbeat at all it consults `claimant_run_id`, scoped to `in-progress`: such a row that
-  holds a claimant is a claimed runner which has not yet written (or has lost) its heartbeat, and
-  is `LIVE`. A `blocked` row with no heartbeat stays eligible whatever its claimant, because
-  `blocked` rows legitimately carry no heartbeat and the classes that are `blocked`-only per
-  **L4** would otherwise become invisible wholesale. When the claimant rule landed the
-  claimant-without-heartbeat shape was measured at **zero** occurrences on the live store, so it
-  is fail-safe hardening against a shape the sweep must survive, not a change to observed
-  behaviour.
-- **L2** — an unreadable escalation oracle degrades to `unknown`, never to `STALE`; a row that
-  simply matches no class is `NO-CLASS`, which is a different thing and a different counter.
-- **L3** — every candidate contributes to exactly one class counter and appears exactly once;
-  `--class all` never double-counts a multi-class row.
-- **L4** — classes A and C are `blocked`-only; only class B spans `in-progress`.
-- **L5** — a corruption flag suppresses auto-re-dispatch; a flagged hit is held for a human gate.
-- **L6** — read-only on all task state: sqlite is opened `-readonly` / `mode=ro`, the escalation
-  store is only read, and the only side effect of any invocation is request files under
-  `--emit-requests`.
-
-## Exit codes
-
-- **0** — always, on every valid invocation (advisory-only; degrade, never abort).
-- **2** — usage error only: unknown flag, missing flag value, invalid `--format` / `--class`, or a
-  non-integer / negative `--stale-heartbeat-min`.
-
-## `--emit-requests` consumer contract
-
-One file per confirmed hit, `redispatch-<task_id>-<class>.json`, holding `schema_version`,
-`task_id`, `class`, `verdict`, `action`, `evidence`, `main_ref_sha`, `emitted_by`.
-
-- **Atomic** — a `mktemp` intermediate in the same directory followed by `mv` (a rename within one
-  filesystem), removed on every failure path. A consumer polling the directory never observes a
-  partial file.
-- **Idempotent** — the body carries no wall-clock field, deliberately, so re-emission is
-  byte-identical and a consumer can diff the directory instead of re-processing it. Read the file
-  mtime if recency is needed.
-- **A snapshot, not an append-only log** — each run **retracts** every
-  `redispatch-<digits>-<class>.json` that is no longer a confirmed hit, *before* it emits. Without
-  that, a remediated task's request would advertise an actionable request forever, and a row whose
-  primary class changed between runs would leave `redispatch-<id>-gate_closure.json`
-  (`action=close`) sitting beside `redispatch-<id>-unmet_dependency.json` (`action=redispatch`) —
-  two contradictory instructions the consumer cannot order, precisely because the bodies carry no
-  wall-clock field. Retraction is deliberately narrow:
-  - only files this sweep could itself have emitted are touched, so a consumer's own bookkeeping in
-    the same directory is left alone;
-  - a `--class`-restricted run retracts **only that class** — it never deletes the requests of a
-    class it did not adjudicate;
-  - a run whose **DB read failed retracts nothing**. An unreadable DB reports zero candidates too,
-    and absence of a hit is evidence only when the query actually ran; wiping on that would be the
-    sweep destroying its own output on a transient fault.
-- **Never gating** — an uncreatable or unwritable directory warns on stderr; the report on stdout
-  is still complete and the exit code is still 0. The directory is created on demand only when its
-  parent already exists, so a typo'd `--emit-requests` surfaces as a warning rather than silently
-  materializing a path and reporting "0 requests emitted".
-
-**The sweep does not perform the task-state write, by design.** `CLAUDE.md` is categorical that
-all task operations go through the fused-memory MCP tools; writing `tasks.db` directly would
-bypass the reconciliation that status transitions trigger, turning an advisory sweep into an
-unaudited mutator of the canonical task store. This is the house cross-repo seam verbatim: **reify
-ships the primitive, dark-factory wires the invocation** that performs the `set_task_status` /
-`update_task` write.
-
-## Recommended run cadence
-
-Extends #5316's "Re-run trigger" section. Run the sweep:
-
-- on the standing-audit cadence;
-- after any escalation-watcher resolution/dismissal sweep (that is precisely what strands a class-A
-  gate task);
-- after any merge-gate red on `main` — and again once `main` advances past it (class B);
-- after any task reaches a terminal status, which may satisfy a dependent's last dependency
-  (class C).
-
-**The timer itself is not wired by this task.** It belongs in dark-factory:
-`dark-factory-orchestrator.yaml` loads once at startup and a task running under the orchestrator
-must not restart it, so wiring the recurring invocation from inside a reify task is not possible.
-A follow-up is filed for it; until it lands, the sweep is a manual/ad-hoc run.
-
-## First sweep findings (2026-07-26)
-
-The live measurements this design was derived from — recorded as the evidentiary basis for the
-predicates, not as live assertions (the suite is hermetic; see below):
-
-- **Class A: 5537 / 5549 / 5559** — `always_escalates=true`, still `blocked`, with **zero** live
-  `esc-<id>-*.json`; their escalations are archived `dismissed` (~08:10Z). Three live instances of
-  #5316 §5's un-closed-gate gap. These are other tasks' records, so a follow-up is filed rather
-  than acting on them here.
-- **Class C shape: 5372** — `blocked`, one dependency on 5271, which is `done`.
-- **A claimant-less stale `in-progress`: 5196** — NULL `claimant_run_id`, `updated_at` ~3h stale.
-- **The measured false-positive hazard:** all **ten** live `in-progress` tasks had every dependency
-  `done` — **task 5321 itself among them**. A naive "dependency premise resolved ⇒ re-dispatch"
-  rule would have targeted ten actively-running agents: the capability would have *destroyed* work
-  rather than recovered it. That measurement is why the liveness guard is L1 and why class C is
-  `blocked`-only.
-
-## Human-gate seed batch status
-
-The four instances named in this task's brief were **already redispatched or closed** as of
-2026-07-26: 5236 `pending`, 5271 `done`, 5316 `done`, 5373 `pending`. They therefore serve as the
-suite's **frozen fixture shapes**, not as live detections — a live-DB assertion on them would be
-both non-hermetic and already false. The whole suite is hermetic by construction: a synthetic
-`tasks.db` built from the production DDL, a synthetic escalation dir, and a synthetic git repo per
-block; every SHA in an assertion is computed from the fixture repo, never frozen.
+Whoever builds it should carry forward the one measurement that constrained the original design:
+at first sweep (2026-07-26) **all ten** live `in-progress` tasks had every dependency `done` —
+**task 5321 itself among them**. A naive "dependency premise resolved ⇒ re-dispatch" rule would
+have targeted ten actively-running agents and *destroyed* work rather than recovered it. Any such
+trigger needs a liveness guard before it needs anything else.
 
 ## Pointers
 
 | Topic | Source |
 |---|---|
 | Corruption signature catalog + remediation recipe (#5316) | `docs/notes/offline-lane-red-corruption-remediation.md` |
-| Read-only task-DB access contract (`REIFY_LANE_TASK_*`) | `scripts/lane-task-status.sh` |
-| The advisory-observability script family this clones | `scripts/warm-lane-audit.sh`, `docs/notes/warm-lane-audit-runbook.md` |
-| Hermetic test suite | `tests/infra/test_deterministic_gate_closure_staleness_sweep.sh` |
-| Test-bucket registration (`pool`) | `tests/infra/run-all-classification.manifest` |
-| Verify-pipeline artifact↔test mapping | `scripts/verify-pipeline-infra-tests.txt` |
+| Task/escalation state rules | dark-factory `docs/task-escalation-state-spec.md` |
+| Surviving stranded-blocked recovery | dark-factory `Scheduler._phase_redispatch_stranded_blocked` (DF 2408) |
+| The advisory-observability script family this cloned | `scripts/warm-lane-audit.sh`, `docs/notes/warm-lane-audit-runbook.md` |

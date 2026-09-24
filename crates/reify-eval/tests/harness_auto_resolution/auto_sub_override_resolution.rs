@@ -48,7 +48,7 @@ use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::{DeterminacyState, Value};
-use reify_test_support::parse_and_compile_with_stdlib;
+use reify_test_support::{parse_and_compile_with_stdlib, scalar_si};
 
 // ── Shared fixtures ───────────────────────────────────────────────────────────
 
@@ -205,14 +205,8 @@ structure A2 {
     );
 
     // §4.4: the two paths must produce the same resolved value.
-    let si_a = match val_a {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("A.b.bore should be Scalar, got {:?}", other),
-    };
-    let si_a2 = match val_a2 {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("A2.bore should be Scalar, got {:?}", other),
-    };
+    let si_a = scalar_si(val_a, "A.b.bore");
+    let si_a2 = scalar_si(val_a2, "A2.bore");
     assert!(
         (si_a - si_a2).abs() < 1e-9,
         "§4.4 invariant violated: sub-override A.b.bore = {} != param-default A2.bore = {}",

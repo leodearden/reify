@@ -73,6 +73,7 @@ requires a census row in the same change.**
 | doc-chunk ↔ registry truth | PDOCCOVER | shipped |
 | `dimensionless_scalar()` reintroduction | PDSSENTINEL | shipped |
 | layer-rule imports | PLAYER | shipped |
+| code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
 | prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
 | whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
@@ -237,12 +238,20 @@ systematically, and force message-substring hacks downstream.
 without a code? Does any consumer it adds match on message text where a
 code should exist?
 
-**Evidence**: 362 `Diagnostic::error/warning` ctor sites in reify-eval,
-67 with codes; the CLI's `E_DFM_` message-prefix escalation exists only
+**Evidence**: the 2026-07-24 census counted 362
+`Diagnostic::error/warning` ctor sites in reify-eval, 67 with codes —
+the live successor measurement is the per-file code-less-site ratchet
+in `crates/reify-audit/pdiag-baseline.txt` (broader scope: all swept
+crate `src/` trees, test paths excluded), not a re-count of this same
+ratio; the CLI's `E_DFM_` message-prefix escalation exists only
 because co-resident Error diagnostics are code-less.
 
 **House pattern**: `DiagnosticCode` registry + typed-code test assertions
-(tasks 2255, 3416 flipped substring tests to code identity).
+(tasks 2255, 3416 flipped substring tests to code identity); the PDIAG
+detector (`reify-audit --pattern PDIAG`, ratcheted against
+`crates/reify-audit/pdiag-baseline.txt`, remediation recipe in
+`docs/notes/diagnostic-severity-policy.md` §3, hard-gated by
+`tests/infra/test_reify_audit_pdiag.sh`) as the enforcement substrate.
 
 ## INV-SF-7 `parse-is-value-faithful`
 
@@ -268,7 +277,16 @@ same seam yields four outcomes (correct / silently wrong / undef /
 parse-error-at-wrong-line) depending on adjacent tokens. #5492's corpus
 red on main is suspected drift of the same seam. Ratified by Leo
 2026-07-25 (seam review); #5392 is the enforcement vehicle for the
-fn-body seam.
+fn-body seam, and #7094 for the member-body seam — the structure,
+occurrence, trait, purpose, relate, constraint-def and guarded-block
+bodies, whose separator-free `repeat(...)` lets a member absorb the
+next line. #7094's mechanism is the post-parse check in
+`crates/reify-syntax/src/member_continuation.rs`, which reports the join
+as a hard parse error. That check is deliberately scoped to trees that
+parsed CLEANLY: this invariant targets the SILENT join, so once the
+grammar has itself errored on a source, the recovered member spans are
+the parser's guesses rather than the author's layout and a second
+diagnostic over them can only mislead.
 
 ## Angle-crossing family (INV-AD-1..4)
 

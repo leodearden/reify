@@ -126,11 +126,22 @@ fn seeded_satisfied_constraint_is_reported() {
 
 // ── constraint_statuses: the shared check surface (step 2) ──────────────────
 
-/// Runs `source` through the exact pure value-eval check surface `reify
-/// check` uses — `check_source_with_stdlib` is `parse_and_compile_with_stdlib`
-/// followed by `make_simple_engine().check(&compiled)`, i.e.
-/// `SimpleConstraintChecker` with NO geometry kernel — and extracts each
-/// constraint's id and satisfaction, preserving `constraint_results`' order.
+/// Runs `source` through the KERNEL-LESS value-eval check surface —
+/// `check_source_with_stdlib` is `parse_and_compile_with_stdlib` followed by
+/// `make_simple_engine().check(&compiled)`, i.e. `SimpleConstraintChecker`
+/// with NO geometry kernel — and extracts each constraint's id and
+/// satisfaction, preserving `constraint_results`' order.
+///
+/// NOT the surface `reify check` runs (corrected 2026-09-10; esc-5760-4). It
+/// was, when this gate was written. Task 5748 (PRD
+/// `docs/prds/v0_6/check-diagnostic-truthfulness.md` leaf β D1, landed
+/// 2026-08-28) routes any geometry-bearing module in `cmd_check` onto
+/// `Engine::with_registered_kernel` + `realize_for_check`, then adopts the
+/// realization's verdicts via `merge_post_build_verdicts` — so on an OCCT
+/// build the CLI RESOLVES geometry-consumer constraints this surface must
+/// still report `Indeterminate`. Both are correct; they are different
+/// surfaces. Read every `Indeterminate` in this file as "on a kernel-less
+/// engine", never as a prediction of CLI output.
 ///
 /// # Panics
 /// Panics on a parse or compile error (via `check_source_with_stdlib`). Every
@@ -412,7 +423,8 @@ fn corpus_discovery_finds_the_flat_best_practices_drawer() {
 
 /// The pinned set of `(basename, constraint index)` pairs that are expected
 /// to report `Satisfaction::Indeterminate` — never `Satisfied` — under the
-/// pure value-eval check surface this gate (and `reify check`) runs on. Each
+/// KERNEL-LESS value-eval check surface this gate runs on (NOT `reify check`;
+/// see `constraint_statuses`' doc for why the two diverged). Each
 /// entry carries a mandatory reason citing the in-file documentation that
 /// explains why the Indeterminate is intentional, so a reviewer can confirm
 /// the exemption against the exemplar's own prose rather than trusting this
@@ -432,27 +444,32 @@ fn corpus_discovery_finds_the_flat_best_practices_drawer() {
 /// `GateFailure::StaleExpectedIndeterminate`), so a resolved exemption can
 /// never linger as dead weight that masks recovered coverage.
 ///
-/// Seeded with exactly the three entries measured on this branch, verified
-/// two independent ways (`./target/release/reify check` per file, and an
-/// in-process `check_source_with_stdlib` probe — both agree).
+/// Seeded with exactly the three entries measured on this branch. They were
+/// originally verified two independent ways — `./target/release/reify check`
+/// per file, and an in-process `check_source_with_stdlib` probe, which agreed
+/// at the time. They no longer do, and the CLI is NOT a valid cross-check for
+/// this const any more: since task 5748 (2026-08-28) `reify check` realizes
+/// geometry, so it reports the two `clearance_oracle.ri` entries below as OK.
+/// Re-measure this const against `check_source_with_stdlib` only.
 const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
     (
         "clearance_oracle.ri",
         0,
         "`constraint not fouls` — `intersects` is a geometry-consumer builtin: it needs \
-         a realized kernel and resolves only on the build()/tessellate() path, not the \
-         pure value-eval surface this gate (and `reify check`) runs on. Documented by \
-         the EVAL/BUILD ONLY bullet in clearance_oracle.ri, which states verbatim \
-         \"THAT IS EXPECTED, NOT A FAILURE\", and echoed by the `clearance_oracle.ri` \
-         row of examples/best_practices/INDEX.md.",
+         a realized kernel, and this gate's engine has none. It DOES resolve wherever a \
+         kernel is attached, which since task 5748 includes `reify check` on an OCCT \
+         build — so do not cross-check this entry against the CLI. Documented by the \
+         NEEDS A REALIZED KERNEL bullet in clearance_oracle.ri, which states verbatim \
+         \"THAT IS EXPECTED, NOT A FAILURE\" of exactly this kernel-less case, and \
+         echoed by the `clearance_oracle.ri` row of examples/best_practices/INDEX.md.",
     ),
     (
         "clearance_oracle.ri",
         1,
         "`constraint gap > min_gap` — same class as constraint[0] above, via the \
-         geometry-consumer builtin `distance`. Documented by the EVAL/BUILD ONLY \
-         bullet in clearance_oracle.ri and echoed by the `clearance_oracle.ri` row of \
-         examples/best_practices/INDEX.md.",
+         geometry-consumer builtin `distance`, and with the same kernel-less caveat. \
+         Documented by the NEEDS A REALIZED KERNEL bullet in clearance_oracle.ri and \
+         echoed by the `clearance_oracle.ri` row of examples/best_practices/INDEX.md.",
     ),
     (
         "discrete_choice.ri",
@@ -514,8 +531,10 @@ fn audit_bypassed() -> bool {
 }
 
 /// Renders one `GateFailure` as a single human-readable line, using `id`'s
-/// `Display` impl so the offender is directly reproducible by copy-pasting
-/// into `reify check`.
+/// `Display` impl — the same `{entity}#constraint[{index}]` spelling `reify
+/// check` prints, so the offender is greppable in either surface's output.
+/// Reproducing it, though, needs THIS gate's kernel-less engine: the CLI
+/// attaches a kernel and can legitimately disagree (see `constraint_statuses`).
 fn describe_failure(failure: &GateFailure) -> String {
     match failure {
         GateFailure::Violated { file, id } => format!("VIOLATED: {file}: {id}"),
@@ -609,9 +628,11 @@ fn run_corpus_gate() -> Vec<GateFailure> {
 /// `audit_file` against `EXPECTED_INDETERMINATE`. Asserts ZERO
 /// `GateFailure`s on the live corpus.
 ///
-/// This is expected GREEN on the measured baseline (7 files, 31 constraints:
-/// 28 Satisfied / 3 Indeterminate / 0 Violated, with all 3 Indeterminate
-/// listed in `EXPECTED_INDETERMINATE` above).
+/// This is expected GREEN on the measured baseline (8 files, 39 constraints:
+/// 36 Satisfied / 3 Indeterminate / 0 Violated, with all 3 Indeterminate
+/// listed in `EXPECTED_INDETERMINATE` above). Re-measured 2026-09-07 when
+/// `dimensioned_arguments.ri` (+8 constraints, all Satisfied) joined the
+/// corpus for task 5760.
 #[test]
 fn best_practices_corpus_satisfies_every_constraint() {
     let failures = run_corpus_gate();
@@ -638,7 +659,9 @@ fn best_practices_corpus_satisfies_every_constraint() {
     if !violated.is_empty() {
         report.push_str(&format!(
             "  VIOLATED ({} constraint(s)) — a real regression. Reproduce with \
-             `reify check examples/best_practices/<file>`:\n{}\n",
+             `cargo test -p reify-eval --test harness_corpus_gates \
+             best_practices_constraint_gate` (this gate's kernel-less engine; \
+             `reify check` attaches a kernel and may disagree):\n{}\n",
             violated.len(),
             violated.join("\n")
         ));
@@ -646,10 +669,10 @@ fn best_practices_corpus_satisfies_every_constraint() {
     if !unexpected_indeterminate.is_empty() {
         report.push_str(&format!(
             "  UNEXPECTED INDETERMINATE ({} constraint(s)) — a constraint's inputs went \
-             undefined (lost coverage). Reproduce with \
-             `reify check examples/best_practices/<file>`. If this Indeterminate is \
-             genuinely intentional, add a reasoned entry to EXPECTED_INDETERMINATE; \
-             otherwise it is a regression to fix:\n{}\n",
+             undefined (lost coverage). Reproduce on THIS gate's kernel-less engine, not \
+             with `reify check` (which realizes geometry and may resolve it anyway). If \
+             this Indeterminate is genuinely intentional, add a reasoned entry to \
+             EXPECTED_INDETERMINATE; otherwise it is a regression to fix:\n{}\n",
             unexpected_indeterminate.len(),
             unexpected_indeterminate.join("\n")
         ));

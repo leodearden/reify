@@ -626,3 +626,321 @@ fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
          — doing so silently reverts the user's edit_param)."
     );
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Geometry-LIST lets across a rebuild (task #5385, review esc-5385-4).
+//
+// MEASURED GROUND TRUTH for the test below — `snapshot.values` and
+// `TessellateResult.values` do NOT agree for a geometry list, and only the
+// latter is the user-visible surface:
+//
+//   cell                       snapshot.values      TessellateResult.values
+//   `a`     (scalar geometry)  live GeometryHandle  live GeometryHandle
+//   `holes` (List<Geometry>)   List([Undef; 3])     List([3 live handles])
+//
+// The `snapshot.values` column for `holes` is `List([Undef; 3])` in EVERY path —
+// `eval`, `tessellate_snapshot`, `build_snapshot` and `build` — because the
+// regroup in `post_process_geometry_handle_cells` writes the assembled list into
+// the build's working `ValueMap` (which becomes the result), never back into the
+// snapshot. That pre-hydration placeholder is deliberate and already pinned by
+// `indexing_a_geometry_list_reads_the_pre_hydration_placeholder`
+// (generate_eval.rs); the remaining silent-Undef seam is #5402's.
+//
+// So this test asserts on the RESULT, not on `snapshot.values`. Asserting the
+// snapshot would pin `[Undef; 3]` — the defect — as if it were the contract.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Editing a param the list depends on must leave the list RESOLVED, and
+/// actually re-realized — not stale, not `[Undef; n]`.
+///
+/// The review noted every geometry-list test was single-shot `Engine::eval`, so
+/// no test drove build → `edit_param` → rebuild. `r` feeds all three
+/// `cylinder(r, h)` elements, so a correct rebuild changes every element's
+/// `upstream_values_hash` while keeping all three live.
+///
+/// FULL SCOPE ON PURPOSE (review esc-5385-7). This test deliberately does NOT
+/// call `set_demand_selective`, so despite living in the selective-demand harness
+/// it exercises the ordinary full-scope rebuild path. Driving the same fixture
+/// through hide → un-hide is RED today for a reason this task does not own: a
+/// repeat `tessellate_snapshot` under selective demand returns
+/// `List([Undef; 3])`, a realization-NAME versus cell-MEMBER correspondence gap
+/// filed as task #6460. It lives here rather than in a rebuild harness so #6460
+/// can add its selective-demand cases against this same fixture and these same
+/// helpers.
+#[test]
+fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
+    let e = "SelectiveGeomList";
+    let holes_id = ValueCellId::new(e, "holes");
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+
+    let tess1 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after eval()");
+    let hashes_before = geometry_list_upstream_hashes(&tess1, &holes_id, 3, "before edit_param");
+
+    // ── Edit `r` 5mm → 7mm; all three cylinders depend on it ────────────────
+    engine
+        .edit_param(ValueCellId::new(e, "r"), Value::length(0.007))
+        .expect("edit_param(r, 7mm) must succeed");
+
+    let tess2 = engine
+        .tessellate_snapshot(&compiled)
+        .expect("tessellate_snapshot must return Some after edit_param");
+    let refs_after = assert_live_handle_list(
+        &tess2,
+        &holes_id,
+        3,
+        "after edit_param + rebuild: the list must still hold three live handles",
+    );
+
+    // Cross-element distinctness, which the per-element hash loop below CANNOT
+    // see: a regroup bug that broadcasts `holes#0`'s handle into all three slots
+    // changes every element's hash together and so passes that loop.
+    // `generate_eval.rs::assert_geometry_handle_list` already pins this for the
+    // single-shot eval path; this restores the same guarantee on the rebuild
+    // path.
+    let distinct: std::collections::HashSet<_> = refs_after.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "after edit_param + rebuild the elements must still be SEPARATE \
+         realizations, not clones of one: {refs_after:?}",
+    );
+
+    let hashes_after = geometry_list_upstream_hashes(&tess2, &holes_id, 3, "after edit_param");
+
+    // PER ELEMENT, not per Vec: `assert_ne!` on the two `Vec`s holds as soon as
+    // ONE element differs, so a partial regroup that re-realizes `holes#0` from
+    // the edited `r` while serving `holes#1`/`holes#2` stale would pass GREEN.
+    // `zip` cannot silently skip an element here — both vectors come from
+    // `geometry_list_upstream_hashes(..., 3, ...)`, which asserts `items.len()
+    // == 3` before returning, so both are exactly 3 long.
+    //
+    // Each element is compared only against ITSELF across the edit. All three
+    // elements are `cylinder(r, h)` over the same upstream values, so their
+    // hashes are IDENTICAL to one another by construction — that coincidence is
+    // not a bug, and cross-element distinctness belongs on `realization_ref`
+    // (above), never on these hashes.
+    for (k, (before, after)) in hashes_before.iter().zip(&hashes_after).enumerate() {
+        assert_ne!(
+            before, after,
+            "element {k}'s upstream_values_hash did not change after \
+             edit_param(r, 7mm) — served stale rather than re-realized"
+        );
+    }
+}
+
+/// A cone holding a STRICT SUBSET of one geometry list's elements must still
+/// resolve the WHOLE list (review esc-5385-4, blocking finding "correctness").
+///
+/// THE CHAIN this guards: `GeometryListCellAccumulator::into_entries` requires
+/// the resolved index set to be exactly `0..len`, and `declare` is deliberately
+/// called BEFORE the `named_steps` miss `continue` at all three hydration
+/// passes, so an UNREALIZED element counts against that check. `named_steps` is
+/// written only by `execute_realization_ops`, and `BuildStep::Realize` is gated
+/// on `demanded_rids` — derived from the demand cone. So a cone holding a strict
+/// subset makes the index set non-contiguous and drops the WHOLE cell: `holes`
+/// stays `List([Undef; 3])` and the elements that WERE realized become invisible
+/// to every consumer. That is a visible data regression on the majority of the
+/// list, not the conservative safety property the all-or-nothing rule is meant
+/// to be.
+///
+/// The fix is on the DEMAND side, never the accumulator: demand.rs's reverse
+/// edge ("a demanded cell pulls its producing realizations in") makes a strict
+/// subset UNREACHABLE — `holes#0` pulls `Value(holes)`, which pulls every
+/// sibling back in. `into_entries`' exact-index-set check therefore stays
+/// intact, and still defeats a compensating index set.
+///
+/// DISTINCT FROM #6460, which is a repeat no-op `tessellate_snapshot` under
+/// selective demand. Each arm below uses its OWN engine, so both assert on a
+/// FIRST tessellate after their own `set_demand_selective` and neither sits on
+/// that path.
+#[test]
+fn set_demand_selective_on_a_strict_subset_of_a_geometry_lists_elements_still_resolves_the_whole_list()
+{
+    let compiled = compile_source(differential::SELECTIVE_DEMAND_GEOM_LIST_SRC);
+    let e = "SelectiveGeomList";
+    let holes_id = ValueCellId::new(e, "holes");
+
+    let element = |k: usize| -> NodeId {
+        let want = format!("holes#{k}");
+        compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.realizations.iter())
+            .find(|r| r.name.as_deref() == Some(&want))
+            .map(|r| NodeId::Realization(r.id.clone()))
+            .unwrap_or_else(|| panic!("fixture must compile a realization named {want:?}"))
+    };
+
+    // The ALL-VISIBLE arm is the control: it establishes that this surface
+    // resolves the list under selective demand AT ALL, so a green SUBSET arm
+    // cannot be read as "selective demand happened to do nothing on this
+    // module".
+    for (label, roots) in [
+        (
+            "all three elements visible",
+            vec![element(0), element(1), element(2)],
+        ),
+        (
+            "the strict subset {holes#0, holes#2}",
+            vec![element(0), element(2)],
+        ),
+    ] {
+        let mut engine = Engine::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+        engine.eval(&compiled);
+
+        engine.set_demand_selective(roots);
+        assert!(
+            !engine.demand_is_full_scope(),
+            "{label}: precondition — full_scope must be OFF, or the cone is not \
+             actually selective and the subset case is untested"
+        );
+
+        let tess = engine
+            .tessellate_snapshot(&compiled)
+            .expect("tessellate_snapshot must return Some after set_demand_selective");
+        let refs = assert_live_handle_list(
+            &tess,
+            &holes_id,
+            3,
+            &format!("under selective demand with {label}, `holes` must hold three live handles"),
+        );
+
+        // The helper already rejects `Undef` PER ELEMENT and a short list. This
+        // adds that the three are SEPARATE realizations, so a regroup that
+        // broadcast one surviving element's handle into all three slots cannot
+        // pass as "the whole list resolved".
+        let distinct: std::collections::HashSet<_> = refs.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            3,
+            "{label}: the three elements must be separate realizations: {refs:?}",
+        );
+    }
+}
+
+/// One element of a geometry-list cell that is backed by REAL kernel geometry.
+///
+/// Constructible only through [`live_geometry_list`], which refuses any element
+/// whose `kernel_handle` is `None` — so holding one of these IS the evidence
+/// that a kernel handle was present. The kernel handle id itself is checked and
+/// then dropped: it is ephemeral and session-scoped, and no assertion here
+/// compares ids across rebuilds.
+#[derive(Clone, Debug)]
+struct LiveGeometryHandle {
+    realization_ref: RealizationNodeId,
+    upstream_values_hash: [u8; 32],
+}
+
+/// The live handles backing a `len`-element geometry-list cell in
+/// `result.values`, in order. `ctx` labels the call site in panic messages.
+///
+/// THE `kernel_handle: Some(_)` CHECK IS THE POINT (review esc-5385-20).
+/// `kernel_handle` is the ONLY discriminator between the two producers of a
+/// `Value::GeometryHandle`: the kernel-backed hydration path
+/// (`post_process_geometry_handle_cells` / `hydrate_geometry_handles_into_values`)
+/// writes `Some(id)`, while `mint_symbolic_geometry_handles_into_values` writes
+/// `None` and recomputes `upstream_values_hash` from the CURRENT params —
+/// deliberately byte-identical to what the build path would produce. So a
+/// symbolic refill after the all-or-nothing regroup DROPPED the list satisfies
+/// every other assertion available here: the cell is a list, no element is
+/// `Undef`, the elements are distinct realizations, and the hashes changed
+/// across an `edit_param`. Without this check these tests — the only
+/// `MockGeometryKernel`-backed witnesses in this file — cannot tell real
+/// geometry from a placeholder, which is the whole claim they exist to pin.
+///
+/// Single walk for both consumers so the check cannot be enforced at one call
+/// site and forgotten at the other.
+fn live_geometry_list(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<LiveGeometryHandle> {
+    let value = result
+        .values
+        .get(cell)
+        .unwrap_or_else(|| panic!("{ctx}: no value cell `{cell}` in the result"));
+    let Value::List(items) = value else {
+        panic!("{ctx}: `{cell}` should be a List; got: {value:?}");
+    };
+    assert_eq!(
+        items.len(),
+        len,
+        "{ctx}: `{cell}` should have {len} elements; got: {items:?}",
+    );
+    items
+        .iter()
+        .enumerate()
+        .map(|(k, item)| match item {
+            Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash,
+                kernel_handle: Some(_),
+            } => LiveGeometryHandle {
+                realization_ref: realization_ref.clone(),
+                upstream_values_hash: *upstream_values_hash,
+            },
+            Value::GeometryHandle {
+                realization_ref,
+                kernel_handle: None,
+                ..
+            } => panic!(
+                "{ctx}: `{cell}[{k}]` is a SYMBOLIC handle (kernel_handle: None) for \
+                 realization {realization_ref:?} — no kernel geometry backs it, so the \
+                 list only looks realized. A dropped list refilled by \
+                 `mint_symbolic_geometry_handles_into_values` lands here.\n\
+                 full value: {items:?}",
+            ),
+            Value::Undef => panic!(
+                "{ctx}: `{cell}[{k}]` is Undef — a realized geometry list regressed to \
+                 unresolved.\nfull value: {items:?}",
+            ),
+            other => panic!("{ctx}: `{cell}[{k}]` should be a GeometryHandle; got: {other:?}"),
+        })
+        .collect()
+}
+
+/// The backing realization ids of a live `len`-element geometry-list cell, in
+/// order. See [`live_geometry_list`] for what "live" is checked to mean.
+fn assert_live_handle_list(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<RealizationNodeId> {
+    live_geometry_list(result, cell, len, ctx)
+        .into_iter()
+        .map(|h| h.realization_ref)
+        .collect()
+}
+
+/// The per-element `upstream_values_hash` of a live geometry-list cell, in
+/// order. Distinguishes "re-realized from the current params" from "served
+/// stale" — but only once [`live_geometry_list`] has ruled out the symbolic
+/// mint, which recomputes a byte-identical hash with no kernel geometry behind
+/// it and would otherwise read as a refresh.
+fn geometry_list_upstream_hashes(
+    result: &reify_eval::TessellateResult,
+    cell: &ValueCellId,
+    len: usize,
+    ctx: &str,
+) -> Vec<[u8; 32]> {
+    live_geometry_list(result, cell, len, ctx)
+        .into_iter()
+        .map(|h| h.upstream_values_hash)
+        .collect()
+}

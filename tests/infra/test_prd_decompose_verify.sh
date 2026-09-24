@@ -6,7 +6,11 @@
 #   3. CLI smoke: scripts/prd-decompose-verify.py --help exits 0
 #   4. CLI smoke: synthesize on an all-PASS results fixture exits 0
 #   5. CLI smoke: synthesize on a FAIL results fixture exits 1
-#   6. (skip-guarded) node --check scripts/prd-decompose-verify.mjs exits 0
+#   6. CLI smoke (task #7257): a mixed batch reports a counts header, blocks on
+#      ONLY the evidence-backed record, and renders a string command verbatim
+#   7. CLI smoke (task #7257 amendment): the Prover prompt's evidence-free
+#      HARNESS_ERROR fallback still exits 1 — a dead harness is not INCOMPLETE
+#   8. (skip-guarded) node --check scripts/prd-decompose-verify.mjs exits 0
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -88,6 +92,137 @@ else
     PASS=$((PASS + 1))
 fi
 rm -f "$_TMP_FAIL"
+
+# ── CLI smoke (task #7257): the evidence gate, end to end ─────────────────
+# Five records: three unexecuted promises, one probe whose fixture is missing,
+# and ONE evidence-backed FAIL whose `command` arrived as a STRING.  Before the
+# fix all five were tabulated as blocking and the string command was rendered
+# character-by-character ("t a r g e t / r e l e a s e / ...").
+_TMP_MIXED="$(mktemp /tmp/pdv_smoke_mixed_XXXXXX.json)"
+cat > "$_TMP_MIXED" <<'EOJSON'
+{
+    "prover": [
+        {
+            "capability": "vacuous-1",
+            "probe_kind": "check",
+            "verdict": "FAIL",
+            "command": [],
+            "exit_code": null,
+            "stdout": "",
+            "stderr": ""
+        },
+        {
+            "capability": "vacuous-2",
+            "probe_kind": "ir",
+            "verdict": "UNPROVABLE",
+            "command": [],
+            "stdout": "",
+            "stderr": ""
+        },
+        {
+            "capability": "vacuous-3",
+            "probe_kind": "check",
+            "verdict": "FAIL",
+            "exit_code": null,
+            "stdout": "",
+            "stderr": ""
+        },
+        {
+            "capability": "fixture-absent cap",
+            "probe_kind": "ir",
+            "verdict": "FAIL",
+            "command": ["reify", "eval", "tests/prd-gate/fixtures/not-yet.ri"],
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: No such file or directory (os error 2)"
+        }
+    ],
+    "adversary": [
+        {
+            "capability": "string-command cap",
+            "probe_kind": "ir",
+            "verdict": "FAIL",
+            "command": "target/release/reify eval f.ri",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "assertion did not hold"
+        }
+    ]
+}
+EOJSON
+
+_MIXED_OUT="$(mktemp /tmp/pdv_smoke_mixed_out_XXXXXX.json)"
+if python3 "$REPO_ROOT/scripts/prd-decompose-verify.py" synthesize "$_TMP_MIXED" \
+        > "$_MIXED_OUT" 2>/dev/null; then
+    echo "  FAIL: mixed batch should exit 1 (one evidence-backed FAIL); got 0"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: mixed batch exits 1 (blocking on the evidence-backed record)"
+    PASS=$((PASS + 1))
+fi
+
+assert "mixed batch report carries the counts header" \
+    grep -q "records: 5 total, 2 with executed-probe evidence, 1 blocking, 3 malformed, 1 fixture-absent" \
+    "$_MIXED_OUT"
+
+# Exactly one capability blocks — the other four are malformed or fixture-absent.
+assert "mixed batch blocks on exactly one capability" \
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["blocking"]==["string-command cap"] else 1)' \
+    "$_MIXED_OUT"
+
+assert "mixed batch renders the string command verbatim" \
+    grep -q "target/release/reify eval f.ri" "$_MIXED_OUT"
+
+# The character-exploded rendering must be gone.
+if grep -q "t a r g e t" "$_MIXED_OUT"; then
+    echo "  FAIL: string command was rendered character-by-character"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: string command is not character-exploded"
+    PASS=$((PASS + 1))
+fi
+
+rm -f "$_TMP_MIXED" "$_MIXED_OUT"
+
+# ── CLI smoke (task #7257 amendment): a dead harness still blocks ─────────
+# The Prover prompt's documented fallback for "I could not run anything at all"
+# is an evidence-FREE HARNESS_ERROR (command: [], exit_code: -1).  Under a
+# blanket evidence gate it was routed to MALFORMED, stopped blocking, and the
+# batch silently became INCOMPLETE instead of BLOCKS.
+_TMP_HE="$(mktemp /tmp/pdv_smoke_he_XXXXXX.json)"
+cat > "$_TMP_HE" <<'EOJSON'
+{
+    "prover": [
+        {
+            "capability": "leaf label (delta)",
+            "probe_kind": "check",
+            "verdict": "HARNESS_ERROR",
+            "command": [],
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "python3: can't open file 'scripts/prd-capability-check.py': [Errno 2] No such file or directory"
+        }
+    ],
+    "adversary": []
+}
+EOJSON
+
+_HE_OUT="$(mktemp /tmp/pdv_smoke_he_out_XXXXXX.json)"
+if python3 "$REPO_ROOT/scripts/prd-decompose-verify.py" synthesize "$_TMP_HE" \
+        > "$_HE_OUT" 2>/dev/null; then
+    echo "  FAIL: evidence-free HARNESS_ERROR should exit 1 (a dead harness blocks); got 0"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: evidence-free HARNESS_ERROR exits 1 (a dead harness blocks)"
+    PASS=$((PASS + 1))
+fi
+
+# It blocks, and it is neither malformed nor fixture-absent despite the ENOENT.
+assert "HARNESS_ERROR is blocking, not malformed or fixture-absent" \
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if (d["blocking"]==["leaf label (delta)"] and d["malformed"]==[] and d["fixture_absent"]==[] and d["executed"]==0) else 1)' \
+    "$_HE_OUT"
+
+rm -f "$_TMP_HE" "$_HE_OUT"
 
 # ── node --check wrapped form (skip-guarded) ─────────────────────────────
 # The .mjs has a top-level `return` (Workflow harness wraps body in AsyncFunction).

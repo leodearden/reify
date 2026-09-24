@@ -87,7 +87,12 @@ stamped by commit_planning).
   **#5580** (the rope seat is a half-round with its arc centre on the land surface, so
   only the radially **inner** half of the swept tube is ever stock — the outer half
   sweeps through air above the land, except where it emerges into the flanges at the
-  band ends); band width and L_helix formula unchanged.
+  band ends); band width and L_helix formula unchanged. Symbols re-anchored onto
+  the DIN 15061 oversize seat arc by **#5683** — `r` is the seat **arc** radius
+  `0.53·rope_dia`, not the rope radius, and `R` is the arc-centre radius
+  `seat_c = pitch_r + r − rope_dia/2`, not `pitch_r`; the arc centre still lies ON
+  the land surface (`land_r = seat_c`), so the inner-half reasoning above holds
+  verbatim, and the formula shape and the ±15% band width are both unchanged.
 - `target-file-caveat` — **PASS** (wired) — the "HELICAL GROOVE itself is not
   modelled" caveat this row tracked was retired from `dev_capstan.ri`'s
   MODELLING CAVEATS header by this leaf (`b47aff5eed`): the rope channel is
@@ -162,7 +167,7 @@ The D3 workflow (Enumerator → Prover ‖ Adversary → Synthesize, 32 agents) 
   sweep/sweep_guided docs must state real arg-type constraints (adversary falsified
   "any 3 geometry args pass").
 - **Substrate premise verified during disposition**: examples-CI runner exists
-  (`crates/reify-compiler/tests/examples_smoke.rs`) — ζ's "examples run in CI" is real.
+  (`crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`) — ζ's "examples run in CI" is real.
 - No finding falsified a premise about EXISTING substrate; no numeric bound was at or
   below a method floor.
 

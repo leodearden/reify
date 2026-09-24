@@ -688,8 +688,10 @@ const MAX_SHAPED_SAMPLES: usize = 1024;
 /// waypoints, so the landed echo-era assertions (which check those three fields
 /// are preserved) still hold.
 ///
-/// **TOTS arm** (`TOTSShaper`): dispatched FIRST (the impulse path cannot
-/// resolve a `TOTSShaper`). Marshal the profile's waypoints into a per-joint
+/// **TOTS FAMILY arm** (`TOTSShaper` / `RevoluteTOTSShaper`, one per joint
+/// kind — membership is decided by `tots::is_tots_shaper_type_name`,
+/// the single source of truth): dispatched FIRST (the impulse path cannot
+/// resolve a TOTS-family shaper). Marshal the profile's waypoints into a per-joint
 /// point-to-point spec ([`JointWaypoints`] — `start` / `interior…` / `end`), the
 /// shaper's scalar `velocity_limit` / `acceleration_limit` into the per-joint
 /// constraints, its `vibration_tolerance` into `vib_tol`, its `modes` into a
@@ -705,9 +707,10 @@ const MAX_SHAPED_SAMPLES: usize = 1024;
 ///
 /// Returns [`Value::Undef`] for: a non-`StructureInstance` profile or shaper; an
 /// unrecognised shaper with no resolvable train (not in {ZV, ZVD, EI, Cascaded}
-/// and not a `TOTSShaper`); an impulse-arm profile that does not marshal to a
-/// spline, or a TOTS-arm profile with `< 2` / inconsistent waypoints; or a
-/// `TOTSShaper` whose problem is `ConstraintInfeasible`.
+/// and not a TOTS-family shaper, per `tots::is_tots_shaper_type_name`);
+/// an impulse-arm profile that does not marshal to a spline, or a TOTS-arm
+/// profile with `< 2` / inconsistent waypoints; or a TOTS-family shaper whose
+/// problem is `ConstraintInfeasible`.
 ///
 /// New waypoints reuse the input waypoints' registered `type_id` / `type_name` /
 /// `version` so the shaped profile binds like the original; per-waypoint
@@ -910,7 +913,8 @@ fn profile_to_joint_waypoints(
     Some((joints, duration))
 }
 
-/// The `TOTSShaper` arm of [`input_shape_value`]: marshal the profile + shaper
+/// The TOTS-family arm (`TOTSShaper` / `RevoluteTOTSShaper`, per
+/// [`super::tots::is_tots_shaper_type_name`]) of [`input_shape_value`]: marshal the profile + shaper
 /// into the [`solve_tots`] inputs, run the time-optimal SQP loop, and re-emit the
 /// optimised command as a re-timed `Profile` (or [`Value::Undef`] when the
 /// problem is infeasible / the profile cannot be marshalled). See

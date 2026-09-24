@@ -317,8 +317,13 @@ ts_inputs() {
     {
         # The two translation units build.rs hands to cc::Build.  src/parser.c is
         # generated and gitignored, but its bytes are compiled in, so it belongs
-        # in the fingerprint — even though it is deliberately NOT watched (see
-        # build.rs: watching an output this script writes causes double execution).
+        # in the fingerprint.  Since `#6992` it is ALSO watched by build.rs — the
+        # old "deliberately NOT watched, watching an output causes double
+        # execution" note here was falsified by that change.  The cost is one
+        # extra build-script run after a genuine regeneration, which then finds
+        # both shell stamps current and writes nothing; what it buys is that a
+        # deleted or CoW-mismatched parser.c can re-trigger the build script at
+        # all.
         printf 'src/parser.c\n'
         printf 'src/scanner.c\n'
         if [ "${#headers[@]}" -gt 0 ]; then
@@ -832,8 +837,15 @@ ts_unattestable_lines() {
 # Derived FROM ts_inputs() (rather than restated) so it cannot drift, plus
 # grammar.js, which is an input to generation rather than to compilation.
 #
-# src/parser.c is excluded on purpose: build.rs WRITES it, so watching it would
-# cause double execution, and touching an unwatched file repairs nothing.
+# src/parser.c is excluded on purpose, and stays excluded after `#6992` made
+# build.rs WATCH it (see ts_inputs above).  The two sets answer different
+# questions: build.rs's watch set is what cargo re-runs the build script FOR,
+# whereas this is what `ensure` is allowed to force-TOUCH.  Adding a
+# build-script OUTPUT to a force set risks a touch/regenerate loop, and would
+# make the ts_max_watched_mtime witness move on every regeneration — weakening
+# the rewind signature at ts_ledger_force_in_effect that guards against
+# warm-lane mtime rollback.  Touching grammar.js already re-triggers the build
+# script, so the narrower set loses nothing.
 ts_watched_inputs() {
     printf 'grammar.js\n'
     local rel

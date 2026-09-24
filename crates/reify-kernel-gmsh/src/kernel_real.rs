@@ -99,6 +99,170 @@ pub const CLASSIFY_FEATURE_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
 /// Exported alongside [`CLASSIFY_FEATURE_ANGLE`] for the same reason.
 pub const CLASSIFY_CURVE_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
 
+/// Turn the discrete surface already pushed into gmsh's model into a closed
+/// B-rep region that HXT can fill.
+///
+/// Carries no mesh data in or out: it communicates only through gmsh's
+/// process-global model state, which the caller has already populated with the
+/// surface nodes and triangles. The [`init::GmshGuard`] is that state's
+/// admission ticket — never touched, taken so "the caller holds
+/// [`init::GMSH_LOCK`]" is a precondition the compiler checks rather than a
+/// comment a later caller can skip reading.
+///
+/// Split out of [`GmshKernel::mesh_to_volume`] so this span — six `?` sites,
+/// each of whose failures gmsh explains in its captured message stream rather
+/// than in the last-error line — folds that stream into its error at ONE seam
+/// instead of six.
+fn build_meshable_region(_guard: &init::GmshGuard) -> Result<(), GeometryError> {
+    // Reclassify the discrete surface and build geometry so 3D meshing has
+    // a parametric region to fill.
+    //
+    // The feature angle MUST stay strictly below π/2 (#6200). gmsh's
+    // sharp-edge test is strictly-greater-than, and a box's dihedral angle
+    // is EXACTLY π/2, so a π/2 threshold registers none of the box's own
+    // edges as sharp. This site used to pass FRAC_PI_2 with a comment
+    // claiming it "splits cube faces into separate B-rep surface entities";
+    // that claim was false, and nothing tested it. Measured with the gmsh
+    // logger armed (the caller's `General.Terminal = 0` otherwise hides all
+    // of this), on a welded 8-vertex unit cube at FRAC_PI_2:
+    //
+    //     Classifying surfaces (angle: 90)...
+    //      - Level 0 partition with 12 triangles split in 2 parts because
+    //        poincare characteristic 2 is not 0
+    //     Found 2 model surfaces
+    //     Found 1 model curves
+    //
+    // i.e. the only split that happened was TOPOLOGICAL (a parametrizability
+    // necessity), not a feature split. `create_geometry` then reparametrizes
+    // 2 non-planar patches instead of 6 planar faces, so the region
+    // `geo_add_volume` hands HXT is not the full box: HXT built 206 tets
+    // while the model retained only 91. Fill fraction 0.74–0.86 with ZERO
+    // interior nodes, scale-invariantly, and refinement does not rescue it
+    // (4x resolution only reaches 0.926). Downstream, #6154 measured the
+    // same pathology as 0.8429 on the realized fixture.
+    //
+    // Two sibling call sites in this crate already diagnosed this exact bug
+    // and worked around it — `mesh_boundary.rs` (FRAC_PI_4, the attributed
+    // producer) and `refine_volume.rs` (PI/12) — each noting that a cube's
+    // corners do not become dim-0 entities under a π/2 threshold. What
+    // `mesh_boundary.rs` got wrong was inferring that volume meshing "only
+    // needs a closed watertight surface" and could therefore tolerate 90°;
+    // that inference is what left this site as the crate's last 90°
+    // hold-out. It cannot: HXT fills the B-rep region, not the shell.
+    // See `tests/classify_feature_angle.rs` (B-rep census, importing the
+    // constants below) and `tests/volume_fill_fraction.rs` (fill fraction).
+    //
+    // Note: this affects only the B-rep classification. `create_geometry`
+    // and `mesh_generate(3)` below re-mesh from the resulting parametric
+    // geometry, so output node identities are gmsh's choice and do NOT
+    // preserve the input discrete vertex set — confirmed by the
+    // diagnostic test in `tests/gmsh_classify_diagnostics.rs`. See task
+    // 3591 for the broader NodeAttachment-producer redesign that
+    // implication motivates.
+    ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)?;
+    ffi::create_geometry(&[])?;
+
+    // After classify+createGeometry, gmsh creates new geometric surface
+    // entities whose tags supersede the original discrete-entity
+    // `surf_tag`; query them so `geo_add_surface_loop` references the
+    // correct entities. (`surf_tag` is the discrete-mesh entity tag and
+    // is no longer referenced from this point on.)
+    let surface_tags = ffi::get_entity_tags(2)?;
+    if surface_tags.is_empty() {
+        return Err(GeometryError::OperationFailed(
+            "gmsh produced no dim=2 entities after classify_surfaces+create_geometry — \
+             input surface mesh may be open or non-manifold"
+                .into(),
+        ));
+    }
+
+    // Wrap the reclassified surface(s) in a surface loop and a volume
+    // so HXT has a closed region to mesh.
+    let loop_tag = ffi::geo_add_surface_loop(&surface_tags)?;
+    let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
+    ffi::geo_synchronize()?;
+    Ok(())
+}
+
+/// Read the tets gmsh just generated back out of the process-global model and
+/// remap them onto a [`VolumeMesh`]'s 0-based local indices.
+///
+/// Companion to [`build_meshable_region`]: same lock ticket, same model, split
+/// out for the same reason. Every failure here is gmsh handing back something
+/// inconsistent with the mesh it had just reported building — precisely the
+/// failure whose explanation is in the captured stream and not in the
+/// last-error line — so the caller folds this span into that stream at its own
+/// single seam.
+fn read_back_tet_mesh(
+    _guard: &init::GmshGuard,
+    element_order: ElementOrderTag,
+) -> Result<VolumeMesh, GeometryError> {
+    let (node_tags, coord_buf) = ffi::get_nodes_all()?;
+    // Defend the chunks_exact zip below: if gmsh ever returns mismatched
+    // buffers, surfacing the real readback-stride mismatch beats a
+    // silent prefix-truncation that would later masquerade as an
+    // "unknown node tag" connectivity error.
+    if coord_buf.len() != node_tags.len() * 3 {
+        return Err(GeometryError::OperationFailed(format!(
+            "gmsh get_nodes_all stride mismatch: node_tags.len()={}, \
+             coord_buf.len()={} (expected {} = node_tags.len()*3)",
+            node_tags.len(),
+            coord_buf.len(),
+            node_tags.len() * 3,
+        )));
+    }
+    let elem_node_tags = init::read_tet_connectivity("mesh_to_volume", element_order)?;
+
+    // Build (gmsh_tag → 0-based local idx) by sorting node tags and
+    // assigning indices in tag order. Vertices are emitted in the same
+    // sorted order so tag-N → index-N once remapped.
+    let mut paired: Vec<(u64, [f64; 3])> = node_tags
+        .iter()
+        .copied()
+        .zip(coord_buf.chunks_exact(3))
+        .map(|(t, c)| (t, [c[0], c[1], c[2]]))
+        .collect();
+    paired.sort_by_key(|(t, _)| *t);
+
+    // HashMap (not BTreeMap): we never iterate `tag_to_idx` in tag order;
+    // the only access is the per-element O(1) lookup below.
+    let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
+    let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
+    for (idx, (tag, xyz)) in paired.iter().enumerate() {
+        // VolumeMesh.tet_indices is u32; if a future huge-mesh regression
+        // pushes the count past 2^32, fail explicitly rather than wrap.
+        let idx_u32 = u32::try_from(idx).map_err(|_| {
+            GeometryError::OperationFailed(format!(
+                "mesh has {} nodes, exceeding the u32 connectivity limit \
+                 of VolumeMesh.tet_indices",
+                paired.len()
+            ))
+        })?;
+        tag_to_idx.insert(*tag, idx_u32);
+        vertices.extend(xyz.iter().map(|&v| v as f32));
+    }
+
+    // Remap connectivity from gmsh tags to 0-based local indices.
+    let mut tet_indices: Vec<u32> = Vec::with_capacity(elem_node_tags.len());
+    for &tag in &elem_node_tags {
+        let idx = *tag_to_idx.get(&tag).ok_or_else(|| {
+            GeometryError::OperationFailed(format!(
+                "gmsh element references unknown node tag {tag} (mesh corruption?)"
+            ))
+        })?;
+        tet_indices.push(idx);
+    }
+    Ok(VolumeMesh {
+        vertices,
+        connectivity: VolumeConnectivity::Tet {
+            indices: tet_indices,
+            order: element_order,
+        },
+        normals: None,
+        boundary: None,
+    })
+}
+
 impl GmshKernel {
     /// Construct a new `GmshKernel` with an empty volume-mesh store. The gmsh
     /// library is initialised lazily on the first `mesh_to_volume` call (via
@@ -120,25 +284,35 @@ impl GmshKernel {
     /// `options`: user-tunable knobs (see [`MeshingOptions`](crate::MeshingOptions)).
     /// `element_order`: P1 (4-node) or P2 (10-node) tets.
     ///
-    /// # Global mesh-size clamp: leaves nothing
+    /// # Global mesh-size options: inherits nothing, leaves nothing
     ///
-    /// Since task #6298 this function **leaves the
-    /// `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` pair at gmsh's documented
-    /// defaults on every exit path**, early `?`-returns included, via
-    /// [`crate::mesh_size_clamp::MeshSizeClampReset`]. Gmsh's option table is
-    /// process-global and `gmshClear()` does not reset it, so without that
-    /// restore the resolved size written below would outlive the call and pin
-    /// every later *defaults-relying* gmsh call in the process to a size
-    /// nobody requested.
+    /// Gmsh's option table is process-global and `gmshClear()` does not reset
+    /// it. Via [`crate::mesh_size_scope::MeshSizeScope`], this function
+    /// **enters at gmsh's documented defaults for every size option and leaves
+    /// them there on every exit path**, early `?`-returns included.
     ///
-    /// The claim is enforced, not asserted:
-    /// `tests/mesh_to_volume_clamp_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`
-    /// straddles one of these calls with two runs of the same
-    /// `mesh_plane_2d(_, _, None, …)` probe and requires them to be equal.
+    /// Both directions matter here, and the inbound one is the subtler. The
+    /// clamp writes below are skipped when the resolved size is `0.0`, so such
+    /// a call writes no size option at all; entering at defaults is what stops
+    /// it inheriting the table wholesale. Outbound, the resolved size written
+    /// below would otherwise outlive the call and pin every later
+    /// *defaults-relying* gmsh call in the process to a size nobody requested.
     ///
-    /// This is the outbound direction only. Inbound, the clamp writes are
-    /// skipped when the resolved size is `0.0`, so such a call still inherits
-    /// whatever is in the table — task #6212 owns that hole.
+    /// Task #6298 closed the outbound direction for the
+    /// `Mesh.MeshSizeMin`/`MeshSizeMax` pair; #6968 widened it to all five
+    /// size options and added the inbound half. The three size-SOURCE options
+    /// are why the widening was needed: this function never writes them, so
+    /// before #6968 it passed a sibling's leaked
+    /// `Mesh.MeshSizeExtendFromBoundary` through untouched — a silent CARRIER,
+    /// damaging its successors while its own output stayed put.
+    ///
+    /// The claim is enforced, not asserted — by an option-table read-back
+    /// after a call made from a poisoned table (which also requires the tet
+    /// count to match an unpoisoned run), by the unpoisoned read alongside
+    /// this function's own suite, and by a both-orders pair sweep against the
+    /// other entry points in one process. [`crate::mesh_size_scope`] names
+    /// each of those guards; restating them here would be a second copy of
+    /// that map which a test rename could silently falsify.
     ///
     /// # Errors
     ///
@@ -147,6 +321,27 @@ impl GmshKernel {
     /// acquisition, model setup, mesh generation, readback). Common
     /// failure modes: open / non-manifold input mesh, degenerate triangles,
     /// HXT internal errors.
+    ///
+    /// Also fails when the mesher reports success but the model holds no
+    /// tetrahedra of the requested element type. An empty `VolumeMesh` is
+    /// never a useful caller outcome, so it is reported rather than
+    /// returned — the output-side counterpart of the empty-input rejection
+    /// this function already performs.
+    ///
+    /// Every such message carries more than that one last-error line. Since
+    /// task #6969 it also holds the tail of gmsh's own captured Info/Warning
+    /// stream, via [`crate::log_capture::LogCapture`]:
+    /// `gmshLoggerGetLastError` holds only the last ERROR, and gmsh's actual
+    /// diagnosis is routinely an Info line above it — measured on a single
+    /// open triangle, last error `HXT 3D mesh failed`, explanation
+    /// `Info: all vertices are coplanar or nearly coplanar`. That same guard
+    /// stops the process-global capture on every exit path, success included.
+    ///
+    /// A failure at the mesher is the one that does not read its stream from
+    /// here, and the call site does not make that obvious:
+    /// `init::mesh_generate_with_recovery` recycles libgmsh on failure, and
+    /// the captured stream lives inside libgmsh, so it reads the diagnosis
+    /// before the teardown and hands back an error that already carries it.
     pub fn mesh_to_volume(
         &self,
         surface: &Mesh,
@@ -195,15 +390,14 @@ impl GmshKernel {
             )));
         }
 
-        // Recover from a poisoned lock rather than propagating the failure:
-        // every call begins with `ffi::clear()` immediately below, which
-        // wipes any half-built model state left over from a panicked prior
-        // call. Without this, a single panic anywhere under the lock would
-        // permanently disable meshing for the rest of the process lifetime.
-        let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // `init::lock` rather than `GMSH_LOCK.lock()`: it carries the
+        // poisoned-lock recovery every entry point here needs, refuses outright
+        // once libgmsh has been finalized beyond recovery, and its `GmshGuard`
+        // is the witness `mesh_generate_with_recovery` demands.
+        let _guard = init::lock()?;
         init::ensure_initialized();
 
-        // --- Mesh-size clamp: leave nothing behind (task #6298) ---
+        // --- Mesh-size options: inherit nothing, leave nothing (tasks #6298, #6968) ---
         //
         // Gmsh's option table is process-global and `ffi::clear()` clears
         // MODELS, not OPTIONS, so the `Mesh.MeshSizeMin`/`MeshSizeMax` pair
@@ -217,33 +411,53 @@ impl GmshKernel {
         // Armed HERE, not next to the two writes further down, so it covers
         // every `?` early-return in the body as well as the success path.
         //
-        // Drop order is what makes it correct: `_clamp_reset` is declared
-        // AFTER `_guard`, so it drops FIRST and its two FFI writes land while
+        // Drop order is what makes it correct: `_size_scope` is declared
+        // AFTER `_guard`, so it drops FIRST and its FFI writes land while
         // `GMSH_LOCK` is still held. The `PhantomData<&'g MutexGuard>` borrow
         // makes that structural rather than a comment a refactor can violate —
-        // see `mesh_size_clamp`'s "Why it borrows the lock guard".
+        // see `mesh_size_scope`'s "Why it borrows the lock guard".
         //
-        // The pair is restored to gmsh's DEFAULTS, not to the values found on
-        // entry: this crate's FFI surface has no `option_get_number`, so "as
-        // found" is not observable here, and defaults are what a
-        // defaults-relying caller expects anyway.
-        //
-        // This closes the OUTBOUND direction only. The remaining INBOUND hole
-        // — when `resolved_size <= 0.0` the two writes below are skipped and
-        // this call inherits whatever a sibling left in the table — is
-        // deliberately out of #6298's scope and owned by name by task #6212,
-        // which also owns the still-unshared `Mesh.MeshSizeFromPoints` /
-        // `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` trio.
-        let _clamp_reset = crate::mesh_size_clamp::MeshSizeClampReset::armed(&_guard);
+        // Defaults are the target in BOTH directions, not the values found on
+        // entry — which is what makes the discipline total: entering at
+        // defaults means "as found" is always "defaults", so the restore never
+        // needs to read the table back, and the INBOUND hole below (when
+        // `resolved_size <= 0.0` the two writes are skipped) closes without
+        // needing to be reached. The scope covers all five size options, so
+        // the `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+        // `MeshSizeExtendFromBoundary` trio this function never writes is no
+        // longer carried through from a sibling either (task #6968).
+        let _size_scope =
+            crate::mesh_size_scope::MeshSizeScope::entered(_guard.size_scope_witness())?;
 
         ffi::clear()?;
         // Silence gmsh's stdout chatter — keeps test output readable.
         ffi::option_set_number("General.Terminal", 0.0)?;
 
+        // --- gmsh's own diagnosis: captured, not discarded (task #6969) ---
+        //
+        // Armed HERE, immediately after the line above silences gmsh, because
+        // that silencing is exactly what makes the capture the only route by
+        // which a caller can see WHY a mesh failed. Declared AFTER `_guard`
+        // and `_size_scope` so it drops FIRST: the `logger_stop` in its drop
+        // is an FFI call and must land while `GMSH_LOCK` is still held, and
+        // the `PhantomData<&GmshGuard>` borrow makes that structural rather
+        // than a comment a refactor can violate — see `log_capture`'s "Why it
+        // borrows the lock guard".
+        //
+        // Arming unconditionally costs the SUCCESS path gmsh's buffering for
+        // lines nobody reads; that cost is measured and accepted in
+        // `log_capture`'s module doc. The stop on drop is what keeps this
+        // call's lines from surfacing as some later, unrelated caller's
+        // diagnosis.
+        let log_capture = crate::log_capture::LogCapture::armed(&_guard);
+
         // Resolve mesh size: caller override > auto-derived from smallest
         // triangle edge. `auto_mesh_size_from_features` returns 0.0 for
         // empty meshes; we leave the gmsh defaults in place in that case
-        // (skip the SetNumber call).
+        // (skip the SetNumber call) — and since #6968 those are gmsh's ACTUAL
+        // defaults, established on entry by `_size_scope`, rather than
+        // whatever a sibling entry point last left in the process-global
+        // table.
         let resolved_size = match options.mesh_size {
             Some(s) => s,
             None => {
@@ -306,150 +520,33 @@ impl GmshKernel {
         let tri_node_tags: Vec<u64> = surface.indices.iter().map(|&i| i as u64 + 1).collect();
         ffi::add_elements_2d(surf_tag, 2, &tri_tags, &tri_node_tags)?;
 
-        // Reclassify the discrete surface and build geometry so 3D meshing has
-        // a parametric region to fill.
+        // One seam for the model-building span inside `build_meshable_region`:
+        // `log_capture` folds gmsh's own Info/Warning stream into whatever
+        // error surfaces there, because `gmshLoggerGetLastError` — all the
+        // `ffi` macro can annotate with — holds only the last ERROR line.
+        build_meshable_region(&_guard).map_err(|e| log_capture.annotate(e))?;
+
+        // Tet meshing. Routed through `init::mesh_generate_with_recovery` so a
+        // failure here stays local: gmsh's mesher is process-global and a
+        // failed generate leaves it silently producing no elements until the
+        // library is recycled. See that function for the measured behaviour.
         //
-        // The feature angle MUST stay strictly below π/2 (#6200). gmsh's
-        // sharp-edge test is strictly-greater-than, and a box's dihedral angle
-        // is EXACTLY π/2, so a π/2 threshold registers none of the box's own
-        // edges as sharp. This site used to pass FRAC_PI_2 with a comment
-        // claiming it "splits cube faces into separate B-rep surface entities";
-        // that claim was false, and nothing tested it. Measured with the gmsh
-        // logger armed (the `General.Terminal = 0` above otherwise hides all of
-        // this), on a welded 8-vertex unit cube at FRAC_PI_2:
+        // Deliberately NOT under the seam above or the one below. Recovery
+        // destroys and re-creates libgmsh, and the captured stream lives
+        // inside it, so that function reads the diagnosis before the teardown
+        // and returns it already folded in. Annotating it here as well would
+        // append the same lines twice: MEASURED on libgmsh 4.15.2, the capture
+        // survives the recycle.
         //
-        //     Classifying surfaces (angle: 90)...
-        //      - Level 0 partition with 12 triangles split in 2 parts because
-        //        poincare characteristic 2 is not 0
-        //     Found 2 model surfaces
-        //     Found 1 model curves
-        //
-        // i.e. the only split that happened was TOPOLOGICAL (a parametrizability
-        // necessity), not a feature split. `create_geometry` then reparametrizes
-        // 2 non-planar patches instead of 6 planar faces, so the region
-        // `geo_add_volume` hands HXT is not the full box: HXT built 206 tets
-        // while the model retained only 91. Fill fraction 0.74–0.86 with ZERO
-        // interior nodes, scale-invariantly, and refinement does not rescue it
-        // (4x resolution only reaches 0.926). Downstream, #6154 measured the
-        // same pathology as 0.8429 on the realized fixture.
-        //
-        // Two sibling call sites in this crate already diagnosed this exact bug
-        // and worked around it — `mesh_boundary.rs` (FRAC_PI_4, the attributed
-        // producer) and `refine_volume.rs` (PI/12) — each noting that a cube's
-        // corners do not become dim-0 entities under a π/2 threshold. What
-        // `mesh_boundary.rs` got wrong was inferring that volume meshing "only
-        // needs a closed watertight surface" and could therefore tolerate 90°;
-        // that inference is what left this site as the crate's last 90°
-        // hold-out. It cannot: HXT fills the B-rep region, not the shell.
-        // See `tests/classify_feature_angle.rs` (B-rep census, importing the
-        // constants below) and `tests/volume_fill_fraction.rs` (fill fraction).
-        //
-        // Note: this affects only the B-rep classification. `create_geometry`
-        // and `mesh_generate(3)` below re-mesh from the resulting parametric
-        // geometry, so output node identities are gmsh's choice and do NOT
-        // preserve the input discrete vertex set — confirmed by the
-        // diagnostic test in `tests/gmsh_classify_diagnostics.rs`. See task
-        // 3591 for the broader NodeAttachment-producer redesign that
-        // implication motivates.
-        ffi::classify_surfaces(CLASSIFY_FEATURE_ANGLE, 1, 1, CLASSIFY_CURVE_ANGLE, 0)?;
-        ffi::create_geometry(&[])?;
+        // That exclusion is enforced, not merely stated here:
+        // `mesher_poison_recovery::a_failed_mesh_to_volume_reports_gmshs_captured_log_not_just_the_last_error`
+        // requires exactly ONE `gmsh log (` header in the message, so drawing
+        // either seam over this call reds instead of silently doubling every
+        // mesher-failure diagnostic that reaches a log or the GUI.
+        init::mesh_generate_with_recovery(&_guard, 3)?;
 
-        // After classify+createGeometry, gmsh creates new geometric surface
-        // entities whose tags supersede the original discrete-entity
-        // `surf_tag`; query them so `geo_add_surface_loop` references the
-        // correct entities. (`surf_tag` is the discrete-mesh entity tag and
-        // is no longer referenced from this point on.)
-        let surface_tags = ffi::get_entity_tags(2)?;
-        if surface_tags.is_empty() {
-            return Err(GeometryError::OperationFailed(
-                "gmsh produced no dim=2 entities after classify_surfaces+create_geometry — \
-                 input surface mesh may be open or non-manifold"
-                    .into(),
-            ));
-        }
-
-        // Wrap the reclassified surface(s) in a surface loop and a volume
-        // so HXT has a closed region to mesh.
-        let loop_tag = ffi::geo_add_surface_loop(&surface_tags)?;
-        let _vol_tag = ffi::geo_add_volume(&[loop_tag])?;
-        ffi::geo_synchronize()?;
-
-        // Tet meshing.
-        ffi::mesh_generate(3)?;
-
-        // Element type for readback: P1 = 4 (4-node tet), P2 = 11 (10-node tet).
-        let elem_type = match element_order {
-            ElementOrderTag::P1 => 4,
-            ElementOrderTag::P2 => 11,
-        };
-
-        let (node_tags, coord_buf) = ffi::get_nodes_all()?;
-        // Defend the chunks_exact zip below: if gmsh ever returns mismatched
-        // buffers, surfacing the real readback-stride mismatch beats a
-        // silent prefix-truncation that would later masquerade as an
-        // "unknown node tag" connectivity error.
-        if coord_buf.len() != node_tags.len() * 3 {
-            return Err(GeometryError::OperationFailed(format!(
-                "gmsh get_nodes_all stride mismatch: node_tags.len()={}, \
-                 coord_buf.len()={} (expected {} = node_tags.len()*3)",
-                node_tags.len(),
-                coord_buf.len(),
-                node_tags.len() * 3,
-            )));
-        }
-        let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-        let nodes_per_elem: usize = match element_order {
-            ElementOrderTag::P1 => 4,
-            ElementOrderTag::P2 => 10,
-        };
-        if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
-            return Err(GeometryError::OperationFailed(format!(
-                "gmsh get_elements_by_type stride mismatch: elem_node_tags.len()={} \
-                 is not a multiple of {nodes_per_elem} (expected {nodes_per_elem} \
-                 nodes per {element_order:?} tet)",
-                elem_node_tags.len(),
-            )));
-        }
-
-        // Build (gmsh_tag → 0-based local idx) by sorting node tags and
-        // assigning indices in tag order. Vertices are emitted in the same
-        // sorted order so tag-N → index-N once remapped.
-        let mut paired: Vec<(u64, [f64; 3])> = node_tags
-            .iter()
-            .copied()
-            .zip(coord_buf.chunks_exact(3))
-            .map(|(t, c)| (t, [c[0], c[1], c[2]]))
-            .collect();
-        paired.sort_by_key(|(t, _)| *t);
-
-        // HashMap (not BTreeMap): we never iterate `tag_to_idx` in tag order;
-        // the only access is the per-element O(1) lookup below.
-        let mut tag_to_idx: HashMap<u64, u32> = HashMap::with_capacity(paired.len());
-        let mut vertices: Vec<f32> = Vec::with_capacity(paired.len() * 3);
-        for (idx, (tag, xyz)) in paired.iter().enumerate() {
-            // VolumeMesh.tet_indices is u32; if a future huge-mesh regression
-            // pushes the count past 2^32, fail explicitly rather than wrap.
-            let idx_u32 = u32::try_from(idx).map_err(|_| {
-                GeometryError::OperationFailed(format!(
-                    "mesh has {} nodes, exceeding the u32 connectivity limit \
-                     of VolumeMesh.tet_indices",
-                    paired.len()
-                ))
-            })?;
-            tag_to_idx.insert(*tag, idx_u32);
-            vertices.extend(xyz.iter().map(|&v| v as f32));
-        }
-
-        // Remap connectivity from gmsh tags to 0-based local indices.
-        let mut tet_indices: Vec<u32> = Vec::with_capacity(elem_node_tags.len());
-        for &tag in &elem_node_tags {
-            let idx = *tag_to_idx.get(&tag).ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "gmsh element references unknown node tag {tag} (mesh corruption?)"
-                ))
-            })?;
-            tet_indices.push(idx);
-        }
+        let volume_mesh =
+            read_back_tet_mesh(&_guard, element_order).map_err(|e| log_capture.annotate(e))?;
 
         // Defensive cleanup: clear the model so the next mesh_to_volume call
         // starts from a known-empty state. Errors here are deliberately
@@ -458,15 +555,7 @@ impl GmshKernel {
         // successfully produced VolumeMesh into a user-visible failure.
         let _ = ffi::clear();
 
-        Ok(VolumeMesh {
-            vertices,
-            connectivity: VolumeConnectivity::Tet {
-                indices: tet_indices,
-                order: element_order,
-            },
-            normals: None,
-            boundary: None,
-        })
+        Ok(volume_mesh)
     }
 
     /// Store a realized [`VolumeMesh`] and return a fresh handle that
@@ -645,6 +734,43 @@ impl GeometryKernel for GmshKernel {
     /// `Err`, which the engine realization edge (task 4092 step-18,
     /// `reify-eval`'s `engine_build.rs`) degrades to the plain
     /// [`Self::mesh_surface_to_volume`] path (boundary `None`).
+    ///
+    /// # Why `deterministic: true`
+    ///
+    /// Load-bearing, not decorative — same register as `reify-eval`'s
+    /// `RealizedAdaptiveProblem::new`, which pins the adaptive-REFINE step for
+    /// the same reason; this closes the seed/refine asymmetry noted there.
+    ///
+    /// `reify-eval`'s `engine_build` stashes any produced `VolumeMesh` as the
+    /// next tick's `MorphSource::source_mesh`, but `decide_morph_or_remesh`
+    /// (`reify-eval`'s `morph_producer`) remeshes unless that source carries a
+    /// task-4092 `BoundaryAssociation` — which only this branch attaches, so in
+    /// practice this override is the morph arm's sole source supplier.
+    /// `reify-mesh-morph` judges the MORPHED mesh against ABSOLUTE quality
+    /// floors, so a source that varies run-to-run makes the morph-or-remesh
+    /// verdict depend on thread scheduling rather than on the geometry.
+    /// `deterministic: true` pins `General.NumThreads = 1` (the thread block in
+    /// [`crate::mesh_surface_to_volume_with_attribution`]) and makes the output
+    /// bit-reproducible.
+    ///
+    /// The pin is NOT morph-only in reach: `reify-eval` takes this branch for
+    /// EVERY boundary-demanded `VolumeMesh` realization — i.e. every FEA
+    /// face-selector-BC solve on real user geometry — always at the
+    /// auto-derived mesh size, since the trait method carries no
+    /// `MeshingOptions` for a caller to opt out with. MEASURED (task 7411)
+    /// rather than assumed away: single-threaded is FASTER at every scale
+    /// measured on this 32-core host (one unit-cube call, pinned vs.
+    /// `default()`) — 1.2k tets 0.016s vs 2.2–3.7s, 33k 0.26s vs 11–15s, 149k
+    /// 1.0s vs 10–21s, 491k 3.4–4.3s vs 25–27s — and `default()` drifts at
+    /// every one of those scales, while the pinned arm repeats its tet count
+    /// exactly. Pinned, this producer is bit-identical across 12 runs spanning
+    /// 2 processes; `NumThreads = 1` alone suffices, with no `Mesh.RandomSeed`
+    /// needed or set anywhere in `crates/`. Full log:
+    /// `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`.
+    ///
+    /// Guarded by `tests/mesh_surface_to_volume_attributed.rs`'s
+    /// `attributed_producer_output_is_reproducible_across_repeated_calls`,
+    /// which is deterministically red without the pin.
     #[cfg(feature = "mesh-morph")]
     fn mesh_surface_to_volume_attributed(
         &self,
@@ -661,7 +787,7 @@ impl GeometryKernel for GmshKernel {
         };
         let report = crate::mesh_surface_to_volume_with_attribution(
             surface,
-            &crate::MeshingOptions::default(),
+            &crate::MeshingOptions { deterministic: true, ..Default::default() },
             element_order,
             None,
             None,

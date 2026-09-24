@@ -452,10 +452,13 @@ harness_layout_baseline_cache_reset() {
 # RETURNS VIA A GLOBAL, NOT stdout, deliberately: it is called one-to-two times
 # per module declaration, and `$(…)` would fork a subshell for each of those —
 # pure overhead for a function that is already pure bash and touches no disk.
-# Measured over the 14 live harness units, dropping that fork took ~12% off the
-# transitive walk; batching the awk fork (see `_harness_layout_mod_decls`) took
-# the rest (task #5620 review). Callers read `$_HL_NORM_OUT` immediately after
-# the call.
+# Measured over the 14 harness units live AT THE TIME (task #5620), dropping
+# that fork took ~12% off the transitive walk; batching the awk fork (see
+# `_harness_layout_mod_decls`) took the rest (task #5620 review). The ~12% is a
+# property of the per-declaration fork, so it is unaffected by the unit count
+# having grown since (32 across the 5 consolidatable crates as of task #6121);
+# only the sample the figure was measured over is pinned here. Callers read
+# `$_HL_NORM_OUT` immediately after the call.
 _harness_layout_norm_path() {
     local p="$1" leading="" out="" seg
     case "$p" in /*) leading="/"; p="${p#/}" ;; esac

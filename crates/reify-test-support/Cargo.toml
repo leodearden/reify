@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 description = "Test builders, fixtures, and mock implementations for Reify"
 
+# Despite the crate NAME, this is not a test-only crate: some of its publics are
+# consumed on `reify-audit`'s PRODUCTION path, which is why that crate carries
+# this one as a normal dependency rather than a dev-dependency. Which publics,
+# why they live here rather than above the edge, and the open question about the
+# shape of the arrangement are argued once in `sanitize`'s doc comment
+# (src/git_env.rs).
+
 [dependencies]
 reify-ast.workspace = true
 reify-core.workspace = true
@@ -46,7 +53,8 @@ tracing.workspace = true
 # Normal (not dev) dependency: `temp_dirs::prefixed_tempdir` is a PUBLIC fn
 # returning `tempfile::TempDir`, which a dev-dependency cannot back. See the
 # paired design decision — `crates/reify-audit` carries reify-test-support as a
-# normal dependency, so this makes tempfile a normal transitive dep there.
+# normal dependency (for the reason in the crate-level note above), so this
+# makes tempfile a normal transitive dep there.
 tempfile.workspace = true
 
 [dev-dependencies]

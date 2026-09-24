@@ -4,12 +4,12 @@ Fields are first-class entities representing spatially-varying quantities. They 
 
 ## Type
 
-```
+```reify-schematic
 Field<D, C>    // D = domain type, C = codomain type
 ```
 
 Examples:
-```
+```reify-schematic
 Field<Point3<Length>, Scalar<Temperature>>      // Temperature distribution
 Field<Point3<Length>, Vector3<Force>>            // Force field
 Field<Real, Scalar<Length>>                      // 1D profile
@@ -22,7 +22,7 @@ Composition is type-safe: `Field<A,B>` composed with `Field<B,C>` yields `Field<
 
 v0.1 supports `analytical` and `composed`; `sampled` and `imported` are reserved syntax that the compiler rejects with the diagnostic codes shown below.
 
-```
+```reify-fragment
 field def temperature_distribution : Point3<Length> -> Scalar<Temperature> {
     source = analytical {
         |p| 300K + 50K * exp(-distance(p, heat_source) / 10mm)

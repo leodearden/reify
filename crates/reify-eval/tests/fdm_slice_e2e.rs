@@ -35,7 +35,8 @@
 //! `fdm_slice` `@optimized("fdm::slice")` surface; until then `fdm_slice` is an
 //! unresolved name and `parse_and_compile_with_stdlib` panics on the compile error.
 
-use reify_core::{DiagnosticCode, Severity, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
+use reify_eval::compute_targets::fdm_slice::toolpath_to_value;
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::{ExportFormat, Value};
 
@@ -71,22 +72,35 @@ fn slicer_on_path() -> bool {
     reify_fdm::discover_slicer(&path_var, reify_fdm::DEFAULT_SLICER_NAMES).is_some()
 }
 
-/// Read the `beads` field of a `Toolpath` `StructureInstance` value as a slice,
-/// asserting the value is a `Toolpath` structure carrying a `beads` List.
-fn toolpath_beads(tp: &Value) -> &[Value] {
-    let fields = match tp {
+/// Read a named field off a `StructureInstance` Value, asserting both the
+/// structure's `type_name` and the field's presence.
+fn struct_field<'a>(v: &'a Value, type_name: &str, field: &str) -> &'a Value {
+    match v {
         Value::StructureInstance(d) => {
             assert_eq!(
-                d.type_name, "Toolpath",
-                "fdm_slice output must be a `Toolpath` StructureInstance, got type_name {}",
+                d.type_name, type_name,
+                "expected a `{type_name}` StructureInstance, got type_name {}",
                 d.type_name
             );
-            &d.fields
+            d.fields.get(field).unwrap_or_else(|| {
+                panic!(
+                    "`{type_name}` must carry a `{field}` field; has: {:?}",
+                    d.fields.keys().collect::<Vec<_>>()
+                )
+            })
         }
-        other => panic!("fdm_slice output must be a StructureInstance, got {other:?}"),
-    };
-    match fields.get("beads") {
-        Some(Value::List(items)) => items,
+        other => panic!("expected a `{type_name}` StructureInstance, got {other:?}"),
+    }
+}
+
+/// Read the `beads` field of a `Toolpath` `StructureInstance` value as a slice,
+/// asserting the value is a `Toolpath` structure carrying a `beads` List.
+/// Delegates the structure-shape + field-presence half to [`struct_field`], so
+/// there is ONE place in this file that knows how a `StructureInstance` is
+/// unwrapped.
+fn toolpath_beads(tp: &Value) -> &[Value] {
+    match struct_field(tp, "Toolpath", "beads") {
+        Value::List(items) => items,
         other => panic!("Toolpath must carry a `beads` List field, got {other:?}"),
     }
 }
@@ -224,5 +238,425 @@ fn real_slicer_build_is_deterministic_verify_and_lock() {
         toolpath1, toolpath2,
         "the real slicer must be deterministic: two builds must produce an identical Toolpath \
          (byte-identical G-code → identical Toolpath)"
+    );
+}
+
+// ── Declared-unit regime (task #6301) ───────────────────────────────────────
+
+/// Compile `src` with the stdlib and return its Error-severity diagnostics as
+/// `(code, message)` pairs. Uses `compile_source_with_stdlib` (which does NOT
+/// assert the absence of compile errors) so the negative half below can inspect
+/// the errors rather than panicking on them.
+fn compile_errors(src: &str) -> Vec<(Option<DiagnosticCode>, String)> {
+    let module = reify_test_support::compile_source_with_stdlib(src);
+    reify_test_support::errors_only(&module)
+        .into_iter()
+        .map(|d| (d.code, d.message.clone()))
+        .collect()
+}
+
+/// Assert `src` compiles with no Error-severity diagnostics.
+fn assert_compiles_clean(src: &str, what: &str) {
+    let errors = compile_errors(src);
+    assert!(
+        errors.is_empty(),
+        "{what}: expected a clean compile, got errors: {errors:?}"
+    );
+}
+
+/// Read the DECLARED type of `<template>.<member>` straight off the compiled
+/// prelude, so an expectation below is an exact `Type` equality rather than a
+/// guess about how the diagnostic renderer spells a dimension.
+///
+/// This is the direct observation point the binding-shaped assertions above
+/// cannot reach: `TopologyTemplate::value_cells` carries the fully-resolved
+/// `cell_type` for every `param`, including the List element and `Point3`
+/// component types the `ParamDefaultTypeMismatch` check never descends into.
+/// Same shape as `reify-compiler`'s
+/// `harness_langcore/prelude_sub_member_typing_tests.rs::prelude_member_type`
+/// — both `stdlib_loader::load_stdlib` and `find_template` are public API and
+/// `reify-compiler` is a normal dependency of this crate, so no new seam is
+/// opened to get it.
+fn prelude_member_type(template_name: &str, member: &str) -> Type {
+    let prelude = reify_compiler::stdlib_loader::load_stdlib();
+    let tmpl = prelude
+        .iter()
+        .find_map(|m| reify_compiler::find_template(&m.templates, template_name))
+        .unwrap_or_else(|| panic!("prelude has no template {template_name}"));
+    tmpl.value_cells
+        .iter()
+        .find(|c| c.id.member == member)
+        .unwrap_or_else(|| {
+            let members: Vec<&str> = tmpl
+                .value_cells
+                .iter()
+                .map(|c| c.id.member.as_str())
+                .collect();
+            panic!("prelude template {template_name} has no member {member}; have: {members:?}")
+        })
+        .cell_type
+        .clone()
+}
+
+/// `Scalar[<dimension>]`, the declared type of a unit-bearing `param`.
+fn scalar_ty(dimension: DimensionVector) -> Type {
+    Type::Scalar { dimension }
+}
+
+/// Assert `src` is REJECTED with at least one `ParamDefaultTypeMismatch`.
+fn assert_param_default_type_mismatch(src: &str, what: &str) {
+    let errors = compile_errors(src);
+    assert!(
+        errors
+            .iter()
+            .any(|(code, _)| *code == Some(DiagnosticCode::ParamDefaultTypeMismatch)),
+        "{what}: expected a ParamDefaultTypeMismatch error, got: {errors:?}"
+    );
+}
+
+/// Assert `src` is REJECTED with at least one `DimensionMismatch` — the code the
+/// comparison guard emits for two scalar operands of different dimensions.
+fn assert_dimension_mismatch(src: &str, what: &str) {
+    let errors = compile_errors(src);
+    assert!(
+        errors
+            .iter()
+            .any(|(code, _)| *code == Some(DiagnosticCode::DimensionMismatch)),
+        "{what}: expected a DimensionMismatch error, got: {errors:?}"
+    );
+}
+
+/// The stdlib `Bead` / `Layer` field types declare the SAME unit regime that
+/// `toolpath_to_value` marshals into — SI and dimensioned.
+///
+/// This is the enforcement of `fdm_slice.ri`'s "Field-type ↔ marshalling
+/// contract" header, which until now asserted that the declarations and the
+/// marshaller "MUST stay aligned" with nothing actually checking it.
+///
+/// # Reach (what this test does and does not pin)
+///
+/// The SCALAR fields — `width` / `height` / `layer_z` / `speed` /
+/// `nominal_temp` / `Layer.z` — are pinned directly and in both directions: the
+/// positive half fails if a field stops being its own dimension, the negative
+/// half fails if it reverts to bare `Real`.
+///
+/// One field, `width`, additionally carries the USE the header of
+/// `fdm_slice.ri` justifies the whole regime by: `bead.width > 0.1mm`
+/// typechecks. Dimensional arithmetic reaches the comparison guard rather than
+/// the param-default check, so no binding-shaped assertion above covers it, and
+/// its own negative control (`> 0.1kg`) keeps that half from passing vacuously.
+///
+/// `centerline` is not reachable through that mechanism: the
+/// `ParamDefaultTypeMismatch` check inspects neither List element types nor
+/// `Point3` component types, so `param c : List<Int> = Bead().centerline` and
+/// `param p : Point3<Real> = Bead().centerline[0]` BOTH compile clean — a
+/// revert to `List<Point3<Real>>` would sail past any binding-shaped
+/// assertion. (That laxness is recorded below but deliberately not asserted; a
+/// test that reds when the checker gets STRICTER is a reverse ratchet, not
+/// coverage.) It is instead pinned DIRECTLY, by reading the declared cell type
+/// off the compiled prelude via [`prelude_member_type`] and asserting an exact
+/// `Type` equality against `List<Point3<Length>>`. That closes the blind spot:
+/// the equality is a property of the DECLARATION, so it is immune both to how
+/// the diagnostic renderer spells a dimension and to how strict the binding
+/// check happens to be. The scalar fields get the same exact-type treatment
+/// alongside their binding assertions, so every dimensional field is pinned
+/// twice over — once through what a design author's code actually sees, once
+/// against the declaration itself.
+///
+/// MEASURED RED for the equality (temporarily reverting the `.ri` declaration
+/// to `List<Point3<Real>>`): `left: List(Point { n: 3, quantity: Scalar {
+/// dimension: <all-zero> } })`. Note what that shows — a `Real` quantity slot
+/// lowers to a DIMENSIONLESS `Scalar`, not to a distinct `Type` variant, so the
+/// revert is only visible by comparing dimension exponents. That is exactly the
+/// distinction an equality against the declared type makes and a
+/// variant-shaped or renderer-prose check does not.
+///
+/// No claim here rests on diagnostic prose: every assertion is either an exact
+/// declared-type equality or a diagnostic CODE. Executable centerline coverage
+/// also lives on the marshaller side: `fdm_slice.rs`'s `assert_point3_length`
+/// and its `gcode_text_marshals_into_the_si_regime_end_to_end` per-coordinate
+/// LENGTH check.
+///
+/// Pure compile-level: no OCCT, no PrusaSlicer, no beads — so unlike the two
+/// tests above it carries no `OCCT_AVAILABLE` / `slicer_on_path` guard and runs
+/// in every environment.
+///
+/// # Why this shape
+///
+/// The obvious spelling — passing a unit-bearing literal to a constructor,
+/// `Bead(width: 0.45mm)` — has NO discriminating power here: structure-
+/// construction arguments are not dimension-checked, so even a flagrantly wrong
+/// `Flatness(tolerance_value: 0.45kg)` compiles clean. Binding a field to a
+/// declared param IS checked (`ParamDefaultTypeMismatch`), so reading the field
+/// back out into a typed param is what actually observes its declared type.
+#[test]
+fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
+    // Positive half: each field binds cleanly to a param of its own dimension.
+    // RED while the fields are declared `Real`, GREEN once they name their unit.
+    assert_compiles_clean(
+        "structure P { param w : Length = Bead().width }",
+        "Bead.width is Length",
+    );
+    assert_compiles_clean(
+        "structure P { param h : Length = Bead().height }",
+        "Bead.height is Length",
+    );
+    assert_compiles_clean(
+        "structure P { param z : Length = Bead().layer_z }",
+        "Bead.layer_z is Length",
+    );
+    assert_compiles_clean(
+        "structure P { param s : Velocity = Bead().speed }",
+        "Bead.speed is Velocity",
+    );
+    assert_compiles_clean(
+        "structure P { param t : Temperature = Bead().nominal_temp }",
+        "Bead.nominal_temp is Temperature",
+    );
+    assert_compiles_clean(
+        "structure P { param z : Length = Layer().z }",
+        "Layer.z is Length",
+    );
+
+    // The dimensionless-by-nature fields stay `Int` — the regime covers the
+    // dimensional fields, it does not sweep up the indices.
+    assert_compiles_clean(
+        "structure P { param i : Int = Bead().layer_index }",
+        "Bead.layer_index stays Int",
+    );
+    assert_compiles_clean(
+        "structure P { param i : Int = Layer().index }",
+        "Layer.index stays Int",
+    );
+
+    // Negative half — the half that actually closes the silent bare-number
+    // surface. Binding a now-dimensioned field to a bare `Real` param must be
+    // REJECTED; this assertion fails if someone later reverts a field to `Real`.
+    assert_param_default_type_mismatch(
+        "structure P { param w : Real = Bead().width }",
+        "Bead.width must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param h : Real = Bead().height }",
+        "Bead.height must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param z : Real = Bead().layer_z }",
+        "Bead.layer_z must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param s : Real = Bead().speed }",
+        "Bead.speed must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param t : Real = Bead().nominal_temp }",
+        "Bead.nominal_temp must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param z : Real = Layer().z }",
+        "Layer.z must no longer satisfy a bare Real param",
+    );
+
+    // Mechanism control: a WRONG-dimension binding is rejected, and stays
+    // rejected either way. Without this, a compiler that silently accepted
+    // everything would make the positive half above pass vacuously.
+    assert_param_default_type_mismatch(
+        "structure P { param m : Mass = Bead().width }",
+        "a Mass param must never accept a Bead width",
+    );
+
+    // The USE the regime exists for: dimensional arithmetic on a marshalled
+    // field. `fdm_slice.ri`'s header justifies the whole change by "`bead.width
+    // > 0.1mm` simply works", and a comparison goes through the comparison
+    // guard rather than the param-default check, so nothing above observes it.
+    assert_compiles_clean(
+        "structure P { param ok : Bool = Bead().width > 0.1mm }",
+        "a Length comparison on Bead.width typechecks",
+    );
+    assert_dimension_mismatch(
+        "structure P { param bad : Bool = Bead().width > 0.1kg }",
+        "comparing Bead.width against a Mass must be rejected",
+    );
+
+    // `centerline` — the one field whose type actually gates usability
+    // (`resolve_point3_length_arg` rejects bare-`Real` components). No binding
+    // half above can see it, so it is pinned DIRECTLY off the prelude instead:
+    // an exact `Type` equality against the declared cell type, which a revert to
+    // `List<Point3<Real>>` fails outright.
+    assert_eq!(
+        prelude_member_type("Bead", "centerline"),
+        Type::List(Box::new(Type::Point {
+            n: 3,
+            quantity: Box::new(scalar_ty(DimensionVector::LENGTH)),
+        })),
+        "Bead.centerline must be declared `List<Point3<Length>>` — a bare-`Real` \
+         component makes every centerline point unusable at \
+         `resolve_point3_length_arg`, and no binding-shaped assertion can see it"
+    );
+    // Secondary observation on the same field, kept because it exercises a
+    // DIFFERENT surface: that a wrong-dimension read THROUGH `centerline[0]`
+    // is rejected at all, rather than only that the declaration is right.
+    assert_param_default_type_mismatch(
+        "structure P { param m : Mass = Bead().centerline[0] }",
+        "a Mass param must never accept a Bead centerline point",
+    );
+
+    // The scalar fields get the same direct treatment, so each one is pinned
+    // both through the binding mechanism above (which observes what a design
+    // author's code actually sees) and by exact declared type (which cannot be
+    // satisfied by an implicit conversion or a laxer checker).
+    assert_eq!(
+        prelude_member_type("Bead", "width"),
+        scalar_ty(DimensionVector::LENGTH),
+        "Bead.width must be declared `Length`"
+    );
+    assert_eq!(
+        prelude_member_type("Bead", "height"),
+        scalar_ty(DimensionVector::LENGTH),
+        "Bead.height must be declared `Length`"
+    );
+    assert_eq!(
+        prelude_member_type("Bead", "layer_z"),
+        scalar_ty(DimensionVector::LENGTH),
+        "Bead.layer_z must be declared `Length`"
+    );
+    assert_eq!(
+        prelude_member_type("Bead", "speed"),
+        scalar_ty(DimensionVector::VELOCITY),
+        "Bead.speed must be declared `Velocity`"
+    );
+    assert_eq!(
+        prelude_member_type("Bead", "nominal_temp"),
+        scalar_ty(DimensionVector::TEMPERATURE),
+        "Bead.nominal_temp must be declared `Temperature` (absolute kelvin)"
+    );
+    assert_eq!(
+        prelude_member_type("Layer", "z"),
+        scalar_ty(DimensionVector::LENGTH),
+        "Layer.z must be declared `Length`"
+    );
+
+    // Recorded, deliberately NOT asserted: `param c : List<Int> =
+    // Bead().centerline` and `param p : Point3<Real> = Bead().centerline[0]`
+    // both compile clean today, because the binding check descends into neither
+    // List element types nor Point3 component types — the mechanism cannot
+    // distinguish those two spellings from the correct ones. Asserting that
+    // laxness would build a reverse ratchet: tightening the checker to descend
+    // into element types is exactly the improvement that would make the regime
+    // pinnable through the binding mechanism too, and it must not have to red a
+    // unit-regime test on its way in. (The prelude equality above is unaffected
+    // either way — it reads the declaration, not the checker.)
+}
+
+// ── The 0 °C not-observed sentinel (task #6301) ─────────────────────────────
+
+/// A one-bead `Toolpath` whose bead never saw an `M104`/`M109` — i.e. carries
+/// `Sweep::new()`'s untouched `temp: 0.0` accumulator
+/// (`reify-fdm/src/toolpath.rs`). Every other field is arbitrary-but-plausible;
+/// only `nominal_temp` is load-bearing here.
+fn temperature_less_toolpath() -> reify_fdm::Toolpath {
+    reify_fdm::Toolpath {
+        beads: vec![reify_fdm::Bead {
+            centerline: vec![[0.0, 0.0, 0.2], [10.0, 0.0, 0.2]],
+            width: 0.45,
+            height: 0.2,
+            role: reify_fdm::BeadRole::Perimeter,
+            layer_index: 0,
+            layer_z: 0.2,
+            // THE point of the fixture: no M104/M109 was ever seen.
+            nominal_temp: 0.0,
+            speed: 1800.0,
+        }],
+        layers: vec![reify_fdm::Layer {
+            index: 0,
+            z: 0.2,
+            bead_indices: vec![0],
+        }],
+        in_layer_adjacency: Vec::new(),
+        inter_layer_adjacency: Vec::new(),
+    }
+}
+
+/// The "no temperature was ever observed" sentinel means the SAME Value on both
+/// sides of the marshalling boundary.
+///
+/// `reify_fdm`'s sweep initialises its temperature accumulator to `0.0` °C and
+/// never distinguishes "no `M104`/`M109` was seen" from a genuine 0 °C setpoint
+/// (`crates/reify-fdm/src/toolpath.rs`, `Sweep::new`), so a temperature-less
+/// G-code yields beads reporting 0 °C. `nominal_temp` is the ONE field where
+/// that sentinel could silently disagree with the stdlib's default, because
+/// `degC` is the only AFFINE conversion in the regime — under `Length` or
+/// `Velocity` a zero stays a zero whatever the declared default's unit is,
+/// whereas `0degC` and `0K` are 273.15 K apart. This test pins the two halves
+/// together:
+///
+///   * (a) MARSHALLER SIDE — `toolpath_to_value` maps a `nominal_temp: 0.0`
+///     bead to `Scalar { si_value: 273.15, dimension: TEMPERATURE }`; and
+///   * (b) DECLARATION SIDE — a default-constructed `Bead()` in the DSL, whose
+///     `nominal_temp` default `fdm_slice.ri` declares as `0degC`, evaluates to
+///     that IDENTICAL Value.
+///
+/// Both sides are exactly `273.15` — `0.0 + DEG_C_TO_K_OFFSET` in the
+/// marshaller, `0 * 1.0 + 273.15` for `0degC` per `stdlib/units.ri`'s
+/// `pub unit degC : Temperature = 1 offset 273.15` — and adding to zero is
+/// exact in f64, so the agreement is BITWISE. It is asserted as Value equality
+/// rather than against an invented tolerance. Declaring the default `0K`
+/// instead breaks half (b) by the full 273.15 K.
+///
+/// Kernel-free (`make_simple_engine`, no body, no beads to slice), so like the
+/// declared-regime test above it carries no `OCCT_AVAILABLE` / `slicer_on_path`
+/// guard and runs everywhere.
+#[test]
+fn nominal_temp_zero_celsius_sentinel_agrees_across_the_marshalling_boundary() {
+    // ── (a) marshaller side ────────────────────────────────────────────────
+    let marshalled = toolpath_to_value(&temperature_less_toolpath());
+    let beads = toolpath_beads(&marshalled);
+    assert_eq!(beads.len(), 1, "fixture must marshal to exactly one bead");
+    let marshalled_temp = struct_field(&beads[0], "Bead", "nominal_temp").clone();
+
+    assert_eq!(
+        marshalled_temp,
+        Value::Scalar {
+            si_value: 273.15,
+            dimension: DimensionVector::TEMPERATURE,
+        },
+        "a bead that never saw an M104/M109 must marshal its 0 °C sentinel to \
+         273.15 K, dimensioned TEMPERATURE"
+    );
+
+    // ── (b) declaration side ───────────────────────────────────────────────
+    let source = r#"
+structure def TempSentinelProbe {
+    let t : Temperature = Bead().nominal_temp
+}
+"#;
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
+    let mut engine = reify_test_support::make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected zero Error diagnostics evaluating the sentinel probe, got: {eval_errors:#?}"
+    );
+
+    let id = ValueCellId::new("TempSentinelProbe", "t");
+    let declared_temp = result.values.get(&id).unwrap_or_else(|| {
+        panic!(
+            "TempSentinelProbe.t not found in eval result; available cells: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+
+    // ── the agreement itself ───────────────────────────────────────────────
+    assert_eq!(
+        *declared_temp, marshalled_temp,
+        "the stdlib `Bead.nominal_temp` default and the marshalled not-observed \
+         sentinel must be the SAME Value — declaring the default `0K` instead of \
+         `0degC` puts them 273.15 K apart, so a default-constructed Bead and a \
+         bead parsed from temperature-less G-code would silently disagree"
     );
 }

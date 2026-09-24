@@ -49,6 +49,7 @@ import {
   getInitialState,
   getEntityTree as bridgeGetEntityTree,
   setParameter as bridgeSetParameter,
+  previewParameter as bridgePreviewParameter,
   exportGeometry as bridgeExportGeometry,
   pickSavePath,
   pickOpenPath,
@@ -1791,9 +1792,38 @@ const App: Component = () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  function handleSetParameter(cellId: string, value: string) {
-    bridgeSetParameter(cellId, value).catch((err) =>
-      showToast(`Parameter update failed: ${errorMessage(err)}`, 'error'),
+  /**
+   * The durable write: rewrites the parameter's default in the source file.
+   * Returns so a caller can sequence on it — `MechanismPanel` holds the
+   * gesture's commit until the preview it follows has landed.
+   */
+  function handleSetParameter(cellId: string, value: string): Promise<void> {
+    return bridgeSetParameter(cellId, value).then(
+      () => undefined,
+      (err) => {
+        // A refusal discards the gesture's previews engine-side and re-emits
+        // the source values, so the optimistic overrides a scrub recorded are
+        // now the only thing still claiming the refused number. `refresh()`
+        // cannot retire them — it clears an override only when the committed
+        // value CATCHES UP to it, which is exactly what a refusal guarantees
+        // will not happen — so the slider would stay parked on a value neither
+        // the engine nor the file carries. Clearing all of them is right
+        // because a refusal invalidates the whole gesture, not one joint.
+        mechanismStore.clearOptimistic();
+        showToast(`Parameter update failed: ${errorMessage(err)}`, 'error');
+      },
+    );
+  }
+
+  /**
+   * The transient write behind a drag. A refusal is logged, never toasted: this
+   * fires at frame cadence, and the commit that ends the gesture reports the
+   * same refusal exactly once.
+   */
+  function handlePreviewParameter(cellId: string, value: string): Promise<void> {
+    return bridgePreviewParameter(cellId, value).then(
+      () => undefined,
+      (err) => console.error('Parameter preview failed:', errorMessage(err)),
     );
   }
 
@@ -2279,6 +2309,7 @@ const App: Component = () => {
                 <MechanismPanel
                   descriptors={mechanismStore.state.descriptors}
                   onSetParameter={handleSetParameter}
+                  onPreviewParameter={handlePreviewParameter}
                   onScrubLocal={(cellId, jointIndex, valueSi) =>
                     mechanismStore.setOptimistic(cellId ?? '', jointIndex, valueSi)
                   }

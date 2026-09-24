@@ -74,11 +74,11 @@
 //! `resolved_params` straight into its own returned `EvalResult`, so it
 //! inherits this wiring transitively.
 
-use reify_constraints::DimensionalSolver;
+use crate::fea_design_loop_support::fea_loop_engine;
 use reify_core::{Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, Engine, RealizationReadHandle};
 use reify_ir::{OpaqueState, Value};
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib, mm};
+use reify_test_support::{collect_errors, compile_source_with_stdlib, mm};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Edit-path coverage (task #5025) — see the module doc's "Edit-path coverage"
@@ -219,24 +219,15 @@ fn edit_path_half_span_fn(
     }
 }
 
-/// Shared engine constructor for the edit-path regression tests: the same
-/// `Engine::new` + `with_solver` + `register_production_compute_fns`
-/// discipline as `solve_elastic_static_dispatches_real_result_inside_minimize_where_loop`
-/// in the sibling `fea_in_the_loop_producer` submodule (INV-FEA-1
-/// single-bundler discipline — see that test's comment for
-/// why `register_production_compute_fns` is called even though this fixture
-/// needs none of its legs), plus registration of the synthetic
+/// Shared engine constructor for the edit-path regression tests: the
+/// [`fea_loop_engine`] wiring (the real `DimensionalSolver` plus the INV-FEA-1
+/// single bundler — see that function's doc), plus registration of the synthetic
 /// `test::edit_path_half_span` target. `scripts/check-compute-trampoline-registration.sh`
 /// excludes `tests/` dirs by path, so this test-local registration does not
 /// trip that guard, and the target name collides with no existing `test::`
 /// target under `compute_targets/`.
 fn build_edit_path_engine() -> Engine {
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(DimensionalSolver));
-    engine.register_production_compute_fns(reify_eval::MorphRegistration::Unavailable {
-        reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744); this fixture \
-                 uses only the synthetic test:: dispatch target, no morph/FEA legs at all",
-    });
+    let mut engine = fea_loop_engine();
     engine.register_compute_fn(
         "test::edit_path_half_span",
         edit_path_half_span_fn as ComputeFn,

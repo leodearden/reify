@@ -147,17 +147,21 @@ fn translate_bare_component_drops_op_dimensioned_builds() {
 
 #[test]
 fn rotate_around_bare_pivot_drops_op_dimensioned_builds() {
-    // The axis `0, 0, 1` and the angle stay BARE in BOTH forms — they are a
-    // dimensionless unit vector and PRD 3's angle respectively, and the
-    // dimensioned control's zero-diagnostic assertion is what pins that.
+    // The axis `0, 0, 1` stays BARE in BOTH forms — a dimensionless unit
+    // vector, and the dimensioned control's zero-diagnostic assertion is what
+    // pins that. The ANGLE is now dimensioned in both arms: PRD 3 leaf γ gates
+    // it, so a bare angle here would fire γ's Error inside THIS file's LENGTH
+    // signal — including in the dimensioned control, whose whole assertion is
+    // that it emits none. Migrating only the bare arm would present γ's gate
+    // as a task-5623 length regression.
     assert_length_gate(
         "rotate_around",
         "px",
         r#"structure def BareRotateAround {
-            let s = rotate_around(box(10mm, 10mm, 10mm), 5, 0, 0, 0, 0, 1, 1.5707963267948966)
+            let s = rotate_around(box(10mm, 10mm, 10mm), 5, 0, 0, 0, 0, 1, 1.5707963267948966rad)
         }"#,
         r#"structure def DimRotateAround {
-            let s = rotate_around(box(10mm, 10mm, 10mm), 5mm, 0mm, 0mm, 0, 0, 1, 1.5707963267948966)
+            let s = rotate_around(box(10mm, 10mm, 10mm), 5mm, 0mm, 0mm, 0, 0, 1, 1.5707963267948966rad)
         }"#,
         |op| matches!(op, GeometryOp::RotateAround { .. }),
     );
@@ -169,10 +173,10 @@ fn revolve_bare_axis_origin_drops_op_dimensioned_builds() {
         "revolve",
         "ox",
         r#"structure def BareRevolve {
-            let s = revolve(rectangle(20mm, 10mm), -10, 0, 0, 0.0, 1.0, 0.0, 6.283185307179586)
+            let s = revolve(rectangle(20mm, 10mm), -10, 0, 0, 0.0, 1.0, 0.0, 6.283185307179586rad)
         }"#,
         r#"structure def DimRevolve {
-            let s = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586)
+            let s = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586rad)
         }"#,
         |op| matches!(op, GeometryOp::Revolve { .. }),
     );
@@ -199,10 +203,10 @@ fn arc_bare_center_drops_op_dimensioned_builds() {
         "arc",
         "cx",
         r#"structure def BareArc {
-            let w = arc(0, 0, 0, 10, 0.0, 1.5707963267948966, 0, 0, 1)
+            let w = arc(0, 0, 0, 10, 0.0rad, 1.5707963267948966rad, 0, 0, 1)
         }"#,
         r#"structure def DimArc {
-            let w = arc(0mm, 0mm, 0mm, 10mm, 0.0, 1.5707963267948966, 0, 0, 1)
+            let w = arc(0mm, 0mm, 0mm, 10mm, 0.0rad, 1.5707963267948966rad, 0, 0, 1)
         }"#,
         |op| matches!(op, GeometryOp::Arc { .. }),
     );
@@ -342,13 +346,21 @@ fn polygon_bare_vertex_drops_op_dimensioned_builds() {
 /// |                     | Translate dz (`height × -0.5`)| LENGTH-preserving  |
 /// | `rounded_box`       | Translate dx/dy/dz (binops)   | LENGTH-preserving  |
 /// | `rounded_rect`      | Translate dz                  | LENGTH `Scalar`    |
-/// | `revolve_full`      | Revolve angle (2π)            | ANGLE, ungated     |
+/// | `revolve_full`      | Revolve angle (2π)            | ANGLE, gated (γ)   |
 ///
 /// Task 5742 retyped the literal ones ahead of this gate; the binop ones rely
 /// on `Scalar{LENGTH} × Real` preserving LENGTH at eval (the documented
 /// INVARIANT at `reify-compiler/src/geometry.rs`, which is why the `-0.5`
 /// multiplier must stay a BARE dimensionless `Real` — retyping it would yield
 /// `Scalar{AREA}` and our gate would reject it).
+///
+/// The `revolve_full` row was "ANGLE, ungated" until PRD 3 leaf γ (task 6924)
+/// gated the revolve angle. Now that the synthesized 2π literal meets a gate,
+/// this test is the load-bearing cross-check for it: nothing else here compiles
+/// `revolve_full(...)` from SOURCE, so a retype of that literal in
+/// `reify-compiler/src/geometry.rs` to a bare `Real` would make every
+/// `revolve_full(...)` in the language self-reject, and THIS is the arm that
+/// reds.
 ///
 /// If this test fails, the residual is COMPILER-side and belongs to task 5742,
 /// not here.

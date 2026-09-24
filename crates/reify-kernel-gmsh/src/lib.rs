@@ -60,13 +60,22 @@ pub mod ffi;
 #[cfg(has_gmsh)]
 pub mod init;
 
-// The shared `Mesh.MeshSizeMin`/`MeshSizeMax` restore discipline — only
-// compiled when has_gmsh is set (it writes through `crate::ffi`, itself
-// has_gmsh-gated). Deliberately NOT re-exported at the crate root: each
-// constant keeps exactly one public path, so a citation cannot drift between
-// two spellings of the same value.
+// The shared mesh-size option-table discipline — only compiled when has_gmsh
+// is set (it writes through `crate::ffi`, itself has_gmsh-gated).
+// Deliberately NOT re-exported at the crate root: each constant keeps exactly
+// one public path, so a citation cannot drift between two spellings of the
+// same value.
 #[cfg(has_gmsh)]
-pub mod mesh_size_clamp;
+pub mod mesh_size_scope;
+
+// The shared gmsh message-capture discipline — only compiled when has_gmsh
+// is set (it drives `crate::ffi`'s logger family, itself has_gmsh-gated).
+// `pub` for the same reason as `init` and `mesh_size_scope`: the `tests/`
+// binaries are separate compilation units and cannot reach `pub(crate)`.
+// Deliberately NOT re-exported at the crate root, so the cap constant keeps
+// exactly one public path and a citation cannot drift between spellings.
+#[cfg(has_gmsh)]
+pub mod log_capture;
 
 // Real kernel (FFI-backed) — only compiled when has_gmsh is set.
 #[cfg(has_gmsh)]

@@ -97,11 +97,17 @@ pub enum Reason {
 ///    `new.values` to decide whether the design-tree shape is unchanged and
 ///    all differing LEAF parameters are dimensional. Cheap; no kernel calls.
 ///
-///    `Type::Geometry` realization references are deliberately NOT treated as
-///    structural diffs (task 6635), so Stage A is strictly a leaf-parameter +
-///    graph-shape gate. Canonical rationale and the measured evidence live in
-///    ONE place — `reify_eval::classify_cell`'s "Type::Geometry and Rule 4"
-///    note; do not restate them here.
+///    Realization references are deliberately NOT treated as structural diffs —
+///    neither a bare `Type::Geometry` handle (task 6635) nor a top-level
+///    `Type::List(Type::Geometry)` handle list (task 7016) — so Stage A is
+///    strictly a leaf-parameter + graph-shape gate. Canonical rationale and the
+///    measured evidence live in ONE place — `reify_eval::classify_cell`'s
+///    "Type::Geometry and Rule 4" note; do not restate them here.
+///
+///    "LEAF parameters" is literal: Stage A consults its type whitelist only
+///    for `Param`/`Auto` cells. Canonical rationale, again in ONE place —
+///    `reify_eval::stage_a_eligible`'s "The value-diff walk is LEAF-SCOPED"
+///    note; do not restate it here.
 ///
 /// 2. **Realization gate** — if Stage A passes, this function ASSUMES the
 ///    caller has already realized the new B-rep and populated
