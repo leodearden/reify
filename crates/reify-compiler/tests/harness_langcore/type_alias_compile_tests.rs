@@ -950,9 +950,17 @@ fn alias_dependency_map_via_type_args_reverse_order() {
 fn alias_dependency_option_via_type_arg_reverse_order() {
     // Wrapped depends on Base via Option<Base>.
     // Base declared after Wrapped to trigger the bug.
+    //
+    // `Base = Length`, not `Force`: the alias target's DIMENSION is incidental to
+    // the reverse-declaration-order bug this pins, and the param default has to
+    // conform to it. `Force` plus a `1mm` default was a latent D8 param-default
+    // dimension mismatch that δ (#5306) turned fatal; there is no Force literal
+    // spelling available here because `compile_source` carries no stdlib prelude.
+    // Keeping a DEFAULT is load-bearing — type-checking it against the
+    // alias-resolved type is what reaches the bug.
     let source = r#"
         type Wrapped = Option<Base>
-        type Base = Force
+        type Base = Length
         structure S {
             param w : Wrapped = 1mm
         }

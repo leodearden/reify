@@ -12,24 +12,37 @@ use crate::geometry_traits_inference::{
 use reify_core::BASE_UNIT_SYMBOLS;
 use std::cell::RefCell;
 
-/// Severity knob for struct-constructor field-conformance diagnostics
-/// (task 5302, struct-ctor-conformance α).
+/// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
 ///
-/// α generalizes the 4584 struct-ctor conformance chokepoint from its original
-/// 4-family allowlist (`List<TraitObject>` / `StructureRef` / `Vector` /
-/// `Selector`) to ALL concrete field types, at **Warning** severity behind this
-/// single const. The ctor field-conformance surface reads its severity from
-/// here (threaded through `WalkCtx.severity`), so the δ follow-up is a literal
-/// one-const flip to `Severity::Error` that promotes that surface uniformly.
+/// Task 5302 (α) generalized the 4584 struct-ctor conformance chokepoint from
+/// its original 4-family allowlist (`List<TraitObject>` / `StructureRef` /
+/// `Vector` / `Selector`) to ALL concrete field types; task 5303 (ε) added the
+/// two structural codes. Both landed at `Severity::Warning` behind this const —
+/// a landing convenience under PRD decision D4, so a large diagnostic surface
+/// could reach the corpus before it could reject. **Task 5306 (δ) closed that
+/// warn window.** A non-conforming ctor argument is now an Error, so
+/// `reify check` exits 1 on it (`crates/reify-cli/src/main.rs`,
+/// `.any(|d| d.severity == Severity::Error)`).
 ///
-/// **Two emit sites are deliberately outside this knob** and will NOT flip with
-/// the const: (1) the fn-call conformance entry (`check_fn_arg_conformance`)
-/// hard-codes `Severity::Error` (out of scope; see the `WalkCtx.severity` field
-/// doc); (2) the geometry-trait leaf (`Bounded` / `Connected` / `Convex`, reached
-/// via [`emit_geometry_unbounded`] / [`emit_geometry_trait_violation`]) hard-codes
-/// `Severity::Error` because those codes (`GeometryUnbounded` and the geometry
-/// `TypeNotConformingToTrait`) belong to the geometry-primitive-constructors PRD,
-/// not to this ctor-field knob (see the `WalkCtx.severity` doc's carve-out note).
+/// The surface still reads its severity from HERE (threaded through
+/// `WalkCtx.severity`) rather than hard-coding `Severity::Error` at each emit
+/// site, because that is what made δ a one-const flip and what keeps every
+/// knob-governed site provably uniform. **There is no config flag and no
+/// environment variable behind this const, and none may be added**: a
+/// per-invocation severity would make `reify check`'s exit code depend on
+/// something other than the source, which is the failure mode the whole staged
+/// promotion existed to avoid.
+///
+/// **Two emit sites are deliberately outside this knob** and did NOT move with
+/// δ, because they were already Error: (1) the fn-call conformance entry
+/// (`check_fn_arg_conformance`) hard-codes `Severity::Error` (out of scope; see
+/// the `WalkCtx.severity` field doc); (2) the geometry-trait leaf (`Bounded` /
+/// `Connected` / `Convex`, reached via [`emit_geometry_unbounded`] /
+/// [`emit_geometry_trait_violation`]) hard-codes `Severity::Error` because those
+/// codes (`GeometryUnbounded` and the geometry `TypeNotConformingToTrait`) belong
+/// to the geometry-primitive-constructors PRD, not to this ctor-field knob (see
+/// the `WalkCtx.severity` doc's carve-out note). Both carve-outs remain live: a
+/// future re-scoping of this const must not silently absorb them.
 ///
 /// **ε (task 5303) additionally reads this knob from outside this module.** The
 /// two structural emit sites in the `StructureInstanceCtor` by-name binder
@@ -37,12 +50,12 @@ use std::cell::RefCell;
 /// ([`DiagnosticCode::CtorUnknownField`]) and over-arity positional argument
 /// ([`DiagnosticCode::CtorArity`]) — build their diagnostics with
 /// [`diag_at`]`(CTOR_FIELD_CONFORMANCE_SEVERITY, …)` rather than a literal
-/// `Severity::Warning`, which is why both this const and [`diag_at`] are
-/// `pub(crate)`. Keeping every knob-governed site on this one const is what keeps
-/// δ a literal one-const flip; a duplicated `Severity::Warning` literal in
-/// expr.rs would silently survive that flip (the C2(iv) severity-invariance
-/// failure mode).
-pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
+/// severity, which is why both this const and [`diag_at`] are `pub(crate)`. That
+/// is what made δ a literal one-const flip; a duplicated `Severity::Warning`
+/// literal in expr.rs would have silently survived it (the C2(iv)
+/// severity-invariance failure mode). The same reasoning applies to any emit site
+/// added here later: read the const, never a literal.
+pub(crate) const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Error;
 
 /// Build a `Diagnostic` at an explicit `severity`.
 ///
@@ -440,8 +453,9 @@ pub(crate) fn check_fn_arg_conformance(
 /// one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
 ///
 /// Whether an inference fallback should be judged AT ALL is a live question, and
-/// it is δ's (task #5306): that flip turns this Warning into a hard error on
-/// source that named no type. It is recorded here rather than pre-empted because
+/// δ (task #5306) made it a loud one: the flip turned this diagnostic into a
+/// hard error on source that named no type. It is recorded here rather than
+/// pre-empted because
 /// gating it is a behaviour change at BOTH sites — this chain cannot skip the
 /// fallback for port cells without also skipping it for top-level ones, which is
 /// exactly the parity this task established. The bit such a gate would need
@@ -672,14 +686,15 @@ struct WalkCtx<'a> {
     /// Severity at which conformance diagnostics emitted through this walk are
     /// built (task 5302). The two ctor-conformance entries
     /// (`check_trait_arg_conformance`, `check_param_default_conformance`) set
-    /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α); the fn-call
+    /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α, `Error` since
+    /// δ / task #5306); the fn-call
     /// entry (`check_fn_arg_conformance`) sets it to `Severity::Error` so the
     /// out-of-scope fn-call trait-conformance semantics stay hard errors. Every
     /// *field-conformance* emit site (leaf-trait, StructureRef, Vector, selector,
     /// wrapper-shape, and the general concrete-leaf `ArgTypeMismatch`) builds its
     /// `Diagnostic` via [`diag_at`]`(ctx.severity, …)`, so severity is read from
-    /// exactly one place per walk (C2(iv) severity-invariance); the δ follow-up
-    /// flips only the const.
+    /// exactly one place per walk (C2(iv) severity-invariance), which is what let
+    /// δ (task #5306) promote the whole family by flipping only the const.
     ///
     /// **Carve-out — geometry-trait conformance stays always-Error.** The
     /// `Bounded` / `Connected` / `Convex` geometry-trait leaf (reached inside
@@ -1775,7 +1790,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // second route — a persisted `Type::Point` on the value cell rather than
         // a `FunctionCall`'s inferred `result_type` — and the rule below fires
         // through it exactly as it does for a direct call. Pinned by
-        // `point3_cross_dimension_via_let_at_dimensioned_point_param_warns_arg_type_mismatch`
+        // `point3_cross_dimension_via_let_at_dimensioned_point_param_errors_arg_type_mismatch`
         // (`struct_ctor_field_conformance_tests.rs`); this claim is not carried
         // by prose alone.
         //
@@ -6879,11 +6894,12 @@ mod tests {
             diagnostics.len(),
         );
         let d = &diagnostics[0];
-        // task 5302 α (Option-A uniform downgrade): check_trait_arg_conformance is a
-        // ctor-conformance entry, so its diagnostics are emitted at
-        // CTOR_FIELD_CONFORMANCE_SEVERITY (Warning) rather than Error. Code/count/message
-        // are unchanged; δ later flips the knob back to Error.
-        assert_eq!(d.severity, Severity::Warning);
+        // check_trait_arg_conformance is a ctor-conformance entry, so its diagnostics
+        // are emitted at CTOR_FIELD_CONFORMANCE_SEVERITY. Task 5302 α downgraded that
+        // knob to Warning (Option-A uniform downgrade); task 5306 δ flipped it back to
+        // Error. Code/count/message were unchanged by both moves. Written as a literal
+        // rather than a read of the const so a future re-flip cannot pass vacuously.
+        assert_eq!(d.severity, Severity::Error);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TypeNotConformingToTrait),
@@ -7481,8 +7497,8 @@ mod tests {
     /// made it invisible to the walk: RED (zero diagnostics) until
     /// `param_default_cells` chains `template.ports[].members` in.
     ///
-    /// Its integration twin `port_member_geometry_param_default_warns`
-    /// (`harness_structure_declarations`) proves the same warning end-to-end from
+    /// Its integration twin `port_member_geometry_param_default_errors`
+    /// (`harness_structure_declarations`) proves the same diagnostic end-to-end from
     /// real source, so this probe is not here for the diagnostic — it is here for
     /// the ROUTE. Constructing the cell on `ports[].members` and nowhere else is
     /// the only way to distinguish "the chain reached the port list" from "the
@@ -7708,7 +7724,8 @@ mod tests {
     ///
     /// The `.ri` twin of this exact cell is
     /// `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
-    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Warning`).
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Error`
+    /// since δ / task #5306).
     /// Pinning BOTH seams matters because they reach this arm by different
     /// routes — a hand-built `Type` here, versus a `FunctionCall`'s inferred
     /// `result_type` there — so this probe holds the walker's rule whatever the
@@ -7720,7 +7737,7 @@ mod tests {
     /// The value-cell route (`let p = point3(…); Anchor(origin: p)`) is a THIRD
     /// entry point and NOTHING here stands in for it — this probe builds no
     /// `CompiledExpr` at all. It is pinned by its own fixture,
-    /// `point3_cross_dimension_via_let_at_dimensioned_point_param_warns_arg_type_mismatch`.
+    /// `point3_cross_dimension_via_let_at_dimensioned_point_param_errors_arg_type_mismatch`.
     ///
     /// The complement of `point_param_accepts_dimensionless_point_arg` directly
     /// above: that one pins the TOLERANT half (either side declines to name a
@@ -7750,7 +7767,7 @@ mod tests {
     /// (task 5766), sibling of `point_param_rejects_cross_dimension_point_arg`.
     ///
     /// The `.ri` seam for the same rule is
-    /// `vec3_cross_dimension_at_dimensioned_vector_param_warns_arg_type_mismatch`
+    /// `vec3_cross_dimension_at_dimensioned_vector_param_errors_arg_type_mismatch`
     /// in `struct_ctor_field_conformance_tests.rs`. Pinning BOTH seams matters
     /// because they reach the arm by different routes — a hand-built `Type`
     /// here, versus a `FunctionCall`'s inferred `result_type` there — so this
@@ -7851,11 +7868,11 @@ mod tests {
     /// For a probe whose types are WRAPPERS (the `List<Vector3<…>>` recursion
     /// probe), the quantities named are the INNER ones the rule fires on.
     ///
-    /// This is where the ERROR half of the rule's severity split is pinned: the
-    /// fn-call entry point this scaffold drives sets `Severity::Error`, while the
-    /// ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α) and is
-    /// pinned by the `.ri` fixtures in `struct_ctor_field_conformance_tests.rs`.
-    /// Both halves are recorded in `crates/reify-core/src/ty.rs`.
+    /// This pins the fn-call entry point this scaffold drives, which sets
+    /// `Severity::Error`. The ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`]
+    /// instead (Warning at α, `Error` since δ / task #5306, so the two entries no
+    /// longer split on severity) and is pinned by the `.ri` fixtures in
+    /// `struct_ctor_field_conformance_tests.rs`.
     fn assert_quantity_slot_conflict(
         param_type: Type,
         arg_ty: Type,
@@ -7882,7 +7899,7 @@ mod tests {
             diagnostics[0].severity,
             Severity::Error,
             "{why}\nthe fn-call entry point sets Severity::Error (the ctor entry sets the \
-             CTOR_FIELD_CONFORMANCE_SEVERITY knob, Warning at α); the quantity rule inherits \
+             CTOR_FIELD_CONFORMANCE_SEVERITY knob, Error since δ); the quantity rule inherits \
              whichever the walk was entered with. Got {:?}",
             diagnostics[0].severity,
         );
@@ -7990,10 +8007,11 @@ mod tests {
     /// a deliberate assertion of unit-lessness rather than a grammar workaround,
     /// so a `Vector3<Length>` arg there is a real error.
     ///
-    /// Ruling and its basis: `crates/reify-core/src/ty.rs`. The Warning half of
-    /// the severity split for this same cell is pinned by
+    /// Ruling and its basis: `crates/reify-core/src/ty.rs`. The ctor-path `.ri`
+    /// twin of this same cell is
     /// `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
-    /// (`struct_ctor_field_conformance_tests.rs`).
+    /// (`struct_ctor_field_conformance_tests.rs`), at `Severity::Error` since
+    /// δ / task #5306 — so the two paths no longer split on severity.
     #[test]
     fn dimensionless_quantity_param_rejects_dimensioned_vector_arg() {
         let diagnostics = assert_quantity_slot_conflict(
@@ -8045,7 +8063,7 @@ mod tests {
     /// now be rejected on cell `[0][0]` alone, where before only a dimensioned
     /// param slot could trip it. That claim is only true if this arm actually
     /// reaches the STRICT param-side predicate — the arm's one other quantity
-    /// fixture (`matrix_builtin_cross_dimension_at_inertia_param_warns_…` in
+    /// fixture (`matrix_builtin_cross_dimension_at_inertia_param_errors_…` in
     /// `struct_ctor_field_conformance_tests.rs`) is concrete×concrete and was
     /// already green under task 5766's symmetric rule, so it cannot tell the two
     /// predicates apart. Without this probe, routing the arm through the
@@ -8090,9 +8108,10 @@ mod tests {
     /// there are none outstanding.
     ///
     /// The `.ri` twin of this exact cell is
-    /// `point3_dimensioned_at_dimensionless_point_param_warns_arg_type_mismatch`
-    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Warning`),
-    /// which pins the inference chain this direct-`Type` probe deliberately
+    /// `point3_dimensioned_at_dimensionless_point_param_errors_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`, ctor path, `Severity::Error`
+    /// since δ / task #5306), which pins the inference chain this direct-`Type`
+    /// probe deliberately
     /// bypasses.
     #[test]
     fn dimensionless_quantity_point_param_rejects_dimensioned_point_arg() {
@@ -8341,7 +8360,7 @@ mod tests {
     /// twin named below carries the detail.
     ///
     /// The arity leg IS now pinned from `.ri` source, by
-    /// `point2_arg_at_point3_param_warns_arity_arg_type_mismatch`
+    /// `point2_arg_at_point3_param_errors_arity_arg_type_mismatch`
     /// (`struct_ctor_field_conformance_tests.rs`). This probe stays as the
     /// direct-`Type` seam of the same pair the cross-dimension probe above
     /// describes: constructed directly so it reaches the walker without
@@ -8354,7 +8373,7 @@ mod tests {
     /// so nothing there needs the correction this block carries. The `Vector`
     /// arm has the same asymmetry (no `Vector2` param spelling; `vec2` claimed
     /// into the same collapsed arm by 5344) and now has the matching `.ri` twin,
-    /// `vec2_arg_at_vector3_param_warns_arity_type_not_conforming`. The two
+    /// `vec2_arg_at_vector3_param_errors_arity_type_not_conforming`. The two
     /// arms' arity legs differ in EMITTER, not in reachability: `Point` routes
     /// arity through `emit_arg_type_mismatch`, `Vector` keeps its bespoke
     /// `TypeNotConformingToVector`, and each `.ri` twin asserts its own code so
@@ -8591,7 +8610,7 @@ mod tests {
     /// A bare `Enum("Hue")` param supplied an applied `Result<…>` arg resolves
     /// to two DIFFERENT base names, so it must still be exactly one
     /// `ArgTypeMismatch` — the same verdict the forward-direction cross-enum
-    /// probe (`enum_param_given_wrong_enum_warns_arg_type_mismatch`) pins.
+    /// probe (`enum_param_given_wrong_enum_errors_arg_type_mismatch`) pins.
     #[test]
     fn enum_param_rejects_applied_enum_arg_of_different_base() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();

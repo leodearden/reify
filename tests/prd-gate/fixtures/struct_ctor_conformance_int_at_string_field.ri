@@ -1,0 +1,21 @@
+// PRD probe fixture — docs/prds/struct-ctor-field-type-conformance.md §7 row 2, task δ (#5306).
+//
+// The general concrete-leaf mismatch: an Int literal at a `String`-typed ctor field.
+//
+// PRE (knob at Severity::Warning): `reify check` exits 0, "All constraints satisfied." —
+// silent at the CLI surface (the PRD's G6-branch-4 RED premise).
+// POST (task δ / #5306): `reify check` exits 1 with
+// "argument 'label' has type 'Int' but param 'label' requires type 'String'"
+// (crates/reify-compiler/src/conformance/mod.rs `emit_arg_type_mismatch`).
+//
+// Asserted by tests/prd-gate/struct-ctor-conformance-probe-set.json, gated by
+// tests/infra/test_prd_gate_struct_ctor_conformance.sh.
+module struct_ctor_conformance_int_at_string_field
+
+structure def Widget {
+    param label : String
+}
+
+structure def IntAtStringField {
+    let w = Widget(label: 42)
+}

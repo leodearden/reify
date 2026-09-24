@@ -1,0 +1,64 @@
+{
+  "probes": [
+    {
+      "capability": "PRE (knob at Severity::Warning, every commit up to delta): reify check exits 0 with 'All constraints satisfied.' — a coordinate pose at a selector-typed field is silent at the CLI. POST (task delta / 5306, CTOR_FIELD_CONFORMANCE_SEVERITY flipped to Error): PRD section 7 row 1 rejects — reify check exits 1 with the ArgTypeMismatch message carrying the fixed pose-vs-set hint, over the real stdlib PressureLoad (param face : Option<FaceSelector>), so alpha's Option-unwrap arm is exercised too",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/struct_ctor_conformance_pose_at_selector_field.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1,
+          "stderr_contains": "argument 'face' has type 'Frame3' but param 'face' requires selector type 'FaceSelector'; a coordinate pose is not a region target; select a face/edge/vertex instead"
+        }
+      }
+    },
+    {
+      "capability": "PRE (knob at Severity::Warning): reify check exits 0 with 'All constraints satisfied.' — an Int at a String-typed field is silent at the CLI. POST (task delta / 5306): PRD section 7 row 2 rejects — reify check exits 1 with the general concrete-leaf ArgTypeMismatch naming the field, the declared type and the found type (C3's structured content, all of which lives in the message because reify check never prints the DiagnosticCode)",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/struct_ctor_conformance_int_at_string_field.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1,
+          "stderr_contains": "argument 'label' has type 'Int' but param 'label' requires type 'String'"
+        }
+      }
+    },
+    {
+      "capability": "PRE (knob at Severity::Warning): reify check exits 0 with 'All constraints satisfied.' — a legacy string at a selector-typed field is silent at the CLI. POST (task delta / 5306): PRD section 7 row 3 rejects — reify check exits 1 with the disallow-string ArgTypeMismatch, and deliberately WITHOUT the pose hint (the 4581 over-tag guard: only Frame/Transform/Point args get it)",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/struct_ctor_conformance_string_at_selector_field.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1,
+          "stderr_contains": "argument 'face' has type 'String' but param 'face' requires selector type 'FaceSelector'"
+        }
+      }
+    },
+    {
+      "capability": "PRE (knob at Severity::Warning): reify check exits 0 with 'All constraints satisfied.' — a typo'd named argument is silently appended as a lenient __arg{i} positional. POST (task delta / 5306): PRD section 7 row 11 rejects — reify check exits 1 with E_CTOR_UNKNOWN_FIELD (minted by epsilon / 5303) naming both the offending field and the constructor; the mnemonic is a message PREFIX because reify check renders '{severity}: {message}' only",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/struct_ctor_conformance_unknown_field.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1,
+          "stderr_contains": "E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget'"
+        }
+      }
+    },
+    {
+      "capability": "PRE (knob at Severity::Warning): reify check exits 0 with 'All constraints satisfied.' — a surplus positional argument is silently appended as a lenient __arg{i}. POST (task delta / 5306): PRD section 7 row 12 rejects — reify check exits 1 with E_CTOR_ARITY (minted by epsilon / 5303) stating the declared arity and the given count; unlike E_CTOR_UNKNOWN_FIELD this is one-per-CALL, not one-per-argument",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/struct_ctor_conformance_over_arity.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1,
+          "stderr_contains": "E_CTOR_ARITY: Widget() expects at most 1 argument, got 2"
+        }
+      }
+    }
+  ]
+}

@@ -14,7 +14,7 @@
 //! `extract_damping` → `rayleigh_damping_ratio`.
 //!
 //! This test drives the exact author surface an engineer touches: a `.ri`
-//! source that configures `RayleighDamping(alpha: 0.0, beta: 0.0001)` and
+//! source that configures `RayleighDamping(alpha: 0.0Hz, beta: 0.0001s)` and
 //! reads `z_modal.modes[0].damping_ratio` back out.
 //!
 //! ## Physics ground truth (an identity, not a fitted number)
@@ -69,7 +69,7 @@ structure def MechanismDampingProbe {
     let opts = ModalOptions(
         n_modes: 1,
         boundary_conditions: [],
-        damping: RayleighDamping(alpha: 0.0, beta: 0.0001),
+        damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
         sigma: 0.0,
         tol: 0.000000001,
         max_iters: 200,

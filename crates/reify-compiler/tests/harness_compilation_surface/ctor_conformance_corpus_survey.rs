@@ -1,9 +1,9 @@
 //! Struct-ctor field-type conformance — corpus survey generator (task #5304).
 //!
 //! PRD `docs/prds/struct-ctor-field-type-conformance.md`, task β (§8): run the
-//! α(+ε) warn-stage compiler over **all tracked `.ri`** and commit
-//! `docs/prds/struct-ctor-field-type-conformance.survey.md` — every warning
-//! site, classified per D9, with the regeneration command. The signal is
+//! α(+ε) conformance-checking compiler over **all tracked `.ri`** and commit
+//! `docs/prds/struct-ctor-field-type-conformance.survey.md` — every
+//! conformance site, classified per D9, with the regeneration command. The signal is
 //! "mechanized, not a hand audit": every row and every count in that artifact
 //! is produced by the code in this module, with zero hand-derived entries.
 //!
@@ -751,7 +751,7 @@ impl Owner {
     }
 }
 
-/// One ctor-conformance warning site, as one row of the survey artifact.
+/// One ctor-conformance site, as one row of the survey artifact.
 ///
 /// Every field is machine-derived; nothing here is ever typed in by hand. An
 /// extractor that cannot recover its column yields `None`, which renders as an
@@ -946,8 +946,12 @@ fn synth(
 ) -> reify_core::Diagnostic {
     use reify_core::{Severity, diagnostics::DiagnosticLabel};
     let mut d = reify_core::Diagnostic::error(message).with_code(code);
-    // α's knob: ctor field conformance is Warning severity, not Error.
-    d.severity = Severity::Warning;
+    // The severity `CTOR_FIELD_CONFORMANCE_SEVERITY` emits at today: Error since
+    // δ/#5306, Warning under α. Set explicitly rather than inherited from
+    // `Diagnostic::error` so these fixtures keep modelling the knob if it moves
+    // again; every test here is about an EXTRACTOR, and the one that is about the
+    // severity column overrides this deliberately.
+    d.severity = Severity::Error;
     if let Some(l) = label {
         d = d.with_label(DiagnosticLabel::new(reify_core::SourceSpan::empty(0), l));
     }
@@ -1193,13 +1197,18 @@ fn survey_site_prefers_the_label_for_expected_and_found() {
 
 #[test]
 fn survey_site_renders_code_and_severity_in_pascal_case_debug_form() {
-    use reify_core::diagnostics::DiagnosticCode;
+    use reify_core::{Severity, diagnostics::DiagnosticCode};
 
-    let d = synth(
+    let mut d = synth(
         DiagnosticCode::ArgTypeMismatch,
         "argument 'a' has type 'Int' but param 'a' requires type 'String'",
         Some("expected 'String', got 'Int'"),
     );
+    // Deliberately a severity the knob does NOT emit today: feeding it the
+    // current one could not tell a read-off-the-diagnostic column apart from a
+    // hardcoded one, and reporting the MEASURED severity is what lets the
+    // artifact record a knob flip instead of asserting one.
+    d.severity = Severity::Warning;
     let site = survey_site_from_diagnostic("a.ri", "", &d).expect("site");
     // `{:?}` is used because reify-core's serde feature (which supplies the
     // PascalCase wire name) is non-default and not enabled for reify-compiler.
@@ -1207,7 +1216,7 @@ fn survey_site_renders_code_and_severity_in_pascal_case_debug_form() {
     assert_eq!(site.code, "ArgTypeMismatch");
     assert_eq!(
         site.severity, "Warning",
-        "α's knob is Warning; the sweep must report what it measured, not assume Error"
+        "the sweep must report the severity it MEASURED, never the one it expects"
     );
 }
 
@@ -2024,8 +2033,9 @@ struct SurveyRun {
     /// Reasons: `read-error`, `parse-error`.
     not_surveyed: Vec<(String, String)>,
     /// `(path, reason)` for members that WERE surveyed but whose compile also
-    /// produced Error-severity diagnostics — their ctor sites are collected,
-    /// but coverage of that file may be partial. Reason: `compile-error`.
+    /// produced Error-severity diagnostics OTHER than the ctor-conformance sites
+    /// this sweep collects — their ctor sites are collected, but coverage of that
+    /// file may be partial. Reason: `compile-error`.
     ///
     /// A separate bucket from `not_surveyed` on purpose: `compile_with_stdlib`
     /// is the SINGLE-FILE path (`reify check` instead uses
@@ -2034,6 +2044,14 @@ struct SurveyRun {
     /// `examples/module_visibility/consumer.ri` class — lands here. Calling
     /// those "not surveyed" would understate coverage; calling them fully
     /// surveyed would overstate it. Naming them is the honest third option.
+    ///
+    /// The sweep's own signal is excluded because it hides nothing: δ (#5306)
+    /// changed `CTOR_FIELD_CONFORMANCE_SEVERITY` and nothing else at the emit
+    /// site, so a ctor-conformance Error suppresses exactly as little of the
+    /// compile as the Warning it replaced — and the site it names is in
+    /// [`SurveyRun::sites`], collected rather than lost. Counting it here would
+    /// mark every member that carries a site as partially surveyed, which is the
+    /// one claim this bucket exists to make truthfully.
     partial: Vec<(String, String)>,
     /// Every ctor-conformance site found, sorted `(file, line, field)`.
     sites: Vec<SurveySite>,
@@ -2106,7 +2124,7 @@ fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
         if compiled
             .diagnostics
             .iter()
-            .any(|d| d.severity == Severity::Error)
+            .any(|d| d.severity == Severity::Error && !is_ctor_conformance_code(d.code))
         {
             run.partial.push((rel.clone(), "compile-error".to_owned()));
         }
@@ -2139,14 +2157,14 @@ fn survey_corpus(root: &std::path::Path, rel_paths: &[String]) -> SurveyRun {
     run
 }
 
-/// The known-WARNING member: PRD §7 boundary-test row 2, reused verbatim from
+/// The known-SITE member: PRD §7 boundary-test row 2, reused verbatim from
 /// `struct_ctor_field_conformance_tests.rs`'s `SOURCE_ROW2_VALUE_CELL_STRING`.
 ///
 /// Using α's own landed fixture means the end-to-end test asserts against a
 /// site shape the compiler is ALREADY proven to emit — the premise is verified
 /// live on `main`, not guessed.
 #[cfg(test)]
-const SYNTH_WARNS: &str = "module test.row2\n\
+const SYNTH_CONFORMANCE_SITE: &str = "module test.row2\n\
      structure def Widget { param label : String }\n\
      structure def Root {\n\
      \x20   let x = Widget(label: 42)\n\
@@ -2185,7 +2203,7 @@ const SYNTH_COMPILE_ERROR: &str = "module test.compile_error\n\
 
 // ─── prose-contract members: the extractors, against the LIVE emitters ───────
 //
-// `SYNTH_WARNS` above pins `ArgTypeMismatch`'s `argument '<f>'` /
+// `SYNTH_CONFORMANCE_SITE` above pins `ArgTypeMismatch`'s `argument '<f>'` /
 // `expected '<X>', got '<Y>'` shapes end-to-end. Every OTHER admitted wording
 // was pinned only against `synth(...)` fixtures whose message strings are
 // hand-written in this file — a presumed copy of what the emitters produce, not
@@ -2202,7 +2220,7 @@ const SYNTH_COMPILE_ERROR: &str = "module test.compile_error\n\
 // These three members close the gap for the remaining shapes at the same
 // near-zero cost — three small files through the real parse→compile pipeline.
 // They are deliberately a SEPARATE corpus rather than extra `synth_corpus()`
-// members: `survey_corpus_finds_the_known_warning_site_with_every_column_resolved`
+// members: `survey_corpus_finds_the_known_conformance_site_with_every_column_resolved`
 // asserts "exactly one ctor-conformance site across the mini-corpus", and the
 // coverage-arithmetic tests assert `run.total == 4`. Diluting those to carry
 // prose coverage would weaken guards that exist for a different reason.
@@ -2350,7 +2368,7 @@ fn epsilon_and_required_by_param_prose_extractors_hold_against_the_live_emitters
 fn synth_corpus() -> (tempfile::TempDir, Vec<String>) {
     let dir = tempfile::tempdir().expect("tempdir");
     for (name, source) in [
-        ("warns.ri", SYNTH_WARNS),
+        ("conformance_site.ri", SYNTH_CONFORMANCE_SITE),
         ("clean.ri", SYNTH_CLEAN),
         ("broken.ri", SYNTH_BROKEN),
         ("compile_error.ri", SYNTH_COMPILE_ERROR),
@@ -2361,13 +2379,13 @@ fn synth_corpus() -> (tempfile::TempDir, Vec<String>) {
         "broken.ri".to_owned(),
         "clean.ri".to_owned(),
         "compile_error.ri".to_owned(),
-        "warns.ri".to_owned(),
+        "conformance_site.ri".to_owned(),
     ];
     (dir, paths)
 }
 
 #[test]
-fn survey_corpus_finds_the_known_warning_site_with_every_column_resolved() {
+fn survey_corpus_finds_the_known_conformance_site_with_every_column_resolved() {
     let (dir, paths) = synth_corpus();
     let run = survey_corpus(dir.path(), &paths);
 
@@ -2378,11 +2396,12 @@ fn survey_corpus_finds_the_known_warning_site_with_every_column_resolved() {
         run.sites
     );
     let site = &run.sites[0];
-    assert_eq!(site.file, "warns.ri");
+    assert_eq!(site.file, "conformance_site.ri");
     assert_eq!(site.code, "ArgTypeMismatch");
     assert_eq!(
-        site.severity, "Warning",
-        "α's knob is Warning — the sweep must report what it MEASURED, never assume Error"
+        site.severity, "Error",
+        "δ flipped the knob to Error — the sweep must report what it MEASURED, never \
+         assume the severity the signal was first scoped to"
     );
     assert_eq!(site.field.as_deref(), Some("label"));
     assert_eq!(site.def.as_deref(), Some("Widget"));
@@ -2639,7 +2658,7 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 
 // ─── γ (task #5305): the sites γ deferred, with their owners ─────────────────
 
-/// Per-SITE, owner-attributed deferrals for the ctor-conformance warnings that
+/// Per-SITE, owner-attributed deferrals for the ctor-conformance sites that
 /// survive γ (task #5305) OUTSIDE `examples/`.
 ///
 /// Each entry is `(repo_relative_path, param_name, owning_task, why)`.
@@ -2673,7 +2692,7 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// the two `CTOR_CONFORMANCE_MIGRATION_DEBT` entries. An entry left behind after
 /// its site is retired is caught by the corpus-wide check inside
 /// [`generate_ctor_conformance_corpus_survey`], which reports a stale entry and
-/// an unexplained warning as two different defects.
+/// an unexplained site as two different defects.
 ///
 /// The `why` column's Greek leaf labels are
 /// `docs/prds/v0_6/dimension-checked-readers.md`'s, kept alongside the `#NNNN`
@@ -2694,7 +2713,7 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// Nothing here is dropped from any walk. Each entry excuses ONE
 /// `(file, param)` pair; every other diagnostic in these files stays unwaived,
 /// and a ctor-conformance diagnostic at a different param in the same file is
-/// an unexplained warning.
+/// an unexplained site.
 const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] = &[
     (
         "tests/prd-gate/fixtures/curvature_rad_literal.ri",
@@ -2780,12 +2799,12 @@ const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] = &[
 
 /// The repo-relative prefix of the `examples/` corpus.
 ///
-/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT)
 /// is keyed relative to that directory; every key in THIS module is
 /// repo-relative. This const is the whole of the difference.
 const EXAMPLES_PREFIX: &str = "examples/";
 
-/// Whether a [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// Whether a [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT)
 /// entry describes the REPO-RELATIVE site `(file, param)`.
 ///
 /// The single place the two tables' key forms are bridged. The debt list is
@@ -2796,14 +2815,15 @@ const EXAMPLES_PREFIX: &str = "examples/";
 /// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] has to exist as a sibling table.
 ///
 /// The `(file, param)` matching RULE is not restated here; it is
-/// `examples_smoke`'s `debt_entry_matches`, called through.
+/// `reify_test_support::ctor_conformance_debt::debt_entry_matches`, called through.
 fn debt_entry_describes(entry: &(&str, &str, &str), file: &str, param: Option<&str>) -> bool {
-    file.strip_prefix(EXAMPLES_PREFIX)
-        .is_some_and(|key| super::examples_smoke::debt_entry_matches(entry, key, param))
+    file.strip_prefix(EXAMPLES_PREFIX).is_some_and(|key| {
+        reify_test_support::ctor_conformance_debt::debt_entry_matches(entry, key, param)
+    })
 }
 
 /// The reason every
-/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT)
 /// site is deferred.
 ///
 /// That table carries no `why` column — it predates this one, and every entry in
@@ -2815,13 +2835,128 @@ const MIGRATION_DEBT_WHY: &str = "un-migrated examples/ call site that cannot be
      in isolation; waived per-site in CTOR_CONFORMANCE_MIGRATION_DEBT and retired by its \
      owning task's own diff";
 
-/// The `Debug` rendering of `reify_core::Severity::Warning`, which is how
-/// [`SurveySite::severity`] carries it.
+/// The `Debug` rendering of the severity `CTOR_FIELD_CONFORMANCE_SEVERITY` emits
+/// a ctor-conformance site at, which is how [`SurveySite::severity`] carries it.
 ///
-/// Read in exactly ONE place — [`disposition_of`] — so γ's Warning-severity scope
-/// is stated once and every consumer inherits it through the resolver instead of
-/// re-filtering on severity itself.
-const WARNING_SEVERITY: &str = "Warning";
+/// `"Error"` since δ (#5306) flipped that knob; `"Warning"` under α, which is
+/// what γ's signal was first scoped to. Named for its ROLE rather than for
+/// either value, so the next flip moves the value here and nothing else.
+///
+/// Read in exactly ONE place — [`disposition_of`] — so the scope is stated once
+/// and every consumer inherits it through the resolver instead of re-filtering on
+/// severity itself.
+const CTOR_CONFORMANCE_SITE_SEVERITY: &str = "Error";
+
+/// Whether `site`'s wording names the CTOR ARGUMENT it is about — the half of
+/// [`disposition_of`]'s scope statement that severity used to carry alone.
+///
+/// Most emitters the knob governs name the offending argument through the
+/// ctor's own argument list, either with [`ARG_PREFIX`] (α's four wordings and
+/// ε's `unknown named argument '…'`) or, for ε's arity code, with
+/// [`CTOR_ARITY_PREFIX`] — which names the def and a count instead, there being
+/// no single argument to name. The non-ctor emitters of the same codes name a
+/// composition, an overload set or a `required by param`, and so match neither.
+///
+/// # KNOWN BLIND SPOT: two knob-governed ctor families are scoped OUT
+///
+/// "Most", not "every". The leaf-trait arms of `emit_leaf_conformance_for_arg_type`
+/// (`type 'X' does not conform to trait 'T' required by param 'p'`) and its
+/// wrapper-shape arm (`type 'X' does not match wrapper shape required by param
+/// 'p' …`) are built with `diag_at(ctx.severity, …)`, so the knob DOES govern
+/// them on the ctor path — yet they match neither prefix. The fn-call entry
+/// (`check_fn_arg_conformance`) emits byte-identical wording, so no reading of
+/// the prose can separate the two paths. Consequence: a genuine ctor-field
+/// trait-conformance or wrapper-shape site resolves
+/// [`Disposition::NotApplicable`] and [`assert_no_unwaived_ctor_conformance_sites`]
+/// does not count it. Under α severity kept these in scope; δ's flip lost that.
+/// `a_ctor_path_required_by_param_site_is_scoped_out_known_blind_spot` pins the
+/// current classification so the gap is visible rather than silent. The cure is
+/// a structured ctor-vs-fn-call discriminator on the diagnostic itself, not more
+/// prose matching — tracked as a follow-up to #5306.
+///
+/// Both prefixes are already this module's, read here rather than re-spelled:
+/// `epsilon_and_required_by_param_prose_extractors_hold_against_the_live_emitters`
+/// pins them against the live emitters, so a wording drift reds there — at the
+/// extractor that owns the coupling — instead of quietly narrowing this scope.
+///
+/// Read in exactly ONE place, [`disposition_of`], for the same reason the
+/// severity const is.
+fn names_a_ctor_argument(site: &SurveySite) -> bool {
+    site.message.contains(ARG_PREFIX) || site.message.starts_with(CTOR_ARITY_PREFIX)
+}
+
+/// The committed CLI probe-set that asserts every
+/// [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] file actually rejects.
+///
+/// Named here because this table's soundness depends on it: without a probe, an
+/// entry is an unbacked declaration. Run by
+/// `tests/infra/test_prd_gate_struct_ctor_conformance.sh`.
+const REJECTION_PROBE_SET_REL: &str = "tests/prd-gate/struct-ctor-conformance-probe-set.json";
+
+/// Sites whose ctor-conformance violation IS the deliverable: δ's (#5306)
+/// committed PRD §7 boundary-row rejection fixtures.
+///
+/// Each entry is `(repo-relative file, param or `None`, why)`. The param is the
+/// one [`SurveySite::field`] recovers, taken off the generator's MEASURED panic
+/// text rather than read off the fixture source — the two can differ, and only
+/// the first is what the resolver keys on.
+///
+/// # No owner column, deliberately
+///
+/// The other two tables carry a `#NNNN` owner because their entries are RETIRED
+/// by that task's diff, and [`is_canonical_task_cite`] keeps the cite
+/// liveness-checkable. Neither applies here: these fixtures are never retired —
+/// they are the PRD's G2 headline signal made repeatable, and deleting one reds
+/// `tests/infra/test_prd_gate_struct_ctor_conformance.sh`. Naming #5306 would
+/// orphan the cite the moment δ goes done on merge, and would tell a reader that
+/// someone owes work here. What retires this table is the survey module's own
+/// three-file deletion, already documented in the module header — not a task.
+///
+/// # This is NOT `SKIP_SET`, and the guard that makes that true is not a comment
+///
+/// Each entry excuses ONE `(file, param)` pair, so a rejection fixture that grows
+/// a SECOND, unintended violation is still reported
+/// (`intended_rejection_claims_the_listed_param_and_not_its_neighbours`). And
+/// every entry's file must be the fixture of a probe in
+/// [`REJECTION_PROBE_SET_REL`] that asserts `reify check` rejects it
+/// (`every_rejection_fixture_is_asserted_by_a_committed_cli_probe`), so a file
+/// can be declared an intended rejection only while a committed gate
+/// independently asserts that it DOES reject.
+const CTOR_CONFORMANCE_REJECTION_FIXTURES: &[(&str, Option<&str>, &str)] = &[
+    (
+        "tests/prd-gate/fixtures/struct_ctor_conformance_int_at_string_field.ri",
+        Some("label"),
+        "PRD §7 row 2 (general concrete leaf, Int at a String field); asserted to exit 1 by \
+         the `check` probe for this file in tests/prd-gate/struct-ctor-conformance-probe-set.json",
+    ),
+    (
+        "tests/prd-gate/fixtures/struct_ctor_conformance_over_arity.ri",
+        None,
+        "PRD §7 row 12 (E_CTOR_ARITY); the diagnostic names a def and a count, never an \
+         argument, so no param is recoverable — asserted to exit 1 by the `check` probe for \
+         this file in tests/prd-gate/struct-ctor-conformance-probe-set.json",
+    ),
+    (
+        "tests/prd-gate/fixtures/struct_ctor_conformance_pose_at_selector_field.ri",
+        Some("face"),
+        "PRD §7 row 1 (a coordinate pose at a selector-typed field, over the real stdlib \
+         PressureLoad so α's Option-unwrap arm is exercised); asserted to exit 1 by the \
+         `check` probe for this file in tests/prd-gate/struct-ctor-conformance-probe-set.json",
+    ),
+    (
+        "tests/prd-gate/fixtures/struct_ctor_conformance_string_at_selector_field.ri",
+        Some("face"),
+        "PRD §7 row 3 (disallow-string at a selector-typed field, deliberately WITHOUT the \
+         pose hint per the 4581 over-tag guard); asserted to exit 1 by the `check` probe for \
+         this file in tests/prd-gate/struct-ctor-conformance-probe-set.json",
+    ),
+    (
+        "tests/prd-gate/fixtures/struct_ctor_conformance_unknown_field.ri",
+        Some("labl"),
+        "PRD §7 row 11 (E_CTOR_UNKNOWN_FIELD); asserted to exit 1 by the `check` probe for \
+         this file in tests/prd-gate/struct-ctor-conformance-probe-set.json",
+    ),
+];
 
 /// γ's per-site ruling on a surveyed site, resolved from the site's measured
 /// severity and the waiver tables.
@@ -2833,8 +2968,9 @@ enum Disposition {
         owning_task: &'static str,
         why: &'static str,
     },
-    /// The site carries a ctor-conformance CODE, but not at Warning severity: it
-    /// is outside γ's signal, and nobody owns retiring it.
+    /// The site carries a ctor-conformance CODE, but is not one of the sites the
+    /// conformance knob governs: it is outside γ's signal, and nobody owns
+    /// retiring it.
     ///
     /// Its own variant rather than folded into [`Disposition::Unattributed`],
     /// because the two call for OPPOSITE actions — an unattributed row is work,
@@ -2842,7 +2978,17 @@ enum Disposition {
     /// to go fix three deliberate rejection fixtures whose violation IS their
     /// content.
     NotApplicable,
-    /// A Warning that no table names: it is actionable, and nobody has claimed it.
+    /// An in-scope site whose violation IS the deliverable: a committed PRD §7
+    /// boundary-row fixture that `reify check` is asserted to REJECT.
+    ///
+    /// Distinct from [`Disposition::NotApplicable`] on scope — these sites ARE
+    /// knob-governed and DO name a ctor argument — and from
+    /// [`Disposition::Deferred`] on ownership: no task retires them, so there is
+    /// no owner to carry. Folding either way told the artifact's reader to go
+    /// break δ's own CLI gate.
+    IntendedRejection,
+    /// A knob-governed site that no table names: it is actionable, and nobody has
+    /// claimed it.
     Unattributed,
 }
 
@@ -2861,8 +3007,12 @@ impl Disposition {
                 format!("deferred — owned by {owning_task}: {why}")
             }
             Disposition::NotApplicable => {
-                "n/a — Error severity, outside the ctor-conformance warning signal: \
+                "n/a — names no ctor argument, outside the ctor-conformance signal: \
                  nothing to retire"
+                    .to_owned()
+            }
+            Disposition::IntendedRejection => {
+                "intended rejection — this fixture's violation is the signal: nothing to retire"
                     .to_owned()
             }
             Disposition::Unattributed => "unattributed — actionable".to_owned(),
@@ -2870,45 +3020,111 @@ impl Disposition {
     }
 }
 
-/// Resolve `site`'s disposition from [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] and
-/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT).
+/// Resolve `site`'s disposition from [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`],
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// and [`CTOR_CONFORMANCE_REJECTION_FIXTURES`].
 ///
-/// The ONLY place the two tables are unioned. The tables are the single source
+/// The ONLY place the three tables are unioned. The tables are the single source
 /// of truth and the artifact is a projection of them, so nothing else re-derives
 /// this mapping — including the corpus-wide check in
 /// [`generate_ctor_conformance_corpus_survey`], which calls straight through.
+///
+/// # Four dispositions, because a reader has four DIFFERENT things to do
+///
+/// The arms are not four shades of the same judgement; each one calls for a
+/// different action, and that is the whole reason the artifact is worth reading
+/// one row at a time:
+///
+/// * [`Disposition::Unattributed`] — FIX IT. In scope, unclaimed, actionable.
+/// * [`Disposition::Deferred`] — LEAVE IT, and read the named task to learn what
+///   breaks if you migrate it here instead.
+/// * [`Disposition::NotApplicable`] — IGNORE IT. The row carries a
+///   ctor-conformance code but the knob's walk did not emit it; the work does
+///   not exist.
+/// * [`Disposition::IntendedRejection`] — DO NOT TOUCH IT. In scope and
+///   genuinely violating, on purpose: the violation is a committed PRD §7
+///   signal, and removing it reds the CLI gate that asserts the rejection.
+///
+/// Collapsing any pair sends the reader the opposite way from the right one.
 ///
 /// Consultation order is immaterial:
 /// [`ctor_conformance_corpus_residual_is_disjoint_from_migration_debt`] proves
 /// no site can be described by both.
 ///
-/// A WARNING whose param could not be recovered is [`Disposition::Unattributed`].
-/// Both tables key on `(file, param)`, so there is nothing to match on, and the
-/// conservative default is the one that does not invent an owner.
+/// An in-scope site whose param could not be recovered is
+/// [`Disposition::Unattributed`]. Both tables key on `(file, param)`, so there is
+/// nothing to match on, and the conservative default is the one that does not
+/// invent an owner.
 ///
-/// # Severity decides SCOPE, before any table is consulted
+/// # SCOPE is decided here, before any table is consulted
 ///
-/// γ's signal is "zero unwaived ctor-conformance WARNINGS", so a site at any
-/// other severity is [`Disposition::NotApplicable`]. The corpus's Error-severity
-/// ctor-conformance-CODED sites — `bt1_wrong_kind_union.ri`,
-/// `bt6_kind_typed_param.ri`, `raw_lambda_material_field_rejected.ri` — are
-/// deliberate rejection fixtures reached from NON-ctor paths (selector
-/// composition, overload resolution, trait conformance). They work exactly as
-/// intended; giving them an owner would invent work, and leaving them
-/// `Unattributed` told the artifact's reader to go delete three other PRDs'
-/// signals.
+/// γ's signal is "zero unwaived ctor-conformance sites", and a site is in that
+/// signal when the ctor-argument walk the knob governs is what emitted it. Two
+/// conditions say so, and a site failing either is
+/// [`Disposition::NotApplicable`]: it carries
+/// [`CTOR_CONFORMANCE_SITE_SEVERITY`], and [`names_a_ctor_argument`].
 ///
-/// Stating that scope HERE rather than as a severity filter at each consumer is
-/// what keeps the artifact's `disposition` column and
-/// [`assert_no_unwaived_ctor_conformance_warnings`] unable to disagree about
-/// which sites the signal even covers.
+/// Under α the severity alone was the whole scope statement — the knob was the
+/// only Warning-severity source of these seven codes. δ (#5306) flipped it to
+/// `Error`, which is where the OTHER emitters of the same codes already were, so
+/// the second condition took over the job of separating them. It does that job
+/// only partially: ctor-path `required by param` sites (leaf-trait and
+/// wrapper-shape) are scoped OUT alongside the fn-call ones they cannot be told
+/// apart from — see [`names_a_ctor_argument`]'s "KNOWN BLIND SPOT".
 ///
-/// When δ (#5306) flips `CTOR_FIELD_CONFORMANCE_SEVERITY` to `Error`, this is the
-/// line that moves with it. Until it does, every waiver entry reads as STALE and
-/// the assertion goes RED naming them — loudly re-scoped, never vacuously green.
+/// # The corpus's three non-knob sites, measured
+///
+/// `bt1_wrong_kind_union.ri`, `bt6_kind_typed_param.ri` and
+/// `raw_lambda_material_field_rejected.ri` are deliberate REJECTION fixtures for
+/// other PRDs, reached from non-ctor paths (selector composition, overload
+/// resolution, trait conformance). They work exactly as intended; giving them an
+/// owner would invent work, and leaving them `Unattributed` told the artifact's
+/// reader to go delete three other PRDs' signals. Their wording — recorded in
+/// the committed artifact's rows for those three files, which γ measured while
+/// the knob was still `Warning` — names no argument:
+///
+/// * `selector composition kind mismatch: cannot compose FaceSelector and …`
+/// * `no matching overload for needs_face(EdgeSelector), candidates: …`
+/// * `type 'Field<…>' does not conform to trait 'ConstitutiveLaw' required by
+///   param 'material'`
+///
+/// # Why not the `Owner` column, which looks like it already draws this line
+///
+/// [`Owner::UnresolvedDef`] means "the anchor named something that is not a
+/// declared `structure def`", which is exactly the non-ctor call shape, and it
+/// does catch the first two. It is not sufficient, and the difference is
+/// MEASURED rather than argued: `raw_lambda`'s site recovers no def at all
+/// ([`Owner::Unknown`]) — and so does a genuine, waived ctor site,
+/// `curvature_rad_literal.ri :: param 'kc'`, whose label anchors at an
+/// initializer rather than at a `Def(` call. Scoping on the owner column would
+/// therefore stale a live [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry, so the
+/// ctor/non-ctor split has to be read off the DIAGNOSTIC, not off the anchor.
+///
+/// Stating the scope HERE rather than as a filter at each consumer is what keeps
+/// the artifact's `disposition` column and
+/// [`assert_no_unwaived_ctor_conformance_sites`] unable to disagree about which
+/// sites the signal even covers.
+///
+/// The next flip of `CTOR_FIELD_CONFORMANCE_SEVERITY` moves
+/// [`CTOR_CONFORMANCE_SITE_SEVERITY`] with it. Until it does, every waiver entry
+/// reads as STALE and the assertion goes RED naming them — loudly re-scoped,
+/// never vacuously green.
 fn disposition_of(site: &SurveySite) -> Disposition {
-    if site.severity != WARNING_SEVERITY {
+    if site.severity != CTOR_CONFORMANCE_SITE_SEVERITY || !names_a_ctor_argument(site) {
         return Disposition::NotApplicable;
+    }
+
+    // BEFORE the param early return, and that ordering is forced rather than
+    // stylistic: ε's arity wording names a def and a count, so `site.field` is
+    // `None` at `struct_ctor_conformance_over_arity.ri` and the early return
+    // below is exactly what stranded it as an unexplained site. Matching on
+    // `(file, param)` — with `param` as `Option` — is what lets one table reach
+    // both shapes.
+    if CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .any(|(file, param, _)| *file == site.file && *param == site.field.as_deref())
+    {
+        return Disposition::IntendedRejection;
     }
 
     let Some(param) = site.field.as_deref() else {
@@ -2922,7 +3138,7 @@ fn disposition_of(site: &SurveySite) -> Disposition {
         return Disposition::Deferred { owning_task, why };
     }
 
-    if let Some(&(_, _, owning_task)) = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+    if let Some(&(_, _, owning_task)) = reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()
         .find(|entry| debt_entry_describes(entry, &site.file, Some(param)))
     {
@@ -2935,40 +3151,40 @@ fn disposition_of(site: &SurveySite) -> Disposition {
     Disposition::Unattributed
 }
 
-/// Panic unless every WARNING-severity ctor-conformance site in `run` is
-/// accounted for by exactly one waiver-table entry, and every entry accounts for
-/// at least one site.
+/// Panic unless every in-scope ctor-conformance site in `run` is accounted for by
+/// exactly one waiver-table entry, and every entry accounts for at least one
+/// site.
 ///
-/// This is γ's actual signal — "zero UNWAIVED ctor-conformance warnings" — made
+/// This is γ's actual signal — "zero UNWAIVED ctor-conformance sites" — made
 /// repeatable instead of asserted once in a commit message.
 ///
 /// Both directions are reported together, because they are DIFFERENT defects:
 ///
-/// * a site named by NEITHER table is an UNEXPLAINED warning. Someone added an
+/// * a site named by NEITHER table is an UNEXPLAINED site. Someone added an
 ///   un-migrated call site, or reverted a migration; γ's invariant is broken.
 /// * an entry matching NO site is STALE. Its owning task landed and the entry
 ///   must be deleted in that same diff — exactly the rot
 ///   `ctor_conformance_migration_debt_entries_are_all_live` catches for the debt
 ///   list, extended to the whole tracked corpus.
 ///
-/// # Scoped to Warning severity, but it does not say so itself
+/// # Scoped, but it does not say so itself
 ///
-/// The corpus also carries ERROR-severity ctor-conformance-CODED sites —
-/// `bt1_wrong_kind_union.ri`, `bt6_kind_typed_param.ri`,
+/// The corpus also carries ctor-conformance-CODED sites the conformance knob did
+/// not emit — `bt1_wrong_kind_union.ri`, `bt6_kind_typed_param.ri`,
 /// `raw_lambda_material_field_rejected.ri`. Those are deliberate REJECTION
 /// fixtures reached from non-ctor paths (selector composition, overload
 /// resolution, trait conformance): they are working exactly as intended, they
-/// are not ctor-conformance warnings, and enumerating them as residual would
-/// claim an owner for something nobody needs to retire.
+/// are not ctor-conformance sites, and enumerating them as residual would claim
+/// an owner for something nobody needs to retire.
 ///
 /// That scope is [`disposition_of`]'s, not this function's: nothing here reads
-/// [`WARNING_SEVERITY`]. Both directions below are decided entirely by the
-/// resolver — `Unattributed` is the unexplained set, `Deferred` is the waived set
-/// — so the artifact's `disposition` column and this assertion cannot disagree
-/// about whether a site is in scope OR about whether it is waived. A severity
-/// filter here as well would be a second, silently divergent copy of the scope
-/// statement.
-fn assert_no_unwaived_ctor_conformance_warnings(run: &SurveyRun) {
+/// [`CTOR_CONFORMANCE_SITE_SEVERITY`] or calls [`names_a_ctor_argument`]. Both
+/// directions below are decided entirely by the resolver — `Unattributed` is the
+/// unexplained set, `Deferred` is the waived set — so the artifact's
+/// `disposition` column and this assertion cannot disagree about whether a site
+/// is in scope OR about whether it is waived. A scope filter here as well would
+/// be a second, silently divergent copy of the scope statement.
+fn assert_no_unwaived_ctor_conformance_sites(run: &SurveyRun) {
     let unexplained: Vec<String> = run
         .sites
         .iter()
@@ -2985,9 +3201,9 @@ fn assert_no_unwaived_ctor_conformance_warnings(run: &SurveyRun) {
         .collect();
 
     // The waived set, by the same resolver that renders the artifact column.
-    // Severity scope rides along rather than being re-stated: only a Warning can
-    // resolve to `Deferred`, so an entry whose only site stopped being a warning
-    // reads as stale — the loud, correct outcome.
+    // Scope rides along rather than being re-stated: only an in-scope site can
+    // resolve to `Deferred`, so an entry whose only site left the scope reads as
+    // stale — the loud, correct outcome.
     let waived: Vec<&SurveySite> = run
         .sites
         .iter()
@@ -3005,7 +3221,7 @@ fn assert_no_unwaived_ctor_conformance_warnings(run: &SurveyRun) {
             )
         })
     });
-    let stale_debt = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+    let stale_debt = reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()
         .filter_map(|entry| {
             let matched = waived
@@ -3018,28 +3234,63 @@ fn assert_no_unwaived_ctor_conformance_warnings(run: &SurveyRun) {
                 )
             })
         });
-    let stale: Vec<String> = stale_residual.chain(stale_debt).collect();
+    // Rejection entries go stale exactly as waiver entries do, and for a reason
+    // that is MORE likely here than there: a renamed or deleted fixture leaves a
+    // dead entry behind, and a dead entry in THIS table is a claim that a probe
+    // is watching a file that no longer exists.
+    let claimed: Vec<&SurveySite> = run
+        .sites
+        .iter()
+        .filter(|s| disposition_of(s) == Disposition::IntendedRejection)
+        .collect();
+    let stale_rejection = CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .filter_map(|(file, param, _)| {
+            let matched = claimed
+                .iter()
+                .any(|s| s.file == *file && s.field.as_deref() == *param);
+            (!matched).then(|| {
+                format!(
+                    "  {} :: param '{}'  (CTOR_CONFORMANCE_REJECTION_FIXTURES)",
+                    file,
+                    param.unwrap_or("—"),
+                )
+            })
+        });
+
+    let stale: Vec<String> = stale_residual
+        .chain(stale_debt)
+        .chain(stale_rejection)
+        .collect();
 
     assert!(
         unexplained.is_empty() && stale.is_empty(),
         "the tracked corpus and the waiver tables disagree: {} unexplained \
-         warning(s), {} stale entry/entries.\n\n\
-         UNEXPLAINED — a Warning-severity ctor-conformance site named by NEITHER \
+         site(s), {} stale entry/entries.\n\n\
+         UNEXPLAINED — an in-scope ctor-conformance site named by NEITHER \
          CTOR_CONFORMANCE_CORPUS_RESIDUAL nor CTOR_CONFORMANCE_MIGRATION_DEBT:\n{}\n\n\
          Fix the site. Add a waiver ONLY if a LIVE task genuinely owns retiring it, \
-         and then name that task and say what breaks if it is migrated here instead.\n\n\
+         and then name that task and say what breaks if it is migrated here instead. \
+         A THIRD, narrower option applies only to a committed rejection FIXTURE whose \
+         violation is itself a PRD §7 signal: add it to \
+         CTOR_CONFORMANCE_REJECTION_FIXTURES, which requires a probe in \
+         tests/prd-gate/struct-ctor-conformance-probe-set.json already asserting that \
+         the file rejects.\n\n\
          STALE — a waiver entry matching no live site:\n{}\n\n\
          The expected case is that the owning task landed: DELETE the entry, in the \
          same diff that retired the site. TWO other causes make EVERY entry go stale \
          at once, and neither is fixed by deleting them: param extraction stopped \
          matching the emitter's `argument '<name>'` wording (fix the extraction), or \
-         `CTOR_FIELD_CONFORMANCE_SEVERITY` was flipped to Error by δ/#5306, which puts \
-         every site outside this Warning-scoped signal (re-scope `disposition_of`, \
-         which is the ONE place that scope is stated).\n\n\
-         Scope comes from `disposition_of`: the corpus's three Error-severity \
-         ctor-conformance-coded sites are deliberate rejection fixtures reached from \
-         non-ctor paths, so they resolve to `n/a` and are neither waived nor counted \
-         here.",
+         `CTOR_FIELD_CONFORMANCE_SEVERITY` moved again and \
+         CTOR_CONFORMANCE_SITE_SEVERITY did not move with it (re-point that const, \
+         which with `names_a_ctor_argument` is the ONE place that scope is stated).\n\n\
+         Scope comes from `disposition_of`, and TWO distinct classes sit outside the \
+         actionable set for different reasons. Non-knob sites carry a \
+         ctor-conformance code but were emitted by another PRD's path, so they name \
+         no ctor argument and resolve to `n/a`. In-scope INTENDED REJECTIONS are \
+         knob-governed and genuinely violating, on purpose: they are committed PRD §7 \
+         boundary-row fixtures whose rejection a CLI probe asserts. Neither is waived \
+         and neither is counted here.",
         unexplained.len(),
         stale.len(),
         if unexplained.is_empty() {
@@ -3148,7 +3399,7 @@ fn ctor_conformance_corpus_residual_is_sorted_and_duplicate_free() {
 }
 
 /// [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] and
-/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT)
+/// [`CTOR_CONFORMANCE_MIGRATION_DEBT`](reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT)
 /// describe DISJOINT sites.
 ///
 /// The two tables are siblings, not a merge: one site described in both would
@@ -3160,7 +3411,7 @@ fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
     let overlap: Vec<String> = CTOR_CONFORMANCE_CORPUS_RESIDUAL
         .iter()
         .filter(|(path, param, _, _)| {
-            super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT
+            reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT
                 .iter()
                 .any(|entry| debt_entry_describes(entry, path, Some(param)))
         })
@@ -3175,6 +3426,281 @@ fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
          the gate that consumes it walks EXAMPLES_DIR only and its keys are relative to \
          that directory. CTOR_CONFORMANCE_CORPUS_RESIDUAL owns everything else.",
         overlap.join("\n"),
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CTOR_CONFORMANCE_REJECTION_FIXTURES — the third table, and why it is a third
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// δ (#5306) committed five `.ri` under `tests/prd-gate/fixtures/` whose WHOLE
+// CONTENT is a ctor-conformance violation: they are the PRD's §7 boundary-row
+// rejection signals, and `tests/infra/test_prd_gate_struct_ctor_conformance.sh`
+// asserts that `reify check` exits 1 on each. They are tracked, so the corpus
+// sweep finds them; they are knob-governed and name a ctor argument, so
+// `disposition_of` puts them IN SCOPE; and no waiver table names them, so before
+// this table every one resolved `Unattributed` — the generator reported five
+// UNEXPLAINED sites, telling the artifact's reader to go fix the very fixtures
+// whose violation IS the deliverable.
+//
+// That is the same failure `Disposition::NotApplicable` was minted for, one axis
+// over, and it takes a fourth arm rather than a fifth reading of an existing
+// one: these sites ARE in scope (unlike `NotApplicable`) and nobody will ever
+// retire them (unlike `Deferred`). The four dispositions map one-to-one onto
+// four DIFFERENT reader actions, which is the property that makes the artifact
+// worth reading at all.
+
+/// The first [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] entry that carries a param,
+/// or `None` when the table holds none.
+///
+/// Borrowed rather than copied, for the reason
+/// `render_survey_resolves_each_site_disposition_from_the_tables` states: a key
+/// spelled a second time here would stale the moment a fixture is renamed, and
+/// draining the table is a legitimate end state that must not red the gate.
+fn first_rejection_entry_with_param() -> Option<&'static (&'static str, Option<&'static str>, &'static str)>
+{
+    CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .find(|(_, param, _)| param.is_some())
+}
+
+/// A listed `(file, param)` resolves [`Disposition::IntendedRejection`], and an
+/// UNLISTED param in the SAME file still resolves [`Disposition::Unattributed`].
+///
+/// Both halves are load-bearing and the second is the non-vacuity guard: keyed on
+/// the file alone this table would be a `SKIP_SET` by another name, silencing
+/// every future ctor-conformance diagnostic a rejection fixture grows. A fixture
+/// that acquires a SECOND, unintended violation must still be reported.
+#[test]
+fn intended_rejection_claims_the_listed_param_and_not_its_neighbours() {
+    let Some(&(file, param, _)) = first_rejection_entry_with_param() else {
+        println!("skipped: CTOR_CONFORMANCE_REJECTION_FIXTURES holds no param-keyed entry");
+        return;
+    };
+    let param = param.expect("first_rejection_entry_with_param only yields Some");
+
+    let listed = synth_site(file, 1, "Widget", param, Owner::Unknown);
+    assert_eq!(
+        disposition_of(&listed),
+        Disposition::IntendedRejection,
+        "a listed (file, param) must resolve IntendedRejection: {file} :: param '{param}'"
+    );
+
+    // A param no entry can name, asserted rather than assumed so this half cannot
+    // go vacuous if the sentinel is ever added to the table.
+    const UNLISTED: &str = "a_param_no_rejection_fixture_declares";
+    assert!(
+        !CTOR_CONFORMANCE_REJECTION_FIXTURES
+            .iter()
+            .any(|(f, p, _)| *f == file && *p == Some(UNLISTED)),
+        "the sentinel param must stay absent from the table, or this guard proves nothing"
+    );
+    let neighbour = synth_site(file, 2, "Widget", UNLISTED, Owner::Unknown);
+    assert_eq!(
+        disposition_of(&neighbour),
+        Disposition::Unattributed,
+        "an UNLISTED param in a listed file must stay actionable — keyed on the file \
+         alone this table would be a SKIP_SET, and a rejection fixture that grows a \
+         SECOND, unintended violation would be silently swallowed"
+    );
+}
+
+/// Pins [`names_a_ctor_argument`]'s KNOWN BLIND SPOT: a knob-governed
+/// ctor-path leaf-trait or wrapper-shape site — the wording
+/// `boundary13_option_trait_param_nonconforming_errors_trait_conformance`
+/// measures on `Holder(mat: NotAMaterial())` — resolves
+/// [`Disposition::NotApplicable`], because its prose is indistinguishable from
+/// the fn-call path's.
+///
+/// This asserts the CURRENT classification, not the desired one. When a
+/// structured ctor-vs-fn-call discriminator lands, this test is expected to go
+/// red and be rewritten to assert the site is in scope.
+#[test]
+fn a_ctor_path_required_by_param_site_is_scoped_out_known_blind_spot() {
+    for message in [
+        "type 'NotAMaterial' does not conform to trait 'MaterialSpec' required by param 'mat'",
+        "type 'Int' does not match wrapper shape required by param 'mat' (expected 'Option')",
+    ] {
+        let mut site = synth_site("examples/holder.ri", 1, "Holder", "mat", Owner::Unknown);
+        site.code = "TypeNotConformingToTrait".to_owned();
+        site.message = message.to_owned();
+        assert_eq!(site.severity, CTOR_CONFORMANCE_SITE_SEVERITY);
+
+        assert!(
+            !names_a_ctor_argument(&site),
+            "if this now holds, the blind spot is closed: update the doc and flip this test"
+        );
+        assert_eq!(
+            disposition_of(&site),
+            Disposition::NotApplicable,
+            "ctor-path `required by param` sites are currently scoped out: {message}"
+        );
+    }
+}
+
+/// A listed fixture whose diagnostic recovers NO param still resolves
+/// [`Disposition::IntendedRejection`].
+///
+/// This pins the LOOKUP ORDER inside [`disposition_of`], not merely a table row.
+/// ε's `E_CTOR_ARITY` wording names a def and a count because there is no single
+/// argument to name, so `site.field` is `None` and the `let … else` param
+/// early-return fires. Placed after it, the rejection lookup could never reach
+/// `struct_ctor_conformance_over_arity.ri` — which is exactly how that fixture
+/// was stranded as an UNEXPLAINED site with `param '—'`.
+#[test]
+fn intended_rejection_reaches_a_site_whose_wording_names_no_argument() {
+    let Some(&(file, _, _)) = CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .find(|(_, param, _)| param.is_none())
+    else {
+        println!("skipped: CTOR_CONFORMANCE_REJECTION_FIXTURES holds no param-less entry");
+        return;
+    };
+
+    let mut site = synth_site(file, 1, "Widget", "ignored", Owner::Unknown);
+    site.field = None;
+    site.code = "CtorArity".to_owned();
+    site.message = format!("{CTOR_ARITY_PREFIX}Widget() expects at most 1 argument, got 2");
+    assert!(
+        names_a_ctor_argument(&site),
+        "the arity wording must stay IN SCOPE, or this test would pass off NotApplicable"
+    );
+
+    assert_eq!(
+        disposition_of(&site),
+        Disposition::IntendedRejection,
+        "a param-less listed site must resolve IntendedRejection, which requires the \
+         rejection lookup to precede the `site.field` early return: {file}"
+    );
+}
+
+/// [`Disposition::IntendedRejection`]'s artifact cell reads distinctly from every
+/// other disposition, and names no owner.
+///
+/// The cell is the whole interface to a reader consuming the artifact one row at
+/// a time. Reading like `NotApplicable` would tell them the site is out of scope
+/// when it is in scope; naming a task would send them hunting for work that does
+/// not exist, because nothing retires these fixtures short of the survey module's
+/// own deletion.
+#[test]
+fn intended_rejection_cell_is_distinct_and_names_no_owner() {
+    let cell = Disposition::IntendedRejection.label();
+    let deferred = Disposition::Deferred {
+        owning_task: "#5847",
+        why: "an owning task's reason",
+    }
+    .label();
+
+    assert_ne!(cell, Disposition::NotApplicable.label());
+    assert_ne!(cell, Disposition::Unattributed.label());
+    assert_ne!(cell, deferred);
+    assert!(
+        !cell.contains('#'),
+        "the IntendedRejection cell must name no task — there is nothing to retire, so a \
+         cite would send the reader hunting for work that does not exist. Got: {cell:?}"
+    );
+}
+
+/// Every [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] entry names a file that exists
+/// and is a `.ri`.
+///
+/// Mirrors `ctor_conformance_corpus_residual_entries_name_existing_ri_files`, and
+/// for the same reason: it separates a MIS-TYPED path from a DELETED fixture,
+/// which otherwise surface identically inside the `#[ignore]`d generator.
+#[test]
+fn ctor_conformance_rejection_fixtures_name_existing_ri_files() {
+    for (path, param, _why) in CTOR_CONFORMANCE_REJECTION_FIXTURES {
+        assert!(
+            path.ends_with(".ri"),
+            "CTOR_CONFORMANCE_REJECTION_FIXTURES entry '{path}' (param {param:?}) is not a \
+             `.ri` path"
+        );
+        let full = std::path::Path::new(WORKSPACE_ROOT).join(path);
+        assert!(
+            full.exists(),
+            "CTOR_CONFORMANCE_REJECTION_FIXTURES entry '{path}' (param {param:?}) does not \
+             exist under {WORKSPACE_ROOT}"
+        );
+    }
+}
+
+/// [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] describes sites DISJOINT from both
+/// waiver tables.
+///
+/// Three sibling tables, not a merge. A site in two of them would make the
+/// resolver pick a winner between "nobody will ever retire this" and "a live task
+/// owns retiring this" — opposite claims about the same row.
+#[test]
+fn ctor_conformance_rejection_fixtures_are_disjoint_from_both_waiver_tables() {
+    let overlap: Vec<String> = CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .filter(|(path, param, _)| {
+            CTOR_CONFORMANCE_CORPUS_RESIDUAL
+                .iter()
+                .any(|(rp, rparam, _, _)| *rp == *path && Some(*rparam) == *param)
+                || reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT
+                    .iter()
+                    .any(|entry| debt_entry_describes(entry, path, *param))
+        })
+        .map(|(path, param, _)| format!("  {path} :: param {param:?}"))
+        .collect();
+
+    assert!(
+        overlap.is_empty(),
+        "these site(s) are described by CTOR_CONFORMANCE_REJECTION_FIXTURES AND by a waiver \
+         table:\n{}\n\n\
+         Pick one. A rejection fixture is never retired and names no owner; a waiver entry \
+         is retired by the task that owns it. A site cannot be both.",
+        overlap.join("\n"),
+    );
+}
+
+/// THE ANTI-SKIP_SET INVARIANT: every
+/// [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] file is the fixture of a probe in the
+/// committed CLI probe-set that asserts `reify check` REJECTS it.
+///
+/// This is what keeps the table from becoming a place to hide an inconvenient
+/// site. A file may be declared an intended rejection ONLY if a committed probe
+/// independently asserts that it DOES reject — so every entry is backed by a gate
+/// that reds if the rejection stops happening, and an entry can never silence a
+/// site nothing else is watching.
+///
+/// The probe-set is PARSED, through
+/// `reify_test_support::prd_gate_probe_set::fixtures_asserted_to_reject`, rather
+/// than searched as text: a path mentioned only in a `capability` string, or the
+/// fixture of a probe expecting exit 0 or the match `absent`, watches nothing
+/// and must not satisfy this guard. That each probe also PASSES is
+/// `tests/infra/test_prd_gate_struct_ctor_conformance.sh`'s half of the chain.
+#[test]
+fn every_rejection_fixture_is_asserted_by_a_committed_cli_probe() {
+    let probe_set = std::path::Path::new(WORKSPACE_ROOT).join(REJECTION_PROBE_SET_REL);
+    let text = std::fs::read_to_string(&probe_set).unwrap_or_else(|e| {
+        panic!(
+            "CTOR_CONFORMANCE_REJECTION_FIXTURES is only sound while its probe-set exists: \
+             cannot read {}: {e}",
+            probe_set.display()
+        )
+    });
+    let asserted_rejections =
+        reify_test_support::prd_gate_probe_set::fixtures_asserted_to_reject(&text)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", probe_set.display()));
+
+    let unwatched: Vec<&str> = CTOR_CONFORMANCE_REJECTION_FIXTURES
+        .iter()
+        .map(|(path, _, _)| *path)
+        .filter(|path| !asserted_rejections.contains(*path))
+        .collect();
+
+    assert!(
+        unwatched.is_empty(),
+        "these CTOR_CONFORMANCE_REJECTION_FIXTURES entries have NO probe in \
+         {REJECTION_PROBE_SET_REL} asserting that `reify check` rejects them (a `check` \
+         probe on that fixture expecting `present` with `exit_code: 1`):\n  {}\n\n\
+         An entry declares `reify check` rejects this file ON PURPOSE. Without a probe \
+         asserting the rejection, the declaration is unbacked and the table degrades into \
+         a place to hide a site nobody is watching. Add the probe, or remove the entry and \
+         fix the site.",
+        unwatched.join("\n  "),
     );
 }
 
@@ -3265,9 +3791,9 @@ fn ctor_conformance_corpus_residual_entries_are_all_live() {
          the entry, in that same diff. Two other causes stale MANY entries at once and \
          are fixed by neither deleting them nor touching the fixtures: param extraction \
          stopped matching the emitter's `argument '<name>'` wording (fix the \
-         extraction), or `CTOR_FIELD_CONFORMANCE_SEVERITY` was flipped to Error by \
-         δ/#5306, which puts every site outside this Warning-scoped signal (re-scope \
-         `disposition_of`, the one place that scope is stated).",
+         extraction), or `CTOR_FIELD_CONFORMANCE_SEVERITY` moved again and \
+         CTOR_CONFORMANCE_SITE_SEVERITY did not move with it (re-point that const, the \
+         one place that half of the scope is stated).",
         stale.len(),
         stale.join("\n"),
     );
@@ -3384,8 +3910,8 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
         ## Provenance\n\
         \n\
         Every row and every count here is **machine-generated — zero hand-derived\n\
-        entries**. The corpus is `git ls-files -- '*.ri'`; each member is compiled with\n\
-        the α(+ε) warn-stage compiler in-process (`parse_with_stdlib` →\n\
+        entries**. The corpus is `git ls-files -- '*.ri'`; each member is compiled\n\
+        in-process by the compiler at the commit surveyed (`parse_with_stdlib` →\n\
         `compile_with_stdlib`) and every diagnostic carrying one of the seven\n\
         ctor-conformance codes becomes one row. The `file:line` comes from the\n\
         diagnostic's own label span; `expected`/`found` come from the label message.\n\
@@ -3415,23 +3941,32 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
           prose here has to guess a cause on a reader's behalf.\n\
         \n\
         The **`disposition` column is γ's RULING**, projected from the site's measured\n\
-        severity and the two per-site waiver tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`\n\
-        in the generator, `CTOR_CONFORMANCE_MIGRATION_DEBT` in the sibling\n\
-        `examples_smoke.rs`) rather than typed here. It has three states, and they call\n\
-        for three DIFFERENT actions:\n\
+        severity and wording and the three per-site tables (`CTOR_CONFORMANCE_CORPUS_RESIDUAL`\n\
+        and `CTOR_CONFORMANCE_REJECTION_FIXTURES` in the generator,\n\
+        `CTOR_CONFORMANCE_MIGRATION_DEBT` in `reify_test_support::ctor_conformance_debt`)\n\
+        rather than typed here. It has four states, and they call for four DIFFERENT\n\
+        actions:\n\
         \n\
         - **`deferred`** names the LIVE task that owns retiring the site, and the reason\n\
         migrating it here would destroy something — most of these are committed RED\n\
         before-images whose violation IS the fixture's content. Leave them alone.\n\
-        - **`n/a`** carries a ctor-conformance CODE but at **Error** severity, which is\n\
-        outside the zero-ctor-conformance-warnings signal entirely. Every such row today\n\
-        is a deliberate REJECTION fixture reached from a NON-ctor path (selector\n\
+        - **`n/a`** carries a ctor-conformance CODE but names no ctor ARGUMENT, so the\n\
+        conformance knob is not what emitted it and it is outside the\n\
+        zero-ctor-conformance-sites signal entirely. Every such row today is a\n\
+        deliberate REJECTION fixture reached from a NON-ctor path (selector\n\
         composition, overload resolution, trait conformance): the rejection IS the\n\
         behaviour under test. **Not actionable, and not residual either** — it carries no\n\
         owner because it needs none, and reading it as unclaimed work would send you to\n\
         delete another PRD’s signal.\n\
-        - **`unattributed`** is a warning claimed by nobody: that is the actionable\n\
-        state, and after γ the corpus holds none.\n\
+        - **`intended rejection`** is an in-scope site whose violation IS the\n\
+        deliverable: a committed PRD §7 boundary-row fixture that `reify check` is\n\
+        asserted to REJECT by a probe in\n\
+        `tests/prd-gate/struct-ctor-conformance-probe-set.json`. It differs from `n/a` on\n\
+        scope — the knob's ctor-argument walk really is what emitted it — and from\n\
+        `deferred` on ownership: no task retires it, so it names none. **Leave it alone**;\n\
+        migrating the site deletes δ's own signal and reds that CLI gate.\n\
+        - **`unattributed`** is an in-scope site claimed by nobody: that is the\n\
+        actionable state, and after γ the corpus holds none.\n\
         \n\
         The **`hint` column is ADVISORY**, derived purely from the (expected, found)\n\
         type pair. It is **not** a D9 ruling. PRD §4 D9 defines the split between class\n\
@@ -3476,7 +4011,7 @@ fn render_survey(run: &SurveyRun, stamp: &SurveyStamp) -> String {
             Owner::NonFea => md.push_str(
                 "The recovered name IS a `structure def` declared in the corpus or the stdlib,\n\
                  and it is not FEA-owned. D9's per-case judgment applied here, and **γ has\n\
-                 now ruled every Warning row in this group** — read the `disposition` column.\n\
+                 now ruled every in-scope row in this group** — read the `disposition` column.\n\
                  A site γ judged a call-site bug was fixed and is simply absent below; a site γ\n\
                  deferred names the LIVE task that owns retiring it.\n\n\
                  That check is against ONE GLOBAL namespace — *some* corpus or stdlib file\n\
@@ -3648,7 +4183,7 @@ fn synth_site(file: &str, line: u32, def: &str, field: &str, owner: Owner) -> Su
         expected: Some("FaceSelector".to_owned()),
         found: Some("String".to_owned()),
         code: "ArgTypeMismatch".to_owned(),
-        severity: "Warning".to_owned(),
+        severity: "Error".to_owned(),
         // `FaceSelector`, matching the `expected` cell above: that is the
         // rendering `reify_core::Type::Selector(SelectorKind::Face)` actually
         // Displays. `Selector(Face)` appears nowhere in real compiler output.
@@ -3887,7 +4422,7 @@ fn render_survey_writes_an_em_dash_for_every_unrecoverable_cell() {
         expected: None,
         found: None,
         code: "CtorArity".to_owned(),
-        severity: "Warning".to_owned(),
+        severity: "Error".to_owned(),
         message: "E_CTOR_ARITY: Bar() expects at most 1 argument, got 2".to_owned(),
         owner: Owner::Unknown,
     };
@@ -4192,13 +4727,27 @@ fn disposition_cell(md: &str, row_anchor: &str) -> String {
 fn render_survey_resolves_each_site_disposition_from_the_tables() {
     let mut unkeyable = synth_site("no_param.ri", 4, "Widget", "ignored", Owner::Unknown);
     unkeyable.field = None;
-    // A ctor-conformance CODE at Error severity: a deliberate rejection fixture,
-    // keyable by param yet owned by nobody. Synthetic rather than borrowed from
-    // the corpus, and deliberately NOT in either table, so it proves severity
-    // alone decides the `n/a` state.
-    let mut rejection = synth_site("rejection_fixture.ri", 5, "union", "faces", Owner::NonFea);
-    rejection.severity = "Error".to_owned();
+    // A ctor-conformance CODE that the conformance knob did not emit: a
+    // deliberate rejection fixture, owned by nobody. Synthetic rather than
+    // borrowed from the corpus, and deliberately NOT in either table, so it
+    // proves the SCOPE test alone decides the `n/a` state.
+    //
+    // The message is the wording γ measured at `bt6_kind_typed_param.ri:24` and
+    // committed to the artifact, not `synth_site`'s ctor-argument wording: after
+    // δ the severity is no longer what separates this row from a knob site, so a
+    // fixture carrying `argument '…'` prose would no longer be modelling a
+    // rejection fixture at all.
+    let mut rejection = synth_site(
+        "rejection_fixture.ri",
+        5,
+        "needs_face",
+        "faces",
+        Owner::NonFea,
+    );
     rejection.code = "SelectorKindMismatch".to_owned();
+    rejection.message = "no matching overload for needs_face(EdgeSelector), \
+         candidates: needs_face(FaceSelector) -> Int"
+        .to_owned();
 
     let mut sites = vec![
         synth_site("not_in_any_table.ri", 3, "Widget", "label", Owner::NonFea),
@@ -4207,7 +4756,7 @@ fn render_survey_resolves_each_site_disposition_from_the_tables() {
     ];
 
     let residual = CTOR_CONFORMANCE_CORPUS_RESIDUAL.first();
-    let debt = super::examples_smoke::CTOR_CONFORMANCE_MIGRATION_DEBT.first();
+    let debt = reify_test_support::ctor_conformance_debt::CTOR_CONFORMANCE_MIGRATION_DEBT.first();
     let debt_path = debt.map(|(key, _, _)| format!("{EXAMPLES_PREFIX}{key}"));
     if let Some((path, param, _, _)) = residual {
         sites.push(synth_site(path, 1, "Widget", param, Owner::NonFea));
@@ -4248,12 +4797,13 @@ fn render_survey_resolves_each_site_disposition_from_the_tables() {
     }
 
     // The third state, and the one the `why` column exists to protect: an
-    // Error-severity row must NOT read as unclaimed work.
+    // out-of-scope row must NOT read as unclaimed work.
     let rejection_cell = disposition_cell(&md, "| `rejection_fixture.ri:5`");
     assert!(
         rejection_cell.starts_with("n/a"),
-        "an Error-severity ctor-conformance-coded site must render as `n/a` — it is \
-         outside the warning signal and nobody owns retiring it; got {rejection_cell:?}"
+        "a ctor-conformance-coded site that names no ctor argument must render as \
+         `n/a` — the conformance knob is not what emitted it and nobody owns \
+         retiring it; got {rejection_cell:?}"
     );
     assert!(
         !rejection_cell.contains("unattributed") && !rejection_cell.contains('#'),
@@ -4439,7 +4989,7 @@ fn generate_ctor_conformance_corpus_survey() {
     // Asserted AFTER the write, deliberately: a failing run still leaves a
     // regenerated artifact on disk, so the operator can read the disposition
     // column to see which sites the panic is talking about.
-    assert_no_unwaived_ctor_conformance_warnings(&run);
+    assert_no_unwaived_ctor_conformance_sites(&run);
 }
 
 #[test]
@@ -4753,6 +5303,76 @@ fn git_succeeds(args: &[&str]) -> bool {
         })
         .status
         .success()
+}
+
+/// TRIPWIRE: the committed artifact still renders the CURRENT
+/// [`Disposition::NotApplicable`] cell.
+///
+/// Makes artifact staleness a repeatable gate-resident signal instead of
+/// something only a human review catches. Before this guard, step 8 re-scoped the
+/// resolver and δ moved the knob while the committed artifact went on rendering
+/// 13 `Warning` severity cells and the pre-re-scope `n/a` wording — a divergence
+/// that survived a full merge gate.
+///
+/// # WHY ONE STRING IS ENOUGH
+///
+/// A generator run rewrites the WHOLE file, so the severity column and the
+/// disposition labels can never go stale independently of one another. A
+/// tripwire on any single code-owned rendered string therefore detects staleness
+/// in every dimension at once. This is a tripwire, NOT a golden-file comparison:
+/// it asks whether the artifact was produced by roughly today's renderer, never
+/// whether it is byte-current. A plain substring, because parsing the rendered
+/// markdown table here would be a second copy of the renderer.
+///
+/// # WHY IT MUST NOT BE STRENGTHENED INTO A FRESHNESS GATE
+///
+/// Re-deriving the artifact to compare against it would compile all 723 tracked
+/// `.ri` on every merge-gate run — exactly what
+/// `docs/prds/merge-gate-compile-cost.md` forbids, and exactly why the generator
+/// is `#[ignore]`d in the first place. This gates the artifact on the RESOLVER'S
+/// SEMANTICS, which are current code. It never gates the CENSUS — the counts and
+/// the row set — which the artifact's own header deliberately declares a
+/// point-in-time snapshot.
+///
+/// # Why `NotApplicable` is the right anchor
+///
+/// Its cell is fixed by construction. [`Disposition::Deferred`] and
+/// [`Disposition::IntendedRejection`] both interpolate a per-row `why`, so
+/// neither has a stable rendering to pin. [`Disposition::Unattributed`]'s is
+/// fixed too, but a correct artifact may legitimately contain ZERO unattributed
+/// rows — that is the goal state — so pinning it would red on success.
+///
+/// Skips on absence for the same reason
+/// [`committed_survey_stamps_a_commit_that_is_an_ancestor_of_head`] does:
+/// deleting a consumed census is its documented end of life, not a defect.
+#[test]
+fn committed_survey_renders_the_current_disposition_vocabulary() {
+    let artifact = std::path::Path::new(WORKSPACE_ROOT).join(ARTIFACT_REL);
+    if !artifact.is_file() {
+        println!(
+            "skipped: {ARTIFACT_REL} is not present — the survey snapshot has been \
+             retired or not yet generated; nothing to check"
+        );
+        return;
+    }
+    let text = std::fs::read_to_string(&artifact)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", artifact.display()));
+
+    let expected = Disposition::NotApplicable.label();
+    assert!(
+        text.contains(&expected),
+        "{ARTIFACT_REL} does not render the current `Disposition::NotApplicable` cell, so \
+         it was produced by an older renderer and EVERY code-owned string in it is \
+         suspect — including the severity column, which δ (#5306) moved.\n\n\
+         Expected to find: {expected:?}\n\n\
+         REGENERATE it, on a CLEAN tree (`stamp_decision` refuses a dirty one):\n  \
+         cargo test -p reify-compiler --test harness_compilation_surface -- --ignored \
+         ctor_conformance\n\n\
+         Do NOT weaken this into a comparison against a freshly derived artifact: that \
+         would compile every tracked `.ri` on each merge-gate run, which is what \
+         docs/prds/merge-gate-compile-cost.md forbids and why the generator is \
+         `#[ignore]`d."
+    );
 }
 
 #[test]

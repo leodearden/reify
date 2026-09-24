@@ -1610,8 +1610,8 @@ mod tests {
     #[test]
     fn test_compile_template_by_name() {
         let source = r#"
-            structure Alpha { param x: Length = 1 }
-            structure Beta { param y: Length = 2 }
+            structure Alpha { param x: Length = 1mm }
+            structure Beta { param y: Length = 2mm }
         "#;
         let (template, _diags) = super::compile_template(source, "Beta");
         assert_eq!(template.name, "Beta", "should extract template named Beta");
@@ -1760,7 +1760,7 @@ mod tests {
     #[test]
     fn test_make_engine() {
         // Use a simple non-geometry source to avoid coupling to bracket fixture shape.
-        let source = "structure S { param x: Length = 42 }";
+        let source = "structure S { param x: Length = 42mm }";
         let compiled = super::parse_and_compile(source);
         let mut engine = super::make_engine();
         let result = engine.eval(&compiled);

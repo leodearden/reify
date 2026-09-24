@@ -2106,8 +2106,8 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
     let source = r#"structure AirBearing {
     param length: Length = 100mm
     param od: Length = 50mm
-    param axis: Length = 0
-    let body = if axis == 0 then box(length, od, od) else cylinder(od, length)
+    param axis: Length = 0mm
+    let body = if axis == 0mm then box(length, od, od) else cylinder(od, length)
 }"#;
 
     let compiled = compile_with_diagnostics(source);
@@ -2271,8 +2271,8 @@ fn geometry_valued_if_then_else_box_lowers_to_conditional_primitive() {
     let source = r#"structure S {
     param length: Length = 100mm
     param od: Length = 50mm
-    param axis: Length = 0
-    let body = if axis == 0 then box(length, od, length) else box(od, length, od)
+    param axis: Length = 0mm
+    let body = if axis == 0mm then box(length, od, length) else box(od, length, od)
 }"#;
 
     let compiled = compile_with_diagnostics(source);
@@ -2332,8 +2332,8 @@ fn geometry_valued_if_then_else_union_tree_lowers_to_conditional_box_ops() {
     param b: Length = 20mm
     param c: Length = 30mm
     param d: Length = 40mm
-    param axis: Length = 0
-    let body = if axis == 0 then union(box(a, a, a), box(b, b, b)) else union(box(c, c, c), box(d, d, d))
+    param axis: Length = 0mm
+    let body = if axis == 0mm then union(box(a, a, a), box(b, b, b)) else union(box(c, c, c), box(d, d, d))
 }"#;
 
     let compiled = compile_with_diagnostics(source);
@@ -2440,8 +2440,8 @@ fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
     param a: Length = 10mm
     param b: Length = 20mm
     param tx: Length = 5mm
-    param axis: Length = 0
-    let body = if axis == 0 then translate(box(a, a, a), tx, 0mm, 0mm) else translate(box(b, b, b), tx, 0mm, 0mm)
+    param axis: Length = 0mm
+    let body = if axis == 0mm then translate(box(a, a, a), tx, 0mm, 0mm) else translate(box(b, b, b), tx, 0mm, 0mm)
 }"#;
 
     let compiled = compile_with_diagnostics(source);

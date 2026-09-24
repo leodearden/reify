@@ -144,6 +144,11 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | `fixtures/purpose_nested_structure.ri` | grammar | 4497 — nested `structure` inside `purpose {}` → was tree-sitter exit 1 (MISSING "}"); **removed from corpus** (grammar production landed — probe flipped PASS) |
 | `fixtures/cross_sub_geometry_ref.ri` | check | 4358 — `let copy = self.inner.body` (cross-sub ref) → was exit 0 with panic in stderr; **removed from corpus** (task 4954 gave geometry lets first-class value cells — cross-sub `let` access now resolves via `ValueRef`, not `CrossSubGeometryRef` — probe flipped PASS) |
 | `fixtures/scalar_codomain_mismatch.ri` | check | 4375 — `field def f : Length -> Scalar` → exit 1, "codomain mismatch" |
+| `fixtures/struct_ctor_conformance_pose_at_selector_field.ri` | check | §7 row 1 (task δ/5306) — `PressureLoad(face: frame3(...))` on the real stdlib `Option<FaceSelector>` field → was exit 0 + `warning:`; after δ flipped `CTOR_FIELD_CONFORMANCE_SEVERITY` to Error, exit 1 with the pose-vs-set hint |
+| `fixtures/struct_ctor_conformance_int_at_string_field.ri` | check | §7 row 2 (task δ/5306) — `Widget(label: 42)` at a `String` field → was exit 0 + `warning:`; now exit 1, "argument 'label' has type 'Int' but param 'label' requires type 'String'" |
+| `fixtures/struct_ctor_conformance_string_at_selector_field.ri` | check | §7 row 3 (task δ/5306) — `PressureLoad(face: "x_max")` disallow-string → was exit 0 + `warning:`; now exit 1, "requires selector type 'FaceSelector'", deliberately WITHOUT the pose hint |
+| `fixtures/struct_ctor_conformance_unknown_field.ri` | check | §7 row 11 (task δ/5306) — `Widget(labl: "x")` typo'd named argument → was exit 0 + `warning:`; now exit 1, `E_CTOR_UNKNOWN_FIELD` |
+| `fixtures/struct_ctor_conformance_over_arity.ri` | check | §7 row 12 (task δ/5306) — surplus positional arg on a 1-param ctor → was exit 0 + `warning:`; now exit 1, `E_CTOR_ARITY` |
 
 ## Committed probe sets
 
@@ -152,6 +157,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | `example-probe-set.json` | Example showing all four probe kinds (used in README and docs). Pinned one-row-per-kind against `_VALID_PROBE_KINDS`, so a new kind reds until the example covers it. |
 | `corpus-probe-set.json` | δ historical-false-premise regression corpus — 3 rows, all FAIL |
 | `compiler-type-hygiene-probe-set.json` | §8 boundary-table integration gate (task λ/5070) — 7 rows, **all PASS**: grammar (`SpecLike<Foo>` parses) + 3 flipped POST-state rejections (`E_TYPE_ARG_ON_TRAIT` / `is undefined for operand kinds` / `must be a comparable kind`) + 3 end-to-end integration-fixture rows. Gated by `tests/infra/test_prd_gate_compiler_type_hygiene.sh` (all-PASS, tree-sitter skip-guarded). |
+| `struct-ctor-conformance-probe-set.json` | §7 boundary-row CLI gate for the struct-ctor field-type-conformance PRD (task δ/5306) — 5 rows, **all PASS**, every one `probe_kind: check` with `exit_code: 1`. Rows 1/2/3 are the α type surface (pose-vs-set, Int→String, disallow-string), rows 11/12 the ε structural codes (`E_CTOR_UNKNOWN_FIELD`, `E_CTOR_ARITY`). Each `capability` states the PRE state (exit 0, "All constraints satisfied.") alongside the POST assertion. Gated by `tests/infra/test_prd_gate_struct_ctor_conformance.sh` (all-PASS, reify-binary skip-guarded; no grammar probe, so no tree-sitter substrate guard). C3's span-at-the-offending-argument is NOT assertable here — `reify check` prints neither label nor span nor code — and stays a Rust-level assertion in `struct_ctor_field_conformance_tests.rs`. |
 
 ## `match` predicate semantics
 
