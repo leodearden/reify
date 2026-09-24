@@ -102,7 +102,10 @@ fn across_epochs_the_arriving_edit_wins() {
 fn the_ledger_refuses_a_preview_older_than_one_already_admitted() {
     let mut ledger = EditLedger::default();
     assert!(ledger.admit(&preview("A", 5)));
-    assert!(!ledger.admit(&preview("A", 4)), "a late preview must be refused");
+    assert!(
+        !ledger.admit(&preview("A", 4)),
+        "a late preview must be refused"
+    );
     assert!(ledger.admit(&preview("A", 6)));
 }
 
