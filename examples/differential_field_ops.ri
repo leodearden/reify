@@ -13,6 +13,9 @@
 //     • result.rotation    (ruling #6164: ∇×u / 2, Vector3<Angle> — the DESIGNATED
 //                           CROSSING where the radian enters explicitly; it is the
 //                           reason curl above stays dimensionless)
+//     • result.shear_angles (task #6183: Voigt engineering shears γ = 2·ε_offdiag,
+//                           Vector3<Angle> — a named crossing; gradient above
+//                           stays Tensor<2,3,Real>)
 //     • max(result.divergence), min(result.divergence)
 //     • max(result.gradient)   (task γ: tensor Frobenius-magnitude reduction)
 //
@@ -86,6 +89,18 @@ field def linear : Length -> Real {
 
 fn rotation_probe(v: Vector3<Angle>) -> Angle { magnitude(v) }
 
+// ── Task #6183: a worked shear-limit check ────────────────────────────────────
+//
+// ‖γ‖₂ ≥ max_i |γ_i|, so bounding the magnitude of the engineering-shear vector
+// conservatively bounds every shear component.  Per-component comparisons need
+// Vector3 component access, which does not exist in-language (see
+// tests/prd-gate/fixtures/shear_angles_component_deg_compare_pre.ri, which
+// stays failing), so those live in the Rust gate.  The Vector3<Angle>
+// parameter rejects wrong-quantity sampled vectors (curl, displacement) —
+// differential_field_ops_e2e pins that.
+
+fn shear_magnitude(gamma: Vector3<Angle>) -> Angle { magnitude(gamma) }
+
 // ── Integration structure ─────────────────────────────────────────────────────
 
 structure DifferentialFieldOps {
@@ -132,6 +147,11 @@ structure DifferentialFieldOps {
     // the pin.
     let rot_probe = rotation_probe(sample(result.rotation, point3(500mm, 50mm, 50mm)))
 
+    // Task #6183: engineering shear at the same in-bounds point — the section
+    // centroid, on the neutral axis where transverse shear peaks.
+    param shear_allowable : Angle = 0.1deg
+    let shear_probe = shear_magnitude(sample(result.shear_angles, point3(500mm, 50mm, 50mm)))
+
     // ── Phase 2: generic sampled-field differential operators ───────────────
     //
     // Eager-lowered via compute_laplacian / compute_gradient (task ε), both of
@@ -169,6 +189,16 @@ structure DifferentialFieldOps {
     // 0.5deg is the literal ruling #6164 itself names.
     constraint rot_probe > 0.001deg
     constraint rot_probe < 0.5deg
+
+    // Phase 1: the task-#6183 shear-limit check (magnitude-based, conservative).
+    // BOUND BASIS (G6 — the allowable was fixed a priori, then measured, never
+    // tuned): beam theory at the section centroid gives γ ≈ 1.5·V/(A·G)
+    // ≈ 1.9e-6 rad, and a no-cancellation worst case gives
+    // |∂u_x/∂z| + |∂u_z/∂x| ≈ 2θ(L/2) ≈ 4.4e-4 rad ≈ 0.025°.
+    // Measured on this example: shear_probe at point3(500mm, 50mm, 50mm)
+    //   = 1.7736992633488599e-6 rad = 1.0162548191535281e-4°,
+    // so 0.1deg clears it by ~980x (and the worst case by ~4x).
+    constraint shear_probe < shear_allowable
 
     // Phase 2: exact polynomial values (G6 numeric-premise discipline).
     // Central AND one-sided 3-pt 2nd-difference are EXACT on quadratics on any
