@@ -22,6 +22,7 @@
 
 pub mod dirichlet;
 pub mod neumann;
+pub mod patch_load;
 
 pub use dirichlet::{DirichletBc, apply_dirichlet_row_elimination};
 pub use neumann::{FaceOrder, apply_body_force, apply_point_load, apply_traction_load};
