@@ -95,10 +95,15 @@ const isStarvationShapedTest = (test: FailedTestRecord): boolean =>
   test.errorMessages.length > 0 &&
   test.errorMessages.every((message) => isRpcTimeout(message) || TEST_TIMEOUT_MESSAGE.test(message))
 
-const starvedOutright = (suite: FailedSuiteRecord): boolean => suite.errorMessages.some(isRpcTimeout)
+const starvedOutright = (suite: FailedSuiteRecord): boolean =>
+  suite.errorMessages.length > 0 && suite.errorMessages.every(isRpcTimeout)
+
+/** Starved outright in a module holding no failed test, so it cannot vouch for itself. */
+const isIndependentlyStarved = (suite: FailedSuiteRecord, holdsFailedTest: ReadonlySet<string>): boolean =>
+  starvedOutright(suite) && !holdsFailedTest.has(suite.filepath)
 
 /**
- * Explained by its own RPC timeout or, carrying no error of its own, by the
+ * Explained by its own RPC timeouts or, carrying no error of its own, by the
  * failed test it holds — which isStarvationShapedTest has already vetted.
  */
 const isExplainedSuite = (suite: FailedSuiteRecord, holdsFailedTest: ReadonlySet<string>): boolean =>
@@ -114,24 +119,25 @@ const isExplainedSuite = (suite: FailedSuiteRecord, holdsFailedTest: ReadonlySet
  *  - Every failed test is STARVATION-SHAPED: it carries at least one error, and
  *    EVERY one is an RPC timeout or vitest's own "Test timed out". An assertion
  *    failure therefore never classifies, even beside a timeout on the same test.
- *  - A failed test is CORROBORATED by at least one failed suite whose own
- *    errors carry an RPC timeout. A lone test timeout is exactly what a genuine
- *    hang looks like, and a run-level RPC timeout does not corroborate it.
- *  - Every failed suite is explained — by an RPC timeout among its errors or,
- *    carrying no error of its own, by the vetted failed test it holds — and
- *    every unhandled error is an RPC timeout. One failure arising any other way
- *    vetoes the whole run, so a real defect coinciding with a starvation event
- *    is never absorbed.
+ *  - A failed test is CORROBORATED by an INDEPENDENT starved suite: a failed
+ *    module holding no failed test, whose errors are all RPC timeouts. A lone
+ *    test timeout is exactly what a genuine hang looks like; neither its own
+ *    module's RPC timeouts nor a run-level one make it evidence of starvation.
+ *  - Every failed suite is explained — EVERY one of its errors is an RPC
+ *    timeout or, carrying no error of its own, it holds the vetted failed
+ *    test — and every unhandled error is an RPC timeout. One error arising any
+ *    other way, even beside an RPC timeout in the same module, vetoes the whole
+ *    run, so a real defect coinciding with a starvation event is never absorbed.
  *  - Every suite reached a terminal state and the run was not interrupted.
  *    The rules above reason only about failures that were REPORTED; this one
  *    closes the same hole for suites that never RAN, which a dying forks pool
  *    leaves behind. Without it a retry of the two failures could green a gate
  *    that silently skipped twenty more.
  *
- * The failed-test rules (task 7833) can absorb a genuine HANG only when it
- * coincides with independent suite-level starvation, and scope below always
- * re-runs the hung test's module — so a deterministic hang recurs on the one
- * bounded retry and escalates red.
+ * The one defect these rules CAN classify is a genuine HANG, and only when it
+ * coincides with independent suite-level starvation (task 7833). Scope below
+ * always re-runs the hung test's module, so a deterministic hang recurs on the
+ * one bounded retry and escalates red.
  *
  * SCOPE is decided separately, and by ATTRIBUTABILITY rather than by counting.
  * A run-level failure has no module to attribute it to: the `snapshotSaved` RPC
@@ -150,12 +156,13 @@ export function classifyWorkerRpcFlake(
   const { failedSuites, failedTests } = summary
   const unhandled = summary.unhandledErrorMessages ?? []
   const holdsFailedTest = new Set(failedTests.map((test) => test.filepath))
+  const corroborated = failedSuites.some((suite) => isIndependentlyStarved(suite, holdsFailedTest))
 
   if (failedSuites.length === 0 && failedTests.length === 0 && unhandled.length === 0) return null
   if (summary.runEndReason === 'interrupted') return null
   if ((summary.unfinishedSuites?.length ?? 0) !== 0) return null
   if (!failedTests.every(isStarvationShapedTest)) return null
-  if (failedTests.length !== 0 && !failedSuites.some(starvedOutright)) return null
+  if (failedTests.length !== 0 && !corroborated) return null
   if (!failedSuites.every((suite) => isExplainedSuite(suite, holdsFailedTest))) return null
   if (!unhandled.every(isRpcTimeout)) return null
 

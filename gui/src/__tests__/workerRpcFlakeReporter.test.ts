@@ -160,6 +160,17 @@ describe('classifyWorkerRpcFlake', () => {
     ).toBeNull()
   })
 
+  it("returns null for a timed-out test corroborated only by its OWN module's RPC timeout", () => {
+    expect(
+      classifyWorkerRpcFlake(
+        summary(
+          [{ filepath: EDITOR, errorMessages: [rpcTimeout('onTaskUpdate')] }],
+          [failedTest(EDITOR, TEST_TIMEOUT(60000))],
+        ),
+      ),
+    ).toBeNull()
+  })
+
   it('returns null for a timed-out test corroborated only by a RUN-level RPC timeout', () => {
     expect(
       classifyWorkerRpcFlake(
@@ -413,7 +424,9 @@ describe('classifyWorkerRpcFlake', () => {
     expect(verdict!.methods).toEqual(['fetch', 'onQueued', 'snapshotSaved'])
   })
 
-  it('classifies a suite whose RPC timeout is one error among several', () => {
+  // All-or-nothing reaches inside a suite too: an RPC timeout explains only
+  // itself, never a sibling error in the same module.
+  it('returns null for a suite whose RPC timeout is one error among several', () => {
     const verdict = classifyWorkerRpcFlake(
       summary([
         {
@@ -423,7 +436,7 @@ describe('classifyWorkerRpcFlake', () => {
       ]),
     )
 
-    expect(verdict!.methods).toEqual(['onUnhandledError'])
+    expect(verdict).toBeNull()
   })
 
   it('does not match a message that merely mentions the phrase in prose', () => {
@@ -718,6 +731,42 @@ describe('WorkerRpcFlakeReporter — describe-level suite errors count as the mo
         testModule(`${ROOT}/${EDITOR}`, {
           failed: true,
           failedTests: [[TEST_TIMEOUT(60000)]],
+          suiteErrors: ['Error: beforeAll failed: fixture missing'],
+        }),
+      ],
+      [],
+      'failed',
+    )
+
+    expect(lines).toEqual([])
+    expect(writes).toEqual([])
+  })
+
+  it('vetoes a module whose own describe-level RPC timeout is all that vouches for its timed-out test', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [
+        testModule(`${ROOT}/${EDITOR}`, {
+          failed: true,
+          failedTests: [[TEST_TIMEOUT(60000)]],
+          suiteErrors: [TIMEOUT_SNAPSHOT],
+        }),
+      ],
+      [],
+      'failed',
+    )
+
+    expect(lines).toEqual([])
+    expect(writes).toEqual([])
+  })
+
+  it('vetoes a starved module whose describe-level beforeAll ALSO failed for a real defect', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [
+        testModule(`${ROOT}/src/__tests__/a.test.ts`, {
+          failed: true,
+          errors: [TIMEOUT_FETCH],
           suiteErrors: ['Error: beforeAll failed: fixture missing'],
         }),
       ],
