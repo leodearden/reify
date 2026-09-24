@@ -1095,15 +1095,15 @@ fn e2e_printer_gantry_prints_five_modes() {
 // are bit-identical to the `n_modes: 2` run, so the extra window costs nothing
 // numerically (the shift-invert Krylov window is 64 either way). The raw cells
 // are still read and guarded finite — that keeps the `first_frequency` builtin
-// exercised — and (h) asserts on one.
+// exercised — and (h)/(i) assert on them.
 //
 // Signals asserted:
 //   (a) no Error-severity diagnostics after parse + eval
 //   (b) a ComputeNode with target == "modal::free_vibration" in the graph
 //   (c) f1z_pinned within CC_FIXTURE_PINNED_REL_TOL of the SS analytic 397.33 Hz
 //       — an ACCURACY band on the pinned vertical mode. NOT the bit-preservation
-//       guard, which is (i); see CC_FIXTURE_PINNED_REL_TOL's own doc for why the
-//       two were conflated and what that cost
+//       guard (see "NOT asserted here" below); see CC_FIXTURE_PINNED_REL_TOL's own
+//       doc for why the two were conflated and what that cost
 //   (d) f1z_fixed within CC_FIXTURE_FIXED_REL_TOL of the CC analytic 900.699 Hz
 //   (e) f1z_fixed / f1z_pinned ≥ CC_FIXTURE_MIN_FIXED_PINNED_RATIO — the task's
 //       literal "they must DIFFER" acceptance
@@ -1114,12 +1114,16 @@ fn e2e_printer_gantry_prints_five_modes() {
 //   (g) the ordering within that family: pinned < propped < fixed, strictly —
 //       the BC-stiffness ordering λ²: 9.8696 < 15.4182 < 22.3733, which no
 //       single band can express
-//   (h) the mixed pair's RAW fundamental sits strictly below its vertical one —
-//       the measurable form of "a lateral mode intrudes here", which is what
-//       forces the whole test onto the vertical family
+//   (h) the RAW `first_frequency` cells order strictly, pinned < propped <
+//       fixed — a Courant–Fischer consequence of the Dirichlet superset chain
+//       pinned ⊊ propped ⊊ fixed over identical K and M (task 7055)
+//   (i) the mixed pair's RAW fundamental within CC_FIXTURE_PROPPED_REL_TOL of
+//       the CP analytic — first_frequency on a propped cantilever is a propped
+//       bending mode, not a lateral cantilever (task 7055)
 //
 // NOT asserted here (amendment, review suggestion 2): bit-preservation of the
-// pin-pin Dirichlet set. A former signal (i) pinned the pinned configuration's
+// pin-pin Dirichlet set. A since-removed raw-frequency signal (then labelled
+// (i), unrelated to today's) pinned the pinned configuration's
 // RAW `first_frequency` to 391.0495 Hz ± 0.5% and claimed to be that guard; it
 // was not, because that number also depends on the derived mesh, the P2
 // promotion, the assembly and the shift-invert tolerance, so any legitimate
@@ -1127,10 +1131,10 @@ fn e2e_printer_gantry_prints_five_modes() {
 // be unchanged". The property IS asserted — structurally and exactly, on the DOF
 // sets — by the unit tests `CC_FIXTURE_PINNED_REL_TOL`'s doc names.
 //
-// Why (f)–(h) live in THIS test rather than a sibling: all three solves come
+// Why (f)–(i) live in THIS test rather than a sibling: all three solves come
 // from one eval of one fixture, so a sibling test would re-run the two heavy
 // solves (c)/(d) already cover just to reach the third. The name still describes
-// the headline clause; (f)–(h) are the mixed-pair extension riding the same eval.
+// the headline clause; (f)–(i) are the mixed-pair extension riding the same eval.
 //
 // RED before the fix: `build_dirichlet_bcs` discriminated on target face NAMES
 // only and never read the support kind, so ALL THREE solves returned the
@@ -1439,19 +1443,42 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
         f1z_fixed
     );
 
-    // (h) Guard the selection itself: the mixed configuration's raw fundamental
-    // must be STRICTLY below its vertical fundamental. That is the measurable
-    // form of "the lateral mode intrudes here", so a future reader who reverts
-    // (f) to `first_frequency` gets a failure that explains itself rather than a
-    // band that quietly stops meaning what it says. No magic number — the two
-    // are read from the same solve.
+    // (h) The RAW `first_frequency` cells order strictly: pinned < propped <
+    // fixed. Task 7055 made the three Dirichlet sets a strict superset chain,
+    // pinned ⊊ propped ⊊ fixed (pinned structurally by the unit test
+    // `build_dirichlet_bcs_realizes_a_pinned_beam_end_identically_in_every_configuration`
+    // (c)), and K and M are identical across the three solves, so by
+    // Courant–Fischer every raw eigenvalue is ordered with no family selection
+    // at all. A failure means a support kind again realizes FEWER constraints
+    // than a weaker one — e.g. a laterally free pinned end.
     assert!(
-        f1_propped < f1z_propped,
-        "expected the mixed configuration's raw fundamental ({:.4} Hz) to sit strictly below \
-         its vertical fundamental ({:.4} Hz) — the lateral cantilever mode is why (f) selects \
-         the Z-dominant family instead of first_frequency; if these have converged, re-derive \
-         the selection rather than assuming first_frequency is now the bending mode",
+        f1_pinned < f1_propped && f1_propped < f1_fixed,
+        "expected strict raw ordering f1_pinned < f1_propped < f1_fixed, got f1_pinned={:.4} Hz, \
+         f1_propped={:.4} Hz, f1_fixed={:.4} Hz — the Dirichlet sets form the superset chain \
+         pinned ⊂ propped ⊂ fixed over identical K and M \
+         (build_dirichlet_bcs_realizes_a_pinned_beam_end_identically_in_every_configuration (c)), \
+         so Courant–Fischer orders every raw eigenvalue; a violation means a support kind \
+         realizes FEWER constraints than a weaker kind, e.g. a laterally free pinned end",
+        f1_pinned,
         f1_propped,
-        f1z_propped
+        f1_fixed
+    );
+
+    // (i) The mixed pair's RAW fundamental is a propped BENDING mode: it lands
+    // within CC_FIXTURE_PROPPED_REL_TOL of the clamped-pinned analytic. The
+    // section is square, so the mode may bend in either direction; what it must
+    // not be is a lateral cantilever — before task 7055 a laterally free pinned
+    // x_max made this cell 141.70 Hz, a clamped-free Y-bending mode.
+    let propped_raw_err = (f1_propped - cc_propped_analytic_hz).abs() / cc_propped_analytic_hz;
+    assert!(
+        propped_raw_err < CC_FIXTURE_PROPPED_REL_TOL,
+        "f1_propped (raw first_frequency) = {:.4} Hz, analytic clamped-pinned = {:.3} Hz, \
+         rel_err = {:.2}% > {:.2}% — first_frequency on [FixedSupport(x_min), \
+         PinnedSupport(x_max)] must be a propped bending mode, not a lateral cantilever of a \
+         laterally free pinned end",
+        f1_propped,
+        cc_propped_analytic_hz,
+        propped_raw_err * 100.0,
+        CC_FIXTURE_PROPPED_REL_TOL * 100.0
     );
 }

@@ -4530,7 +4530,7 @@ mod tests {
         placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
         resolve_location_node, rigid_body_mode_diagnostic, run_modal_analysis,
         run_transient_response,
-        ModalSolveFault, shift_window_is_reportable, simply_supported_pin_pin_bcs,
+        ModalSolveFault, shift_window_is_reportable,
         solve_generalized_eigen,
         solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
@@ -6911,6 +6911,28 @@ mod tests {
         fn on_y_min(&self, n: usize) -> bool {
             self.mesh.nodes[n][1] <= BC_FIXTURE_EPS
         }
+
+        fn on_y_max(&self, n: usize) -> bool {
+            self.mesh.nodes[n][1] >= self.width - BC_FIXTURE_EPS
+        }
+
+        /// The UNIQUE node at `xyz`, every coordinate matched within
+        /// [`BC_FIXTURE_EPS`]. Locates an anchor by coordinate, independently of
+        /// the production `nearest_node`, so an anchor that moved is caught
+        /// rather than followed.
+        fn node_at(&self, xyz: [f64; 3]) -> usize {
+            let matches: Vec<usize> = (0..self.n_nodes())
+                .filter(|&n| {
+                    (0..3).all(|a| (self.mesh.nodes[n][a] - xyz[a]).abs() <= BC_FIXTURE_EPS)
+                })
+                .collect();
+            match matches.as_slice() {
+                [n] => *n,
+                _ => panic!(
+                    "BcFixture::node_at({xyz:?}) must match exactly one mesh node; matched {matches:?}",
+                ),
+            }
+        }
     }
 
     /// Coordinate tolerance for the face predicates above — the same `1e-9` the
@@ -6926,6 +6948,41 @@ mod tests {
     /// full clamp, so this is the discriminator between the two realizations.
     fn z_only(set: &HashSet<usize>, n: usize) -> bool {
         set.contains(&(3 * n + 2)) && !set.contains(&(3 * n)) && !set.contains(&(3 * n + 1))
+    }
+
+    /// Assert that the nodes `on_face` selects carry the simple-support shape
+    /// of a pinned beam end: Z on every node, X on none, and Y on exactly
+    /// `{anchor}` — the face's neutral-axis node (task 7055).
+    fn assert_simple_support(
+        set: &HashSet<usize>,
+        face_nodes: &[usize],
+        anchor: usize,
+        what: &str,
+    ) {
+        assert!(
+            face_nodes.contains(&anchor),
+            "{what}: the lateral anchor node {anchor} must lie on the face being checked",
+        );
+        assert!(
+            face_nodes.iter().all(|&n| set.contains(&(3 * n + 2))),
+            "{what}: every node of a pinned beam end must carry its transverse (Z) DOF",
+        );
+        assert!(
+            !face_nodes.iter().any(|&n| set.contains(&(3 * n))),
+            "{what}: no node of a pinned beam end may carry its axial (X) DOF — that would \
+             clamp the bending rotation",
+        );
+        let lateral: HashSet<usize> = face_nodes
+            .iter()
+            .copied()
+            .filter(|&n| set.contains(&(3 * n + 1)))
+            .collect();
+        assert_eq!(
+            lateral,
+            HashSet::from([anchor]),
+            "{what}: a pinned beam end must restrain its lateral (Y) DOF at exactly ONE node, \
+             the face's neutral-axis node — a laterally free pinned end is a lateral cantilever",
+        );
     }
 
     /// A `Length` scalar (SI metres), as the trampoline reads geometry inputs.
@@ -7434,7 +7491,9 @@ mod tests {
     ///         the bit-identical pin-pin set;
     ///   (iii) one `FixedSupport` on x_min → the cantilever, unchanged;
     ///   (iv)  `[FixedSupport("x_min"), PinnedSupport("x_max")]` → a genuine
-    ///         propped cantilever (x_min fully clamped, x_max Z-only).
+    ///         propped cantilever (x_min fully clamped, x_max a simple support:
+    ///         Z on every node, no X, and Y only at its neutral-axis node —
+    ///         task 7055).
     ///
     /// Supersedes `build_dirichlet_bcs_selects_pin_pin_vs_clamp`, which fed two
     /// `fixed_support(...)` and asserted the pin-pin set — i.e. PINNED THE DEFECT.
@@ -7491,7 +7550,9 @@ mod tests {
         );
 
         // (iv) Mixed [Fixed(x_min), Pinned(x_max)] → a genuine propped
-        //      cantilever: x_min fully clamped, x_max Z-only (X/Y free).
+        //      cantilever: x_min fully clamped, x_max a simple support that
+        //      restrains Y at its neutral-axis node (task 7055: a laterally
+        //      free x_max made the fundamental a 141.70 Hz lateral cantilever).
         let propped = dof_set(vec![fixed_support("x_min"), pinned_support("x_max")]);
         assert!(
             (0..f.n_nodes())
@@ -7499,11 +7560,14 @@ mod tests {
                 .all(|n| clamped(&propped, n)),
             "propped cantilever must fully clamp every x_min node",
         );
-        assert!(
-            (0..f.n_nodes())
-                .filter(|&n| on_x_max(n) && !on_x_min(n))
-                .all(|n| z_only(&propped, n)),
-            "propped cantilever must constrain Z ONLY on the pinned x_max face",
+        let x_max_nodes: Vec<usize> = (0..f.n_nodes())
+            .filter(|&n| on_x_max(n) && !on_x_min(n))
+            .collect();
+        assert_simple_support(
+            &propped,
+            &x_max_nodes,
+            f.node_at([f.length, 0.0, f.height / 2.0]),
+            "propped cantilever, pinned x_max",
         );
     }
 
@@ -7579,14 +7643,16 @@ mod tests {
         );
     }
 
-    /// Amendment (review suggestion 2): a `PinnedSupport` realizes as a
-    /// transverse-only pin ONLY where the simply-supported BEAM idealization
-    /// applies — a beam-axis end face of a model that carries another support.
-    /// Everywhere else it clamps, matching `PinnedOnTetEquivalentToFixed`
+    /// Amendment (review suggestion 2): a `PinnedSupport` realizes as a simple
+    /// support — a transverse (Z) pin across the face plus one lateral (Y)
+    /// anchor at its neutral-axis node (task 7055) — ONLY where the
+    /// simply-supported BEAM idealization applies: a beam-axis end face of a
+    /// model that carries another support. Everywhere else it clamps, matching
+    /// `PinnedOnTetEquivalentToFixed`
     /// (`reify-solver-elastic/src/shell_boundary.rs`) and the static path.
     ///
     /// Two configurations regress into ≈ 0 Hz mechanisms under an
-    /// unconditional Z-only rule, and both are pinned here:
+    /// unconditional simple-support rule, and both are pinned here:
     ///
     ///   (i)  `[Pinned("x_min")]` — a LONE support, whose Z-only realization
     ///        leaves four rigid-body modes. Pre-6663 this returned the
@@ -7597,15 +7663,18 @@ mod tests {
     ///        faces clamp instead.
     ///
     /// Case (iii), added by review suggestion 4, is the other side: the beam-end
-    /// pin that DOES realize as transverse-only, in the one shape the
+    /// pin that DOES realize as a simple support, in the one shape the
     /// no-mechanism argument depends on rather than merely illustrates —
     /// `[Pinned("x_min"), Fixed("y_min")]`, where the second face is a non-end
     /// face and must therefore be a FULL clamp for the model to be well posed.
+    /// Case (iv), `[Pinned("x_min"), Fixed("y_max")]`, is the same shape with
+    /// the lateral anchor OFF the clamped side face, so the anchor itself is
+    /// visible in the x_min set.
     ///
     /// The propped case `[Fixed("x_min"), Pinned("x_max")]` (covered by
     /// `build_dirichlet_bcs_discriminates_support_kind` case (iv)) is the
     /// counterexample that keeps this scoping from collapsing into "Pinned
-    /// always clamps": there, x_max IS transverse-only.
+    /// always clamps": there, x_max IS a simple support.
     #[test]
     fn build_dirichlet_bcs_pins_transversely_only_on_a_supported_beam_end() {
         let f = BcFixture::new();
@@ -7645,12 +7714,13 @@ mod tests {
         //       propped cantilever (case (iv)) and "an end pin plus a non-end
         //       face, which always clamps" — this one, previously untested.
         //
-        //       Both halves must hold TOGETHER. x_min being a bare Z pin is only
-        //       well posed because y_min removes the remaining rigid-body modes;
-        //       an edit to `face_realization` that made a non-end `Fixed` face
-        //       anything less than a full clamp would leave the model a
-        //       mechanism whose ≈ 0 Hz modes come back under a mere Warning,
-        //       with nothing else in this module red.
+        //       Both halves must hold TOGETHER. x_min being a simple support
+        //       (transverse pin plus one lateral anchor) is only well posed
+        //       because y_min removes the remaining rigid-body modes; an edit to
+        //       `face_realization` that made a non-end `Fixed` face anything
+        //       less than a full clamp would leave the model a mechanism whose
+        //       ≈ 0 Hz modes come back under a mere Warning, with nothing else
+        //       in this module red.
         let end_pin_plus_side = dof_set(vec![pinned_support("x_min"), fixed_support("y_min")]);
         let off_y_min_x_min: Vec<usize> = (0..f.n_nodes())
             .filter(|&n| f.on_x_min(n) && !f.on_y_min(n))
@@ -7658,6 +7728,15 @@ mod tests {
         assert!(
             !off_y_min_x_min.is_empty(),
             "the fixture must have x_min nodes off the y_min edge for this case to say anything",
+        );
+        // The x_min lateral anchor (0, 0, h/2) lies ON the y_min edge, which is
+        // fully clamped — that, not an absent anchor, is why every x_min node
+        // OFF y_min reads Z-only below.
+        let x_min_anchor = f.node_at([0.0, 0.0, f.height / 2.0]);
+        assert!(
+            f.on_y_min(x_min_anchor),
+            "the x_min neutral-axis anchor must sit on the clamped y_min edge for the \
+             Z-only assertion below to hold",
         );
         assert!(
             off_y_min_x_min
@@ -7671,7 +7750,86 @@ mod tests {
                 .filter(|&n| f.on_y_min(n))
                 .all(|n| clamped(&end_pin_plus_side, n)),
             "every y_min node must be FULLY clamped — that is the only thing removing the \
-             rigid-body modes the transverse-only x_min pin leaves behind",
+             rigid-body modes the simply-supported x_min end leaves behind",
+        );
+
+        // (iv) Task 7055: the same shape with the lateral anchor OFF the named
+        //      side face, so the anchor is visible in the x_min set itself.
+        let end_pin_plus_far_side = dof_set(vec![pinned_support("x_min"), fixed_support("y_max")]);
+        let off_y_max_x_min: Vec<usize> = (0..f.n_nodes())
+            .filter(|&n| f.on_x_min(n) && !f.on_y_max(n))
+            .collect();
+        assert_simple_support(
+            &end_pin_plus_far_side,
+            &off_y_max_x_min,
+            x_min_anchor,
+            "[Pinned(x_min), Fixed(y_max)], x_min off y_max",
+        );
+    }
+
+    /// Task 7055: `PinnedSupport` means ONE thing on a beam end, whatever the
+    /// other end carries, and the pin-pin special case adds ONLY the axial
+    /// anchor on top of it.
+    ///
+    /// Before task 7055 the pin-pin path restrained Y at each end's
+    /// neutral-axis node while the per-face path (propped cantilever, end pin
+    /// plus side face) left the end laterally FREE, so the propped cantilever
+    /// reported a 141.70 Hz lateral clamped-free mode as its fundamental.
+    ///
+    ///   (a) The pinned x_max face realizes identically in pin-pin and propped.
+    ///   (b) The pinned x_min face realizes identically in pin-pin and in the
+    ///       mirrored propped cantilever, except for EXACTLY one DOF: the axial
+    ///       (X) anchor at its neutral-axis node.
+    ///   (c) The Dirichlet sets form a strict chain pin_pin ⊊ propped ⊊ fix_fix.
+    ///       K and M are identical across the three solves (only the BCs
+    ///       differ), so by Courant–Fischer every raw eigenvalue is ordered
+    ///       λ_k(pin_pin) ≤ λ_k(propped) ≤ λ_k(fix_fix) — the basis of the e2e
+    ///       raw-frequency ordering signal in `modal_analysis_e2e.rs`.
+    #[test]
+    fn build_dirichlet_bcs_realizes_a_pinned_beam_end_identically_in_every_configuration() {
+        let f = BcFixture::new();
+        let restrict = |set: &HashSet<usize>, on_face: &dyn Fn(usize) -> bool| -> HashSet<usize> {
+            set.iter().copied().filter(|&d| on_face(d / 3)).collect()
+        };
+        let on_x_min = |n: usize| f.on_x_min(n);
+        let on_x_max = |n: usize| f.on_x_max(n);
+
+        let pin_pin = f.dof_set(vec![pinned_support("x_min"), pinned_support("x_max")]);
+        let propped = f.dof_set(vec![fixed_support("x_min"), pinned_support("x_max")]);
+        let mirrored = f.dof_set(vec![pinned_support("x_min"), fixed_support("x_max")]);
+        let fix_fix = f.dof_set(vec![fixed_support("x_min"), fixed_support("x_max")]);
+
+        // (a) The pinned x_max end: pin-pin and propped agree exactly.
+        assert_eq!(
+            restrict(&pin_pin, &on_x_max),
+            restrict(&propped, &on_x_max),
+            "a pinned x_max must realize identically whether x_min is pinned or fixed",
+        );
+
+        // (b) The pinned x_min end: pin-pin adds exactly the axial anchor.
+        let axial_anchor = 3 * f.node_at([0.0, 0.0, f.height / 2.0]);
+        let mut mirrored_plus_axial = restrict(&mirrored, &on_x_min);
+        assert!(
+            mirrored_plus_axial.insert(axial_anchor),
+            "the mirrored propped cantilever must not already carry the pin-pin axial anchor",
+        );
+        assert_eq!(
+            restrict(&pin_pin, &on_x_min),
+            mirrored_plus_axial,
+            "a pinned x_min must realize identically in pin-pin and the mirrored propped \
+             cantilever, except for the ONE axial (X) anchor the pin-pin special case adds",
+        );
+
+        // (c) Strict superset chain.
+        assert!(
+            pin_pin.is_subset(&propped) && pin_pin.len() < propped.len(),
+            "pin_pin must be a STRICT subset of propped; pin-pin DOFs missing from propped: {:?}",
+            pin_pin.difference(&propped).collect::<Vec<_>>(),
+        );
+        assert!(
+            propped.is_subset(&fix_fix) && propped.len() < fix_fix.len(),
+            "propped must be a STRICT subset of fix_fix; propped DOFs missing from fix_fix: {:?}",
+            propped.difference(&fix_fix).collect::<Vec<_>>(),
         );
     }
 
@@ -8060,37 +8218,32 @@ mod tests {
         );
     }
 
-    /// Amendment (suggestion 2): `simply_supported_pin_pin_bcs` pins Z on every
-    /// end-face node and adds exactly the three minimal anchors (1 axial X +
-    /// 2 lateral Y) at the end-face neutral-axis nodes — the configuration that
-    /// yields the simply-supported `(nπ)²` family rather than fixed-fixed.
+    /// Characterization guard: `[Pinned(x_min), Pinned(x_max)]` realizes Z on
+    /// every end-face node plus exactly three neutral-axis anchors — X and Y at
+    /// the x_min node, Y at the x_max node — the set that yields the
+    /// simply-supported `(nπ)²` family rather than fixed-fixed. Asserted as
+    /// EXACT set equality, so the pin-pin Dirichlet set every simply-supported
+    /// consumer relies on is pinned bit-for-bit across task 7055's refactor
+    /// (which composes it from the per-face realization plus one axial anchor
+    /// instead of spelling it out wholesale).
     #[test]
-    fn simply_supported_pin_pin_bcs_places_minimal_anchors() {
-        let length = 0.02_f64;
-        let width = 0.05_f64;
-        let height = 0.1_f64;
-        let mesh = build_beam_mesh(length, width, height);
-        let eps = 1e-9_f64;
+    fn build_dirichlet_bcs_pin_pin_places_minimal_anchors() {
+        let f = BcFixture::new();
+        let root = f.node_at([0.0, 0.0, f.height / 2.0]);
+        let tip = f.node_at([f.length, 0.0, f.height / 2.0]);
 
-        let bcs = simply_supported_pin_pin_bcs(&mesh.nodes, length, height);
+        let mut expected: HashSet<usize> = (0..f.n_nodes())
+            .filter(|&n| f.on_end(n))
+            .map(|n| 3 * n + 2)
+            .collect();
+        expected.extend([3 * root, 3 * root + 1, 3 * tip + 1]);
 
-        // Count constraints per axis (dof % 3): X = axial anchor, Y = lateral
-        // anchors, Z = simple supports.
-        let (mut nx, mut ny, mut nz) = (0usize, 0usize, 0usize);
-        for b in &bcs {
-            match b.dof % 3 {
-                0 => nx += 1,
-                1 => ny += 1,
-                _ => nz += 1,
-            }
-        }
-        assert_eq!(nx, 1, "expected exactly one X (axial) anchor");
-        assert_eq!(ny, 2, "expected exactly two Y (lateral) anchors");
-
-        let n_end_nodes = (0..mesh.nodes.len())
-            .filter(|&n| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps)
-            .count();
-        assert_eq!(nz, n_end_nodes, "Z must be pinned on every end-face node");
+        assert_eq!(
+            f.dof_set(vec![pinned_support("x_min"), pinned_support("x_max")]),
+            expected,
+            "pin-pin must be Z on every end-face node plus X@root, Y@root and Y@tip at the \
+             end-face neutral-axis nodes — nothing more, nothing less",
+        );
     }
 
     /// step-1 (RED → GREEN in step-2): a NaN node coordinate must not win the
