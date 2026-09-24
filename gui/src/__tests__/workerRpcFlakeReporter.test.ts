@@ -459,6 +459,8 @@ const testModule = (
     errors?: string[]
     /** One error-message list per failed test. */
     failedTests?: ReadonlyArray<readonly string[]>
+    /** Errors held by a NESTED describe suite, never by the module itself. */
+    suiteErrors?: string[]
   } = {},
 ): ReportedModule => ({
   moduleId,
@@ -471,6 +473,10 @@ const testModule = (
             result: () => ({ state: 'failed', errors: messages.map((message) => ({ message })) }),
           }))
         : [],
+    allSuites: () =>
+      (opts.suiteErrors === undefined ? [] : [opts.suiteErrors]).map((messages) => ({
+        errors: () => messages.map((message) => ({ message })),
+      })),
   },
 })
 
@@ -697,6 +703,42 @@ describe('WorkerRpcFlakeReporter — a starved test body (task 7833, esc-7094-6)
 
     expect(writes).toHaveLength(1)
     expect(JSON.parse(writes[0].contents).suites).toEqual([RAIL_GATE, EDITOR])
+  })
+})
+
+// A failed describe-level beforeAll records its error on the NESTED suite and
+// marks that suite's tests skipped; TestModule.errors() never sees it
+// (@vitest/runner runSuite, dist/chunk-hooks.js:1706-1735).
+describe('WorkerRpcFlakeReporter — describe-level suite errors count as the module\'s own', () => {
+  it('vetoes a hook defect hiding beside a timed-out test in the same module', () => {
+    const { reporter, lines, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [
+        testModule(`${ROOT}/${RAIL_GATE}`, { failed: true, errors: [RAIL_GATE_FETCH_TIMEOUT] }),
+        testModule(`${ROOT}/${EDITOR}`, {
+          failed: true,
+          failedTests: [[TEST_TIMEOUT(60000)]],
+          suiteErrors: ['Error: beforeAll failed: fixture missing'],
+        }),
+      ],
+      [],
+      'failed',
+    )
+
+    expect(lines).toEqual([])
+    expect(writes).toEqual([])
+  })
+
+  it('reads a nested-suite RPC timeout as that module starving outright', () => {
+    const { reporter, writes } = recordingReporter()
+    reporter.onTestRunEnd(
+      [testModule(`${ROOT}/src/__tests__/a.test.ts`, { failed: true, suiteErrors: [TIMEOUT_FETCH] })],
+      [],
+      'failed',
+    )
+
+    expect(writes).toHaveLength(1)
+    expect(JSON.parse(writes[0].contents).suites).toEqual(['src/__tests__/a.test.ts'])
   })
 })
 
