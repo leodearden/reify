@@ -8,6 +8,7 @@ use reify_mcp::{
 };
 
 use crate::engine::EngineSession;
+use crate::eval_queue::{EvalOutcome, EvalRequest};
 
 /// Event emitter callback type for navigation events (focus_entity, navigate_to_source).
 type EventEmitter = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
@@ -348,6 +349,51 @@ pub fn mcp_tool_call_impl(
     registry
         .call_tool(name, params, context)
         .map_err(|e| e.to_string())
+}
+
+/// [`mcp_tool_call_impl`] as a queued evaluation. The session's state is
+/// published after every tool, even a read-only or failed one: an unchanged
+/// state publishes an empty delta.
+///
+/// This one request covers `TauriToolContext`'s WHOLE engine surface: a tool
+/// touches the engine only through [`ReifyToolContext`] methods, including
+/// `open_file`, `update_source` and `set_parameter`, which drive full
+/// recursive compiles.
+///
+/// The cost of that granularity: `reify_focus_entity`,
+/// `reify_navigate_to_source`, `reify_get_selection` and
+/// `reify_get_eval_status` touch no engine, yet queue behind every evaluation
+/// ahead of them — worst for `reify_get_eval_status`, which a client polls to
+/// learn WHETHER an evaluation is in flight. They are not bypassed here,
+/// because a tool-name predicate would be a second copy of the registry's
+/// knowledge of which tool reaches the engine, and it would rot in the
+/// dangerous direction: a tool wrongly classed non-engine would leave the
+/// ENGINE lane's large stack. #7722 tracks the bypass without that copy — the
+/// registry classifying each tool where its handler is registered.
+///
+/// The context's event emitter fires from the ENGINE lane thread, which is
+/// sound because `tauri::AppHandle` is `Send + Sync`. The job dispatches
+/// directly because it already runs on that lane, whose single consumer cannot
+/// wait on a nested submission to itself.
+pub fn mcp_tool_call_evaluation(
+    ctx: TauriToolContext,
+    engine: Arc<Mutex<EngineSession>>,
+    name: String,
+    params: serde_json::Value,
+) -> EvalRequest<serde_json::Value> {
+    EvalRequest::evaluation(move || {
+        let reply = mcp_tool_call_impl(&name, params, &ctx);
+        let publish = match crate::commands::get_initial_state_impl(&engine) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(
+                    "mcp_tool_call: delta sync failed, frontend model may be stale: {e}"
+                );
+                None
+            }
+        };
+        EvalOutcome { publish, reply }
+    })
 }
 
 /// Dispatch an MCP tool call on the persistent ENGINE lane — the entry point
