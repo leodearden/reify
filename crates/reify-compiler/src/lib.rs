@@ -558,48 +558,18 @@ pub fn compile_with_prelude_context_checked_with_config(
     // `Type::Enum("Fit")` — conformance and overload resolution then rejected the
     // pair, turning a previously-WARNING module into a hard ERROR (esc-5429-1).
     //
-    // Installed HERE — immediately after `collect_decl_refs`, before every resolving
-    // phase — for the same reason, one notch earlier (#6394; PRD
-    // docs/prds/v0_6/enum-shadow-coherence.md §2 R4 / §3 D1). This is the earliest
-    // point at which BOTH set inputs are final: `ctx.enum_defs` and
-    // `ctx.seen_entity_names` are seeded by `pre_pass::collect_decl_refs`, and
-    // `resolve_enum_variant_payloads` rewrites payloads, never names. Installing it
-    // after that phase instead left enum-variant payload resolution as the ONE
-    // declared-type position in a module that could not see the shadow set: a payload
-    // field typed by a shadowed name lowered to `Type::StructureRef(N)` while every
-    // param/let/fn/trait position lowered to `Type::Enum(N)`, so handing that
-    // payload's `match` binder to a same-typed `fn` param failed overload resolution
-    // ("no matching overload for use_fit(Fit), candidates: use_fit(Enum(Fit))").
-    // Oracles: `enum_ctor_param_binding_tests::{shadow_payload_field_lowers_to_enum_type,
-    // shadow_payload_binder_fixture_has_no_errors}`. The phases this newly covers
-    // besides `resolve_enum_variant_payloads` are inert with respect to the override,
-    // but NOT all for the same reason:
-    // • `phase_units` does no type resolution, `build_resolution_names` only builds
-    //   name sets, and `build_resolution_enums_from_cache` is a clone — none of the
-    //   three reaches a resolver at all.
-    // • `phase_aliases` DOES reach `resolve_type_expr_with_aliases_kinded`, via
-    //   `resolve_alias_dfs` → `type_resolution::resolve_type_alias_expr` →
-    //   `resolve_parameterized_builtin_type`, whose `List`/`Set`/`Option`/`Map`/… arms
-    //   recurse into it for every inner type arg — so `type Fits = List<Fit>` in a
-    //   module with a local `enum Fit` now walks the override site. It is inert only
-    //   because that DFS passes EMPTY structure/trait/type-param sets: the structure
-    //   arm the override replaces cannot fire, so the `matches!(ty,
-    //   Type::StructureRef(_))` conjunct is unreachable (nor can the alias-registry
-    //   arm yield a `StructureRef` during DFS, since it resolves with the same empty
-    //   structure set). That is a narrow margin, not a structural one — IF REAL
-    //   STRUCTURE NAMES ARE EVER THREADED INTO THE ALIAS DFS, THIS INSTALL SITE MUST
-    //   BE RE-EXAMINED, because the override would silently activate for alias bodies
-    //   (a case PRD §5 C1 routes to #6259, not to this task).
-    //   Inert DFS is NOT the same as a shadow-blind alias, and the distinction is
-    //   MEASURED: the user-visible element type of `type Fits = List<Fit>` is decided
-    //   later, at the USE site, where the full structure set IS in scope and the
-    //   override does fire — so alias-position lowering tracks the shadow set exactly
-    //   like a direct `param f: Fit`. Oracle (added by the #6394 review pass, so the
-    //   margin above is a live assertion rather than prose alone):
-    //   `enum_ctor_param_binding_tests::alias_body_naming_shadowed_enum_agrees_with_param_position`.
-    //   That oracle would ideally ALSO be flagged where the editor who threads those
-    //   sets in is actually reading — `aliases_phase.rs` / `resolve_type_alias_expr`
-    //   — but both files are outside task #6394's lock set; left to the follow-up.
+    // Installed immediately after `collect_decl_refs`, before every resolving phase
+    // (#6394; PRD docs/prds/v0_6/enum-shadow-coherence.md §2 R4 / §3 D1): the earliest
+    // point at which both set inputs, `ctx.enum_defs` and `ctx.seen_entity_names`, are
+    // final. It must precede `resolve_enum_variant_payloads`: a payload field resolved
+    // outside the scope lowers to `Type::StructureRef(N)` while every other
+    // declared-type position lowers to `Type::Enum(N)`. Oracles:
+    // `enum_ctor_param_binding_tests::{shadow_payload_field_lowers_to_enum_type,
+    // shadow_payload_binder_fixture_has_no_errors}`. `phase_aliases` also runs inside
+    // the scope, but its DFS resolves with empty structure sets by design (see the
+    // `aliases_phase` module doc), so shadowing reaches an alias body at its USE
+    // site. Oracle:
+    // `enum_ctor_param_binding_tests::alias_body_naming_shadowed_enum_agrees_with_param_position`.
     //
     // The set-construction rules (local-only, minus local structure names) live in ONE
     // place — see `enums_phase::build_local_enum_shadow_set`.

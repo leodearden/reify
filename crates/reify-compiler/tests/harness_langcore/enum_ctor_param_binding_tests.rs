@@ -17,14 +17,14 @@
 //!   than into the conformance walker, which could have silenced the diagnostic
 //!   while leaving the wrong type in the IR for `match`, member typing and trait
 //!   matching to trip over later.
-//! * **RED on main (#6394 — the enum-variant PAYLOAD axis)** —
+//! * **RED before the #6394 hoist (the enum-variant PAYLOAD axis)** —
 //!   [`shadow_payload_field_lowers_to_enum_type`] and
-//!   [`shadow_payload_binder_fixture_has_no_errors`]. The `LocalEnumShadowScope`
-//!   is installed AFTER `resolve_enum_variant_payloads`, so an enum-variant
-//!   payload field typed by the shadowed name lowers to
-//!   `Type::StructureRef("Fit")` while every param/let/fn/trait position lowers
-//!   to `Type::Enum("Fit")`; passing that payload's `match` binder to a
-//!   same-typed `fn` param then fails overload resolution. The first test forces
+//!   [`shadow_payload_binder_fixture_has_no_errors`]. They were RED while the
+//!   `LocalEnumShadowScope` was installed after payload resolution: an
+//!   enum-variant payload field typed by the shadowed name lowered to
+//!   `Type::StructureRef("Fit")` while every param/let/fn/trait position lowered
+//!   to `Type::Enum("Fit")`, so passing that payload's `match` binder to a
+//!   same-typed `fn` param failed overload resolution. The first test forces
 //!   the fix into the LOWERING, the second pins the leaf `reify check … exits 0`
 //!   signal. PRD `docs/prds/v0_6/enum-shadow-coherence.md` §2 R4 / §3 D1.
 //! * **Characterization (green on main, must stay green)** —
@@ -41,19 +41,15 @@
 //!   [`prelude_enum_does_not_shadow_local_structure_in_payload`],
 //!   [`payload_field_of_prelude_structure_name_unaffected_without_local_enum`] and
 //!   [`local_structure_wins_over_same_named_local_enum_in_payload`]: the group
-//!   above, mirrored 1:1 on the phase the #6394 hoist newly covers. They fail
-//!   against an implementation that hoisted the scope but ALSO widened what enters
-//!   the shadow set. Which over-broadening each one actually catches — they do not
-//!   partition the two membership rules one-for-one — is recorded on that group's
-//!   section comment.
+//!   above, mirrored 1:1 on the phase the #6394 hoist newly covers, so they fail
+//!   against a hoist that ALSO widened what enters the shadow set.
 //! * **Alias-position coherence (green on main AND after, #6394)** —
-//!   [`alias_body_naming_shadowed_enum_agrees_with_param_position`], covering
-//!   `phase_aliases`: the one newly-covered phase whose inertness rests on a
-//!   narrow margin (the alias DFS passing empty structure sets) rather than a
-//!   structural one. It pins that alias-position lowering agrees with direct-param
-//!   lowering on both sides of the local-structure subtraction.
+//!   [`alias_body_naming_shadowed_enum_agrees_with_param_position`]: with
+//!   `phase_aliases` newly inside the scope, alias-position lowering must still
+//!   agree with direct-param lowering on both sides of the local-structure
+//!   subtraction.
 //!
-//! A failure in the last three groups is a BEHAVIOUR CHANGE, not an unimplemented
+//! A failure in the last four groups is a BEHAVIOUR CHANGE, not an unimplemented
 //! feature.
 //!
 //! **Every helper here goes through the `*_with_stdlib` test-support variants on
@@ -227,10 +223,10 @@ fn enum_ctor_emits_no_structure_ref_mismatch() {
 
 // ── Enum-variant payload coherence (R4, #6394) ───────────────────────
 //
-// PRD `docs/prds/v0_6/enum-shadow-coherence.md` §2 R4 / §3 D1. Both are RED on
-// main: `resolve_enum_variant_payloads` runs BEFORE the `LocalEnumShadowScope`
-// install, so the payload position is the one declared-type position in the
-// module that does not see the shadow set.
+// PRD `docs/prds/v0_6/enum-shadow-coherence.md` §2 R4 / §3 D1. Both were RED
+// before the #6394 hoist, when `resolve_enum_variant_payloads` ran outside the
+// `LocalEnumShadowScope`, leaving the payload position the one declared-type
+// position in the module that did not see the shadow set.
 
 /// R4's root claim, pinned in the IR. `Boxed.B`'s payload field `f` must lower
 /// to `Type::Enum("Fit")`.
@@ -239,6 +235,9 @@ fn enum_ctor_emits_no_structure_ref_mismatch() {
 /// machinery, which could silence
 /// [`shadow_payload_binder_fixture_has_no_errors`] while leaving the wrong type
 /// in the IR for `match`, member typing and trait matching to trip over later.
+/// That leaf test cannot stand in for this one: with shadowing switched off
+/// wholesale it stays green, because the payload field and the `fn` param are
+/// then both `StructureRef` and still agree.
 #[test]
 fn shadow_payload_field_lowers_to_enum_type() {
     let module = compile_source_with_stdlib(PAYLOAD_FIXTURE);
@@ -247,9 +246,9 @@ fn shadow_payload_field_lowers_to_enum_type() {
         f,
         Type::Enum("Fit".to_string()),
         "`Boxed.B`'s payload field must lower through the SAME shadow set as \
-         every param/let/fn/trait position; on main it is \
-         `Type::StructureRef(\"Fit\")` because `resolve_enum_variant_payloads` \
-         runs before the `LocalEnumShadowScope` install; got {f:?}"
+         every param/let/fn/trait position; a `StructureRef` means payload \
+         resolution did not see that set (ran outside the \
+         `LocalEnumShadowScope`); got {f:?}"
     );
 }
 
@@ -433,55 +432,11 @@ structure def Consumer {
 
 // ── Payload-axis no-overreach guards (green on main AND after) ───────────────
 //
-// NOT red pins — all three are green BEFORE and AFTER #6394's scope hoist. They
-// mirror the `No-overreach guards` group above 1:1 on the newly-covered phase
-// (enum-variant payload resolution) and do not drive the fix; they fail against an
-// implementation that hoisted the `LocalEnumShadowScope` but ALSO widened what
-// enters the shadow set.
-//
-// What each one actually discriminates. Stated from MEASURED counterfactuals
-// (`build_local_enum_shadow_set` mutated in place, group re-run), not from
-// reasoning — the three do NOT partition its two membership rules one-for-one:
-//
-// * [`payload_field_of_prelude_structure_name_unaffected_without_local_enum`] —
-//   the hoist must not blanket-enum every name: with NO local enum declaring it,
-//   a payload field typed by a prelude structure name stays a `StructureRef`.
-//   It does NOT discriminate the `ctx.enum_defs`-not-`ctx.resolution_enums` rule,
-//   because the prelude declares no `enum Fit` (only `enum FitCategory`,
-//   `stdlib/tolerancing.ri:22`) — swapping the membership source leaves "Fit" out
-//   of the set either way and this test stays green.
-// * [`prelude_enum_does_not_shadow_local_structure_in_payload`] — the payload-axis
-//   mirror of [`prelude_enum_does_not_shadow_local_structure`], and the only shape
-//   in this group naming something the PRELUDE declares as an `enum`
-//   (`enum ThreadSystem`, `stdlib/ports_mechanical.ri:35`). It pins the
-//   user-visible property directly — no prelude enum name may reach the shadow set
-//   by ANY route, e.g. seeding from the `prelude_enums` slice that
-//   `resolve_enum_variant_payloads` already receives, or re-lowering the install
-//   below `build_resolution_enums_from_cache` with the subtraction dropped.
-// * [`local_structure_wins_over_same_named_local_enum_in_payload`] — the
-//   local-structure subtraction, on its own: "Fit" IS a module-local enum there,
-//   so dropping the subtraction alone flips it to `Type::Enum` (measured).
-//
-// A CONSEQUENCE OF #6394'S HOIST, recorded here because it retires a hazard this
-// group was originally written to cover: `ctx.resolution_enums` is assigned ONLY
-// by `enums_phase::build_resolution_enums_from_cache` (enums_phase.rs:286-287),
-// which the hoist now runs AFTER the install site — so it is EMPTY when
-// `build_local_enum_shadow_set` is called. Sourcing the set from it no longer
-// yields an over-broad prelude ++ local set; it yields an EMPTY one, shadowing
-// switches off wholesale, and FIVE tests in this file go red at once
-// (`enum_ctor_param_lowers_to_enum_type`, `enum_ctor_emits_no_structure_ref_mismatch`,
-// `trait_member_typed_by_shadowing_local_enum_conforms`,
-// `fn_param_typed_by_shadowing_local_enum_resolves_call`,
-// `shadow_payload_field_lowers_to_enum_type`). That mutation is now fail-LOUD
-// rather than fail-subtle, which is why no single guard below needs to catch it.
-//
-// Note which test did NOT go red in that measurement:
-// [`shadow_payload_binder_fixture_has_no_errors`] stayed GREEN against an empty
-// shadow set, because with no shadowing at all the payload field and the `fn` param
-// are BOTH `StructureRef` and therefore still agree. That is exactly why the IR pin
-// is a separate test from the leaf `reify check … exits 0` signal.
-//
-// Same `module test.<name>` prologue convention as the group above, so
+// C3 conservation guards (PRD `docs/prds/v0_6/enum-shadow-coherence.md` §5 C3),
+// green before AND after the #6394 hoist: the `No-overreach guards` group above,
+// mirrored 1:1 on enum-variant payload resolution. They do not drive the fix;
+// they fail against a hoist that ALSO widened what enters the shadow set. Same
+// `module test.<name>` prologue convention as that group, so
 // `W_MODULE_DECL_MISSING` never pollutes these modules.
 
 /// A LOCAL `structure def ThreadSystem` must win over the PRELUDE
@@ -492,12 +447,8 @@ structure def Consumer {
 /// and the only guard in this group naming something the PRELUDE declares as an
 /// `enum`. It pins the user-visible property that no prelude enum name may reach
 /// the shadow set by ANY route — the nearest live route being the `prelude_enums`
-/// slice [`resolve_enum_variant_payloads`] already receives for its own bare-name
+/// slice `resolve_enum_variant_payloads` already receives for its own bare-name
 /// fallback, one `.chain()` away from the shadow set.
-///
-/// It does NOT discriminate a swap of `ctx.enum_defs` for `ctx.resolution_enums`:
-/// post-#6394 that source is EMPTY at set-construction time and the swap is
-/// fail-loud instead. See the section comment above for the measurement.
 #[test]
 fn prelude_enum_does_not_shadow_local_structure_in_payload() {
     const SOURCE: &str = r#"
@@ -524,9 +475,7 @@ enum Boxed { B { t: ThreadSystem } }
 ///
 /// The payload-axis mirror of
 /// [`stdlib_fit_structure_param_unaffected_without_local_enum`]: the hoist must
-/// not make every `Fit` an enum. Note this shape does NOT discriminate the
-/// membership-SOURCE rule (there is no prelude `enum Fit`) — that is
-/// [`prelude_enum_does_not_shadow_local_structure_in_payload`]'s job.
+/// not make every `Fit` an enum.
 #[test]
 fn payload_field_of_prelude_structure_name_unaffected_without_local_enum() {
     const SOURCE: &str = r#"
@@ -576,52 +525,14 @@ enum Boxed { B { f: Fit } }
 
 // ── Alias-position coherence (#6394 hoist, `phase_aliases`) ──────────────────
 //
-// Green BEFORE and AFTER the hoist — a conservation guard, not a red pin. It
-// exists because `phase_aliases` is one of the four phases the #6394 hoist
-// newly runs under the live `LocalEnumShadowScope`, and it was the only one of
-// the four whose inertness rests on a NARROW margin rather than a structural
-// one: `resolve_alias_dfs` → `type_resolution::resolve_type_alias_expr` →
-// `resolve_parameterized_builtin_type` does reach the override's host function
-// for every inner type arg of `List`/`Set`/`Option`/`Map`/…, and is inert only
-// because that DFS passes EMPTY structure/trait/type-param sets
-// (`type_resolution.rs:1538-1539`), leaving the override's
-// `matches!(ty, Type::StructureRef(_))` conjunct unreachable. Before this test
-// that margin was prose at the install site and nothing in the suite exercised
-// an alias body naming a shadowed name.
-//
-// MEASURED, and worth stating because it corrects the obvious reading of that
-// margin: alias-position lowering is NOT insensitive to the shadow set. The DFS
-// answer is inert, but the user-visible element type is decided later, at the
-// USE site, where the full structure set is in scope and the override does
-// fire. All four shapes tracked the shadow set exactly:
-//
-//   local `enum Fit` + `type Fits = List<Fit>`      → List(Enum("Fit"))
-//   no local enum, ditto                            → List(StructureRef("Fit"))
-//   local `enum Fit` + local `structure def Fit`    → List(StructureRef("Fit"))
-//   local `structure def ThreadSystem` (prelude enum) → List(StructureRef(…))
-//
-// What the two assertions below discriminate, from counterfactual mutation of
-// `build_local_enum_shadow_set` (mutated in place, re-run), not from reasoning:
-//
-// * shape A catches shadowing switched OFF wholesale — returning an empty set
-//   flips it to `List(StructureRef("Fit"))` (measured). Note this is a SECOND
-//   fail-loud site for the `ctx.resolution_enums` swap described on the
-//   payload-axis group above, on a different axis.
-// * shape B catches the local-structure subtraction being dropped — removing
-//   the `!local_structure_names.contains(…)` filter flips it to
-//   `List(Enum("Fit"))` (measured).
-//
-// Neither shape moved under the OTHER mutation, so the pair is not redundant.
-//
-// Hypothesis (NOT measured — no such build was run): this is also the assertion
-// that would catch the hazard the install-site comment flags in capitals. If
-// real structure names were ever threaded into the alias DFS, the DFS would
-// begin baking a resolved `Fit` into the alias registry at `phase_aliases`
-// time. With the scope installed over `phase_aliases` — today's position — the
-// override fires there too and shape A should stay green; combined with a
-// LATER re-narrowing of the scope back below `phase_aliases`, the DFS would
-// bake `StructureRef("Fit")` and shape A should go red. That pairing is why
-// the guard lives here rather than in the alias suite.
+// A conservation guard, green before AND after the hoist, for `phase_aliases`,
+// which the #6394 hoist newly runs inside the `LocalEnumShadowScope`. Its alias
+// DFS reaches the shadow override through `resolve_parameterized_builtin_type`'s
+// inner-arg recursion, but with empty structure sets by design (see the
+// `aliases_phase` module doc), so a `List<Fit>` alias body is resolved at its use
+// site, where shadowing applies exactly as for a direct param. Complements
+// `type_alias_compile_tests::{alias_body_shadow_semantics,
+// parametric_alias_body_shadow_parity}` (#6259, #6477: bare and parametric bodies).
 
 /// Alias-position lowering must agree with direct-param lowering about a
 /// prelude-shadowing local enum, on both sides of the local-structure
@@ -630,8 +541,7 @@ enum Boxed { B { f: Fit } }
 /// Shape A pins that a `type Fits = List<Fit>` body naming a shadowed name
 /// lowers its element to `Type::Enum`, exactly as a bare `param f: Fit` does;
 /// shape B pins that a same-module `structure def Fit` still beats the local
-/// `enum Fit` through the alias. See the section comment for which mutation
-/// each one was measured to catch.
+/// `enum Fit` through the alias.
 #[test]
 fn alias_body_naming_shadowed_enum_agrees_with_param_position() {
     // Shape A — shadowing active through the alias.

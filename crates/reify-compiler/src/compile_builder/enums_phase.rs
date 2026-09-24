@@ -352,18 +352,8 @@ pub(crate) fn build_resolution_enums_from_cache(
 /// `ctx.seen_entity_names`, and the only later phase that touches `ctx.enum_defs`
 /// — [`resolve_enum_variant_payloads`] — rewrites PAYLOADS, never names.
 ///
-/// That freedom-of-placement invariant is what this function owns. WHERE the scope
-/// is actually installed, and why that position was chosen, is stated once at the
-/// install site in [`crate::compile_with_prelude_context_checked_with_config`]
-/// (task #6394; PRD `docs/prds/v0_6/enum-shadow-coherence.md` §2 R4 / §3 D1) and
-/// is deliberately NOT restated here — a second copy would rot the moment the
-/// install site moves, which the absorption note there says #5493 will do.
-///
-/// Before editing the first rule above: post-#6394 the mistake it warns against
-/// (sourcing the set from `ctx.resolution_enums`) is fail-LOUD, not fail-subtle.
-/// The measurement — which tests go red, and why one of them does NOT — is
-/// recorded once, on the payload-axis guard section of
-/// `enum_ctor_param_binding_tests`, and is deliberately not restated here.
+/// Where the scope is installed, and why there, is stated at the install site in
+/// [`crate::compile_with_prelude_context_checked_with_config`].
 pub(crate) fn build_local_enum_shadow_set(ctx: &CompilationCtx) -> HashSet<String> {
     let local_structure_names: HashSet<&str> = ctx
         .seen_entity_names
