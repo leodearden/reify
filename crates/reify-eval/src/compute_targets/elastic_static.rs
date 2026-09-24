@@ -851,10 +851,12 @@ pub fn solve_elastic_static_trampoline(
             // consistent with the tet convention for frame/shell_channels.
             ("divergence".to_string(), Value::Undef),
             // task 4565/β: gradient and curl are tet-only derivative channels;
-            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set.
+            // ruling #6164 adds `rotation` (= curl/2) to that tet-only set, and
+            // task #6183 adds `shear_angles` (projected from gradient).
             ("gradient".to_string(), Value::Undef),
             ("curl".to_string(), Value::Undef),
             ("rotation".to_string(), Value::Undef),
+            ("shear_angles".to_string(), Value::Undef),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -1197,6 +1199,10 @@ pub fn solve_elastic_static_trampoline(
     let disp_field = super::sampled_disp_field(disp_sf);
     let stress_field = super::sampled_stress_field(stress_sf);
     let div_field = super::sampled_divergence_field(div_sf);
+    // task #6183: `shear_angles` is DERIVED from the gradient SampledField, like
+    // `rotation` from curl below (see `shear_angles_sf_from_gradient`).
+    let shear_angles_field =
+        super::sampled_shear_angles_field(super::shear_angles_sf_from_gradient(&grad_sf));
     let grad_field = super::sampled_gradient_field(grad_sf);
     // ruling #6164: `rotation` = ∇×u / 2 is DERIVED from the curl SampledField
     // here rather than resampled independently — note there is deliberately NO
@@ -1607,6 +1613,9 @@ pub fn solve_elastic_static_trampoline(
         // radian enters (Vector3<Angle>). Derived from the curl SampledField at
         // wrap time and stored nowhere. Shell path emits Undef (PRD §7).
         ("rotation".to_string(), rotation_field),
+        // task #6183: Voigt engineering shears (Vector3<Angle>), derived from
+        // the gradient SampledField the same way. Shell path emits Undef.
+        ("shear_angles".to_string(), shear_angles_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -2216,7 +2225,9 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// (`value_from_elastic_result`), because it is a pure ×½ of a slab already on
 /// the wire and the binary header is frozen (`curl_len` at a fixed byte offset,
 /// byte-exact golden test). So this direction needs no `rotation` arm, and
-/// existing persisted entries gain a correct `.rotation` for free.
+/// existing persisted entries gain a correct `.rotation` for free. The same
+/// holds for `shear_angles` (task #6183), derived from the persisted `gradient`
+/// slab: no extract arm, no wire change.
 ///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
@@ -2479,9 +2490,16 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         Some(sf) => super::sampled_divergence_field(sf),
         None => Value::Undef,
     };
-    let grad_field = match build_sf(er.gradient.clone(), "gradient") {
-        Some(sf) => super::sampled_gradient_field(sf),
-        None => Value::Undef,
+    // task #6183: shear_angles is derived from the SAME reconstructed gradient
+    // slab, never persisted — one `build_sf` feeds both, exactly as for
+    // curl/rotation below.
+    let (grad_field, shear_angles_field) = match build_sf(er.gradient.clone(), "gradient") {
+        Some(sf) => {
+            let shear =
+                super::sampled_shear_angles_field(super::shear_angles_sf_from_gradient(&sf));
+            (super::sampled_gradient_field(sf), shear)
+        }
+        None => (Value::Undef, Value::Undef),
     };
     // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
     // never persisted — the compute-contract wire header is frozen (`curl_len`
@@ -2555,6 +2573,7 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         ("gradient".to_string(), grad_field),
         ("curl".to_string(), curl_field),
         ("rotation".to_string(), rotation_field),
+        ("shear_angles".to_string(), shear_angles_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
