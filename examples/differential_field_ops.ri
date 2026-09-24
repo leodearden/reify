@@ -191,13 +191,11 @@ structure DifferentialFieldOps {
     constraint rot_probe < 0.5deg
 
     // Phase 1: the task-#6183 shear-limit check (magnitude-based, conservative).
-    // BOUND BASIS (G6 — the allowable was fixed a priori, then measured, never
-    // tuned): beam theory at the section centroid gives γ ≈ 1.5·V/(A·G)
-    // ≈ 1.9e-6 rad, and a no-cancellation worst case gives
-    // |∂u_x/∂z| + |∂u_z/∂x| ≈ 2θ(L/2) ≈ 4.4e-4 rad ≈ 0.025°.
-    // Measured on this example: shear_probe at point3(500mm, 50mm, 50mm)
-    //   = 1.7736992633488599e-6 rad = 1.0162548191535281e-4°,
-    // so 0.1deg clears it by ~980x (and the worst case by ~4x).
+    // BOUND BASIS (G6 — the allowable is fixed a priori, never tuned): beam
+    // theory at the section centroid gives γ ≈ 1.5·V/(A·G) ≈ 1.9e-6 rad, and a
+    // no-cancellation worst case gives |∂u_x/∂z| + |∂u_z/∂x| ≈ 2θ(L/2)
+    // ≈ 4.4e-4 rad ≈ 0.025°, which 0.1deg clears by ~4x.  The measured probe
+    // (~1.8e-6 rad) sits at the beam-theory estimate.
     constraint shear_probe < shear_allowable
 
     // Phase 2: exact polynomial values (G6 numeric-premise discipline).
