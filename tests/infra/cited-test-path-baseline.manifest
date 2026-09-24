@@ -229,7 +229,9 @@ docs/prds/v0_6/thread-hole-features.capability-manifest.md :: crates/reify-compi
 docs/prds/v0_6/thread-hole-features.capability-manifest.md :: crates/reify-compiler/tests/tolerancing_tests.rs
 docs/prds/v0_6/thread-hole-features.md :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/trampoline-param-drop-closure.capability-manifest.md :: crates/reify-compiler/tests/examples_smoke.rs
+docs/prds/v0_6/trampoline-param-drop-closure.capability-manifest.md :: crates/reify-eval/tests/fdm_progressive_refinement_e2e.rs
 docs/prds/v0_6/trampoline-param-drop-closure.capability-manifest.yaml :: crates/reify-compiler/tests/examples_smoke.rs
+docs/prds/v0_6/trampoline-param-drop-closure.capability-manifest.yaml :: crates/reify-eval/tests/fdm_progressive_refinement_e2e.rs
 docs/prds/v0_6/units-length-gate-completion.capability-manifest.md :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/units-length-gate-completion.capability-manifest.yaml :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/units-physical-constants.md :: crates/reify-compiler/tests/constants_example_tests.rs
@@ -243,7 +245,6 @@ examples/auto_binding_sites.ri :: crates/reify-eval/tests/auto_binding_sites_rem
 examples/conditional_compilation/README.md :: crates/reify-compiler/tests/examples_smoke.rs
 examples/drivebelt_trait_bounds.ri :: crates/reify-compiler/tests/examples_smoke.rs
 examples/fdm_bracket.ri :: crates/reify-compiler/tests/examples_smoke.rs
-examples/fdm_bracket.ri :: crates/reify-eval/tests/as_printed_body_realization_e2e.rs
 examples/fea_shell_too_thick_annotated.ri :: crates/reify-eval/tests/shell_too_thick_at_shell_annotation_errors.rs
 examples/fea_shell_too_thick_auto.ri :: crates/reify-eval/tests/shell_too_thick_at_auto_falls_back.rs
 examples/fields/std_fields_surface.ri :: crates/reify-compiler/tests/examples_smoke.rs
