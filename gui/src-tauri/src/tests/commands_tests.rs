@@ -4156,3 +4156,345 @@ fn a_colliding_second_module_does_not_replay_the_first_modules_mass_props() {
          drifting back toward module A's retained value"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Queued request constructors (task 7442): each engine-touching command as an
+// EvalQueue request, driven through a ManualQueue so the drainer runs here.
+// ---------------------------------------------------------------------------
+
+mod queued_requests {
+    use std::sync::{Arc, Mutex};
+
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::{MockGeometryKernel, bracket_source};
+
+    use super::{make_test_engine_for_commands, make_test_engine_on_disk};
+    use crate::commands::{
+        active_fea_case_evaluation, commit_parameter_edit, disk_reload_edit, editor_source_edit,
+        initial_file_evaluation, initial_state_evaluation, open_file_evaluation,
+        preview_parameter_edit,
+    };
+    use crate::engine::EngineSession;
+    use crate::eval_queue::{EditOrder, EvalQueue, EvalRequest};
+    use crate::tests::test_helpers::{ManualQueue, Observed, RecordingObserver, settled};
+
+    const WIDTH: &str = "Bracket.width";
+
+    fn order(seq: u64) -> EditOrder {
+        EditOrder { epoch: 1, seq }
+    }
+
+    /// The `(value, unit)` the newest published delta gave `Bracket.width`.
+    fn published_width(observer: &RecordingObserver) -> Option<(String, String)> {
+        observer
+            .published_value(WIDTH)
+            .map(|width| (width.value, width.unit))
+    }
+
+    fn mm(value: &str) -> Option<(String, String)> {
+        Some((value.to_string(), "mm".to_string()))
+    }
+
+    fn fresh_engine() -> Arc<Mutex<EngineSession>> {
+        Arc::new(Mutex::new(EngineSession::new(
+            Box::new(SimpleConstraintChecker),
+            Some(Box::new(MockGeometryKernel::new())),
+        )))
+    }
+
+    fn bracket_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let path = dir.path().join("bracket.ri");
+        std::fs::write(&path, bracket_source()).expect("write bracket.ri");
+        path
+    }
+
+    fn read(path: &std::path::Path) -> String {
+        std::fs::read_to_string(path).expect("the .ri file should be readable")
+    }
+
+    #[test]
+    fn a_queued_preview_publishes_the_value_and_leaves_the_file_alone() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(preview_parameter_edit(
+            engine,
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("120"));
+        assert_eq!(read(&path), bracket_source());
+    }
+
+    #[test]
+    fn a_queued_commit_writes_the_file_and_publishes_the_committed_value() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(commit_parameter_edit(
+            engine,
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(read(&path), bracket_source().replace("80mm", "120mm"));
+        assert_eq!(published_width(&rig.observer), mm("120"));
+    }
+
+    /// A refusal discards the preview, so the restored state must ride the
+    /// publish or the viewport stays stranded on the preview.
+    #[test]
+    fn a_refused_queued_commit_replies_err_and_publishes_the_restored_state() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+        let preview = rig.queue.submit(preview_parameter_edit(
+            Arc::clone(&engine),
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+        assert_eq!(settled(preview), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("120"));
+
+        let external_text = format!("{}\n// an external editor was here\n", bracket_source());
+        std::fs::write(&path, external_text).expect("external write should succeed");
+        let commit = rig.queue.submit(commit_parameter_edit(
+            engine,
+            WIDTH.into(),
+            "150mm".into(),
+            order(2),
+        ));
+        rig.executor.run_pending();
+
+        let refusal = settled(commit).expect_err("a diverged file must be refused");
+        assert!(
+            refusal.contains("no longer matches the source this session compiled"),
+            "got: {refusal}"
+        );
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_editor_sync_publishes_the_recompiled_state() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(editor_source_edit(
+            engine,
+            "bracket.ri".into(),
+            bracket_source().replace("80mm", "95mm"),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("95"));
+    }
+
+    #[test]
+    fn a_broken_editor_buffer_still_publishes_the_last_good_state_with_an_error() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(editor_source_edit(
+            engine,
+            "bracket.ri".into(),
+            "invalid syntax $$$".into(),
+            order(1),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        let deltas = rig.observer.deltas();
+        let published = deltas
+            .last()
+            .expect("the last-good state must be published");
+        assert_eq!(published_width(&rig.observer), mm("80"));
+        let diagnostics = published
+            .changed_compile_diagnostics
+            .as_ref()
+            .expect("the delta must carry the compile diagnostics");
+        assert!(
+            diagnostics.iter().any(|d| d.severity == "Error"),
+            "got: {diagnostics:?}"
+        );
+    }
+
+    /// The reload reads the file when it RUNS, so a reload queued behind a long
+    /// evaluation never recompiles stale disk content.
+    #[test]
+    fn a_queued_disk_reload_reads_the_file_when_it_runs() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(disk_reload_edit(engine, path.clone()));
+        std::fs::write(&path, bracket_source().replace("80mm", "95mm"))
+            .expect("rewrite should succeed");
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(published_width(&rig.observer), mm("95"));
+    }
+
+    /// The echo of this session's own durable write recompiles nothing.
+    #[test]
+    fn a_queued_disk_reload_of_the_session_source_publishes_nothing() {
+        let (_dir, path, engine) = make_test_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(disk_reload_edit(engine, path));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert!(rig.observer.deltas().is_empty());
+    }
+
+    /// Slider frames arriving while an earlier request runs: only the newest
+    /// preview runs, and it is the one value the frontend is told about.
+    #[test]
+    fn a_rapid_drag_behind_a_running_request_runs_only_the_newest_preview() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+        let frames = Arc::new(Mutex::new(Vec::new()));
+
+        let running = {
+            let (queue, engine, frames) = (
+                Arc::clone(&rig.queue),
+                Arc::clone(&engine),
+                Arc::clone(&frames),
+            );
+            rig.queue.submit(EvalRequest::engine_call(move || {
+                for seq in 1..=10 {
+                    let value = format!("{}mm", 80 + seq);
+                    let edit = preview_parameter_edit(
+                        Arc::clone(&engine),
+                        WIDTH.into(),
+                        value,
+                        order(seq),
+                    );
+                    frames.lock().expect("frames").push(queue.submit(edit));
+                }
+                Ok(())
+            }))
+        };
+        rig.executor.run_pending();
+
+        assert_eq!(settled(running), Ok(()));
+        for frame in std::mem::take(&mut *frames.lock().expect("frames")) {
+            assert_eq!(settled(frame), Ok(()));
+        }
+        assert_eq!(rig.observer.deltas().len(), 1, "only one preview ran");
+        assert_eq!(published_width(&rig.observer), mm("90"));
+        let engine_width = crate::commands::get_initial_state_impl(&engine)
+            .expect("state")
+            .values
+            .into_iter()
+            .find(|v| v.cell_id == WIDTH)
+            .map(|v| v.value);
+        assert_eq!(engine_width.as_deref(), Some("90"));
+    }
+
+    #[test]
+    fn a_queued_file_open_replies_the_resolved_state_and_publishes_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = bracket_file(&dir);
+        let canonical = std::fs::canonicalize(&path).expect("canonicalize");
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(open_file_evaluation(
+            fresh_engine(),
+            path.to_string_lossy().into_owned(),
+        ));
+        rig.executor.run_pending();
+
+        let state = settled(ticket).expect("the open should succeed");
+        assert!(!state.files.is_empty());
+        for file in &state.files {
+            assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
+        }
+        assert_eq!(rig.observer.deltas().len(), 1);
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_initial_file_load_replies_the_resolved_state_and_publishes_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonical = std::fs::canonicalize(bracket_file(&dir)).expect("canonicalize");
+        let rig = ManualQueue::new();
+
+        let ticket = rig
+            .queue
+            .submit(initial_file_evaluation(fresh_engine(), canonical.clone()));
+        rig.executor.run_pending();
+
+        let state = settled(ticket).expect("the load should succeed");
+        assert!(!state.files.is_empty());
+        for file in &state.files {
+            assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
+        }
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_initial_state_replies_and_publishes() {
+        let rig = ManualQueue::new();
+
+        let ticket = rig
+            .queue
+            .submit(initial_state_evaluation(make_test_engine_for_commands()));
+        rig.executor.run_pending();
+
+        let state = settled(ticket).expect("the state should build");
+        assert!(state.values.iter().any(|v| v.cell_id == WIDTH));
+        assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    #[test]
+    fn a_queued_fea_case_switch_replies_and_publishes() {
+        let rig = ManualQueue::new();
+
+        let ticket = rig.queue.submit(active_fea_case_evaluation(
+            make_test_engine_for_commands(),
+            "case-a".into(),
+        ));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(ticket), Ok(()));
+        assert_eq!(rig.observer.deltas().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_queued_file_open_publishes_from_the_engine_lane() {
+        use crate::large_stack::WORKER_THREAD_NAME;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = bracket_file(&dir);
+        let observer = Arc::new(RecordingObserver::default());
+        let queue = EvalQueue::on_engine_lane(Arc::new(Mutex::new(None)), observer.clone());
+
+        let state = queue
+            .submit(open_file_evaluation(
+                fresh_engine(),
+                path.to_string_lossy().into_owned(),
+            ))
+            .await
+            .expect("the open should succeed");
+
+        assert!(!state.meshes.is_empty());
+        let delta_threads: Vec<_> = observer
+            .observations()
+            .into_iter()
+            .filter(|o| matches!(o.observed, Observed::Delta(_)))
+            .map(|o| o.thread)
+            .collect();
+        assert_eq!(delta_threads, [Some(WORKER_THREAD_NAME.to_string())]);
+    }
+}

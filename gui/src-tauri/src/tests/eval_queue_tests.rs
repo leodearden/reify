@@ -8,8 +8,8 @@ use crate::eval_queue::{
     EvalRequest, EvalTicket, SnapshotPublisher,
 };
 use crate::tests::test_helpers::{
-    ANTI_WEDGE, DEEP_RECURSION_DEPTH, ManualExecutor, Observed, RecordingObserver,
-    deep_recurse_if_on_thread, gui_state_with_values,
+    ANTI_WEDGE, DEEP_RECURSION_DEPTH, ManualExecutor, ManualQueue, Observed, RecordingObserver,
+    deep_recurse_if_on_thread, gui_state_with_values, poll_now, settled,
 };
 use crate::types::GuiState;
 
@@ -269,20 +269,6 @@ fn advance_baseline_returns_the_delta_compute_delta_would_and_moves_the_state_in
 
 // ── EvalQueue: one front door, one drainer ────────────────────────────────────
 
-/// Poll `future` once without waiting: `Some` if it has already resolved.
-fn poll_now<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    match std::pin::Pin::new(future).poll(&mut context) {
-        std::task::Poll::Ready(output) => Some(output),
-        std::task::Poll::Pending => None,
-    }
-}
-
-/// The reply of a ticket that must already have resolved.
-fn reply<T>(mut ticket: EvalTicket<T>) -> Result<T, String> {
-    poll_now(&mut ticket).expect("the ticket must have resolved")
-}
-
 type RunLog = Arc<Mutex<Vec<String>>>;
 
 fn log_run(log: &RunLog, label: &str) {
@@ -338,13 +324,11 @@ struct ManualRig {
 
 impl ManualRig {
     fn new() -> Self {
-        let executor = ManualExecutor::new();
-        let observer = Arc::new(RecordingObserver::default());
-        let queue = EvalQueue::with_executor(
-            executor.executor(),
-            Arc::new(Mutex::new(None)),
-            observer.clone(),
-        );
+        let ManualQueue {
+            queue,
+            executor,
+            observer,
+        } = ManualQueue::new();
         Self {
             queue,
             executor,
@@ -413,7 +397,7 @@ fn edits_of_different_targets_run_and_publish_in_acceptance_order() {
         ["Evaluating", "delta A", "delta B", "delta P", "Idle"]
     );
     for ticket in tickets {
-        assert_eq!(reply(ticket), Ok(()));
+        assert_eq!(settled(ticket), Ok(()));
     }
 }
 
@@ -448,10 +432,10 @@ fn previews_arriving_while_an_edit_runs_coalesce_to_the_newest() {
         ["B", "A5"],
         "only the newest queued preview runs"
     );
-    assert_eq!(reply(running), Ok(()));
+    assert_eq!(settled(running), Ok(()));
     let arrivals = std::mem::take(&mut *arrivals.lock().expect("arrivals"));
     for ticket in arrivals {
-        assert_eq!(reply(ticket), Ok(()), "a superseded preview resolves Ok");
+        assert_eq!(settled(ticket), Ok(()), "a superseded preview resolves Ok");
     }
 }
 
@@ -468,7 +452,7 @@ fn a_queued_commit_survives_newer_previews_of_its_cell() {
 
     assert_eq!(rig.ran(), ["commit", "frame 3"]);
     for ticket in tickets {
-        assert_eq!(reply(ticket), Ok(()));
+        assert_eq!(settled(ticket), Ok(()));
     }
 }
 
@@ -477,7 +461,7 @@ fn an_edit_older_than_an_admitted_one_resolves_at_once_without_running() {
     let rig = ManualRig::new();
     let newest = rig.edit(preview("A", 5), "A5");
     rig.executor.run_pending();
-    let settled = rig.timeline();
+    let before = rig.timeline();
 
     let mut late = rig.edit(preview("A", 4), "A4");
 
@@ -487,9 +471,9 @@ fn an_edit_older_than_an_admitted_one_resolves_at_once_without_running() {
         "a late edit resolves at once"
     );
     assert_eq!(rig.executor.pending(), 0, "a late edit posts no drainer");
-    assert_eq!(rig.timeline(), settled, "a late edit reports no activity");
+    assert_eq!(rig.timeline(), before, "a late edit reports no activity");
     assert_eq!(rig.ran(), ["A5"]);
-    assert_eq!(reply(newest), Ok(()));
+    assert_eq!(settled(newest), Ok(()));
 }
 
 /// A superseding edit takes its own arrival position, so it never jumps ahead
@@ -506,12 +490,12 @@ fn ordered_requests_are_barriers_a_superseding_edit_never_jumps() {
     rig.executor.run_pending();
 
     assert_eq!(rig.ran(), ["call", "evaluation", "A2", "again", "again"]);
-    assert_eq!(reply(first_edit), Ok(()));
-    assert_eq!(reply(call), Ok("call".to_string()));
-    assert_eq!(reply(evaluation), Ok("evaluation".to_string()));
-    assert_eq!(reply(second_edit), Ok(()));
+    assert_eq!(settled(first_edit), Ok(()));
+    assert_eq!(settled(call), Ok("call".to_string()));
+    assert_eq!(settled(evaluation), Ok("evaluation".to_string()));
+    assert_eq!(settled(second_edit), Ok(()));
     for ticket in repeated {
-        assert_eq!(reply(ticket), Ok("again".to_string()));
+        assert_eq!(settled(ticket), Ok("again".to_string()));
     }
 }
 
@@ -524,7 +508,7 @@ fn engine_calls_alone_never_report_activity() {
 
     assert!(rig.timeline().is_empty(), "got {:?}", rig.timeline());
     for ticket in calls {
-        assert!(reply(ticket).is_ok());
+        assert!(settled(ticket).is_ok());
     }
 }
 
@@ -584,7 +568,7 @@ fn an_evaluation_replies_only_after_its_delta_is_published() {
 
     assert_eq!(*probe.resolved_at_delta.lock().expect("probe log"), [false]);
     let ticket = probe.ticket.lock().expect("probe ticket").take();
-    assert_eq!(reply(ticket.expect("ticket")), Ok("E".to_string()));
+    assert_eq!(settled(ticket.expect("ticket")), Ok("E".to_string()));
 }
 
 #[test]
@@ -597,9 +581,9 @@ fn a_panicking_job_resolves_err_and_the_queue_carries_on() {
 
     rig.executor.run_pending();
 
-    let error = reply(panicking).expect_err("a panicking job must resolve Err");
+    let error = settled(panicking).expect_err("a panicking job must resolve Err");
     assert!(error.contains("kaboom"), "got {error:?}");
-    assert_eq!(reply(next), Ok(()));
+    assert_eq!(settled(next), Ok(()));
     assert_eq!(rig.ran(), ["A1"]);
     assert_eq!(rig.observer.activities().last(), Some(&EvalActivity::Idle));
 }
@@ -621,7 +605,7 @@ fn a_refused_drainer_resolves_the_ticket_err_and_leaves_the_queue_idle() {
     rig.executor.refuse(false);
     let next = rig.evaluation("next");
     rig.executor.run_pending();
-    assert_eq!(reply(next), Ok("next".to_string()));
+    assert_eq!(settled(next), Ok("next".to_string()));
     assert_eq!(rig.ran(), ["next"]);
 }
 

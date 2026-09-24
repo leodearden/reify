@@ -455,6 +455,17 @@ impl RecordingObserver {
             .collect()
     }
 
+    /// The newest published value of `cell_id`, if any delta carried one.
+    pub(crate) fn published_value(&self, cell_id: &str) -> Option<crate::types::ValueData> {
+        self.deltas().iter().rev().find_map(|delta| {
+            delta
+                .changed_values
+                .iter()
+                .find(|value| value.cell_id == cell_id)
+                .cloned()
+        })
+    }
+
     fn record(&self, observed: Observed) {
         let thread = std::thread::current().name().map(str::to_owned);
         self.observations
@@ -472,6 +483,44 @@ impl crate::eval_queue::EvalObserver for RecordingObserver {
     fn delta(&self, delta: &crate::diff::StateDelta) {
         self.record(Observed::Delta(Box::new(delta.clone())));
     }
+}
+
+/// A queue whose drainers run on the test thread, when the test says.
+pub(crate) struct ManualQueue {
+    pub(crate) queue: std::sync::Arc<crate::eval_queue::EvalQueue>,
+    pub(crate) executor: std::sync::Arc<ManualExecutor>,
+    pub(crate) observer: std::sync::Arc<RecordingObserver>,
+}
+
+impl ManualQueue {
+    pub(crate) fn new() -> Self {
+        let executor = ManualExecutor::new();
+        let observer = std::sync::Arc::new(RecordingObserver::default());
+        let queue = crate::eval_queue::EvalQueue::with_executor(
+            executor.executor(),
+            std::sync::Arc::new(Mutex::new(None)),
+            observer.clone(),
+        );
+        Self {
+            queue,
+            executor,
+            observer,
+        }
+    }
+}
+
+/// Poll `future` once without waiting: `Some` if it has already resolved.
+pub(crate) fn poll_now<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::pin::Pin::new(future).poll(&mut context) {
+        std::task::Poll::Ready(output) => Some(output),
+        std::task::Poll::Pending => None,
+    }
+}
+
+/// The reply of a ticket that must already have settled.
+pub(crate) fn settled<T>(mut ticket: crate::eval_queue::EvalTicket<T>) -> Result<T, String> {
+    poll_now(&mut ticket).expect("the ticket must have settled")
 }
 
 /// An [`crate::eval_queue::Executor`] that runs nothing until told: posted jobs
