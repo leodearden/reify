@@ -171,7 +171,7 @@ export function Editor(props: EditorProps) {
    * Send the debounced didChange NOW, or null when the server is already current.
    *
    * Requests that must be answered against the text the user is looking at
-   * (rename) call this first. Without it the server answers from text up to
+   * go through onceServerIsCurrent. Without it the server answers from text up to
    * EDITOR_DEBOUNCE_MS old while both sides still agree on the version number —
    * skew that no version comparison downstream can detect, because the stale
    * answer is stamped with the version the client itself last sent.
@@ -186,6 +186,24 @@ export function Editor(props: EditorProps) {
     if (!path) return null;
     return sendDidChange(pathToUri(path), cmView.state.doc.toString());
   };
+
+  /**
+   * Wrap a keymap command so it runs only after the server has the text on
+   * screen: any pending didChange goes out FIRST, and the command waits for it.
+   *
+   * Position-based requests (rename, find uses) are only meaningful against
+   * the text they were computed from, and pressing the key straight after
+   * typing is the most likely way to ask about text the server has not
+   * received yet. The key is consumed either way.
+   */
+  const onceServerIsCurrent =
+    (command: (cmView: EditorView) => boolean) =>
+    (cmView: EditorView): boolean => {
+      const flushed = flushPendingLspChange(cmView);
+      if (!flushed) return command(cmView);
+      void flushed.then(() => command(cmView));
+      return true;
+    };
 
   onMount(() => {
     const activeFile = props.store.state.activeFile;
@@ -457,18 +475,9 @@ export function Editor(props: EditorProps) {
           // F2 inline rename. prepareRename gates the edit (Invariant-4 refusal),
           // and applying the WorkspaceEdit dispatches one CM change that flows
           // through the updateListener below → markDirty + updateSource + didChange.
-          //
-          // A pending didChange goes out FIRST, and the request waits for it:
-          // rename ranges are only meaningful against the text they were
-          // computed from, and pressing F2 straight after typing is the most
-          // likely way to ask about text the server has not received yet.
+          // Waits for a pending didChange first (see onceServerIsCurrent).
           key: 'F2',
-          run: (cmView: EditorView) => {
-            const flushed = flushPendingLspChange(cmView);
-            if (!flushed) return renameF2(cmView);
-            void flushed.then(() => renameF2(cmView));
-            return true; // The key is consumed either way.
-          },
+          run: onceServerIsCurrent(renameF2),
           preventDefault: true,
         },
         {
@@ -476,11 +485,14 @@ export function Editor(props: EditorProps) {
           // through the CM keymap (not the global useKeyboardShortcuts handler,
           // which bails inside the contentEditable editor) because it needs the
           // live cursor; mirrors the F12 goto-definition precedent above.
+          // Waits for a pending didChange first (see onceServerIsCurrent).
           key: 'Shift-F12',
-          run: findUsesCommand(
-            () => currentUri,
-            lspClient,
-            (r) => props.onShowReferences?.(r),
+          run: onceServerIsCurrent(
+            findUsesCommand(
+              () => currentUri,
+              lspClient,
+              (r) => props.onShowReferences?.(r),
+            ),
           ),
           preventDefault: true,
         },
