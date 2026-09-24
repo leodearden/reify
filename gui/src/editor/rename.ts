@@ -86,13 +86,6 @@ export function applyTextEditsToString(
 }
 
 /**
- * Dependency-injected sinks for routing a multi-file WorkspaceEdit.
- *
- * Keeping the sinks as a plain object makes the orchestrator unit-testable
- * without CodeMirror or Tauri — exactly like the existing RenameClient/RenameUi
- * injection pattern.
- */
-/**
  * One document's worth of a WorkspaceEdit, flattened out of whichever wire
  * representation the server used.
  *
@@ -160,10 +153,10 @@ export type DocumentVersionReader = (uri: string) => number | undefined;
  *    closed-file and inactive-buffer sinks.
  *
  * This detects exactly the race it is named for: the server computed these
- * edits against version N, and the client has since sent M. It does NOT detect
- * local edits still inside the `didChange` debounce window — that distinct
- * hazard stays covered by `lspRangeToCmRange` returning null for out-of-range
- * ranges, which this guard sits in front of rather than replacing.
+ * edits against version N, and the client has since sent M. It cannot see
+ * local edits not yet sent, so a caller must make sure the server has the
+ * latest text before asking (Editor.tsx flushes the pending didChange before
+ * F2); `lspRangeToCmRange`'s null-skip remains a last-resort backstop.
  */
 function staleEditTargets(
   edit: WorkspaceEdit,
@@ -178,6 +171,13 @@ function staleEditTargets(
     .map(({ uri }) => uri);
 }
 
+/**
+ * Dependency-injected sinks for routing a multi-file WorkspaceEdit.
+ *
+ * Keeping the sinks as a plain object makes the orchestrator unit-testable
+ * without CodeMirror or Tauri — exactly like the existing RenameClient/RenameUi
+ * injection pattern.
+ */
 export interface WorkspaceEditDeps {
   /** Returns true when `uri` is currently open in an editor buffer. */
   isOpen(uri: string): boolean;
