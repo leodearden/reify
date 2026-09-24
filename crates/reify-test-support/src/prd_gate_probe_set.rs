@@ -52,6 +52,10 @@ fn asserts_check_rejection(probe: &Value) -> bool {
 mod tests {
     use super::*;
 
+    // The fixture paths below are synthetic: nothing reads them, so they stay out
+    // of the prd-gate fixtures directory that test_verify_scope.sh's PG-DRIFT
+    // guard treats as Rust-coupled.
+
     /// A probe-set holding the single probe `probe`.
     fn one_probe(probe: &str) -> String {
         format!(r#"{{ "probes": [ {probe} ] }}"#)
@@ -60,7 +64,7 @@ mod tests {
     const REJECTING: &str = r#"{
         "capability": "rejects",
         "probe_kind": "check",
-        "fixture": "tests/prd-gate/fixtures/rejects.ri",
+        "fixture": "tests/prd-gate/synthetic/rejects.ri",
         "expected": { "observation": "present", "match": { "exit_code": 1 } }
     }"#;
 
@@ -69,7 +73,7 @@ mod tests {
         let fixtures = fixtures_asserted_to_reject(&one_probe(REJECTING)).expect("valid probe-set");
         assert_eq!(
             fixtures.into_iter().collect::<Vec<_>>(),
-            ["tests/prd-gate/fixtures/rejects.ri"]
+            ["tests/prd-gate/synthetic/rejects.ri"]
         );
     }
 
@@ -77,9 +81,9 @@ mod tests {
     #[test]
     fn a_path_named_only_in_a_capability_string_is_not_asserted() {
         let probe = r#"{
-            "capability": "mentions tests/prd-gate/fixtures/mentioned.ri in prose only",
+            "capability": "mentions tests/prd-gate/synthetic/mentioned.ri in prose only",
             "probe_kind": "check",
-            "fixture": "tests/prd-gate/fixtures/other.ri",
+            "fixture": "tests/prd-gate/synthetic/other.ri",
             "expected": { "observation": "present", "match": { "exit_code": 0 } }
         }"#;
         let fixtures = fixtures_asserted_to_reject(&one_probe(probe)).expect("valid probe-set");
