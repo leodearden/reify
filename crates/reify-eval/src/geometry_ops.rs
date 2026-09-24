@@ -5461,17 +5461,15 @@ fn profile_ellipse(
 /// Locks `$table`'s length to `$kind::VARIANT_COUNT` at compile time, so a variant
 /// added to or removed from the kind enum without a matching dispatch-table row (or
 /// vice versa) fails `cargo check` instead of only surfacing later as a `lookup_*`
-/// miss at runtime. `$kind_name` carries the short enum name for the message since
-/// this file always refers to `$kind` fully qualified (no local `use` for the
-/// `reify_compiler::*Kind` types).
+/// miss at runtime.
 macro_rules! lock_dispatch_table {
-    ($table:ident, $kind:ty, $kind_name:literal) => {
+    ($table:ident, $kind:ty) => {
         const _: () = assert!(
             $table.len() == <$kind>::VARIANT_COUNT,
             concat!(
                 stringify!($table),
                 " / ",
-                $kind_name,
+                stringify!($kind),
                 "::VARIANT_COUNT mismatch — a variant was added or removed without \
                  updating this production dispatch table"
             )
@@ -5489,7 +5487,7 @@ static PRIMITIVE_COMPILERS: &[(reify_compiler::PrimitiveKind, PrimitiveCompileFn
     (reify_compiler::PrimitiveKind::Torus, prim_torus),
     (reify_compiler::PrimitiveKind::HalfSpace, prim_half_space),
 ];
-lock_dispatch_table!(PRIMITIVE_COMPILERS, reify_compiler::PrimitiveKind, "PrimitiveKind");
+lock_dispatch_table!(PRIMITIVE_COMPILERS, reify_compiler::PrimitiveKind);
 
 static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::Fillet, modify_fillet),
@@ -5503,7 +5501,7 @@ static MODIFY_COMPILERS: &[(reify_compiler::ModifyKind, ModifyCompileFn)] = &[
     (reify_compiler::ModifyKind::OffsetSurface, modify_offset_surface),
     (reify_compiler::ModifyKind::OffsetCurve, modify_offset_curve),
 ];
-lock_dispatch_table!(MODIFY_COMPILERS, reify_compiler::ModifyKind, "ModifyKind");
+lock_dispatch_table!(MODIFY_COMPILERS, reify_compiler::ModifyKind);
 
 static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn)] = &[
     (reify_compiler::TransformKind::Translate, transform_translate),
@@ -5514,7 +5512,7 @@ static TRANSFORM_COMPILERS: &[(reify_compiler::TransformKind, TransformCompileFn
     (reify_compiler::TransformKind::AffineApply, transform_affine_apply),
     (reify_compiler::TransformKind::ScaleNonUniform, transform_scale_non_uniform),
 ];
-lock_dispatch_table!(TRANSFORM_COMPILERS, reify_compiler::TransformKind, "TransformKind");
+lock_dispatch_table!(TRANSFORM_COMPILERS, reify_compiler::TransformKind);
 
 static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &[
     (reify_compiler::PatternKind::Linear, pattern_linear),
@@ -5523,7 +5521,7 @@ static PATTERN_COMPILERS: &[(reify_compiler::PatternKind, PatternCompileFn)] = &
     (reify_compiler::PatternKind::Linear2D, pattern_linear2d),
     (reify_compiler::PatternKind::Arbitrary, pattern_arbitrary),
 ];
-lock_dispatch_table!(PATTERN_COMPILERS, reify_compiler::PatternKind, "PatternKind");
+lock_dispatch_table!(PATTERN_COMPILERS, reify_compiler::PatternKind);
 
 static SWEEP_COMPILERS: &[(reify_compiler::SweepKind, SweepCompileFn)] = &[
     (reify_compiler::SweepKind::Loft, sweep_loft),
@@ -5536,7 +5534,7 @@ static SWEEP_COMPILERS: &[(reify_compiler::SweepKind, SweepCompileFn)] = &[
     (reify_compiler::SweepKind::LoftGuided, sweep_loft_guided),
     (reify_compiler::SweepKind::Pipe, sweep_pipe),
 ];
-lock_dispatch_table!(SWEEP_COMPILERS, reify_compiler::SweepKind, "SweepKind");
+lock_dispatch_table!(SWEEP_COMPILERS, reify_compiler::SweepKind);
 
 static CURVE_COMPILERS: &[(reify_compiler::CurveKind, CurveCompileFn)] = &[
     (reify_compiler::CurveKind::LineSegment, curve_line_segment),
@@ -5546,7 +5544,7 @@ static CURVE_COMPILERS: &[(reify_compiler::CurveKind, CurveCompileFn)] = &[
     (reify_compiler::CurveKind::BezierCurve, curve_bezier_curve),
     (reify_compiler::CurveKind::NurbsCurve, curve_nurbs_curve),
 ];
-lock_dispatch_table!(CURVE_COMPILERS, reify_compiler::CurveKind, "CurveKind");
+lock_dispatch_table!(CURVE_COMPILERS, reify_compiler::CurveKind);
 
 static PROFILE_COMPILERS: &[(reify_compiler::ProfileKind, ProfileCompileFn)] = &[
     (reify_compiler::ProfileKind::Rectangle, profile_rectangle),
@@ -5554,7 +5552,7 @@ static PROFILE_COMPILERS: &[(reify_compiler::ProfileKind, ProfileCompileFn)] = &
     (reify_compiler::ProfileKind::Polygon, profile_polygon),
     (reify_compiler::ProfileKind::Ellipse, profile_ellipse),
 ];
-lock_dispatch_table!(PROFILE_COMPILERS, reify_compiler::ProfileKind, "ProfileKind");
+lock_dispatch_table!(PROFILE_COMPILERS, reify_compiler::ProfileKind);
 
 // ── Lookup helpers ────────────────────────────────────────────────────────────
 
