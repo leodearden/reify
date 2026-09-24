@@ -1187,7 +1187,12 @@ fn version_stamped_workspace_edit(
             edits: edits.into_iter().map(OneOf::Left).collect(),
         })
         .collect();
-    targets.sort_by(|a, b| a.text_document.uri.as_str().cmp(b.text_document.uri.as_str()));
+    targets.sort_by(|a, b| {
+        a.text_document
+            .uri
+            .as_str()
+            .cmp(b.text_document.uri.as_str())
+    });
 
     WorkspaceEdit {
         changes: None,
@@ -3665,11 +3670,18 @@ structure Assembly {
         );
         let entries = stamped_entries(&stamped);
         assert_eq!(
-            entries.iter().map(|(u, _, _)| u.as_str()).collect::<Vec<_>>(),
+            entries
+                .iter()
+                .map(|(u, _, _)| u.as_str())
+                .collect::<Vec<_>>(),
             vec![uri_a.as_str(), uri_b.as_str()],
             "entries are URI-sorted, not in HashMap iteration order"
         );
-        assert_eq!(entries[0].1, Some(3), "an open document carries its version");
+        assert_eq!(
+            entries[0].1,
+            Some(3),
+            "an open document carries its version"
+        );
         assert_eq!(
             entries[1].1, None,
             "a document not open on the server is unversioned (disk is master)"
@@ -3763,7 +3775,10 @@ structure Assembly {
             Some(2),
             "the stamp is the version the edit was computed against, not the open-time one"
         );
-        assert!(!entries[0].2.is_empty(), "the rename edits survive stamping");
+        assert!(
+            !entries[0].2.is_empty(),
+            "the rename edits survive stamping"
+        );
     }
 
     /// The mixed open/closed case: the open home file carries its version, the
