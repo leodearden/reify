@@ -104,7 +104,7 @@ export async function previewParameter(cellId: string, value: string): Promise<v
 /**
  * Register the GUI's PASSIVE observed-demand sources (selective-demand
  * precondition, task 4532). OBSERVATIONAL ONLY — the backend records a
- * would-prune measurement that rides back on the NEXT `set_parameter` response's
+ * would-prune measurement onto the NEXT edit's state, as
  * `GuiState.demand_prune_measurement`; this command itself returns nothing and
  * cannot perturb evaluation.
  *

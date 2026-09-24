@@ -9,7 +9,7 @@ use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
-use crate::eval_queue::{EditIdentity, EditOrder, EvalOutcome, EvalRequest};
+use crate::eval_queue::{EditIdentity, EditOrder, EvalOutcome, EvalQueue, EvalRequest, EvalTicket};
 use crate::types::{
     DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, MechanismDescriptor,
     PersistentViewState,
@@ -19,14 +19,6 @@ use crate::watcher::FileWatcher;
 /// Application state shared across all Tauri commands.
 pub struct AppState {
     pub engine: Arc<Mutex<EngineSession>>,
-    /// Last emitted state for computing minimal diffs.
-    ///
-    /// Shared (via `Arc`) with `DebugServerState::last_state` so a
-    /// debug-driven mutation and a normal Tauri command diff against the
-    /// SAME baseline (INV-GUI-2, task 5035 L6) — without this, the debug
-    /// server (spawned outside Tauri's managed-state world) would advance
-    /// the engine without the normal command path ever finding out.
-    pub last_state: Arc<Mutex<Option<GuiState>>>,
     /// File watcher for the currently loaded .ri file (re-targeted on open_file_engine).
     pub watcher: Mutex<Option<FileWatcher>>,
     /// Claude Code SDK sidecar handle (lazily spawned on first claude_send_message).
@@ -121,7 +113,7 @@ fn publish_and_reply(produced: Result<GuiState, String>) -> EvalOutcome<GuiState
 /// value: esc-7281-4's divergence relocated from the engine to the frontend,
 /// and with no later event to correct it. Carrying the restored state in the
 /// error makes the emit the caller's obligation rather than its option — the
-/// compiler will not let `main.rs` destructure this and forget.
+/// compiler will not let [`commit_parameter_edit`] destructure this and forget.
 #[derive(Debug, Clone)]
 pub struct RefusedParameterWrite {
     /// The refusal, verbatim from [`EngineSession::commit_parameter`] — this is
@@ -256,7 +248,7 @@ pub fn preview_parameter_edit(
 /// OBSERVATIONAL ONLY — this never touches the production `demand` registry and
 /// cannot perturb evaluation. There is no meaningful state to return: the
 /// passive would-prune [`crate::types::DemandPruneMeasurementDto`] is recorded
-/// by the NEXT edit and rides back on that `set_parameter` response's
+/// by the NEXT edit onto the state it builds, as
 /// [`crate::types::GuiState::demand_prune_measurement`], so this command returns
 /// `Ok(())` on success.
 pub fn sync_observed_demand_impl(
@@ -279,9 +271,9 @@ pub fn sync_observed_demand_impl(
 ///
 /// Unlike [`sync_observed_demand_impl`] — the task-4532 PASSIVE measurement
 /// channel — this drives the registry `compute_eval_set` reads, so the next warm
-/// `edit_param` prunes hidden bodies' exclusive cells. The pruning effect rides
-/// back on the next `set_parameter` response, so this command returns `Ok(())`
-/// on success.
+/// `edit_param` prunes hidden bodies' exclusive cells. The pruning effect
+/// reaches the frontend with that edit's published state, so this command
+/// returns `Ok(())` on success.
 pub fn sync_demand_impl(
     engine: &Mutex<EngineSession>,
     visible_realizations: &[String],
@@ -871,7 +863,7 @@ pub fn open_file_evaluation(
 }
 
 /// The ONE load-and-resolve body behind both file-open entry points: the
-/// startup **argv** launch (`main()` → here directly) and File-Open
+/// startup **argv** launch ([`begin_initial_file_load`] → here) and File-Open
 /// ([`open_file_engine_impl`], which canonicalises and delegates), alongside
 /// `debug_server::open_source_into_engine_and_refresh_baseline` on the shared
 /// [`load_file_into_engine`] choke-point (#5193).
@@ -883,8 +875,9 @@ pub fn open_file_evaluation(
 /// returns, and makes the startup state observable to tests (#5338).
 ///
 /// SCOPE OF THAT CLAIM — [`UnresolvedGuiState::resolve`] mutates only the returned
-/// `GuiState`, never engine state, and `main()` uses the return value for its `Err`
-/// arm only. The frontend's startup path (`initApp` → `get_initial_state` →
+/// `GuiState`, never engine state, and the argv launch uses the return value for
+/// its `Err` arm only (it is also published, but deltas never carry `files[]`).
+/// The frontend's startup path (`initApp` → `get_initial_state` →
 /// [`crate::engine::EngineSession::build_gui_state`]) rebuilds `files[]` from the
 /// stem-only `source_map()` keys, so an argv-LAUNCHED GUI still paints stem-only
 /// `files[].path` — the #5193 identity split is closed at THIS boundary (which is
@@ -950,6 +943,18 @@ pub fn resolve_initial_file_path(path_str: &str) -> Option<PathBuf> {
     }
     let canonical = crate::path_key::canonicalize_document_key(path_str);
     Some(PathBuf::from(canonical))
+}
+
+/// Queue the load of the argv file: its canonical path and the ticket the
+/// load's reply arrives on, or `None` when `argv_path` names no `.ri` file.
+pub fn begin_initial_file_load(
+    queue: &Arc<EvalQueue>,
+    engine: Arc<Mutex<EngineSession>>,
+    argv_path: &str,
+) -> Option<(PathBuf, EvalTicket<GuiState>)> {
+    let canonical = resolve_initial_file_path(argv_path)?;
+    let load = queue.submit(initial_file_evaluation(engine, canonical.clone()));
+    Some((canonical, load))
 }
 
 /// Return the hierarchical entity tree for the currently loaded module.
