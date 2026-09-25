@@ -2934,15 +2934,17 @@ fn check_fails(outcome: &ConstraintOutcome, strict: bool) -> bool {
 enum CheckErrorAllowlistMatcher {
     /// Preferred: match the machine-readable [`DiagnosticCode`].
     Code(DiagnosticCode),
-    /// LEGACY code-less emissions ONLY.
+    /// LEGACY code-less emissions ONLY — enforced, not merely documented:
+    /// [`allowlist_excuses`] never lets this arm match a diagnostic that
+    /// carries a [`DiagnosticCode`].  Coding a legacy emission therefore drops
+    /// it out of the allowlist with no table edit, and a code minted after
+    /// the gate can never be excused through a legacy substring
+    /// (`check_error_gate_tests::message_entries_excuse_only_code_less_diagnostics`).
     ///
-    /// PRD §7 sketches this as `MessagePrefix`; the seed markers are
-    /// mid-string, and a true prefix match would be over-broad —
-    /// `@optimized target {t:?}: no registered compute trampoline` shares its
-    /// prefix with the co-resident `@optimized target {t:?}: compute
-    /// trampoline was cancelled` Error (`engine_admin.rs`, `engine_eval.rs`),
-    /// which must keep gating.  Substring is the honest spelling of the same
-    /// intent, and `check_error_gate_tests` pins the distinction.
+    /// PRD §7 sketches this as `MessagePrefix`; entry #2's marker
+    /// (`is unresolved (Undef)`) sits mid-string, after the per-argument
+    /// detail, so a prefix match could not express it.  Substring is the
+    /// honest spelling of the same intent.
     MessageContains(&'static str),
 }
 
@@ -2958,8 +2960,8 @@ enum CheckErrorAllowlistDisposition {
     /// be reasoned about (or excused) precisely.
     ///
     /// Part of the documented taxonomy but not exercised by the seeded table:
-    /// all three code-less seed entries are `Demote`, because their severity —
-    /// not their lack of a code — is what is wrong on `check`'s path.  Kept so
+    /// both code-less seed entries are `Demote`, because their severity — not
+    /// their lack of a code — is what is wrong on `check`'s path.  Kept so
     /// the burn-down owner has the vocabulary without having to invent it, and
     /// carrying a bare `#[allow(dead_code)]` (no trailing `//` rationale, so it
     /// anchors no PTODO marker — there is no deferred work here to cite).
@@ -3001,29 +3003,38 @@ struct CheckErrorExitAllowance {
 /// per-code list mediates the exit code at all.  **Do not add entries** — see
 /// that module's doc for the standing obligation.
 ///
-/// Seeded from a MEASURED sweep of `reify check` over all `examples/*.ri` and
-/// `crates/reify-cli/tests/fixtures/*.ri` (2026-08-29): of the files that
-/// exited 0 while printing an `error:` line, only these families are expected
-/// on a healthy path.  The genuine design errors in that same sweep —
+/// Entries #2 and #3 come from a MEASURED sweep of `reify check` over all
+/// `examples/*.ri` and `crates/reify-cli/tests/fixtures/*.ri` (2026-08-29): of
+/// the files that exited 0 while printing an `error:` line, only those
+/// families are expected on a healthy path.  Entry #1 is a posture entry that
+/// excuses nothing `check` reaches today, kept by ruling until its deadline
+/// (see its marker); entry #4 is a merge hazard, not a corpus finding.  The
+/// genuine design errors in that same sweep —
 /// `mirror: o{x,y,z} argument expects Length`, `unresolvable GeomRef::*`,
 /// `transform_{log,exp}: ... dimensionless`, `E_StackupEmptyChain` — are
 /// deliberately NOT excused and now exit 1, matching `reify eval`, which
 /// already exits 1 on every one of them.
 const CHECK_ERROR_EXIT_ALLOWLIST: &[CheckErrorExitAllowance] = &[
-    // TODO(#5311): demote this engine-owned diagnostic to `Severity::Warning`
-    // on the trampoline-free path, then delete this entry.
+    // TODO(#5404): delete this entry no later than the change that gives
+    // `check` a non-empty compute registry (#6693).
     //
     // `cmd_check` attaches NO compute trampoline BY DESIGN (see its doc
-    // contract above: registering one would run a potentially slow FEA solve
-    // inside the lightweight static-check path).  A missing trampoline is
-    // therefore the healthy, expected state under `check`, not an error about
-    // the design — the PRD names this as the seed entry.  Locked end to end by
-    // `cli_build_fea.rs::check_fea_violated_constraint_is_not_gated`, whose
-    // exit-0 contract is held by THIS entry.
+    // contract: registering one would run a potentially slow FEA solve inside
+    // the lightweight static-check path).  The engine conditions this
+    // diagnostic's severity on that posture: on an EMPTY compute registry it
+    // is a `Severity::Warning`, so today this entry excuses nothing `check`
+    // can reach, and `cli_build_fea.rs::check_fea_violated_constraint_is_not_gated`
+    // holds its exit 0 by severity alone.  The entry is kept deliberately (the
+    // ruling is recorded on #5404).  On a non-empty registry the same emission
+    // is a correct Error that this entry would silence — hence the deadline.
+    //
+    // Keyed on the code rather than the message stem, as `engine_compute.rs`
+    // advises: the co-resident code-less "compute trampoline was cancelled"
+    // Error shares the `@optimized target {t:?}: ` prefix and must keep gating.
     CheckErrorExitAllowance {
-        matcher: CheckErrorAllowlistMatcher::MessageContains("no registered compute trampoline"),
+        matcher: CheckErrorAllowlistMatcher::Code(DiagnosticCode::NoRegisteredComputeTrampoline),
         disposition: CheckErrorAllowlistDisposition::Demote,
-        cite: "#5311",
+        cite: "#5404",
     },
     // TODO(#5404): demote or re-scope this so `check` does not report an
     // unresolved `auto` param as an Error, then delete this entry.
@@ -3110,7 +3121,9 @@ fn allowlist_excuses(d: &reify_core::Diagnostic) -> bool {
         .iter()
         .any(|entry| match entry.matcher {
             CheckErrorAllowlistMatcher::Code(code) => d.code == Some(code),
-            CheckErrorAllowlistMatcher::MessageContains(needle) => d.message.contains(needle),
+            CheckErrorAllowlistMatcher::MessageContains(needle) => {
+                d.code.is_none() && d.message.contains(needle)
+            }
         })
 }
 
@@ -5661,8 +5674,7 @@ mod check_error_gate_tests {
         }
 
         assert!(
-            check_gating_error(&[Diagnostic::error("no registered compute trampoline")])
-                .is_some(),
+            check_gating_error(&[Diagnostic::error("no registered compute trampoline")]).is_some(),
             "entry 1 keys on NoRegisteredComputeTrampoline, not on its message text"
         );
     }
