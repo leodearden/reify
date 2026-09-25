@@ -16,7 +16,7 @@ module cost_robustness_tradeoff_form
 // `default_bounds_for(Length)` — a solver-internal default the model never
 // authored — and `verify_uniqueness`' γ branch reports it as
 // default-bounds-determined. The precise diagnostic that produces is asserted
-// end to end by `crates/reify-eval/tests/cost_robustness_tradeoff_underdetermined_diagnostic.rs`.
+// end to end by `crates/reify-eval/tests/harness_auto_resolution/cost_robustness_tradeoff_underdetermined_diagnostic.rs`.
 // The model below is UNCHANGED by that: the two-arm grammar/semantics framing
 // above still owns why this fixture exists.
 structure CostTradeoffPart {
