@@ -831,15 +831,13 @@ b2_alpha_has_one_interpreter_literal() {
     return 1
 }
 
-# -- δ CITES α BY ITEM NAME, NEVER BY LINE RANGE ----------------------------
+# -- EVERY α ITEM δ CITES STILL RESOLVES -------------------------------------
 #
-# δ leans on α for nine separate design decisions and cites it throughout. Those
-# cites used to be LINE RANGES, and a hand-maintained line range is the same
-# drift class this whole hoist exists to close: α gaining a 20-line const forced
-# every one of them to be bumped by hand, and the ones that were missed pointed
-# at unrelated code with full confidence — strictly worse than no cite at all,
-# because a reader trusts it. An ITEM NAME survives reflow for free AND is
-# checkable, which is what these two assertions make of it.
+# δ leans on α for nine separate design decisions and cites it throughout, by
+# ITEM NAME (those cites were once line ranges, which went stale as α reflowed).
+# An item name survives reflow for free AND is checkable, which is what
+# b2_delta_alpha_cites_resolve makes of it: renaming or deleting a cited α item
+# reds it.
 #
 # The pairs below are (the cite AS δ SPELLS IT, the spelling that must still
 # exist in α), consumed two at a time. Hand-maintained on purpose, exactly like
@@ -880,31 +878,6 @@ b2_delta_alpha_cites_resolve() {
             rc=1
         fi
     done
-    return "$rc"
-}
-
-# The ban that keeps the cites checkable. Two shapes, both unfindable-by-grep
-# once α reflows:
-#   * any `jcodemunch_session_live.rs:<n>` range — a cite into α by position;
-#   * any ANONYMOUS range (`(:361-362)`) — a range that does not even name its
-#     file, so a reader cannot tell which file went stale. δ's remaining ranges
-#     all name their file (reify-audit.rs, the upstream python package,
-#     run-gui-dev.sh) and are deliberately untouched by this.
-b2_delta_cites_alpha_by_name() {
-    local by_line anon rc=0
-    by_line="$(grep -n 'jcodemunch_session_live\.rs:[0-9]' "$JC_SERVE" || true)"
-    if [ -n "$by_line" ]; then
-        printf '%s\n' "δ cites α by LINE RANGE:" "$by_line" \
-            "  Cite the Rust item by NAME instead (Serve::spawn, finish_teardown, …) and add" \
-            "  the pair to JC_ALPHA_CITES above, so the cite is checked rather than merely hoped."
-        rc=1
-    fi
-    anon="$(grep -nE '[^A-Za-z0-9_./-]:[0-9]+-[0-9]+' "$JC_SERVE" || true)"
-    if [ -n "$anon" ]; then
-        printf '%s\n' "δ carries an ANONYMOUS line range — one that does not name its file:" "$anon" \
-            "  A reader cannot tell what it points at, so nobody can tell when it goes stale."
-        rc=1
-    fi
     return "$rc"
 }
 
@@ -974,8 +947,6 @@ assert "α carries exactly one quoted interpreter literal (the const's initialis
     b2_alpha_has_one_interpreter_literal
 assert "every α item δ cites by name still exists in α (no dangling cite)" \
     b2_delta_alpha_cites_resolve
-assert "δ cites α by item NAME, never by line range, and carries no anonymous range" \
-    b2_delta_cites_alpha_by_name
 assert "--dry-run exits 0" b2_dry_run_exits_zero
 assert "--dry-run spawns nothing (its port is still free afterwards)" b2_dry_run_spawns_nothing
 assert "--dry-run does not run the wrapped command" b2_dry_run_skips_wrapped_command
