@@ -184,4 +184,11 @@ fn check_fea_violated_constraint_is_not_gated() {
          vacuously and CHECK_ERROR_EXIT_ALLOWLIST entry #1 (#5311) looks \
          retirable when nothing has been demoted.\nstderr:\n{stderr}"
     );
+
+    assert!(
+        !stderr.lines().any(|l| l.starts_with("error:")),
+        "check must print NO `error:` line here: its compute registry is empty, \
+         so the trampoline diagnostic is a `warning:`, and this exit 0 is held \
+         by severity alone — not by CHECK_ERROR_EXIT_ALLOWLIST.\nstderr:\n{stderr}"
+    );
 }

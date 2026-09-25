@@ -751,6 +751,49 @@ fn check_exits_nonzero_on_dimensional_circular_let_binding() {
     );
 }
 
+/// PRD `eradicate-silent-undef.md` §8 boundary row 5: `reify check` on the
+/// #5386 repro — a non-`pub` structure used from a sibling module — exits 1,
+/// regardless of whether #5386's compile-time fix has landed.
+///
+/// Today the reference is caught only at EVAL time (`sub-component "j"
+/// references unknown structure "InternalJig"`, printed beside "All
+/// constraints satisfied."), so it is the Severity::Error gate that moves the
+/// exit code.  #5386 / #5523 will replace that message with a
+/// visibility-specific COMPILE error and drop the summary line, so this test
+/// deliberately asserts neither the message wording nor stdout — only the
+/// exit status and that the diagnostic names the structure.
+#[test]
+fn check_exits_nonzero_on_cross_file_private_structure_reference() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    // Each file stem must match its `module` declaration, or `check` reports
+    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
+    std::fs::write(
+        dir.path().join("parts.ri"),
+        "module parts\n\nstructure def InternalJig {\n    param w : Length = 10mm\n}\n",
+    )
+    .expect("failed to write parts.ri");
+    let entry = dir.path().join("entry.ri");
+    std::fs::write(
+        &entry,
+        "module entry\n\nimport parts\n\nstructure def Top {\n    sub j = InternalJig()\n}\n",
+    )
+    .expect("failed to write entry.ri");
+
+    let entry_str = entry.to_str().expect("temp path is UTF-8");
+    let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["check", entry_str]);
+
+    assert!(
+        !status.success(),
+        "a private structure referenced from a sibling module must exit \
+         non-zero under `check`.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("InternalJig"),
+        "the gating diagnostic must name the unreachable structure, or this \
+         test could pass for an unrelated reason.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
 /// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D2.
 ///
 /// `cmd_check`'s kernel-backed arm calls `build()` for its handle-population
