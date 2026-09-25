@@ -20,6 +20,11 @@
 //! `large_stack::run_on_worker`, whose symbol is absent at RED — so that RED is
 //! likewise a clean compile error.
 //!
+//! That section has since grown a task-5466 test
+//! ([`the_mcp_dispatch_shares_the_one_engine_lane`]) which needs no such
+//! argument: it pins lane IDENTITY by `ThreadId` and never recurses, inheriting
+//! the stack property from the thread it names rather than re-proving it.
+//!
 //! One CORRECTION to the argument above, found while driving 5772's step-3 RED:
 //! "invoked through a large-stack helper" does NOT by itself imply "runs on a
 //! large stack". Every helper documents an INLINE-degradation arm that hands the
@@ -809,9 +814,10 @@ fn the_two_lanes_are_separate_threads_each_amortised() {
 /// submitter like any other job panic. A guard placed on the submitting side, or
 /// one raised outside the job body, would kill the shared lane for everybody.
 ///
-/// Not reachable from the fourteen migrated call sites; the guard exists because
-/// the lane is SHARED and grows new callers (`main.rs::mcp_tool_call`, task 5466,
-/// is already named as a future one).
+/// No call site reaches the guard today, `main.rs::mcp_tool_call` (task 5466)
+/// included; the guard exists because the lane is SHARED and grows new callers.
+/// Why each existing caller is exempt is argued once, in `run_on_worker`'s
+/// non-reentrancy section, and not restated here.
 ///
 /// UNLIKE the deep-recursion tests, this one cannot honour the module's "no
 /// violent RED" doctrine: the failure it guards against is a wedge of a
@@ -877,6 +883,74 @@ fn a_job_on_one_lane_may_submit_to_the_other_lane() {
         outer, inner,
         "a cross-lane submission must run on the OTHER lane's thread — the guard \
          must not reject it, and it must not degrade to an inline call"
+    );
+}
+
+/// (r5) ONE lane serves BOTH the projection commands and the MCP dispatch —
+/// task 5466's headline invariant, that the MCP path JOINS the existing
+/// mechanism rather than adding a second one.
+///
+/// `ThreadId` equality, not thread NAME, is what pins that. A name is a label:
+/// a second lane built with the same `&'static str` would satisfy a name check
+/// while being a different thread with its own queue and its own 256 MiB
+/// mapping — exactly the "two divergent large-stack approaches" outcome this
+/// task exists to avoid. `ThreadId`s are never reused within a process, so
+/// equality here proves the two submissions landed on the SAME consumer.
+///
+/// The MCP side's thread is observed through the PRODUCTION event-emitter seam
+/// (`TauriToolContext::focus_entity` fires the emitter and touches no engine),
+/// so the id recorded is the thread the dispatch itself ran on. That is what
+/// stops this being a tautology about where a deliberately-planted probe was
+/// placed.
+///
+/// `sync_channel`, not `channel`: `with_event_emitter` requires
+/// `Fn(..) + Send + Sync + 'static`, and `mpsc::Sender` is `!Sync` while
+/// `SyncSender` is `Sync`. Capacity 1 never blocks — the emitter fires exactly
+/// once — and `mcp_tool_call_on_large_stack` blocks until the job completes, so
+/// the send has landed by the time `try_recv` runs.
+///
+/// Non-vacuity: both ids are also asserted DIFFERENT from the caller's. A
+/// degraded lane runs its job inline and reports the caller's id, which would
+/// make the equality above trivially true.
+#[test]
+fn the_mcp_dispatch_shares_the_one_engine_lane() {
+    use crate::large_stack::run_on_worker;
+    use crate::mcp_context::{TauriToolContext, mcp_tool_call_on_large_stack};
+
+    let caller_id = std::thread::current().id();
+
+    let (tx, rx) = std::sync::mpsc::sync_channel::<std::thread::ThreadId>(1);
+    let ctx = TauriToolContext::builder(crate::tests::make_test_engine())
+        .with_event_emitter(move |_name, _payload| {
+            let _ = tx.send(std::thread::current().id());
+        })
+        .build();
+
+    mcp_tool_call_on_large_stack(
+        ctx,
+        "reify_focus_entity".to_string(),
+        serde_json::json!({"entity_path": "Bracket"}),
+    )
+    .expect("reify_focus_entity should dispatch successfully");
+
+    let mcp_id = rx
+        .try_recv()
+        .expect("the event emitter must have fired before the dispatch returned");
+    let command_id = run_on_worker(|| std::thread::current().id());
+
+    assert_ne!(
+        mcp_id, caller_id,
+        "the MCP dispatch must not have degraded to an inline call on the caller"
+    );
+    assert_ne!(
+        command_id, caller_id,
+        "the engine lane must not have degraded to an inline call on the caller"
+    );
+    assert_eq!(
+        mcp_id, command_id,
+        "the MCP dispatch must share the ONE engine lane with the projection \
+         commands — a second large-stack mechanism is the outcome this routing \
+         exists to prevent"
     );
 }
 
@@ -946,7 +1020,7 @@ fn lsp_lane_is_panic_isolated_and_survives() {
 
 // ── ASYNC lane submission (task 5772) ────────────────────────────────────────
 //
-// `run_on_worker` parks its caller in `mpsc::recv()`. For the fourteen migrated
+// `run_on_worker` parks its caller in `mpsc::recv()`. For the migrated engine
 // commands that is free: they are sync `#[tauri::command] fn`s, which Tauri runs
 // as `ExecutionContext::Blocking` on their own thread. `lsp_request` is an
 // `async fn` on the tauri tokio runtime, so the same call would pin a runtime

@@ -1,0 +1,24 @@
+// PRD probe fixture — docs/prds/struct-ctor-field-type-conformance.md §7 row 11, task δ (#5306).
+//
+// A typo'd named argument. ε (#5303) minted `E_CTOR_UNKNOWN_FIELD` for the lenient
+// `__arg{i}` binder site (crates/reify-compiler/src/expr.rs), emitting at the same
+// CTOR_FIELD_CONFORMANCE_SEVERITY knob as the α type surface.
+//
+// PRE (knob at Severity::Warning): `reify check` exits 0, "All constraints satisfied." —
+// the typo is silently appended as a lenient positional arg.
+// POST (task δ / #5306): `reify check` exits 1 with
+// "E_CTOR_UNKNOWN_FIELD: unknown named argument 'labl' in call to 'Widget'".
+// The mnemonic is a message PREFIX because `reify check` renders `{severity}: {message}`
+// and never prints the DiagnosticCode (crates/reify-cli/src/main.rs:211).
+//
+// Asserted by tests/prd-gate/struct-ctor-conformance-probe-set.json, gated by
+// tests/infra/test_prd_gate_struct_ctor_conformance.sh.
+module struct_ctor_conformance_unknown_field
+
+structure def Widget {
+    param label : String
+}
+
+structure def UnknownField {
+    let w = Widget(labl: "x")
+}

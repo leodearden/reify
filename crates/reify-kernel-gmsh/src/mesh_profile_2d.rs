@@ -54,8 +54,14 @@ pub struct MeshPlane2dResult {
 /// least 3 distinct points. Each entry in `holes` is a similar sequence;
 /// gmsh accepts either winding order for hole rings.
 ///
-/// `mesh_size = Some(s)` sets `Mesh.MeshSizeMin/Max` to `s`; `None` defers
-/// to gmsh's defaults. `recombine = true` enables blossom recombination
+/// `mesh_size = Some(s)` sets `Mesh.MeshSizeMin/Max` to `s`; `None` defers to
+/// gmsh's defaults — its ACTUAL defaults, established on entry by
+/// [`crate::mesh_size_scope::MeshSizeScope`], not whatever a sibling entry
+/// point last left in gmsh's process-global option table. That table survives
+/// `gmshClear()`, so before task #6968 a `None` call was cut to whatever size
+/// the previous caller in the process had asked for. The scope also restores
+/// the defaults on exit, so an `s` requested here cannot pin a later call.
+/// `recombine = true` enables blossom recombination
 /// (quad-dominated output); `false` produces triangles only.
 /// `deterministic = true` pins `General.NumThreads = 1` so the output is
 /// repeatable run-to-run.
@@ -78,15 +84,21 @@ pub fn mesh_plane_2d(
 
     use crate::ffi;
     use crate::init;
+    use crate::mesh_size_scope::MeshSizeScope;
 
-    // Recover from a poisoned lock rather than propagating: every call begins
-    // with `ffi::clear()` immediately below, which wipes any half-built model
-    // state left over from a panicked prior call. Mirrors `mesh_to_volume`.
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = init::lock()?;
     init::ensure_initialized();
+    // Declared after `_guard` so it drops first (Rust drops locals in reverse
+    // declaration order): its restore writes land while GMSH_LOCK is still
+    // held. Placed above the first `?` so every early return is covered, not
+    // only the success path. See `mesh_size_scope` for both directions.
+    let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
 
+    // This function's own deviation from the size defaults the scope just
+    // established. With `mesh_size: None` there is no deviation and the mesh
+    // is cut against gmsh's own defaults.
     if let Some(s) = mesh_size
         && s > 0.0
     {
@@ -149,7 +161,11 @@ pub fn mesh_plane_2d(
         ffi::mesh_set_recombine(2, surf_tag, 45.0)?;
     }
 
-    ffi::mesh_generate(2)?;
+    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
+    // a failure here must not outlive this call. See that function. Wired for
+    // uniformity with the three 3D sites — no cheap 2D geometry that fails
+    // `mesh_generate(2)` was identified, so this site is NOT test-covered.
+    init::mesh_generate_with_recovery(&_guard, 2)?;
 
     // Readback nodes. The flat coord buffer is stride-3 (x, y, z); we drop
     // the z component (always 0 for a plane surface).
@@ -222,6 +238,8 @@ pub fn mesh_plane_2d(
     }
     let quad_indices = remap(&quad_node_tags)?;
 
+    verify_plane_readback(&triangle_indices, &quad_indices, outer.len(), holes.len())?;
+
     // Note: we intentionally do NOT issue a trailing `ffi::clear()` here.
     // The leading `ffi::clear()?` at the top of every `mesh_plane_2d` call
     // is the documented invariant for entering a clean model state; an
@@ -235,6 +253,42 @@ pub fn mesh_plane_2d(
         triangle_indices,
         quad_indices,
     })
+}
+
+/// Reject a readback holding no elements at all — the 2D form of the
+/// emptiness rejection `init::read_tet_connectivity` applies to the three tet
+/// meshers.
+///
+/// Gmsh can report a successful generate and hold nothing, and a
+/// [`MeshPlane2dResult`] with neither a triangle nor a quad in it is a silent
+/// wrong answer no caller can tell from a real mesh of a plane surface. Both
+/// buffers together, because `recombine` legitimately drives either one to
+/// empty on its own: a clean recombination leaves quads and no triangles,
+/// `recombine = false` leaves triangles and no quads.
+///
+/// Split out of [`mesh_plane_2d`], as `verify_tet_readback` is out of the tet
+/// readback, so the predicate is reachable from a unit test with no live gmsh
+/// model behind it — the only coverage it has, since no cheap 2D geometry that
+/// fails `mesh_generate(2)` was identified.
+///
+/// `outer_len` and `holes_len` describe the outline that produced nothing and
+/// reach the message only.
+#[cfg(has_gmsh)]
+fn verify_plane_readback(
+    triangle_indices: &[u32],
+    quad_indices: &[u32],
+    outer_len: usize,
+    holes_len: usize,
+) -> Result<(), GeometryError> {
+    if triangle_indices.is_empty() && quad_indices.is_empty() {
+        return Err(GeometryError::OperationFailed(format!(
+            "mesh_plane_2d: gmshModelMeshGenerate reported success but the model \
+             holds neither triangles nor quads for a {outer_len}-vertex outline \
+             with {holes_len} hole(s) — returning an empty mesh would be a silent \
+             wrong answer"
+        )));
+    }
+    Ok(())
 }
 
 /// Stub-build companion: returns `GeometryError::OperationFailed` containing
@@ -254,4 +308,56 @@ pub fn mesh_plane_2d(
         "mesh_plane_2d: {STUB_UNAVAILABLE_MARKER} in this build \
          (libgmsh not detected at build time)"
     )))
+}
+
+/// Both directions of [`verify_plane_readback`]: the rejection it exists for,
+/// and the three element mixes a legitimate 2D mesh comes back as.
+///
+/// This predicate has no integration coverage — nothing cheap fails
+/// `mesh_generate(2)` — so without these, inverting the `&&` to `||` would
+/// reject every clean-recombine quad-only mesh, the whole happy case of
+/// `reify_solver_elastic::mesher::mesh_swept_profile_2d`'s HexPreferred path,
+/// and still ship green.
+#[cfg(all(test, has_gmsh))]
+mod tests {
+    use super::*;
+
+    /// One triangle's and one quad's worth of connectivity. The values are
+    /// never dereferenced — only the buffers' emptiness is under test.
+    const ONE_TRIANGLE: [u32; 3] = [0, 1, 2];
+    const ONE_QUAD: [u32; 4] = [0, 1, 2, 3];
+
+    #[test]
+    fn a_readback_with_no_elements_at_all_is_rejected() {
+        let err = verify_plane_readback(&[], &[], 3, 1)
+            .expect_err("neither triangles nor quads is never a real mesh of a surface");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("neither triangles nor quads"),
+            "the rejection must say the model came back holding nothing; got: {msg}"
+        );
+        assert!(
+            msg.contains("3-vertex outline with 1 hole(s)"),
+            "the message must describe the outline that produced nothing, outer \
+             vertices first; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn triangles_alone_are_a_real_mesh() {
+        verify_plane_readback(&ONE_TRIANGLE, &[], 3, 0)
+            .expect("recombine = false legitimately yields triangles and no quads");
+    }
+
+    #[test]
+    fn quads_alone_are_a_real_mesh() {
+        verify_plane_readback(&[], &ONE_QUAD, 4, 0)
+            .expect("a clean recombination legitimately yields quads and no triangles");
+    }
+
+    #[test]
+    fn a_partially_recombined_mesh_carrying_both_is_a_real_mesh() {
+        verify_plane_readback(&ONE_TRIANGLE, &ONE_QUAD, 4, 0)
+            .expect("recombination that cannot form every quad leaves both kinds behind");
+    }
 }

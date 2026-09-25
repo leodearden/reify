@@ -45,7 +45,8 @@ use reify_solver_elastic::{
 };
 
 use super::tensegrity_crack::{
-    check_index, crack_dimensioned_scalar, crack_index_pairs, crack_nodes, crack_scalar_list,
+    check_index, crack_dimensioned_scalar, crack_index_pairs, crack_loads, crack_nodes,
+    crack_scalar_list,
 };
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -115,7 +116,7 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
         CODE,
         UNIT_HINT,
     )?;
-    let loads = crack_loads(&value_inputs[4])?;
+    let loads = crack_loads(&value_inputs[4], CODE, UNIT_HINT)?;
     let supports = crack_supports(&value_inputs[5], nodes.len())?;
 
     // Length guards — reject silently-wrong inputs before building members. The
@@ -212,62 +213,6 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
 /// [`crack_dimensioned_scalar`](super::tensegrity_crack::crack_dimensioned_scalar).
 fn crack_forces(v: &Value, what: &str) -> Result<Vec<f64>, String> {
     crack_scalar_list(v, what, DimensionVector::FORCE, "Force", CODE, UNIT_HINT)
-}
-
-/// Crack `loads` (a `List<Vector3<Force>>`) into per-node `[f64; 3]` force
-/// vectors. The loads-vs-nodes length check is performed in [`run`] (the
-/// trampoline) so a mismatch surfaces as a *located*
-/// `E_TensegrityLoadInfeasible` error; the kernel's own
-/// `loads.len() != nodes.len()` guard is a redundant backstop. This cracker only
-/// validates per-entry shape (3-component, numeric).
-fn crack_loads(v: &Value) -> Result<Vec<[f64; 3]>, String> {
-    let list = match v {
-        Value::List(items) => items,
-        other => {
-            return Err(format!(
-                "E_TensegrityLoadInfeasible: loads must be a list of 3-component force vectors, got {other:?}"
-            ));
-        }
-    };
-    let mut out = Vec::with_capacity(list.len());
-    for (i, item) in list.iter().enumerate() {
-        match item {
-            Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
-                out.push([
-                    crack_dimensioned_scalar(
-                        &c[0],
-                        &format!("loads[{i}].x"),
-                        DimensionVector::FORCE,
-                        "Force",
-                        CODE,
-                        UNIT_HINT,
-                    )?,
-                    crack_dimensioned_scalar(
-                        &c[1],
-                        &format!("loads[{i}].y"),
-                        DimensionVector::FORCE,
-                        "Force",
-                        CODE,
-                        UNIT_HINT,
-                    )?,
-                    crack_dimensioned_scalar(
-                        &c[2],
-                        &format!("loads[{i}].z"),
-                        DimensionVector::FORCE,
-                        "Force",
-                        CODE,
-                        UNIT_HINT,
-                    )?,
-                ]);
-            }
-            other => {
-                return Err(format!(
-                    "E_TensegrityLoadInfeasible: loads[{i}] must be a 3-component force vector, got {other:?}"
-                ));
-            }
-        }
-    }
-    Ok(out)
 }
 
 /// Crack a `List<Int>` of support node indices, range-checking each against the

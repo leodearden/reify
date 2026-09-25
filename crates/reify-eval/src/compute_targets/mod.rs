@@ -172,6 +172,111 @@ pub(crate) fn sampled_curl_field(sf: SampledField) -> Value {
     }
 }
 
+/// Wrap a [`SampledField`] as a rotation `Value::Field`.
+///
+/// domain: `Point3<Length>`, codomain: `Vector3<Angle>` (stride 3) — matches
+/// `solver_elastic.ri` `rotation : Field<Point3<Length>, Vector3<Angle>>`.
+/// The payload is the infinitesimal rotation vector ω = ∇×u / 2, the axial
+/// vector of the antisymmetric part of ∇u.
+///
+/// ## This is the designated crossing (ruling #6164)
+///
+/// Structurally this is a byte-for-byte clone of [`sampled_curl_field`] with
+/// exactly ONE difference: `vec3(angle())` instead of
+/// `vec3(dimensionless_scalar())` in the codomain slot. That single difference
+/// is the entire ruling. The derivative algebra stays quotient-pure — ∇×u is
+/// Length/Length and therefore genuinely dimensionless, so [`sampled_curl_field`]
+/// deliberately keeps its dimensionless codomain and `result.curl` stays
+/// type-identical to `curl(result.displacement)`. The radian is introduced only
+/// here, by a named channel that ASSERTS an arc measure.
+///
+/// ## Why declaring the codomain is sufficient
+///
+/// The ANGLE tag on the DECLARED codomain is what makes the runtime emit
+/// angle-dimensioned components, with no runtime change anywhere:
+/// `reify-expr`'s `sample_at_point` takes its stride>1 branch and extracts
+/// `component_type` from `Type::Vector { quantity }`, then its `wrap_result`
+/// helper emits `Value::Scalar { dimension }` for any non-dimensionless
+/// codomain. Nothing else has to know about rotation.
+pub(crate) fn sampled_rotation_field(sf: SampledField) -> Value {
+    Value::Field {
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::vec3(reify_core::Type::angle()),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+/// Derive the `rotation` [`SampledField`] from the `curl` one: ω = ∇×u / 2.
+///
+/// Clones `curl_sf`, halves every `data` entry, and renames to `"rotation"`.
+/// Every grid-metadata field (`kind`, `bounds_min`, `bounds_max`, `spacing`,
+/// `axis_grids`, `interpolation`) is carried through verbatim, so the rotation
+/// channel shares the curl channel's Regular3D grid exactly — no extra BVH
+/// resample pass, and bit-identical node coordinates.
+///
+/// Halving is bit-exact: IEEE-754 division by 2.0 only decrements the exponent,
+/// so it is exact for every normal operand (subnormal underflow is unreachable
+/// at physical strain magnitudes). Callers may therefore pin `rotation == curl/2`
+/// at 0 ULP.
+///
+/// ## Why rotation is DERIVED at wrap time and never stored
+///
+/// `crates/reify-compute-contract/src/elastic_result.rs` carries a FROZEN binary
+/// wire header with `curl_len: u64` at a fixed byte offset, guarded by that
+/// module's byte-exact golden header test (which pins `curl_len` as literal
+/// hex). Adding a `rotation_len` slab would break that header, invalidate every
+/// persisted cache entry, and force a format version bump — all to carry data
+/// that is a pure ×½ of a slab already on the wire. Deriving instead means
+/// existing cache entries gain a correct `.rotation` for free.
+pub(crate) fn rotation_sf_from_curl(curl_sf: &SampledField) -> SampledField {
+    let mut sf = curl_sf.clone();
+    sf.name = "rotation".to_string();
+    for c in sf.data.iter_mut() {
+        *c /= 2.0;
+    }
+    sf
+}
+
+/// Assert `rot` is exactly what [`rotation_sf_from_curl`] must produce from
+/// `curl`: the same slab halved at 0 ULP, renamed, on the bit-identical grid.
+///
+/// Lives beside the function it pins, and is the SINGLE enumeration of the
+/// grid-metadata field list — the tet path, the cache-reconstruction path and
+/// the wrapper unit test all call through here, so a new [`SampledField`] field
+/// gets checked in every path the moment it is added below.
+///
+/// 0 ULP is a numeric-premise claim, not laziness: IEEE-754 division by 2.0
+/// only decrements the exponent, so it is exact for every normal operand
+/// (subnormal underflow is unreachable at physical strain magnitudes).
+#[cfg(test)]
+pub(crate) fn assert_rotation_is_half_of(rot: &SampledField, curl: &SampledField, path: &str) {
+    assert_eq!(
+        rot.data.len(),
+        curl.data.len(),
+        "{path}: rotation must have the same node/stride count as curl"
+    );
+    let expected: Vec<f64> = curl.data.iter().map(|c| c / 2.0).collect();
+    assert_eq!(
+        rot.data, expected,
+        "{path}: rotation data must be curl data halved element-wise, bit-exactly (0 ULP)"
+    );
+    assert_eq!(rot.name, "rotation", "{path}: derived field is renamed");
+    // Grid metadata carried through verbatim — this is also what proves the
+    // channel was DERIVED from curl rather than independently resampled (an
+    // independent resample would need a 6th `resample_multi_nodal_to_grid`
+    // entry and a `nodal_rotation_flat` slab, neither of which exists).
+    assert_eq!(rot.kind, curl.kind, "{path}: grid kind");
+    assert_eq!(rot.bounds_min, curl.bounds_min, "{path}: bounds_min");
+    assert_eq!(rot.bounds_max, curl.bounds_max, "{path}: bounds_max");
+    assert_eq!(rot.spacing, curl.spacing, "{path}: spacing");
+    assert_eq!(rot.axis_grids, curl.axis_grids, "{path}: axis_grids");
+    assert_eq!(
+        rot.interpolation, curl.interpolation,
+        "{path}: interpolation"
+    );
+}
+
 /// Wrap a [`SampledField`] as an error-indicator `Value::Field`.
 ///
 /// domain: `Point3<Length>`, codomain: `Pressure` (Pa, dimensioned scalar,
@@ -223,6 +328,17 @@ pub(crate) fn point3_length(p: [f64; 3]) -> Value {
     Value::Point(vec![length(p[0]), length(p[1]), length(p[2])])
 }
 
+/// A Velocity-dimensioned Scalar (SI metres per second).
+pub(crate) fn velocity(m_per_s: f64) -> Value {
+    scalar(m_per_s, DimensionVector::VELOCITY)
+}
+
+/// A Temperature-dimensioned Scalar (SI kelvin — never °C: `degC` is an affine
+/// unit, so a Temperature Scalar's `si_value` is always absolute).
+pub(crate) fn temperature(kelvin: f64) -> Value {
+    scalar(kelvin, DimensionVector::TEMPERATURE)
+}
+
 /// A 3-component `Value::Vector` of Length-dimensioned Scalars.
 ///
 /// The displacement-field analogue of [`point3_length`]: a displacement is a
@@ -236,6 +352,54 @@ pub(crate) fn vec3_length(v: [f64; 3]) -> Value {
 /// One `dimension`-typed `Value::Scalar` per SI value, in input order.
 pub(crate) fn scalar_list(values: &[f64], dimension: DimensionVector) -> Vec<Value> {
     values.iter().map(|&v| scalar(v, dimension)).collect()
+}
+
+// ── Native-unit constructors (printer-native → DSL-visible projection) ──────
+//
+// A parser layer stays in the units its source is written in, for lossless
+// fidelity; the DSL-visible projection of that payload is SI and dimensioned.
+// These constructors ARE that projection, so each conversion factor is written
+// once and every call site reads as the unit it is handed.
+
+/// Millimetres → SI metres. Same name and value as the other mm→SI boundaries
+/// in the workspace (`as_printed_material_r0.rs`, `reify-fdm/src/r0.rs`,
+/// `reify-stdlib`'s `trajectory::gcode_import`), so grepping `MM_TO_M`
+/// enumerates all of them — and all of them convert, so no unconverted
+/// G-code→DSL `Value` seam is left (surveyed under task #6301).
+const MM_TO_M: f64 = 1.0e-3;
+
+/// G-code feedrate mm·min⁻¹ → SI m·s⁻¹, as the DIVISOR (1e3 millimetres per
+/// metre × 60 seconds per minute) rather than a rounded reciprocal:
+/// `1800.0 / 60_000.0` is exactly 0.03 where `1800.0 * (1.0 / 60_000.0)` is
+/// 0.030000000000000002. Pinned by `fdm_slice.rs`'s
+/// `speed_conversion_divides_rather_than_multiplying_a_reciprocal`.
+const MM_PER_MIN_PER_M_PER_S: f64 = 60_000.0;
+
+/// °C → K. Not a free choice: this is the offset the language itself declares
+/// for `degC` (`crates/reify-compiler/stdlib/units.ri`, `pub unit degC :
+/// Temperature = 1 offset 273.15`), so the affine conversion stays traceable to
+/// that declaration rather than reading as a magic number.
+const DEG_C_TO_K_OFFSET: f64 = 273.15;
+
+/// A Length Scalar from a native-millimetre measurement.
+pub(crate) fn length_mm(mm: f64) -> Value {
+    length(mm * MM_TO_M)
+}
+
+/// A `Point3<Length>` from native-millimetre coordinates — the shape
+/// `resolve_point3_length_arg` requires of a point passed to a geometry builtin.
+pub(crate) fn point3_length_mm(p: [f64; 3]) -> Value {
+    point3_length([p[0] * MM_TO_M, p[1] * MM_TO_M, p[2] * MM_TO_M])
+}
+
+/// A Velocity Scalar from a G-code feedrate in mm·min⁻¹.
+pub(crate) fn velocity_mm_per_min(mm_per_min: f64) -> Value {
+    velocity(mm_per_min / MM_PER_MIN_PER_M_PER_S)
+}
+
+/// A Temperature Scalar from °C (absolute kelvin out — `degC` is affine).
+pub(crate) fn temperature_deg_c(deg_c: f64) -> Value {
+    temperature(deg_c + DEG_C_TO_K_OFFSET)
 }
 
 /// Register all compute trampolines shipped in this slice.
@@ -698,5 +862,101 @@ mod tests {
         engine.register_production_compute_fns(super::MorphRegistration::Unavailable {
             reason: "test",
         });
+    }
+    /// step-3 RED (ruling #6164): the `rotation` derivative channel is the
+    /// DESIGNATED CROSSING where the radian enters the elastic-result algebra.
+    /// This test pins the whole mechanism by which the `rad` tag reaches the
+    /// runtime: `sampled_rotation_field` DECLARES a `Vector3<Angle>` codomain,
+    /// and `reify-expr`'s `sample_at_point` / `wrap_result`
+    /// reads that declared codomain to decide what `Value::Scalar { dimension }`
+    /// to emit per component. Declaring the codomain is therefore sufficient —
+    /// no runtime change is needed anywhere.
+    ///
+    /// Drives the exact production composition
+    /// `sampled_rotation_field(rotation_sf_from_curl(&curl_sf))`, and asserts:
+    ///
+    ///   - domain `Point3<Length>`, codomain `Vector3<Angle>` (NOT
+    ///     `dimensionless_scalar` — THIS assertion is what encodes the ruling;
+    ///     the sibling divergence/gradient/curl wrappers all declare
+    ///     dimensionless codomains, and `curl` must stay that way);
+    ///   - `source == FieldSourceKind::Sampled`;
+    ///   - `data` is the curl input halved element-wise, BIT-EXACTLY.
+    ///
+    /// Bit-exactness is asserted at 0 ULP with `assert_eq!` on f64 rather than
+    /// with a tolerance, and that is a deliberate numeric-premise claim, not
+    /// laziness: IEEE-754 division by 2.0 only decrements the exponent, so it
+    /// is exact for every normal operand (subnormal underflow is unreachable at
+    /// physical strain magnitudes). The fixture values are 3.0 / 5.0 / 7.0 —
+    /// deliberately NOT powers of two — so a halving bug cannot hide behind a
+    /// coincidental exact result.
+    ///
+    /// The second half asserts every grid-metadata field survives the derive
+    /// unchanged (only `data` and `name` may differ), which is what lets the
+    /// rotation channel share the curl channel's Regular3D grid with no extra
+    /// BVH resample pass.
+    ///
+    /// RED: neither `sampled_rotation_field` nor `rotation_sf_from_curl`
+    /// exists yet, so this does not compile until step-4.
+    #[test]
+    fn sampled_rotation_field_declares_angle_codomain_and_halves_curl() {
+        use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
+        use std::sync::atomic::AtomicBool;
+
+        // stride-3 (one vector per node), 2 nodes on a Regular1D grid.
+        let curl_sf = SampledField {
+            name: "curl".to_string(),
+            kind: SampledGridKind::Regular1D,
+            bounds_min: vec![0.0],
+            bounds_max: vec![1.0],
+            spacing: vec![1.0],
+            axis_grids: vec![vec![0.0, 1.0]],
+            interpolation: InterpolationKind::Linear,
+            data: vec![3.0, 5.0, 7.0, -3.0, -5.0, -7.0],
+            oob_emitted: AtomicBool::new(false),
+        };
+
+        let rot_sf = super::rotation_sf_from_curl(&curl_sf);
+        let value = super::sampled_rotation_field(rot_sf);
+
+        let Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } = value
+        else {
+            panic!("expected Value::Field")
+        };
+
+        assert_eq!(
+            domain_type,
+            reify_core::Type::point3(reify_core::Type::length()),
+            "rotation field domain must be Point3<Length>"
+        );
+        assert_eq!(
+            codomain_type,
+            reify_core::Type::vec3(reify_core::Type::angle()),
+            "rotation field codomain must be Vector3<Angle> — this is ruling \
+             #6164's designated crossing, NOT vec3(dimensionless_scalar()) like \
+             the sibling divergence/gradient/curl wrappers"
+        );
+        assert_eq!(
+            source,
+            FieldSourceKind::Sampled,
+            "rotation field must be source Sampled"
+        );
+
+        let Value::SampledField(out) = lambda.as_ref() else {
+            panic!("expected lambda to be a Value::SampledField, got {lambda:?}")
+        };
+
+        // Bit-exact halving at 0 ULP, rename, and verbatim grid metadata.
+        // Do NOT soften this to a tolerance.
+        super::assert_rotation_is_half_of(out, &curl_sf, "wrapper");
+        assert_eq!(
+            out.data,
+            vec![1.5, 2.5, 3.5, -1.5, -2.5, -3.5],
+            "sanity: literal expected halves of the non-power-of-two fixture"
+        );
     }
 }

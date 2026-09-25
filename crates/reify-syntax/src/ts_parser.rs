@@ -2,21 +2,25 @@
 //!
 //! Parses source text into tree-sitter CST, then lowers to the `ParsedModule` AST.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use reify_ast::*;
 use reify_core::{ContentHash, ModulePath, PortDirection, SourceSpan, SpannedIdent};
 
-/// Check a child node for errors before lowering it. If the node has errors,
-/// push a parse error and return None. Otherwise, evaluate the lowering expression.
+mod fault_diagnosis;
+
+use fault_diagnosis::{
+    MAX_DIAGNOSTICS, collect_let_anchors, faults_strictly_inside, last_let_anchor_before,
+};
+
+/// Check a child node for errors before lowering it. If the node has errors, refuse it
+/// through [`Lowering::refuse_if_faulty`] and return None. Otherwise, evaluate the lowering
+/// expression.
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
-        if $child.is_error() || $child.has_error() {
-            $self.push_error(
-                format!("invalid {}: {}", $label, $self.node_text($child)),
-                $self.span($child),
-            );
+        if $self.refuse_if_faulty($child, $label) {
             None
         } else {
             $lower
@@ -66,6 +70,14 @@ pub fn parse_with_prelude_enums<'a>(
 
     let mut lowering = Lowering::with_prelude_enums(source, prelude_enum_names);
     lowering.lower_source_file(root);
+
+    // INV-SF-7 (#7094): report member-list bodies where a member silently
+    // absorbed the following line. All logic lives in `member_continuation`;
+    // this stays a call site so the merge surface against the pending
+    // `ts_parser.rs` work on `task/5392` is one hunk.
+    for (span, message) in crate::member_continuation::check_member_continuations(root) {
+        lowering.push_error(message, span);
+    }
 
     let content_hash = ContentHash::of_str(source);
 
@@ -215,6 +227,234 @@ impl<'a> Lowering<'a> {
         self.errors.borrow_mut().push(ParseError { message, span });
     }
 
+    /// Push a parse error for a faulty subtree, narrowing the span to the first
+    /// ERROR/MISSING descendant so the diagnostic points at the fault itself
+    /// rather than at the whole enclosing construct.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+    /// task #5392: when a subtree carries an ERROR or MISSING node the lowered
+    /// AST no longer corresponds to the source, so the construct must be refused
+    /// loudly rather than lowered best-effort. Dropping it silently is what let a
+    /// missing `;` in a function body evaporate a `let` binding and change the
+    /// program's value with no diagnostic at all.
+    ///
+    /// `message` must be one line and must never interpolate RAW `node_text`: echoing a
+    /// multi-line slice of source is what made these diagnostics unreadable and
+    /// mislocated. A bounded [`Self::snippet`] excerpt is the only permitted source text
+    /// (see [`Self::push_fault_error_with_excerpt`]).
+    fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
+        let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
+        self.push_error(message.into(), self.span(anchor));
+    }
+
+    /// Push `<what>: <snippet(node)>`, located at `node`'s first fault by
+    /// [`Self::push_fault_error`]'s rule.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), tasks
+    /// #5392 and #6156: the excerpt says WHICH construct or text, the span says WHERE.
+    /// Spanning the whole node instead reported every fault inside a body at the start of
+    /// the construct enclosing it.
+    fn push_fault_error_with_excerpt(&self, node: tree_sitter::Node, what: &str) {
+        self.push_fault_error(node, format!("{what}: {}", self.snippet(node)));
+    }
+
+    /// Report `node` as `invalid <label>: <excerpt>` if it carries a CST fault, and return
+    /// whether it did: a faulty node's lowered AST would no longer match its source, so it
+    /// must not be lowered. This is the refusal `check_and_lower!` applies before every
+    /// lowering it guards.
+    ///
+    /// The excerpt is bounded, never the raw node text, and the report is located at the
+    /// node's first fault (see [`Self::push_fault_error_with_excerpt`] — INV-SF-7, tasks
+    /// #5392 and #6156).
+    fn refuse_if_faulty(&self, node: tree_sitter::Node, label: &str) -> bool {
+        let faulty = node.is_error() || node.has_error();
+        if faulty {
+            self.push_fault_error_with_excerpt(node, &format!("invalid {label}"));
+        }
+        faulty
+    }
+
+    /// Diagnose an `ERROR` node, anchoring the report to the `let` binding whose missing `;`
+    /// caused tree-sitter's recovery to fuse two statements.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    ///
+    /// The former behaviour spanned the WHOLE `ERROR` node and interpolated its entire source
+    /// slice into the message. For the shape this task exists to fix, that meant one
+    /// four-line diagnostic covering an entire `fn` declaration — and for a file with two
+    /// broken sibling fns, ONE diagnostic covering BOTH, which is how the error came to be
+    /// reported against an unrelated later line.
+    ///
+    /// Span choice, measured on the t9 shape
+    /// `fn f(i: Int) -> Real {\n  let x0 = cos(0deg)\n  x0 * sgn(i, 0)\n}`:
+    /// the enclosing ERROR spans the whole declaration; the first fault descendant sits on
+    /// the ABSORBED line, one row too late; only the `let` token sits on the ABSORBING line
+    /// — the line a user must actually edit. Spanning `[let_token.start, fault.start)` also
+    /// highlights exactly the text that was silently fused.
+    ///
+    /// Emits one diagnostic per ABSORBING `let`, not per `ERROR` node: recovery collapses
+    /// several broken declarations into one node (see [`faults_strictly_inside`]), so a
+    /// first-fault-only report silently drops every later declaration's break. Deduplicating by
+    /// anchoring `let` keeps the recovery debris around a single break from multiplying into
+    /// several diagnostics for the same missing separator.
+    ///
+    /// `context` (`"source file"`, `"structure body"`) names only the DISPATCH ARM, not the
+    /// construct the fault is in — the t9 shape reaches this method as a `"source file"` ERROR
+    /// yet the fault is inside a function body — so it is used only in the generic arm's
+    /// message. The separator arm instead earns its "in function body" wording from
+    /// [`fault_diagnosis::LetAnchor::in_fn_body`], which is a property of the anchoring
+    /// `let` itself.
+    ///
+    /// The CST-walking half of this — innermost-fault selection, the `let` anchor table and
+    /// its search, and the [`MAX_DIAGNOSTICS`] budget — lives in [`fault_diagnosis`]; what
+    /// stays here is the policy that reads those facts and decides which fault earns which
+    /// message, which is the only part that needs `self`.
+    fn diagnose_error_node(&self, node: tree_sitter::Node, context: &str) {
+        let mut faults = faults_strictly_inside(node);
+        if faults.is_empty() {
+            // An `ERROR` leaf with nothing broken below it is its own single fault.
+            faults.push(node);
+        }
+
+        // Hoisted out of the fault loop: one walk for the whole `ERROR` node, then a binary
+        // search per fault. Re-walking the subtree per fault made a badly broken file cost
+        // O(faults × nodes) on the LSP's per-keystroke path.
+        let let_anchors = collect_let_anchors(node);
+
+        // Classify every fault before emitting any of it, so the budget can be spent on the
+        // reports worth keeping rather than on whichever faults the walk reached first.
+        // `located` holds `(absorbing let start byte, fault node)` deduplicated per `let`;
+        // `generic` holds the faults no `let` explains, deduplicated per ROW. Both stay in
+        // source order because `faults` is. Each is bounded by `MAX_DIAGNOSTICS` at emission,
+        // and the dedupe keys are few enough that a linear `contains` beats a set.
+        let mut located: Vec<(usize, tree_sitter::Node)> = Vec::new();
+        let mut generic: Vec<tree_sitter::Node> = Vec::new();
+
+        for fault in faults {
+            // Two conditions must BOTH hold before a missing `;` is a supportable diagnosis.
+            //
+            // The fault must sit on a LATER LINE than the `let` — that fusing of two lines is
+            // the whole mechanism (see `collect_let_anchors`). Once recovery has derailed at
+            // the first fault, later debris can land on the same line as an entirely
+            // well-formed binding; measured on
+            // `structure T { fn f(..) { let x0 = 1 <NL> x0 * 2 } let v = 1 }`, tree-sitter emits
+            // a second `ERROR` at `v`, whose nearest preceding `let` is the well-formed
+            // `let v = 1`.
+            //
+            // And the `let` must be a FUNCTION-BODY binding. Only `fn_let_binding` requires a
+            // `;`; a structure/module member `let` is newline-separated, so telling a user to
+            // add a separator there names a construct that is not a function body and demands
+            // an edit the grammar rejects.
+            //
+            // Either way the failure is the same point-at-an-unrelated-line defect this method
+            // exists to remove, so such a fault falls through to the generic branch instead:
+            // honest about the debris, silent about a cause it cannot support.
+            let anchoring_let = last_let_anchor_before(&let_anchors, fault.start_byte())
+                .filter(|a| a.in_fn_body && fault.start_position().row > a.row);
+            match anchoring_let {
+                Some(let_tok) => {
+                    if !located.iter().any(|(anchor, _)| *anchor == let_tok.start_byte) {
+                        located.push((let_tok.start_byte, fault));
+                    }
+                }
+                // No `let` to blame — the fault itself is the report, span-narrowed and with
+                // no source echo (mechanism M3), deduplicated per ROW rather than once per
+                // `ERROR` node. Recovery collapses several independently-broken declarations
+                // into ONE node (see `faults_strictly_inside`), so a once-per-node report
+                // drops every later declaration's break — the same silent-drop defect the
+                // located arm exists to remove, on the arm that has no `let` to blame. A row
+                // is the unit a user edits, so per-row still collapses the debris around a
+                // single break into one report.
+                None => {
+                    let row = fault.start_position().row;
+                    if !generic.iter().any(|f| f.start_position().row == row) {
+                        generic.push(fault);
+                    }
+                }
+            }
+        }
+
+        // Located reports get FIRST claim on the budget: one that names a cause and points at
+        // the line to edit outranks one that can only say "something is broken here".
+        // Measured on the 24-broken-function corpus
+        // (`a_file_of_broken_functions_is_bounded_and_says_so`): the debris of the first break
+        // fans out across seven rows, so spending the budget in walk order left ONE located
+        // report and seven generic ones — the cap REPLACING the report rather than bounding it.
+        let located_kept = located.len().min(MAX_DIAGNOSTICS);
+        let generic_kept = generic.len().min(MAX_DIAGNOSTICS - located_kept);
+
+        // Re-sorted by position before emission: prioritising by kind is a budget decision,
+        // not a reason to hand a reader diagnostics out of source order. Stable, so faults
+        // sharing a start byte keep their walk order.
+        let mut reports: Vec<(usize, String, SourceSpan)> =
+            Vec::with_capacity(located_kept + generic_kept);
+        for &(anchor, fault) in &located[..located_kept] {
+            reports.push((
+                anchor,
+                "missing ';' after `let` binding in function body".to_string(),
+                SourceSpan::new(anchor as u32, fault.start_byte() as u32),
+            ));
+        }
+        for &fault in &generic[..generic_kept] {
+            reports.push((
+                fault.start_byte(),
+                format!("syntax error in {context}"),
+                self.span(fault),
+            ));
+        }
+        reports.sort_by_key(|(start, _, _)| *start);
+        for (_, message, span) in reports {
+            self.push_error(message, span);
+        }
+
+        // Truncation is announced, and anchored at the EARLIEST fault declined — not at
+        // `node`, whose span is the blob location this method exists to eliminate.
+        let first_declined = located[located_kept..]
+            .iter()
+            .map(|&(_, fault)| fault)
+            .chain(generic[generic_kept..].iter().copied())
+            .min_by_key(|fault| fault.start_byte());
+        if let Some(fault) = first_declined {
+            self.push_error(
+                format!("syntax error in {context} (further errors suppressed)"),
+                self.span(fault),
+            );
+        }
+    }
+
+    /// Lower a `function_definition` / `function_signature` subtree, refusing it outright
+    /// when it carries a CST fault and guaranteeing that such a fault always produces at
+    /// least one diagnostic.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+    /// task #5392. Two properties, both required:
+    ///
+    /// - **Refusal.** A faulty subtree yields `None`, so the caller never pushes a
+    ///   declaration whose AST disagrees with its source. This matches what every other
+    ///   member kind already gets from `check_and_lower!`; the fn arms were the sole
+    ///   exception, which is how a nested MISSING node evaporated a `let` binding in
+    ///   silence.
+    /// - **Loudness.** The inner lowering is still run FIRST, purely for its diagnostics,
+    ///   so specific, well-located messages it already emits (e.g. "syntax error in type
+    ///   argument list", or the fn-body separator diagnostics) are preserved verbatim.
+    ///   `push_fault_error` fires only as a backstop, when that pass stayed silent — a
+    ///   blanket pre-emptive guard would REPLACE the precise message with a vague one.
+    ///
+    /// A well-formed bodyless `function_signature` is not faulty and lowers unchanged to
+    /// `body: None`.
+    fn lower_function_checked(&self, node: tree_sitter::Node) -> Option<FnDef> {
+        if !(node.is_error() || node.has_error()) {
+            return self.lower_function(node);
+        }
+        let before = self.errors.borrow().len();
+        // Run for diagnostics only; the result is deliberately discarded.
+        let _ = self.lower_function(node);
+        if self.errors.borrow().len() == before {
+            self.push_fault_error(node, "syntax error in function definition");
+        }
+        None
+    }
+
     /// Extract the source text for a node.
     fn node_text(&self, node: tree_sitter::Node) -> &'a str {
         &self.source[node.start_byte()..node.end_byte()]
@@ -230,11 +470,36 @@ impl<'a> Lowering<'a> {
         ContentHash::of_str(self.node_text(node))
     }
 
+    /// A short, single-line excerpt of a node's source text, safe to interpolate into a
+    /// diagnostic message.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+    /// a diagnostic that reprints a block of source is unreadable, and on a recovered parse
+    /// the node in question can span an entire declaration. Truncates at the first newline,
+    /// then to at most 40 characters, appending an ellipsis when anything was cut.
+    ///
+    /// Truncation is on a CHARACTER boundary via `char_indices`, never a byte slice: the
+    /// source is UTF-8 and `&s[..40]` would panic mid-codepoint on any non-ASCII input.
+    fn snippet(&self, node: tree_sitter::Node) -> String {
+        const MAX_CHARS: usize = 40;
+        let text = self.node_text(node);
+        let (first_line, had_newline) = match text.find('\n') {
+            Some(i) => (&text[..i], true),
+            None => (text, false),
+        };
+        match first_line.char_indices().nth(MAX_CHARS) {
+            Some((byte_idx, _)) => format!("{}…", &first_line[..byte_idx]),
+            None if had_newline => format!("{first_line}…"),
+            None => first_line.to_string(),
+        }
+    }
+
     /// Emit a diagnostic for an unexpected named child in a lowering context.
     ///
     /// Skips anonymous tokens and extras (comments). For named, non-extra
     /// children that don't match any expected arm, pushes an error with the
-    /// child's kind and source text.
+    /// child's kind and a BOUNDED excerpt of its source text (see [`Self::snippet`] —
+    /// INV-SF-7, task #5392). The `unexpected '<kind>' in <context>` prefix is unchanged.
     fn warn_unexpected_child(&mut self, child: tree_sitter::Node, context: &str) {
         if child.is_named() && !child.is_extra() {
             self.push_error(
@@ -242,7 +507,7 @@ impl<'a> Lowering<'a> {
                     "unexpected '{}' in {}: {}",
                     child.kind(),
                     context,
-                    self.node_text(child)
+                    self.snippet(child)
                 ),
                 self.span(child),
             );
@@ -376,10 +641,17 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
+                // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+                // task #5392: routed through `lower_function_checked` so a faulty subtree is
+                // refused AND diagnosed, like every sibling arm's `check_and_lower!`. Without
+                // that guard a `function_definition` carrying a nested MISSING node (e.g.
+                // `fn f(x: Int) -> Int { let y = ; x }`) lowered cleanly with the malformed
+                // binding silently dropped — zero diagnostics for a module whose values no
+                // longer match its source.
                 "function_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_function(child) {
+                    if let Some(mut decl) = self.lower_function_checked(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Function(decl));
                     }
@@ -532,10 +804,7 @@ impl<'a> Lowering<'a> {
                     // leak past a syntax error to the next successfully-parsed declaration.
                     let _ = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.diagnose_error_node(child, "source file");
                 }
                 _ => self.warn_unexpected_child(child, "source file"),
             }
@@ -1770,14 +2039,21 @@ impl<'a> Lowering<'a> {
                 }
                 "let_declaration" => {
                     // let declarations in constraint def body are ignored for now
-                    // (captured in params/predicates separation; future: add lets field)
+                    // (captured in params/predicates separation; future: add lets field),
+                    // but a FAULTY let is still refused loudly: its recovery can absorb the
+                    // following predicate (INV-SF-7).
+                    self.refuse_if_faulty(child, "constraint let");
                 }
                 "constraint_def_predicate" => {
-                    if let Some(expr_node) = child.child_by_field_name("expr")
-                        && let Some(expr) = self.lower_expr(expr_node)
-                    {
-                        predicates.push(expr);
-                    }
+                    let _ = check_and_lower!(
+                        self,
+                        child,
+                        "constraint predicate",
+                        child
+                            .child_by_field_name("expr")
+                            .and_then(|e| self.lower_expr(e))
+                            .map(|p| predicates.push(p))
+                    );
                 }
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
@@ -1788,10 +2064,7 @@ impl<'a> Lowering<'a> {
                 // before the loop via child_by_field_name / lower_type_parameters.
                 "identifier" | "type_parameters" => {}
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in constraint body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in constraint body");
                 }
                 _ => self.warn_unexpected_child(child, "constraint body"),
             }
@@ -2171,18 +2444,42 @@ impl<'a> Lowering<'a> {
         let mut let_bindings = Vec::new();
 
         // Collect fn_let_binding children (zero for the expression form).
+        //
+        // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+        // task #5392: a binding that fails to lower is REPORTED, never dropped. The former
+        // `if kind == "fn_let_binding" && let Some(..)` shape had no else arm, so a
+        // malformed binding vanished from the AST with no diagnostic — the module then
+        // evaluated to a value its source never described.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "fn_let_binding"
-                && let Some(let_decl) = self.lower_fn_let_binding(child)
-            {
-                let_bindings.push(let_decl);
+            if child.kind() == "fn_let_binding" {
+                match self.lower_fn_let_binding(child) {
+                    Some(let_decl) => let_bindings.push(let_decl),
+                    None => self.push_fault_error(child, "invalid let binding in function body"),
+                }
             }
         }
 
         // The result expression is the 'result' field — present in both arms.
-        let result_node = node.child_by_field_name("result")?;
-        let result_expr = self.lower_expr(result_node)?;
+        // Same INV-SF-7 rule: a body we cannot lower is refused with a diagnostic, not
+        // returned as a bare `None` that the caller silently discards.
+        let Some(result_node) = node.child_by_field_name("result") else {
+            self.push_fault_error(node, "function body has no result expression");
+            return None;
+        };
+        // Distinct from the arm above, and reported only as a backstop. Here the result node
+        // EXISTS and merely failed to lower, so "has no result expression" would be factually
+        // wrong; and `lower_expr` has usually already pushed a more specific, better-located
+        // message, which this must not duplicate. Same growth check as
+        // `lower_function_checked`: speak only when the inner pass stayed silent.
+        let before = self.errors.borrow().len();
+        let lowered = self.lower_expr(result_node);
+        let Some(result_expr) = lowered else {
+            if self.errors.borrow().len() == before {
+                self.push_fault_error(result_node, "invalid result expression in function body");
+            }
+            return None;
+        };
 
         Some(FnBody {
             let_bindings,
@@ -2337,8 +2634,16 @@ impl<'a> Lowering<'a> {
                 .map(MemberDecl::AssociatedType),
             // Trait-body fn members: `fn f(self) -> T { ... }` (function_definition)
             // or `fn req(self) -> T` (bodyless function_signature).
+            //
+            // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+            // task #5392: this was the ONE member kind without a `has_error()` guard, so a
+            // fault inside a member fn body evaporated silently. Routed through
+            // `lower_function_checked` rather than `check_and_lower!` so a more specific
+            // inner message is not overwritten by a vague outer one. A bodyless
+            // `function_signature` is well-formed and lowers to `body: None` as before —
+            // the guard fires on CST faults, never on a legitimately absent body.
             "function_definition" | "function_signature" => {
-                self.lower_function(child).map(MemberDecl::Fn)
+                self.lower_function_checked(child).map(MemberDecl::Fn)
             }
             "port_declaration" => check_and_lower!(
                 self,
@@ -2385,10 +2690,7 @@ impl<'a> Lowering<'a> {
                 self.lower_forall_statement(child)
             ),
             "ERROR" => {
-                self.push_error(
-                    format!("syntax error: {}", self.node_text(child)),
-                    self.span(child),
-                );
+                self.diagnose_error_node(child, "structure body");
                 None
             }
             _ => None,
@@ -2419,10 +2721,18 @@ impl<'a> Lowering<'a> {
                 "ERROR" => {
                     // Consume pending annotations so they don't leak past a syntax error.
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+                    // task #5392. This arm SHADOWS `lower_member`'s own `"ERROR"` arm: an
+                    // `ERROR` child is matched here and never reaches it, so converting only
+                    // that one left every member-position fault reporting the old
+                    // blob-spanning, source-echoing message. Measured before this change, a
+                    // member fn whose `let` was missing its `;` reported
+                    // `2:3: syntax error: fn f(i: Int) -> Real {\n…` — five lines of echoed
+                    // source, anchored to the `fn` header rather than the absorbing `let`, and
+                    // swallowing the following member. A member fn collapses into an `ERROR`
+                    // here exactly as a top-level one collapses in `lower_source_file`, so it
+                    // gets the same let-anchored treatment.
+                    self.diagnose_error_node(child, "structure body");
                 }
                 _ => {
                     // Drain pending annotations before lowering the member.
@@ -2533,10 +2843,8 @@ impl<'a> Lowering<'a> {
                 }
                 "ERROR" => {
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // Shadowed by `check_and_lower!("guarded block")` in `lower_member`.
+                    self.diagnose_error_node(child, "guarded block");
                 }
                 _ => {
                     let annotations = std::mem::take(&mut pending_annotations);
@@ -2765,6 +3073,20 @@ impl<'a> Lowering<'a> {
     fn lower_sub(&mut self, node: tree_sitter::Node) -> Option<SubDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
+
+        // DERIVED arm first — `sub b = mirror of a across <plane> { … }` /
+        // `sub b = image of a under <transform> { … }`
+        // (assembly-derivation-toolbox.md, leaf A-alpha, task #6615).
+        //
+        // This branch MUST precede the `structure_name` lookup below. That
+        // lookup is a `?` early return, and the derived arm has no
+        // `structure_name` field at all — so reaching it would silently DROP
+        // the entire declaration: `lower_sub` returns None, the member never
+        // lands in the AST, and the user sees a `sub` that parsed cleanly and
+        // then vanished with no diagnostic.
+        if let Some(derivation_node) = node.child_by_field_name("derivation") {
+            return self.lower_derived_sub(node, name, derivation_node);
+        }
 
         let struct_node = node.child_by_field_name("structure_name")?;
         // A `namespaced_name` structure_name (`sub p = pp.Pulley()`, task 5495 μ)
@@ -3085,8 +3407,264 @@ impl<'a> Lowering<'a> {
             index_binder,
             index_domain,
             relate_relations,
+            // The derived arm returns early from `lower_sub` above, so this
+            // construction site is reached only by the three non-derived arms.
+            derivation: None,
             span: self.span(node),
             content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower the DERIVED `sub` arm into a `SubDecl` carrying a `SubDerivation`
+    /// (assembly-derivation-toolbox.md, leaf A-alpha, task #6615).
+    ///
+    /// Split out of `lower_sub` rather than inlined because the derived arm
+    /// shares almost nothing with the other three: no `structure_name`, no
+    /// constructor args, no type args, no specialization body. Every one of
+    /// those fields is set to its empty value here, upholding the discriminator
+    /// invariant documented on `SubDecl::derivation` AT THE SINGLE PRODUCER.
+    ///
+    /// `at <pose>` and the inline relate-block are still lowered: placement of
+    /// a derived sub is derived, so an explicit `at` is an error — but it is
+    /// `E_DERIVED_SUB_EXPLICIT_AT` (T8), A-beta's (#6616) COMPILE-scope
+    /// diagnostic, per the D3-adversary ownership ruling. Rejecting it here
+    /// would pre-empt T8 with a worse message.
+    ///
+    /// No interim "not yet elaborated" rejection is emitted, deliberately
+    /// unlike the indexed-sub `#5482` case above. There is no silent-miscompile
+    /// window to close here: a derived `SubDecl` carries an EMPTY
+    /// `structure_name`, so the compiler's unknown-structure path rejects it
+    /// loudly rather than elaborating it to something wrong. MEASURED on
+    /// `tests/prd-gate/fixtures/adt_mirror_of_arm.ri`, that rejection reads
+    /// `error: sub-component "unit_b" references unknown structure ""` — no
+    /// panic and no miscompile, so the safety argument holds, but the empty
+    /// quotes point nowhere useful. Giving that path a derived-aware message is
+    /// COMPILE-scope work and therefore A-beta's (#6616), which deletes the
+    /// whole interval by elaborating the arm.
+    fn lower_derived_sub(
+        &mut self,
+        node: tree_sitter::Node,
+        name: String,
+        derivation_node: tree_sitter::Node,
+    ) -> Option<SubDecl> {
+        // JOINT lowering, the discipline already documented on `index_binder`:
+        // if the derivation cannot be lowered whole, `lower_sub_derivation`
+        // pushes a diagnostic and returns None, and the declaration is dropped
+        // rather than emitted with a half-populated `SubDerivation`.
+        let derivation =
+            self.lower_sub_derivation(derivation_node, node.child_by_field_name("body"), &name)?;
+
+        let pose_expr = node
+            .child_by_field_name("pose")
+            .and_then(|n| self.lower_binding_value(n));
+        let relate_relations = node
+            .child_by_field_name("relations")
+            .map(|n| self.lower_relation_members(n))
+            .unwrap_or_default();
+
+        Some(SubDecl {
+            name,
+            // ── the discriminator invariant, upheld here ──
+            structure_name: String::new(),
+            type_args: Vec::new(),
+            args: Vec::new(),
+            is_collection: false,
+            body: None,
+            spec_param_overrides: Vec::new(),
+            keyed_members: Vec::new(),
+            // ── fields the derived arm genuinely carries ──
+            where_clause: None,
+            is_aux: self.has_aux_keyword(node),
+            is_priv: self.has_priv_keyword(node),
+            pose_expr,
+            index_binder: None,
+            index_domain: None,
+            relate_relations,
+            derivation: Some(Box::new(derivation)),
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower a `sub_derivation` node plus its sibling `derived_body`.
+    ///
+    /// Returns None — after pushing a diagnostic — when the plane/transform
+    /// operand fails to lower, so a caller never sees a `SubDerivation` whose
+    /// constructor is missing its operand.
+    ///
+    /// `body_node` is PASSED IN rather than reached by hopping up to
+    /// `derivation_node.parent()`: the only caller already holds the
+    /// `sub_declaration` node, and an upward hop would couple this helper to
+    /// where it is mounted AND fail open — a parent that is ever not the
+    /// `sub_declaration` (a future wrapper node, an alias) would silently yield
+    /// a `SubDerivation` with no overrides, dispositions or members, which is
+    /// exactly the half-lowering the `None` return above exists to prevent.
+    fn lower_sub_derivation(
+        &mut self,
+        derivation_node: tree_sitter::Node,
+        body_node: Option<tree_sitter::Node>,
+        sub_name: &str,
+    ) -> Option<SubDerivation> {
+        let prototype_node = derivation_node.child_by_field_name("prototype")?;
+        let prototype = SpannedIdent {
+            name: self.node_text(prototype_node).to_string(),
+            // The prototype token's OWN span, not the derivation's: A-beta's
+            // unknown / non-sibling / cyclic-prototype diagnostics underline
+            // exactly it.
+            span: self.span(prototype_node),
+        };
+
+        // The two alternatives are distinguished by which operand field the
+        // grammar produced — `plane` for `mirror … across`, `transform` for
+        // `image … under`. Both are mandatory in their own alternative, so a
+        // missing operand means an ERROR CST node.
+        let kind = if let Some(plane_node) = derivation_node.child_by_field_name("plane") {
+            match self.lower_expr(plane_node) {
+                Some(plane) => SubDerivationKind::Mirror { plane },
+                None => {
+                    self.push_error(
+                        format!(
+                            "invalid mirror plane for `sub {sub_name} = mirror of {} across …`: \
+                             the plane expression could not be lowered",
+                            prototype.name,
+                        ),
+                        self.span(derivation_node),
+                    );
+                    return None;
+                }
+            }
+        } else if let Some(transform_node) = derivation_node.child_by_field_name("transform") {
+            match self.lower_expr(transform_node) {
+                Some(transform) => SubDerivationKind::Image { transform },
+                None => {
+                    self.push_error(
+                        format!(
+                            "invalid image transform for `sub {sub_name} = image of {} under …`: \
+                             the transform expression could not be lowered",
+                            prototype.name,
+                        ),
+                        self.span(derivation_node),
+                    );
+                    return None;
+                }
+            }
+        } else {
+            return None;
+        };
+
+        let mut param_overrides: Vec<SubParamOverride> = Vec::new();
+        let mut param_resets: Vec<SpannedIdent> = Vec::new();
+        let mut dispositions: Vec<SubDisposition> = Vec::new();
+        let mut members: Vec<MemberDecl> = Vec::new();
+
+        if let Some(body_node) = body_node {
+            let mut cursor = body_node.walk();
+            for child in body_node.named_children(&mut cursor) {
+                match child.kind() {
+                    "derived_param_assignment" => {
+                        let Some(name_node) = child.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let Some(value_node) = child.child_by_field_name("value") else {
+                            continue;
+                        };
+                        let param = SpannedIdent {
+                            name: self.node_text(name_node).to_string(),
+                            span: self.span(name_node),
+                        };
+                        if value_node.kind() == "default_reset" {
+                            // `<param> = default` RESETS to the prototype's
+                            // declared default. It carries no expression at
+                            // all, so it goes to `param_resets`, not to
+                            // `param_overrides` under a sentinel value.
+                            param_resets.push(param);
+                        } else if let Some(value) = self.lower_binding_value(value_node) {
+                            // `lower_binding_value`, not `lower_expr`, so
+                            // `auto` / `auto(free)` overrides lower to
+                            // `ExprKind::Auto` exactly as on the
+                            // specialization arm.
+                            param_overrides.push(SubParamOverride {
+                                name: param,
+                                value,
+                                // The grammar's `optional(field('guard', …))`
+                                // tail, lowered through the SAME helper every
+                                // other guarded declaration uses. Stored, never
+                                // dropped: an override the source made
+                                // CONDITIONAL must not reach A-beta looking
+                                // unconditional.
+                                guard: self.lower_where_clause(child),
+                            });
+                        }
+                    }
+                    "keep_disposition" => {
+                        if let Some(d) = self.lower_disposition(child, SubDispositionKind::Keep) {
+                            dispositions.push(d);
+                        }
+                    }
+                    "exclude_disposition" => {
+                        if let Some(d) = self.lower_disposition(child, SubDispositionKind::Exclude) {
+                            dispositions.push(d);
+                        }
+                    }
+                    // `let_declaration` / `constraint_declaration`.
+                    _ => {
+                        if let Some(member) = self.lower_member(child) {
+                            members.push(member);
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(SubDerivation {
+            kind,
+            prototype,
+            param_overrides,
+            param_resets,
+            dispositions,
+            members,
+            span: self.span(derivation_node),
+        })
+    }
+
+    /// Lower one `keep_disposition` / `exclude_disposition` node.
+    ///
+    /// The `kind` is passed in rather than re-derived from `node.kind()` so the
+    /// two call sites above stay the single place the mapping is stated.
+    fn lower_disposition(
+        &mut self,
+        node: tree_sitter::Node,
+        kind: SubDispositionKind,
+    ) -> Option<SubDisposition> {
+        let path_node = node.child_by_field_name("path")?;
+        let mut path = Vec::new();
+        let mut cursor = path_node.walk();
+        for segment in path_node.named_children(&mut cursor) {
+            if segment.kind() == "identifier" {
+                // Each segment carries its OWN span so A-beta's
+                // unresolvable-path diagnostic underlines the failing hop.
+                path.push(SpannedIdent {
+                    name: self.node_text(segment).to_string(),
+                    span: self.span(segment),
+                });
+            }
+        }
+        if path.is_empty() {
+            // Only reachable on an ERROR CST node — the grammar makes
+            // `disposition_path` at least one identifier. That node surfaces
+            // its own diagnostic; dropping the disposition here keeps a
+            // path-less entry out of the AST.
+            return None;
+        }
+        // RESERVED (PRD §3.3/§11): parsed and stored, no v1 meaning.
+        let using_plane = node
+            .child_by_field_name("plane")
+            .and_then(|n| self.lower_expr(n));
+        Some(SubDisposition {
+            kind,
+            path,
+            using_plane,
+            span: self.span(node),
         })
     }
 
@@ -3241,10 +3819,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in port body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in port body");
                 }
                 _ => self.warn_unexpected_child(child, "port body"),
             }
@@ -3376,10 +3951,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in connect body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in connect body");
                 }
                 _ => self.warn_unexpected_child(child, "connect body"),
             }
@@ -4031,6 +4603,9 @@ impl<'a> Lowering<'a> {
             index_binder: None,
             index_domain: None,
             relate_relations: Vec::new(),
+            // The match-arm sub grammar is `sub name : structure_name` only —
+            // no derivation clause is reachable here.
+            derivation: None,
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),
         };
@@ -4248,9 +4823,13 @@ impl<'a> Lowering<'a> {
     ///   1. **Pow** — `base ^ exponent`. Probed first because the pow arm also
     ///      carries an `op` field (the `^`), but is uniquely identified by the
     ///      presence of `base` + `exponent` fields.
-    ///   2. **Mul/Div** — `left (*|/) right`, left-associative. Dispatch on the
+    ///   2. **Mul/Div** — `left (*|·|/) right`, left-associative. Dispatch on the
     ///      operator's source TEXT, not node kind: the `op` field aliases the two
-    ///      external-scanner tokens (`_unit_mul_op` / `_unit_div_op`).
+    ///      external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
+    ///      `child_by_field_name` never resolves — which is why the slice is read
+    ///      at all. `*` and `·` (U+00B7) are two spellings of one operator and
+    ///      both yield [`UnitExpr::Mul`] (task #5784, PRD
+    ///      `docs/prds/v0_6/angle-units-surface-convergence.md` §5 C2).
     ///   3. **Paren / bare unit** — a parenthesised `unit_expr` is unwrapped
     ///      transparently (no `Paren` variant — parens carry no semantics); a
     ///      `unit_name` child becomes [`UnitExpr::Unit`].
@@ -4269,28 +4848,77 @@ impl<'a> Lowering<'a> {
             return Some(UnitExpr::Pow(Box::new(base), exponent));
         }
 
-        // 2. Mul/Div: `left (*|/) right`, left-associative. The `op` field aliases
-        //    the external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
-        //    `child_by_field_name` does NOT expose — so detect the arm by the
-        //    `left`+`right` fields and read the operator from the source slice
-        //    between the two operands. Units are contiguous (no whitespace inside
-        //    a unit_expr), so that slice is exactly `*` or `/`.
+        // 2. Mul/Div: `left (*|·|/) right`, left-associative. Two facts drive it:
+        //
+        //    - The `op` field aliases the external-scanner tokens (`_unit_mul_op`
+        //      / `_unit_div_op`), which `child_by_field_name` does NOT expose. So
+        //      detect the arm by the `left`+`right` fields and read the operator
+        //      from the source slice between them.  Unit ATOMS are contiguous, so
+        //      that slice is normally exactly one of `*`, `·` or `/` — but it is
+        //      not guaranteed to be: a comment between two parenthesised groups
+        //      lands in the slice too (measured: `5(m)/*c*/*(s)` yields
+        //      `/*c*/*`), which is why `classify_unit_op` is TOTAL rather than a
+        //      three-way match.
+        //    - `*` and `·` (U+00B7 MIDDLE DOT, the SI-conventional multiply) are
+        //      two spellings of ONE operator, both yielding `UnitExpr::Mul` —
+        //      task #5784 / PRD
+        //      `docs/prds/v0_6/angle-units-surface-convergence.md` §5 C2.
+        //
+        //    `classify_unit_op` owns the match; its doc covers why the slice is
+        //    matched EXACTLY and why the fallthrough diagnoses rather than
+        //    returning a bare `None` (INV-SF-7 `parse-is-value-faithful`).
         if let (Some(left_node), Some(right_node)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
         ) {
             let left = self.lower_unit_expr(left_node)?;
             let right = self.lower_unit_expr(right_node)?;
-            let op_text = self
-                .source
-                .get(left_node.end_byte()..right_node.start_byte())?;
-            return if op_text.contains('/') {
-                Some(UnitExpr::Div(Box::new(left), Box::new(right)))
-            } else if op_text.contains('*') {
-                Some(UnitExpr::Mul(Box::new(left), Box::new(right)))
+            let op_start = left_node.end_byte();
+            let op_end = right_node.start_byte();
+            let op_text = self.source.get(op_start..op_end)?;
+            // Classify the RAW slice FIRST, and stop there when it already reads
+            // as an operator.  That is the overwhelmingly common case — unit
+            // atoms are contiguous, so the slice is normally just `*`, `·` or `/`
+            // — and this function runs on every compound quantity literal of
+            // every parse, including each keystroke of a GUI reparse.  The
+            // comment sweep below costs a `TreeCursor` plus a `Vec` per node, so
+            // it must not be paid on that path.
+            //
+            // Behaviour-preserving, not an approximation: excision can only ever
+            // SHRINK the slice, and a slice whose trimmed form is exactly `*`,
+            // `·` or `/` cannot contain a comment at all — every comment opens
+            // with `/` and is at least two bytes, so its presence would leave the
+            // trimmed slice strictly longer than the operator alone.  Hence the
+            // raw `Mul`/`Div` answer is the same answer the residue would give.
+            //
+            // Everything else falls through to the sweep.  Comments are `extras`,
+            // so one written between the operands lands INSIDE the slice —
+            // measured on a clean parse (`has_error() == false`):
+            //
+            //   5N/*c*/*m   →   unit_expr(left, block_comment, right)
+            //
+            // No parens needed, and the `·` spelling behaves identically.  Cut
+            // the comment spans out before re-classifying, so a comment-bearing
+            // `Mul`/`Div` lowers to `Mul`/`Div`: the lowered tree must agree with
+            // what the grammar ACCEPTED, and rejecting a clean parse would trade
+            // one INV-SF-7 violation (wrong value) for a spurious error on valid
+            // source.  `collect_unit_op_comment_spans` sweeps the SUBTREE rather
+            // than this node's direct children — where an `extra` attaches is a
+            // property of the generated parser, not of the grammar rule; see its
+            // doc for the measured depth case.
+            //
+            // `op_residue` is bound in THIS scope, not inside the `else`, so the
+            // `Unrecognized(&str)` borrow into it outlives the match below.
+            let op_residue: Cow<'_, str>;
+            let raw_op = classify_unit_op(op_text);
+            let op = if matches!(raw_op, UnitOp::Mul | UnitOp::Div) {
+                raw_op
             } else {
-                None
+                let comment_spans = collect_unit_op_comment_spans(node, op_start, op_end);
+                op_residue = strip_unit_op_comments(op_text, op_start, &comment_spans);
+                classify_unit_op(&op_residue)
             };
+            return self.unit_expr_from_classified_op(op, left, right, node);
         }
 
         // 3. Paren or bare unit: walk named children. A `unit_name` child is a
@@ -4307,6 +4935,53 @@ impl<'a> Lowering<'a> {
             }
         }
         None
+    }
+
+    /// Build the [`UnitExpr`] a classified operator calls for, or drop the
+    /// member — loudly for [`UnitOp::Unrecognized`], silently for
+    /// [`UnitOp::Missing`].  `node` is the whole `unit_expr` being lowered, and
+    /// is what any diagnostic is spanned to.
+    ///
+    /// Split out of [`Self::lower_unit_expr`] purely as a TEST SEAM, following
+    /// the same shape as [`Self::qualified_type_recovery_base`]: no source
+    /// reaches the two dropping arms today (see [`UnitOp`]), so a synthetic
+    /// classification handed to a real CST node is the only way to observe that
+    /// the diagnostic FIRES AT ALL, exactly once, naming the operator verbatim,
+    /// and SPANNED to the whole `unit_expr`.  (Its full wording is deliberately
+    /// not pinned — see `unit_op_seam_unrecognized_*`.)  Without that seam, the
+    /// `push_error` call
+    /// below is defensive code whose first execution would be in production —
+    /// the shape INV-SF-7 warns about.  `unit_op_seam_*` in this file's `mod
+    /// tests` drives all four arms.
+    fn unit_expr_from_classified_op(
+        &self,
+        op: UnitOp<'_>,
+        left: UnitExpr,
+        right: UnitExpr,
+        node: tree_sitter::Node,
+    ) -> Option<UnitExpr> {
+        match op {
+            UnitOp::Mul => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
+            UnitOp::Div => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
+            // Silent BY DESIGN, and not the INV-SF-7 shape: error recovery
+            // spliced the operands together, so the tree already carries the
+            // ERROR/MISSING node `check_and_lower!` reports. The drop is loud
+            // where the user observes it — just not reported twice.  A slice
+            // that held ONLY comments reduces to this same case, and for the
+            // same reason: the operator token is genuinely absent from the
+            // source, so the tree is already in error.
+            UnitOp::Missing => None,
+            // Names the comment-free RESIDUE, which is the operator the user
+            // actually wrote; a comment they deliberately put there is not
+            // part of the complaint.
+            UnitOp::Unrecognized(other) => {
+                self.push_error(
+                    format!("unrecognized unit operator `{other}` in unit expression"),
+                    self.span(node),
+                );
+                None
+            }
+        }
     }
 
     fn lower_number_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -4489,13 +5164,18 @@ impl<'a> Lowering<'a> {
     /// the arity of the enclosing call and re-label every argument after it:
     /// `plain(1, a.b.c(), 3)` measured as a TWO-argument `FunctionCall` before
     /// this was fixed, with `3` sliding into position 1. That matters even
-    /// though the enclosing parse always carries an error, because
-    /// `reify_compiler`'s `forward_parse_errors` downgrades every parse error to
-    /// a WARNING — so a library consumer that compiles and reads diagnostics
-    /// sees the mis-arity'd call with no error at all. The slot is filled with
-    /// `ExprKind::Undef`, whose documented job is exactly this (it absorbs the
-    /// type cascade via `Type::Error`), and any label the argument carried is
-    /// preserved so `args`/`arg_names` stay length-matched and aligned.
+    /// though the enclosing parse always carries an error: the lowered AST is
+    /// observable independently of the diagnostics, so a consumer that inspects
+    /// it without bailing on the error list still reads the mis-arity'd call.
+    /// This is a lowering-local contract — it does not rest on how any
+    /// downstream crate grades the accompanying diagnostic. (Task #5392 later
+    /// made `reify_compiler`'s `forward_parse_errors` push an ERROR rather than
+    /// the WARNING this comment once cited as the motivating hazard; the
+    /// invariant is unchanged, because it never depended on that severity.)
+    /// The slot is filled with `ExprKind::Undef`, whose documented job is exactly
+    /// this (it absorbs the type cascade via `Type::Error`), and any label the
+    /// argument carried is preserved so `args`/`arg_names` stay length-matched
+    /// and aligned.
     ///
     /// The placeholder is pushed ONLY when the failed lowering also pushed a
     /// DIAGNOSTIC. A `None` with no diagnostic is a silent skip — a `line_comment`
@@ -5012,6 +5692,256 @@ impl<'a> Lowering<'a> {
             },
             span: self.span(node),
         })
+    }
+}
+
+/// Classification of the operator slice between a `unit_expr`'s `left` and
+/// `right` operands — see [`Lowering::lower_unit_expr`], the sole caller.
+///
+/// Split out of the method so the non-happy-path arms are REACHABLE FROM A TEST:
+/// defensive code whose first observation is in production is exactly the shape
+/// INV-SF-7 warns about.
+///
+/// [`UnitOp::Unrecognized`] and [`UnitOp::Missing`] are both DEFENSIVE arms: no
+/// probed source reaches either.  They are not therefore removable, and the
+/// history says why the fallthrough must DIAGNOSE rather than return a bare
+/// `None`.
+///
+/// Comments are `extras`, so one written between the operands is part of the raw
+/// operator slice: `5N/*c*/*m` parses with no ERROR node and yields `/*c*/*`
+/// (measured, task #5784).  Three successive contracts for that input —
+///   1. before #5784, `op_text.contains('/')` lowered it to `Div`: a well-typed
+///      WRONG value from a clean parse, the INV-SF-7 shape itself;
+///   2. #5784's exact match made it `Unrecognized("/*c*/*")` — loud, but a
+///      spurious error on source the grammar ACCEPTED;
+///   3. today, [`strip_unit_op_comments`] cuts the comment spans out first, so
+///      the residue `*` classifies as the `Mul` the CST plainly shows.
+///
+/// READ THAT AS A SEPARATE DEFECT FROM THE `·` WIDENING.  Contract (1) is
+/// PRE-EXISTING: `contains('/')` mis-read `/*c*/*` as `Div` for the whole life of
+/// `lower_unit_expr`, with or without U+00B7, so nothing about it is `·`-specific.
+/// #5784 is what made it observable — the exact match turned a silent wrong value
+/// into a loud spurious error — and so repaired it here rather than leaving a
+/// known INV-SF-7 wrong-value bug behind a task boundary.  The `·` change itself
+/// is two lines: one scanner guard, and the `"·"` arm of [`classify_unit_op`].
+/// Everything else on this path — this enum, [`strip_unit_op_comments`],
+/// [`collect_unit_op_comment_spans`] and
+/// [`Lowering::unit_expr_from_classified_op`] — is the comment-correctness fix.
+///
+/// After (3) the residue is always exactly the operator token, because the only
+/// `extras` are whitespace (trimmed), comments (excised), and a sentinel the
+/// scanner never emits.  So `Unrecognized` now guards against a FUTURE operator
+/// token reaching this function unhandled: without the diagnostic, a bare `None`
+/// out of `lower_unit_expr` propagates through `lower_quantity_literal` and
+/// `lower_let` as a DROPPED member with no error at all.
+///
+/// Both arms are therefore observed ONLY by tests, in two layers — do not delete
+/// either as "dead":
+///   - `classify_unit_op_*` and `strip_unit_op_comments_*` pin the
+///     CLASSIFICATION, i.e. which arm a given slice lands in;
+///   - `unit_op_seam_*` pin what the CALL SITE then does with it — that
+///     `Unrecognized` emits exactly one error naming the operator verbatim and
+///     spanned to the whole `unit_expr`, and that `Missing` emits none.  They
+///     drive [`Lowering::unit_expr_from_classified_op`] directly, which exists
+///     as that seam.
+#[derive(Debug, PartialEq, Eq)]
+enum UnitOp<'a> {
+    /// `*` or `·` (U+00B7 MIDDLE DOT) — two spellings of ONE operator, both
+    /// yielding [`UnitExpr::Mul`] (task #5784).
+    Mul,
+    /// `/` → [`UnitExpr::Div`].
+    Div,
+    /// The slice is empty or whitespace-only, i.e. the operator token is
+    /// MISSING — spliced away by tree-sitter's error recovery.  The caller must
+    /// NOT diagnose: the tree already carries the ERROR/MISSING node that
+    /// `check_and_lower!` reports.
+    Missing,
+    /// Anything else, carried verbatim (already trimmed) so the caller can name
+    /// it in the diagnostic.  Never dropped silently.
+    Unrecognized(&'a str),
+}
+
+/// Classify the operator slice between a `unit_expr`'s two operands.
+///
+/// The caller classifies the RAW slice first and, only if that does not already
+/// read as `Mul`/`Div`, re-classifies the residue left by
+/// [`strip_unit_op_comments`].  Either way the trimmed input it finally acts on
+/// is exactly `*`, `·` or `/` for every parse the grammar accepts — unit atoms
+/// are contiguous and the only other `extras` are whitespace and a never-emitted
+/// sentinel.  The match is nonetheless TOTAL; see [`UnitOp`] for why the leftover
+/// arms stay.
+///
+/// Matched EXACTLY rather than by `contains`, and every arm is total, because the
+/// caller cannot afford an unhandled operator: a bare `None` out of
+/// `lower_unit_expr` propagates through `lower_quantity_literal` and `lower_let`
+/// as a DROPPED member, while `check_and_lower!` stays silent (it keys off a CST
+/// that `is_error()`, and a scanner-accepted operator produces no error node).
+/// The user then sees a binding vanish with no diagnostic — the INV-SF-7
+/// `parse-is-value-faithful` failure shape (`docs/legibility/design-invariants.md`).
+/// Returning [`UnitOp::Unrecognized`] instead of `None` closes that for the
+/// OPERATOR-CLASSIFICATION path — every operator spelling, present or future,
+/// rather than `·` alone.
+///
+/// Scope of that claim, stated exactly because the next reader will lean on it:
+/// it covers this function's fallthrough, NOT the whole `Mul`/`Div` arm.  Three
+/// bare-`None` exits still precede the classification in
+/// [`Lowering::lower_unit_expr`] — the two `self.lower_unit_expr(..)?` operand
+/// recursions and the `self.source.get(op_start..op_end)?` slice read.  All
+/// three are unreachable for a well-formed CST (the operand byte ranges are
+/// token-aligned, ascending and inside `self.source`), so they are not live
+/// INV-SF-7 defects; but they are silent, so "no silent exit anywhere in the
+/// arm" would be a false claim.  A future edit that can make any of them fail on
+/// real source must give it a diagnostic, not inherit this one.
+fn classify_unit_op(op_text: &str) -> UnitOp<'_> {
+    match op_text.trim() {
+        "*" | "·" => UnitOp::Mul,
+        "/" => UnitOp::Div,
+        "" => UnitOp::Missing,
+        other => UnitOp::Unrecognized(other),
+    }
+}
+
+/// Collect the byte ranges of every comment lying inside a `unit_expr`'s raw
+/// operator slice `[op_start, op_end)` — the `cuts` argument
+/// [`strip_unit_op_comments`] expects, ascending and non-overlapping.
+///
+/// Sweeps the SUBTREE, not just `node`'s direct children, because WHERE
+/// tree-sitter attaches an `extra` is a property of the GENERATED parser, not of
+/// the grammar rule: it can move under a `grammar.js` edit that changes no
+/// accepted language (narrowing the paren arm to a hidden `_unit_atom`, which
+/// `grammar.js`'s own TODO contemplates, is the concrete candidate).  Comments
+/// already DO attach at depth — measured on a clean parse (task #5784 amendment
+/// pass):
+///
+/// ```text
+///   5(m/*c*/)*s  →  unit_expr(unit_expr(unit_expr(unit_name), block_comment),
+///                             unit_expr(unit_name))
+/// ```
+///
+/// i.e. a child of the INNER `unit_expr`, not the outer one.  That comment is
+/// outside the operator slice (`*`) and so is filtered out, but it shows the
+/// attachment point is not fixed at direct-child.  Were an IN-SLICE comment ever
+/// to move that way, a direct-children sweep would miss it, the residue would
+/// still carry the comment text, and [`Lowering::lower_unit_expr`] would emit a
+/// spurious `unrecognized unit operator` on source the grammar ACCEPTED — the
+/// exact failure the excision path exists to remove, and one no test would
+/// localise to attachment.  Widening costs nothing on the hot path: the caller
+/// only gets here when the RAW slice failed to classify.
+///
+/// An ANCESTOR attachment needs no handling: sibling ranges are disjoint and
+/// ordered, so a node lying strictly inside `node`'s range cannot be a child of
+/// any ancestor of `node`.  A descendant walk is complete for `[op_start,
+/// op_end)`.
+///
+/// Pre-order with children in source order, and a matched comment is never
+/// descended into (comments do not nest), so the spans come back ascending and
+/// non-overlapping.  The range filter is what keeps the wider walk safe, and
+/// [`strip_unit_op_comments`] re-validates every range regardless.
+fn collect_unit_op_comment_spans(
+    node: tree_sitter::Node,
+    op_start: usize,
+    op_end: usize,
+) -> Vec<(usize, usize)> {
+    fn walk(
+        node: tree_sitter::Node,
+        op_start: usize,
+        op_end: usize,
+        out: &mut Vec<(usize, usize)>,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let (start, end) = (child.start_byte(), child.end_byte());
+            // Siblings are ordered and non-overlapping, so a child disjoint from
+            // the operator slice cannot contain an in-slice comment either.
+            if end <= op_start || start >= op_end {
+                continue;
+            }
+            if matches!(child.kind(), "line_comment" | "block_comment") {
+                if start >= op_start && end <= op_end {
+                    out.push((start, end));
+                }
+                continue;
+            }
+            walk(child, op_start, op_end, out);
+        }
+    }
+    let mut spans = Vec::new();
+    walk(node, op_start, op_end, &mut spans);
+    spans
+}
+
+/// Cut the comment spans out of a `unit_expr`'s raw operator slice, returning
+/// what [`classify_unit_op`] should see.
+///
+/// Comments are parser `extras`, so one written between the operands sits INSIDE
+/// the slice `lower_unit_expr` cuts from the source — as a descendant of the
+/// `unit_expr` node (a DIRECT child in every shape probed so far, but
+/// [`collect_unit_op_comment_spans`] does not assume that), on a tree with no
+/// ERROR node anywhere.  Measured (task #5784 amendment pass):
+///
+/// ```text
+///   5N/*c*/*m        →  unit_expr(left, block_comment, right)   slice `/*c*/*`
+///   5N/*c*/·m        →  same shape                              slice `/*c*/·`
+///   5N/*c*//m        →  same shape                              slice `/*c*//`
+///   5N/*a*//*b*/*m   →  two block_comment children              slice `/*a*//*b*/*`
+/// ```
+///
+/// `line_comment` is accepted by the caller's filter for symmetry, but was never
+/// observed inside a `unit_expr`: a `//…` comment ends the line, and every probed
+/// spelling (`5N//c⏎*m`, `5(m)//c⏎*(s)`) reparsed as a `binary_expression`
+/// instead.
+///
+/// Classifying those raw slices would reject source the GRAMMAR ACCEPTED, so the
+/// comments come out first and the residue (`*`, `·`, `/`) classifies as the
+/// operator the CST plainly shows.
+///
+/// `slice_start` is `slice`'s byte offset in the source file; `cuts` are ABSOLUTE
+/// `(start, end)` byte ranges which the caller has already filtered to those
+/// lying inside the slice, in ascending source order.  Any entry that does not
+/// translate to an ascending, in-bounds, char-boundary-aligned range inside
+/// `slice` is SKIPPED, and a slice whose tail cannot be taken falls back to the
+/// raw text: a surprising CST then degrades to the loud `Unrecognized`
+/// diagnostic rather than to a panic or a silently wrong operator.
+///
+/// Borrows rather than allocating when `cuts` is empty.  The caller goes further
+/// and does not call this at all unless the raw slice failed to classify, so a
+/// comment-free unit expression pays neither this nor the `TreeCursor` + `Vec`
+/// needed to find the cuts.
+fn strip_unit_op_comments<'a>(
+    slice: &'a str,
+    slice_start: usize,
+    cuts: &[(usize, usize)],
+) -> Cow<'a, str> {
+    if cuts.is_empty() {
+        return Cow::Borrowed(slice);
+    }
+    let mut out = String::with_capacity(slice.len());
+    // Slice-relative offset of the first byte not yet copied into `out`.
+    let mut kept_to = 0usize;
+    for &(start, end) in cuts {
+        let (Some(rel_start), Some(rel_end)) = (
+            start.checked_sub(slice_start),
+            end.checked_sub(slice_start),
+        ) else {
+            continue;
+        };
+        if rel_start < kept_to || rel_end < rel_start || rel_end > slice.len() {
+            continue;
+        }
+        let Some(keep) = slice.get(kept_to..rel_start) else {
+            continue;
+        };
+        out.push_str(keep);
+        kept_to = rel_end;
+    }
+    match slice.get(kept_to..) {
+        Some(tail) => {
+            out.push_str(tail);
+            Cow::Owned(out)
+        }
+        // `kept_to` landed off a char boundary — unreachable for a token-aligned
+        // CST.  Hand back the raw slice so the caller diagnoses loudly.
+        None => Cow::Borrowed(slice),
     }
 }
 
@@ -6682,8 +7612,9 @@ mod tests {
 
     #[test]
     fn lower_connect_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside connect_body.
-        // When lower_connect_body is called directly, the ERROR arm fires.
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // connect_body. When lower_connect_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
         // NOTE: we use `: BoltSet` to specify a connector_type before the brace
         // block, making `{` unambiguously the start of connect_body.  Without
         // the connector_type, the new variant_construction GLR fork (task α,
@@ -6693,20 +7624,11 @@ mod tests {
         // `{ … }` as a member-level ERROR node rather than a connect_body,
         // causing `find_node_by_kind("connect_body")` to fail.  The connector
         // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
-        let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { >= } }",
-        );
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in connect body")),
-            "expected 'syntax error in connect body', got: {:?}",
-            errors
-        );
+        let source = "structure S {\n  port a : out T\n  port b : in T\n  connect a -> b : BoltSet {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_body_with_errors(source);
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in connect body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
@@ -6835,20 +7757,14 @@ mod tests {
 
     #[test]
     fn lower_port_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside port_body.
-        // When lower_port_body is called directly, the ERROR arm should fire.
-        let errors = lower_port_body_with_errors("structure S { port a : in T { >= } }");
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in port body")),
-            "expected 'syntax error in port body', got: {:?}",
-            errors
-        );
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // port_body. When lower_port_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
+        let source = "structure S {\n  port a : in T {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_port_body_with_errors(source);
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in port body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
@@ -6903,6 +7819,24 @@ mod tests {
             "expected no errors for syntactically valid port body with comment, got: {:?}",
             errors
         );
+    }
+
+    // ── Guarded block ERROR arm ────────────────────────────────
+
+    /// A guarded block is a member list, so its `ERROR` arm takes the member-list policy
+    /// (`diagnose_error_node`): no source echo, located at the fault (INV-SF-7, task #6156).
+    ///
+    /// Only a direct call reaches this arm. Through `parse`, `lower_member` refuses a faulty
+    /// `guarded_block` via `check_and_lower!` before `lower_guarded_block` ever runs.
+    #[test]
+    fn lower_guarded_block_error_node_emits_diagnostic() {
+        let source = "structure S {\n  param x: Real = 1\n  where x > 0 {\n    let a = 1\n    ) (\n      ] [\n    let b = 2\n  }\n}\n";
+        let errors = lower_node_with_errors(source, "guarded_block", |l, n| {
+            l.lower_guarded_block(n);
+        });
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in guarded block");
+        assert_eq!(errors[0].span.start as usize, source.find(") (").unwrap());
     }
 
     // ── Constraint def defensive catch-all tests ───────────────
@@ -7400,5 +8334,479 @@ mod tests {
                 other
             ),
         }
+    }
+
+    // ── `classify_unit_op` — the non-happy-path arms of `lower_unit_expr` ─────
+    //
+    // Task #5784 (angle-units leaf κ).  These pin the CLASSIFICATION and the
+    // verbatim operator text handed to the diagnostic; the message wording itself
+    // is built at the single call site in `lower_unit_expr`.
+    //
+    // Both leftover arms are DEFENSIVE — no probed source reaches `Unrecognized`
+    // or `Missing` now that `strip_unit_op_comments` runs first (see the
+    // [`UnitOp`] doc for why they still must diagnose rather than return a bare
+    // `None`).  Tests are therefore their only observation, and these cover just
+    // one half of it: WHICH ARM a slice lands in.  What the call site does with
+    // that arm — that a diagnostic fires at all and names the operator, the span
+    // it attaches, and the silence of `Missing` — is pinned by `unit_op_seam_*`
+    // below.  Deleting either group as
+    // "dead code" restores the silent-member-drop hazard unobserved.
+
+    #[test]
+    fn classify_unit_op_maps_both_mul_spellings_to_one_operator() {
+        assert_eq!(classify_unit_op("*"), UnitOp::Mul);
+        assert_eq!(
+            classify_unit_op("·"),
+            UnitOp::Mul,
+            "U+00B7 MIDDLE DOT is a second spelling of `*`, not a distinct operator"
+        );
+        assert_eq!(classify_unit_op("/"), UnitOp::Div);
+    }
+
+    #[test]
+    fn classify_unit_op_treats_an_empty_slice_as_a_missing_operator() {
+        // An empty slice means error recovery spliced the operands together, so
+        // the tree already carries the real syntax error.  `Missing` is what tells
+        // `lower_unit_expr` to stay quiet rather than emit a second, confusingly
+        // worded "unrecognized unit operator ``".
+        assert_eq!(classify_unit_op(""), UnitOp::Missing);
+        assert_eq!(classify_unit_op("   "), UnitOp::Missing);
+    }
+
+    #[test]
+    fn classify_unit_op_carries_an_unknown_operator_verbatim() {
+        // Whatever the caller names in its diagnostic must be the operator the
+        // user actually wrote — trimmed, never truncated or normalised.
+        assert_eq!(classify_unit_op("×"), UnitOp::Unrecognized("×"));
+        assert_eq!(classify_unit_op(" ⋅ "), UnitOp::Unrecognized("⋅"));
+        assert_eq!(classify_unit_op("**"), UnitOp::Unrecognized("**"));
+    }
+
+    // ── `strip_unit_op_comments` — comments are `extras`, so they land in the
+    //    operator slice.  Offsets here are the real ones for the cited sources
+    //    (the caller passes ABSOLUTE byte ranges plus the slice's own start).
+
+    #[test]
+    fn strip_unit_op_comments_borrows_when_there_is_nothing_to_cut() {
+        // The overwhelmingly common path: no comment, no allocation.
+        let out = strip_unit_op_comments("*", 24, &[]);
+        assert!(matches!(out, Cow::Borrowed("*")));
+        assert_eq!(strip_unit_op_comments("·", 24, &[]).as_ref(), "·");
+    }
+
+    #[test]
+    fn strip_unit_op_comments_leaves_the_bare_operator() {
+        // `structure S { let x = 5N/*c*/*m }` — slice `/*c*/*` starts at byte 24,
+        // the block_comment spans 24..29, so the residue is the trailing `*`.
+        assert_eq!(
+            strip_unit_op_comments("/*c*/*", 24, &[(24, 29)]).as_ref(),
+            "*",
+            "a comment-bearing Mul must classify as Mul, not as an unrecognized \
+             operator — the grammar accepted this source with no ERROR node"
+        );
+        // The `·` and `/` spellings take the identical path.
+        assert_eq!(
+            strip_unit_op_comments("/*c*/·", 24, &[(24, 29)]).as_ref(),
+            "·"
+        );
+        assert_eq!(
+            strip_unit_op_comments("/*c*//", 24, &[(24, 29)]).as_ref(),
+            "/"
+        );
+    }
+
+    #[test]
+    fn strip_unit_op_comments_handles_several_comments_before_the_operator() {
+        // `structure def S { let x = 5N/*a*//*b*/*m }` — measured: a clean parse
+        // whose `unit_expr` carries TWO block_comment children, slice
+        // `/*a*//*b*/*` at 28..39 with comments at 28..33 and 33..38.
+        assert_eq!(
+            strip_unit_op_comments("/*a*//*b*/*", 28, &[(28, 33), (33, 38)]).as_ref(),
+            "*",
+            "every comment span must come out, not just the first"
+        );
+    }
+
+    #[test]
+    fn strip_unit_op_comments_skips_ranges_it_cannot_apply() {
+        // Defensive: a cut outside the slice, a descending pair, and one running
+        // past the end are each SKIPPED, never panicked on.  The residue then
+        // still carries the comment text and classifies as `Unrecognized` — loud,
+        // which is the correct degradation for a CST shape we did not predict.
+        let slice = "/*c*/*";
+        assert_eq!(
+            strip_unit_op_comments(slice, 24, &[(0, 4)]).as_ref(),
+            slice,
+            "a cut before the slice must not be re-based onto it"
+        );
+        assert_eq!(
+            strip_unit_op_comments(slice, 24, &[(29, 24)]).as_ref(),
+            slice,
+            "a descending range must be skipped"
+        );
+        assert_eq!(
+            strip_unit_op_comments(slice, 24, &[(24, 999)]).as_ref(),
+            slice,
+            "a range running past the slice must be skipped"
+        );
+    }
+
+    #[test]
+    fn strip_unit_op_comments_only_ever_shrinks_toward_a_real_operator() {
+        // A slice that is NOTHING but a comment reduces to `Missing`, not to a
+        // second diagnostic: the operator token is genuinely absent, so error
+        // recovery already put an ERROR/MISSING node in the tree for
+        // `check_and_lower!` to report.
+        let residue = strip_unit_op_comments("/*c*/", 24, &[(24, 29)]);
+        assert_eq!(residue.as_ref(), "");
+        assert_eq!(classify_unit_op(&residue), UnitOp::Missing);
+    }
+
+    // ── `collect_unit_op_comment_spans` — WHICH comments feed the excision ────
+    //
+    // #5784 amendment pass.  `strip_unit_op_comments` above is pinned against
+    // hand-written ranges; these pin the step that PRODUCES those ranges from a
+    // real CST, which is where the excision path's correctness actually rests.
+    // The sweep walks the subtree rather than the node's direct children,
+    // because an `extra`'s attachment point belongs to the generated parser, not
+    // to the grammar rule — see the function's doc.
+
+    /// Parse `source`, find the outer `unit_expr`, and return its operator
+    /// slice's start offset, the slice itself, and the spans the sweep collects
+    /// from it.
+    fn unit_op_comment_spans_of(source: &str) -> (usize, &str, Vec<(usize, usize)>) {
+        let tree = unit_op_seam_tree(source);
+        assert!(
+            !tree.root_node().has_error(),
+            "`{source}` must parse CLEAN — a probe that errors would be \
+             measuring error recovery, not comment attachment"
+        );
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let left = unit_expr
+            .child_by_field_name("left")
+            .expect("expected a `left` operand");
+        let right = unit_expr
+            .child_by_field_name("right")
+            .expect("expected a `right` operand");
+        let (op_start, op_end) = (left.end_byte(), right.start_byte());
+        (
+            op_start,
+            &source[op_start..op_end],
+            collect_unit_op_comment_spans(unit_expr, op_start, op_end),
+        )
+    }
+
+    #[test]
+    fn collect_unit_op_comment_spans_finds_every_comment_in_the_slice_in_order() {
+        let source = "structure def S { let x = 5N/*c*/*m }";
+        let (op_start, slice, spans) = unit_op_comment_spans_of(source);
+        assert_eq!(slice, "/*c*/*");
+        assert_eq!(spans.len(), 1, "one comment, one span; got {spans:?}");
+        assert_eq!(&source[spans[0].0..spans[0].1], "/*c*/");
+        assert_eq!(
+            strip_unit_op_comments(slice, op_start, &spans).as_ref(),
+            "*",
+            "the collected spans must reduce the slice to the operator the CST \
+             plainly shows"
+        );
+
+        // Two comments: ascending and non-overlapping, which is what
+        // `strip_unit_op_comments` requires of `cuts`.
+        let source = "structure def S { let x = 5N/*a*//*b*/*m }";
+        let (op_start, slice, spans) = unit_op_comment_spans_of(source);
+        assert_eq!(slice, "/*a*//*b*/*");
+        assert_eq!(spans.len(), 2, "two comments, two spans; got {spans:?}");
+        assert!(
+            spans[0].1 <= spans[1].0,
+            "spans must come back in ascending, non-overlapping source order; \
+             got {spans:?}"
+        );
+        assert_eq!(
+            strip_unit_op_comments(slice, op_start, &spans).as_ref(),
+            "*"
+        );
+    }
+
+    /// The source below is the one probed shape whose comment is attached BELOW
+    /// the outer `unit_expr` — measured on a clean parse:
+    ///
+    /// ```text
+    ///   5(m/*c*/)*s  →  unit_expr(unit_expr(unit_expr(unit_name), block_comment),
+    ///                             unit_expr(unit_name))
+    /// ```
+    const NESTED_COMMENT_SOURCE: &str = "structure def S { let x = 5(m/*c*/)*s }";
+
+    #[test]
+    fn collect_unit_op_comment_spans_ignores_a_comment_outside_the_slice() {
+        // Its comment sits inside the LEFT operand, so the operator slice is
+        // already exactly `*` and excising anything would corrupt it.  Two
+        // independent guards keep it out — the sibling prune skips a subtree
+        // disjoint from the slice, and the range filter rejects the comment
+        // itself — and this pins the OUTCOME, which must survive either being
+        // rewritten.
+        let (_op_start, slice, spans) = unit_op_comment_spans_of(NESTED_COMMENT_SOURCE);
+        assert_eq!(slice, "*");
+        assert!(
+            spans.is_empty(),
+            "a comment outside `[op_start, op_end)` must not be cut, however \
+             deep the walk goes; got {spans:?}"
+        );
+    }
+
+    #[test]
+    fn collect_unit_op_comment_spans_reaches_a_comment_attached_below_the_node() {
+        // THE DEPTH CLAIM, and the only test that bites on it: this is the sole
+        // shape in which a real parse attaches a comment to a DESCENDANT of the
+        // `unit_expr` rather than to it directly, so a direct-children sweep
+        // returns nothing here while the subtree walk finds it.
+        //
+        // The range passed is the WHOLE node, not the operator slice — widened
+        // deliberately, because today no accepted source puts a depth-attached
+        // comment INSIDE a slice.  That is a fact about the generated parser's
+        // current `extras` placement, not about the grammar, which is exactly why
+        // the sweep must not assume it: if the attachment point moves, this
+        // function keeps working and no spurious `unrecognized unit operator`
+        // reaches a user.
+        let tree = unit_op_seam_tree(NESTED_COMMENT_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let comment = find_node_by_kind(unit_expr, "block_comment")
+            .expect("fixture drift: expected a block_comment somewhere under the unit_expr");
+        assert_ne!(
+            comment.parent().map(|p| p.id()),
+            Some(unit_expr.id()),
+            "fixture drift: this test means to observe a comment attached BELOW \
+             the outer `unit_expr`; it is now a direct child, so the source no \
+             longer exercises the depth the walk exists for"
+        );
+
+        let spans =
+            collect_unit_op_comment_spans(unit_expr, unit_expr.start_byte(), unit_expr.end_byte());
+
+        assert_eq!(
+            spans,
+            vec![(comment.start_byte(), comment.end_byte())],
+            "the sweep must reach a comment attached below the node it is given"
+        );
+    }
+    // ── The CALL SITE: `Lowering::unit_expr_from_classified_op` ───────────────
+    //
+    // #5784 amendment pass.  The `classify_unit_op_*` tests above stop at the
+    // classification; nothing observed what the caller then DOES with a dropping
+    // arm — not that a diagnostic fires at all, not the span it attaches, not
+    // the SILENCE of `Missing`.  Both arms are unreachable from source (the scanner
+    // emits only `*`, `·` and `/`, and comments are excised before classifying),
+    // so the classification is the synthetic half here while the NODE stays real:
+    // the span assertion is then a genuine claim about which construct an editor
+    // underlines.  Same shape as `qualified_type_recovery_base_is_bounded_named`
+    // above — a real CST node, a helper called directly.
+
+    /// The source every seam test below drives, and the `unit_expr` it targets.
+    const UNIT_OP_SEAM_SOURCE: &str = "structure def S { let x = 5N*m }";
+    const UNIT_OP_SEAM_UNIT: &str = "N*m";
+
+    /// Parse `source` with the raw tree-sitter API so the CST is reachable.
+    fn unit_op_seam_tree(source: &str) -> tree_sitter::Tree {
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("set_language failed");
+        ts_parser.parse(source, None).expect("parse returned None")
+    }
+
+    /// The two operands every seam test passes in — named so an assertion that
+    /// they came back in ORDER is readable.
+    fn unit_op_seam_operands() -> (UnitExpr, UnitExpr) {
+        (
+            UnitExpr::Unit("N".to_string()),
+            UnitExpr::Unit("m".to_string()),
+        )
+    }
+
+    #[test]
+    fn unit_op_seam_unrecognized_names_the_operator_and_spans_the_expression() {
+        let tree = unit_op_seam_tree(UNIT_OP_SEAM_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        assert_eq!(
+            &UNIT_OP_SEAM_SOURCE[unit_expr.start_byte()..unit_expr.end_byte()],
+            UNIT_OP_SEAM_UNIT,
+            "fixture drift: this test means to span the WHOLE compound unit, so \
+             the node it found must be the outer `unit_expr`, not an operand"
+        );
+        let lowering = Lowering::new(UNIT_OP_SEAM_SOURCE);
+        let (left, right) = unit_op_seam_operands();
+
+        // `/*c*/*` is the residue shape κ used to reject before comment excision
+        // landed — kept as the probe because it is the one operator text this
+        // arm has ever really been handed.
+        let lowered = lowering.unit_expr_from_classified_op(
+            UnitOp::Unrecognized("/*c*/*"),
+            left,
+            right,
+            unit_expr,
+        );
+
+        assert_eq!(
+            lowered, None,
+            "an unrecognized operator must drop the member — but see the \
+             diagnostic below: dropping it SILENTLY is the INV-SF-7 shape"
+        );
+        let errors = lowering.errors.borrow();
+        let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+        // The two SUBSTANTIVE claims, asserted separately: exactly one
+        // diagnostic, and it quotes the operator verbatim.  Deliberately NOT a
+        // full-sentence equality against the message — this arm is unreachable
+        // from any source the grammar accepts, so the exact wording is a string
+        // no user can currently observe.  Pinning it would red this seam on a
+        // reword that changes no behaviour, while both claims below survive one
+        // (#5784 amendment pass).
+        assert_eq!(
+            messages.len(),
+            1,
+            "the drop must produce exactly ONE diagnostic — a second here means \
+             the caller is also reporting the same node through \
+             `check_and_lower!`; got {messages:?}"
+        );
+        assert!(
+            messages[0].contains("/*c*/*"),
+            "the diagnostic must quote the rejected operator VERBATIM, so the \
+             user can see WHICH operator was not understood; got {:?}",
+            messages[0]
+        );
+        let span = errors[0].span;
+        assert_eq!(
+            (span.start, span.end),
+            (unit_expr.start_byte() as u32, unit_expr.end_byte() as u32),
+            "the diagnostic must underline the whole `{UNIT_OP_SEAM_UNIT}` it \
+             rejected, not the operator alone and not the file"
+        );
+    }
+
+    #[test]
+    fn unit_op_seam_missing_drops_the_member_without_a_second_diagnostic() {
+        let tree = unit_op_seam_tree(UNIT_OP_SEAM_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let lowering = Lowering::new(UNIT_OP_SEAM_SOURCE);
+        let (left, right) = unit_op_seam_operands();
+
+        let lowered =
+            lowering.unit_expr_from_classified_op(UnitOp::Missing, left, right, unit_expr);
+
+        assert_eq!(lowered, None, "a missing operator cannot build a UnitExpr");
+        assert!(
+            lowering.errors.borrow().is_empty(),
+            "`Missing` must stay SILENT: error recovery spliced the operands \
+             together, so `check_and_lower!` already reported the ERROR/MISSING \
+             node — a diagnostic here would be the second one for one mistake, \
+             got {:?}",
+            lowering.errors.borrow()
+        );
+    }
+
+    #[test]
+    fn unit_op_seam_builds_mul_and_div_in_operand_order() {
+        let tree = unit_op_seam_tree(UNIT_OP_SEAM_SOURCE);
+        let unit_expr = find_node_by_kind(tree.root_node(), "unit_expr")
+            .expect("expected a unit_expr node in the CST");
+        let lowering = Lowering::new(UNIT_OP_SEAM_SOURCE);
+        let (left, right) = unit_op_seam_operands();
+        let expected_left = Box::new(UnitExpr::Unit("N".to_string()));
+        let expected_right = Box::new(UnitExpr::Unit("m".to_string()));
+
+        assert_eq!(
+            lowering.unit_expr_from_classified_op(
+                UnitOp::Mul,
+                left.clone(),
+                right.clone(),
+                unit_expr
+            ),
+            Some(UnitExpr::Mul(
+                expected_left.clone(),
+                expected_right.clone()
+            )),
+            "`Mul` must keep the operands in source order — swapping them is \
+             invisible to every commutative-looking end-to-end assertion"
+        );
+        assert_eq!(
+            lowering.unit_expr_from_classified_op(UnitOp::Div, left, right, unit_expr),
+            Some(UnitExpr::Div(expected_left, expected_right)),
+            "`Div` is NOT commutative: numerator left, denominator right"
+        );
+        assert!(
+            lowering.errors.borrow().is_empty(),
+            "a recognised operator must not diagnose, got {:?}",
+            lowering.errors.borrow()
+        );
+    }
+
+    // The three `snippet` tests below borrow `fault_diagnosis::with_root` rather than keeping
+    // a second parse-and-hand-me-the-root helper here; `snippet` itself is a `Lowering` method,
+    // so the tests stay with it.
+
+    /// `snippet` truncates on a CHARACTER boundary, never a byte one.
+    ///
+    /// INV-SF-7, task #5392. The doc on `snippet` calls this out specifically: `&s[..40]` on a
+    /// non-ASCII string panics mid-codepoint, and the source is UTF-8, so a string literal or
+    /// comment full of multi-byte characters would abort the parse instead of describing it.
+    #[test]
+    fn snippet_truncates_long_multibyte_text_on_a_character_boundary() {
+        // 45 two-byte characters — comfortably past the 40-char cap, and every candidate cut
+        // point past index 0 is mid-codepoint under byte slicing.
+        let long = "α".repeat(45);
+        let source = format!("structure S {{\n  let a = \"{long}\"\n}}\n");
+
+        fault_diagnosis::with_root(&source, |root| {
+            let node = find_node_by_kind(root, "string_literal")
+                .expect("fixture must contain a string_literal");
+            let lowering = Lowering::new(&source);
+            let snippet = lowering.snippet(node);
+
+            assert!(
+                snippet.ends_with('…'),
+                "a truncated snippet must announce the truncation, got {snippet:?}",
+            );
+            assert_eq!(
+                snippet.chars().count(),
+                41,
+                "40 characters plus the ellipsis, got {snippet:?}",
+            );
+            assert!(
+                snippet.chars().filter(|c| *c == 'α').count() >= 39,
+                "the truncated prefix should be the node's own text, got {snippet:?}",
+            );
+        });
+    }
+
+    /// The other truncation branch: a first line SHORTER than the cap, followed by more lines,
+    /// is still marked as truncated.
+    #[test]
+    fn snippet_marks_truncation_when_only_later_lines_are_dropped() {
+        let source = "structure S {\n  let a = 1\n}\n";
+        fault_diagnosis::with_root(source, |root| {
+            let node = find_node_by_kind(root, "structure_definition")
+                .expect("fixture must contain a structure_definition");
+            let lowering = Lowering::new(source);
+            let snippet = lowering.snippet(node);
+            assert_eq!(
+                snippet, "structure S {…",
+                "a multi-line node must be cut at its first newline and marked",
+            );
+            assert!(!snippet.contains('\n'), "snippets are always one line");
+        });
+    }
+
+    /// A single-line node shorter than the cap is reproduced verbatim, with no ellipsis.
+    #[test]
+    fn snippet_leaves_short_single_line_text_alone() {
+        let source = "structure S {\n  let a = 1\n}\n";
+        fault_diagnosis::with_root(source, |root| {
+            let node = find_node_by_kind(root, "let_declaration")
+                .expect("fixture must contain a let_declaration");
+            let lowering = Lowering::new(source);
+            assert_eq!(lowering.snippet(node), "let a = 1");
+        });
     }
 }

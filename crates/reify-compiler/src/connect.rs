@@ -11,10 +11,10 @@ pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
             // `MemberAccess { object: IndexAccess { Ident("vents"),
             //                                       NumberLiteral(0) },
             //                 member: "inlet" }`. Format as the dotted-bracket
-            // string `"vents[0].inlet"` so the existing dotted-port-name
-            // branches in `compile_connection` (which skip entity-port
-            // lookup and direction checks for refs containing '.') flow
-            // unchanged.
+            // string `"vents[0].inlet"` so the dotted-port-name branches in
+            // `compile_connection` — which skip the own-entity `CompiledPort`
+            // lookup for refs containing '.', and resolve the direction through
+            // `endpoint_direction` instead — flow unchanged.
             reify_ast::ExprKind::IndexAccess {
                 object: inner,
                 index,
@@ -229,6 +229,298 @@ pub(crate) struct ConnectInput<'a> {
     pub(crate) span: SourceSpan,
 }
 
+/// The OWN-ENTITY port name a connect endpoint denotes, if it denotes one.
+///
+/// `p` and `self.p` are one port written two ways, so both resolve here; every
+/// other shape names something outside this entity (`sub.p`, `sub[k].p`) and
+/// yields `None`. Both the undefined-port diagnostic and `endpoint_direction`
+/// route through this single predicate, so the two can never disagree about
+/// which endpoints are the entity's own.
+///
+/// A bare name is returned verbatim even when it carries an indexer (`vents[0]`,
+/// the bare collection-sub reference `resolve_port_name` can produce): that
+/// shape has always been read as an own-port reference and diagnosed as
+/// undefined, and preserving it keeps this refactor behaviour-neutral there.
+fn own_port_name(port_ref: &str) -> Option<&str> {
+    match port_ref.strip_prefix("self.") {
+        Some(rest) => (!rest.contains('.') && !rest.contains('[')).then_some(rest),
+        None => (!port_ref.contains('.')).then_some(port_ref),
+    }
+}
+
+/// Resolve a connect endpoint to the DECLARED direction of the port it names.
+///
+/// Accepted shapes:
+/// * `p` — a port on the entity being compiled; read from `ctx.ports`.
+/// * `self.p` — the same own port named the long way round; resolves identically
+///   to bare `p` (both through `own_port_name`), so writing the dot buys no
+///   escape from this check, nor from the undefined-port check in
+///   `compile_connection`.
+/// * `sub.p` — a port on a sub-component; read from `scope.sub_port_directions`,
+///   which the entity Sub pre-pass populated from that sub's resolved child
+///   template.
+/// * `sub[<idx-or-key>].p` — one element of a collection or keyed sub
+///   (`vents[0].inlet`, `vents["intake"].inlet`, also what `forall` substitution
+///   produces). Every element shares the sub's child template, and the pre-pass
+///   keys on the SUB name, so the indexer suffix is stripped before the lookup.
+///
+/// Splits on the LAST dot rather than the first: a keyed segment may itself
+/// contain one (`vents["a.b"].inlet`), so `rsplit_once` is what isolates the
+/// port name in every shape `resolve_port_name` can produce. Symmetrically, the
+/// indexer is stripped at the FIRST `[`, so a key containing a bracket still
+/// leaves the bare sub name behind.
+///
+/// `None` means "this compile cannot see the port's declaration", NOT "the
+/// direction is Bidi". Callers must decline to check on `None`. Three cases
+/// resolve to `None` today and are left as silent passes deliberately:
+///   * A child structure declared LATER in the module is not yet in
+///     `compiled_templates` when the parent compiles, so the Sub pre-pass never
+///     recorded its ports. Closing this needs a deferred post-pass over the
+///     fully-populated registry, which would either duplicate the direction
+///     match across two phases or move the check to a point where the
+///     `connect_compat_*` literal is already baked and hashed. Deferred to
+///     #7374; `compile_connect_dotted_child_declared_later_unchecked` pins
+///     today's behaviour so the order-dependence cannot change unobserved.
+///   * A dotted endpoint naming a NON-port member (measured: `connect e1.w ->
+///     e2.w` where `w` is a param) compiles clean today. Diagnosing it is a
+///     separate question about what a connect endpoint may legally denote, and
+///     erroring here would break sub-of-sub endpoint refs.
+///   * A MATCH-ARM sub whose arms disagree about a port's direction, or one of
+///     whose arms has an unresolvable child structure. Every arm declares the
+///     same sub NAME, so the pre-pass folds the arms to their intersection and
+///     drops the contested port rather than answering with whichever arm
+///     happened to compile last — see `merge_arm_port_directions` in
+///     `entity.rs`. Arms that AGREE resolve normally and are checked.
+fn endpoint_direction(ctx: &ConnectContext, port_ref: &str) -> Option<reify_core::PortDirection> {
+    if let Some(own) = own_port_name(port_ref) {
+        return ctx
+            .ports
+            .iter()
+            .find(|p| p.name == own)
+            .map(|p| p.direction);
+    }
+    let (base, port) = port_ref.rsplit_once('.')?;
+    let sub = base.split_once('[').map_or(base, |(name, _)| name);
+    ctx.scope.sub_port_directions.get(sub)?.get(port).copied()
+}
+
+/// Desugar a `chain` statement's elements into one (source, destination)
+/// endpoint pair per hop, applying the spec §6.2 default-port rule.
+///
+/// Both places a `chain` is desugared — an entity member, and a `forall` body
+/// after its bound variable is substituted — route through here, so the rule
+/// has one implementation rather than one per site.
+///
+/// An element plays two roles in a multi-hop chain: destination of the hop that
+/// arrives at it, and source of the hop that leaves it. Resolving it once per
+/// ROLE — `In` as a destination, `Out` as a source — is what makes a chain
+/// longer than two elements direction-valid: `chain a -> b -> c` becomes
+/// `a.out -> b.in` and `b.out -> c.in`, never `a.out -> b.in` followed by the
+/// `b.in -> c.in` that reading `b` one way in both roles would produce.
+///
+/// A hop is emitted only when BOTH of its endpoints resolved, so a §6.2 failure
+/// yields exactly one precise diagnostic rather than that plus a downstream
+/// "undefined port" from `compile_connection`. Both endpoints are always
+/// attempted, so an element whose port cannot be inferred is reported in each
+/// role it fails in.
+///
+/// Whether an element denotes ONE occurrence is a property of the element, not
+/// of a role, so it is settled once per element before any hop is resolved: an
+/// unindexed collection is reported once, however many hops it sits in.
+pub(crate) fn chain_hops(
+    ctx: &ConnectContext,
+    elements: &[reify_ast::Expr],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<(reify_ast::Expr, reify_ast::Expr)> {
+    use reify_core::PortDirection::{In, Out};
+    let one_occurrence: Vec<bool> = elements
+        .iter()
+        .map(|elem| denotes_one_occurrence(ctx, elem, diagnostics))
+        .collect();
+    elements
+        .windows(2)
+        .zip(one_occurrence.windows(2))
+        .filter_map(|(pair, ok)| {
+            let source = if ok[0] {
+                resolve_chain_endpoint(ctx, &pair[0], Out, diagnostics)
+            } else {
+                None
+            };
+            let dest = if ok[1] {
+                resolve_chain_endpoint(ctx, &pair[1], In, diagnostics)
+            } else {
+                None
+            };
+            source.zip(dest)
+        })
+        .collect()
+}
+
+/// The sub a chain element names, in one of the two shapes §6.2 inference acts
+/// on.
+enum ChainElementSub<'a> {
+    /// A bare `Ident`: `p1`.
+    Bare(&'a str),
+    /// An `IndexAccess` directly under an `Ident`: `vents[0]`, `vents["intake"]`.
+    Indexed(&'a str),
+}
+
+/// Classify a chain element by the sub it names. Every other shape is `None`:
+/// a `MemberAccess` (`sub.port`, `vents[0].inlet`) has already named its port,
+/// and an `AdHocSelector` cannot be resolved by inference.
+///
+/// Dispatch reads `elem.kind`, never the serialized name, which cannot tell a
+/// keyed element from a dotted port reference (`vents["a.b"]` carries both a
+/// bracket and a dot).
+fn chain_element_sub(elem: &reify_ast::Expr) -> Option<ChainElementSub<'_>> {
+    match &elem.kind {
+        reify_ast::ExprKind::Ident(sub) => Some(ChainElementSub::Bare(sub)),
+        reify_ast::ExprKind::IndexAccess { object, .. } => match &object.kind {
+            reify_ast::ExprKind::Ident(sub) => Some(ChainElementSub::Indexed(sub)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether a chain element denotes at most one occurrence, reporting the one
+/// shape that does not: a bare name of a collection or keyed sub, which denotes
+/// N occurrences, so the port inference would pick belongs to none of them.
+///
+/// An own port of the enclosing entity is exempt: own ports take precedence
+/// over a same-named sub (see `resolve_chain_endpoint`).
+fn denotes_one_occurrence(
+    ctx: &ConnectContext,
+    elem: &reify_ast::Expr,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let Some(ChainElementSub::Bare(sub)) = chain_element_sub(elem) else {
+        return true;
+    };
+    if is_own_port(ctx, sub) || !names_many_occurrences(ctx, sub) {
+        return true;
+    }
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "chain element '{sub}' names a whole collection, not one occurrence; \
+             chain its elements, e.g. 'forall v in {sub}: chain v -> ...'"
+        ))
+        .with_code(DiagnosticCode::ChainElementNotAnOccurrence)
+        .with_label(DiagnosticLabel::new(
+            elem.span,
+            "names a collection, not one occurrence",
+        )),
+    );
+    false
+}
+
+/// Resolve one chain element in one role to the endpoint expression the hop
+/// should connect, per spec §6.2: an element naming ONE occurrence of a sub
+/// becomes that sub's unique port usable in `needed`.
+///
+/// Everything else is handed back verbatim for `compile_connection` to judge,
+/// so this function never duplicates a diagnostic that already has a home:
+///
+/// * an element that already names its port, or that `resolve_port_name`
+///   cannot serialize (`compile_connection` owns "invalid port reference");
+/// * an own port of the enclosing entity — own ports take precedence over a
+///   same-named sub, since inferring would silently repoint an existing chain;
+/// * an indexer on a sub that is not a collection or keyed sub — `p1[0]` names
+///   no occurrence, and inferring `p1[0].outlet` would emit a hop to a node
+///   that does not exist;
+/// * a bare collection name, which `chain_hops` has already refused — checked
+///   again here so this function never infers for one on its own;
+/// * a `sub_port_directions` MISS — per that map's absence contract "not
+///   resolvable at this point in the compile", covering a typo and a child
+///   declared later in the module (#7374), where the silent pass is deliberate.
+///
+/// Usability is TIERED, not a union: a port declared in `needed` wins
+/// outright, and only when the sub declares none does a `bidi` port — which
+/// `is_forward_compatible` accepts in either role — become a candidate. A
+/// union would make the common `in`/`out`/`bidi` sub ambiguous, though §6.2
+/// reads it as having exactly one port per direction.
+///
+/// Zero or several usable ports is the §6.2 failure: it names what was
+/// actually found and sends the author to the dotted form, leaving the
+/// endpoint unresolved so `chain_hops` drops the hop.
+fn resolve_chain_endpoint(
+    ctx: &ConnectContext,
+    elem: &reify_ast::Expr,
+    needed: reify_core::PortDirection,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ast::Expr> {
+    let Some(name) = resolve_port_name(elem) else {
+        return Some(elem.clone());
+    };
+    let sub = match chain_element_sub(elem) {
+        Some(ChainElementSub::Bare(sub))
+            if !is_own_port(ctx, sub) && !names_many_occurrences(ctx, sub) =>
+        {
+            sub
+        }
+        Some(ChainElementSub::Indexed(sub)) if names_many_occurrences(ctx, sub) => sub,
+        _ => return Some(elem.clone()),
+    };
+    let Some(child_ports) = ctx.scope.sub_port_directions.get(sub) else {
+        return Some(elem.clone());
+    };
+    let declared_in = |wanted: reify_core::PortDirection| -> Vec<&str> {
+        child_ports
+            .iter()
+            .filter(|(_, dir)| **dir == wanted)
+            .map(|(port, _)| port.as_str())
+            .collect()
+    };
+    let mut candidates = declared_in(needed);
+    if candidates.is_empty() {
+        candidates = declared_in(reify_core::PortDirection::Bidi);
+    }
+    let dir = needed.as_str();
+    let found = match candidates.as_slice() {
+        [port] => {
+            return Some(reify_ast::Expr {
+                kind: reify_ast::ExprKind::MemberAccess {
+                    object: Box::new(elem.clone()),
+                    member: (*port).to_string(),
+                },
+                span: elem.span,
+            });
+        }
+        [] => format!("has no port usable as '{dir}'"),
+        several => format!(
+            "has several ports usable as '{dir}' ({})",
+            several.join(", ")
+        ),
+    };
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "chain element '{name}' {found}; name the port explicitly on that element, \
+             e.g. '{name}.<port>'"
+        ))
+        .with_code(DiagnosticCode::ChainPortNotUnique)
+        .with_label(DiagnosticLabel::new(
+            elem.span,
+            format!("no unique port usable as '{dir}'"),
+        )),
+    );
+    None
+}
+
+/// Whether `sub` names a sub-component that denotes MANY occurrences — a
+/// `List<T>` collection or a `Keyed<T>` map — rather than exactly one.
+///
+/// Both maps must be consulted: keyed subs have `is_collection == false` and
+/// are therefore absent from `collection_sub_names`, living in `keyed_sub_keys`
+/// instead.
+fn names_many_occurrences(ctx: &ConnectContext, sub: &str) -> bool {
+    ctx.scope.collection_sub_names.contains(sub) || ctx.scope.keyed_sub_keys.contains_key(sub)
+}
+
+/// Whether `name` is one of the enclosing entity's own ports.
+fn is_own_port(ctx: &ConnectContext, name: &str) -> bool {
+    ctx.ports.iter().any(|p| p.name == name)
+}
+
 /// Compile a single connection (from connect statement or chain desugaring).
 pub(crate) fn compile_connection(
     ctx: &ConnectContext,
@@ -266,15 +558,25 @@ pub(crate) fn compile_connection(
         }
     };
 
-    // Hoist port lookups once — used for both direction checking and auto-matching.
+    // Hoist the own-entity port lookups once — they feed `auto_match_port_members`,
+    // which needs the whole `CompiledPort` and is deliberately own-entity-only.
     let left_compiled = ctx.ports.iter().find(|p| p.name == left_port);
     let right_compiled = ctx.ports.iter().find(|p| p.name == right_port);
-    let left_dir = left_compiled.map(|p| p.direction);
-    let right_dir = right_compiled.map(|p| p.direction);
+    // Directions are resolved separately and more widely: a dotted endpoint has
+    // no `CompiledPort` here, but its declared direction is still knowable.
+    let left_dir = endpoint_direction(ctx, &left_port);
+    let right_dir = endpoint_direction(ctx, &right_port);
 
-    // Bare ident (no dot) that doesn't match any port is undefined
+    // An endpoint that claims one of THIS entity's ports must actually name one.
+    // `own_port_name` accepts bare `p` and `self.p` alike, so a typo is caught in
+    // either spelling — the same symmetry `endpoint_direction` gives the
+    // direction check.
+    let undefined_own_port =
+        |port_ref: &str| own_port_name(port_ref).is_some_and(|name| !is_own_port(ctx, name));
+    // Own-entity-only consumers below (auto-match, the asymmetric-LocatedPort
+    // warning) still gate on the endpoint being written bare.
     let is_bare = |name: &str| !name.contains('.');
-    if is_bare(&left_port) && left_dir.is_none() {
+    if undefined_own_port(&left_port) {
         diagnostics.push(
             Diagnostic::error(format!(
                 "undefined port '{}' in connect statement",
@@ -283,7 +585,7 @@ pub(crate) fn compile_connection(
             .with_label(DiagnosticLabel::new(span, "undefined port")),
         );
     }
-    if is_bare(&right_port) && right_dir.is_none() {
+    if undefined_own_port(&right_port) {
         diagnostics.push(
             Diagnostic::error(format!(
                 "undefined port '{}' in connect statement",
@@ -311,7 +613,8 @@ pub(crate) fn compile_connection(
                         false
                     }
                 }
-                _ => true, // Can't check unknown/dotted ports
+                // An endpoint whose port declaration this compile cannot see.
+                _ => true,
             }
         }
         reify_ast::ConnectOp::Reverse => match (left_dir, right_dir) {
@@ -571,7 +874,9 @@ pub(crate) fn compile_connection(
     // Skipping when incompatible avoids a misleading "members do not match" warning when the
     // real problem is direction incompatibility.
     let effective_mappings = if port_mappings.is_empty() {
-        // is_bare guards are defense-in-depth; dotted ports also yield None from the lookup above
+        // The is_bare guards are load-bearing: `compatible` is now decided for
+        // dotted endpoints too, but auto-matching still needs an own-entity
+        // `CompiledPort` on both sides, which a dotted endpoint never has.
         if compatible && is_bare(&left_port) && is_bare(&right_port) {
             auto_match_port_members(left_compiled, right_compiled, diagnostics, span)
         } else {

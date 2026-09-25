@@ -22,11 +22,17 @@
 //!   call rather than inheriting whatever a sibling entry point last left
 //!   behind, so its output is a function of its own arguments alone and not of
 //!   call order within the process; and
-//! * **outbound**: restores that same option pair to gmsh's documented
-//!   defaults before returning (see `MeshSizeClampReset` below), so a later
-//!   *defaults-relying* call — e.g. `mesh_plane_2d` with no requested size,
-//!   which deliberately writes no clamp — is not silently pinned to a fine
-//!   `MeshSizeMax` left over from an adaptive-refinement iteration.
+//! * **outbound**: restores every size option to gmsh's documented defaults
+//!   before returning (via [`crate::mesh_size_scope::MeshSizeScope`]),
+//!   so a later *defaults-relying* call — e.g. `mesh_plane_2d` with no
+//!   requested size, which deliberately writes no clamp — is not silently
+//!   pinned to a fine `MeshSizeMax` left over from an adaptive-refinement
+//!   iteration.
+//!
+//! That guard now lives in [`crate::mesh_size_scope`] rather than in this
+//! file: since task #6298 it is shared infrastructure with a second consumer,
+//! `kernel_real::GmshKernel::mesh_to_volume`, and one implementation cannot
+//! drift from itself the way two hand-written resets could.
 //!
 //! Each half has its own guard in `tests/refine_volume_tests.rs`, so neither
 //! can rot into a comment: inbound is
@@ -36,14 +42,17 @@
 //! `refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`,
 //! which straddles a refine with exactly the `mesh_plane_2d` call named above.
 //!
-//! Scope of that guarantee: it covers the `MeshSizeMin`/`MeshSizeMax` pair
-//! only. The `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
-//! `MeshSizeExtendFromBoundary` writes below are still left behind for a later
-//! caller to inherit — the same defect class in the same direction, tracked as
-//! task #6212 because closing it means a shared save/restore discipline across
-//! the four entry points that write those options (and an `option_get_number`
-//! FFI getter to restore *as found* rather than to defaults), not a change
-//! local to this file. See the inline rationale at the option writes below.
+//! Scope of that guarantee: since task #6968 it covers all five size options,
+//! not just the `MeshSizeMin`/`MeshSizeMax` pair. The
+//! `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+//! `MeshSizeExtendFromBoundary` writes below used to be left behind for a
+//! later caller to inherit; `MeshSizeScope` now restores them too. Measured
+//! against gmsh 4.15.2, only `MeshSizeExtendFromBoundary` — written `0` here
+//! against a measured default of `1` — deviated far enough to change a later
+//! caller's mesh, which is why the leak was invisible for so long. See the
+//! inline rationale at the option writes below, and
+//! [`crate::mesh_size_scope`] for which guard holds this writer; that map is
+//! kept in one place rather than restated per writer.
 //!
 //! # Cost basis: full remesh from surface
 //!
@@ -63,65 +72,10 @@ use reify_ir::{ElementOrderTag, GeometryError, Mesh, VolumeConnectivity, VolumeM
 
 use crate::options::MeshingOptions;
 
-/// Gmsh's documented default for `Mesh.MeshSizeMin` — no floor.
-///
-/// `pub` (like [`crate::init::GMSH_LOCK`], and for the same reason) so this
-/// crate's `tests/` binaries — separate compilation units — can restore the
-/// process-global clamp to gmsh's defaults without re-declaring the literal.
-/// A test-local copy could drift silently away from the value this module
-/// actually writes, which would quietly weaken the "from gmsh's defaults"
-/// leg of `refine_volume_tests.rs`'s inbound-hermeticity assertion rather
-/// than fail it.
 #[cfg(has_gmsh)]
-pub const GMSH_MESH_SIZE_MIN_DEFAULT: f64 = 0.0;
-
-/// Gmsh's documented default for `Mesh.MeshSizeMax` — effectively no cap.
-///
-/// `pub` for the same reason as [`GMSH_MESH_SIZE_MIN_DEFAULT`].
-#[cfg(has_gmsh)]
-pub const GMSH_MESH_SIZE_MAX_DEFAULT: f64 = 1.0e22;
-
-/// RAII reset of the process-global `Mesh.MeshSizeMin`/`MeshSizeMax` pair to
-/// gmsh's defaults, covering the early-`?`-return paths as well as success.
-///
-/// Restores DEFAULTS rather than the values found on entry: gmsh's C API
-/// exposes no reader for a numeric option in this crate's FFI surface, so
-/// "as found" is not observable here. Defaults are the right target anyway —
-/// they are what a caller that writes no clamp of its own expects to get, so
-/// leaving them behind means no downstream path inherits state from this one
-/// (task #6211).
-///
-/// # Why it borrows the lock guard
-///
-/// The two FFI writes in `drop` mutate gmsh's process-global option table and
-/// must therefore happen while `init::GMSH_LOCK` is held. The
-/// `PhantomData<&'g MutexGuard<'g, ()>>` makes that structural rather than a
-/// comment a refactor can quietly violate: [`Self::armed`] can only be called
-/// with a live guard in hand, so the binding cannot be hoisted above the
-/// `let _guard = …` line, and because this type has a `Drop` impl (no
-/// `#[may_dangle]`) dropck requires the borrow to still be live when it drops
-/// — which forces the writes to land *before* the lock is released.
-#[cfg(has_gmsh)]
-struct MeshSizeClampReset<'g>(std::marker::PhantomData<&'g std::sync::MutexGuard<'g, ()>>);
-
-#[cfg(has_gmsh)]
-impl<'g> MeshSizeClampReset<'g> {
-    /// Arm the reset. Takes the live `GMSH_LOCK` guard by reference purely for
-    /// its lifetime — the guard itself is never touched.
-    fn armed(_guard: &'g std::sync::MutexGuard<'g, ()>) -> Self {
-        Self(std::marker::PhantomData)
-    }
-}
-
-#[cfg(has_gmsh)]
-impl Drop for MeshSizeClampReset<'_> {
-    fn drop(&mut self) {
-        // Best-effort, like the trailing `ffi::clear()`: a failure here cannot
-        // be reported from `drop` and must not mask the real result.
-        let _ = crate::ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT);
-        let _ = crate::ffi::option_set_number("Mesh.MeshSizeMax", GMSH_MESH_SIZE_MAX_DEFAULT);
-    }
-}
+use crate::mesh_size_scope::{
+    GMSH_MESH_SIZE_MAX_DEFAULT, GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope,
+};
 
 /// Remesh the volume enclosed by `surface` using per-vertex size hints.
 ///
@@ -197,8 +151,13 @@ pub fn refine_volume_with_size_field(
     }
 
     // --- Acquire lock + initialise ---
-    let _guard = init::GMSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = init::lock()?;
     init::ensure_initialized();
+    // Declared after `_guard` so it drops first (Rust drops locals in reverse
+    // declaration order): its restore writes land while GMSH_LOCK is still
+    // held. Hoisted above the first `?` below so every early return is
+    // covered, not only the success path — see `mesh_size_scope`.
+    let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
 
@@ -293,6 +252,12 @@ pub fn refine_volume_with_size_field(
     // corner-entity sizes (set by `gmshModelMeshSetSize` below) drive the
     // interior mesh density, with a smooth interpolation between corners rather
     // than an aggressive gradient from the finest boundary face.
+    //
+    // All three are written unconditionally and independently of
+    // `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS`: each is a REQUIREMENT of
+    // the per-vertex size field below, so this function states it rather than
+    // inheriting it from a default that is gmsh's to change. See "no test can
+    // tell" below for what that costs.
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;
@@ -300,18 +265,25 @@ pub fn refine_volume_with_size_field(
     // --- Mesh-size clamp: set explicitly, never inherited (task #6211) ---
     //
     // INVARIANT: `vertex_sizes` alone decides element size here. Gmsh's option
-    // table is process-global and is NOT reset by `gmshClear()`, and the
-    // sibling entry points `kernel_real::GmshKernel::mesh_to_volume`,
-    // `mesh_profile_2d::mesh_plane_2d` and `mesh_boundary`'s surface remesh all
-    // write `Mesh.MeshSizeMin`/`MeshSizeMax` without restoring them. Without
-    // the two writes below, any of those running earlier in the process pins
-    // every element of THIS remesh to ITS size and the per-vertex field becomes
-    // inert (task #6211: one identical tet count for every hint).
+    // table is process-global and is NOT reset by `gmshClear()`, so a sibling
+    // entry point that wrote `Mesh.MeshSizeMin`/`MeshSizeMax` and never
+    // restored them used to pin every element of THIS remesh to ITS size,
+    // leaving the per-vertex field inert (task #6211: one identical tet count
+    // for every hint). Since task #6968 every entry point in this crate enters
+    // a `mesh_size_scope::MeshSizeScope`, so the table these writes land on
+    // holds gmsh's defaults whatever ran earlier in the process.
     //
-    // Both writes are load-bearing, not belt-and-braces: with a leaked
-    // Min == Max, lowering only Max leaves Min > Max (gmsh still floors at the
-    // leaked value) and lowering only Min leaves the leaked Max capping
-    // everything.
+    // NO TEST CAN TELL whether a write whose value coincides with gmsh's
+    // current default is present: while the scope is armed it is a behavioural
+    // no-op, so deleting it leaves `tests/` green. Stated here rather than
+    // left for a future author to discover by deleting one and finding the
+    // suite still green. They stay because they are this function's
+    // requirements, and specifically so `MeshSizeMin` and `MeshSizeMax` read
+    // as ONE clamp rather than half of one: written as a
+    // pair against a hostile Min == Max, lowering only Max would leave
+    // Min > Max (gmsh still floors at the leaked value) and lowering only Min
+    // would leave the leaked Max capping everything. That is the shape an
+    // inbound clamp needs if it is ever to stand without the scope beneath it.
     //
     // Min = gmsh's default: no floor, so the finest hint is honoured.
     // Deliberately not `min(vertex_sizes)`, which would forbid gmsh from going
@@ -330,9 +302,10 @@ pub fn refine_volume_with_size_field(
     // `vertex_sizes` is the caller's job and is already done at
     // `reify_solver_elastic::volume_refine`'s entry point.
     //
-    // `MeshSizeClampReset` closes the outbound direction: this pair is returned
-    // to gmsh's defaults on every exit path, so the same leak does not run from
-    // here into a later defaults-relying call.
+    // `MeshSizeScope` closes the outbound direction: every size option — this
+    // pair and the three set above — is returned to gmsh's defaults on every
+    // exit path, so the same leak does not run from here into a later
+    // defaults-relying call.
     let max_hint = vertex_sizes
         .iter()
         .copied()
@@ -343,7 +316,6 @@ pub fn refine_volume_with_size_field(
     } else {
         GMSH_MESH_SIZE_MAX_DEFAULT
     };
-    let _clamp_reset = MeshSizeClampReset::armed(&_guard);
     ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT)?;
     ffi::option_set_number("Mesh.MeshSizeMax", max_hint)?;
 
@@ -430,18 +402,11 @@ pub fn refine_volume_with_size_field(
     }
 
     // --- Tet meshing ---
-    ffi::mesh_generate(3)?;
+    // Via `init::mesh_generate_with_recovery`: the mesher is process-global, so
+    // a failure here must not outlive this call. See that function.
+    init::mesh_generate_with_recovery(&_guard, 3)?;
 
     // --- Readback (mirrors mesh_to_volume verbatim) ---
-    let elem_type = match order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 11,
-    };
-    let nodes_per_elem: usize = match order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
-
     let (out_node_tags, coord_buf) = ffi::get_nodes_all()?;
     if coord_buf.len() != out_node_tags.len() * 3 {
         return Err(GeometryError::OperationFailed(format!(
@@ -452,14 +417,7 @@ pub fn refine_volume_with_size_field(
             out_node_tags.len() * 3,
         )));
     }
-    let (_elem_tags, elem_node_tags) = ffi::get_elements_by_type(elem_type)?;
-    if !elem_node_tags.len().is_multiple_of(nodes_per_elem) {
-        return Err(GeometryError::OperationFailed(format!(
-            "refine_volume_with_size_field: get_elements_by_type stride mismatch: \
-             elem_node_tags.len()={} not multiple of {nodes_per_elem}",
-            elem_node_tags.len(),
-        )));
-    }
+    let elem_node_tags = init::read_tet_connectivity("refine_volume_with_size_field", order)?;
 
     let mut paired: Vec<(u64, [f64; 3])> = out_node_tags
         .iter()

@@ -23,8 +23,10 @@
 use std::collections::HashMap;
 
 use reify_ast::{
-    ConnectDecl, Declaration, Expr, ExprKind, ForallConnectBody, ForallConstraintBody, ImportKind,
-    MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl, WhereClause,
+    ConnectDecl, ConstraintInstDecl, Declaration, DefaultDecl, Expr, ExprKind, FieldSource, FnDef,
+    ForallConnectBody, ForallConstraintBody, ImportKind, KeyedSubMemberEntry,
+    MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, StringPart, SubDecl, TraitBoundRef,
+    TypeExpr, TypeExprKind, TypeParamDecl, VariantPayload, WhereClause,
 };
 use reify_core::SourceSpan;
 use tower_lsp::lsp_types::{
@@ -38,12 +40,21 @@ use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// The kind of symbol a [`ReferenceSet`] resolves to.
 ///
-/// The enum is defined **complete** for the reify-lsp ↔ frontend seam (so β/γ/δ
-/// have a stable contract), but only the value-member kinds (`Param`, `Let`,
-/// `Auto`, `Sub`, `Port`) are reference-collected and rename-eligible in this
-/// single-file foundation phase. The declaration-name kinds
-/// (`Structure`/`Occurrence`/`Trait`/`Enum`/`Variant`/`Fn`) are classification-only
-/// here; full cross-declaration + cross-file rename is deferred to phase κ.
+/// Two families, and which one a symbol falls in decides which rename path can
+/// reach it:
+/// - DECLARATION NAMES — one variant per NAMED top-level `Declaration` kind
+///   (all eleven), plus `Variant` for an enum's variants. Never single-file
+///   renameable; renameable cross-file for the kinds
+///   `is_renameable_cross_file` admits.
+/// - VALUE MEMBERS (`Param`/`Let`/`Auto`/`Sub`/`Port`) — bindings inside an
+///   entity body, renameable single-file (`is_renameable`) and keeping those
+///   exact semantics on the cross-file path.
+///
+/// One variant per named declaration kind — rather than a single `Decl` — is
+/// what lets `classify_decl_name` match WILDCARD-FREE over
+/// `Declaration`, so a new declaration kind is a compile error there instead of
+/// a silently unclassified declaration that every rename gate then refuses
+/// without saying so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefSymbolKind {
     Structure,
@@ -52,6 +63,12 @@ pub enum RefSymbolKind {
     Enum,
     Variant,
     Fn,
+    Field,
+    Purpose,
+    Constraint,
+    Unit,
+    TypeAlias,
+    Joint,
     Param,
     Let,
     Auto,
@@ -230,6 +247,121 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
     }
 }
 
+// ─── Shared SubDecl expression-field enumeration ─────────────────────────────
+//
+// Lives here, outside either section's banner, because both consumers below
+// share it. Field-set rationale is centralized in `sub_direct_exprs`'s doc
+// comment — see it for why, rather than restating it at each call site.
+
+/// Exhaustively enumerate every direct (non-nested-scope) expression carried
+/// by a `SubDecl` — constructor args, specialization param overrides, the
+/// `at` placement pose, the indexer clause's domain expression (task #5481/
+/// #5579), the inline `at … where { }` relate-block relations (task δ 4384),
+/// and the `where` guard condition.
+///
+/// Both [`for_each_member_direct_expr`] (the shared member-expression
+/// enumeration every use walker composes with) and the `MemberDecl::Sub` arm of
+/// `cursor_on_member_segment` (`.member`-segment refusal) consume this instead
+/// of re-listing `SubDecl`'s fields themselves, so the two scanners
+/// cannot drift apart the way they already have twice — `relate_relations`
+/// (task δ 4384) and `index_domain` (#5481/#5579) were each added to
+/// `collect_uses`' sub walk without a matching guard clause in
+/// `cursor_on_member_segment`, silently letting a `.member` segment on that
+/// field mis-resolve to an unrelated same-named binding instead of refusing.
+///
+/// The `let SubDecl { .. } = s` pattern below names every field with no `..`,
+/// so adding a new field to `SubDecl` is a compile error here, forcing a
+/// deliberate choice: fold it into the returned chain if it is a use-bearing
+/// expression, or extend the `_`-bound list with a one-line reason if it
+/// isn't — as `index_binder` already is (it mirrors the existing
+/// `ExprKind::Quantifier` `variable`/`variable_span` precedent: a
+/// binder-introducing field is deliberately not itself a use site here; see
+/// the "Known limitation" doc comment on `collect_idents_in_expr`).
+///
+/// Excludes `body` and `keyed_members.overrides`: both consumers reach them
+/// separately, via [`for_each_child_scope`], since they open a
+/// nested member scope rather than being a direct expression of this `sub`.
+/// Each keyed entry's OWN direct expression (`param_overrides`) is not a
+/// `SubDecl`-level field, so it is not part of this iterator either — it is
+/// walked by both consumers via [`keyed_entry_param_override_exprs`] at the
+/// same keyed-block recursion site instead (see that function's doc comment).
+fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
+    let SubDecl {
+        // Identifiers, flags, and span/cache metadata below — never expressions.
+        name: _,
+        structure_name: _,
+        type_args: _,
+        args,
+        is_collection: _,
+        // Guard condition folded directly into the chain below, unlike every
+        // other member kind's `where` (which routes through
+        // `visit_where_condition`) — see this function's doc comment.
+        where_clause,
+        // Nested member scope, not a direct expression — both consumers
+        // recurse into it separately at depth + 1 (see doc comment above).
+        body: _,
+        spec_param_overrides,
+        // Nested member scope, not a direct expression — both consumers
+        // recurse into it separately at depth + 1, walking each entry's
+        // `overrides` member list AND `param_overrides` expressions (see
+        // doc comment above and `keyed_entry_param_override_exprs`).
+        keyed_members: _,
+        is_aux: _,
+        is_priv: _,
+        pose_expr,
+        // Binder site, not a use — mirrors the existing `ExprKind::Quantifier`
+        // `variable`/`variable_span` precedent (see doc comment above).
+        index_binder: _,
+        index_domain,
+        relate_relations,
+        // The DERIVED arm's clause — `sub b = mirror of a across P { … }`
+        // (task #6615). Deliberately `_`-bound, not folded into the chain
+        // below: its expression-bearing parts (the `SubDerivationKind`
+        // transform operand, each `SubParamOverride` value) and its
+        // `members` are reached only once derived subs elaborate, which is
+        // A-beta (#6616)'s semantics to define — the same deferral, for the
+        // same reason, that `SubDerivation::members`' doc comment records
+        // against every member walker in reify-ast. A-beta must wire both
+        // together rather than inherit either silently.
+        derivation: _,
+        span: _,
+        content_hash: _,
+    } = s;
+
+    args.iter()
+        .map(|(_, e)| e)
+        .chain(spec_param_overrides.iter().map(|(_, e)| e))
+        .chain(pose_expr.iter())
+        .chain(index_domain.iter())
+        .chain(relate_relations.iter())
+        .chain(where_clause.iter().map(|w| &w.condition))
+}
+
+/// Exhaustively enumerate the direct expressions carried by a single keyed
+/// entry (`"key" => { param_overrides… }`): its `param_overrides` values,
+/// mirroring `SubDecl.spec_param_overrides` one level down (see
+/// `KeyedSubMemberEntry.param_overrides`'s doc comment, task 3931 γ).
+///
+/// Field set centralized here for the same anti-drift reason as
+/// `sub_direct_exprs` — see its doc comment. The exhaustive `let
+/// KeyedSubMemberEntry { .. } = entry` below (no `..`) gives this the same
+/// compile-error tripwire: a new expression-bearing field added to
+/// `KeyedSubMemberEntry` cannot silently go unwalked by both consumers again
+/// (task #5579 amendment — this is what closed that exact gap for
+/// `param_overrides` itself).
+fn keyed_entry_param_override_exprs(entry: &KeyedSubMemberEntry) -> impl Iterator<Item = &Expr> {
+    let KeyedSubMemberEntry {
+        key: _,
+        // Nested member scope, not a direct expression — both consumers
+        // recurse into it separately as a nested member scope, exactly as
+        // `sub_direct_exprs` excludes `SubDecl::body`.
+        overrides: _,
+        param_overrides,
+        span: _,
+    } = entry;
+    param_overrides.iter().map(|(_, e)| e)
+}
+
 // ─── Member-segment detection helpers ────────────────────────────────────────
 //
 // These two helpers implement the AST-aware guard in `collect_references_at`
@@ -242,6 +374,10 @@ fn entity_members(decl: &Declaration) -> Option<&[MemberDecl]> {
 // nested-scope descent, depth-bounded by `MAX_MEMBER_NESTING_DEPTH`). Keeping
 // the two scanners symmetric ensures the detection scan never drifts from the
 // use-collection scan.
+//
+// The `MemberDecl::Sub` arm's field set is centralized in `sub_direct_exprs`
+// (plus each keyed entry's own fields in `keyed_entry_param_override_exprs`)
+// — see their doc comments for why.
 
 /// Return `true` when the cursor byte offset `off` falls on the `.member`
 /// segment of a `MemberAccess` node anywhere in `expr`.
@@ -391,16 +527,13 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
                         .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
             }
             MemberDecl::Sub(s) => {
-                s.args.iter().any(|(_, a)| expr_member_segment_hit(a, off))
-                    || s.spec_param_overrides
-                        .iter()
-                        .any(|(_, o)| expr_member_segment_hit(o, off))
-                    || s.pose_expr
-                        .as_ref()
-                        .is_some_and(|p| expr_member_segment_hit(p, off))
-                    || s.where_clause
-                        .as_ref()
-                        .is_some_and(|w| expr_member_segment_hit(&w.condition, off))
+                sub_direct_exprs(s).any(|e| expr_member_segment_hit(e, off))
+                    // Each keyed entry's own `param_overrides` values (task
+                    // #5579 amendment) — see `keyed_entry_param_override_exprs`.
+                    || s.keyed_members.iter().any(|entry| {
+                        keyed_entry_param_override_exprs(entry)
+                            .any(|e| expr_member_segment_hit(e, off))
+                    })
             }
             MemberDecl::Minimize(m) => {
                 expr_member_segment_hit(&m.expr, off)
@@ -772,173 +905,317 @@ fn resolve_use(offset: usize, bindings: &[Binding]) -> usize {
 /// Walk every value-bearing member of `members`, pushing the span of each
 /// `ExprKind::Ident` whose name equals `name`.
 ///
-/// Covers every expression-bearing member kind so the reference set is complete
-/// (Invariant 2): param/let/constraint/objective expressions and their `where`
-/// clauses, constraint-instantiation args, sub constructor args / specialization
-/// overrides / pose / body, port frames and bodies, guarded `where`/`else`
-/// branches, `forall` connect/constraint bodies, bare connect/chain elements,
-/// and match-arm decl clusters. Recursion into nested member lists is bounded by
-/// [`MAX_MEMBER_NESTING_DEPTH`], mirroring `reify_ast::find_named_member_span`.
+/// The member fan-out itself is not written here: [`for_each_member_direct_expr`]
+/// yields a member's own expressions and [`for_each_child_scope`] yields the
+/// nested member lists it opens, so this function is only "an ident use is any
+/// `Ident` in any of those expressions". Recursion into nested member lists is
+/// bounded by [`MAX_MEMBER_NESTING_DEPTH`], mirroring
+/// `reify_ast::find_named_member_span`.
 ///
-/// Associated functions (`MemberDecl::Fn`) are intentionally NOT walked: a fn
-/// body opens its own parameter scope (its params can shadow an entity binding),
-/// which this single-file foundation does not model, so collecting uses there
-/// could produce false positives (Invariant 1). Deferred to a later phase.
+/// Associated functions (`MemberDecl::Fn`) are intentionally NOT walked — see
+/// [`for_each_member_direct_expr`]'s doc comment for why, and for the reason the
+/// type-position walk does not inherit that restriction.
 fn collect_uses(members: &[MemberDecl], name: &str, depth: usize, out: &mut Vec<SourceSpan>) {
     if depth > MAX_MEMBER_NESTING_DEPTH {
         return;
     }
     for member in members {
-        match member {
-            MemberDecl::Param(p) => {
-                if let Some(default) = &p.default {
-                    collect_idents_in_expr(default, name, out);
-                }
-                collect_uses_in_where(&p.where_clause, name, out);
+        for_each_member_direct_expr(member, &mut |expr| {
+            collect_idents_in_expr(expr, name, out);
+        });
+        for_each_child_scope(member, |child| collect_uses(child, name, depth + 1, out));
+    }
+}
+
+/// Enumerate every DIRECT (non-nested-scope) expression carried by `member`, in
+/// source order: param/let/constraint/objective expressions and their `where`
+/// clauses, constraint-instantiation args, a sub's constructor args /
+/// specialization overrides / pose / index domain / relate relations, a port's
+/// placement frame, a guarded group's condition, bare connect/chain elements,
+/// `forall` connect/constraint bodies, a match-arm cluster's discriminant, and a
+/// member-level `relate` block's relations.
+///
+/// The member half of this module's two-part traversal skeleton: this function
+/// yields a member's own expressions, [`for_each_child_scope`] yields the nested
+/// member lists it opens, and each member walker here is one of the two composed
+/// with a visitor. One enumeration rather than one per walker is what stops a
+/// newly-added expression-bearing field from being walked by one scanner and
+/// silently missed by another — the drift [`sub_direct_exprs`]' doc comment
+/// records having already happened twice.
+///
+/// The match is WILDCARD-FREE, so a new `MemberDecl` variant is a compile error
+/// here rather than a silently unwalked expression.
+///
+/// `MemberDecl::Fn` yields NOTHING. An associated function's body opens its own
+/// parameter scope (its params can shadow an entity binding), which this
+/// single-file value-reference foundation does not model, so collecting value
+/// uses there could produce false positives (Invariant 1). The TYPE-position
+/// walk does not inherit that restriction — a signature's types are not scoped
+/// by the function's params — so [`collect_decl_name_uses_in_members`] reaches a
+/// `Fn` through its own arm instead of through this enumeration.
+///
+/// The visitor is `&mut dyn FnMut` rather than a generic parameter because its
+/// callers recurse through it; a generic would monomorphise without end.
+fn for_each_member_direct_expr(member: &MemberDecl, visit: &mut dyn FnMut(&Expr)) {
+    match member {
+        MemberDecl::Param(p) => {
+            if let Some(default) = &p.default {
+                visit(default);
             }
-            MemberDecl::Let(l) => {
-                collect_idents_in_expr(&l.value, name, out);
-                collect_uses_in_where(&l.where_clause, name, out);
-            }
-            MemberDecl::Constraint(c) => {
-                collect_idents_in_expr(&c.expr, name, out);
-                collect_uses_in_where(&c.where_clause, name, out);
-            }
-            MemberDecl::ConstraintInst(c) => {
-                for (_, arg) in &c.args {
-                    collect_idents_in_expr(arg, name, out);
-                }
-                collect_uses_in_where(&c.where_clause, name, out);
-            }
-            MemberDecl::Sub(s) => collect_uses_in_sub(s, name, depth, out),
-            MemberDecl::Minimize(m) => {
-                collect_idents_in_expr(&m.expr, name, out);
-                collect_uses_in_where(&m.where_clause, name, out);
-            }
-            MemberDecl::Maximize(m) => {
-                collect_idents_in_expr(&m.expr, name, out);
-                collect_uses_in_where(&m.where_clause, name, out);
-            }
-            // Recurse into guarded branches so uses inside `where`/`else` blocks
-            // are collected (and later resolved to their innermost binding); the
-            // guard condition itself is an outer-scope expression.
-            MemberDecl::GuardedGroup(g) => {
-                collect_idents_in_expr(&g.condition, name, out);
-                collect_uses(&g.members, name, depth + 1, out);
-                collect_uses(&g.else_members, name, depth + 1, out);
-            }
-            // Ports carry an optional placement frame and a nested member body.
-            MemberDecl::Port(p) => {
-                if let Some(frame) = &p.frame_expr {
-                    collect_idents_in_expr(frame, name, out);
-                }
-                collect_uses(&p.members, name, depth + 1, out);
-            }
-            MemberDecl::Connect(c) => collect_uses_in_connect(c, name, out),
-            MemberDecl::Chain(c) => {
-                for el in &c.elements {
-                    collect_idents_in_expr(el, name, out);
-                }
-            }
-            MemberDecl::ForallConnect(f) => {
-                collect_idents_in_expr(&f.collection, name, out);
-                match &f.body {
-                    ForallConnectBody::Connect(c) => collect_uses_in_connect(c, name, out),
-                    ForallConnectBody::Chain(c) => {
-                        for el in &c.elements {
-                            collect_idents_in_expr(el, name, out);
-                        }
-                    }
-                }
-            }
-            MemberDecl::ForallConstraint(f) => {
-                collect_idents_in_expr(&f.collection, name, out);
-                match &f.body {
-                    ForallConstraintBody::Constraint(c) => {
-                        collect_idents_in_expr(&c.expr, name, out);
-                        collect_uses_in_where(&c.where_clause, name, out);
-                    }
-                    ForallConstraintBody::Instantiation(c) => {
-                        for (_, arg) in &c.args {
-                            collect_idents_in_expr(arg, name, out);
-                        }
-                        collect_uses_in_where(&c.where_clause, name, out);
-                    }
-                }
-            }
-            // Match-arm decl clusters (spec §6.4): the discriminant is an
-            // outer-scope expression; each arm's member is recursed as a child.
-            MemberDecl::MatchArmDeclGroup(g) => {
-                collect_idents_in_expr(&g.discriminant, name, out);
-                for arm in &g.arms {
-                    collect_uses(std::slice::from_ref(&*arm.member), name, depth + 1, out);
-                }
-            }
-            // A member-level `relate { … }` block: collect uses in each relation
-            // expression (task δ 4384), mirroring Chain's element walk.
-            MemberDecl::Relate(r) => {
-                for rel in &r.relations {
-                    collect_idents_in_expr(rel, name, out);
-                }
-            }
-            // See the fn-body note above — intentionally not walked.
-            MemberDecl::Fn(_) => {}
-            // Type-only / expression-free members: nothing to collect.
-            MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
+            visit_where_condition(&p.where_clause, visit);
         }
+        MemberDecl::Let(l) => {
+            visit(&l.value);
+            visit_where_condition(&l.where_clause, visit);
+        }
+        MemberDecl::Constraint(c) => {
+            visit(&c.expr);
+            visit_where_condition(&c.where_clause, visit);
+        }
+        MemberDecl::ConstraintInst(c) => {
+            for (_, arg) in &c.args {
+                visit(arg);
+            }
+            visit_where_condition(&c.where_clause, visit);
+        }
+        // `body` and each keyed entry's `overrides` open nested member scopes and
+        // so belong to `for_each_child_scope`, not here; `sub_direct_exprs`'
+        // doc comment carries the field-set rationale for both halves.
+        MemberDecl::Sub(s) => {
+            for expr in sub_direct_exprs(s) {
+                visit(expr);
+            }
+            for entry in &s.keyed_members {
+                for expr in keyed_entry_param_override_exprs(entry) {
+                    visit(expr);
+                }
+            }
+        }
+        MemberDecl::Minimize(m) => {
+            visit(&m.expr);
+            visit_where_condition(&m.where_clause, visit);
+        }
+        MemberDecl::Maximize(m) => {
+            visit(&m.expr);
+            visit_where_condition(&m.where_clause, visit);
+        }
+        // A guard condition is an OUTER-scope expression; the `where`/`else`
+        // branches it guards are child scopes.
+        MemberDecl::GuardedGroup(g) => visit(&g.condition),
+        // A port's placement frame is a direct expression; its member body is a
+        // child scope.
+        MemberDecl::Port(p) => {
+            if let Some(frame) = &p.frame_expr {
+                visit(frame);
+            }
+        }
+        MemberDecl::Connect(c) => visit_connect_exprs(c, visit),
+        MemberDecl::Chain(c) => {
+            for el in &c.elements {
+                visit(el);
+            }
+        }
+        MemberDecl::ForallConnect(f) => {
+            visit(&f.collection);
+            match &f.body {
+                ForallConnectBody::Connect(c) => visit_connect_exprs(c, visit),
+                ForallConnectBody::Chain(c) => {
+                    for el in &c.elements {
+                        visit(el);
+                    }
+                }
+            }
+        }
+        MemberDecl::ForallConstraint(f) => {
+            visit(&f.collection);
+            match &f.body {
+                ForallConstraintBody::Constraint(c) => {
+                    visit(&c.expr);
+                    visit_where_condition(&c.where_clause, visit);
+                }
+                ForallConstraintBody::Instantiation(c) => {
+                    for (_, arg) in &c.args {
+                        visit(arg);
+                    }
+                    visit_where_condition(&c.where_clause, visit);
+                }
+            }
+        }
+        // Match-arm decl clusters (spec §6.4): the discriminant is an
+        // outer-scope expression; each arm's member is a child scope.
+        MemberDecl::MatchArmDeclGroup(g) => visit(&g.discriminant),
+        // A member-level `relate { … }` block (task δ 4384), mirroring Chain's
+        // element walk.
+        MemberDecl::Relate(r) => {
+            for rel in &r.relations {
+                visit(rel);
+            }
+        }
+        // See the `MemberDecl::Fn` paragraph in this function's doc comment.
+        MemberDecl::Fn(_) => {}
+        // Type-only / expression-free members.
+        MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
     }
 }
 
-/// Collect uses inside an optional `where` clause condition.
-fn collect_uses_in_where(where_clause: &Option<WhereClause>, name: &str, out: &mut Vec<SourceSpan>) {
+/// Visit an optional `where` clause's condition expression.
+fn visit_where_condition(where_clause: &Option<WhereClause>, visit: &mut dyn FnMut(&Expr)) {
     if let Some(w) = where_clause {
-        collect_idents_in_expr(&w.condition, name, out);
+        visit(&w.condition);
     }
 }
 
-/// Collect uses inside a `connect`/`chain` declaration: both port-ref endpoints
+/// Visit a `connect`/`chain` declaration's expressions: both port-ref endpoints
 /// and every named connector parameter value.
-fn collect_uses_in_connect(c: &ConnectDecl, name: &str, out: &mut Vec<SourceSpan>) {
-    collect_idents_in_expr(&c.left.expr, name, out);
-    collect_idents_in_expr(&c.right.expr, name, out);
+fn visit_connect_exprs(c: &ConnectDecl, visit: &mut dyn FnMut(&Expr)) {
+    visit(&c.left.expr);
+    visit(&c.right.expr);
     for (_, param) in &c.params {
-        collect_idents_in_expr(param, name, out);
+        visit(param);
     }
 }
 
-/// Collect uses inside a `sub` declaration: constructor args, specialization
-/// param overrides, the `at` placement pose, the `where` guard, and any nested
-/// specialization-body / keyed-block members (depth-bounded).
-fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<SourceSpan>) {
-    for (_, arg) in &s.args {
-        collect_idents_in_expr(arg, name, out);
-    }
-    for (_, ov) in &s.spec_param_overrides {
-        collect_idents_in_expr(ov, name, out);
-    }
-    if let Some(pose) = &s.pose_expr {
-        collect_idents_in_expr(pose, name, out);
-    }
-    // Inline `at … where { … }` relate-block relations (task δ 4384): collect
-    // uses in each, the same as a member-level `relate { }` block.
-    for rel in &s.relate_relations {
-        collect_idents_in_expr(rel, name, out);
-    }
-    collect_uses_in_where(&s.where_clause, name, out);
-    if let Some(body) = &s.body {
-        collect_uses(body, name, depth + 1, out);
-    }
-    for entry in &s.keyed_members {
-        collect_uses(&entry.overrides, name, depth + 1, out);
+/// Enumerate every DIRECT sub-expression of `expr`, in source order.
+///
+/// The crate's single exhaustive `ExprKind` child enumeration, shared by the two
+/// expression walkers that need it: [`collect_idents_in_expr`] (value uses) and
+/// [`collect_type_name_uses_in_expr`] (type positions on lambda params). The
+/// match is WILDCARD-FREE, so a new `ExprKind` variant is a compile error here
+/// rather than a silently-dropped subtree in both walkers at once.
+///
+/// Only `Expr`-typed children are yielded. The non-expression parts an
+/// expression carries — a member-access `.segment`, a qualified access's member,
+/// a match arm's patterns, a lambda's parameter list, a quantifier's binder —
+/// are not sub-expressions and are the visiting walker's own business (the
+/// lambda parameter list is exactly why [`collect_type_name_uses_in_expr`]
+/// inspects `expr` itself before delegating here).
+///
+/// The visitor is `&mut dyn FnMut` rather than a generic parameter because both
+/// callers recurse through it; a generic would monomorphise without end.
+fn for_each_direct_subexpr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
+    match &expr.kind {
+        ExprKind::BinOp { left, right, .. } => {
+            visit(left);
+            visit(right);
+        }
+        ExprKind::UnOp { operand, .. } => visit(operand),
+        ExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                visit(arg);
+            }
+        }
+        // The base of a member access (`h` in `h.diameter`) is an identifier use
+        // of the sub/port/binding; the `.member` segment is a field name, not an
+        // expression.
+        ExprKind::MemberAccess { object, .. } => visit(object),
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            visit(condition);
+            visit(then_branch);
+            visit(else_branch);
+        }
+        ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
+            for item in items {
+                visit(item);
+            }
+        }
+        ExprKind::MapLiteral(entries) => {
+            for (k, v) in entries {
+                visit(k);
+                visit(v);
+            }
+        }
+        ExprKind::IndexAccess { object, index } => {
+            visit(object);
+            visit(index);
+        }
+        ExprKind::Match { discriminant, arms } => {
+            visit(discriminant);
+            for arm in arms {
+                visit(&arm.body);
+            }
+        }
+        ExprKind::Lambda { body, .. } => visit(body),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            visit(collection);
+            visit(predicate);
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            visit(base);
+            for arg in args {
+                visit(arg);
+            }
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => visit(qualifier),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            visit(object);
+            visit(qualified);
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            if let Some(l) = lower {
+                visit(l);
+            }
+            if let Some(u) = upper {
+                visit(u);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            visit(object);
+            for arg in args {
+                visit(arg);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for arg in args {
+                visit(arg);
+            }
+        }
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                visit(v);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Hole(e) = part {
+                    visit(e);
+                }
+            }
+        }
+        // `auto(seed = expr, …)` params carry value expressions that reference
+        // real bindings, so they are children — otherwise find-references/rename
+        // silently miss occurrences inside `auto(seed = x)`, leaving a dangling
+        // reference after rename (mirrors substitute_expr; geometric-relations δ,
+        // 4384).
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                visit(v);
+            }
+        }
+        // Leaves with no sub-expressions.
+        ExprKind::Ident(_)
+        | ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Undef => {}
     }
 }
 
 /// Recursively push the span of every `ExprKind::Ident(name)` in `expr`.
 ///
 /// Covers every `ExprKind` that contains sub-expressions so no in-scope use is
-/// missed (Invariant 2). The match is exhaustive (no wildcard) so a new
-/// `ExprKind` variant is a compile error here rather than a silently-dropped
-/// reference.
+/// missed (Invariant 2); the child enumeration itself lives in
+/// [`for_each_direct_subexpr`], whose wildcard-free match is what makes a new
+/// `ExprKind` variant a compile error rather than a silently-dropped reference.
 ///
 /// Known limitation: binder-introducing expressions (`Lambda` params,
 /// `Quantifier` variables, `Match` pattern binders) open their own value scope,
@@ -946,124 +1223,12 @@ fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<Sour
 /// completeness; a binder that shadows `name` is therefore not handled here and
 /// is deferred along with the other nested-scope cases.
 fn collect_idents_in_expr(expr: &Expr, name: &str, out: &mut Vec<SourceSpan>) {
-    match &expr.kind {
-        ExprKind::Ident(ident) => {
-            if ident == name {
-                out.push(expr.span);
-            }
-        }
-        ExprKind::BinOp { left, right, .. } => {
-            collect_idents_in_expr(left, name, out);
-            collect_idents_in_expr(right, name, out);
-        }
-        ExprKind::UnOp { operand, .. } => collect_idents_in_expr(operand, name, out),
-        ExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_idents_in_expr(arg, name, out);
-            }
-        }
-        // The base of a member access (`h` in `h.diameter`) is an identifier use
-        // of the sub/port/binding; the `.member` segment is a field name, not a
-        // tracked binding, so it is not recursed into.
-        ExprKind::MemberAccess { object, .. } => collect_idents_in_expr(object, name, out),
-        ExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_idents_in_expr(condition, name, out);
-            collect_idents_in_expr(then_branch, name, out);
-            collect_idents_in_expr(else_branch, name, out);
-        }
-        ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => {
-            for item in items {
-                collect_idents_in_expr(item, name, out);
-            }
-        }
-        ExprKind::MapLiteral(entries) => {
-            for (k, v) in entries {
-                collect_idents_in_expr(k, name, out);
-                collect_idents_in_expr(v, name, out);
-            }
-        }
-        ExprKind::IndexAccess { object, index } => {
-            collect_idents_in_expr(object, name, out);
-            collect_idents_in_expr(index, name, out);
-        }
-        ExprKind::Match { discriminant, arms } => {
-            collect_idents_in_expr(discriminant, name, out);
-            for arm in arms {
-                collect_idents_in_expr(&arm.body, name, out);
-            }
-        }
-        ExprKind::Lambda { body, .. } => collect_idents_in_expr(body, name, out),
-        ExprKind::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            collect_idents_in_expr(collection, name, out);
-            collect_idents_in_expr(predicate, name, out);
-        }
-        ExprKind::AdHocSelector { base, args, .. } => {
-            collect_idents_in_expr(base, name, out);
-            for arg in args {
-                collect_idents_in_expr(arg, name, out);
-            }
-        }
-        ExprKind::QualifiedAccess { qualifier, .. } => collect_idents_in_expr(qualifier, name, out),
-        ExprKind::InstanceQualifiedAccess { object, qualified } => {
-            collect_idents_in_expr(object, name, out);
-            collect_idents_in_expr(qualified, name, out);
-        }
-        ExprKind::Range { lower, upper, .. } => {
-            if let Some(l) = lower {
-                collect_idents_in_expr(l, name, out);
-            }
-            if let Some(u) = upper {
-                collect_idents_in_expr(u, name, out);
-            }
-        }
-        ExprKind::TraitMethodCall { object, args, .. } => {
-            collect_idents_in_expr(object, name, out);
-            for arg in args {
-                collect_idents_in_expr(arg, name, out);
-            }
-        }
-        ExprKind::TraitStaticCall { args, .. } => {
-            for arg in args {
-                collect_idents_in_expr(arg, name, out);
-            }
-        }
-        ExprKind::VariantConstruct { fields, .. } => {
-            for (_, v) in fields {
-                collect_idents_in_expr(v, name, out);
-            }
-        }
-        ExprKind::InterpolatedString(parts) => {
-            for part in parts {
-                if let StringPart::Hole(e) = part {
-                    collect_idents_in_expr(e, name, out);
-                }
-            }
-        }
-        // `auto(seed = expr, …)` params carry value expressions that reference
-        // real bindings, so recurse — otherwise find-references/rename silently
-        // miss occurrences inside `auto(seed = x)`, leaving a dangling reference
-        // after rename (mirrors substitute_expr; geometric-relations δ, 4384).
-        ExprKind::Auto { params, .. } => {
-            for (_, v) in params {
-                collect_idents_in_expr(v, name, out);
-            }
-        }
-        // Leaves with no sub-expressions.
-        ExprKind::NumberLiteral { .. }
-        | ExprKind::QuantityLiteral { .. }
-        | ExprKind::StringLiteral(_)
-        | ExprKind::BoolLiteral(_)
-        | ExprKind::EnumAccess { .. }
-        | ExprKind::Undef => {}
+    if let ExprKind::Ident(ident) = &expr.kind
+        && ident == name
+    {
+        out.push(expr.span);
     }
+    for_each_direct_subexpr(expr, &mut |child| collect_idents_in_expr(child, name, out));
 }
 
 /// Classify a value binding by its initializer: a binding initialized to the
@@ -1263,57 +1428,362 @@ pub fn compute_document_highlights(
     )
 }
 
-// ─── κ (task 4210): cross-file structure references + rename ─────────────────
+// ─── κ (task 4210): cross-file declaration-name references + rename ─────────────────
 //
 // The single-file producers above resolve VALUE-member bindings
 // (param/let/auto/sub/port) within one entity body. The machinery below follows
-// the import graph to resolve a STRUCTURE name (a declaration name) across
-// files: its home declaration token, every same-file `sub _ = Name`
-// construction site, and — in each importing document — the import entity token
-// plus its construction sites. The collectors are PURE: the open-document set
-// arrives as `workspace_docs` and target resolution as an injectable
+// the import graph to resolve a DECLARATION name across
+// files: its home declaration token, every same-file USE SITE, and — in each
+// importing document — the import entity token plus that document's use sites.
+// `collect_decl_name_spans` enumerates the use-site categories and is the ONE
+// place that list is written down: #6539 widened it, and the surfaces that had
+// re-listed it verbatim understated it for exactly as long.
+//
+// The collectors are PURE: the open-document set arrives as `workspace_docs`
+// and target resolution as an injectable
 // `resolve_import` closure (mirroring goto_def's pattern), so the whole
 // cross-file scope logic is unit-testable with an in-memory workspace + a mock
 // resolver. The server handlers assemble both from the live DocumentStore.
 
-/// Collect every structure-name reference to `name` within a SINGLE parsed
+/// Collect every declaration-name reference to `name` within a SINGLE parsed
 /// document: the home declaration's name token (when `name` is declared in this
-/// document) plus each `sub _ = name` construction-site token across every
-/// entity's members, recursing into nested scopes. Ascending by `span.start`.
+/// document) plus each USE-SITE token in every top-level declaration, recursing
+/// into members and nested scopes. Ascending by `span.start`.
 ///
-/// `SubDecl.structure_name` is a plain `String` field (decl.rs), not an `Expr`,
-/// so these construction-site uses never appear as `ExprKind::Ident` and are
-/// structurally invisible to `collect_uses`/`collect_idents_in_expr`. This
-/// dedicated traversal is the only way to surface them (κ design decision). The
-/// home declaration token is located via goto_def's `find_declaration_name_span`
-/// so a structure's rename/reference token is uniform with go-to-definition.
-fn collect_structure_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> Vec<SourceSpan> {
+/// Use-site categories collected here:
+/// - `sub _ = name` construction sites (κ design decision).
+/// - `constraint Name(…)` instantiations (#6539).
+/// - TYPE POSITIONS — `param p : Name`, `fn f() -> Name`, `type H = Name`,
+///   `structure S : Name`, `|p: Name| …` and every other root
+///   [`collect_decl_name_uses_in_decl`] fans out over (#6539).
+///
+/// All of them are structurally invisible to
+/// `collect_uses`/`collect_idents_in_expr`: `SubDecl.structure_name` is a plain
+/// `String` field, not an `Expr`, and a `TypeExpr` is not an `Expr` at all, so
+/// neither ever appears as `ExprKind::Ident`. This dedicated, BINDING-FREE
+/// traversal is the only way to surface them — see [`collect_type_name_uses`]
+/// for why the value-binding path is the wrong home. The home declaration token
+/// is located via goto_def's `decl_name_span_in` so a declaration's
+/// rename/reference token is uniform with go-to-definition — fed the `parsed`
+/// the caller already holds, rather than `find_declaration_name_span`, which
+/// re-parses the same string.
+///
+/// CAVEAT — the one type reference this traversal cannot locate.
+/// `TypeParamDecl.bounds` is a `Vec<String>` carrying no spans of its own (only
+/// the enclosing `TypeParamDecl.span`), so the `Numeric` in `structure S<T:
+/// Numeric>` is a real reference that no span in the AST identifies, and it is
+/// NOT collected. A trait renamed cross-file therefore leaves such a bound
+/// stale, exactly as the pre-#6539 type-annotation gap did. Closing it needs a
+/// spanned bound in the AST (`Vec<SpannedIdent>`, as `TraitDecl.refinements`
+/// already uses), not a change here.
+fn collect_decl_name_spans(source: &str, parsed: &ParsedModule, name: &str) -> Vec<SourceSpan> {
     let mut spans = Vec::new();
     // Home declaration token (`structure Name` / `occurrence def Name` / …),
     // present only when `name` is declared in THIS document.
-    if let Some(decl_token) = crate::goto_def::find_declaration_name_span(source, name) {
+    if let Some(decl_token) = crate::goto_def::decl_name_span_in(parsed, source, name) {
         spans.push(decl_token);
     }
-    // Every `sub _ = name` construction site across all entities' members.
     for decl in &parsed.declarations {
-        if let Some(members) = entity_members(decl) {
-            collect_sub_structure_uses(members, source, name, 0, &mut spans);
-        }
+        collect_decl_name_uses_in_decl(decl, source, name, &mut spans);
     }
     spans.sort_by_key(|s| s.start);
     spans
 }
 
-/// Push the name-token span of each `MemberDecl::Sub` whose `structure_name`
-/// equals `name`, recursing into nested member-list scopes (guarded branches,
-/// port bodies, sub specialization bodies / keyed overrides, match-arm members)
-/// exactly as `collect_uses` does — depth-bounded by `MAX_MEMBER_NESTING_DEPTH`
-/// — so a construction site nested inside a `where`/port/sub block is not missed.
+/// Push every span at which `decl` REFERENCES a declaration named `name` — never
+/// `decl`'s own name token, which [`collect_decl_name_spans`] supplies once.
 ///
-/// The emitted span is `name_token_span(source, sub.span, name)`: the first
-/// whole-word `name` token within the `sub` statement, i.e. the structure-name
-/// (construction) token in `sub binding = Name(...)`.
-fn collect_sub_structure_uses(
+/// The declaration half of the use-site fan-out, and the single place the root
+/// set is written down: every `TypeExpr` root reachable from a top-level
+/// declaration is reached from here, directly or through
+/// [`collect_decl_name_uses_in_members`]. The match is WILDCARD-FREE over all 14
+/// `Declaration` variants, so a new declaration kind is a compile error here
+/// rather than a silently uncollected use site — the same forcing-function
+/// design as `analysis::decl_name_and_span`.
+///
+/// Both reference collectors share it: the home document walks every
+/// declaration, and an importing document walks the same set once its import
+/// exposes `name` under that same local name
+/// ([`collect_importer_decl_name_references`]). Sharing one fan-out is what
+/// keeps the two from disagreeing about what a use site is.
+fn collect_decl_name_uses_in_decl(
+    decl: &Declaration,
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    match decl {
+        Declaration::Structure(s) => {
+            collect_entity_body_uses(
+                &s.type_params,
+                &s.trait_bounds,
+                &s.members,
+                source,
+                name,
+                out,
+            );
+        }
+        Declaration::Occurrence(o) => {
+            collect_entity_body_uses(
+                &o.type_params,
+                &o.trait_bounds,
+                &o.members,
+                source,
+                name,
+                out,
+            );
+        }
+        // `TraitDecl.refinements` is a `Vec<SpannedIdent>`, the one type
+        // reference in the AST that already carries its own exact name-token
+        // span — so it is pushed verbatim, with no narrowing and no source scan.
+        Declaration::Trait(t) => {
+            collect_type_param_uses(&t.type_params, source, name, out);
+            for refinement in &t.refinements {
+                if refinement.name == name {
+                    out.push(refinement.span);
+                }
+            }
+            collect_decl_name_uses_in_members(&t.members, source, name, 0, out);
+        }
+        // A purpose has THREE child regions, not one. `members` is the obvious
+        // one; `structures` (a `structure def` lexically nested in the body,
+        // kept out of `members` by task 4639) and `defaults` (kept out by task
+        // 4496) are sibling vecs that no member walk can reach, which is why
+        // `entity_members` — whose contract is a single `&[MemberDecl]` — is
+        // NOT the place to close this and is deliberately left alone.
+        //
+        // `PurposeParam.entity_kind` is deliberately not a use site: it is an
+        // entity-KIND keyword (`Structure`, `Occurrence`), not a reference to a
+        // declaration, so collecting it would let a rename rewrite unrelated
+        // text.
+        Declaration::Purpose(p) => {
+            collect_type_param_uses(&p.type_params, source, name, out);
+            collect_decl_name_uses_in_members(&p.members, source, name, 0, out);
+            for default in &p.defaults {
+                collect_default_decl_uses(default, source, name, out);
+            }
+            // A purpose-nested structure is a first-class entity body — the
+            // compiler registers its name in the MODULE-level structure
+            // namespace and compiles it into the same template table as a
+            // top-level one (pre_pass.rs, entities_phase.rs) — so its body is
+            // walked exactly like a top-level structure's, sharing one home
+            // rather than a second copy that could drift.
+            for nested in &p.structures {
+                collect_entity_body_uses(
+                    &nested.type_params,
+                    &nested.trait_bounds,
+                    &nested.members,
+                    source,
+                    name,
+                    out,
+                );
+            }
+        }
+        Declaration::Enum(e) => {
+            collect_type_param_uses(&e.type_params, source, name, out);
+            for variant in &e.variants {
+                match &variant.payload {
+                    VariantPayload::Named(fields) => {
+                        for (_, ty) in fields {
+                            collect_type_name_uses(ty, source, name, out);
+                        }
+                    }
+                    VariantPayload::Unit => {}
+                }
+            }
+        }
+        Declaration::Function(f) => collect_fn_name_uses(f, source, name, out),
+        Declaration::Field(f) => {
+            collect_type_name_uses(&f.domain_type, source, name, out);
+            collect_type_name_uses(&f.codomain_type, source, name, out);
+            match &f.source {
+                FieldSource::Analytical { expr } | FieldSource::Composed { expr } => {
+                    collect_type_name_uses_in_expr(expr, source, name, out);
+                }
+                FieldSource::Sampled { config } => {
+                    for (_, expr) in config {
+                        collect_type_name_uses_in_expr(expr, source, name, out);
+                    }
+                }
+                // Path/format/grid are `Option<String>` literals, not
+                // expressions and not declaration references.
+                FieldSource::Imported { .. } => {}
+            }
+        }
+        Declaration::Constraint(c) => {
+            collect_type_param_uses(&c.type_params, source, name, out);
+            for param in &c.params {
+                if let Some(ty) = &param.type_expr {
+                    collect_type_name_uses(ty, source, name, out);
+                }
+                if let Some(default) = &param.default {
+                    collect_type_name_uses_in_expr(default, source, name, out);
+                }
+            }
+            for predicate in &c.predicates {
+                collect_type_name_uses_in_expr(predicate, source, name, out);
+            }
+        }
+        Declaration::Unit(u) => collect_type_name_uses(&u.dimension_type, source, name, out),
+        Declaration::TypeAlias(a) => {
+            collect_type_param_uses(&a.type_params, source, name, out);
+            collect_type_name_uses(&a.type_expr, source, name, out);
+        }
+        Declaration::Default(d) => collect_default_decl_uses(d, source, name, out),
+        Declaration::Joint(j) => {
+            collect_type_param_uses(&j.type_params, source, name, out);
+            for param in &j.params {
+                collect_type_name_uses(&param.type_expr, source, name, out);
+                if let Some(default) = &param.default {
+                    collect_type_name_uses_in_expr(default, source, name, out);
+                }
+            }
+            for dof in &j.dof {
+                collect_type_name_uses(&dof.type_expr, source, name, out);
+                if let Some(range) = &dof.range {
+                    collect_type_name_uses_in_expr(range, source, name, out);
+                }
+            }
+            for expr in &j.body {
+                collect_type_name_uses_in_expr(expr, source, name, out);
+            }
+        }
+        // An import's entity token IS a reference, but admitting it here would
+        // key on a bare name match; scope soundness (Invariant 1) requires
+        // keying on the RESOLVED target module instead, which is
+        // `collect_importer_decl_name_references`' job. A `module` declaration
+        // names a module path, never a declaration.
+        Declaration::Import(_) | Declaration::Module(_) => {}
+    }
+}
+
+/// Push every reference to `name` inside an entity body — its type parameters'
+/// defaults, its trait bounds and its members.
+///
+/// Takes the three slices rather than a declaration, because the three entity
+/// bodies that share this shape are three distinct types: `StructureDef`,
+/// `OccurrenceDef`, and a `StructureDef` nested in a `PurposeDef`. One home for
+/// the walk keeps a purpose-nested structure from being walked less thoroughly
+/// than a top-level one, which is the shape of gap #6539 exists to close.
+fn collect_entity_body_uses(
+    type_params: &[TypeParamDecl],
+    trait_bounds: &[TraitBoundRef],
+    members: &[MemberDecl],
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    collect_type_param_uses(type_params, source, name, out);
+    collect_trait_bound_uses(trait_bounds, source, name, out);
+    collect_decl_name_uses_in_members(members, source, name, 0, out);
+}
+
+/// Push every reference to `name` in an ambient-default declaration: the type it
+/// applies to and its value expression.
+///
+/// Shared by the top-level `Declaration::Default` arm and `PurposeDef.defaults`,
+/// which are the same `DefaultDecl` at the two positions the grammar allows.
+fn collect_default_decl_uses(d: &DefaultDecl, source: &str, name: &str, out: &mut Vec<SourceSpan>) {
+    collect_type_name_uses(&d.type_expr, source, name, out);
+    collect_type_name_uses_in_expr(&d.value, source, name, out);
+}
+
+/// Push every reference to `name` inside a function definition: its type
+/// parameters' defaults, each parameter's declared type and default expression,
+/// the return type, and the body's `let` annotations and expressions.
+///
+/// Shared by the top-level `Declaration::Function` arm and the `MemberDecl::Fn`
+/// arm (a trait's associated function), which are the same `FnDef` in two
+/// positions.
+fn collect_fn_name_uses(f: &FnDef, source: &str, name: &str, out: &mut Vec<SourceSpan>) {
+    collect_type_param_uses(&f.type_params, source, name, out);
+    for param in &f.params {
+        collect_type_name_uses(&param.type_expr, source, name, out);
+        if let Some(default) = &param.default {
+            collect_type_name_uses_in_expr(default, source, name, out);
+        }
+    }
+    if let Some(return_type) = &f.return_type {
+        collect_type_name_uses(return_type, source, name, out);
+    }
+    if let Some(body) = &f.body {
+        for binding in &body.let_bindings {
+            if let Some(ty) = &binding.type_expr {
+                collect_type_name_uses(ty, source, name, out);
+            }
+            collect_type_name_uses_in_expr(&binding.value, source, name, out);
+        }
+        collect_type_name_uses_in_expr(&body.result_expr, source, name, out);
+    }
+}
+
+/// Push every reference to `name` in a type-parameter list — each parameter's
+/// DEFAULT type (`<T = Name>`), recursively.
+///
+/// `TypeParamDecl.bounds` is NOT reached: it is a `Vec<String>` with no spans of
+/// its own, so a bound reference cannot be located from the AST at all. That
+/// residual is stated once, on [`collect_decl_name_spans`].
+fn collect_type_param_uses(
+    type_params: &[TypeParamDecl],
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    for type_param in type_params {
+        if let Some(default) = &type_param.default {
+            collect_type_name_uses(default, source, name, out);
+        }
+    }
+}
+
+/// Push the name-token span of every trait bound in `bounds` that references
+/// `name` (`structure S : Name`, `occurrence def O : Container<Name>`),
+/// recursing into each bound's type arguments.
+///
+/// `TraitBoundRef.span` covers the WHOLE bound, name and type arguments
+/// together, so the token is always narrowed with [`name_token_span`] — unlike
+/// `TraitDecl.refinements`, whose `SpannedIdent` already carries the exact name
+/// token.
+fn collect_trait_bound_uses(
+    bounds: &[TraitBoundRef],
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    for bound in bounds {
+        if references_decl_name(&bound.name, name) {
+            out.push(name_token_span(source, bound.span, name));
+        }
+        for arg in &bound.type_args {
+            collect_type_name_uses(arg, source, name, out);
+        }
+    }
+}
+
+/// Push the name-token span of each use site of `name` among `members`,
+/// recursing into nested member-list scopes (guarded branches, port bodies, sub
+/// specialization bodies / keyed overrides, match-arm members) exactly as
+/// `collect_uses` does — depth-bounded by [`MAX_MEMBER_NESTING_DEPTH`] — so a
+/// use nested inside a `where`/port/sub block is not missed.
+///
+/// Four categories, and the match over them is WILDCARD-FREE so a new
+/// `MemberDecl` variant is a compile error rather than a silently uncollected
+/// use site:
+/// - a `sub binding = Name(...)` CONSTRUCTION site, whose `structure_name` is a
+///   plain `String`; the emitted span is the first whole-word `name` token
+///   inside the `sub` statement, i.e. the construction token;
+/// - a `constraint Name(...)` INSTANTIATION, whose `name` is a plain `String`
+///   for the same reason and is narrowed the same way;
+/// - a TYPE POSITION on a member that declares one (`param`/`let` annotations, a
+///   sub's type arguments, an associated type's default, a `port`'s trait, an
+///   associated function's whole signature and body);
+/// - a lambda parameter's type annotation anywhere in the member's own
+///   expressions, reached via [`for_each_member_direct_expr`].
+///
+/// `MemberDecl::Fn` is walked here even though `for_each_member_direct_expr`
+/// yields nothing for it — see that function's doc comment for why the value
+/// walk stops at a fn body and the type walk does not.
+fn collect_decl_name_uses_in_members(
     members: &[MemberDecl],
     source: &str,
     name: &str,
@@ -1324,18 +1794,213 @@ fn collect_sub_structure_uses(
         return;
     }
     for member in members {
-        if let MemberDecl::Sub(s) = member
-            && s.structure_name == name
-        {
-            out.push(name_token_span(source, s.span, name));
+        match member {
+            MemberDecl::Sub(s) => {
+                if s.structure_name == name {
+                    out.push(name_token_span(source, s.span, name));
+                }
+                for arg in &s.type_args {
+                    collect_type_name_uses(arg, source, name, out);
+                }
+            }
+            MemberDecl::Param(p) => {
+                if let Some(ty) = &p.type_expr {
+                    collect_type_name_uses(ty, source, name, out);
+                }
+            }
+            MemberDecl::Let(l) => {
+                if let Some(ty) = &l.type_expr {
+                    collect_type_name_uses(ty, source, name, out);
+                }
+            }
+            MemberDecl::AssociatedType(a) => {
+                if let Some(ty) = &a.default_type {
+                    collect_type_name_uses(ty, source, name, out);
+                }
+            }
+            MemberDecl::Fn(f) => collect_fn_name_uses(f, source, name, out),
+            // `PortDecl.type_name` names a TRAIT (the compiler looks it up in
+            // the trait registry, entity.rs), so it is a real reference to a
+            // top-level declaration. It is a plain `String` with no span of its
+            // own, so the token is narrowed out of the port's span.
+            MemberDecl::Port(p) => {
+                if p.type_name == name {
+                    out.push(name_token_span(source, p.span, name));
+                }
+            }
+            // `constraint Foo(x: w)` — a CONSTRAINT-DEF INSTANTIATION. Twins
+            // the `Sub` arm above: `ConstraintInstDecl.name` is a plain
+            // `String`, so the instantiation name never appears as an
+            // `ExprKind::Ident` and is invisible to every ident walk.
+            MemberDecl::ConstraintInst(c) => {
+                collect_constraint_inst_uses(c, source, name, out);
+            }
+            // `forall v in coll: constraint Foo(…)` carries the SAME
+            // `ConstraintInstDecl` one level in, so it is the same use site and
+            // shares the same arm rather than being a second, driftable copy.
+            MemberDecl::ForallConstraint(f) => {
+                if let ForallConstraintBody::Instantiation(c) = &f.body {
+                    collect_constraint_inst_uses(c, source, name, out);
+                }
+            }
+            // Expression-only members: any type reference they carry is a
+            // lambda parameter annotation, collected below through
+            // `for_each_member_direct_expr` rather than arm by arm.
+            MemberDecl::Constraint(_)
+            | MemberDecl::Minimize(_)
+            | MemberDecl::Maximize(_)
+            | MemberDecl::GuardedGroup(_)
+            | MemberDecl::Connect(_)
+            | MemberDecl::Chain(_)
+            | MemberDecl::MetaBlock(_)
+            | MemberDecl::ForallConnect(_)
+            | MemberDecl::MatchArmDeclGroup(_)
+            | MemberDecl::Relate(_) => {}
         }
-        // Recurse into the SAME nested member-list scopes `collect_uses`
-        // descends into (via `for_each_child_scope`), so a `sub` construction
-        // site inside a guarded/port/sub/match scope is also collected.
+        for_each_member_direct_expr(member, &mut |expr| {
+            collect_type_name_uses_in_expr(expr, source, name, out);
+        });
         for_each_child_scope(member, |child| {
-            collect_sub_structure_uses(child, source, name, depth + 1, out);
+            collect_decl_name_uses_in_members(child, source, name, depth + 1, out);
         });
     }
+}
+
+/// Push the name-token span of a `constraint Name(…)` instantiation when it
+/// instantiates `name`.
+///
+/// `ConstraintInstDecl.name` is a plain `String` with no span of its own, so the
+/// token is narrowed out of the instantiation's span — the first whole-word
+/// `name` inside `constraint Name(args…)`, which is the instantiation token.
+/// Exactly the treatment `SubDecl.structure_name` gets, for exactly the same
+/// reason.
+///
+/// Shared by the `MemberDecl::ConstraintInst` arm and the
+/// `ForallConstraintBody::Instantiation` arm, which carry the same struct at two
+/// nesting levels.
+fn collect_constraint_inst_uses(
+    c: &ConstraintInstDecl,
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    if c.name == name {
+        out.push(name_token_span(source, c.span, name));
+    }
+}
+
+/// Push every TYPE-position reference to `name` written inside an expression.
+///
+/// `LambdaParam.type_expr` (`|p: Name| …`) is the only `TypeExpr` root an
+/// expression can carry, so this walk inspects each node for a lambda and
+/// otherwise just descends. It is a type walk, not a value walk: an
+/// `ExprKind::Ident` equal to `name` is NOT collected here, because a bare
+/// identifier in value position names a binding, not a declaration.
+fn collect_type_name_uses_in_expr(
+    expr: &Expr,
+    source: &str,
+    name: &str,
+    out: &mut Vec<SourceSpan>,
+) {
+    if let ExprKind::Lambda { params, .. } = &expr.kind {
+        for param in params {
+            if let Some(ty) = &param.type_expr {
+                collect_type_name_uses(ty, source, name, out);
+            }
+        }
+    }
+    for_each_direct_subexpr(expr, &mut |child| {
+        collect_type_name_uses_in_expr(child, source, name, out);
+    });
+}
+
+/// Push the name-token span of every reference to `name` appearing in TYPE
+/// POSITION within `ty`, recursing through the whole type expression.
+///
+/// WHY THIS LIVES IN THE DECLARATION-NAME TRAVERSAL AND NOT IN
+/// `collect_uses`/`collect_idents_in_expr`. [`collect_references_at`] is a
+/// VALUE-BINDING machine: it collects param/let/sub/port BINDINGS, collects
+/// uses, then keeps only the uses whose `resolve_use(...)` is the selected
+/// binding. A top-level declaration name is not a binding, so a type-position
+/// span pushed there would be filtered straight back out — inert, and
+/// misleading to the next reader. This traversal is the existing binding-free
+/// home for exactly this shape of problem; it was created because
+/// `SubDecl.structure_name` is a plain `String` invisible to
+/// `collect_idents_in_expr`, and a type expression is invisible to it for the
+/// same structural reason.
+///
+/// The match is WILDCARD-FREE over all six `TypeExprKind` variants, so a new
+/// variant is a compile error here rather than a silently uncollected use site
+/// — the same forcing-function design as `analysis::decl_name_and_span`.
+///
+/// SPAN PRECISION is the rename-safety property, because
+/// [`compute_rename_cross_file`] uses the reference set as its exact edit set.
+/// A `Named` type's span is the NAME TOKEN exactly when it is a bare identifier
+/// (`lower_type_expr_node`'s bare-identifier arm spans just that node), but
+/// covers the whole `Box<T>` construct for the parameterized form
+/// (`lower_parameterized_type` spans the entire node). The bare case therefore
+/// pushes `ty.span` directly — authoritative by construction, with no source
+/// scan and no exposure to [`name_token_span`]'s empty-span miss fallback —
+/// while every other shape must narrow.
+fn collect_type_name_uses(ty: &TypeExpr, source: &str, name: &str, out: &mut Vec<SourceSpan>) {
+    match &ty.kind {
+        TypeExprKind::Named {
+            name: written,
+            type_args,
+        } => {
+            if written == name && type_args.is_empty() {
+                out.push(ty.span);
+            } else if references_decl_name(written, name) {
+                out.push(name_token_span(source, ty.span, name));
+            }
+            for arg in type_args {
+                collect_type_name_uses(arg, source, name, out);
+            }
+        }
+        TypeExprKind::DimensionalOp { op: _, left, right } => {
+            collect_type_name_uses(left, source, name, out);
+            collect_type_name_uses(right, source, name, out);
+        }
+        TypeExprKind::QualifiedAssoc {
+            base,
+            trait_name: _,
+            member: _,
+        } => {
+            // `base` is a type expression; `member` and `trait_name` name an
+            // associated type and a trait, neither of which is a reference to
+            // the top-level declaration `name` denotes.
+            collect_type_name_uses(base, source, name, out);
+        }
+        TypeExprKind::Function {
+            params,
+            return_type,
+        } => {
+            for param in params {
+                collect_type_name_uses(param, source, name, out);
+            }
+            collect_type_name_uses(return_type, source, name, out);
+        }
+        // Leaves: an integer type-argument and an `auto` type-argument name no
+        // declaration. `Auto.bound` is a bare identifier but carries no span of
+        // its own (only the enclosing `TypeExpr.span`), so a bound reference
+        // cannot be located from the AST and is not collected.
+        TypeExprKind::IntegerLiteral(_) => {}
+        TypeExprKind::Auto { .. } => {}
+    }
+}
+
+/// Whether a type name spelled `written` in source refers to the declaration
+/// named `name`.
+///
+/// Two spellings do. The bare name is the obvious one. The NAMESPACED form
+/// (`pp.Hole`) is the trap: `ts_parser::namespaced_name_text` dot-JOINS the
+/// qualifier and the name into a single `String`, so a bare declaration name
+/// never equals it and, without this comparison, an ordinary-looking use is
+/// silently dropped — invisible to find-references and left stale by a rename.
+/// Only the LAST segment is ever emitted as a span, because renaming the
+/// declaration rewrites `Hole` and never the `pp.` qualifier.
+fn references_decl_name(written: &str, name: &str) -> bool {
+    written == name || written.rsplit('.').next().unwrap_or(written) == name
 }
 
 /// Whether import `kind` brings an entity named `name` into local scope under
@@ -1355,14 +2020,22 @@ enum CrossFileHome {
     /// A local value-member binding (`param`/`let`/`auto`/`sub`/`port`) — the
     /// single-file producers own it unchanged.
     ValueMember,
-    /// A structure declaration named `name`, homed in document `uri` whose full
-    /// `source` is carried so the home-file collector can run over it.
-    Structure { uri: Url, name: String, source: String },
+    /// A DECLARATION named `name`, homed in document `uri` whose full `source`
+    /// is carried so the home-file collector can run over it.
+    ///
+    /// "Declaration" is the whole module-level namespace, not just `structure`:
+    /// since #6539 this carries a Structure, Occurrence, Fn, Enum, Trait, Field,
+    /// TypeAlias, Constraint, Purpose or Joint, and since #6534 a `structure
+    /// def` nested one level inside a `purpose` body too. Which of those may be
+    /// RENAMED is a narrower question, and the one place it is answered is
+    /// [`is_renameable_cross_file`] — reaching this variant is not itself a
+    /// rename verdict.
+    Declaration { uri: Url, name: String, source: String },
 }
 
 /// Resolve the cursor (`offset` + the identifier `word` under it) to a cross-file
-/// home (κ step-4): a local value-member binding, a structure declared in THIS
-/// document, or a structure reached through an `import`.
+/// home (κ step-4): a local value-member binding, a declaration in THIS
+/// document, or a declaration reached through an `import`.
 ///
 /// Resolution order is deliberate: value-member bindings win first (so the
 /// single-file semantics of `param`/`let`/`auto`/`sub`/`port` are untouched),
@@ -1376,7 +2049,7 @@ enum CrossFileHome {
 /// `false` for ALIASED imports (`import m.Name as Alias`). So resolution cannot
 /// START from an aliased import's entity token: invoking references/rename with
 /// the cursor exactly on the `Name` in `import parts.Hole as Bore` returns
-/// `None`. This is asymmetric with [`collect_importer_structure_references`],
+/// `None`. This is asymmetric with [`collect_importer_decl_name_references`],
 /// which DOES emit that aliased entity token into the reference set when
 /// resolution starts elsewhere (e.g. the home declaration) — so the token is
 /// part of the set yet is not a valid starting cursor. The asymmetry is
@@ -1397,9 +2070,15 @@ fn resolve_cross_file_home(
     if collect_references_at(primary_source, primary_parsed, offset, word, true).is_some() {
         return Some(CrossFileHome::ValueMember);
     }
-    // 2. A structure declared in THIS document → home is the current file.
-    if crate::goto_def::find_declaration_name_span(primary_source, word).is_some() {
-        return Some(CrossFileHome::Structure {
+    // 2. A declaration of any admitted kind in THIS document → home is the
+    //    current file. Scanned through `primary_parsed`, which the server
+    //    already parsed for this edit, rather than `find_declaration_name_span`
+    //    — that helper is this same scan preceded by its own
+    //    `parse_with_stdlib`, i.e. a second full parse of the primary buffer on
+    //    an interactive path, and the server's cached parse is that same
+    //    prelude-aware flavour.
+    if crate::goto_def::decl_name_span_in(primary_parsed, primary_source, word).is_some() {
+        return Some(CrossFileHome::Declaration {
             uri: primary_uri.clone(),
             name: word.to_string(),
             source: primary_source.to_string(),
@@ -1412,7 +2091,7 @@ fn resolve_cross_file_home(
             && import_exposes_entity(&import.kind, word)
             && let Some((home_uri, home_source)) = resolve_import(&import.path)
         {
-            return Some(CrossFileHome::Structure {
+            return Some(CrossFileHome::Declaration {
                 uri: home_uri,
                 name: word.to_string(),
                 source: home_source,
@@ -1422,10 +2101,17 @@ fn resolve_cross_file_home(
     None
 }
 
-/// Collect the structure-name reference spans an importing document
-/// `doc_source` contributes for an entity named `name` homed at `home_uri`:
-/// the import entity token plus (for non-aliased imports) every same-file
-/// `sub _ = name` construction site, ascending by `span.start`.
+/// Collect the declaration-name reference spans an importing document
+/// `doc_source` contributes for a declaration named `name` homed at `home_uri`:
+/// the import entity token plus, for non-aliased imports, every USE SITE in the
+/// document, ascending by `span.start`.
+///
+/// The use sites are exactly the three categories
+/// [`collect_decl_name_uses_in_decl`] fans out over — `sub _ = name`
+/// construction sites, `constraint name(…)` instantiations, and every type
+/// position (#6539) — because this calls that same fan-out. Sharing it with the
+/// home document is deliberate: the two cannot disagree about what counts as a
+/// use, so a rename driven from either end edits the same set.
 ///
 /// SCOPE SOUNDNESS (Invariant 1, κ step-6): an import contributes ONLY when
 /// `resolve_import(import.path)` resolves to `home_uri` — never by a bare
@@ -1442,13 +2128,13 @@ fn resolve_cross_file_home(
 ///   and its `sub _ = Alias` uses are a separate binding and are excluded.
 ///
 /// PERFORMANCE — a cheap substring pre-filter skips fully parsing docs that
-/// cannot contribute: every span this function emits (an import entity token or
-/// a `sub _ = name` construction token) requires `name` to appear LITERALLY in
-/// `doc_source`, so `!doc_source.contains(name)` is a sound early-out (a
+/// cannot contribute: every span this function emits is a name token for `name`
+/// itself, so it requires `name` to appear LITERALLY in `doc_source`, and
+/// `!doc_source.contains(name)` is a sound early-out (a
 /// whole-word match implies a substring match — the pre-filter never drops a
 /// real reference). On a workspace with many open docs this avoids re-parsing
 /// every buffer just to discover it never imports the home entity.
-fn collect_importer_structure_references(
+fn collect_importer_decl_name_references(
     doc_source: &str,
     name: &str,
     home_uri: &Url,
@@ -1493,12 +2179,12 @@ fn collect_importer_structure_references(
             _ => {}
         }
     }
-    // Construction sites only when imported under the same (non-aliased) name.
+    // Use sites only when imported under the same (non-aliased) name — and then
+    // the SAME fan-out the home document uses, so the two documents cannot
+    // disagree about what counts as a use of the entity.
     if exposes_under_same_name {
         for decl in &parsed.declarations {
-            if let Some(members) = entity_members(decl) {
-                collect_sub_structure_uses(members, doc_source, name, 0, &mut spans);
-            }
+            collect_decl_name_uses_in_decl(decl, doc_source, name, &mut spans);
         }
     }
     spans.sort_by_key(|s| s.start);
@@ -1507,19 +2193,24 @@ fn collect_importer_structure_references(
 
 /// Cross-file find-references over the import graph (κ, task 4210).
 ///
-/// Resolves the cursor to a structure "home" — a local declaration name, an
+/// Resolves the cursor to a declaration "home" — a local declaration name, an
 /// `import` entity token, or a `sub _ = Name` construction site — then unions:
-/// the home document's declaration token + same-file construction sites, and,
-/// for every OTHER document in `workspace_docs` that imports the home entity,
-/// that document's import entity token + construction sites. Each span is mapped
-/// to an LSP [`Location`] in its document. `include_declaration` controls whether
-/// the home declaration token is part of the set, mirroring the single-file
-/// [`compute_references`] contract.
+/// the home document's declaration token + its same-file use sites, and, for
+/// every OTHER document in `workspace_docs` that imports the home entity, that
+/// document's import entity token + its use sites. Both halves run the one
+/// fan-out described on `collect_decl_name_spans`, so "use site" means the
+/// same thing in every document. Each span is mapped to an LSP [`Location`] in
+/// its document. `include_declaration` controls whether the home declaration
+/// token is part of the set, mirroring the single-file [`compute_references`]
+/// contract.
 ///
 /// When the cursor is on a local VALUE-member binding the call delegates to the
 /// single-file [`compute_references`] (value members keep single-file scope).
 /// Returns `None` when the cursor resolves to neither a value member nor a
-/// resolvable structure.
+/// resolvable declaration — and, since #6972, also when it resolves to a home
+/// the DECLARATION-TOKEN oracle declines (a `Unit` reached through an import),
+/// rather than reporting a set from which the declaration itself is missing.
+/// The refusal is stated at the check.
 ///
 /// PURE: the open-document set arrives as `workspace_docs` and target resolution
 /// as the injected `resolve_import` closure (mirroring goto_def), so the whole
@@ -1552,18 +2243,44 @@ pub fn compute_references_cross_file(
             pos,
             include_declaration,
         ),
-        CrossFileHome::Structure {
+        CrossFileHome::Declaration {
             uri: home_uri,
             name,
             source: home_source,
         } => {
-            let mut locations = Vec::new();
-
-            // Home document: declaration token + same-file construction sites.
+            // ONE parse of the home document, shared by all three questions
+            // asked of it below. `find_declaration_name_span` and
+            // `classify_decl_name` each carry their own `parse` and were being
+            // called on this same string; both `_in` forms take the parse
+            // instead (the flavour argument is on `classify_decl_name_in`).
             let home_parsed =
                 reify_syntax::parse(&home_source, reify_core::ModulePath::single("_home"));
-            let home_decl = crate::goto_def::find_declaration_name_span(&home_source, &name);
-            for span in collect_structure_name_spans(&home_source, &home_parsed, &name) {
+            let home_decl = crate::goto_def::decl_name_span_in(&home_parsed, &home_source, &name);
+
+            // REFUSE A HOME THE ORACLE DECLINES. The home document declares
+            // `name`, but `decl_name_span_in` will not locate its token —
+            // today exactly the `Unit` kind, which it refuses so that rename
+            // stays away from a unit whose literal-suffix uses no collector can
+            // reach. `resolve_cross_file_home` step 3 never consults the oracle
+            // (it keys only on `import_exposes_entity`), so without this the
+            // set would be the importers' tokens with the DECLARATION ITSELF
+            // absent even under `include_declaration = true` — one "reference"
+            // that is not the declaration. Refusing wholesale matches what
+            // `prepare_rename_cross_file` already does for the same kind.
+            //
+            // A home that does not declare `name` at all (a stale or
+            // mis-resolved import) is a different case and keeps its existing
+            // behaviour: `classify_decl_name_in` answers `None`, and the
+            // importing documents' tokens are still reported.
+            if home_decl.is_none() && classify_decl_name_in(&home_parsed, &name).is_some() {
+                return None;
+            }
+
+            let mut locations = Vec::new();
+
+            // Home document: declaration token + every same-file use site
+            // (categories enumerated on `collect_decl_name_spans`).
+            for span in collect_decl_name_spans(&home_source, &home_parsed, &name) {
                 // include_declaration=false drops the home declaration token.
                 if !include_declaration && Some(span) == home_decl {
                     continue;
@@ -1580,7 +2297,7 @@ pub fn compute_references_cross_file(
                 if *doc_uri == home_uri {
                     continue; // home-file references already collected above
                 }
-                for span in collect_importer_structure_references(
+                for span in collect_importer_decl_name_references(
                     doc_source,
                     &name,
                     &home_uri,
@@ -1598,52 +2315,142 @@ pub fn compute_references_cross_file(
     }
 }
 
-/// Classify the top-level declaration named `name` in `source` to a
-/// [`RefSymbolKind`], for κ cross-file rename gating. Mirrors the declaration
-/// scan in [`crate::goto_def::find_declaration_name_span`] (which located the
-/// home token), so the classified kind agrees with the resolved home. Returns
-/// `None` when no top-level declaration matches.
-fn classify_top_level_decl(source: &str, name: &str) -> Option<RefSymbolKind> {
-    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("_classify"));
-    parsed.declarations.iter().find_map(|decl| {
+/// Classify the declaration named `name` in `source` to a [`RefSymbolKind`],
+/// for cross-file rename gating. Returns `None` when nothing declares `name`.
+///
+/// "Declaration" here means a MODULE-LEVEL name: every top-level `Declaration`
+/// that declares one, plus the `structure def`s nested one level inside a
+/// `purpose` body (#6534). The nested ones classify as
+/// [`RefSymbolKind::Structure`] — which is what they are to the compiler, which
+/// registers them in the module-level structure namespace and compiles them
+/// into the same template table — so they need no new gate:
+/// [`is_renameable_cross_file`] already admits `Structure`. Top-level names are
+/// scanned FIRST, matching the precedence both goto-def scans use, so a name
+/// clash resolves identically everywhere.
+///
+/// WILDCARD-FREE over all 14 `Declaration` variants. This function and
+/// `goto_def::decl_name_span_in` are two per-kind allowlists over the
+/// same enum — one deciding the rename GATE, the other the reference SET — and
+/// a wildcard on either is a channel through which they drift apart silently.
+/// (They did: this one lacked `Field`, which the other admitted.) With both
+/// exhaustive, a new declaration kind is a compile error at both.
+///
+/// They still differ in exactly one place, deliberately: `Unit` is classified
+/// here but refused there, so a unit's refusal is stated by
+/// [`is_renameable_cross_file`] as a named verdict rather than falling out of an
+/// unmatched arm. Reaching a unit home at all needs the import path, since the
+/// same-document arm of `resolve_cross_file_home` consults the oracle first.
+///
+/// PARSE DIFFERENCE, and why it cannot decide kind admission: a caller may hand
+/// this either parse flavour — a bare [`reify_syntax::parse`] or
+/// `reify_compiler::parse_with_stdlib`, which the oracle uses. The latter is
+/// `parse_with_prelude_enums` — it hands the parser the prelude's ENUM NAMES so
+/// a qualified `E.V` lowers correctly, and injects NO prelude declarations into
+/// `parsed.declarations`. Both therefore see exactly the user's own top-level
+/// declarations; the difference is in expression/type SHAPE below the
+/// declaration level, which no arm of this match (nor of the oracle's) inspects.
+/// That is what lets [`compute_references_cross_file`] compare the two verdicts
+/// over ONE parse of the home document.
+fn classify_decl_name_in(parsed: &ParsedModule, name: &str) -> Option<RefSymbolKind> {
+    let top_level = parsed.declarations.iter().find_map(|decl| {
         let (decl_name, kind) = match decl {
             Declaration::Structure(s) => (s.name.as_str(), RefSymbolKind::Structure),
             Declaration::Occurrence(o) => (o.name.as_str(), RefSymbolKind::Occurrence),
             Declaration::Trait(t) => (t.name.as_str(), RefSymbolKind::Trait),
             Declaration::Enum(e) => (e.name.as_str(), RefSymbolKind::Enum),
             Declaration::Function(f) => (f.name.as_str(), RefSymbolKind::Fn),
-            _ => return None,
+            Declaration::Field(f) => (f.name.as_str(), RefSymbolKind::Field),
+            Declaration::Purpose(p) => (p.name.as_str(), RefSymbolKind::Purpose),
+            Declaration::Constraint(c) => (c.name.as_str(), RefSymbolKind::Constraint),
+            Declaration::Unit(u) => (u.name.as_str(), RefSymbolKind::Unit),
+            Declaration::TypeAlias(a) => (a.name.as_str(), RefSymbolKind::TypeAlias),
+            Declaration::Joint(j) => (j.name.as_str(), RefSymbolKind::Joint),
+            // These three declare no name of their own: an import names an
+            // entity homed elsewhere, a `default` names the type it applies to,
+            // and a `module` names a module path.
+            Declaration::Import(_) | Declaration::Default(_) | Declaration::Module(_) => {
+                return None;
+            }
         };
         (decl_name == name).then_some(kind)
+    });
+    top_level.or_else(|| {
+        crate::analysis::purpose_nested_decl_names(parsed)
+            .any(|(nested, _)| nested == name)
+            .then_some(RefSymbolKind::Structure)
     })
 }
 
-/// Whether a cross-file home of `kind` is renameable in κ: every single-file
-/// value-member kind ([`is_renameable`]) PLUS `Structure`/`Occurrence` — the
-/// declaration kinds whose construction sites (`sub _ = Name`) κ tracks across
-/// the import graph. `Trait`/`Enum`/`Fn`/`Variant` are OUT of κ scope (their use
-/// sites are type-annotation / refinement positions κ does not collect, so a
-/// rename would be unsound) and refuse. Shared by [`prepare_rename_cross_file`]
-/// and the cross-file rename producer so the two agree on what is renameable.
+/// [`classify_decl_name_in`] for a caller holding only the source text.
 ///
-/// CAVEAT — the same type-position gap applies to the ADMITTED Structure/
-/// Occurrence kinds: κ collects only the declaration token and `sub _ = Name`
-/// construction sites (κ design decision #3). If a structure name ALSO appears
-/// in a type-annotation / refinement position (e.g. `param p: Name`), renaming
-/// the structure rewrites the decl + construction sites but leaves that
-/// type-position use stale. Because Invariant 5 only checks that buffers
-/// re-PARSE clean, such a rename parses fine yet references a now-nonexistent
-/// name. Admitting Structure/Occurrence is sound for the κ signal (construction
-/// across an import); extending the collector to type positions — or refusing
-/// when such uses exist — is a clean follow-up that does not change the
-/// substrate.
+/// Parses and delegates. A caller that already has the document's
+/// [`ParsedModule`] must call the `_in` form directly rather than pay a second
+/// parse of the same string on an interactive path.
+fn classify_decl_name(source: &str, name: &str) -> Option<RefSymbolKind> {
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("_classify"));
+    classify_decl_name_in(&parsed, name)
+}
+
+/// Whether a cross-file home of `kind` is renameable. Shared by
+/// [`prepare_rename_cross_file`] and the cross-file rename producer so the two
+/// agree on what is renameable.
+///
+/// THE ADMISSION RULE, and it is the only one: a kind is renameable cross-file
+/// exactly when EVERY use-site form for that kind is collected.
+/// [`compute_rename_cross_file`] uses the reference set as its exact EDIT set,
+/// so an uncollected use is left stale by the rename — and Invariant 5 does not
+/// catch it, because it only checks that the edited buffers re-PARSE clean,
+/// which a dangling name does.
+///
+/// ADMITTED, with what discharges the rule for each:
+/// - `Structure`/`Occurrence` — declaration token, `sub _ = Name` construction
+///   sites, and every type position ([`collect_decl_name_spans`], #6539).
+/// - `TypeAlias` — its uses are type positions only, and every `TypeExpr` root
+///   is walked.
+/// - `Constraint` — type positions plus `constraint Name(…)` instantiation
+///   names, both collected (#6539).
+/// - `Purpose`/`Joint` — VACUOUSLY: the grammar names a purpose only in
+///   `purpose_declaration` and a joint only in `joint_definition`, so there is
+///   no use-site form to collect and the declaration token alone is a COMPLETE
+///   reference set. Not a gap; asserted as such by
+///   `tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`.
+/// - Every single-file value-member kind, via [`is_renameable`] — those keep
+///   their exact single-file semantics on this path.
+///
+/// REFUSED, and for two different reasons — worth keeping apart, because only
+/// the first is a gap anyone can close here:
+/// - `Trait`/`Enum`/`Fn`/`Variant`/`Field`: the rule is simply not DISCHARGED.
+///   Their type positions ARE collected, but each is also used in VALUE
+///   position (`E.Variant`, `f(x)`), which a different collector answers for
+///   and which this function has no evidence about.
+/// - `Unit`: the rule cannot be discharged from here at all. Its one use form
+///   is a literal suffix, and `UnitExpr::Unit(String)` carries no span for any
+///   collector to push — see `goto_def::decl_name_span_in`, which
+///   refuses `Unit` outright for the same measurement. FIND-REFERENCES refuses
+///   it too, in [`compute_references_cross_file`]: the two gates now agree on
+///   `Unit` rather than leaving a unit home reporting importers' tokens with no
+///   declaration in the set.
+///
+/// The one residual inside an ADMITTED kind is `TypeParamDecl.bounds`, stated
+/// in [`collect_decl_name_spans`]' CAVEAT: a `T: Numeric` bound carries no span,
+/// so renaming the TRAIT `Numeric` would leave it stale — which is part of why
+/// `Trait` is refused above.
 fn is_renameable_cross_file(kind: RefSymbolKind) -> bool {
-    is_renameable(kind) || matches!(kind, RefSymbolKind::Structure | RefSymbolKind::Occurrence)
+    is_renameable(kind)
+        || matches!(
+            kind,
+            RefSymbolKind::Structure
+                | RefSymbolKind::Occurrence
+                | RefSymbolKind::TypeAlias
+                | RefSymbolKind::Constraint
+                | RefSymbolKind::Purpose
+                | RefSymbolKind::Joint
+        )
 }
 
 /// Cross-file prepare-rename over the import graph (κ, task 4210).
 ///
-/// Lifts the single-file cross-module refusal: a structure name reached through
+/// Lifts the single-file cross-module refusal: a declaration name reached through
 /// an `import` (its import entity token or a `sub _ = Name` construction site),
 /// or the home declaration token itself, becomes a rename target — whereas the
 /// single-file [`prepare_rename`] returns `None` for it (declaration/imported
@@ -1651,10 +2458,11 @@ fn is_renameable_cross_file(kind: RefSymbolKind) -> bool {
 ///
 /// Resolution order mirrors [`compute_references_cross_file`]: try the
 /// single-file [`prepare_rename`] first (value members keep their exact
-/// semantics), then resolve a cross-file structure home and admit it only when
-/// its declaration kind is κ-renameable ([`is_renameable_cross_file`] —
-/// Structure/Occurrence). Refuses keywords, literals, type-annotation positions,
-/// and words resolving to neither a local binding nor a resolvable structure.
+/// semantics), then resolve a cross-file declaration home and admit it only when
+/// its kind is renameable ([`is_renameable_cross_file`], which states the rule
+/// and the per-kind verdicts). Refuses keywords, literals, type-annotation
+/// positions, and words resolving to neither a local binding nor a resolvable
+/// declaration.
 ///
 /// PURE: target resolution arrives as the injected `resolve_import` closure
 /// (mirroring goto_def), so the cross-file path is unit-testable with a mock
@@ -1671,10 +2479,10 @@ pub fn prepare_rename_cross_file(
         return Some(target);
     }
 
-    // 2. Cross-file structure home — lift the single-file cross-module refusal.
+    // 2. Cross-file declaration home — lift the single-file cross-module refusal.
     let offset = position_to_offset(primary_source, pos);
     let (word_start, word) = find_word_at_offset(primary_source, offset)?;
-    let CrossFileHome::Structure { name, source, .. } = resolve_cross_file_home(
+    let CrossFileHome::Declaration { name, source, .. } = resolve_cross_file_home(
         primary_source,
         primary_parsed,
         primary_uri,
@@ -1689,9 +2497,9 @@ pub fn prepare_rename_cross_file(
         return None;
     };
 
-    // Admit only the κ-renameable declaration kinds (Structure/Occurrence); a
-    // trait/enum/fn home is OUT of κ scope and refuses.
-    if !is_renameable_cross_file(classify_top_level_decl(&source, &name)?) {
+    // Admit only the renameable declaration kinds; `is_renameable_cross_file`
+    // owns the rule and the per-kind verdicts.
+    if !is_renameable_cross_file(classify_decl_name(&source, &name)?) {
         return None;
     }
 
@@ -1708,42 +2516,46 @@ pub fn prepare_rename_cross_file(
 }
 
 /// Cross-file rename over the import graph (κ, task 4210): a [`WorkspaceEdit`]
-/// that renames a structure (or single-file value member) to `new_name` across
-/// every OPEN document that references it.
+/// that renames a DECLARATION (or a single-file value member) to `new_name`
+/// across every OPEN document that references it. Which declaration kinds are
+/// admitted is [`is_renameable_cross_file`]'s answer, not this one's — it is
+/// wider than `structure` and narrower than every named kind.
 ///
 /// SCOPE — open documents only. The guarantee is bounded to the `workspace_docs`
 /// set, which the server populates exclusively from documents currently OPEN in
 /// the editor (the open-doc snapshot). A file that imports and constructs the
-/// renamed structure but is NOT open is never edited, so the rename can leave
+/// renamed declaration but is NOT open is never edited, so the rename can leave
 /// stale references to the old name in closed importers. This matches κ design
 /// decision #5 (whole-tree on-disk enumeration of unopened importers is a
 /// deferred follow-up); the substrate here is the open-doc set + resolved
 /// targets. A consuming task that surfaces "only open files were updated" or
 /// walks the workspace `.ri` tree would close this gap.
 ///
-/// SCOPE — declaration + construction sites only. For a Structure/Occurrence
-/// home the edit set covers the declaration token, import entity tokens, and
-/// `sub _ = Name` (construction) sites — NOT type-annotation / refinement
-/// positions (see [`is_renameable_cross_file`] and [`collect_structure_name_spans`]).
-/// If a structure name also appears in such a position the rename rewrites the
-/// decl + construction sites but leaves that use stale; the buffers still
-/// re-PARSE clean (Invariant 5 only checks parse-cleanliness) yet now reference
-/// a renamed entity. Extending the collector to type positions is a κ follow-up.
+/// SCOPE — which use forms the edit set covers. The edit set is the reference
+/// set, so it covers the declaration token, import entity tokens, `sub _ = Name`
+/// construction sites, `constraint Name(…)` instantiations, and every type
+/// position — the categories [`collect_decl_name_spans`] enumerates. The
+/// type-position gap this block used to record as a live rename hazard was
+/// closed by #6539; the one residual inside an admitted kind is
+/// `TypeParamDecl.bounds`, which carries no span in the AST and is stated in
+/// that function's CAVEAT. Which KINDS may be renamed at all is a separate
+/// question, answered by [`is_renameable_cross_file`].
 ///
 /// The edit set is exactly the cross-file reference set
 /// ([`compute_references_cross_file`] with `include_declaration = true`) — the
-/// home declaration token + same-file construction sites, plus each importing
-/// document's import entity token + construction sites — one [`TextEdit`] per
-/// name-token span, grouped by document URI (ascending and non-overlapping
-/// within each file).
+/// home declaration token + every same-file use site, plus each importing
+/// document's import entity token + that document's use sites — one
+/// [`TextEdit`] per name-token span, grouped by document URI (ascending and
+/// non-overlapping within each file). The SCOPE block above names the
+/// categories; [`collect_decl_name_spans`] is where they are enumerated.
 ///
 /// Two refusals keep the multi-file result re-parse-clean (Invariant 5):
 /// `new_name` must be a legal Reify identifier ([`is_valid_rename_identifier`] —
 /// rejecting empty/whitespace/punctuation/digit-leading/reserved-keyword), and
 /// the cursor must resolve to a renameable home. Renameability is gated through
 /// [`prepare_rename_cross_file`] so prepare and rename never disagree (value
-/// members keep single-file semantics; structure homes admit only
-/// Structure/Occurrence). Returns `None` on either refusal.
+/// members keep single-file semantics; declaration homes admit only the kinds
+/// [`is_renameable_cross_file`] lists). Returns `None` on either refusal.
 ///
 /// PURE: the open-document set arrives as `workspace_docs` and target resolution
 /// as the injected `resolve_import` closure (mirroring goto_def), so the whole
@@ -1766,7 +2578,8 @@ pub fn compute_rename_cross_file(
     }
 
     // Renameability gate — share prepare's resolution so prepare and rename never
-    // disagree on what is renameable (value member, or Structure/Occurrence home).
+    // disagree on what is renameable (value member, or an admitted declaration
+    // home — `is_renameable_cross_file` lists them).
     prepare_rename_cross_file(primary_source, primary_parsed, primary_uri, pos, resolve_import)?;
 
     // The cross-file reference set (declaration ∪ uses) is exactly the set of
@@ -1804,6 +2617,7 @@ pub fn compute_rename_cross_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences, parse_one_clean};
     use crate::convert::{offset_to_position, span_to_range};
     use reify_core::ModulePath;
 
@@ -1812,16 +2626,105 @@ mod tests {
         SourceSpan::new(start as u32, (start + text.len()) as u32)
     }
 
-    /// Byte offsets of every whole-word-ish occurrence of `needle` in `source`,
-    /// ascending. `width`/`volume`/etc. never appear as substrings of other
-    /// identifiers in the bracket fixture, so plain match_indices is exact here.
-    fn occurrences(source: &str, needle: &str) -> Vec<usize> {
-        source.match_indices(needle).map(|(i, _)| i).collect()
-    }
-
     /// Whether `span` lies fully within the byte range `[lo, hi)`.
     fn within(span: SourceSpan, lo: usize, hi: usize) -> bool {
         (span.start as usize) >= lo && (span.end as usize) <= hi
+    }
+
+    /// Locate the `MemberDecl::Sub` named `sub_name` among the parsed
+    /// module's top-level structure members. Used to assert directly on an
+    /// AST field (e.g. `index_domain.is_some()`) instead of on an interim
+    /// parser diagnostic's wording, which is not the behavior under test and
+    /// would break for an unrelated reason once that diagnostic is retired.
+    fn find_sub<'a>(parsed: &'a ParsedModule, sub_name: &str) -> &'a SubDecl {
+        parsed
+            .declarations
+            .iter()
+            .find_map(|decl| match decl {
+                Declaration::Structure(s) => s.members.iter().find_map(|m| match m {
+                    MemberDecl::Sub(sub) if sub.name == sub_name => Some(sub),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no `sub {sub_name}` found in parsed module"))
+    }
+
+    /// Assert that all four rename/reference producers (`prepare_rename`,
+    /// `compute_rename`, `compute_document_highlights`, `collect_references`)
+    /// refuse to resolve the cursor at `pos` — the shared `.member`-segment
+    /// refusal contract every fixture in this file's `.member`-segment suite
+    /// pins. `ctx` is interpolated into each failure message to name the
+    /// specific scenario under test, e.g. `"inside port body"`.
+    ///
+    /// Builds its own dummy [`Url`] internally: none of the four producers
+    /// read the URI before returning `None` on the refusal path under test
+    /// here — `compute_rename` only touches `uri` after the shared
+    /// `collect_references` gate it has in common with the other three has
+    /// already passed — so the URI's exact value is immaterial to this
+    /// assertion.
+    ///
+    /// Centralizes what were four independent ~22-line copies of this same
+    /// assertion block (one per `.member`-segment fixture) so a fifth
+    /// producer joining the refusal contract is a one-place edit instead of a
+    /// find-and-fix across every fixture test.
+    fn assert_all_producers_refuse(source: &str, parsed: &ParsedModule, pos: Position, ctx: &str) {
+        let uri = Url::parse("file:///member-segment-refusal.ri").unwrap();
+        assert!(
+            prepare_rename(source, parsed, pos).is_none(),
+            "prepare_rename must refuse .field segment {ctx}"
+        );
+        assert!(
+            compute_rename(source, parsed, &uri, pos, "renamed").is_none(),
+            "compute_rename must refuse .field segment {ctx}"
+        );
+        assert!(
+            compute_document_highlights(source, parsed, pos).is_none(),
+            "compute_document_highlights must refuse .field segment {ctx}"
+        );
+        assert!(
+            collect_references(source, parsed, pos, true).is_none(),
+            "collect_references must refuse .field segment {ctx}"
+        );
+    }
+
+    /// Assert that `collect_references` rooted at the declaration token
+    /// `[decl_off, decl_off + name.len())` reaches exactly one use, at
+    /// `[use_off, use_off + name.len())`, resolving as `kind` — the shared
+    /// positive-reachability tail every `sub_direct_exprs`/keyed-entry
+    /// chain-link test in this file's task #5579 suite pins.
+    ///
+    /// Positions are caller-supplied byte offsets rather than derived here via
+    /// `occurrences(source, name)`, so a fixture whose identifier is a
+    /// substring of other tokens in the source (e.g. the 1-char `n` in `Int`/
+    /// `in`) can still use this shared tail: the caller locates its own two
+    /// offsets however is unambiguous for its fixture, then hands them off.
+    ///
+    /// Centralizes what were five independent ~15-line copies of this same
+    /// parse→query→assert tail (one per chain-link fixture), leaving each
+    /// test's unique fixture string and AST-field precondition assertion as
+    /// the only per-case code.
+    fn assert_sole_use_reachable(
+        source: &str,
+        parsed: &ParsedModule,
+        name: &str,
+        kind: RefSymbolKind,
+        decl_off: usize,
+        use_off: usize,
+    ) {
+        let pos = offset_to_position(source, decl_off as u32);
+        let refset = collect_references(source, parsed, pos, false).unwrap_or_else(|| {
+            panic!("`{name}` declaration at {decl_off} should resolve to a ReferenceSet")
+        });
+        assert_eq!(refset.name, name);
+        assert_eq!(refset.kind, kind);
+        assert_eq!(refset.declaration, span_of(decl_off, name));
+        assert_eq!(
+            refset.references,
+            vec![span_of(use_off, name)],
+            "the sole use of `{name}` must be reachable from a find-references \
+             query on its declaration"
+        );
     }
 
     // ─── κ (task 4210): cross-file references + rename scaffolding ────────────
@@ -1977,6 +2880,326 @@ mod tests {
             v
         };
         assert_eq!(with.references, expected);
+    }
+
+    // --- task #5579: indexed-sub domain expression uses (#5481 α consumer gap) ---
+
+    #[test]
+    fn collect_references_reaches_indexed_sub_domain_use() {
+        // `n` is used only inside the indexer clause's domain expression
+        // (`sub xs[i in 0..n] = …`), never in the sub's args/pose/where. Before
+        // this fix, the sub use-walk never walked `SubDecl::index_domain`,
+        // so a find-references/rename query rooted at the `param n` decl missed
+        // this use entirely (silent miss — no compile error, since #5481 added
+        // the AST fields with zero struct-pattern destructures elsewhere).
+        let source = "\
+structure S {
+    param n: Int = 4
+    sub xs[i in 0..n] = Hole(bore: 3mm)
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("indexed_sub"));
+        // The indexer clause lowers to a fully-populated `index_binder`/
+        // `index_domain` pair (both are the AST contract β builds on), though
+        // it also travels with an interim #5482 ERROR-severity diagnostic
+        // until compiler elaboration lands — see the doc comment on
+        // `SubDecl::index_binder` (crates/reify-ast/src/decl.rs). That
+        // diagnostic is not the behavior under test, so assert directly on the
+        // AST field the walker must reach instead of on the diagnostic's
+        // wording (which would break for an unrelated reason once #5482
+        // elaboration lands and the diagnostic is retired).
+        assert!(
+            find_sub(&parsed, "xs").index_domain.is_some(),
+            "fixture must actually lower an index_domain for the walker to reach"
+        );
+
+        // The 1-char identifier `n` is not safe to locate via `occurrences`
+        // (it also matches inside `Int`, `in`, etc.), so find the two sites we
+        // care about directly instead.
+        let decl_off = source.find("param n:").expect("param n decl") + "param ".len();
+        let domain_off = source.find("0..n").expect("0..n domain use") + "0..".len();
+        assert_eq!(&source[decl_off..decl_off + 1], "n");
+        assert_eq!(&source[domain_off..domain_off + 1], "n");
+
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "n",
+            RefSymbolKind::Param,
+            decl_off,
+            domain_off,
+        );
+    }
+
+    // --- task #5579 (amendment): index_binder shadow — pin the deliberate
+    // current behavior (reviewer-surfaced gap: neither `sub_direct_exprs` nor
+    // its consumers' doc comments previously had a test observing the
+    // consequence of NOT registering `index_binder` as a binding site) ---
+
+    #[test]
+    fn collect_references_from_outer_param_reaches_shadowed_index_binder_use() {
+        // `i` is declared twice here: once as an outer `param i`, and again as
+        // the indexed-sub's own `index_binder` (`sub xs[i in 0..4] = …`). Per
+        // the deliberate choice documented on `sub_direct_exprs` (mirroring
+        // the "Known limitation" on `collect_idents_in_expr`: binder-
+        // introducing expressions are not modeled as their own scope),
+        // `index_binder` is NOT registered as a local binding, so
+        // `Hole(bore: i)` — logically a use of the BINDER's `i` under
+        // indexed-sub semantics — resolves TODAY as a use of the unrelated
+        // OUTER `param i` instead.
+        //
+        // This pins that current, deliberately-deferred answer so a future
+        // change to binder scope-modeling must update this test rather than
+        // silently flip which `i` a rename touches.
+        let source = "\
+structure S {
+    param i: Int = 0
+    sub xs[i in 0..4] = Hole(bore: i)
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("index_binder_shadow"));
+        // See `collect_references_reaches_indexed_sub_domain_use` above for
+        // why this fixture is not asserted parse-clean: the indexed form
+        // always travels with an interim #5482 diagnostic, unrelated to the
+        // shadow under test here.
+        let sub = find_sub(&parsed, "xs");
+        assert!(
+            sub.index_binder.is_some(),
+            "fixture must actually lower an index_binder for the shadow to exist"
+        );
+
+        // The 1-char identifier `i` is not safe to locate via `occurrences`
+        // (it also matches inside the `in` keyword), so find the two sites we
+        // care about directly instead, mirroring
+        // `collect_references_reaches_indexed_sub_domain_use`'s approach for
+        // the equally-short `n`.
+        let decl_off = source.find("param i:").expect("param i decl") + "param ".len();
+        let use_off = source.find("bore: i)").expect("bore: i) use") + "bore: ".len();
+        assert_eq!(&source[decl_off..decl_off + 1], "i");
+        assert_eq!(&source[use_off..use_off + 1], "i");
+
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "i",
+            RefSymbolKind::Param,
+            decl_off,
+            use_off,
+        );
+    }
+
+    // --- task #5579 (amendment): inline relate-block relation use reachable
+    // from find-references (task δ 4384 `relate_relations` symmetry) ---
+
+    #[test]
+    fn collect_references_reaches_inline_relate_block_use() {
+        // `gap` is used only inside the inline `at … where { }` relate-block's
+        // relation expression (task δ 4384), never in the sub's args/pose/
+        // where. Mirrors `collect_references_reaches_indexed_sub_domain_use`
+        // above, but for `SubDecl::relate_relations` instead of
+        // `index_domain` — this is the positive reachability counterpart to
+        // `member_access_field_segment_refuses_in_inline_relate_block`, which
+        // only exercises the separate `cursor_on_member_segment` refusal
+        // guard and would stay green even if the
+        // `for rel in &s.relate_relations` walk in the sub use-walk
+        // (now folded into `sub_direct_exprs`) were deleted.
+        let source = "\
+structure S {
+    param gap: Length = 1mm
+    sub bolt : Bolt at auto where {
+        concentric(bolt.face, gap)
+    }
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("relateuse"));
+        assert!(
+            parsed.errors.is_empty(),
+            "inline relate-block fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        assert!(
+            !find_sub(&parsed, "bolt").relate_relations.is_empty(),
+            "fixture must actually lower a relate_relations entry for the walker to reach"
+        );
+
+        // gap[0] = `param gap` decl, gap[1] = the sole use inside the relate block.
+        let gap = occurrences(source, "gap");
+        assert_eq!(gap.len(), 2, "1 param decl + 1 use inside the relate block");
+
+        assert_sole_use_reachable(source, &parsed, "gap", RefSymbolKind::Param, gap[0], gap[1]);
+    }
+
+    // --- task #5579 (amendment): mutation-coverage gap closure for the three
+    // `sub_direct_exprs` chain links no test previously exercised — deleting
+    // `.chain(pose_expr.iter())`, `.chain(where_clause.iter().map(|w|
+    // &w.condition))`, or `.chain(spec_param_overrides.iter().map(|(_, e)|
+    // e))` each independently left the whole reify-lsp suite green. These
+    // three tests mirror `collect_references_reaches_indexed_sub_domain_use`
+    // / `_inline_relate_block_use` above, one per previously-uncovered link. ---
+
+    #[test]
+    fn collect_references_reaches_sub_pose_expr_use() {
+        // `dx` is used only inside the sub's `at <expr>` placement pose, never
+        // in its args/where/index-domain/relate-block.
+        let source = "\
+structure S {
+    param dx: Length = 1mm
+    sub b : Bolt at translate(dx)
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("pose"));
+        assert!(
+            parsed.errors.is_empty(),
+            "pose fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        assert!(
+            find_sub(&parsed, "b").pose_expr.is_some(),
+            "fixture must actually lower a pose_expr for the walker to reach"
+        );
+
+        // dx[0] = `param dx` decl, dx[1] = the sole use inside the pose expr.
+        let dx = occurrences(source, "dx");
+        assert_eq!(dx.len(), 2, "1 param decl + 1 use inside the pose expression");
+
+        assert_sole_use_reachable(source, &parsed, "dx", RefSymbolKind::Param, dx[0], dx[1]);
+    }
+
+    #[test]
+    fn collect_references_reaches_sub_where_clause_use() {
+        // `ready` is used only inside the sub's own trailing `where <cond>`
+        // guard (`SubDecl::where_clause` — distinct from both a member-level
+        // `where { }` GuardedGroup and the inline `at … where { }`
+        // relate-block), never in its args/pose/index-domain.
+        let source = "\
+structure S {
+    param ready: Bool = true
+    sub b = Widget() where ready
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("subwhere"));
+        assert!(
+            parsed.errors.is_empty(),
+            "sub-where fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        assert!(
+            find_sub(&parsed, "b").where_clause.is_some(),
+            "fixture must actually lower a where_clause for the walker to reach"
+        );
+
+        // ready[0] = `param ready` decl, ready[1] = the sole use inside the
+        // sub's where guard.
+        let ready = occurrences(source, "ready");
+        assert_eq!(
+            ready.len(),
+            2,
+            "1 param decl + 1 use inside the sub's where guard"
+        );
+
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "ready",
+            RefSymbolKind::Param,
+            ready[0],
+            ready[1],
+        );
+    }
+
+    #[test]
+    fn collect_references_reaches_sub_spec_param_override_use() {
+        // `margin` is used only inside the sub's specialization-body param
+        // override value (`SubDecl::spec_param_overrides`), never in its
+        // args/pose/where/index-domain.
+        let source = "\
+structure S {
+    param margin: Length = 1mm
+    sub b : Bearing { bore = margin }
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("specoverride"));
+        assert!(
+            parsed.errors.is_empty(),
+            "spec-override fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        assert!(
+            !find_sub(&parsed, "b").spec_param_overrides.is_empty(),
+            "fixture must actually lower a spec_param_overrides entry for the \
+             walker to reach"
+        );
+
+        // margin[0] = `param margin` decl, margin[1] = the sole use inside the
+        // override value.
+        let margin = occurrences(source, "margin");
+        assert_eq!(
+            margin.len(),
+            2,
+            "1 param decl + 1 use inside the specialization-body override"
+        );
+
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "margin",
+            RefSymbolKind::Param,
+            margin[0],
+            margin[1],
+        );
+    }
+
+    // --- task #5579 (amendment): keyed-entry `param_overrides` use reachable
+    // from find-references (reviewer-surfaced sibling gap to the five chain
+    // links above) ---
+
+    #[test]
+    fn collect_references_reaches_sub_keyed_param_override_use() {
+        // `margin` is used only inside a KEYED block's `param_overrides`
+        // value (`KeyedSubMemberEntry.param_overrides`, task 3931 γ) — distinct
+        // from `collect_references_reaches_sub_spec_param_override_use` above,
+        // which covers the sub-level `spec_param_overrides` of a plain
+        // (non-keyed) specialization body. Before this fix, neither
+        // the sub use-walk nor `cursor_on_member_segment`'s
+        // `MemberDecl::Sub` arm walked any keyed entry's `param_overrides` —
+        // the identical silent find-references/rename miss this task closes
+        // for `index_domain`, just one level deeper (inside `keyed_members`).
+        let source = "\
+structure S {
+    param margin: Length = 1mm
+    sub b : Bearing {
+        \"k\" => { bore = margin }
+    }
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("keyedoverride"));
+        assert!(
+            parsed.errors.is_empty(),
+            "keyed-override fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let sub = find_sub(&parsed, "b");
+        assert_eq!(
+            sub.keyed_members.len(),
+            1,
+            "fixture must lower one keyed entry"
+        );
+        assert_eq!(
+            sub.keyed_members[0].param_overrides.len(),
+            1,
+            "fixture must actually lower a param_overrides entry for the walker to reach"
+        );
+
+        // margin[0] = `param margin` decl, margin[1] = the sole use inside the
+        // keyed entry's override value.
+        let margin = occurrences(source, "margin");
+        assert_eq!(
+            margin.len(),
+            2,
+            "1 param decl + 1 use inside the keyed entry's param override"
+        );
+
+        assert_sole_use_reachable(
+            source,
+            &parsed,
+            "margin",
+            RefSymbolKind::Param,
+            margin[0],
+            margin[1],
+        );
     }
 
     // --- step-7: cross-structure isolation (Boundary row 1 — scope soundness) ---
@@ -3148,25 +4371,9 @@ structure S {
         assert_eq!(d.len(), 2, "1 param decl + 1 port-body member-access segment");
 
         let member_pos = offset_to_position(source, d[1] as u32);
-        let uri = Url::parse("file:///portbody.ri").unwrap();
 
         // All four producers must refuse the port-body member-access .field segment.
-        assert!(
-            prepare_rename(source, &parsed, member_pos).is_none(),
-            "prepare_rename must refuse .field segment inside port body"
-        );
-        assert!(
-            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
-            "compute_rename must refuse .field segment inside port body"
-        );
-        assert!(
-            compute_document_highlights(source, &parsed, member_pos).is_none(),
-            "compute_document_highlights must refuse .field segment inside port body"
-        );
-        assert!(
-            collect_references(source, &parsed, member_pos, true).is_none(),
-            "collect_references must refuse .field segment inside port body"
-        );
+        assert_all_producers_refuse(source, &parsed, member_pos, "inside port body");
 
         // Over-refusal guard: the base `h` inside the port body still resolves as a Sub.
         let h_off = source.find("h.diameter").expect("h.diameter present");
@@ -3204,24 +4411,13 @@ structure S {
         assert_eq!(d.len(), 2, "1 param decl + 1 member-access segment");
 
         let member_pos = offset_to_position(source, d[1] as u32);
-        let uri = Url::parse("file:///s.ri").unwrap();
 
         // All four producers must refuse the member-access segment.
-        assert!(
-            prepare_rename(source, &parsed, member_pos).is_none(),
-            "prepare_rename must refuse cursor on .field segment"
-        );
-        assert!(
-            compute_rename(source, &parsed, &uri, member_pos, "renamed").is_none(),
-            "compute_rename must refuse cursor on .field segment"
-        );
-        assert!(
-            compute_document_highlights(source, &parsed, member_pos).is_none(),
-            "compute_document_highlights must refuse cursor on .field segment"
-        );
-        assert!(
-            collect_references(source, &parsed, member_pos, true).is_none(),
-            "collect_references must refuse cursor on .field segment"
+        assert_all_producers_refuse(
+            source,
+            &parsed,
+            member_pos,
+            "when colliding with a local binding",
         );
 
         // Over-refusal guard: the BASE `h` (cursor at the start of `h.diameter`) must
@@ -3250,6 +4446,184 @@ structure S {
         assert_eq!(
             prepare_decl.placeholder, "diameter",
             "prepare_rename placeholder is `diameter` when on the decl"
+        );
+    }
+
+    // --- task #5579 step-3: member-access .field segment refuses inside an
+    // indexed-sub domain expression ---
+
+    #[test]
+    fn member_access_field_segment_refuses_in_indexed_sub_domain() {
+        // Fixture: `param count` collides in name with the `.count` member-access
+        // segment inside the indexed-sub's domain expression `0..cfg.count`. The
+        // cursor on that `.count` segment must refuse (None) on all four
+        // producers — the identical wrong-rename vector as
+        // `member_access_field_segment_refuses_when_colliding_with_local`, just
+        // reached through `SubDecl::index_domain` instead of a plain `let` value.
+        let source = "\
+structure S {
+    param count: Int = 4
+    sub cfg = Cfg()
+    sub xs[i in 0..cfg.count] = Hole(bore: 3mm)
+    let other: Int = count
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("indexdom"));
+        // Indexed subs also carry the interim #5482 diagnostic (see
+        // `collect_references_reaches_indexed_sub_domain_use` above) — not a
+        // parse failure, just a "not yet elaborated" marker, and not the
+        // behavior under test here. Assert directly on the AST field the
+        // guard clause must reach instead, so this test doesn't break for an
+        // unrelated reason once #5482 elaboration lands.
+        assert!(
+            find_sub(&parsed, "xs").index_domain.is_some(),
+            "fixture must actually lower an index_domain for the guard to refuse against"
+        );
+
+        // d[0] = `param count` decl, d[1] = `.count` segment in `cfg.count`,
+        // d[2] = the unrelated `let other` use.
+        let d = occurrences(source, "count");
+        assert_eq!(
+            d.len(),
+            3,
+            "1 param decl + 1 member-access segment + 1 unrelated use"
+        );
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+
+        // All four producers must refuse the `.count` segment inside the domain.
+        assert_all_producers_refuse(source, &parsed, member_pos, "inside indexed-sub domain");
+
+        // Over-refusal guard: the BASE `cfg` (start of `cfg.count`) must still
+        // resolve as a Sub binding — the guard clause must refuse only the
+        // `.count` segment, not the whole domain expression.
+        let cfg_off = source.find("cfg.count").expect("cfg.count present");
+        let cfg_pos = offset_to_position(source, cfg_off as u32);
+        let cfg_set = collect_references(source, &parsed, cfg_pos, false)
+            .expect("cursor on base `cfg` must resolve to a ReferenceSet");
+        assert_eq!(
+            cfg_set.kind,
+            RefSymbolKind::Sub,
+            "base `cfg` resolves as Sub binding"
+        );
+    }
+
+    // --- task #5579 step-5: member-access .field segment refuses inside an
+    // inline relate-block relation expression ---
+
+    #[test]
+    fn member_access_field_segment_refuses_in_inline_relate_block() {
+        // Fixture: `param axis` collides in name with the `.axis` member-access
+        // segment inside the inline `sub … at … where { }` relate block's
+        // relation expression `concentric(bolt.axis, 1)` (task δ 4384). Same
+        // wrong-rename vector as the indexed-sub domain case above (step-3),
+        // reached through `SubDecl::relate_relations` instead of `index_domain`.
+        let source = "\
+structure S {
+    param axis: Int = 4
+    sub bolt : Bolt at auto where {
+        concentric(bolt.axis, 1)
+    }
+    let other: Int = axis
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("relateblock"));
+        assert!(
+            parsed.errors.is_empty(),
+            "inline relate-block fixture must parse clean: {:?}",
+            parsed.errors
+        );
+
+        // d[0] = `param axis` decl, d[1] = `.axis` segment in `bolt.axis`,
+        // d[2] = the unrelated `let other` use.
+        let d = occurrences(source, "axis");
+        assert_eq!(
+            d.len(),
+            3,
+            "1 param decl + 1 member-access segment + 1 unrelated use"
+        );
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+
+        // All four producers must refuse the `.axis` segment inside the relate block.
+        assert_all_producers_refuse(source, &parsed, member_pos, "inside inline relate block");
+
+        // Over-refusal guard: the BASE `bolt` (start of `bolt.axis`) must still
+        // resolve as a Sub binding — the guard clause must refuse only the
+        // `.axis` segment, not the whole relation expression.
+        let bolt_off = source.find("bolt.axis").expect("bolt.axis present");
+        let bolt_pos = offset_to_position(source, bolt_off as u32);
+        let bolt_set = collect_references(source, &parsed, bolt_pos, false)
+            .expect("cursor on base `bolt` must resolve to a ReferenceSet");
+        assert_eq!(
+            bolt_set.kind,
+            RefSymbolKind::Sub,
+            "base `bolt` resolves as Sub binding"
+        );
+    }
+
+    // --- task #5579 (amendment): member-access .field segment refuses inside
+    // a keyed entry's `param_overrides` expression (reviewer-surfaced sibling
+    // gap to the two refusal tests above) ---
+
+    #[test]
+    fn member_access_field_segment_refuses_in_keyed_param_override() {
+        // Fixture: `param area` collides in name with the `.area` member-access
+        // segment inside a KEYED entry's `param_overrides` value `cfg.area`.
+        // Same wrong-rename vector as the indexed-sub-domain / inline-relate-
+        // block cases above, reached through
+        // `KeyedSubMemberEntry.param_overrides` instead of
+        // `SubDecl::index_domain` / `relate_relations`.
+        let source = "\
+structure S {
+    param area: Length = 4mm
+    sub cfg = Cfg()
+    sub b : Bearing {
+        \"k\" => { bore = cfg.area }
+    }
+    let other: Length = area
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("keyedmember"));
+        assert!(
+            parsed.errors.is_empty(),
+            "keyed-override fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let sub = find_sub(&parsed, "b");
+        assert_eq!(
+            sub.keyed_members.len(),
+            1,
+            "fixture must lower one keyed entry"
+        );
+        assert_eq!(
+            sub.keyed_members[0].param_overrides.len(),
+            1,
+            "fixture must actually lower a param_overrides entry for the guard to refuse against"
+        );
+
+        // d[0] = `param area` decl, d[1] = `.area` segment in `cfg.area`,
+        // d[2] = the unrelated `let other` use.
+        let d = occurrences(source, "area");
+        assert_eq!(
+            d.len(),
+            3,
+            "1 param decl + 1 member-access segment + 1 unrelated use"
+        );
+
+        let member_pos = offset_to_position(source, d[1] as u32);
+
+        // All four producers must refuse the `.area` segment inside the keyed override.
+        assert_all_producers_refuse(source, &parsed, member_pos, "inside keyed param override");
+
+        // Over-refusal guard: the BASE `cfg` (start of `cfg.area`) must still
+        // resolve as a Sub binding — the guard clause must refuse only the
+        // `.area` segment, not the whole override expression.
+        let cfg_off = source.find("cfg.area").expect("cfg.area present");
+        let cfg_pos = offset_to_position(source, cfg_off as u32);
+        let cfg_set = collect_references(source, &parsed, cfg_pos, false)
+            .expect("cursor on base `cfg` must resolve to a ReferenceSet");
+        assert_eq!(
+            cfg_set.kind,
+            RefSymbolKind::Sub,
+            "base `cfg` resolves as Sub binding"
         );
     }
 
@@ -3332,7 +4706,7 @@ structure S {
     // --- κ step-1 (task 4210): single-file structure-name collector ---
 
     #[test]
-    fn collect_structure_name_spans_decl_plus_same_file_sub_uses() {
+    fn collect_decl_name_spans_decl_plus_same_file_sub_uses() {
         // `SubDecl.structure_name` is a plain `String` field, structurally
         // invisible to the Expr-walking `collect_uses`/`collect_idents_in_expr`.
         // The dedicated structure-name collector must surface the home
@@ -3365,7 +4739,7 @@ structure Assembly {
         // hole[0]=`structure Hole` decl token, hole[1]=`sub a = Hole`,
         // hole[2]=`sub b = Hole`.
 
-        let spans = collect_structure_name_spans(source, &parsed, "Hole");
+        let spans = collect_decl_name_spans(source, &parsed, "Hole");
         assert_eq!(
             spans,
             vec![
@@ -3375,6 +4749,342 @@ structure Assembly {
             ],
             "decl token + both sub-use tokens, ascending, each covering exactly `Hole`"
         );
+    }
+
+    /// Every collected span must cover EXACTLY the target name, and the collected
+    /// set must be every whole-word occurrence of it in the fixture.
+    ///
+    /// Both halves matter. The set equality is the completeness half: each
+    /// fixture below is written so that every occurrence of the target is either
+    /// the declaration token or the one use under test, so a missed use is a
+    /// missing element. The exact-cover check is the RENAME-SAFETY half:
+    /// `compute_rename_cross_file` uses the reference set as its exact edit set,
+    /// so a span one byte too wide — `Box<Hole>` instead of `Hole`, or `pp.Hole`
+    /// instead of its last segment — is a DESTRUCTIVE edit, not a cosmetic one.
+    fn assert_collects_every_occurrence(label: &str, source: &str, name: &str) {
+        let parsed = reify_syntax::parse(source, ModulePath::single("t"));
+        assert!(
+            parsed.errors.is_empty(),
+            "[{label}] fixture must parse clean, got {:?} for:\n{source}",
+            parsed.errors
+        );
+        let expected: Vec<SourceSpan> = occurrences(source, name)
+            .into_iter()
+            .map(|at| span_of(at, name))
+            .collect();
+        assert!(
+            expected.len() >= 2,
+            "[{label}] fixture must hold a declaration AND at least one use, or it \
+             asserts nothing:\n{source}"
+        );
+        let got = collect_decl_name_spans(source, &parsed, name);
+        assert_eq!(
+            got, expected,
+            "[{label}] every occurrence of {name:?} must be collected, each span \
+             covering exactly the name token:\n{source}"
+        );
+    }
+
+    /// AXIS 1 — every `TypeExpr` ROOT reachable from a top-level declaration.
+    ///
+    /// Each row was probe-verified to parse clean, and each names the AST field
+    /// the use travels through. A root missing from `collect_decl_name_uses`'s
+    /// fan-out is a silently uncollected use site, which for an admitted kind is
+    /// a stale rename.
+    #[test]
+    fn type_position_use_is_collected_from_every_type_expr_root() {
+        const DECL: &str = "structure Hole {\n    param d: Length = 1mm\n}\n";
+        // (label + the AST field under test, source tail, target name)
+        let rows: &[(&str, String, &str)] = &[
+            ("FnDef.return_type", format!("{DECL}fn mk(x: Length) -> Hole {{ x }}"), "Hole"),
+            ("FnParam.type_expr", format!("{DECL}fn id(h: Hole) -> Hole {{ h }}"), "Hole"),
+            (
+                "FieldDef.domain_type",
+                format!("{DECL}field def f : Hole -> Real {{ source = analytical {{ |p| p }} }}"),
+                "Hole",
+            ),
+            ("UnitDecl.dimension_type", format!("{DECL}unit hoop : Hole"), "Hole"),
+            ("TypeAliasDecl.type_expr", format!("{DECL}type H = Hole"), "Hole"),
+            ("DefaultDecl.type_expr", format!("{DECL}default Hole = 1"), "Hole"),
+            (
+                "JointDofField.type_expr",
+                format!("{DECL}joint ball(c: Point, d: Point) with orientation: Hole = coincident(c, d)"),
+                "Hole",
+            ),
+            ("TypeParamDecl.default", format!("{DECL}type Foo<T = Hole> = T"), "Hole"),
+            ("AssociatedTypeDecl.default_type", format!("{DECL}trait T1 {{ type A = Hole }}"), "Hole"),
+            ("VariantPayload::Named", format!("{DECL}enum E {{ V {{ h: Hole }} }}"), "Hole"),
+            (
+                "LambdaParam.type_expr",
+                format!(
+                    "{DECL}field def f : Point3 -> Real {{ source = analytical {{ |p: Hole| 1.0 }} }}"
+                ),
+                "Hole",
+            ),
+            // The same root reached the other way — through a MEMBER's own
+            // expression rather than a top-level declaration's — since the two
+            // are separate legs of the fan-out and either could rot alone.
+            (
+                "LambdaParam.type_expr (member expression)",
+                format!("{DECL}structure A {{\n    let f = |p: Hole| 1.0\n}}"),
+                "Hole",
+            ),
+            // The two non-`TypeExpr` type references. `TraitDecl.refinements` is a
+            // `Vec<SpannedIdent>` carrying exact per-name spans; `trait_bounds` is
+            // a `Vec<TraitBoundRef>` whose `span` covers the whole bound and must
+            // be narrowed.
+            (
+                "TraitDecl.refinements",
+                "trait Physical { param mass : Mass }\ntrait Solid : Physical { param v : Volume }"
+                    .to_string(),
+                "Physical",
+            ),
+            (
+                "StructureDef.trait_bounds",
+                "trait Physical { param mass : Mass }\nstructure S : Physical {\n    param mass : Mass = 1kg\n}"
+                    .to_string(),
+                "Physical",
+            ),
+            (
+                "OccurrenceDef.trait_bounds",
+                "trait Physical { param mass : Mass }\noccurrence def O : Physical {\n    param mass : Mass = 1kg\n}"
+                    .to_string(),
+                "Physical",
+            ),
+            // A third non-`TypeExpr` type reference, beyond the two the plan
+            // named: a port's type is a TRAIT name, resolved against the trait
+            // registry by the compiler (`entity.rs`'s port-type check), so a
+            // trait rename that left it behind would break the port.
+            (
+                "PortDecl.type_name",
+                "trait Flange { param d : Length }\nstructure A {\n    port mount : Flange { param d: Length = 5mm }\n}"
+                    .to_string(),
+                "Flange",
+            ),
+        ];
+        for (label, source, name) in rows {
+            assert_collects_every_occurrence(label, source, name);
+        }
+    }
+
+    /// AXIS 2 — every type-expression FORM, i.e. every shape the recursion and
+    /// the name-narrowing rule must handle.
+    ///
+    /// `DimensionalOp` is exercised through a type alias rather than a `param`
+    /// annotation: `param p : Hole / Time` is a probe-verified SYNTAX ERROR (a
+    /// dimensional operator is not accepted in param-annotation position), so the
+    /// alias root is the only place the form is reachable.
+    ///
+    /// The NAMESPACED row is the subtle one. `ts_parser`'s `namespaced_name_text`
+    /// dot-JOINS `pp.Hole` into the single `String` "pp.Hole", so a bare
+    /// declaration name never equals it and the use is silently dropped — while
+    /// the user sees a perfectly ordinary reference. The emitted span must be the
+    /// LAST SEGMENT alone, since that is the token a rename may rewrite.
+    #[test]
+    fn type_position_use_is_collected_for_every_type_expression_form() {
+        const DECL: &str = "structure Hole {\n    param d: Length = 1mm\n}\n";
+        let rows: &[(&str, String, &str)] = &[
+            (
+                "Named with type_args (Box<Hole> \u{2014} span covers the brackets, must narrow)",
+                format!("{DECL}structure A {{\n    param p : Box<Hole>\n}}"),
+                "Hole",
+            ),
+            (
+                "DimensionalOp (Hole / Time)",
+                format!("{DECL}type Q = Hole / Time"),
+                "Hole",
+            ),
+            (
+                "Function ((Hole) -> Real)",
+                format!("{DECL}structure A {{\n    param p : (Hole) -> Real\n}}"),
+                "Hole",
+            ),
+            (
+                "QualifiedAssoc (Hole::Material)",
+                format!("{DECL}structure A {{\n    param p : Hole::Material\n}}"),
+                "Hole",
+            ),
+            (
+                "namespaced (pp.Hole \u{2014} dot-joined into one String)",
+                format!("{DECL}structure A {{\n    param p : pp.Hole\n}}"),
+                "Hole",
+            ),
+            (
+                "SubDecl.type_args (Wrap<Hole>)",
+                format!("{DECL}structure A {{\n    sub s = Wrap<Hole>()\n}}"),
+                "Hole",
+            ),
+            (
+                "nested guarded scope",
+                format!(
+                    "{DECL}structure A {{\n    param f : Bool = true\n    where f {{\n        param p : Hole\n    }}\n}}"
+                ),
+                "Hole",
+            ),
+        ];
+        for (label, source, name) in rows {
+            assert_collects_every_occurrence(label, source, name);
+        }
+    }
+
+    /// AXIS 3 — the two child regions of a PURPOSE that no collector reaches.
+    ///
+    /// `entity_members` admits Structure|Occurrence|Trait|Purpose, so a purpose's
+    /// `members` are walked — but a `PurposeDef` has THREE child regions, and the
+    /// other two are sibling vecs it never sees: `structures: Vec<StructureDef>`
+    /// (a structure lexically nested in the purpose body, kept out of `members`
+    /// by task 4639) and `defaults: Vec<DefaultDecl>` (kept out by task 4496,
+    /// each carrying a real `DefaultDecl.type_expr` type reference).
+    ///
+    /// Every use below is therefore invisible today: a construction site, a type
+    /// annotation and an ambient default, none of them exotic. This is the
+    /// surface workstreams D and C share — a cross-file oracle that resolved a
+    /// purpose-nested name while these uses stayed uncollected would rename the
+    /// declaration and leave every one of them stale, which is precisely the
+    /// hazard the collectors-before-oracle rule exists to prevent.
+    #[test]
+    fn use_inside_a_purpose_body_is_collected() {
+        const DECL: &str = "structure Hole {\n    param d: Length = 1mm\n}\n";
+        let rows: &[(&str, String, &str)] = &[
+            (
+                "PurposeDef.structures — `sub s = Hole()` construction site",
+                format!(
+                    "{DECL}purpose P() {{\n    structure def Nested {{\n        sub s = Hole()\n    }}\n}}"
+                ),
+                "Hole",
+            ),
+            (
+                "PurposeDef.structures — `param p : Hole` type annotation",
+                format!(
+                    "{DECL}purpose P() {{\n    structure def Nested {{\n        param p : Hole\n    }}\n}}"
+                ),
+                "Hole",
+            ),
+            (
+                "PurposeDef.defaults — `default Hole = …`",
+                format!("{DECL}purpose P() {{\n    default Hole = 1\n}}"),
+                "Hole",
+            ),
+            // All three at once, in a purpose that also takes a param, so the
+            // three regions are pinned as coexisting rather than only one at a
+            // time — a fan-out that handled each alone but dropped one when the
+            // others were present would still be caught.
+            (
+                "all three regions together",
+                format!(
+                    "{DECL}purpose P(subject : Structure) {{\n    default Hole = 1\n    structure def Nested {{\n        param p : Hole\n        sub s = Hole()\n    }}\n}}"
+                ),
+                "Hole",
+            ),
+        ];
+        for (label, source, name) in rows {
+            assert_collects_every_occurrence(label, source, name);
+        }
+    }
+
+    /// AXIS 4 — a CONSTRAINT-DEF instantiation, the third declaration-name use
+    /// site whose name is a plain `String` rather than an expression.
+    ///
+    /// `ConstraintInstDecl { name: String, args, where_clause, span, … }`, and
+    /// `for_each_member_direct_expr` yields only its `args` and `where_clause`,
+    /// so the instantiation NAME is structurally invisible to every ident walk —
+    /// the exact same shape as `SubDecl.structure_name`, which is why this
+    /// traversal exists at all.
+    ///
+    /// WHAT THIS ASSERTS AND WHAT IT DELIBERATELY DOES NOT. The subject here is
+    /// the COLLECTOR, so the use site is asserted exactly: present, and spanning
+    /// the name token alone rather than the whole member statement — the
+    /// rename-safety property, since `compute_rename_cross_file` uses the
+    /// reference set as its exact edit set. The DECLARATION token is the
+    /// ORACLE's to supply, so the declaration half is asserted as an
+    /// IMPLICATION — if the oracle offers a home token, the set carries it.
+    /// Written that way when `decl_name_span_in` still refused `Constraint`, so
+    /// it was VACUOUSLY true; step-18 admitted the kind, and the implication
+    /// became a real assertion with no edit — which is the point of phrasing a
+    /// coupling in the direction that lets the gap be closed.
+    ///
+    /// Non-vacuity: the fixture is asserted to parse clean AND to really contain
+    /// a `MemberDecl::ConstraintInst` named `Foo`, so grammar drift fails loudly
+    /// here instead of turning the whole test into a pass over an empty AST.
+    #[test]
+    fn constraint_def_instantiation_is_collected_as_a_use_site() {
+        const DECL: &str = "constraint def Foo {\n    param x : Length\n    x > 0mm\n}\n";
+        let rows: &[(&str, String)] = &[
+            (
+                "instantiated in a structure member",
+                format!(
+                    "{DECL}structure A {{\n    param w : Length = 1mm\n    constraint Foo(x: w)\n}}"
+                ),
+            ),
+            // Also through the purpose regions step-14 opened, so the two legs
+            // are pinned as composing rather than each working alone.
+            //
+            // It must be a purpose-NESTED STRUCTURE, not the purpose body
+            // itself: measured, `constraint Foo(x: 1mm)` written directly in a
+            // purpose body lowers to `MemberDecl::Constraint` wrapping an
+            // `ExprKind::FunctionCall`, NOT to a `ConstraintInst` — the
+            // instantiation form is a structure-body form. A `FunctionCall`'s
+            // callee is a `String` with no span of its own, so that spelling is
+            // a separate, pre-existing use-site gap (filed as a follow-up), not
+            // this arm's business.
+            (
+                "instantiated in a purpose-nested structure",
+                format!(
+                    "{DECL}purpose P(subject : Structure) {{\n    structure def Nested {{\n        constraint Foo(x: 1mm)\n    }}\n}}"
+                ),
+            ),
+        ];
+        for (label, source) in rows {
+            let parsed = reify_syntax::parse(source, ModulePath::single("t"));
+            assert!(
+                parsed.errors.is_empty(),
+                "[{label}] fixture must parse clean, got {:?} for:\n{source}",
+                parsed.errors
+            );
+            let instantiates_foo = |members: &[MemberDecl]| {
+                members
+                    .iter()
+                    .any(|m| matches!(m, MemberDecl::ConstraintInst(c) if c.name == "Foo"))
+            };
+            let found_inst = parsed.declarations.iter().any(|decl| {
+                entity_members(decl).is_some_and(instantiates_foo)
+                    || matches!(decl, Declaration::Purpose(p)
+                        if p.structures.iter().any(|n| instantiates_foo(&n.members)))
+            });
+            assert!(
+                found_inst,
+                "[{label}] fixture must really contain a `constraint Foo(…)` \
+                 instantiation member, or this test asserts nothing:\n{source}"
+            );
+
+            let use_at = *occurrences(source, "Foo")
+                .last()
+                .expect("fixture mentions Foo");
+            let got = collect_decl_name_spans(source, &parsed, "Foo");
+            assert!(
+                got.contains(&span_of(use_at, "Foo")),
+                "[{label}] the instantiation name token at {use_at} must be \
+                 collected, got {got:?}:\n{source}"
+            );
+            // Rename safety: the whole member statement is `constraint Foo(x: w)`,
+            // so a span wider than the name is a destructive edit set.
+            for span in &got {
+                assert_eq!(
+                    &source[span.start as usize..span.end as usize],
+                    "Foo",
+                    "[{label}] every collected span must cover exactly the name \
+                     token, got {span:?}:\n{source}"
+                );
+            }
+            // The declaration half, as an implication over the oracle.
+            if let Some(home) = crate::goto_def::find_declaration_name_span(source, "Foo") {
+                assert!(
+                    got.contains(&home),
+                    "[{label}] once the oracle offers a home token it must be in \
+                     the reference set, got {got:?}:\n{source}"
+                );
+            }
+        }
     }
 
     // --- κ step-3 (task 4210): cross-file structure references from any signal cursor ---
@@ -3465,6 +5175,105 @@ structure Assembly {
         )
         .expect("(c) cursor on import entity token resolves to a cross-file reference set");
         assert_eq!(sorted_locations(got_c), expected, "(c) import entity cursor");
+    }
+
+    // --- task #6539: declaration names used in TYPE POSITION ---
+
+    /// The `is_renameable_cross_file` CAVEAT, made executable — and retired.
+    ///
+    /// That doc block used to name this exact hazard: "If a structure name ALSO
+    /// appears in a type-annotation / refinement position (e.g. `param p:
+    /// Name`), renaming the structure rewrites the decl + construction sites but
+    /// leaves that type-position use stale." The quote is kept here because this
+    /// test is what discharged it; the CAVEAT itself now records the collector's
+    /// one remaining residual instead. Structure is an ALREADY-ADMITTED kind, so
+    /// this test needed no oracle widening — it was RED for the collector reason
+    /// alone, which is what made it the right first assertion of workstream D.
+    ///
+    /// FIXTURE DISCIPLINE: cleanliness is asserted BEFORE anything else, and the
+    /// `param p : Hole` annotation is asserted to be present IN THE AST rather
+    /// than only in the source text. `test_fixtures::parse_one_clean` does not
+    /// fit here — it requires a single declaration and this fixture needs an
+    /// import plus a structure — so the same two assertions are made inline. A
+    /// snippet broken by grammar drift would otherwise yield an `Assembly` with
+    /// no `param p` at all and make the whole test pass vacuously.
+    #[test]
+    fn compute_references_cross_file_reports_a_structure_name_in_type_position() {
+        let main_src =
+            "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n    param p : Hole\n}";
+        let parsed_main = reify_syntax::parse(main_src, ModulePath::single("main"));
+        assert!(
+            parsed_main.errors.is_empty(),
+            "fixture must parse clean, got {:?}",
+            parsed_main.errors
+        );
+        let assembly = parsed_main
+            .declarations
+            .iter()
+            .find_map(|d| match d {
+                Declaration::Structure(s) if s.name == "Assembly" => Some(s),
+                _ => None,
+            })
+            .expect("fixture must declare `structure Assembly`");
+        assert!(
+            assembly.members.iter().any(|m| matches!(
+                m,
+                MemberDecl::Param(param)
+                    if param.name == "p"
+                        && param
+                            .type_expr
+                            .as_ref()
+                            .is_some_and(|t| t.to_string() == "Hole")
+            )),
+            "fixture must carry `param p : Hole` as a TYPE POSITION in the AST, \
+             not merely as source text; got members: {:?}",
+            assembly.members.len()
+        );
+
+        let docs = workspace_docs(&[(parts_uri(), PARTS_SRC), (main_uri(), main_src)]);
+        let mut map = HashMap::new();
+        map.insert("parts".to_string(), (parts_uri(), PARTS_SRC.to_string()));
+        let resolver = mock_resolver(map);
+
+        let main_hits = occurrences(main_src, "Hole");
+        assert_eq!(
+            main_hits.len(),
+            3,
+            "main.ri holds the import token, the construction site and the type \
+             annotation"
+        );
+        let expected = sorted_locations(vec![
+            loc_at(
+                parts_uri(),
+                PARTS_SRC,
+                occurrences(PARTS_SRC, "Hole")[0],
+                "Hole",
+            ),
+            loc_at(main_uri(), main_src, main_hits[0], "Hole"),
+            loc_at(main_uri(), main_src, main_hits[1], "Hole"),
+            loc_at(main_uri(), main_src, main_hits[2], "Hole"),
+        ]);
+
+        // Cursor on the parts.ri home declaration token.
+        let decl_offset = occurrences(PARTS_SRC, "Hole")[0];
+        let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
+        let got = compute_references_cross_file(
+            PARTS_SRC,
+            &parsed_parts,
+            &parts_uri(),
+            offset_to_position(PARTS_SRC, decl_offset as u32),
+            true,
+            &docs,
+            &resolver,
+        )
+        .expect("cursor on the home declaration token resolves a cross-file set");
+        assert_eq!(
+            sorted_locations(got),
+            expected,
+            "the type-annotation use must be reported alongside the declaration \
+             and the construction site \u{2014} a rename's edit set is exactly this \
+             reference set, so a missing use is a stale-rename bug"
+        );
     }
 
     #[test]
@@ -3673,8 +5482,9 @@ structure Assembly {
     #[test]
     fn prepare_rename_cross_file_refuses_keyword_type_and_unresolved() {
         // The cross-file producer keeps the single-file refusals: a keyword, a
-        // type-annotation position (OUT of κ scope), and a word that resolves to
-        // neither a local binding nor a resolvable structure all return None.
+        // type-annotation position naming a declaration this workspace does not
+        // declare, and a word that resolves to neither a local binding nor a
+        // resolvable declaration all return None.
         let (_docs, resolver) = canonical_workspace();
         let parsed_parts = reify_syntax::parse(PARTS_SRC, ModulePath::single("parts"));
 
@@ -3692,7 +5502,13 @@ structure Assembly {
             "(a) keyword `structure` is not renameable"
         );
 
-        // (b) type-annotation position `Length` — type positions are OUT of κ.
+        // (b) type-annotation position `Length`. Since #6539 a type position is
+        //     no longer refused for BEING one — it is a collected use site, and
+        //     an alias named there is renameable. `Length` still refuses for a
+        //     different and more basic reason: it is a PRELUDE dimension, so no
+        //     top-level declaration in this workspace declares it and there is
+        //     no home to rename. Kept as a row because "the cursor is on a type"
+        //     must not become sufficient on its own.
         let ty = occurrences(PARTS_SRC, "Length")[0];
         assert!(
             prepare_rename_cross_file(
@@ -3703,7 +5519,8 @@ structure Assembly {
                 &resolver,
             )
             .is_none(),
-            "(b) a type-annotation position (`Length`) is not a κ rename target"
+            "(b) `Length` names no declaration in this workspace, so there is \
+             no home to rename"
         );
 
         // (c) an imported structure use whose import does NOT resolve (the
@@ -3723,6 +5540,479 @@ structure Assembly {
             )
             .is_none(),
             "(c) an unresolvable imported structure use is not renameable"
+        );
+    }
+
+    /// Per-kind CROSS-FILE admission of a top-level declaration name, and the
+    /// coverage rule that decides it. Successor to #6388's non-regression
+    /// guard; same subject, opposite verdict for four of five kinds.
+    ///
+    /// HISTORY — what this test used to assert, and why. #6388 made same-file
+    /// go-to-definition resolve top-level declaration names UNIFORMLY across
+    /// all kinds, via its own scanner (`analysis::decl_name_and_span` +
+    /// `goto_def::decl_name_token`). It deliberately did NOT widen
+    /// `goto_def::decl_name_span_in`, the home oracle feeding
+    /// `collect_decl_name_spans`, `resolve_cross_file_home` step 2 and the
+    /// cross-file rename producer. At that time `collect_uses` /
+    /// `collect_idents_in_expr` walked `ExprKind::Ident` in EXPRESSIONS only
+    /// and `collect_decl_name_spans` added only `sub _ = Name` construction
+    /// sites, so admitting a type-position-only kind would have reported the
+    /// DECLARATION token with every use site absent — and because
+    /// `compute_rename_cross_file` uses the reference set as its exact EDIT
+    /// set, a rename would move the declaration while silently leaving each use
+    /// stale. Invariant 5 cannot see that: it checks only that edited buffers
+    /// re-PARSE clean, which a dangling name does. So this test asserted, per
+    /// kind, that the split HELD.
+    ///
+    /// WHAT CHANGED (#6539, rolled up in #6972). The RULE is unchanged — a kind
+    /// is admitted cross-file iff EVERY use-site form for that kind is
+    /// collected — but the collectors moved, so the same rule now yields the
+    /// opposite verdict for four kinds. `collect_decl_name_spans` collects
+    /// every type position at every `TypeExpr` root, every `constraint Name(…)`
+    /// instantiation, and both of a purpose's sibling child regions. The split
+    /// that #6388 pinned is therefore RETIRED, not violated.
+    ///
+    /// TWO GATES, STILL ASSERTED SEPARATELY, because they are still separate
+    /// code:
+    /// - RENAME is gated by `classify_decl_name_in` + `is_renameable_cross_file`,
+    ///   which never consult `decl_name_span_in`. The per-kind verdicts
+    ///   below pin THAT gate.
+    /// - The REFERENCE SET is gated by `decl_name_span_in`. The
+    ///   coupling assertion at the tail pins that one. A rename-only assertion
+    ///   cannot: a kind admitted to the home oracle alone leaves every
+    ///   `prepare_rename*` call returning None, so the verdicts stay green while
+    ///   the reference set silently goes incomplete.
+    #[test]
+    fn cross_file_declaration_kind_admission_tracks_use_site_coverage() {
+        let (_docs, resolver) = canonical_workspace();
+
+        // The five kinds whose uses live in TYPE position only (or, for Unit, in
+        // a literal suffix) — the kinds #6388 refused wholesale — each paired
+        // with its verdict under the coverage rule and the measurement behind
+        // it. Names are FILTERED from the shared snippet table rather than
+        // re-copied: that table was hoisted to module scope in `analysis`
+        // precisely so it would have one home, and a third verbatim copy here
+        // would reintroduce the lockstep-edit burden it was meant to remove.
+        //
+        // `meter` is the one refusal left, and it is refused for a STRONGER
+        // reason than "not yet collected" — the use site is unreachable from
+        // both ends (#6972, measured):
+        //   - A unit's only use site is a suffixed literal (`5meter`), which
+        //     lowers to `ExprKind::QuantityLiteral { value, unit: UnitExpr }`.
+        //     That is a LEAF to `collect_idents_in_expr`, and its
+        //     `UnitExpr::Unit(String)` (ast.rs:196) carries NO span, so there is
+        //     nothing in the AST for any collector to push.
+        //   - Even a spanned suffix would not help the user: `find_word_at_offset`
+        //     FUSES `5meter` into the single word `"5meter"`, pinned by
+        //     `goto_def::tests::
+        //     goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration`,
+        //     so goto-def and rename cannot be INVOKED from that position at all.
+        // Closing it needs a spanned `UnitExpr` plus a suffix-aware word
+        // splitter, neither of which is a change here.
+        const ADMISSION: [(&str, bool, &str); 5] = [
+            (
+                "Pressure",
+                true,
+                "TypeAlias — every use is a type position, and every `TypeExpr` \
+                 root is collected (#6539)",
+            ),
+            (
+                "Foo",
+                true,
+                "Constraint — type positions plus `constraint Foo(…)` \
+                 instantiation names, both collected (#6539)",
+            ),
+            (
+                "lightweight",
+                true,
+                "Purpose — VACUOUSLY complete: `purpose` appears only in its own \
+                 declaration production (grammar.js `purpose_declaration`), so \
+                 the grammar admits no use site to miss",
+            ),
+            (
+                "ball",
+                true,
+                "Joint — vacuously complete for the same reason (grammar.js \
+                 `joint_definition` is the sole production naming a joint)",
+            ),
+            (
+                "meter",
+                false,
+                "Unit — the literal-suffix use site is both uncollectable and \
+                 unreachable; see this test's table comment",
+            ),
+        ];
+        let rows: Vec<(&(&str, &str), bool, &str)> = ADMISSION
+            .iter()
+            .map(|(name, admitted, why)| {
+                let snippet = NAMED_DECL_SNIPPETS
+                    .iter()
+                    .find(|(_, n)| n == name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "every name in ADMISSION must still have a row in \
+                             NAMED_DECL_SNIPPETS; a renamed or dropped row would \
+                             silently shrink this guard, but {name:?} has none"
+                        )
+                    });
+                (snippet, *admitted, *why)
+            })
+            .collect();
+
+        let uri = Url::parse("file:///proj/guard.ri").unwrap();
+        for ((source, name), admitted, why) in &rows {
+            // `parse_one_clean` asserts cleanliness FIRST: a snippet broken by
+            // grammar drift would yield zero declarations, and every assertion
+            // below would then pass — or refuse — vacuously.
+            let parsed = parse_one_clean(source, "guard");
+
+            let decl = occurrences(source, name)[0];
+            let pos = offset_to_position(source, decl as u32);
+
+            // SINGLE-FILE rename is unchanged by all of this and still refuses
+            // every declaration kind: `prepare_rename` admits only value-member
+            // bindings, so same-file goto-def navigability has never implied
+            // same-file renameability and still does not.
+            assert!(
+                prepare_rename(source, &parsed, pos).is_none(),
+                "single-file prepare_rename must refuse the {name:?} declaration \
+                 name (a declaration name is not a value-member binding): {source}"
+            );
+
+            let granted =
+                prepare_rename_cross_file(source, &parsed, &uri, pos, &resolver).is_some();
+            assert_eq!(
+                granted, *admitted,
+                "cross-file rename admission for {name:?} must be \
+                 {admitted} — {why}: {source}"
+            );
+        }
+
+        // COMPLETENESS OF A VACUOUS SET. Purpose and Joint are admitted on the
+        // grounds that the grammar gives their names no use-site syntax, so a
+        // reference set holding the declaration token ALONE is COMPLETE for
+        // them — not incomplete. Asserted explicitly so a future reader does not
+        // read the one-element set as the very gap this task closed and "fix" it
+        // by collecting something that is not a reference.
+        for (source, name) in [
+            NAMED_DECL_SNIPPETS
+                .iter()
+                .find(|(_, n)| *n == "lightweight")
+                .expect("purpose row"),
+            NAMED_DECL_SNIPPETS
+                .iter()
+                .find(|(_, n)| *n == "ball")
+                .expect("joint row"),
+        ] {
+            let parsed = parse_one_clean(source, "guard");
+            let decl = occurrences(source, name)[0];
+            let refs = compute_references_cross_file(
+                source,
+                &parsed,
+                &uri,
+                offset_to_position(source, decl as u32),
+                true,
+                &workspace_docs(&[(uri.clone(), source)]),
+                &resolver,
+            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "an admitted kind must resolve to a cross-file home, so \
+                     {name:?} must report a reference set: {source}"
+                )
+            });
+            assert_eq!(
+                refs,
+                vec![loc_at(uri.clone(), source, decl, name)],
+                "{name:?} has no use-site syntax in the grammar, so its \
+                 reference set is exactly the declaration token — complete, not \
+                 truncated: {source}"
+            );
+        }
+
+        // COUPLING between the two halves, stated in the direction that lets the
+        // gap be CLOSED: if either oracle treats the declaration as a home — a
+        // granted rename, or a reported reference set — then that set must COVER
+        // the use site.
+        //
+        // Deliberately NOT the earlier form of this assertion, which pinned the
+        // reference-set INCOMPLETENESS ("the type-position use must not be
+        // reported"). That is a deficiency, not a contract: it would have redded
+        // the moment someone taught the collectors to walk type expressions —
+        // #6972's remit — reading as a rule forbidding the improvement. Written
+        // this way it survived that change intact: the `Pressure` and `Foo` rows
+        // flipped from vacuously-true to genuinely-true without an edit, and it
+        // is still what guards the `meter` row.
+        let use_bearing: &[(&str, &str, &str)] = &[
+            (
+                "type Pressure = Force\nstructure S {\n    param p : Pressure = 1.0\n}",
+                "Pressure",
+                "the `param p : Pressure` type annotation",
+            ),
+            (
+                "constraint def Foo {\n    param x : Length\n    x > 0mm\n}\nstructure A {\n    param w : Length = 1mm\n    constraint Foo(x: w)\n}",
+                "Foo",
+                "the `constraint Foo(x: w)` instantiation",
+            ),
+            (
+                "unit meter : Length\nstructure S {\n    param x : Length = 5meter\n}",
+                "meter",
+                "the `5meter` literal suffix",
+            ),
+        ];
+
+        for (source, name, use_desc) in use_bearing {
+            let parsed = reify_syntax::parse(source, ModulePath::single("guard_use"));
+            assert!(
+                parsed.errors.is_empty(),
+                "fixture must parse clean, got {:?} for: {source}",
+                parsed.errors
+            );
+            let use_uri = Url::parse("file:///proj/guard_use.ri").unwrap();
+            let occ = occurrences(source, name);
+            assert_eq!(
+                occ.len(),
+                2,
+                "fixture: declaration + exactly one use ({use_desc}): {source}"
+            );
+            let decl_pos = offset_to_position(source, occ[0] as u32);
+            let (use_start, use_end) = (occ[1], occ[1] + name.len());
+
+            let rename_granted =
+                prepare_rename_cross_file(source, &parsed, &use_uri, decl_pos, &resolver).is_some();
+            let refs = compute_references_cross_file(
+                source,
+                &parsed,
+                &use_uri,
+                decl_pos,
+                true,
+                &workspace_docs(&[(use_uri.clone(), source)]),
+                &resolver,
+            );
+            let refs_reported = refs.is_some();
+            // CONTAINS, not starts-at: a collector later taught to report unit
+            // uses might span the whole `5meter` literal rather than just the
+            // suffix, and that would still be a correct closing of the gap.
+            let use_covered = refs.is_some_and(|locs| {
+                locs.iter().any(|l| {
+                    l.uri == use_uri
+                        && position_to_offset(source, l.range.start) <= use_start
+                        && position_to_offset(source, l.range.end) >= use_end
+                })
+            });
+
+            assert!(
+                !(rename_granted || refs_reported) || use_covered,
+                "the {name:?} declaration is treated as a home \
+                 (rename_granted={rename_granted}, refs_reported={refs_reported}) \
+                 but the cross-file reference set does not cover {use_desc}, so a \
+                 rename would move the declaration token and silently miss it. \
+                 Either teach the declaration-name traversal to collect that use \
+                 form, or keep both oracles refusing this kind: {source}"
+            );
+        }
+    }
+
+    /// The MULTI-DOCUMENT half of the `Unit` refusal, which the single-document
+    /// rows of `cross_file_declaration_kind_admission_tracks_use_site_coverage`
+    /// cannot reach.
+    ///
+    /// In one document a unit home is already unreachable: step 2 of
+    /// `resolve_cross_file_home` consults the oracle, which refuses `Unit`, and
+    /// step 3 finds no import — so the whole query is `None` and the guard's
+    /// `meter` row is vacuously satisfied. Across TWO documents it is reachable,
+    /// because step 3 keys only on `import_exposes_entity` and never consults
+    /// the oracle: the home resolves, and the reference set used to come back as
+    /// the importer's `import` token ALONE — one "reference" that is not the
+    /// declaration, with the declaration missing even under
+    /// `include_declaration = true`, and no rename available to act on it.
+    ///
+    /// The contract is now a wholesale refusal, matching what
+    /// `prepare_rename_cross_file` already did for the same kind. Both are
+    /// asserted, and the two halves of the non-vacuity are asserted too: the
+    /// import really does resolve, and the SAME workspace shape yields a full
+    /// reference set for an ADMITTED kind — otherwise this test would pass
+    /// against a resolver that simply never resolves anything.
+    #[test]
+    fn cross_file_references_refuse_a_home_whose_kind_this_oracle_declines() {
+        const DEFS_SRC: &str = "pub unit hoop : Length\npub type Pressure = Force\n";
+        const USER_SRC: &str = "import defs.{hoop, Pressure}\n\
+                                structure S {\n    \
+                                param p : Pressure = 1.0\n\
+                                }";
+        let defs_uri = Url::parse("file:///proj/defs.ri").unwrap();
+        let user_uri = Url::parse("file:///proj/user.ri").unwrap();
+        let mut map = HashMap::new();
+        map.insert("defs".to_string(), (defs_uri.clone(), DEFS_SRC.to_string()));
+        let resolver = mock_resolver(map);
+        let docs = workspace_docs(&[(defs_uri.clone(), DEFS_SRC), (user_uri.clone(), USER_SRC)]);
+
+        let parsed_user = reify_syntax::parse(USER_SRC, ModulePath::single("user"));
+        assert!(
+            parsed_user.errors.is_empty(),
+            "fixture must parse clean, got {:?}",
+            parsed_user.errors
+        );
+        let refs_at = |name: &str, occurrence: usize| {
+            compute_references_cross_file(
+                USER_SRC,
+                &parsed_user,
+                &user_uri,
+                offset_to_position(USER_SRC, occurrences(USER_SRC, name)[occurrence] as u32),
+                true,
+                &docs,
+                &resolver,
+            )
+        };
+
+        // NON-VACUITY (a): the import arm really does reach `defs.ri` for a kind
+        // the oracle admits, so the refusal below is about the KIND and not
+        // about a resolver that resolves nothing.
+        let alias_refs = refs_at("Pressure", 0)
+            .expect("an admitted kind imported from defs.ri must resolve to a home");
+        assert!(
+            alias_refs.iter().any(|l| l.uri == defs_uri),
+            "non-vacuity: the admitted kind's set must include the home \
+             declaration in defs.ri, got: {alias_refs:?}"
+        );
+
+        // NON-VACUITY (b): the unit is genuinely exposed by that same import, so
+        // `resolve_cross_file_home` step 3 does reach a home for it.
+        assert_eq!(
+            classify_decl_name(DEFS_SRC, "hoop"),
+            Some(RefSymbolKind::Unit),
+            "fixture: defs.ri must declare `hoop` as a unit"
+        );
+        assert!(
+            crate::goto_def::find_declaration_name_span(DEFS_SRC, "hoop").is_none(),
+            "fixture: the declaration-token oracle must decline that unit"
+        );
+
+        // THE CONTRACT. Both gates refuse, in the same direction.
+        assert!(
+            refs_at("hoop", 0).is_none(),
+            "a home the declaration-token oracle declines must refuse the whole \
+             query, not report the importer's token with no declaration in the set"
+        );
+        assert!(
+            prepare_rename_cross_file(
+                USER_SRC,
+                &parsed_user,
+                &user_uri,
+                offset_to_position(USER_SRC, occurrences(USER_SRC, "hoop")[0] as u32),
+                &resolver,
+            )
+            .is_none(),
+            "rename already refused a unit home; references must not disagree"
+        );
+    }
+
+    /// The CROSS-FILE path must give the same answer as the same-file path for a
+    /// purpose-nested structure (#6534).
+    ///
+    /// #6534's requirement is CONSISTENCY, not merely coverage: the two paths
+    /// run different scans (`resolve_decl_name` walks `decl_name_and_span`, the
+    /// cross-file side walks `decl_name_span_in`), so one learning to descend
+    /// into purpose bodies while the other does not would make the SAME name
+    /// navigable or renameable depending only on which file the cursor sits in —
+    /// the exact asymmetry this whole sweep exists to remove.
+    ///
+    /// ORDERING, and why admitting this is safe rather than merely convenient:
+    /// the collectors landed FIRST. Step-12 taught the declaration-name
+    /// traversal every type position and step-14 taught it to descend
+    /// `PurposeDef.structures`, so by the time the oracle admits this name its
+    /// use sites are already collected. Admitting it before that would have
+    /// handed `compute_rename_cross_file` an edit set holding the declaration
+    /// token alone — which is why the reference set is asserted here to carry
+    /// ALL THREE sites, and the rename grant is asserted only alongside it.
+    #[test]
+    fn cross_file_path_agrees_with_same_file_on_a_purpose_nested_structure() {
+        const SRC: &str = "purpose Exploration() {\n    \
+                           structure def InPurpose {\n        \
+                           param x : Length = 5mm\n    \
+                           }\n\
+                           }\n\
+                           structure Host {\n    \
+                           param p : InPurpose\n    \
+                           sub s = InPurpose()\n\
+                           }";
+        let parsed = reify_syntax::parse(SRC, ModulePath::single("nested"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean, got {:?}",
+            parsed.errors
+        );
+        // Non-vacuity: the name must really be purpose-nested and really have
+        // both use forms, or every assertion below could pass for a top-level
+        // structure instead.
+        assert!(
+            parsed.declarations.iter().any(|d| matches!(
+                d,
+                Declaration::Purpose(p) if p.structures.iter().any(|s| s.name == "InPurpose")
+            )),
+            "fixture must nest `InPurpose` inside the purpose body"
+        );
+        let occ = occurrences(SRC, "InPurpose");
+        assert_eq!(
+            occ.len(),
+            3,
+            "fixture: declaration + `param p : InPurpose` + `sub s = InPurpose()`"
+        );
+        let (decl, type_use, sub_use) = (occ[0], occ[1], occ[2]);
+
+        let uri = Url::parse("file:///proj/nested.ri").unwrap();
+        // The fixture imports nothing; a resolver that resolves nothing keeps
+        // the cross-file machinery on its single-document path.
+        let resolver = |_: &str| -> Option<(Url, String)> { None };
+        let decl_pos = offset_to_position(SRC, decl as u32);
+
+        // (a) The cross-file oracle locates the name token — and locates the
+        //     SAME token the same-file scan jumps to.
+        assert_eq!(
+            crate::goto_def::find_declaration_name_span(SRC, "InPurpose"),
+            Some(span_of(decl, "InPurpose")),
+            "the cross-file oracle must locate a purpose-nested structure's \
+             name token"
+        );
+        assert_eq!(
+            crate::goto_def::compute_goto_definition(SRC, &uri, decl_pos).map(|l| l.range),
+            Some(span_to_range(SRC, span_of(decl, "InPurpose"))),
+            "same-file goto-def and the cross-file oracle must agree on the \
+             token; a divergence makes navigability depend on which file the \
+             cursor is in"
+        );
+
+        // (b) The reference set carries the declaration token AND BOTH use
+        //     forms. All three, because `compute_rename_cross_file` uses this
+        //     set as its exact edit set.
+        let refs = compute_references_cross_file(
+            SRC,
+            &parsed,
+            &uri,
+            decl_pos,
+            true,
+            &workspace_docs(&[(uri.clone(), SRC)]),
+            &resolver,
+        )
+        .expect("a purpose-nested structure must resolve to a cross-file home");
+        assert_eq!(
+            sorted_locations(refs),
+            vec![
+                loc_at(uri.clone(), SRC, decl, "InPurpose"),
+                loc_at(uri.clone(), SRC, type_use, "InPurpose"),
+                loc_at(uri.clone(), SRC, sub_use, "InPurpose"),
+            ],
+            "declaration token, `param p : InPurpose` type position, and \
+             `sub s = InPurpose()` construction site — a rename that moved the \
+             declaration while missing either use would leave the file \
+             referencing a name that no longer exists"
+        );
+
+        // (c) And it is renameable, which is sound ONLY because (b) holds.
+        assert!(
+            prepare_rename_cross_file(SRC, &parsed, &uri, decl_pos, &resolver).is_some(),
+            "a purpose-nested structure classifies as a Structure, which \
+             `is_renameable_cross_file` already admits"
         );
     }
 
@@ -3812,6 +6102,104 @@ structure Assembly {
         assert!(
             main_after.contains("import parts.Bore"),
             "main.ri import renamed to `parts.Bore`: {main_after}"
+        );
+        assert!(
+            main_after.contains("= Bore()"),
+            "main.ri construction site renamed to `Bore()`: {main_after}"
+        );
+    }
+
+    #[test]
+    fn compute_rename_cross_file_one_char_structure_name_does_not_corrupt_keyword() {
+        // BLAST-RADIUS GUARD (task 7529). A declaration span starts at its
+        // keyword, so a name-token locator that is not whole-word matches the
+        // `s` of `structure` before the `s` of `structure s`. That span reaches
+        // this write path: the parts.ri edit rewrites byte 0, yielding
+        // `Boretructure s { … }`, which does not parse.
+        //
+        // The DESTRUCTURED import form is load-bearing and must not be
+        // "simplified" to `import parts.s`: ts_parser classifies a trailing
+        // import-path segment as an entity only when it starts with an
+        // uppercase character, so `import parts.s` lowers to
+        // `ImportKind::Module`, the cross-file home never resolves, and this
+        // test would silently assert nothing. `import parts.{s}` lowers to
+        // `ImportKind::Destructured(["s"])`, which `import_exposes_entity`
+        // admits.
+        const SHORT_PARTS_SRC: &str = "structure s {\n    param diameter: Length = 10mm\n}";
+        const SHORT_MAIN_SRC: &str =
+            "import parts.{s}\nstructure Assembly {\n    sub hole = s()\n}";
+
+        let docs = workspace_docs(&[(parts_uri(), SHORT_PARTS_SRC), (main_uri(), SHORT_MAIN_SRC)]);
+        let mut map = HashMap::new();
+        map.insert(
+            "parts".to_string(),
+            (parts_uri(), SHORT_PARTS_SRC.to_string()),
+        );
+        let resolver = mock_resolver(map);
+
+        let parsed_main = reify_syntax::parse(SHORT_MAIN_SRC, ModulePath::single("main"));
+        // `occurrences` is unusable for a one-character name (every `s` in
+        // `structure`/`parts`/`sub` matches), so anchor on the construction site.
+        let assign = SHORT_MAIN_SRC.find("= s()").expect("fixture: construction site");
+        let main_use = assign + "= ".len(); // the `s` of `= s()`
+        assert_eq!(&SHORT_MAIN_SRC[main_use..main_use + 1], "s");
+
+        let edit = compute_rename_cross_file(
+            SHORT_MAIN_SRC,
+            &parsed_main,
+            &main_uri(),
+            offset_to_position(SHORT_MAIN_SRC, main_use as u32),
+            "Bore",
+            &docs,
+            &resolver,
+        )
+        .expect("cross-file rename of a one-character name yields a WorkspaceEdit");
+
+        let changes = edit.changes.expect("changes present");
+        assert_eq!(changes.len(), 2, "edit spans both parts.ri and main.ri");
+
+        let parts_edits = changes.get(&parts_uri()).expect("parts.ri edits present");
+        assert_eq!(
+            parts_edits.len(),
+            1,
+            "parts.ri: 1 edit (structure decl token)"
+        );
+        let main_edits = changes.get(&main_uri()).expect("main.ri edits present");
+        assert_eq!(
+            main_edits.len(),
+            2,
+            "main.ri: 2 edits (import token + sub use)"
+        );
+        assert!(
+            parts_edits
+                .iter()
+                .chain(main_edits)
+                .all(|e| e.new_text == "Bore"),
+            "every edit writes Bore"
+        );
+
+        // Invariant 5: apply per-file edits, re-parse, assert ZERO errors in BOTH.
+        let parts_after = apply_edits(SHORT_PARTS_SRC, parts_edits);
+        let main_after = apply_edits(SHORT_MAIN_SRC, main_edits);
+        let parts_reparsed = reify_syntax::parse(&parts_after, ModulePath::single("parts"));
+        assert!(
+            parts_reparsed.errors.is_empty(),
+            "parts.ri re-parses clean after renaming a one-character name: {:?}\n{parts_after}",
+            parts_reparsed.errors
+        );
+        let main_reparsed = reify_syntax::parse(&main_after, ModulePath::single("main"));
+        assert!(
+            main_reparsed.errors.is_empty(),
+            "main.ri re-parses clean after renaming a one-character name: {:?}\n{main_after}",
+            main_reparsed.errors
+        );
+        assert!(
+            parts_after.contains("structure Bore"),
+            "parts.ri now declares `structure Bore` — the keyword is intact: {parts_after}"
+        );
+        assert!(
+            main_after.contains("import parts.{Bore}"),
+            "main.ri import renamed to `parts.{{Bore}}`: {main_after}"
         );
         assert!(
             main_after.contains("= Bore()"),

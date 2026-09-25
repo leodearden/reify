@@ -96,13 +96,26 @@ pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
 pub use engine_eval::is_representable_cell_type;
-pub(crate) mod arg_acceptance;
+// Task 5791 (PRD docs/prds/v0_6/dimension-checked-readers.md §3 Leg A):
+// `arg_acceptance` was RELOCATED to `crates/reify-ir/src/arg_acceptance.rs`
+// so `reify-stdlib` — which cannot depend on `reify-eval` — shares the same
+// dimension-acceptance rule. This crate-private re-export keeps every
+// pre-existing `crate::arg_acceptance::…` spelling in this crate compiling
+// unchanged, at exactly the former visibility (a `pub use` would widen
+// reify-eval's public API for no reason).
+pub(crate) use reify_ir::arg_acceptance;
 mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
 #[cfg(test)]
 mod registry_drift_tests;
+// Task 6013 (registry ψ): the executed static-vs-runtime parity harness for the
+// builtin-signature registry. In-crate for the same reason as the sibling above
+// — it asserts against the private `value_type_kind_matches`, unreachable from
+// an integration test. See that module's header for PRD open question 5.
+#[cfg(test)]
+mod registry_parity_tests;
 // Task #4673 (geom-dispatch-registry L4): cfg-gated cross-crate test seam exposing
 // a 1:1 delegate to the `pub(crate)` `geometry_ops::compile_geometry_op` for the
 // characterization/golden harness in `tests/compile_geometry_op_characterization.rs`.
@@ -334,7 +347,12 @@ fn value_type_kind_matches(
         Value::Point(_) => matches!(ty, Type::Point { .. }),
         Value::Vector(_) => matches!(ty, Type::Vector { .. }),
         Value::Complex { .. } => matches!(ty, Type::Complex(_)),
-        Value::Orientation { .. } => matches!(ty, Type::Orientation(_)),
+        // Only N=3 is inhabited — see `reify_core::Type::Orientation`'s
+        // variant doc; mirrors `joint_self_check::dof_kind_of`. The sibling
+        // Frame/Transform/AffineMap arms stay permissive under the same
+        // #6336 deferral — that asymmetry is intentional, not an oversight.
+        // #6336 owns widening this arm.
+        Value::Orientation { .. } => matches!(ty, Type::Orientation(3)),
         Value::Frame { .. } => matches!(ty, Type::Frame(_)),
         Value::Transform { .. } => matches!(ty, Type::Transform(_)),
         Value::Plane { .. } => matches!(ty, Type::Plane),
@@ -916,16 +934,21 @@ pub struct Engine {
     /// `Engine` *as long as the inputs are value-stable*.
     ///
     /// **Auto-invalidation hook points (task 2874, steps 17-20)**: `edit_param`
-    /// and `edit_source` reset the cache to a fresh `RealizationCache::new()`
-    /// near function entry, mirroring the established `feature_tag_table` /
-    /// `topology_attribute_table` reset-at-hook-point pattern
-    /// (engine_build.rs:531/406). After an edit, the next `build()` /
-    /// `build_snapshot()` cold-misses on every realization and re-populates
-    /// the cache from kernel execution. The reset is conservative — the
-    /// engine cannot prove which cached entries survive a given edit without
-    /// per-cell input-cone analysis we do not currently maintain — so the
-    /// entire cache is flushed on every edit regardless of whether the
-    /// edited cell participates in any realization's input cone.
+    /// and `edit_source` delegate to [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
+    /// near function entry, mirroring the `topology_attribute_table`
+    /// reset-at-hook-point pattern (`TopologyAttributeTable::default()`
+    /// reset in `Engine::reset_per_build_state`, engine_build.rs). That
+    /// mutator flushes the existing cache in place via
+    /// [`RealizationCache::clear`] (task 4152) rather than
+    /// reseating it to a fresh `RealizationCache::new()` (see that method's
+    /// doc for why an in-place clear rather than a reseat). After an edit,
+    /// the next `build()` / `build_snapshot()` cold-misses on every
+    /// realization and re-populates the cache from kernel execution. The
+    /// reset is conservative — the engine cannot prove which cached entries
+    /// survive a given edit without per-cell input-cone analysis we do not
+    /// currently maintain — so the entire cache is flushed on every edit
+    /// regardless of whether the edited cell participates in any
+    /// realization's input cone.
     ///
     /// **Public escape hatch (task 2874, step-22)**: production callers can
     /// also flush the cache explicitly via
@@ -1154,6 +1177,33 @@ pub struct Engine {
     /// Task 4198 (Determinacy β) — γ reads this to assert `RepresentationWithin`
     /// bounds.
     achieved_repr_tol: BTreeMap<String, f64>,
+    /// Per-build static-relate consumption ledger — one row per ZERO-AUTO relate
+    /// scope processed by this build, in `solve_scopes` order (DIC α, task 5415).
+    ///
+    /// `build_with_geometry_output` drops `relate_solutions` after its consumption
+    /// loop, so without this field the `StaticRelateFacts` that
+    /// [`crate::relate_solve::verify_static_scope`] computes would exist only
+    /// inside that function and be unreachable from a completed
+    /// [`Engine::build`] — the surface ζ (#5420)'s `finish_check` ledger reads.
+    /// This task PRODUCES the rows; rendering them into the check summary is
+    /// #5420's leaf.
+    ///
+    /// A SATISFIED zero-auto scope raises no diagnostic, so its row here is the
+    /// ONLY evidence that its relate block was consumed. Dropping it would make
+    /// `verified: 2` and "there was no relate block" indistinguishable downstream —
+    /// the same conflation, one layer up, that the static-verification arm exists
+    /// to remove (`docs/legibility/design-invariants.md` INV-SF-3;
+    /// `docs/prds/v0_6/declared-intent-consumption-accounting.md` §4.4 V3).
+    ///
+    /// AUTO-FUL scopes never appear: their `RelateSolution::static_facts` is `None`,
+    /// and a solved scope is a different ledger row from a statically-verified one.
+    ///
+    /// Reset on EVERY surface by `reset_per_build_state` (#5069, INV-BUILD-1) and
+    /// repopulated by `build_with_geometry_output`'s relate consumption loop, which
+    /// runs after that reset. Only that one build surface writes it: the other
+    /// surfaces do not run a relate-solve, so for them the field is clearing-only
+    /// and an empty ledger is the honest answer rather than a stale one.
+    relate_static_facts: Vec<(String, crate::relate_solve::StaticRelateFacts)>,
     // ── task #3428 step-6: persistent-cache plumbing ─────────────────────────
     /// On-disk persistent cache root. `None` (the default) disables the
     /// feature entirely — every existing test that does not call
@@ -2017,6 +2067,65 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: Orientation arity narrowing (task 6546) ───
+
+    /// Locks `Value::Orientation` to `Type::Orientation(3)` only — see
+    /// `reify_core::Type::Orientation`'s variant doc for why N=3 is the only
+    /// inhabited arity.
+    ///
+    /// (a) the sole inhabited arity; (b)/(c) rejected arities (mirrors the
+    /// witnesses `joint_self_check::dof_kind_of` already pins to `None`);
+    /// (d) the `Value::Undef` wildcard sits upstream of this match and is
+    /// unaffected; (e) the sibling `Value::Frame` arm is unaffected.
+    #[test]
+    fn value_type_kind_matches_orientation_value_rejects_non_three_arity() {
+        use reify_core::Type;
+        use reify_ir::Value;
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+
+        // (a) The only inhabited arity; also guards against an
+        // over-narrowing that would reject everything.
+        assert!(
+            value_type_kind_matches(&q, &Type::Orientation(3), None),
+            "Value::Orientation must satisfy Type::Orientation(3), the only inhabited arity (a)"
+        );
+
+        // (b) No value can carry N=2, so Type::Orientation(2) is rejected.
+        assert!(
+            !value_type_kind_matches(&q, &Type::Orientation(2), None),
+            "Value::Orientation must be rejected by Type::Orientation(2) — no value can carry N=2 (b)"
+        );
+
+        // (c) Mirrors the arities joint_self_check::dof_kind_of already
+        // pins to None, so the value layer and the classifier agree.
+        assert!(
+            !value_type_kind_matches(&q, &Type::Orientation(0), None),
+            "Value::Orientation must be rejected by Type::Orientation(0) (c)"
+        );
+        assert!(
+            !value_type_kind_matches(&q, &Type::Orientation(4), None),
+            "Value::Orientation must be rejected by Type::Orientation(4) (c)"
+        );
+
+        // (d) Value::Undef is the universal wildcard and sits upstream of
+        // this match — unaffected by the narrowing.
+        assert!(
+            value_type_kind_matches(&Value::Undef, &Type::Orientation(2), None),
+            "Value::Undef against Type::Orientation(2) must stay true (universal wildcard) (d)"
+        );
+
+        // (e) The narrowing must not leak into the sibling Value::Frame arm.
+        assert!(
+            !value_type_kind_matches(&q, &Type::Frame(3), None),
+            "Value::Orientation must be rejected by Type::Frame(3) (different outer variant) (e)"
+        );
+    }
+
     // ── value_type_kind_matches: StructureInstance arm (task 3540 / SIR-α) ────
     // step-5: these tests call the *future* 3-arg signature
     // `value_type_kind_matches(value, ty, registry)`. They fail to compile
@@ -2212,10 +2321,14 @@ mod tests {
     // ── Engine structure_registry prelude population (task 3540 / step-11) ───
 
     /// `Engine::new()` must populate `structure_registry` from the prelude
-    /// modules. `Steel_AISI_1045` is a `structure def : ElasticMaterial` in
-    /// `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
-    /// it must be interned with its declared trait bound, default version 1,
+    /// modules. `Steel_AISI_1045` is a `structure def : DampedMaterial + Visual`
+    /// in `crates/reify-compiler/stdlib/materials_fea.ri`, so after construction
+    /// it must be interned with its DECLARED trait bounds, default version 1,
     /// and a declaration-order `field_layout`. Unknown names resolve to `None`.
+    ///
+    /// `declared_trait_bounds` is declared-only: `ElasticMaterial` is absent
+    /// from the vec after task α (#6877) even though the preset still satisfies
+    /// it transitively via `DampedMaterial : ElasticMaterial + Damped`.
     #[test]
     fn engine_new_populates_structure_registry_from_prelude() {
         use reify_test_support::mocks::MockConstraintChecker;
@@ -2234,8 +2347,8 @@ mod tests {
         );
         assert_eq!(
             meta.declared_trait_bounds,
-            vec!["ElasticMaterial".to_string(), "Visual".to_string()],
-            "structure def Steel_AISI_1045 : ElasticMaterial + Visual (Visual added by task γ #4762)"
+            vec!["DampedMaterial".to_string(), "Visual".to_string()],
+            "structure def Steel_AISI_1045 : DampedMaterial + Visual (Damped mixin added by task α #6877)"
         );
 
         // field_layout preserves materials_fea.ri declaration order.

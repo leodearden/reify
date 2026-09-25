@@ -39,13 +39,13 @@ mod common;
 /// helper's assertion message says so — always diagnose against the clean
 /// parent run first.
 ///
-/// The floor of 10 is today's selection (9 real tests + this one). It exists
+/// The floor of 13 is today's selection (12 real tests + this one). It exists
 /// because libtest exits 0 on a zero-match filter; with an empty filter that
 /// cannot happen today, but the floor also catches a test being deleted or
 /// moved out of this binary, which would silently shrink the proof.
 #[test]
 fn real_git_ops_helpers_survive_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env(&[""], 10);
+    common::git_env::replay_self_under_hook_git_env(&[""], 13);
 }
 
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.
@@ -316,6 +316,114 @@ fn last_commit_for_path_real_repo() {
         none.is_none(),
         "last_commit_for_path(\"never.rs\") must return None; got {:?}",
         none,
+    );
+}
+
+/// Pin that `RealGitOps::rename_target_for_path` resolves a real rename — and
+/// that it composes with `last_commit_for_path`, which is how the ζ inverse
+/// lane reaches it (the lane already holds the commit that last touched the
+/// cited path, and asks "did THAT commit rename it?").
+///
+/// This must be a real-git-repo test: a wrong argument form — omitting `-M`
+/// (so git reports the rename as an unrelated `D`/`A` pair), omitting
+/// `--format=` (so the commit header lines pollute the parse), or reading the
+/// wrong TAB field — would shell out perfectly happily, and `MockGitOps`,
+/// which returns whatever the test puts in, could never catch it.
+///
+/// Setup:
+///   - commit 1: add `old.rs` and `doomed.rs`
+///   - commit 2: `git mv old.rs sub/new.rs` (the rename commit)
+///   - commit 3: `git rm doomed.rs` (a genuine delete, for the fail-safe pin)
+///
+/// Assertions:
+///   - `last_commit_for_path("old.rs")` → `Some(c)` with `c.sha == rename sha`
+///     (the two seam calls compose: the lane's existing call hands this one its
+///     sha)
+///   - `rename_target_for_path("old.rs", rename_sha)` → `Some("sub/new.rs")`
+///   - fail-safe, all `None`:
+///     (a) a genuine delete commit queried for its deleted path
+///     (b) a bogus sha (`git show` exits non-zero with `fatal: bad object`)
+///     (c) a path present in the rename commit that is not its rename SOURCE
+///     (querying the rename TARGET must not match)
+#[test]
+fn rename_target_for_path_real_repo() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    // Commit 1: add old.rs (to be renamed) and doomed.rs (to be deleted).
+    write_file(root, "old.rs", "fn old() {}\n");
+    write_file(root, "doomed.rs", "fn doomed() {}\n");
+    git_commit(root, "add old.rs and doomed.rs");
+
+    // Commit 2: rename old.rs → sub/new.rs. `git mv` requires the destination
+    // directory to exist.
+    std::fs::create_dir_all(root.join("sub")).expect("create sub/");
+    git_run(root, &["mv", "old.rs", "sub/new.rs"]);
+    git_commit(root, "rename old.rs to sub/new.rs");
+    let rename_sha = rev_parse_head(root);
+
+    // Commit 3: genuine delete of an unrelated file.
+    git_run(root, &["rm", "doomed.rs"]);
+    git_commit(root, "delete doomed.rs");
+    let delete_sha = rev_parse_head(root);
+
+    let git = RealGitOps::new(root);
+
+    // The two seam calls compose: the commit the inverse lane already resolved
+    // for the cited path IS the rename commit.
+    let last = git.last_commit_for_path("old.rs");
+    assert!(
+        last.is_some(),
+        "last_commit_for_path(\"old.rs\") must return Some after the rename; got None"
+    );
+    assert_eq!(
+        last.as_ref().unwrap().sha,
+        rename_sha,
+        "last_commit_for_path(\"old.rs\") must resolve to the rename commit; got {:?} expected {}",
+        last,
+        rename_sha,
+    );
+
+    // Core assertion: the rename target is recovered from that commit.
+    let target = git.rename_target_for_path("old.rs", &rename_sha);
+    assert_eq!(
+        target,
+        Some("sub/new.rs".to_string()),
+        "rename_target_for_path(\"old.rs\", <rename sha>) must return the new path; got {:?}",
+        target,
+    );
+
+    // Fail-safe (a): a genuine delete commit has no `R` line → None, so the
+    // inverse lane keeps emitting task-cites-deleted-path.
+    let deleted = git.rename_target_for_path("doomed.rs", &delete_sha);
+    assert!(
+        deleted.is_none(),
+        "a genuine delete must not resolve a rename target; got {:?}",
+        deleted,
+    );
+
+    // Fail-safe (b): a bogus sha makes git exit non-zero (`fatal: bad object`),
+    // which run_or_warn turns into None — a git failure can never manufacture a
+    // renamed classification.
+    let bogus = git.rename_target_for_path(
+        "old.rs",
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    );
+    assert!(
+        bogus.is_none(),
+        "a bogus sha must return None; got {:?}",
+        bogus,
+    );
+
+    // Fail-safe (c): the rename TARGET appears in the rename commit's diff, but
+    // it is not the rename SOURCE — matching on it would invert the relation.
+    let target_as_source = git.rename_target_for_path("sub/new.rs", &rename_sha);
+    assert!(
+        target_as_source.is_none(),
+        "querying the rename TARGET as if it were the source must return None; got {:?}",
+        target_as_source,
     );
 }
 
@@ -645,5 +753,112 @@ fn changed_paths_in_commit_reports_both_sides_of_a_rename() {
          un-landed branch-tip leg has the identical false-refusal defect; got: {:?}",
         tip_sha,
         tip,
+    );
+}
+
+// -----------------------------------------------------------------------
+// The fallible gitignore seam: "not ignored" vs "could not tell"
+// -----------------------------------------------------------------------
+
+/// Pin that a gitignore probe git never answered is reported as `Err`, on the
+/// latched call as much as on the first.
+///
+/// A non-git tempdir is the fixture the two `cli.rs` breadcrumb tests already
+/// rely on: `git check-ignore` exits 128 there, which is neither 0 (ignored)
+/// nor 1 (not ignored).
+///
+/// The SECOND probe is the load-bearing assertion. `gitignore_unavailable` is
+/// a per-instance BREADCRUMB budget — it exists so N files against a broken
+/// repo emit one diagnostic rather than N. It is not a claim that the answer
+/// is known, so the short-circuit it guards must stay silent without becoming
+/// a silent `Ok(false)`: a latched call is still an unanswered question. Were
+/// it to answer `Ok(false)`, a task whose FIRST file latched the flag would
+/// arm the gate's advisory channel while every later file read as
+/// "answered: not ignored" — the exact fail-safe inversion this closes, one
+/// call later.
+///
+/// The third pair pins that the infallible seam is unchanged: every existing
+/// caller still sees `false`, and both `cli.rs` breadcrumb tests keep their
+/// exactly-one-breadcrumb expectation.
+#[test]
+fn try_is_gitignored_reports_an_unanswered_probe_as_err() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    // Deliberately NOT a git repo, and one instance so the latch is live.
+    let git = RealGitOps::new(root);
+
+    assert!(
+        git.try_is_gitignored("some/path.rs").is_err(),
+        "git did not answer, so the fallible seam must say so rather than \
+         collapsing to Ok(false)",
+    );
+    assert!(
+        git.try_is_gitignored("other/path.rs").is_err(),
+        "the latched short-circuit suppresses the repeated BREADCRUMB only — it \
+         must never downgrade an unanswered question to Ok(false)",
+    );
+
+    assert!(
+        !git.is_gitignored("some/path.rs"),
+        "the infallible seam keeps its fail-safe `false`, unchanged",
+    );
+    assert!(
+        !git.is_gitignored("other/path.rs"),
+        "the infallible seam keeps its fail-safe `false`, unchanged",
+    );
+}
+
+/// Pin that a `metadata.files` entry beginning with `-` is ANSWERED rather
+/// than poisoning the gitignore probe for the rest of the process.
+///
+/// `metadata.files` is hand-authored and nothing normalises it, so an entry
+/// like `--weird-file` reaches `git check-ignore` verbatim. Without an
+/// end-of-options `--` separator git parses it as an option and exits 129 —
+/// neither 0 (ignored) nor 1 (not ignored) — which latches `RealGitOps`'s
+/// per-instance breadcrumb budget and short-circuits EVERY later probe on that
+/// instance. The CLI constructs exactly one `RealGitOps` per invocation, so
+/// that latch is process-wide: `P5MetadataFilesGitignored` goes silent for the
+/// rest of the run, and at the pre-done gate the unfiltered entry stays in the
+/// declared set that a blocking refusal is built from.
+///
+/// The SECOND probe is the load-bearing assertion: it reads the latch's
+/// consequence through the public seam rather than the private `AtomicBool`,
+/// so it would still fail if the suppression were reintroduced by some other
+/// mechanism.
+///
+/// Asserted through the FALLIBLE seam because that is where `Ok(false)` and
+/// `Err` are distinguishable — the distinction the pre-done gate acts on. The
+/// infallible seam's `false`/`true` follows from these two by its
+/// `unwrap_or(false)` default, so it needs no test of its own.
+///
+/// Must be a real-git test: a mock returns whatever the fixture seeded, so it
+/// is structurally incapable of catching a defect in git's argv.
+#[test]
+fn try_is_gitignored_answers_for_a_leading_dash_path() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+    write_file(root, ".gitignore", "ignored.txt\n");
+    git_commit(root, "base commit");
+    write_file(root, "ignored.txt", "build artefact\n");
+
+    let git = RealGitOps::new(root);
+
+    assert_eq!(
+        git.try_is_gitignored("--weird-file"),
+        Ok(false),
+        "a declared entry beginning with `-` must reach git as a PATH — git RAN \
+         and answered \"not ignored\", rather than exiting 129 on an unknown \
+         option",
+    );
+    assert_eq!(
+        git.try_is_gitignored("ignored.txt"),
+        Ok(true),
+        "a genuinely-gitignored path must still be answered AFTER a \
+         leading-dash entry was probed — otherwise the first entry latched the \
+         instance and silenced every later probe. Also proves the Ok(false) \
+         above is not a constant",
     );
 }

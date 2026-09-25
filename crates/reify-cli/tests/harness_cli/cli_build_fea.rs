@@ -150,28 +150,14 @@ fn build_fea_violated_constraint_exits_nonzero() {
 /// why this test still sees INDETERMINATE + exit 0 here while `reify eval` on
 /// the same fixture reports VIOLATED + exit 1.  Assertions unchanged.
 ///
-/// WHAT HOLDS THE EXIT-0 CONTRACT CHANGED IN #5403 — read this before touching
-/// the assertions.
-///
-/// Before γ, this test passed because `reify check` gated on essentially
-/// nothing: an Error-severity diagnostic could not move its exit code at all.
-/// Post-γ it passes for a much narrower reason — `check_gating_error` gates on
-/// EVERY `Severity::Error` diagnostic in the merged set, and the ONLY Error
-/// this fixture produces is the trampoline one, which
-/// `CHECK_ERROR_EXIT_ALLOWLIST` entry #1 (cite #5311) excuses.
-///
-/// That makes this test the executable proof that the allowlist is LOAD-BEARING
-/// rather than dead code: delete entry #1 and this test goes red.
-///
-/// Hence the added stderr assertion. Without it, an engine-side change that
-/// stopped emitting the trampoline diagnostic would leave this test green while
-/// silently making entry #1 unreachable — and the entry would then look
-/// retirable when in fact nothing had been demoted.
-///
-/// BURN-DOWN NOTE: when #5311 demotes the diagnostic to `Severity::Warning` and
-/// #5404 removes the allowlist entry, THIS TEST STILL PASSES unchanged — a
-/// Warning never gates, and the stderr assertion only requires the text to be
-/// present, not its severity. So the burn-down needs no edit here.
+/// Note: stderr is NOT asserted clean here — check still surfaces the
+/// engine-owned trampoline diagnostic by design.  Its severity is no longer
+/// deferred: task 5311 landed the downgrade, so under `check` (whose compute
+/// registry is empty) the line is a `warning:`, while `reify eval` / `reify
+/// build` keep printing it as `error:`.  That contrast is pinned by
+/// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
+/// in `cli_check.rs`.  This test's own assertions are severity-blind (they
+/// match message TEXT) and are unaffected.
 #[test]
 fn check_fea_violated_constraint_is_not_gated() {
     let path = common::fixture_path("fea_cantilever_violated.ri");

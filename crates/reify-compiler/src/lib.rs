@@ -5,7 +5,6 @@
 #![allow(clippy::mutable_key_type)]
 
 mod ambient_defaults;
-mod analysis_signatures;
 mod annotations;
 mod arg_check;
 pub mod auto_type_param;
@@ -24,6 +23,7 @@ pub(crate) mod containment_graph;
 /// Re-export the shared forward-adjacency helper at the crate root so `reify-eval`
 /// can call it without knowing the private module layout.
 pub use containment_graph::sub_component_forward_adjacency;
+mod builtin_registry;
 mod builtin_signatures;
 mod datum_projection;
 mod diagnostics;
@@ -34,6 +34,7 @@ mod functions;
 mod geometry;
 mod geometry_boolean;
 mod geometry_curve;
+mod geometry_list;
 mod geometry_modify;
 pub mod geometry_traits;
 pub mod geometry_traits_inference;
@@ -46,7 +47,6 @@ mod joint_signatures;
 mod list_helpers;
 mod math_signatures;
 mod member_path;
-mod parse_signatures;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
 pub mod module_dag;
@@ -58,7 +58,6 @@ pub mod relation_signatures;
 mod scc;
 mod scope;
 pub mod si_units;
-mod signatures_common;
 pub mod stdlib_loader;
 pub(crate) mod stdlib_topo;
 mod termination;
@@ -68,6 +67,7 @@ mod type_compat;
 mod type_resolution;
 mod types;
 mod units;
+mod unresolved_function;
 mod variant_construct;
 
 pub use annotations::materialize::{
@@ -80,7 +80,6 @@ pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
 
 // Re-export submodule items for internal cross-module access via `use super::*;`
-pub(crate) use analysis_signatures::*;
 pub(crate) use annotations::*;
 pub(crate) use arg_check::*;
 pub(crate) use conformance::*;
@@ -94,6 +93,7 @@ pub(crate) use functions::*;
 pub(crate) use geometry::*;
 pub(crate) use geometry_boolean::*;
 pub(crate) use geometry_curve::*;
+pub(crate) use geometry_list::*;
 pub(crate) use geometry_modify::*;
 pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
@@ -102,7 +102,6 @@ pub(crate) use joint_signatures::*;
 pub(crate) use list_helpers::*;
 pub(crate) use math_signatures::*;
 pub(crate) use orientation_signatures::*;
-pub(crate) use parse_signatures::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
 pub(crate) use termination::*;
@@ -124,9 +123,15 @@ pub use units::{
     DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
     GEOMETRY_FUNCTION_NAMES, GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES,
     GEOMETRY_QUERY_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, UnitEntry, UnitRegistry,
-    UnitResolveError, geometry_query_result_type, resolve_unit_expr,
-    topology_selector_result_type,
+    UnitResolveError, WHOLE_HANDLE_GEOMETRY_QUERY_NAMES, geometry_query_result_type,
+    resolve_unit_expr, topology_selector_result_type,
 };
+/// Closed-world builtin-name membership oracle (task #5371).
+///
+/// `pub` so reify-lsp can gate an "unknown function" hint on the same oracle
+/// the compiler's `UnresolvedFunction` warning uses, instead of re-deriving
+/// the union of every builtin-name family.
+pub use unresolved_function::is_known_builtin;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -183,6 +188,44 @@ pub fn __infer_mul_div_result_for_parity_test(
     right: &reify_core::Type,
 ) -> Option<reify_core::Type> {
     type_compat::infer_mul_div_result(op, left, right)
+}
+
+/// Expose the compiler's single builtin-signature-registry entry point to the
+/// registry seam test without widening the compiler's public API.
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time. Gated behind `feature = "test-support"` (or
+/// `cfg(test)` for in-crate tests); not part of the released public API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α) — test-support-gated registry-seam shim,
+// consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the §7.3(2) family-arm swap's
+// type-preservation pin).
+pub fn __registry_result_type_for_test(
+    name: &str,
+    args: &[reify_core::Type],
+) -> Option<reify_core::Type> {
+    builtin_registry::registry_result_type(name, args)
+}
+
+/// Test shim over `builtin_registry::registry_owns` — the seam's cheap
+/// name-only precheck, which `expr.rs`'s ladder arm uses to guard the
+/// `Vec<Type>` argument projection.
+///
+/// Exists SEPARATELY from [`__registry_result_type_for_test`] because the
+/// guard's safety is the implication `!registry_owns(n)` ⇒
+/// `registry_result_type(n, _) == None`, and a test can only observe that
+/// implication if it can call both halves. Same `__`-prefix stability caveat.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α) — test-support-gated registry-seam shim,
+// consumed by tests/harness_builtin_registry/registry_seed_result_types.rs (the ladder
+// arm's cheap-miss guard pin).
+pub fn __registry_owns_for_test(name: &str) -> bool {
+    builtin_registry::registry_owns(name)
 }
 
 /// Compile a parsed module into a compiled module.
@@ -546,6 +589,7 @@ pub fn compile_with_prelude_context_checked_with_config(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.trait_refs,
+        &decl_refs.fn_refs,
     );
 
     // The merged prelude enum set, used BOTH to resolve enum-typed variant
@@ -726,6 +770,24 @@ pub fn compile_with_prelude_context_checked_with_config(
     // compute_module_hash (so the minted cells + refreshed template content_hashes
     // fold into the module hash — design decision 5).
     hoist_nested_selectors::phase_hoist_nested_selector_ctors(&mut compile_ctx);
+
+    // Report declared objectives that provably govern nothing (DIC γ, task
+    // #5417). Runs LAST among the template post-passes, which is what makes the
+    // rule safe: `phase_sub_override_autos` / `phase_connect_auto_params` have
+    // already minted the parent-scoped `Parent.sub`/`member` cells that prove a
+    // child objective is governing after all, and
+    // `phase_hoist_nested_selector_ctors` has already finished rewriting
+    // ValueRefs. Runs before `compute_module_hash` for consistency with the
+    // other post-passes; it mutates only `diagnostics`, so the hash is
+    // unaffected either way. Purposes are excluded structurally — the pass
+    // walks `ctx.templates` and never touches `CompiledPurpose.objective`.
+    //
+    // `prelude_refs` is passed for ONE reason: to name the imported templates
+    // the pass must refuse to judge, including the monomorph clones
+    // `phase_auto_type_param_resolution` pushed into `ctx.templates` above. It
+    // does NOT widen the override search — see `inert_objective_finding`'s
+    // obligation 0′.
+    compile_builder::post_passes::phase_inert_objective_check(&mut compile_ctx, prelude_refs);
 
     let content_hash =
         compile_builder::hash::compute_module_hash(&compile_ctx, parsed, &compiled_purposes);

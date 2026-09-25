@@ -10,11 +10,17 @@
 //! rather than rejecting them — see `make_loop_closure_record` for the
 //! per-entry shape. Open-chain mechanisms carry an empty list.
 //!
-//! On a `duplicate_solid` error the Map additionally carries `error`,
-//! `error_path1`, `error_path2`, and `error_message` fields (`error_path1`
-//! and `error_path2` are empty Lists for `duplicate_solid` — they were
-//! used by the v0.1 `closed_chain` error which is no longer emitted).
-//! See plan §"Mechanism Map shape".
+//! On a `duplicate_solid` or `world_parented_closure` error the Map
+//! additionally carries `error`, `error_path1`, `error_path2`, and
+//! `error_message` fields (`error_path1` and `error_path2` are empty Lists
+//! for both — they were used by the v0.1 `closed_chain` error which is no
+//! longer emitted). See plan §"Mechanism Map shape".
+//!
+//! `world_parented_closure` (task 7186) rejects a CLOSING edge whose
+//! `parent` is the world sentinel: such a closure has no joint on the
+//! closing side, so the loop-closure solver has no free variable to satisfy
+//! it. A plain OPEN edge parented to `world()` is the common case and is
+//! unaffected.
 //!
 //! Diagnostic emission via `EvalResult.diagnostics` is deferred to the
 //! snapshot/eval-pipeline integration (`DiagnosticCode::KinematicClosedChain`
@@ -260,6 +266,41 @@ fn identity_transform() -> Value {
     }
 }
 
+/// Encode a body `pose` as a synthetic 0-DOF rigid link:
+/// `Value::Map { "kind": "fixed", "origin": <pose> }`.
+///
+/// **Why this shape composes correctly through the unmodified chain
+/// machinery.** `joints.rs::transform_at` computes the per-kind motion
+/// first and then applies `origin ∘ motion` UNIFORMLY, once, outside every
+/// per-kind arm (PRD §7.2). The `fixed` arm's motion is the identity, so
+/// the link evaluates to exactly `origin ∘ I = pose`. Every existing chain
+/// consumer — `chain_transform`, `chain_jacobian_fd`,
+/// `loop_residual_jacobian_by_joint` — therefore consumes it with no
+/// signature change, and `extract_loop_closure_chains` resolves it to the
+/// 0-DOF sentinel without making it a solver free variable (see
+/// `is_zero_dof_joint`, loop_closure.rs).
+pub(crate) fn pose_link(pose: &Value) -> Value {
+    let mut m = BTreeMap::new();
+    m.insert(
+        Value::String("kind".to_string()),
+        Value::String("fixed".to_string()),
+    );
+    m.insert(Value::String("origin".to_string()), pose.clone());
+    Value::Map(m)
+}
+
+/// Structural equality against [`identity_transform`].
+///
+/// This is a SIZE OPTIMISATION, not a correctness gate: a semantically-
+/// identity pose that fails this structural test simply yields an identity
+/// rigid link, which composes to a no-op in the residual. Its only job is
+/// to keep the closure paths of the 3-/4-arg `body()` forms (whose pose
+/// defaults to `identity_transform()`) byte-identical to their pre-task-7186
+/// shapes.
+fn is_identity_pose(pose: &Value) -> bool {
+    pose == &identity_transform()
+}
+
 /// Build a body record `Value::Map` with the standard five-key layout:
 /// `at`, `id`, `parent`, `pose`, `solid` (alphabetical, matching `BTreeMap`
 /// iteration). Parallel to `make_joint`/`make_coupling` in `joints.rs`.
@@ -375,10 +416,80 @@ fn make_duplicate_solid_error(mech_map: &BTreeMap<Value, Value>, message: String
     Value::Map(new_map)
 }
 
+/// Decorate an existing Mechanism Map with `world_parented_closure` error
+/// fields. Direct analogy of [`make_duplicate_solid_error`] — same four-key
+/// decoration (`error`, `error_message`, empty-List `error_path1` /
+/// `error_path2`), same preserve-everything-else contract — stamped with this
+/// error's own discriminator rather than a second error vocabulary.
+///
+/// The sole caller is the world-parent guard in `append_body`'s
+/// parent-conflict branch; the WHY lives at that call site.
+///
+/// **The analogy stops short of the diagnostic seam (#7354).**
+/// `reify_eval::engine_eval::detect_mechanism_errors` hardcodes the
+/// `duplicate_solid` discriminator, so this error has no typed
+/// `DiagnosticCode`: a design that trips the guard gets the `error` key and an
+/// `undef` snapshot with nothing naming the cause. Wiring that is out of this
+/// crate's reach; `docs/reify-stdlib-reference.md` §13.2 states the gap for
+/// users.
+fn make_world_parented_closure_error(mech_map: &BTreeMap<Value, Value>, message: String) -> Value {
+    let mut new_map = mech_map.clone();
+    new_map.insert(
+        Value::String("error".to_string()),
+        Value::String("world_parented_closure".to_string()),
+    );
+    new_map.insert(
+        Value::String("error_message".to_string()),
+        Value::String(message),
+    );
+    new_map.insert(
+        Value::String("error_path1".to_string()),
+        Value::List(Vec::new()),
+    );
+    new_map.insert(
+        Value::String("error_path2".to_string()),
+        Value::List(Vec::new()),
+    );
+    Value::Map(new_map)
+}
+
 /// Build a single loop-closure record `Value::Map` with the five-key shape:
 /// `{ body_id, closing_joint, kind="loop_closure", path_a, path_b }`.
-/// Both paths are `[world, joint_0, ..., closing_joint]` (world sentinel
-/// prepended, both chains terminating at the closing joint).
+///
+/// Both paths carry the world sentinel at the head, but they do **not**
+/// share a terminator — the two shapes differ, and differ again by branch
+/// (task 7186 defect A):
+///
+/// * `path_a` is always `[world, joint_0, ..., closing_joint]`: the
+///   spanning-tree walk down to the shared pivot, terminating AT the
+///   closing joint.
+/// * `path_b`, on the **parent-conflict** branch, is
+///   `[world, joint_0, ..., parent]`: the walk that reaches the same pivot
+///   through the closing edge's `parent`. It terminates at `parent` and
+///   does **not** contain the closing joint at all — composing the closing
+///   joint on both sides conjugates the residual instead of cancelling
+///   (see the comment at the push site in `append_body`).
+/// * `path_b`, on the **cycle / self-loop** branch, retains its
+///   `[world, ..., at]` marker shape: `at` is appended so the closing node
+///   is visible twice (once mid-walk as an ancestor of `parent`, once at
+///   the tail). Its PRESENCE in `path_b` — not the duplication — is the
+///   classification signal `mechanism_loop_closure_chains` reads to emit
+///   `LoopClosureChain::Cycle`, and those chains are not solver-feedable in
+///   the first place. The same signal catches the parent-conflict ANCESTOR
+///   case, where `walk_to_world(parent)` passes through `at` and so puts the
+///   closing joint mid-walk with no trailing marker.
+///
+/// On the parent-conflict branch `path_b` — and ONLY `path_b` — may
+/// additionally carry ONE trailing synthetic 0-DOF rigid link
+/// `{ kind: "fixed", origin: <pose> }`. It encodes the single meaning of `pose` on a closing
+/// call: the closing edge is a rigid 0-DOF TIE from `parent` to `at`, so
+/// the residual is `T_tree(at) == T(parent) ∘ pose` and the offset belongs
+/// to the closing side alone. `path_a` is always joint-only. An identity
+/// pose contributes no link, so the 3-/4-arg `body()` forms leave both
+/// paths joint-only.
+///
+/// The closing joint is always available from the record's explicit
+/// `closing_joint` field, on every branch.
 fn make_loop_closure_record(
     body_id: i64,
     closing_joint: Value,
@@ -412,7 +523,11 @@ fn make_loop_closure_record(
 ///
 /// Duplicate-solid detection still produces an error Map (unchanged
 /// from v0.1). Closed-chain edges are now recorded as loop closures
-/// (v0.2 behaviour — no error emitted).
+/// (v0.2 behaviour — no error emitted), with ONE exception: a closing
+/// edge whose `parent` is the world sentinel produces a
+/// `world_parented_closure` error Map (task 7186 — see the guard's own
+/// comment in the parent-conflict branch for why rejection beats every
+/// softer remedy).
 fn append_body(
     mech_map: &BTreeMap<Value, Value>,
     solid: Value,
@@ -486,13 +601,93 @@ fn append_body(
     let skip_jp_insert = if let Some(existing_parent) = joint_parents.get(&at)
         && existing_parent != &parent
     {
+        // Reject a CLOSING edge parented to the world sentinel at build
+        // time, before any loop-closure record is built.
+        //
+        // Why this shape and no other: `path_b` below is
+        // `[world] ++ walk_to_world(joint_parents, parent)`, and
+        // `walk_to_world` returns an EMPTY vec iff `is_world(parent)` — it
+        // breaks before pushing only for the world sentinel, whereas a
+        // non-world parent with no recorded ancestor still yields `[parent]`.
+        // So `path_b == [world]` (len 1) IFF `is_world(&parent)`; the guard is
+        // exact and cannot over-reject (pinned by the negative control
+        // `non_world_parented_closing_edge_still_records`).
+        //
+        // Rejection, not repair. With `parent == world` chain_b holds no
+        // joints, so `free_b == []` for ANY bindings, and an empty `free_b`
+        // validates: `newton_solve` at n = 0 returns `NotConverged { x: [] }`,
+        // which snapshot.rs accepts on the same arm as `Converged`. Every
+        // softer remedy (admitting `[world]` in `strip_world_sentinel`, or
+        // padding `path_b` with an identity anchor) therefore trades a loud
+        // whole-mechanism `Undef` for a normal-looking Snapshot carrying an
+        // arbitrarily large unsatisfied closure — measured at 1.3 m on the
+        // 5-arg form, with no diagnostic. The solver varies only the CLOSING
+        // side's joints, so a world-parented closing edge (a GROUNDING
+        // constraint, whose candidate free variables all live on chain_a) is
+        // solvable only after a solver redesign, not here.
+        //
+        // Scope: this world-parent subcase alone, because it is decidable from
+        // the path shape. The general `free_b.is_empty()` case — every chain_b
+        // joint directly bound — is structurally identical but not statically
+        // decidable here; it is the verdict-integrity surface owned by #7185,
+        // and terminating `path_b` at the closing edge's `parent` makes it
+        // easier to reach than it was.
+        //
+        // The guard is inside the parent-conflict arm on purpose: a plain OPEN
+        // edge `body(m, s, j, world)` is the common case and is untouched.
+        if is_world(&parent) {
+            return make_world_parented_closure_error(
+                mech_map,
+                "closing edge parented to world(): a loop closure whose closing edge attaches \
+                 to world() has no joint on the closing side, so the loop-closure solver has \
+                 no free variable to satisfy it. Parent the closing edge to a joint on the \
+                 other branch of the loop instead."
+                    .to_string(),
+            );
+        }
+        // The two paths meet at the closing joint's OUTPUT frame, and every
+        // term appears on exactly ONE side:
+        //
+        //     path_a:  world → … → existing_parent → at     (spanning tree)
+        //     path_b:  world → … → parent → [pose]          (closing edge)
+        //     residual:  T_tree(at)  ==  T(parent) ∘ pose
+        //
+        // `at` is NOT appended to path_b. A term on both sides does not
+        // cancel: with `T_a = X·A` and `T_b = Y·A` the residual
+        // `log(inv(T_a)·T_b)` has zero set `inv(A)·inv(X)·Y·A = I ⟺ X = Y`,
+        // so `A` CONJUGATES the residual, relocating the closure from the
+        // closing joint's OUTPUT frame to its BASE frame — a whole link away
+        // (pivot C to pivot B on the Grashof 4-bar,
+        // examples/kinematic/relate_mounted_fourbar.ri), leaving a system
+        // with no exact zero for Newton to find. This asymmetric shape is the
+        // one the hand-built reference chains already use:
+        // reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs (B4) and
+        // reify-eval/tests/relate_mounted_joint_sweep_e2e.rs (B7). Pinned by
+        // `parent_conflict_path_b_omits_closing_joint`.
+        //
+        // `pose` has ONE meaning on a closing call: the closing edge is a
+        // rigid 0-DOF TIE `parent --pose--> at`. So it belongs to path_b
+        // alone, exactly once, at the tail — never decorating a joint
+        // mid-walk, and never on path_a, which is joint-only. A pose on
+        // path_a would equate a body-solid frame against a joint frame: the
+        // residual constrains JOINT frames, and the first-recorded body at
+        // `at` is in general a different body from the closing one, so where
+        // its solid sits says nothing about where the two joint frames must
+        // coincide. Pinned by `first_recorded_body_pose_stays_out_of_path_a`
+        // and `closing_body_pose_enters_path_b`.
+        //
+        // `snapshot::walk_fk` composes a parent-conflict closing body from
+        // `body.parent` so FK applies this same tie exactly once and lands on
+        // the frame the solve enforced.
         let world = make_world_sentinel();
         let mut path_a = vec![world.clone()];
         path_a.extend(walk_to_world(&joint_parents, existing_parent));
         path_a.push(at.clone());
         let mut path_b = vec![world];
         path_b.extend(walk_to_world(&joint_parents, &parent));
-        path_b.push(at.clone());
+        if !is_identity_pose(&pose) {
+            path_b.push(pose_link(&pose));
+        }
         let lc = make_loop_closure_record(next_id, at.clone(), path_a, path_b);
         loop_closures.push(lc);
         true // skip joint_parents.insert below
@@ -949,7 +1144,13 @@ mod tests {
     /// - `joint_parents.get(j_x) == Some(j_a)` (first-recorded edge wins)
     /// - `loop_closures` is a List with exactly one Map entry:
     ///   `kind="loop_closure"`, `body_id=Int(1)`, `closing_joint=j_x`,
-    ///   path_a=[world, j_a, j_x], path_b=[world, j_b, j_x]
+    ///   path_a=[world, j_a, j_x], path_b=[world, j_b]
+    ///
+    /// Task 7186 defect A: `path_b` used to be `[world, j_b, j_x]`. The
+    /// closing joint belongs to exactly one side of the loop — appending it
+    /// to both conjugates the residual rather than cancelling out of it (see
+    /// `parent_conflict_path_b_omits_closing_joint` and the push-site comment
+    /// in `append_body`). This expectation encoded the double count.
     #[test]
     fn parent_conflict_records_loop_closure_constraint() {
         // j_a, j_b distinct; j_x distinct again.
@@ -1059,8 +1260,644 @@ mod tests {
         );
         assert_eq!(
             lc.get(&Value::String("path_b".to_string())),
-            Some(&Value::List(vec![world.clone(), j_b.clone(), j_x.clone()])),
-            "path_b should be [world, j_b, j_x]"
+            Some(&Value::List(vec![world.clone(), j_b.clone()])),
+            "path_b should be [world, j_b] — the closing joint j_x is composed \
+             on path_a only (task 7186 defect A)"
+        );
+    }
+
+    // ── closing-joint composition: chain_b must NOT re-append it ─────────
+
+    /// **Task 7186 defect A.** The parent-conflict branch must append the
+    /// closing joint to `path_a` only — never to `path_b`.
+    ///
+    /// The residual the solver drives to zero is `log(inv(T_a) · T_b)`.
+    /// With the closing joint `A` appended to BOTH sides we get `T_a = X·A`
+    /// and `T_b = Y·A`, whose zero set is `inv(A)·inv(X)·Y·A = I ⟺ X = Y` —
+    /// so `A` does not cancel harmlessly, it CONJUGATES the residual and
+    /// relocates the closure from the closing joint's OUTPUT frame to its
+    /// BASE frame. For the Grashof 4-bar that relocation makes the loop
+    /// infeasible by 1.045 mm (see
+    /// `snapshot_grashof_fourbar_converges_to_analytic_closure`).
+    ///
+    /// The correct, asymmetric shape is already the one the in-tree
+    /// hand-built reference chains use —
+    /// `reify-eval/tests/relate_mounted_joint_sweep_e2e.rs` (B7) and
+    /// `reify-eval-fea-tests/tests/closed_chain_idyn_e2e.rs` (B4) both feed
+    /// `chain_a = [.., closing_joint]` against a `chain_b` that stops at the
+    /// closing edge's `parent`.
+    ///
+    /// Fixture is the parent-conflict shape of
+    /// `parent_conflict_records_loop_closure_constraint`: `j_x → j_a` from
+    /// call 1, then the closing `body(m, solidB, j_x, j_b)`.
+    #[test]
+    fn parent_conflict_path_b_omits_closing_joint() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+
+        let map = match m2 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+        let loop_closures = match map.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(lc)) => lc,
+            other => panic!("expected loop_closures List, got {:?}", other),
+        };
+        assert_eq!(
+            loop_closures.len(),
+            1,
+            "exactly one loop-closure entry expected"
+        );
+        let lc = match &loop_closures[0] {
+            Value::Map(m) => m,
+            other => panic!("expected loop_closure Map, got {:?}", other),
+        };
+
+        let world = eval_builtin("world", &[]);
+        // chain_a still terminates at the closing joint — it reaches the
+        // shared pivot through the spanning tree.
+        assert_eq!(
+            lc.get(&Value::String("path_a".to_string())),
+            Some(&Value::List(vec![world.clone(), j_a.clone(), j_x.clone()])),
+            "path_a must still be [world, j_a, j_x] (unchanged)"
+        );
+        // chain_b reaches the SAME pivot through `parent` and must stop
+        // there: the closing joint's transform belongs to exactly one side.
+        assert_eq!(
+            lc.get(&Value::String("path_b".to_string())),
+            Some(&Value::List(vec![world.clone(), j_b.clone()])),
+            "path_b must be [world, j_b] — the closing joint must NOT be re-appended"
+        );
+        // The record's explicit closing_joint field is unaffected: consumers
+        // that need the closing joint read it from here, not from chain_b.last().
+        assert_eq!(
+            lc.get(&Value::String("closing_joint".to_string())),
+            Some(&j_x),
+            "closing_joint field is unchanged by the path-shape fix"
+        );
+    }
+
+    // ── closing body pose enters the closure path (task 7186 defect B) ───
+
+    /// The synthetic 0-DOF rigid link's SHAPE contract, pinned literally in
+    /// exactly one place. Every other site — in this module and in
+    /// `loop_closure.rs`'s tests — calls `pose_link` itself, so a shape change
+    /// fails here (loudly, against the spelled-out Map) instead of silently
+    /// agreeing with itself everywhere.
+    ///
+    /// `kind = "fixed"` is what makes the link compose correctly and stay out
+    /// of `free_b`: `joints.rs::transform_at` applies `origin ∘ motion` outside
+    /// every per-kind arm and the fixed arm's motion is the identity, so the
+    /// link evaluates to exactly `origin`.
+    #[test]
+    fn pose_link_is_a_fixed_kind_map_carrying_the_pose_as_origin() {
+        let pose = pose_translate_1mm_x();
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            Value::String("kind".to_string()),
+            Value::String("fixed".to_string()),
+        );
+        expected.insert(Value::String("origin".to_string()), pose.clone());
+        assert_eq!(
+            super::pose_link(&pose),
+            Value::Map(expected),
+            "pose_link must emit exactly {{ kind: \"fixed\", origin: <pose> }}"
+        );
+    }
+
+    /// Pull the single loop-closure record's (path_a, path_b) out of a
+    /// Mechanism Map.
+    fn only_closure_paths(m: &Value) -> (Value, Value) {
+        let map = match m {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+        assert!(
+            !map.contains_key(&Value::String("error".to_string())),
+            "fixture should not produce an errored mechanism"
+        );
+        let lcs = match map.get(&Value::String("loop_closures".to_string())) {
+            Some(Value::List(lc)) => lc,
+            other => panic!("expected loop_closures List, got {:?}", other),
+        };
+        assert_eq!(lcs.len(), 1, "exactly one loop-closure entry expected");
+        let lc = match &lcs[0] {
+            Value::Map(m) => m,
+            other => panic!("expected loop_closure Map, got {:?}", other),
+        };
+        (
+            lc.get(&Value::String("path_a".to_string()))
+                .expect("path_a")
+                .clone(),
+            lc.get(&Value::String("path_b".to_string()))
+                .expect("path_b")
+                .clone(),
+        )
+    }
+
+    /// **Task 7186 defect B.** A body's `pose` — the rigid-link offset
+    /// between the joint frame and the body — is written into every body
+    /// record but reaches only `walk_fk`; it never enters the closure
+    /// residual. A rigid platform carried by several joints at different
+    /// pivots is therefore inexpressible.
+    ///
+    /// The fix encodes the CLOSING call's own pose as a synthetic 0-DOF
+    /// rigid link at `path_b`'s tail — the transform of the rigid tie
+    /// `parent --pose--> at`, giving the residual
+    /// `T_tree(at) == T(parent) ∘ pose`. `path_a` stays joint-only
+    /// (pinned by `first_recorded_body_pose_stays_out_of_path_a`).
+    ///
+    /// The pose lands at the path TERMINAL, never interleaved after each
+    /// joint: it is the transform of ONE edge — the closing one — not a
+    /// decoration of every joint along the walk.
+    #[test]
+    fn closing_body_pose_enters_path_b() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+        let pose = pose_translate_1mm_x();
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
+        );
+        // Closing edge via the 5-arg form: the pose is the rigid offset
+        // between the two attachment frames of the loop.
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+                pose.clone(),
+            ],
+        );
+
+        let (path_a, path_b) = only_closure_paths(&m2);
+        // The PIN that stops the path_a pose-link deletion from
+        // over-reaching: the closing call's OWN pose on path_b is the correct
+        // half and must survive it — that link is the transform of the rigid
+        // 0-DOF tie `parent --pose--> at` the residual encodes.
+        assert_eq!(
+            path_b,
+            Value::List(vec![world.clone(), j_b.clone(), super::pose_link(&pose)]),
+            "path_b must carry the closing call's own pose as a trailing 0-DOF link"
+        );
+        assert_eq!(
+            path_a,
+            Value::List(vec![world.clone(), j_a.clone(), j_x.clone()]),
+            "path_a is joint-only — it never carries a pose link, whatever the \
+             recorded bodies' poses are"
+        );
+    }
+
+    /// Identity-pose omission rule: the 3-/4-arg `body()` forms default
+    /// `pose` to `identity_transform()`, and an identity pose adds no link.
+    /// The paths must stay byte-identical to the poseless shapes.
+    ///
+    /// This is a size optimisation, not a correctness gate — an identity
+    /// pose that failed the structural test would simply contribute an
+    /// identity link, which composes to a no-op.
+    #[test]
+    fn identity_body_pose_leaves_closure_paths_unchanged() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+            ],
+        );
+        // 4-arg closing form (pose defaults to identity).
+        let four = eval_builtin(
+            "body",
+            &[
+                m1.clone(),
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+        // 5-arg closing form with an EXPLICIT identity pose.
+        let five = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+                identity_transform_value(),
+            ],
+        );
+
+        let expect_a = Value::List(vec![world.clone(), j_a.clone(), j_x.clone()]);
+        let expect_b = Value::List(vec![world.clone(), j_b.clone()]);
+        for (label, m) in [("4-arg", &four), ("5-arg identity", &five)] {
+            let (path_a, path_b) = only_closure_paths(m);
+            assert_eq!(path_a, expect_a, "{label}: path_a must be unchanged");
+            assert_eq!(path_b, expect_b, "{label}: path_b must be unchanged");
+        }
+    }
+
+    /// The FIRST-recorded body's pose must stay OUT of `path_a`: `path_a` is
+    /// joint-only, and `pose` on a closing call belongs to the closing side
+    /// alone.
+    ///
+    /// Why the link never belonged there. The residual constrains JOINT
+    /// frames: `path_a` descends the spanning tree and terminates at the
+    /// closing joint's OUTPUT frame. `first_body_pose(&bodies, &at)` returns
+    /// the pose of the FIRST-RECORDED body at `at` — in general a DIFFERENT
+    /// body from the closing one (in the `p4_platform` fixture it is "post2",
+    /// not "closing"). That pose places THAT body's own solid; where a third
+    /// body's solid sits has no bearing on where the two joint frames must
+    /// coincide. Composing it made chain_a's terminal a body-solid frame
+    /// while chain_b's terminal is a joint frame plus an edge offset — two
+    /// different things equated. It was inert in-tree only because every
+    /// fixture's first-recorded body carries the default identity pose.
+    ///
+    /// The single meaning that replaces it: a closing edge is a rigid 0-DOF
+    /// TIE from `parent` to `at` whose transform is the CLOSING call's own
+    /// `pose`, so the residual is `T_tree(at) == T(parent) ∘ pose` — one
+    /// pose, on `path_b`, and none on `path_a`.
+    #[test]
+    fn first_recorded_body_pose_stays_out_of_path_a() {
+        let j_a = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j_b = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let j_x = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+        let pose = pose_translate_1mm_x();
+
+        let m0 = eval_builtin("mechanism", &[]);
+        // First-recorded body at j_x carries a NON-identity pose — the case
+        // that previously leaked a rigid link onto path_a.
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j_x.clone(),
+                j_a.clone(),
+                pose,
+            ],
+        );
+        // Closing edge with the default identity pose.
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidD".to_string()),
+                j_x.clone(),
+                j_b.clone(),
+            ],
+        );
+
+        let (path_a, path_b) = only_closure_paths(&m2);
+        assert_eq!(
+            path_a,
+            Value::List(vec![world.clone(), j_a, j_x]),
+            "path_a must be joint-only — the first-recorded body's pose places a \
+             DIFFERENT body's solid and must not enter the joint-frame residual"
+        );
+        assert_eq!(
+            path_b,
+            Value::List(vec![world, j_b]),
+            "path_b is unchanged — the closing call's own pose is identity here"
+        );
+    }
+
+    // ── world-parented closing edge is rejected ──────────────────────────
+
+    /// Build the three-call shape whose closing edge is parented to
+    /// `world()`:
+    ///
+    /// ```text
+    /// body(m0, solidA, j1, world)   → joint_parents: j1 → world
+    /// body(m1, solidB, j2, j1)      → joint_parents: j2 → j1
+    /// body(m2, solidC, j2, world)   → parent conflict: j2 already → j1
+    /// ```
+    ///
+    /// The third call takes `append_body`'s parent-conflict branch with
+    /// `parent == world`, which is the rejected shape. `pose` selects the
+    /// 4-arg (`None` → identity) or 5-arg (`Some(p)`) closing form.
+    fn world_parented_closure_fixture(pose: Option<Value>) -> Value {
+        let j1 = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j2 = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j1.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[m1, Value::String("solidB".to_string()), j2.clone(), j1],
+        );
+        let mut args = vec![m2, Value::String("solidC".to_string()), j2, world];
+        if let Some(p) = pose {
+            args.push(p);
+        }
+        eval_builtin("body", &args)
+    }
+
+    /// Assert `m` is the mechanism error Map for a world-parented closing
+    /// edge — the same four-key decoration `make_duplicate_solid_error`
+    /// produces (`error`, `error_message`, empty-List `error_path1` /
+    /// `error_path2`), stamped with this error's own discriminator.
+    fn assert_world_parented_closure_error(m: &Value) {
+        let map = match m {
+            Value::Map(m) => m,
+            other => panic!("expected errored Mechanism Map, got {:?}", other),
+        };
+        assert_eq!(
+            map.get(&Value::String("kind".to_string())),
+            Some(&Value::String("mechanism".to_string())),
+            "the error Map decorates the mechanism in place, keeping kind='mechanism'"
+        );
+        assert_eq!(
+            map.get(&Value::String("error".to_string())),
+            Some(&Value::String("world_parented_closure".to_string())),
+            "error field should be 'world_parented_closure'"
+        );
+        match map.get(&Value::String("error_message".to_string())) {
+            Some(Value::String(s)) => {
+                assert!(!s.is_empty(), "error_message should be non-empty");
+                // `world()` names the API surface the user must change, so it
+                // is a contract. The rest of the wording is not: asserting on
+                // it would pin prose, reddening on a reword that says the same
+                // thing better. The behavioural discriminator is the typed
+                // `error` field above.
+                assert!(
+                    s.contains("world()"),
+                    "error_message must name the world-parented closing edge, got {:?}",
+                    s
+                );
+            }
+            other => panic!("expected error_message String, got {:?}", other),
+        }
+        assert_eq!(
+            map.get(&Value::String("error_path1".to_string())),
+            Some(&Value::List(vec![])),
+            "error_path1 is an empty List (v0.1 error-Map shape uniformity)"
+        );
+        assert_eq!(
+            map.get(&Value::String("error_path2".to_string())),
+            Some(&Value::List(vec![])),
+            "error_path2 is an empty List (v0.1 error-Map shape uniformity)"
+        );
+    }
+
+    /// (a) A closing edge parented to `world()`
+    /// must be rejected at BUILD time with a loud, actionable error Map.
+    ///
+    /// Why this is this task's to close: `path_b` is
+    /// `[world] ++ walk_to_world(joint_parents, parent)`, and `walk_to_world`
+    /// returns an EMPTY vec iff `is_world(parent)` (it breaks before pushing
+    /// only for the world sentinel; a non-world parent with no recorded
+    /// ancestor still yields `[parent]`). So `path_b == [world]` (len 1) iff
+    /// the closing edge's `parent` is the world sentinel. Both
+    /// `strip_world_sentinel` impls reject `len < 2`, so
+    /// `extract_loop_closure_chains` returns None and snapshot.rs maps that
+    /// to `Value::Undef` for the WHOLE mechanism, with no diagnostic. Before
+    /// terminating `path_b` at the closing edge's `parent`, this was unreachable
+    /// (`path_b` always ended with `at`), so it is a failure mode this task
+    /// introduced.
+    ///
+    /// Measured on this exact fixture before the fix: `path_a.len() == 3`,
+    /// `path_b.len() == 1` (`[world]` only), `snapshot(...) == Undef`.
+    ///
+    /// Why rejection and not repair: with `parent == world`, chain_b holds
+    /// NO joints, so `free_b == []` for any bindings — see
+    /// `world_parented_closing_edge_with_pose_is_rejected` for the measured
+    /// silent-wrong-answer that softer remedies produce.
+    #[test]
+    fn world_parented_closing_edge_is_rejected() {
+        let errored = world_parented_closure_fixture(None);
+        assert_world_parented_closure_error(&errored);
+
+        // Propagation: the error must not be swallowed downstream. `body()`
+        // returns an errored Mechanism Map verbatim (its generic `error`-key
+        // short-circuit), and `snapshot()` on an errored mechanism is Undef
+        // rather than a partial Snapshot of the pre-error bodies.
+        let j3 = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let propagated = eval_builtin(
+            "body",
+            &[
+                errored.clone(),
+                Value::String("solidD".to_string()),
+                j3,
+                eval_builtin("world", &[]),
+            ],
+        );
+        assert_eq!(
+            propagated, errored,
+            "a subsequent body() call on the errored mechanism returns it verbatim"
+        );
+        assert!(
+            eval_builtin("snapshot", &[errored.clone(), Value::List(vec![])]).is_undef(),
+            "snapshot() of the errored mechanism must be Undef, not a normal Snapshot Map"
+        );
+        assert!(
+            eval_builtin(
+                "body_id_of",
+                &[errored, Value::String("solidA".to_string())],
+            )
+            .is_undef(),
+            "body_id_of() on the errored mechanism must be Undef"
+        );
+    }
+
+    /// (b) The 5-arg closing form of the same
+    /// shape must be rejected identically. This is the case that is strictly
+    /// WORSE than the 4-arg `Undef`: a non-identity `pose` appends a
+    /// synthetic 0-DOF rigid link, so `path_b == [world, fixed]` (len 2)
+    /// clears `strip_world_sentinel` and the mechanism reports a normal,
+    /// plausible-looking Snapshot carrying an unsatisfied closure.
+    ///
+    /// Measured on this exact fixture (`pose = translate(0.2m, 0, 0)`,
+    /// `j1` bound to 0.5 m) before the fix: `path_b.len() == 2`, snapshot
+    /// NOT Undef, `free_values == [[]]`, bodies at 0.5 / 1.5 / 1.7 m, and a
+    /// direct residual probe gives `T_a = (1.5, 0, 0)`, `T_b = (0.2, 0, 0)`,
+    /// residual twist `[0, 0, 0, -1.3, 0, 0]` — a 1.3 m unsatisfied closure
+    /// returned as a normal Snapshot Map with no diagnostic. That is the
+    /// silent-wrong-answer this rejection closes.
+    #[test]
+    fn world_parented_closing_edge_with_pose_is_rejected() {
+        let pose = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(0.2),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+        };
+        let errored = world_parented_closure_fixture(Some(pose));
+        assert_world_parented_closure_error(&errored);
+        assert!(
+            eval_builtin("snapshot", &[errored, Value::List(vec![])]).is_undef(),
+            "snapshot() of the errored mechanism must be Undef — not the 0.5/1.5/1.7 m \
+             bodies carrying a 1.3 m unsatisfied closure"
+        );
+    }
+
+    /// (c) The negative control that pins the
+    /// rejection's exact boundary: a closing edge whose `parent` is a REAL
+    /// joint with no recorded ancestor still records a loop closure and is
+    /// NOT rejected. `walk_to_world` pushes such a parent (it stops only at
+    /// the world sentinel), so `path_b == [world, parent]` — len 2, which
+    /// clears `strip_world_sentinel`, and chain_b carries one real joint so
+    /// `free_b` is non-empty and the closure is solvable.
+    ///
+    /// This must PASS both before and after the world-parent guard: it is the
+    /// assertion that stops the BUILDER's `is_world(parent)` rejection from
+    /// being widened into "parent has no recorded ancestor", which would
+    /// over-reject.
+    ///
+    /// snapshot.rs's FK base-frame arm keeps the two shapes SEPARATE, and
+    /// deliberately so: a world parent contributes a bare identity, while an
+    /// unregistered real joint is rooted at the identity and then composes
+    /// its OWN `transform_at` — matching `chain_transform`, whose chain_b
+    /// terminal for `[parent]` is `T(parent)`, not `I`. Collapsing them into
+    /// one arm is what shipped a 1.1 m mis-placement; see
+    /// `snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame`.
+    ///
+    /// SCOPE OF THIS TEST: it pins the BUILDER contract (records, is not
+    /// rejected) plus liveness of the snapshot. It deliberately does NOT pin
+    /// geometry — its `j3` is a revolute whose midpoint rotation makes the
+    /// loop infeasible, so the free variable converges to 0 and a base-frame
+    /// error is numerically invisible here. The geometry is pinned by the
+    /// feasible all-prismatic fixture in snapshot.rs named above; keep the
+    /// two in step.
+    #[test]
+    fn non_world_parented_closing_edge_still_records() {
+        let j1 = eval_builtin("prismatic", &[axis_x_unit(), length_range_0_to_1m()]);
+        let j2 = eval_builtin("prismatic", &[axis_y_unit(), length_range_0_to_1m()]);
+        // j3 is never used as an `at`, so joint_parents records no ancestor
+        // for it — the boundary case one step away from the world sentinel.
+        let j3 = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let world = eval_builtin("world", &[]);
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin(
+            "body",
+            &[
+                m0,
+                Value::String("solidA".to_string()),
+                j1.clone(),
+                world.clone(),
+            ],
+        );
+        let m2 = eval_builtin(
+            "body",
+            &[
+                m1,
+                Value::String("solidB".to_string()),
+                j2.clone(),
+                j1.clone(),
+            ],
+        );
+        let m3 = eval_builtin(
+            "body",
+            &[
+                m2,
+                Value::String("solidC".to_string()),
+                j2.clone(),
+                j3.clone(),
+            ],
+        );
+
+        let map = match &m3 {
+            Value::Map(m) => m,
+            other => panic!("expected Mechanism Map, got {:?}", other),
+        };
+        assert!(
+            !map.contains_key(&Value::String("error".to_string())),
+            "a closing edge parented to a real joint must NOT be rejected, got {:?}",
+            map.get(&Value::String("error".to_string()))
+        );
+        let (path_a, path_b) = only_closure_paths(&m3);
+        assert_eq!(
+            path_a,
+            Value::List(vec![world.clone(), j1, j2]),
+            "path_a is the spanning-tree walk down to the closing joint"
+        );
+        assert_eq!(
+            path_b,
+            Value::List(vec![world, j3]),
+            "path_b is [world, parent] — len 2, so strip_world_sentinel accepts it"
+        );
+
+        // The claim above is "NOT rejected AND solvable", so assert the
+        // second half too — a build that records the closure but whose
+        // `snapshot()` is `Undef` is the same silent whole-mechanism failure
+        // the world-parent guard exists to eliminate, just moved one step past
+        // the boundary it pins.
+        //
+        // LIVENESS ONLY — read "solvable" here as "not Undef", nothing more.
+        // This assertion cannot see WHERE the bodies land — a 1.1 m
+        // mis-placement once shipped green past this very test. The
+        // placement is pinned separately by
+        // `snapshot_closing_edge_on_unregistered_parent_rides_that_parent_frame`
+        // (snapshot.rs), on a feasible fixture where it is observable.
+        //
+        // This is what caught the regression: `walk_fk`'s closing-body arm
+        // routed `body.parent` through `joint_world_transform`, whose leading
+        // `joint_parents.get(joint)?` returns None for an UNREGISTERED parent
+        // such as `j3` — turning the whole snapshot Undef. The residual side
+        // roots the same unregistered parent at the identity (`walk_to_world`
+        // stops at it, `chain_transform` accumulates from identity), so FK now
+        // degrades identically. See the `!joint_parents.contains_key(p)` arm
+        // in snapshot.rs.
+        assert!(
+            !eval_builtin("snapshot", &[m3, Value::List(vec![])]).is_undef(),
+            "a recorded, non-rejected closure must still produce a snapshot — FK must root \
+             an unregistered closing parent at the identity, exactly as chain_transform does"
         );
     }
 

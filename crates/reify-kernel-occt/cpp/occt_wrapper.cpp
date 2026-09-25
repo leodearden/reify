@@ -7,9 +7,11 @@
 
 // stdlib
 #include <algorithm>
+#include <functional>
 #include <numeric>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 // OCCT primitives
@@ -28,6 +30,8 @@
 #include <BRepAlgoAPI_Common.hxx>
 
 // OCCT fillet / chamfer
+#include <BRepTools_History.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <TopExp.hxx>
@@ -144,6 +148,39 @@
 #include <StepData_StepModel.hxx>
 #include <Interface_Static.hxx>
 #include <Standard_Failure.hxx>
+
+// OCCT STEP model introspection — the plane-angle unit refusal guard (#6344)
+// walks the transferred `Interface_InterfaceModel` entity by entity and
+// classifies every angular unit it finds. WHICH spellings it has to unwrap,
+// and why omitting one is SILENT rather than loud, is documented on the two
+// functions that downcast to these types: `step_unit_assigned_context` for
+// the representation-context spellings, `classify_step_angle_unit` for the
+// unit spellings.
+#include <Interface_InterfaceModel.hxx>
+#include <StepRepr_GlobalUnitAssignedContext.hxx>
+#include <StepRepr_RepresentationContext.hxx>
+#include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
+#include <StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext.hxx>
+// The unit-FREE representation-context spellings. They are never downcast to;
+// they are the V5 allow-list, and `step_context_carries_no_units` explains why
+// naming them exhaustively is what turns an unknown fourth spelling from a
+// silent skip into a refusal.
+#include <StepGeom_GeometricRepresentationContext.hxx>
+#include <StepGeom_GeometricRepresentationContextAndParametricRepresentationContext.hxx>
+#include <StepRepr_GlobalUncertaintyAssignedContext.hxx>
+#include <StepRepr_ParametricRepresentationContext.hxx>
+#include <StepBasic_NamedUnit.hxx>
+#include <StepBasic_SiUnit.hxx>
+#include <StepBasic_SiUnitName.hxx>
+#include <StepBasic_SiPrefix.hxx>
+#include <StepBasic_PlaneAngleUnit.hxx>
+#include <StepBasic_SiUnitAndPlaneAngleUnit.hxx>
+#include <StepBasic_ConversionBasedUnitAndPlaneAngleUnit.hxx>
+#include <StepBasic_MeasureWithUnit.hxx>
+#include <StepBasic_MeasureValueMember.hxx>
+#include <StepBasic_Unit.hxx>
+#include <TCollection_HAsciiString.hxx>
+#include <StepBasic_HArray1OfNamedUnit.hxx>
 
 // OCCT local surface properties (curvature via GeomLProp_SLProps)
 #include <GeomLProp_SLProps.hxx>
@@ -334,6 +371,115 @@ static TopoDS_Wire require_wire(const TopoDS_Shape& shape, const char* role) {
             + topabs_name(shape.ShapeType()) + "'; it must be a Wire");
     }
     return TopoDS::Wire(shape);
+}
+
+/// True when `s` carries no topology at all: a null shape, or a compound with
+/// no children.
+///
+/// EXACTNESS. A shape carries no topology exactly when it is null, or when it
+/// is a compound whose members are — recursively — all empty. Every other
+/// shape type (compsolid, solid, shell, face, wire, edge, vertex) IS a
+/// topological entity by construction, however degenerate its geometry. No
+/// tolerance and no threshold are involved.
+///
+/// DO NOT reduce this to "has no vertices". That test looks equivalent and is
+/// not: UNBOUNDED IS NOT EMPTY. `make_half_space` builds its solid from a bare
+/// `gp_Pln`, i.e. an unbounded face with zero wires (see the note on
+/// `section_profile_to_wire` above), so a bare `half_space(...)` is a solid
+/// with one face, no edges and NO VERTICES. A vertex test calls that empty and
+/// refuses to export it — measured 2026-09-10 as
+/// `reify-eval::half_space_e2e::bare_half_space_is_constructible` failing with
+/// "export error: ... shape to export is empty".
+///
+/// WHY A DEDICATED PREDICATE. `BRepAlgoAPI_Common` on disjoint operands (and
+/// `BRepAlgoAPI_Cut` whose tool fully consumes its target) reports
+/// `IsDone() == true` and hands back an EMPTY `TopoDS_Compound`. Such a
+/// compound is NOT `IsNull()`, so `get_shape`'s null check
+/// (`reify-kernel-occt/src/lib.rs:854`, via the `shape_is_null` entry point
+/// defined in this file) is blind to it.
+///
+/// USED ONLY AS A CONSUMER PRECONDITION, NEVER AS A BOOLEAN POSTCONDITION.
+/// An empty boolean result is a LEGAL kernel value: `examples/tolerancing/
+/// gdt_oracle_inside.ri` designs on one (an empty cut IS the "inside" verdict,
+/// and `volume()` of it is 0.0), and
+/// `harness_occt::boolean_result_normalization_integration::
+/// empty_boolean_results_stay_untouched_compounds` gates exactly that. Only
+/// the consumers that cannot mint an artifact from nothing reject it.
+static bool shape_has_no_topology(const TopoDS_Shape& s) {
+    if (s.IsNull()) {
+        return true;
+    }
+    if (s.ShapeType() != TopAbs_COMPOUND) {
+        return false;
+    }
+    for (TopoDS_Iterator it(s); it.More(); it.Next()) {
+        if (!shape_has_no_topology(it.Value())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// PRECONDITION: reject an input shape that carries no topology, naming the
+/// argument `role` as the DSL author wrote it (e.g. "profile") — the same
+/// convention `require_wire` above uses.
+///
+/// Per the `ContractViolation` contract, the message must NOT repeat the op
+/// name: `wrap_occt_call` already prefixes it, yielding "<op>: <message>".
+///
+/// CALL SITES — the ops that MINT A BODY FROM A PROFILE and cannot mint one
+/// from nothing, nine in all:
+///   `make_prism`, `make_prism_with_history`, `make_prism_infinite`,
+///   `make_revolve`, `make_revolve_with_history`,
+///   `make_pipe`, `make_pipe_with_history`,
+///   `loft_profiles`, `make_loft_with_history`.
+/// At the two loft entry points the check runs PER PROFILE inside the existing
+/// loop, after the "requires at least 2 profiles" count check, so a caller who
+/// passed one profile still gets the diagnostic naming their actual mistake.
+///
+/// …plus a tenth site of a different kind: `export_step`, the LAST line of
+/// defence. A design whose whole product geometry collapsed reaches export
+/// even when no sweep was involved, and an empty STEP file is a phantom
+/// artifact — header-only bytes with a success exit. Its blast radius is
+/// bounded and measured: the build pipeline COMPOUNDS every product body
+/// before exporting (`engine_build.rs` Phase-B, :4996-5010), and a compound
+/// holding any real solid has topology, so this guard cannot fire on an empty
+/// body sitting alongside real ones. Only "the whole product collapsed"
+/// reaches it — pinned by
+/// `harness_occt::empty_shape_consumer_guard_integration::
+/// export_step_of_a_compound_holding_an_empty_member_still_succeeds`.
+///
+/// DELIBERATELY NOT CALLED, each for a stated reason — this list is the
+/// boundary of the invariant, so a reader does not have to re-derive it:
+///   * the booleans (`boolean_fuse` / `_cut` / `_common` and their
+///     with-history siblings): an empty result is a LEGAL value per the
+///     2026-09-08 ruling, and `empty_boolean_results_stay_untouched_compounds`
+///     gates it;
+///   * `fuse_shape_list`: a pure union over an already-non-empty list, on the
+///     hot pattern-realizer path — the branch would be dead;
+///   * the mass-property queries (`volume`, `area`, centroid, inertia): an
+///     empty shape's 0.0 IS the answer the GD&T oracle reads;
+///   * tessellation: an empty mesh is an honest rendering of an empty shape;
+///   * the transforms: empty in, empty out — the emptiness survives intact to
+///     whichever real consumer comes next, which is where it is diagnosed;
+///   * `fillet` / `chamfer`: already refused by the `BRepKind::Solid` gate task
+///     7054 added, since an empty result classifies as `Compound`;
+///   * `make_pipe_shell` and `loft_guided_profiles`: COVERED ELSEWHERE, not
+///     overlooked. Both route their profile through `section_profile_to_wire`
+///     above, whose default arm already rejects an empty compound as
+///     "unsupported profile shape type 'Compound'". A second guard there would
+///     duplicate the invariant; the two characterization pins in
+///     `harness_occt::empty_shape_consumer_guard_integration` are what protect
+///     that existing coverage.
+static void reject_empty_input_shape(const TopoDS_Shape& s, const char* role) {
+    if (!shape_has_no_topology(s)) {
+        return;
+    }
+    throw ContractViolation(
+        std::string(role) +
+        " is empty: it carries no topology, so this operation has nothing to act on. "
+        "This usually means a boolean collapsed — operands that do not overlap, or a "
+        "tool that fully consumed its target. Check operand placement and units.");
 }
 
 } // anonymous namespace
@@ -644,6 +790,367 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
     });
 }
 
+// --- Shared boolean-result normalization (task 7054) ---
+
+// Normalize a raw `BRepAlgoAPI_*::Shape()` to the tightest topology-preserving
+// type before it is stored on an `OcctShape`.
+//
+// Every BRepAlgoAPI boolean — the binary `Fuse`/`Cut`/`Common` constructors as
+// well as the general SetArguments/SetTools path — wraps its answer in a bare
+// `TopoDS_COMPOUND`, whether or not the operands actually merged. Storing that
+// wrapper verbatim is user-visible in two ways:
+//
+//   * `is_watertight` / `is_closed` guard on SOLID|COMPSOLID|SHELL, so a
+//     genuinely closed body reports NOT watertight.
+//   * `BRepExtrema_DistShapeShape` (behind `query_distance` / `min_clearance`)
+//     only runs its inner-solution / SolidTreatment test when a top-level
+//     operand IS a `TopAbs_SOLID`, so a fully-contained probe silently reads
+//     the boundary-to-boundary distance instead of 0.
+//
+// The unwrap rule below is task 5213's reviewed treatment, lifted here verbatim
+// so every boolean entry point inherits exactly one semantics:
+//
+//   - exactly one solid  → the bare SOLID (operands merged into a single body).
+//     Returning a COMPSOLID here would misclassify one solid as a multi-body
+//     aggregate.
+//   - two or more solids → a COMPSOLID (disjoint multi-body result) which,
+//     unlike a bare COMPOUND, passes the SOLID|COMPSOLID|SHELL guard and
+//     reports the correct per-solid component count.
+//   - no solids          → leave the compound untouched (nothing to tighten).
+//
+// Any non-COMPOUND input is returned unchanged.
+//
+// LOSSLESSNESS PRECONDITION (amendment, esc review #2): the rule above collects
+// only `TopAbs_SOLID` sub-shapes, so applying it to a MIXED compound — one that
+// also carries a free SHELL / FACE / EDGE / VERTEX, which `BRepAlgoAPI_Common`
+// and `BRepAlgoAPI_Cut` do legitimately emit when operands touch tangentially
+// or the result degenerates — would silently DISCARD that geometry. That was
+// tolerable while the rule was confined to `fuse_shape_list` (n-ary fuse of
+// solid instances); it is not, now that every boolean in the system routes
+// through it, and `extract_boolean_history` builds its result face/edge maps
+// from the returned shape, so a child living on a dropped free face would stop
+// resolving and inflate `silent_drop_count`. `compound_holds_only_solids`
+// therefore gates the whole unwrap: a mixed compound is returned VERBATIM,
+// accepting the (pre-existing) COMPOUND symptoms for that shape rather than
+// losing geometry to fix them.
+//
+// MEASURED (OCCT 7.8, through the kernel's own API — see
+// `empty_boolean_results_stay_untouched_compounds`): no solid-solid boolean in
+// this kernel reaches the mixed case TODAY. `BRepAlgoAPI_Common` on cubes that
+// touch at a face or an edge returns an EMPTY compound rather than the free
+// contact face, and a boolean whose operand is a free FACE is rejected before
+// it reaches OCCT. So this gate is defense-in-depth for a non-solid operand
+// becoming reachable — not a live path — and it costs one direct-children walk.
+//
+// Descends through nested COMPOUNDs so a compound-of-compounds-of-solids — the
+// shape the general SetArguments/SetTools BOP path can produce — is still
+// unwrappable. An empty compound trivially satisfies the predicate and then
+// falls out of the `solids.Extent() == 0` arm untouched.
+bool compound_holds_only_solids(const TopoDS_Shape& shape) {
+    for (TopoDS_Iterator it(shape); it.More(); it.Next()) {
+        const TopAbs_ShapeEnum child_type = it.Value().ShapeType();
+        if (child_type == TopAbs_SOLID || child_type == TopAbs_COMPSOLID) {
+            continue;
+        }
+        if (child_type == TopAbs_COMPOUND) {
+            if (!compound_holds_only_solids(it.Value())) {
+                return false;
+            }
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+TopoDS_Shape unwrap_boolean_compound(const TopoDS_Shape& raw) {
+    if (raw.ShapeType() != TopAbs_COMPOUND) {
+        return raw;
+    }
+    if (!compound_holds_only_solids(raw)) {
+        // Mixed compound: unwrapping would drop the free lower-dimensional
+        // children. Preserve the topology exactly as OCCT handed it over.
+        return raw;
+    }
+    TopTools_ListOfShape solids;
+    for (TopExp_Explorer ex(raw, TopAbs_SOLID); ex.More(); ex.Next()) {
+        solids.Append(ex.Current());
+    }
+    if (solids.Extent() == 1) {
+        return TopoDS::Solid(solids.First());
+    }
+    if (solids.Extent() > 1) {
+        TopoDS_CompSolid cs;
+        BRep_Builder builder;
+        builder.MakeCompSolid(cs);
+        for (TopTools_ListIteratorOfListOfShape sit(solids); sit.More(); sit.Next()) {
+            builder.Add(cs, TopoDS::Solid(sit.Value()));
+        }
+        return cs;
+    }
+    return raw;
+}
+
+// True iff no two solids anywhere in `operands` can touch — i.e. every pair of
+// their bounding boxes is disjoint, so the boolean about to be normalized
+// provably merged nothing and `ShapeUpgrade_UnifySameDomain` has nothing to do
+// (see the call site for why that matters, and for why the same test over the
+// RESULT would be unsound).
+//
+// Returns false when the operands carry fewer than two solids in total: a
+// single solid is exactly the case unification exists for, and must never be
+// skipped.
+//
+// Boxes come from the GEOMETRY, not the triangulation, and are enlarged by
+// OCCT's own `Bnd_Box` gap only (`BRepBndLib::Add` already inflates by the
+// shape tolerance); `Bnd_Box::IsOut` is then the exact separation test.
+// `useTriangulation` must stay explicitly false: it DEFAULTS to true
+// (BRepBndLib.hxx), and on a shape that already carries a triangulation the
+// chordal box can UNDERSTATE a curved solid's true extent — biasing the answer
+// toward "disjoint", which is the one direction this predicate may never err
+// in. Any doubt must resolve to "not disjoint", which merely runs the
+// unification pass.
+bool boolean_operand_solids_are_pairwise_disjoint(const TopTools_ListOfShape& operands) {
+    std::vector<Bnd_Box> boxes;
+    for (TopTools_ListIteratorOfListOfShape it(operands); it.More(); it.Next()) {
+        for (TopExp_Explorer ex(it.Value(), TopAbs_SOLID); ex.More(); ex.Next()) {
+            Bnd_Box box;
+            BRepBndLib::Add(ex.Current(), box, /*useTriangulation=*/Standard_False);
+            if (box.IsVoid()) {
+                return false;
+            }
+            boxes.push_back(box);
+        }
+    }
+    if (boxes.size() < 2) {
+        return false;
+    }
+    for (std::size_t i = 0; i + 1 < boxes.size(); ++i) {
+        for (std::size_t j = i + 1; j < boxes.size(); ++j) {
+            if (!boxes[i].IsOut(boxes[j])) {
+                // First overlap wins: the abutting case exits here immediately.
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// True iff `unified` encloses the same volume as `before` to within a relative
+// tolerance — the fail-soft acceptance test for a `ShapeUpgrade_UnifySameDomain`
+// pass (see `normalize_boolean_result`).
+//
+// Vacuously true when `before` carries no solids: there is no volume to compare
+// and the check cannot discriminate.
+bool unify_history_preserves_volume(const TopoDS_Shape& before, const TopoDS_Shape& unified) {
+    // Relative, not absolute: the same predicate has to hold for a 1 mm³ detail
+    // and a 10⁹ mm³ enclosure. 1e-9 is ~three orders above f64 round-off on the
+    // O(faces) Gauss sum and far below any real topological loss (the cheapest
+    // possible corruption — dropping one face of a cube — is a 100% error).
+    constexpr double kVolumeRelTol = 1.0e-9;
+    bool has_solid = false;
+    for (TopExp_Explorer ex(before, TopAbs_SOLID); ex.More(); ex.Next()) {
+        has_solid = true;
+        break;
+    }
+    if (!has_solid) {
+        return true;
+    }
+    GProp_GProps before_props;
+    BRepGProp::VolumeProperties(before, before_props);
+    GProp_GProps after_props;
+    BRepGProp::VolumeProperties(unified, after_props);
+    const double v_before = before_props.Mass();
+    const double v_after = after_props.Mass();
+    if (!std::isfinite(v_before) || !std::isfinite(v_after)) {
+        return false;
+    }
+    const double scale = std::abs(v_before);
+    if (scale == 0.0) {
+        return std::abs(v_after) == 0.0;
+    }
+    return std::abs(v_after - v_before) <= kVolumeRelTol * scale;
+}
+
+// The single normalization entry point shared by `boolean_fuse`,
+// `boolean_cut`, `boolean_common` and `fuse_shape_list`.
+//
+// Deliberately uniform across all four ops: an asymmetry in which, say,
+// `intersection()` returned a fragmented COMPOUND while `union()` returned a
+// clean SOLID would make `is_watertight`, containment and STEP export depend on
+// which operator produced the body, with nothing in the type system to signal
+// it.
+//
+// CALLER CONTRACT: assign the returned shape to `OcctShape::shape` BEFORE
+// anything queries that `OcctShape`. occt_wrapper.h documents an IMMUTABLE
+// POST-CONSTRUCTION INVARIANT under which the three lazy topology-map caches
+// (`face_map`, `edge_map`, `edge_face_map`) are populated once and never
+// invalidated — there is no version counter, no guard and no assert, so
+// assigning `shape` after a map has been built silently stales it.
+// History-returning overload. `out_unify_history` receives the
+// `BRepTools_History` describing what the unification pass did to the
+// unwrapped shape's sub-shapes, so a caller tracking per-sub-shape provenance
+// (`extract_boolean_history`) can CHAIN boolean-child -> unified-survivor.
+// Left as a NULL handle when no unification pass ran, which callers must treat
+// as "every child survived unchanged".
+TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
+                                      const TopTools_ListOfShape& operands,
+                                      Handle(BRepTools_History)& out_unify_history) {
+    TopoDS_Shape unwrapped = unwrap_boolean_compound(raw);
+
+    // PAIRWISE-DISJOINT-OPERAND SHORT-CIRCUIT.
+    //
+    // Unification is a full topology rebuild whose cost scales with the FACE
+    // COUNT of the whole shape, and `fuse_shape_list` is the shared tail of all
+    // four pattern realizers — so a 1000-instance pattern would otherwise pay a
+    // rebuild over every face of every instance. When no two of the OPERANDS'
+    // solids can touch, nothing merged: this boolean is a re-wrap, the result's
+    // topology IS the operands' topology, and so this boolean introduced no
+    // seam for the pass to remove.
+    //
+    // THE SAME TEST OVER THE RESULT IS UNSOUND — do not reintroduce it. The
+    // seams unification exists to remove are created BY THE BOOLEAN BEING
+    // NORMALIZED, so a boolean that merges some operands into a cluster while
+    // other bodies stay far away hands back top-level solids that ARE pairwise
+    // disjoint and yet carry brand-new coplanar seams. Measured on the
+    // result-side form: `fuse_all([a, abutting, far])` kept 16 faces where the
+    // merged prism plus the far cube is 12.  A two-operand test cannot expose
+    // this, because with two operands "nothing could have merged" and "the
+    // result's solids are disjoint" coincide; the three-body guards named below
+    // are what pin it.
+    //
+    // Cost of the check is O(N²) cheap bbox overlap tests with an early exit on
+    // the FIRST overlap, so the abutting case — where unification is the point —
+    // bails out almost immediately; the disjoint case pays the full N²
+    // (≈500k six-float comparisons at N=1000, microseconds) to save the rebuild.
+    // The single-solid case, which is the overwhelmingly common binary boolean
+    // and the one unification exists for, never takes this branch.
+    //
+    // MEASURED (release build, OCCT 7.8, `fuse_all` over N unit boxes, 3 reps;
+    // the host was concurrently loaded, hence the spread — the disjoint-arm
+    // ratio is stable across every rep):
+    //
+    //   disjoint N=100   unify-always 182 / 382 / 378 ms   short-circuit  94 / 100 / 191 ms
+    //   disjoint N=1000  unify-always 2.30 / 3.91 / 2.93 s short-circuit 1.20 / 1.27 / 1.25 s
+    //   abutting N=1000  unify-always 5.86 / 8.19 / 6.07 s short-circuit 4.75 / 10.9 / 4.84 s
+    //
+    // i.e. the pass roughly DOUBLED disjoint pattern realization (~2.3× at the
+    // medians) for zero topological benefit, and the abutting control — which
+    // does not take this branch — shows no systematic difference. Face counts
+    // were bit-identical across both arms (600 at N=100, 6000 at N=1000
+    // disjoint; 6 abutting), which is the correctness-neutrality evidence:
+    // `disjoint_fuse_merges_nothing_and_the_abutting_control_still_merges` in
+    // `boolean_result_normalization_integration.rs` pins it as a standing guard,
+    // since the existing `boolean_pass_count()` perf guard counts BOP passes
+    // only and is structurally blind to this cost. Its three-body siblings
+    // there (`n_ary_fuse_of_a_cluster_plus_a_far_body_unifies_the_cluster` and
+    // the nested-binary / grid-pattern cases) pin the other half: that the skip
+    // stays predicated on the operands.
+    //
+    // The measurements above were taken on disjoint OPERANDS, so they still
+    // describe the arm that fires: a pure-disjoint `fuse_all` has
+    // pairwise-disjoint operands, so re-predicating on the operands preserves
+    // the win by construction. Re-measured on a prototype of exactly this
+    // change (architect, release build, OCCT 7.8): disjoint `fuse_all` at
+    // N=200 costs 312 ms for 1200 faces, in line with the N=100 short-circuit
+    // numbers above.
+    if (boolean_operand_solids_are_pairwise_disjoint(operands)) {
+        // NULL history — callers must read that as "every child survived
+        // unchanged", which is exactly true when no unification pass ran.
+        out_unify_history = Handle(BRepTools_History)();
+        return unwrapped;
+    }
+
+    // Merge same-domain faces and edges. A boolean leaves the seam where its
+    // operands met even when both sides lie on ONE surface, so a fuse chain
+    // (e.g. the compiler's `rounded_box` desugar — five successive fuses)
+    // hands back each logical planar face as many coplanar fragments. That is
+    // invisible in volume but very visible to a designer: a bbox-based edge
+    // selector picks up every phantom seam edge, and a curated fillet over
+    // that selection either explodes the face count or fails outright.
+    //
+    // SetSafeInputMode is deliberately left at its OCCT default of TRUE
+    // (documented at ShapeUpgrade_UnifySameDomain.hxx). With safe-input mode
+    // OFF, OCCT is permitted to modify the INPUT shape in place — and this
+    // kernel shares and caches operand `OcctShape`s across handles under
+    // occt_wrapper.h's IMMUTABLE POST-CONSTRUCTION INVARIANT, where the three
+    // lazy topology-map caches are populated once and never invalidated (no
+    // version counter, no guard, no assert). An in-place operand mutation
+    // would silently stale caches other handles are already reading, yielding
+    // wrong face/edge indices with no error anywhere. Do not turn it off as
+    // an optimisation.
+    ShapeUpgrade_UnifySameDomain unifier(
+        unwrapped,
+        /*UnifyEdges=*/Standard_True,
+        /*UnifyFaces=*/Standard_True,
+        /*ConcatBSplines=*/Standard_False);
+    TopoDS_Shape unified;
+    Handle(BRepTools_History) unify_history;
+    try {
+        unifier.Build();
+        unified = unifier.Shape();
+        // ShapeUpgrade_UnifySameDomain provides a history place holder and
+        // collects into it BY DEFAULT (documented at
+        // ShapeUpgrade_UnifySameDomain.hxx), so this is non-null after Build().
+        unify_history = unifier.History();
+    } catch (const Standard_Failure&) {
+        // Fall through to the fail-soft check below with a null `unified`.
+        unified = TopoDS_Shape();
+    }
+
+    // FAIL-SOFT ACCEPTANCE (amendment, esc review #3).
+    //
+    // `ShapeUpgrade_UnifySameDomain` has NO `IsDone()`, raises nothing on a bad
+    // merge, and is known to occasionally produce a degenerate or invalid face
+    // on tangent / periodic surfaces. Since this pass now sits on the single
+    // chokepoint every boolean flows through, accepting its output blind would
+    // let ONE bad unification corrupt the stored shape for every downstream
+    // consumer (volume, mass, STEP export, selectors) with no error anywhere:
+    // `is_watertight` would go false, but volume / mass / export would silently
+    // use the bad body.
+    //
+    // Volume is the cheap discriminator (O(faces), the same order as the pass
+    // itself, versus a full `BRepCheck_Analyzer` sweep) and it is exactly what
+    // unification must NOT change: merging same-domain faces re-describes the
+    // boundary, it does not move it. So: if the unified body's volume drifts
+    // from the unwrapped one's, or the shape came back null/empty, discard the
+    // unification and return `unwrapped` with a NULL history — which callers
+    // already treat as "every child survived unchanged", keeping
+    // `extract_boolean_history` correct on the fallback path too.
+    //
+    // The check is skipped when the unwrapped shape carries no volume (no
+    // solids), where it cannot discriminate; that shape has nothing for the
+    // unifier to get wrong at the solid level either.
+    const bool unified_usable = !unified.IsNull() && unify_history_preserves_volume(unwrapped, unified);
+    if (!unified_usable) {
+        out_unify_history = Handle(BRepTools_History)();
+        return unwrapped;
+    }
+    out_unify_history = unify_history;
+
+    // Unification can re-wrap its output in a compound, so tighten once more.
+    // Unwrapping never changes any sub-shape's identity — it only re-wraps the
+    // solids — so indices taken from the unify history stay valid against the
+    // returned shape's face/edge maps.
+    return unwrap_boolean_compound(unified);
+}
+
+// Convenience overload for the callers that do not track provenance
+// (`boolean_fuse` / `boolean_cut` / `boolean_common` / `fuse_shape_list`).
+TopoDS_Shape normalize_boolean_result(const TopoDS_Shape& raw,
+                                      const TopTools_ListOfShape& operands) {
+    Handle(BRepTools_History) unused;
+    return normalize_boolean_result(raw, operands, unused);
+}
+
+// The operand list for a binary boolean, in the order the op received them.
+TopTools_ListOfShape operand_pair(const TopoDS_Shape& left, const TopoDS_Shape& right) {
+    TopTools_ListOfShape operands;
+    operands.Append(left);
+    operands.Append(right);
+    return operands;
+}
+
 // --- Single-pass n-ary fuse (task 5213, Lever 1) ---
 
 // Fuse every member of `shapes` into a single result in ONE BOP pass.
@@ -658,16 +1165,19 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
 //   - 1 element  → returned as-is (no BOP; identity)
 //   - N elements → single-pass fuse
 //
-// The general BOP path (SetArguments/SetTools) always wraps its output in a
-// TopoDS_COMPOUND, regardless of whether the inputs merged.  We normalize that
-// wrapper to the tightest topology-preserving type: a COMPOUND holding one
-// solid (overlapping inputs merged into a single body) is unwrapped to that
-// bare SOLID, while a COMPOUND holding multiple solids (fully-DISJOINT inputs)
-// is rewrapped as a TopoDS_COMPSOLID — a bare compound is not
-// watertight-queryable (`is_watertight` excludes COMPOUND), whereas a COMPSOLID
-// preserves total volume and per-solid component count while passing the
-// SOLID|COMPSOLID|SHELL type guard.  Defined here — ahead of the four pattern
-// realizers below — so they can share this one helper.
+// The result is normalized by the shared `normalize_boolean_result` above,
+// exactly as the three binary boolean ops are (task 7054): the COMPOUND the
+// general BOP path always wraps its output in is tightened to the tightest
+// topology-preserving type, and same-domain faces/edges are merged — the
+// latter skipped when the OPERANDS' solids are pairwise bbox-disjoint, so
+// nothing could have merged and there is provably nothing to remove. That is
+// the common pattern-realization case, and where the skip recovers the whole
+// cost of the pass.  See that helper for the full contract; the short version is that a
+// bare COMPOUND is not watertight-queryable (`is_watertight` excludes it),
+// whereas the SOLID / COMPSOLID it unwraps to preserves total volume and
+// per-solid component count while passing the SOLID|COMPSOLID|SHELL guard.
+// Defined here — ahead of the four pattern realizers below — so they can share
+// this one helper.
 TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
     if (shapes.IsEmpty()) {
         throw std::runtime_error("fuse_shape_list: input shape list must not be empty");
@@ -692,37 +1202,10 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
     }
     // One completed boolean pass, regardless of instance count (task 5213).
     t_boolean_pass_count += 1;
-    TopoDS_Shape result = fuse.Shape();
-    // The general BOP path (SetArguments/SetTools) always wraps its output in a
-    // TopoDS_COMPOUND.  Normalize that wrapper to the tightest type that
-    // preserves the union's topology so downstream repr/query code sees the
-    // true kind:
-    //   - exactly one solid  → the bare SOLID (overlapping inputs merged into a
-    //     single body).  Returning a COMPSOLID here would misclassify one solid
-    //     as a multi-body aggregate (task 5213 repr-coherence amendment).
-    //   - two or more solids → a COMPSOLID (disjoint multi-body union) which,
-    //     unlike a bare COMPOUND, passes the is_watertight SOLID|COMPSOLID|SHELL
-    //     guard and reports the correct per-solid component count.
-    //   - no solids          → leave the compound untouched.
-    if (result.ShapeType() == TopAbs_COMPOUND) {
-        TopTools_ListOfShape solids;
-        for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
-            solids.Append(ex.Current());
-        }
-        if (solids.Extent() == 1) {
-            return TopoDS::Solid(solids.First());
-        }
-        if (solids.Extent() > 1) {
-            TopoDS_CompSolid cs;
-            BRep_Builder builder;
-            builder.MakeCompSolid(cs);
-            for (TopTools_ListIteratorOfListOfShape sit(solids); sit.More(); sit.Next()) {
-                builder.Add(cs, TopoDS::Solid(sit.Value()));
-            }
-            return cs;
-        }
-    }
-    return result;
+    // Behaviour-identical to the inline block this replaced (task 5213): the
+    // unwrap rule now lives once, in `normalize_boolean_result`, shared with the
+    // three binary boolean ops (task 7054).
+    return normalize_boolean_result(fuse.Shape(), shapes);
 }
 
 std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
@@ -765,7 +1248,7 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         }
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = fuse.Shape();
+        result->shape = normalize_boolean_result(fuse.Shape(), operand_pair(left.shape, right.shape));
         return result;
     });
 }
@@ -779,7 +1262,7 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         }
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = cut.Shape();
+        result->shape = normalize_boolean_result(cut.Shape(), operand_pair(left.shape, right.shape));
         return result;
     });
 }
@@ -793,7 +1276,7 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         }
         t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
-        result->shape = common.Shape();
+        result->shape = normalize_boolean_result(common.Shape(), operand_pair(left.shape, right.shape));
         return result;
     });
 }
@@ -801,6 +1284,90 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
 // --- BRepAlgoAPI_* history (v0.2 persistent-naming-v2, task 2590) ---
 
 namespace {
+
+/// Chain a boolean child through the unification history to the sub-shape(s)
+/// that actually survived into the NORMALIZED result (task 7054).
+///
+/// `ShapeUpgrade_UnifySameDomain` does not merely renumber — it RE-IDENTIFIES:
+/// when it merges two coplanar faces the survivor is a new TShape that
+/// `BRepAlgoAPI::Modified()` never reported. Looking the boolean's own children
+/// up in the normalized result's map directly would therefore miss on every
+/// merged face and blow `silent_drop_count`, which
+/// `boolean_op_history_integration.rs` and `topology_diagnostic_denoise_e2e.rs`
+/// both require to stay 0.
+///
+/// Cases, in the order they are tested:
+///   - NULL history (no unification pass ran) → the child itself.
+///   - `IsRemoved(child)` → absorbed by the merge. Reported via `out_removed`
+///     so the caller SKIPS it WITHOUT counting a silent drop: an absorbed child
+///     is an expected outcome, not a correspondence loss.
+///   - `Modified(child)` empty → survived unchanged → the child itself.
+///   - `Modified(child)` non-empty → one entry per survivor. Many-to-one merges
+///     are legitimate and must not be collapsed: both parents of a merged pair
+///     have to keep pointing at the shared survivor.
+void resolve_through_unify_history(
+    const Handle(BRepTools_History)& unify_history,
+    const TopoDS_Shape& child,
+    TopTools_ListOfShape& out_survivors,
+    bool& out_removed) {
+    out_survivors.Clear();
+    out_removed = false;
+    if (unify_history.IsNull()) {
+        out_survivors.Append(child);
+        return;
+    }
+    if (unify_history->IsRemoved(child)) {
+        out_removed = true;
+        return;
+    }
+    const TopTools_ListOfShape& modified = unify_history->Modified(child);
+    if (modified.IsEmpty()) {
+        out_survivors.Append(child);
+        return;
+    }
+    for (TopTools_ListIteratorOfListOfShape it(modified); it.More(); it.Next()) {
+        out_survivors.Append(it.Value());
+    }
+}
+
+/// Emit one record per DISTINCT surviving result sub-shape for a single parent
+/// sub-shape, chaining through the unification history first. Returns without
+/// emitting (and without touching `out_drop_count`) for children the merge
+/// absorbed; increments `out_drop_count` only for a survivor the result map
+/// genuinely cannot resolve — preserving `silent_drop_count`'s existing
+/// meaning.
+void emit_records_for_child(
+    const Handle(BRepTools_History)& unify_history,
+    const TopoDS_Shape& child,
+    const TopTools_IndexedMapOfShape& result_map,
+    uint32_t parent_index,
+    uint32_t parent_idx_0,
+    std::set<uint32_t>& seen_for_this_parent_sub,
+    std::vector<uint32_t>& out_records,
+    uint32_t& out_drop_count) {
+    TopTools_ListOfShape survivors;
+    bool removed = false;
+    resolve_through_unify_history(unify_history, child, survivors, removed);
+    if (removed) {
+        return;
+    }
+    for (TopTools_ListIteratorOfListOfShape it(survivors); it.More(); it.Next()) {
+        Standard_Integer one_based = result_map.FindIndex(it.Value());
+        if (one_based < 1) {
+            ++out_drop_count;
+            continue;
+        }
+        const uint32_t result_idx_0 = static_cast<uint32_t>(one_based - 1);
+        // Two boolean children of the SAME parent sub-shape can merge into one
+        // survivor; emit that pairing once rather than duplicating it.
+        if (!seen_for_this_parent_sub.insert(result_idx_0).second) {
+            continue;
+        }
+        out_records.push_back(parent_index);
+        out_records.push_back(parent_idx_0);
+        out_records.push_back(result_idx_0);
+    }
+}
 
 /// Walk `parent_map` (canonical TopExp 1-based order), querying
 /// `op.Modified()/Generated()/IsDeleted()` for each parent sub-shape.
@@ -824,6 +1391,7 @@ void emit_history_for_parent(
     BRepAlgoAPI_BooleanOperation& op,
     const TopTools_IndexedMapOfShape& parent_map,
     const TopTools_IndexedMapOfShape& result_map,
+    const Handle(BRepTools_History)& unify_history,
     uint32_t parent_index,
     std::vector<uint32_t>& out_modified,
     std::vector<uint32_t>& out_generated,
@@ -835,33 +1403,25 @@ void emit_history_for_parent(
         const uint32_t parent_idx_0 = static_cast<uint32_t>(i - 1);
 
         // Modified: parent sub-shape replaced by N result sub-shapes
-        // (split, merged, or otherwise transformed).
+        // (split, merged, or otherwise transformed). Each child is chained
+        // through the unification history before the result-map lookup — see
+        // `resolve_through_unify_history`.
+        std::set<uint32_t> seen_modified;
         const TopTools_ListOfShape& modified = op.Modified(parent_sub);
         for (TopTools_ListIteratorOfListOfShape it(modified); it.More(); it.Next()) {
-            const TopoDS_Shape& child = it.Value();
-            Standard_Integer one_based = result_map.FindIndex(child);
-            if (one_based < 1) {
-                ++out_drop_count;
-                continue;
-            }
-            out_modified.push_back(parent_index);
-            out_modified.push_back(parent_idx_0);
-            out_modified.push_back(static_cast<uint32_t>(one_based - 1));
+            emit_records_for_child(
+                unify_history, it.Value(), result_map, parent_index, parent_idx_0,
+                seen_modified, out_modified, out_drop_count);
         }
 
         // Generated: parent sub-shape gives rise to NEW sub-shapes
         // (e.g. fuse-section walls created from intersecting faces).
+        std::set<uint32_t> seen_generated;
         const TopTools_ListOfShape& generated = op.Generated(parent_sub);
         for (TopTools_ListIteratorOfListOfShape it(generated); it.More(); it.Next()) {
-            const TopoDS_Shape& child = it.Value();
-            Standard_Integer one_based = result_map.FindIndex(child);
-            if (one_based < 1) {
-                ++out_drop_count;
-                continue;
-            }
-            out_generated.push_back(parent_index);
-            out_generated.push_back(parent_idx_0);
-            out_generated.push_back(static_cast<uint32_t>(one_based - 1));
+            emit_records_for_child(
+                unify_history, it.Value(), result_map, parent_index, parent_idx_0,
+                seen_generated, out_generated, out_drop_count);
         }
 
         // Deleted: parent sub-shape has no result analogue. Emit only
@@ -896,7 +1456,16 @@ std::unique_ptr<BooleanOpHistory> extract_boolean_history(
     const OcctShape& right) {
     auto history = std::make_unique<BooleanOpHistory>();
     history->result = std::make_unique<OcctShape>();
-    history->result->shape = op.Shape();
+
+    // ORDER IS LOAD-BEARING (task 7054): normalize and assign `shape` BEFORE
+    // touching `face_map()` / `edge_map()` below. occt_wrapper.h documents the
+    // three lazy topology-map caches as populate-once with NO invalidation, no
+    // version counter and no assert, so assigning `shape` after a map has been
+    // built would silently stale it — the maps would index the raw COMPOUND
+    // while the stored shape is the unified SOLID.
+    Handle(BRepTools_History) unify_history;
+    history->result->shape =
+        normalize_boolean_result(op.Shape(), operand_pair(left.shape, right.shape), unify_history);
 
     // Build the result face/edge maps once via the cached lazy
     // accessors so subsequent FindIndex calls are O(1).
@@ -905,21 +1474,21 @@ std::unique_ptr<BooleanOpHistory> extract_boolean_history(
 
     // Faces: emit per-parent records.
     emit_history_for_parent(
-        op, left.face_map(), result_face_map, /*parent_index=*/0,
+        op, left.face_map(), result_face_map, unify_history, /*parent_index=*/0,
         history->face_modified, history->face_generated, history->face_deleted,
         history->silent_drop_count);
     emit_history_for_parent(
-        op, right.face_map(), result_face_map, /*parent_index=*/1,
+        op, right.face_map(), result_face_map, unify_history, /*parent_index=*/1,
         history->face_modified, history->face_generated, history->face_deleted,
         history->silent_drop_count);
 
     // Edges: emit per-parent records.
     emit_history_for_parent(
-        op, left.edge_map(), result_edge_map, /*parent_index=*/0,
+        op, left.edge_map(), result_edge_map, unify_history, /*parent_index=*/0,
         history->edge_modified, history->edge_generated, history->edge_deleted,
         history->silent_drop_count);
     emit_history_for_parent(
-        op, right.edge_map(), result_edge_map, /*parent_index=*/1,
+        op, right.edge_map(), result_edge_map, unify_history, /*parent_index=*/1,
         history->edge_modified, history->edge_generated, history->edge_deleted,
         history->silent_drop_count);
 
@@ -1435,6 +2004,7 @@ static void synthesize_full_revolution_radial_face_records(
 std::unique_ptr<SweepOpHistory> make_prism_with_history(
     const OcctShape& profile, double dx, double dy, double dz) {
     return wrap_occt_call("make_prism_with_history", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: mirror make_prism's input checks so callers
         // bypassing the Rust validation layer still get a clean error.
         double mag_sq = dx*dx + dy*dy + dz*dz;
@@ -1504,12 +2074,16 @@ std::unique_ptr<SweepOpHistory> make_prism_with_history(
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted by BRepPrimAPI_MakeRevol (a
+// full revolution is 2*M_PI) — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (#6184).
 std::unique_ptr<SweepOpHistory> make_revolve_with_history(
     const OcctShape& profile,
     double ox, double oy, double oz,
     double ax, double ay, double az,
     double angle_rad) {
     return wrap_occt_call("make_revolve_with_history", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: mirror make_revolve's input checks so callers
         // bypassing the Rust validation layer still get a clean error
         // (this is the same threshold pattern used by make_prism_with_history).
@@ -1643,6 +2217,7 @@ std::unique_ptr<SweepOpHistory> make_revolve_with_history(
 std::unique_ptr<SweepOpHistory> make_pipe_with_history(
     const OcctShape& profile, const OcctShape& spine) {
     return wrap_occt_call("make_pipe_with_history", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // BRepOffsetAPI_MakePipe inherits from BRepPrimAPI_MakeSweep (via
         // BRepOffsetAPI_BuildAddSurface), which inherits from
         // BRepBuilderAPI_MakeShape — so the Modified/IsDeleted/Generated/
@@ -1777,6 +2352,8 @@ std::unique_ptr<LoftOpHistory> make_loft_with_history(
         BRepOffsetAPI_ThruSections loft(
             is_solid ? Standard_True : Standard_False, Standard_False);
         for (const auto& shape : profiles.shapes) {
+            // Per profile, and AFTER the count check above (see `loft_profiles`).
+            reject_empty_input_shape(shape, "profile");
             loft.AddWire(TopoDS::Wire(shape));
         }
         loft.Build();
@@ -2254,6 +2831,28 @@ std::unique_ptr<OcctShape> translate_shape(const OcctShape& shape, double dx, do
     });
 }
 
+// ANGULAR UNIT CONTRACT for every rotation/revolution entry point in this file
+// (INV-AD-4; #6184; docs/prds/v0_6/angle-dimension-completion.md).
+//
+// `angle_rad` arrives from reify's IR as SI RADIANS and is consumed here with
+// NO conversion, because OCCT's angular convention is radians universally:
+// `gp_Trsf::SetRotation(axis, angle)` and `BRepPrimAPI_MakeRevol(profile, axis,
+// angle)` both read radians. The reify-side `_rad` name and the OCCT-side
+// expectation therefore AGREE — and that agreement is the boundary declaration,
+// not an accident of both sides happening to pick the same unit.
+//
+// Contrast the two neighbouring conventions, so the reader does not
+// over-generalise from this one:
+//   - LENGTHS also cross this bridge unscaled (model space is SI metres), but
+//     ARE rescaled x1000 by the STEP writer at export time. Angles are not
+//     rescaled anywhere, because rad = 1 by SI coherence.
+//   - SolveSpace is the one genuine DEGREE crossing in the tree
+//     (`SLVS_C_ANGLE` reads `valA` in degrees); see
+//     `crates/reify-constraints/src/solvespace.rs`. Nothing in THIS file is in
+//     degrees.
+//
+// `rotate_around_shape`, `make_revolve` and `make_revolve_with_history` below
+// carry the same contract; this is the one place it is written out.
 std::unique_ptr<OcctShape> rotate_shape(const OcctShape& shape, double ax, double ay, double az, double angle_rad) {
     return wrap_occt_call("rotate_shape", [&]() {
         gp_Ax1 axis(gp_Pnt(0, 0, 0), gp_Dir(ax, ay, az));
@@ -2285,6 +2884,8 @@ std::unique_ptr<OcctShape> scale_shape(const OcctShape& shape, double factor, do
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted — see the ANGULAR UNIT
+// CONTRACT on `rotate_shape` above (#6184).
 std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape,
     double px, double py, double pz,
     double ax, double ay, double az,
@@ -2354,6 +2955,13 @@ std::unique_ptr<OcctShape> gtransform_shape(const OcctShape& shape,
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = gtransform.Shape();
+        // BRepBuilderAPI_GTransform has no copy-mesh switch: BRepTools_GTrsfModification
+        // carries the source's triangulation and polygons onto the result even though it
+        // rewrites every analytic surface as a B-spline. A source tessellated first thus
+        // yields a result BRepCheck_Analyzer rejects and whose re-tessellation silently
+        // reuses the carried mesh. Dropping it matches the theCopyMesh=false default of
+        // BRepBuilderAPI_Transform, which every gp_Trsf transform here relies on (#6652).
+        ::BRepTools::Clean(result->shape);
         return result;
     });
 }
@@ -2645,6 +3253,44 @@ std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double dis
     });
 }
 
+// Offset a surface (open face/shell) along its normal via BRepOffsetAPI_MakeOffsetShape
+// in Skin (surface) mode -- distinct from offset_solid_shape's PerformBySimple solid
+// mode above. Positive `distance` offsets along the face's +normal (e.g. a planar
+// rectangle face built with a +Z-normal wire lands at z = +distance).
+std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double distance) {
+    return wrap_occt_call("make_offset_surface", [&]() {
+        if (std::abs(distance) < Precision::Confusion()) {
+            throw std::runtime_error("make_offset_surface: zero distance");
+        }
+        // Floor the tolerance at Precision::Confusion() so sub-micron (but
+        // still valid, non-zero) offsets don't get an unusably tight
+        // tolerance from the 1e-3 scale factor -- matches the fixed-scale
+        // guard used just above for the zero-distance check.
+        const double tol = std::max(1e-3 * std::abs(distance), Precision::Confusion());
+        BRepOffsetAPI_MakeOffsetShape maker;
+        maker.PerformByJoin(shape.shape, distance, tol, BRepOffset_Skin,
+            Standard_False, Standard_False, GeomAbs_Intersection);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("make_offset_surface: BRepOffsetAPI_MakeOffsetShape failed");
+        }
+        TopoDS_Shape result = maker.Shape();
+        if (result.IsNull()) {
+            throw std::runtime_error("make_offset_surface: result shape is null");
+        }
+        if (!BRepCheck_Analyzer(result).IsValid()) {
+            throw std::runtime_error("make_offset_surface: result shape is invalid");
+        }
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(result, props);
+        if (props.Mass() <= Precision::Confusion()) {
+            throw std::runtime_error("make_offset_surface: result has degenerate (near-zero) area");
+        }
+        auto out = std::make_unique<OcctShape>();
+        out->shape = result;
+        return out;
+    });
+}
+
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset) {
     return wrap_occt_call("thicken_shape", [&]() {
         BRepOffsetAPI_MakeOffsetShape maker;
@@ -2812,6 +3458,11 @@ std::unique_ptr<OcctShape> make_offset_curve_on_surface(
 
 // --- Draft ---
 
+// `angle_rad` is SI radians, consumed unconverted by
+// `BRepOffsetAPI_DraftAngle::Add(face, pull_dir, angle_rad, neutral_plane)`
+// below, which reads radians — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (INV-AD-4; #6184; that block is scoped to the rotation/revolution
+// entry points, so draft cites it rather than being covered by it).
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape) {
     return wrap_occt_call("draft_shape", [&]() {
@@ -2866,6 +3517,10 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
 ///
 /// The all-faces path uses `draft_shape`; this function requires
 /// `face_indices` to be non-empty.
+///
+/// `angle_rad` is SI radians, consumed unconverted by
+/// `BRepOffsetAPI_DraftAngle::Add`, exactly as in `draft_shape` — see the
+/// ANGULAR UNIT CONTRACT on `rotate_shape` above (INV-AD-4; #6184).
 std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape, const rust::Vec<uint32_t>& face_indices) {
     return wrap_occt_call("draft_faces_shape", [&]() {
@@ -3234,6 +3889,13 @@ std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
 
 // --- make_arc_wire ---
 
+// `start_angle`/`end_angle` are SI radians — but here that follows from OCCT's
+// CURVE PARAMETERISATION rather than from an explicit angle argument:
+// `BRepBuilderAPI_MakeEdge(circle, start_angle, end_angle)` below takes a
+// parameter RANGE, and for a `Geom_Circle` that parameter space is radians by
+// definition (a full circle is 2*M_PI). Nothing converts. See the ANGULAR UNIT
+// CONTRACT on `rotate_shape` above (INV-AD-4; #6184), whose scope is the
+// rotation/revolution entry points, so this curve constructor cites it.
 std::unique_ptr<OcctShape> make_arc_wire(
     double cx, double cy, double cz,
     double radius,
@@ -3280,6 +3942,13 @@ std::unique_ptr<OcctShape> make_helix_wire(
         // Helix as a 2D line on the cylindrical surface.
         // In (u,v) space: u = angle, v = height along axis.
         // A line from (0,0) with slope = pitch/(2*PI) traces a helix.
+        // `u_length` is a total sweep ANGLE in RADIANS in the cylindrical
+        // surface's u-parameter space, derived internally from three LENGTH
+        // inputs — the 2*M_PI (not 360) is what makes it radians. It is a
+        // derived internal quantity: NO angular value crosses the FFI boundary
+        // into `make_helix_wire` (INV-AD-4). Cf. doctrine D4 (2*pi rad/cycle
+        // as its own crossing class), in
+        // docs/prds/v0_6/angle-dimension-completion.md.
         double n_turns = height / pitch;
         double u_length = n_turns * 2.0 * M_PI;
         gp_Pnt2d origin2d(0.0, 0.0);
@@ -3548,6 +4217,9 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
         }
         BRepOffsetAPI_ThruSections loft(Standard_True, Standard_False);
         for (const auto& shape : profiles.shapes) {
+            // Per profile, and AFTER the count check above, so a caller who
+            // passed only one still gets the diagnostic naming THAT mistake.
+            reject_empty_input_shape(shape, "profile");
             loft.AddWire(TopoDS::Wire(shape));
         }
         loft.Build();
@@ -3564,6 +4236,7 @@ std::unique_ptr<OcctShape> loft_profiles(const OcctShapeVec& profiles) {
 
 std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& spine) {
     return wrap_occt_call("make_pipe", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         BRepOffsetAPI_MakePipe maker(TopoDS::Wire(spine.shape), profile.shape);
         // BRepOffsetAPI_MakePipe calls Build() internally in its constructor;
         // an explicit Build() here is redundant and was removed (task-383 S1).
@@ -3692,6 +4365,9 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
 
 std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, double dy, double dz) {
     return wrap_occt_call("make_prism", [&]() {
+        // Before the scalar checks: a designer whose profile collapsed must be
+        // told THAT, not sent down a direction-vector rabbit hole.
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: Rust extrude validates distance; this catches direct FFI calls.
         double mag_sq = dx*dx + dy*dy + dz*dz;
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
@@ -3714,6 +4390,7 @@ std::unique_ptr<OcctShape> make_prism(const OcctShape& profile, double dx, doubl
 std::unique_ptr<OcctShape> make_prism_infinite(const OcctShape& profile,
     double dx, double dy, double dz, bool both) {
     return wrap_occt_call("make_prism_infinite", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: Rust producer validates first; this catches direct FFI calls.
         if (!(std::isfinite(dx) && std::isfinite(dy) && std::isfinite(dz))) {
             throw std::runtime_error(
@@ -3739,11 +4416,15 @@ std::unique_ptr<OcctShape> make_prism_infinite(const OcctShape& profile,
     });
 }
 
+// `angle_rad` is SI radians, consumed unconverted by BRepPrimAPI_MakeRevol (a
+// full revolution is 2*M_PI) — see the ANGULAR UNIT CONTRACT on `rotate_shape`
+// above (#6184).
 std::unique_ptr<OcctShape> make_revolve(const OcctShape& profile,
     double ox, double oy, double oz,
     double ax, double ay, double az,
     double angle_rad) {
     return wrap_occt_call("make_revolve", [&]() {
+        reject_empty_input_shape(profile.shape, "profile");
         // DEFENSE-IN-DEPTH: Rust validates first with stricter threshold (1e-12 for axis).
         // These C++ checks (1e-30) are a safety net for future code paths that may bypass
         // the Rust layer (e.g., direct FFI calls from tests or hot-path optimizations).
@@ -3910,32 +4591,63 @@ static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
     return std::abs(volume);
 }
 
+/// The ONE site that chooses between OCCT's exact volume integral and the
+/// tessellation fallback, and the only source of a volume number in this
+/// wrapper. `query_volume` and `query_volume_measurement` both delegate here,
+/// so they can never disagree about which arm ran or what it returned.
+///
+/// DEFENSE-IN-DEPTH: reject null/empty topology before any deref. The check
+/// lives HERE rather than in each caller so the precondition is enforced at the
+/// same single site that selects the arm, and a future third entry point
+/// inherits an enforced invariant instead of a hand-off contract. `ShapeType()`
+/// below dereferences the TShape handle and would SIGSEGV on null topology
+/// (wrap_occt_call catches C++ exceptions, not the hardware signal). The
+/// primary guard is get_shape at the Rust boundary; this covers any direct-FFI
+/// or future path that bypasses it. Thrown as a ContractViolation with no op
+/// prefix, so each caller's own wrap_occt_call names itself.
+static VolumeMeasurement compute_volume_arm(const OcctShape& shape) {
+    if (shape.shape.IsNull()) {
+        throw ContractViolation("shape has null/empty topology");
+    }
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(shape.shape, props);
+    const double vol = props.Mass();
+    // Guard is BITWISE, not a tolerance: an FP-noise volume is a measurement,
+    // not an absent one. On OCCT 7.8 a revolution-surface solid integrates to a
+    // correct non-zero volume; the shapes measured to reach the fallback are
+    // FACE-LESS COMPOUNDS (VolumeProperties integrates over faces, so a compound
+    // with none sums to bitwise 0.0 while ShapeType() COMPOUND is <=
+    // TopAbs_SOLID), for which the tessellation arm likewise sums nothing and
+    // returns 0.0 — see make_empty_compound_for_test for the measured detail.
+    // Pinned by volume_measurement_reports_exact_for_real_solids and
+    // volume_measurement_fallback_guard_is_bitwise_not_tolerance.
+    // TODO(#7707): every shape measured to satisfy this guard is face-less, so
+    // mesh_based_volume iterates zero faces and returns the 0.0 the exact arm
+    // already produced — the arm's body is unreachable in practice, and the
+    // flag can only mean "no measurable volume", never "approximated". #7707
+    // rules on deleting the arm outright vs keeping it as defence.
+    if (vol == 0.0 && shape.shape.ShapeType() <= TopAbs_SOLID) {
+        return VolumeMeasurement{mesh_based_volume(shape.shape, 0.01), true};
+    }
+    return VolumeMeasurement{vol, false};
+}
+
 double query_volume(const OcctShape& shape) {
     return wrap_occt_call("query_volume", [&]() {
-        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref. The
-        // ShapeType() fallback below dereferences the TShape handle and would
-        // SIGSEGV on a null shape (wrap_occt_call catches C++ exceptions, not
-        // the hardware signal). Primary guard is get_shape (Rust boundary);
-        // this covers any direct-FFI/future path that bypasses it.
-        if (shape.shape.IsNull()) {
-            throw std::runtime_error("query_volume: shape has null/empty topology");
-        }
-        GProp_GProps props;
-        BRepGProp::VolumeProperties(shape.shape, props);
-        double vol = props.Mass();
-        // BRepGProp::VolumeProperties returns 0 for some parametric surfaces
-        // (e.g. revolution surfaces). Fall back to mesh-based computation.
-        if (vol == 0.0 && shape.shape.ShapeType() <= TopAbs_SOLID) {
-            vol = mesh_based_volume(shape.shape, 0.01);
-        }
-        return vol;
+        return compute_volume_arm(shape).volume;
+    });
+}
+
+VolumeMeasurement query_volume_measurement(const OcctShape& shape) {
+    return wrap_occt_call("query_volume_measurement", [&]() {
+        return compute_volume_arm(shape);
     });
 }
 
 double query_area(const OcctShape& shape) {
     return wrap_occt_call("query_area", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // compute_volume_arm). Primary guard is get_shape (Rust boundary); this
         // covers any direct-FFI/future path that bypasses it.
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_area: shape has null/empty topology");
@@ -3949,7 +4661,7 @@ double query_area(const OcctShape& shape) {
 double query_edge_length(const OcctShape& shape) {
     return wrap_occt_call("query_edge_length", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // compute_volume_arm). Primary guard is get_shape (Rust boundary); this
         // covers any direct-FFI/future path that bypasses it.
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_edge_length: shape has null/empty topology");
@@ -4496,10 +5208,13 @@ double curve_curvature_at(const OcctShape& shape, double px, double py, double p
     });
 }
 
+/// No tessellation fallback here (no mesh-based inertia integrator exists):
+/// at zero mass this returns the degenerate ORIGIN rather than failing.
+/// `query_volume_measurement`'s `tessellation_fallback` flag discriminates.
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Pre-fix this returns Ok(origin) for a null shape;
+        // compute_volume_arm). Pre-fix this returns Ok(origin) for a null shape;
         // refuse loudly instead. Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_centroid: shape has null/empty topology");
@@ -4521,7 +5236,7 @@ Point3 query_centroid(const OcctShape& shape) {
 Point3 query_face_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_face_centroid", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Reached from the Centroid dispatch for Face-repr
+        // compute_volume_arm). Reached from the Centroid dispatch for Face-repr
         // handles, so pre-fix a null-topology face returns Ok(origin); refuse
         // loudly instead. Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
@@ -4537,7 +5252,7 @@ Point3 query_face_centroid(const OcctShape& shape) {
 BBox query_bbox(const OcctShape& shape) {
     return wrap_occt_call("query_bbox", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
-        // query_volume). Primary guard is get_shape (Rust boundary).
+        // compute_volume_arm). Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_bbox: shape has null/empty topology");
         }
@@ -4897,6 +5612,9 @@ bool geo_equiv_topo_sample(const OcctShape& a, const OcctShape& b,
     });
 }
 
+/// No tessellation fallback here (no mesh-based inertia integrator exists):
+/// at zero mass this returns the degenerate ZERO rather than failing.
+/// `query_volume_measurement`'s `tessellation_fallback` flag discriminates.
 double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, double az) {
     return wrap_occt_call("query_moment_of_inertia", [&]() {
         GProp_GProps props;
@@ -4906,6 +5624,9 @@ double query_moment_of_inertia(const OcctShape& shape, double ax, double ay, dou
     });
 }
 
+/// No tessellation fallback here (no mesh-based inertia integrator exists):
+/// at zero mass this returns the degenerate ALL-ZERO TENSOR rather than failing.
+/// `query_volume_measurement`'s `tessellation_fallback` flag discriminates.
 InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     // wrap_occt_call wraps only BRepGProp::VolumeProperties — the sole OCCT call that may
     // legitimately throw (Standard_Failure or std::exception).  MatrixOfInertia() and
@@ -4915,10 +5636,10 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     GProp_GProps props;
     wrap_occt_call("query_inertia_tensor", [&]() {
         // DEFENSE-IN-DEPTH: reject null/empty topology before VolumeProperties
-        // (see query_volume). Guard lives inside the wrap_occt_call lambda so
-        // the throw is caught and mapped to a catchable Err; the MatrixOfInertia
-        // math below stays outside the lambda by design. Primary guard is
-        // get_shape (Rust boundary).
+        // (see compute_volume_arm). Guard lives inside the wrap_occt_call
+        // lambda so the throw is caught and mapped to a catchable Err; the
+        // MatrixOfInertia math below stays outside the lambda by design.
+        // Primary guard is get_shape (Rust boundary).
         if (shape.shape.IsNull()) {
             throw std::runtime_error("query_inertia_tensor: shape has null/empty topology");
         }
@@ -5287,6 +6008,44 @@ std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test() {
             }
         }
 
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_empty_compound_for_test() {
+    // CANONICAL NOTE on which shapes reach compute_volume_arm's tessellation
+    // fallback. The header, the cxx bridge and the Rust tests point here rather
+    // than restating it.
+    //
+    // THE CLASS is FACE-LESS COMPOUNDS, not this fixture alone:
+    // BRepGProp::VolumeProperties integrates over faces, so any compound with
+    // no faces sums to mass EXACTLY 0.0 (bitwise) while ShapeType() (COMPOUND
+    // == 0) is <= TopAbs_SOLID (2) — both halves of the guard. Production
+    // make_compound applies no topology-type restriction to its members, so
+    // e.g. a compound of edges or wires is in the class too. The EMPTY compound
+    // is simply the simplest member, and the one this fixture builds. For every
+    // member the tessellation arm also iterates zero faces, so both arms return
+    // 0.0 and the reported volume is the same either way.
+    //
+    // MEASURED on OCCT 7.8.1 for the empty compound: Mass() == 0.0 bitwise,
+    // IsNull() == false, CentreOfMass == the origin, MatrixOfInertia all-zero,
+    // and BRepMesh_IncrementalMesh completes with 0 faces (so mesh_based_volume
+    // sums nothing and returns 0.0).
+    //
+    // make_nonmanifold_compound_for_test() is NOT usable for this purpose: it
+    // HAS faces, and its three coplanar-with-origin ones integrate to
+    // -6.6174449004242214e-24 (deterministic over 3 repeat runs), which MISSES
+    // the exact `vol == 0.0` guard, so it never takes the fallback.
+    //
+    // Production make_compound refuses empty input, hence this test-only
+    // fixture (same convention as make_null_shape_for_test /
+    // make_nonmanifold_compound_for_test).
+    return wrap_occt_call("make_empty_compound", [&]() {
+        TopoDS_Compound compound;
+        BRep_Builder builder;
+        builder.MakeCompound(compound);
+        auto result = std::make_unique<OcctShape>();
+        result->shape = compound;
         return result;
     });
 }
@@ -6200,144 +6959,1785 @@ std::unique_ptr<OcctShapeVec> split_shape(
 // all concurrent export_step() calls across all kernel threads.
 static std::mutex g_step_export_mutex;
 
-ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
-    std::lock_guard<std::mutex> lock(g_step_export_mutex);
-    return wrap_occt_call("export_step", [&]() {
-        // Register the STEP statics BEFORE setting them. STEPControl_Controller
-        // ::Init() is the idempotent call that REGISTERS the
-        // `write.step.schema` Interface_Static; calling SetCVal before any
-        // controller exists is a silent no-op (the static is not registered
-        // yet). The writer's own constructor also runs Init(), but it then
-        // immediately builds its model from the STEP Template Model — which
-        // bakes in whatever `write.step.schema` holds AT CONSTRUCTION TIME.
-        // So the correct order is: Init() → SetCVal → construct writer →
-        // Transfer → Write. Setting the static AFTER constructing the writer
-        // is too late: the model has already captured the default schema.
-        STEPControl_Controller::Init();
+namespace {
 
-        // Map the kernel-neutral schema name (StepSchema::as_str()) to the
-        // OCCT `write.step.schema` enum token. The accepted tokens for this
-        // build are AP203 / AP214CD / AP214DIS / AP214IS / AP242DIS; we use
-        // the DIS variants for AP214/AP242. Unknown inputs default to the
-        // AP214 token so a malformed schema never aborts the export.
-        std::string neutral(schema);
-        const char* token = "AP214DIS";
-        bool want_ap242 = false;
-        if (neutral == "AP203") {
-            token = "AP203";
-        } else if (neutral == "AP214") {
-            token = "AP214DIS";
-        } else if (neutral == "AP242") {
-            token = "AP242DIS";
-            want_ap242 = true;
+// ===========================================================================
+// STEP PLANE-ANGLE UNIT REFUSAL GUARD (#6344) — INV-AD-4's third arm.
+//
+// #6184 landed the DECLARATION half of INV-AD-4 (the contract comment inside
+// export_step below, plus two text-level pins in src/handle.rs). This is the
+// RUNTIME half: after the shape has been transferred into the STEP model but
+// BEFORE any bytes reach a file, walk the model and refuse to write it unless
+// every representation context declares the *unprefixed SI radian* for plane
+// angles.
+//
+// WHY REFUSE RATHER THAN WARN. A mislabelled angular unit is not a degraded
+// capability honestly reported (contrast ExportWarning::StepAp242Fallback,
+// which is a real lesser capability delivered honestly) — it is a correctness
+// defect in the emitted bytes. A warning on stderr does not stop the wrong
+// file from reaching an external CAD tool, and the sibling LENGTH regime
+// twenty lines below already took the throw posture for exactly this class of
+// defect ("Fail loudly rather than exporting geometry mislabelled by 1000x").
+// There is deliberately NO break-glass env var: a bypass would let a user
+// write the mislabelled file the guard exists to prevent.
+//
+// WHY THIS CANNOT FIRE ON A CORRECT FILE. STEPConstruct_UnitContext::Init,
+// the sole builder of the write-side unit context, emits `SI_UNIT($,.RADIAN.)`
+// as an immediate constant with no branch on any writer option (measured for
+// #6184 — see the OBSERVATION LOG in export_step below). So no benign OCCT
+// change can move the declaration; only a change that genuinely alters the
+// declared unit trips this guard, and that IS the defect. The same premise has
+// a corollary for the TESTS, which is stated once on the `StepGuardFault` enum
+// in src/ffi.rs rather than restated here.
+//
+// THE WALK IS BY ASSOCIATION, NOT BY COUNT — the choice and its reasoning
+// live on `StepPlaneAngleAuditCounts` below, which is the one place to change
+// if it is ever revisited.
+// ===========================================================================
+
+/// Counts from one walk of a transferred STEP model's plane-angle units.
+///
+/// `plane_angle_units` / `radian_ok` count (context, angular unit)
+/// ASSOCIATIONS, not model-wide entities: the sound question is "does THIS
+/// context reach a radian?", and a model-wide entity tally cannot answer it
+/// (it stays unchanged when a context stops referencing a unit that still
+/// exists in the model). Orphan angular units no context references are
+/// therefore NOT in the three association counts — they are counted separately
+/// in `orphan_angular_units` and checked by V4.
+struct StepPlaneAngleAuditCounts {
+    /// Unit-assigned contexts resolved from the model.
+    uint32_t contexts = 0;
+    /// Summed over contexts: how many angular units each context reaches.
+    uint32_t plane_angle_units = 0;
+    /// Of those associations, how many resolve to the unprefixed SI radian.
+    uint32_t radian_ok = 0;
+    /// Angular unit ENTITIES that no unit-assigned context references.
+    ///
+    /// Reported so a V4-only refusal is not self-contradicting. The three
+    /// association counts above are blind to an orphan by construction, so
+    /// without this a model whose every context is perfectly radian but which
+    /// carries one orphaned degree unit would refuse under a header reading
+    /// `contexts=3 plane_angle_units=3 radian_ok=3` — counts that describe a
+    /// completely healthy file — followed by a violation line contradicting
+    /// them. Counted for EVERY orphan, radian or not, so the number stays a
+    /// property of the model rather than of the violations.
+    uint32_t orphan_angular_units = 0;
+    /// Representation-context entities whose spelling `step_unit_assigned_
+    /// context` could not resolve EITHER WAY — neither to a unit assignment
+    /// nor to a known unit-free context. V5's input, and reported here for the
+    /// same reason `orphan_angular_units` is: the three association counts say
+    /// nothing about a context that was skipped, so a V5-only refusal would
+    /// otherwise print a header describing a healthy file.
+    uint32_t unrecognised_contexts = 0;
+};
+
+/// True for the representation-context spellings that carry NO unit
+/// assignment by design, so failing to unwrap one is expected rather than a
+/// gap in `step_unit_assigned_context`.
+///
+/// AN ALLOW-LIST, NOT A DENY-LIST, and that direction is the whole point. The
+/// three unit-CARRYING spellings plus these five are every
+/// `StepRepr_RepresentationContext` descendant OCCT 7.8 defines (verified in
+/// /usr/include/opencascade: the base itself, GlobalUncertaintyAssignedContext,
+/// ParametricRepresentationContext, GeometricRepresentationContext, and
+/// GeometricRepresentationContextAndParametricRepresentationContext). A ninth
+/// spelling — a later OCCT release, or an XCAF/STEPCAFControl writer path —
+/// therefore lands in NEITHER list, which is exactly the case V5 refuses. A
+/// deny-list would have let it through.
+///
+/// COMPARED BY `DynamicType()` POINTER, not by class NAME. `Standard_Type`
+/// instances are process-unique, so this is a pointer equality test against a
+/// fixed set rather than a substring match over a meaningful string. It is
+/// also deliberately an EXACT-type test rather than an is-a test: a future
+/// subclass of `StepGeom_GeometricRepresentationContext` is a spelling this
+/// build has not seen, and an `IsKind` test would silently absorb it into the
+/// allow-list on the strength of its base class alone.
+bool step_context_carries_no_units(const Handle(Standard_Transient)& entity) {
+    const Handle(Standard_Type)& type = entity->DynamicType();
+    return type == STANDARD_TYPE(StepRepr_RepresentationContext) ||
+           type == STANDARD_TYPE(StepRepr_GlobalUncertaintyAssignedContext) ||
+           type == STANDARD_TYPE(StepRepr_ParametricRepresentationContext) ||
+           type == STANDARD_TYPE(StepGeom_GeometricRepresentationContext) ||
+           type ==
+               STANDARD_TYPE(
+                   StepGeom_GeometricRepresentationContextAndParametricRepresentationContext);
+}
+
+/// Resolve `entity` to the `StepRepr_GlobalUnitAssignedContext` it carries,
+/// or a null handle if it carries none.
+///
+/// THE DIRECT DOWNCAST ALONE IS NOT ENOUGH, and getting this wrong is silent:
+/// what OCCT actually emits for a solid is the COMPLEX entity
+/// `StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx`, which
+/// derives from `StepRepr_RepresentationContext` and merely *composes* a
+/// `Handle(StepRepr_GlobalUnitAssignedContext)` member. A direct
+/// `DownCast<StepRepr_GlobalUnitAssignedContext>` therefore returns null on
+/// every one of them, the walk reports ZERO contexts on a file that carries
+/// three, and every per-context arm below passes vacuously. The integration
+/// test `guard_accepts_a_real_multi_context_export` cross-checks this count
+/// against the `GLOBAL_UNIT_ASSIGNED_CONTEXT` occurrences in the very bytes
+/// the same export produced, which is what reddens that naive form.
+///
+/// EVERY COMPOSITE SPELLING OCCT DEFINES MUST BE UNWRAPPED HERE, not just the
+/// one today's fixture happens to emit. OCCT 7.8 has two (verified in
+/// /usr/include/opencascade, both exported from libTKDESTEP): the three-part
+/// `…GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx` a solid export
+/// produces, and the two-part
+/// `…GeometricRepresentationContextAndGlobalUnitAssignedContext` (identical
+/// shape, no uncertainty component) that other writer paths — AP203, a
+/// wireframe or XCAF/assembly writer — can produce.
+///
+/// A SPELLING THIS FUNCTION DOES NOT KNOW ABOUT IS NOT SKIPPED SILENTLY. It
+/// would be the same silent-vacuity failure the direct-only form above
+/// suffers — `contexts` under-counts, V2/V3 never run for that context, and
+/// the guard passes for the entity it exists to check — and, being PARTIAL
+/// (two contexts resolved, one skipped), it is invisible to V1, which fires
+/// only on a total of zero. So when the entity IS a representation context
+/// and none of the three spellings unwrapped it, `*unrecognised_spelling` is
+/// set and V5 refuses the export. `step_context_carries_no_units` below is
+/// what keeps that from firing on the unit-free contexts OCCT legitimately
+/// emits; between them, completeness is CHECKED rather than asserted in this
+/// comment.
+///
+/// `unrecognised_spelling` may be null (the fault-injection call sites, which
+/// only want the handle). It is only ever SET, never cleared, so one flag can
+/// accumulate across a walk.
+Handle(StepRepr_GlobalUnitAssignedContext) step_unit_assigned_context(
+    const Handle(Standard_Transient)& entity,
+    bool* unrecognised_spelling = nullptr) {
+    // ONE discriminating downcast ahead of the three spellings below: every
+    // one of them derives from `StepRepr_RepresentationContext` (verified in
+    // the OCCT 7.8 headers — including `StepRepr_GlobalUnitAssignedContext`
+    // itself), while a transferred model is overwhelmingly CARTESIAN_POINT /
+    // ADVANCED_FACE / EDGE_CURVE entities that are none of them. This walk
+    // runs on EVERY production export over hundreds of thousands of Part-21
+    // entities on a large assembly, so the common case must cost one type
+    // walk rather than three.
+    if (Handle(StepRepr_RepresentationContext)::DownCast(entity).IsNull()) {
+        return Handle(StepRepr_GlobalUnitAssignedContext)();
+    }
+    Handle(StepRepr_GlobalUnitAssignedContext) direct =
+        Handle(StepRepr_GlobalUnitAssignedContext)::DownCast(entity);
+    if (!direct.IsNull()) {
+        return direct;
+    }
+    Handle(StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx) composed =
+        Handle(StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx)::DownCast(
+            entity);
+    if (!composed.IsNull()) {
+        return composed->GlobalUnitAssignedContext();
+    }
+    Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)
+        composed_no_uncertainty =
+            Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)::
+                DownCast(entity);
+    if (!composed_no_uncertainty.IsNull()) {
+        return composed_no_uncertainty->GlobalUnitAssignedContext();
+    }
+    // A representation context none of the three spellings unwrapped. Either
+    // one of the unit-free spellings OCCT legitimately emits, or a spelling
+    // this build has never seen — and only the second is a finding.
+    if (unrecognised_spelling != nullptr && !step_context_carries_no_units(entity)) {
+        *unrecognised_spelling = true;
+    }
+    return Handle(StepRepr_GlobalUnitAssignedContext)();
+}
+
+/// Part-21 token for a `StepBasic_SiUnitName`, for the refusal diagnostic.
+///
+/// Only the enumerators that can plausibly appear in a plane-angle slot are
+/// spelled out; everything else degrades to `SiUnitName(<n>)`. The fallback is
+/// deliberately NOT a guessed token: a future OCCT release that appends an
+/// enumerator would otherwise shift the numbering under a hardcoded table and
+/// make this print a confidently WRONG unit name, which is worse than printing
+/// a number the reader can look up.
+std::string si_unit_name_token(StepBasic_SiUnitName name) {
+    switch (name) {
+        case StepBasic_sunRadian:
+            return ".RADIAN.";
+        case StepBasic_sunSteradian:
+            return ".STERADIAN.";
+        case StepBasic_sunMetre:
+            return ".METRE.";
+        default: {
+            std::ostringstream oss;
+            oss << "SiUnitName(" << static_cast<int>(name) << ")";
+            return oss.str();
         }
+    }
+}
 
-        // Set the schema EXPLICITLY on every call — including the AP214
-        // default. `write.step.schema` is a process-global Interface_Static;
-        // export_step is serialized by g_step_export_mutex, but the static
-        // persists between calls, so without an explicit per-call set a prior
-        // AP203 export would leak its schema into a later default export.
-        bool ap242_fell_back = false;
-        Standard_Boolean set_ok =
-            Interface_Static::SetCVal("write.step.schema", token);
+/// Part-21 token for a `StepBasic_SiPrefix`, for the refusal diagnostic.
+///
+/// Same numeric-fallback discipline as `si_unit_name_token`: an enumerator
+/// this switch does not know about prints as `SiPrefix(<n>)` rather than as a
+/// guessed token, so a future OCCT enumerator addition degrades to a number
+/// the reader can look up instead of to a confidently wrong prefix name.
+std::string si_prefix_token(StepBasic_SiPrefix prefix) {
+    switch (prefix) {
+        case StepBasic_spKilo:
+            return ".KILO.";
+        case StepBasic_spDeci:
+            return ".DECI.";
+        case StepBasic_spCenti:
+            return ".CENTI.";
+        case StepBasic_spMilli:
+            return ".MILLI.";
+        case StepBasic_spMicro:
+            return ".MICRO.";
+        case StepBasic_spNano:
+            return ".NANO.";
+        default: {
+            std::ostringstream oss;
+            oss << "SiPrefix(" << static_cast<int>(prefix) << ")";
+            return oss.str();
+        }
+    }
+}
 
-        // Why `set_ok` is consulted ONLY for AP242 (and not AP203/AP214):
-        // STEPControl_Controller::Init() registers AP203 and all AP214 tokens
-        // (AP214CD/AP214DIS/AP214IS) unconditionally in every STEP-capable
-        // OCCT build, so SetCVal for those tokens cannot fail here — a failure
-        // would mean no STEP controller exists at all, in which case
-        // export_step itself could not run. They also have no safer fallback
-        // target, so reading back set_ok for them would be dead code. AP242DIS
-        // is the only token whose availability varies across OCCT builds/configs
-        // (it can be compiled out of older/minimal builds), so it is the only
-        // one that needs the rejection readback + honest AP214 fallback below.
-        if (want_ap242) {
-            // Honest AP242 degradation: if the linked OCCT rejected AP242DIS
-            // (SetCVal failed, or the static did not actually take the value),
-            // fall back to AP214DIS and report it. The linked OCCT 7.9.3 DOES
-            // support AP242DIS, so this branch is a guard for builds that
-            // don't — it is intentionally not exercised in-tree.
-            const char* current = Interface_Static::CVal("write.step.schema");
-            bool accepted = set_ok && current != nullptr &&
-                            std::string(current) == "AP242DIS";
-            if (!accepted) {
-                Interface_Static::SetCVal("write.step.schema", "AP214DIS");
-                ap242_fell_back = true;
+/// How a single unit entity classifies for INV-AD-4's purposes.
+enum class StepAngleUnitKind {
+    /// Not an angular unit at all (a length, a solid angle carrier, …).
+    NotAngular,
+    /// The one accepted form: an SI plane-angle unit, name RADIAN, no prefix.
+    SiRadian,
+    /// An SI plane-angle unit that is NOT the unprefixed radian.
+    SiWrong,
+    /// A conversion-based plane-angle unit — the spelling a degree or grad
+    /// unit takes. Never accepted: reify's payload is radians.
+    ConversionBased,
+    /// A plane-angle unit in a form this classifier does not know how to
+    /// inspect: a bare `StepBasic_PlaneAngleUnit` (Part 21 permits a plain
+    /// NAMED_UNIT/PLANE_ANGLE_UNIT pair) or some future OCCT composite
+    /// spelling. Still REFUSED — an unverifiable declaration is not a verified
+    /// one — but reported as unverifiable rather than as absent, which is the
+    /// distinction that matters to whoever reads the refusal. Without this arm
+    /// such a unit classifies as `NotAngular`, its context then reaches zero
+    /// recognised angular units, and V2 refuses with "reaches NO plane-angle
+    /// unit" — factually wrong, and pointing the reader at the wrong defect.
+    UnrecognisedAngular,
+};
+
+/// Classify one model entity as an angular unit declaration.
+///
+/// DOWNCAST TO THE `…And…` COMPOSITES, NOT TO `StepBasic_PlaneAngleUnit`.
+/// Verified in the OCCT 7.8 headers: `StepBasic_SiUnitAndPlaneAngleUnit`
+/// derives from `StepBasic_SiUnit` and only *composes* a
+/// `Handle(StepBasic_PlaneAngleUnit)` member, so a
+/// `DownCast<StepBasic_PlaneAngleUnit>` returns null on the real emitted
+/// entity. `StepBasic_ConversionBasedUnitAndPlaneAngleUnit` has the identical
+/// shape over `StepBasic_ConversionBasedUnit`.
+///
+/// On a non-accepted classification `detail` (when non-null) receives a
+/// description of what was observed, for the refusal diagnostic.
+StepAngleUnitKind classify_step_angle_unit(const Handle(Standard_Transient)& entity,
+                                           std::string* detail) {
+    // Same discriminator-first shape as `step_unit_assigned_context`, for the
+    // same always-on cost: all three angular forms below derive from
+    // `StepBasic_NamedUnit`, and nearly every entity in a model derives from
+    // none of them.
+    if (Handle(StepBasic_NamedUnit)::DownCast(entity).IsNull()) {
+        return StepAngleUnitKind::NotAngular;
+    }
+    Handle(StepBasic_SiUnitAndPlaneAngleUnit) si =
+        Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(entity);
+    if (!si.IsNull()) {
+        // BOTH conjuncts are load-bearing. A name-only check accepts
+        // SI_UNIT(.MILLI.,.RADIAN.) — a MILLIRADIAN, whose declaration is off
+        // from the payload by exactly 1000x, the same factor the length
+        // regime below exists to prevent. `$` (no prefix) is the only
+        // acceptable prefix slot.
+        if (si->Name() == StepBasic_sunRadian && !si->HasPrefix()) {
+            return StepAngleUnitKind::SiRadian;
+        }
+        if (detail != nullptr) {
+            std::ostringstream oss;
+            oss << "SI plane-angle unit declared as " << si_unit_name_token(si->Name());
+            if (si->HasPrefix()) {
+                oss << " with SI prefix " << si_prefix_token(si->Prefix());
+            } else {
+                oss << " with no SI prefix";
+            }
+            *detail = oss.str();
+        }
+        return StepAngleUnitKind::SiWrong;
+    }
+    Handle(StepBasic_ConversionBasedUnitAndPlaneAngleUnit) conv =
+        Handle(StepBasic_ConversionBasedUnitAndPlaneAngleUnit)::DownCast(entity);
+    if (!conv.IsNull()) {
+        if (detail != nullptr) {
+            *detail =
+                "CONVERSION_BASED_UNIT plane-angle unit (the spelling a degree "
+                "or grad unit takes)";
+        }
+        return StepAngleUnitKind::ConversionBased;
+    }
+    // Third downcast, deliberately LAST. The two composites above do not
+    // derive from `StepBasic_PlaneAngleUnit` (they compose a handle to one),
+    // so this cannot shadow them; it catches only the forms neither composite
+    // covers — a bare NAMED_UNIT/PLANE_ANGLE_UNIT pair, which Part 21 permits,
+    // or a future OCCT composite spelling. Why recognising those as ANGULAR
+    // rather than letting them fall through: `StepAngleUnitKind::
+    // UnrecognisedAngular` above.
+    Handle(StepBasic_PlaneAngleUnit) bare =
+        Handle(StepBasic_PlaneAngleUnit)::DownCast(entity);
+    if (!bare.IsNull()) {
+        if (detail != nullptr) {
+            std::ostringstream oss;
+            oss << "plane-angle unit of an unrecognised form, declared as "
+                << bare->DynamicType()->Name()
+                << " (neither StepBasic_SiUnitAndPlaneAngleUnit nor "
+                   "StepBasic_ConversionBasedUnitAndPlaneAngleUnit), so this "
+                   "guard cannot verify it is the unprefixed SI radian";
+            *detail = oss.str();
+        }
+        return StepAngleUnitKind::UnrecognisedAngular;
+    }
+    return StepAngleUnitKind::NotAngular;
+}
+
+/// Machine-readable arm tag prefixed to every violation line.
+///
+/// Tests pin THESE, not the surrounding prose. A negative assertion on an
+/// English sentence ("the MISSING message must not use the WRONG wording")
+/// fails OPEN: reword the sentence and the assertion silently becomes trivially
+/// true, stopping distinguishing exactly the two cases it exists to separate.
+/// An identifier-shaped tag cannot rot that way — rename it and the POSITIVE
+/// assertions red first, which is the direction a guard's tests must fail in.
+///
+/// TWO KINDS OF TAG, same spelling. `V1`..`V5` and `MODE` are ARMS: exactly one
+/// of them opens every violation line. `UNVERIFIABLE` is a QUALIFIER that
+/// follows an arm tag and never appears alone; it marks the sub-case where the
+/// guard could not READ a declaration, as opposed to having read one and found
+/// it wrong. That distinction is a real behavioural fork the contract calls out
+/// repeatedly (see `StepAngleUnitKind::UnrecognisedAngular`) and it spans two
+/// arms — V3 for a referenced unit, V4 for an orphan — so pinning it by the
+/// English of either branch would both rot on a reword and fail to catch the
+/// two branches being collapsed into one wording. Tagging it gives the sub-case
+/// the same identifier-shaped treatment the arm has.
+#define REIFY_INV_AD_4_ARM(tag) "[INV-AD-4/" tag "] "
+
+/// The units a context reaches, rendered for a diagnostic — built LAZILY.
+///
+/// Only the V2 arm ever reads this, i.e. only when a context reaches no
+/// angular unit at all, which never happens on a correct file. Building it
+/// eagerly in the main walk cost a `model->Number()` lookup plus locale-aware
+/// number formatting plus heap growth for EVERY unit of EVERY context on every
+/// production export, all of it discarded. Re-walking one context's `Units()`
+/// array on the failing path is far cheaper than paying for it on the path
+/// that always runs.
+///
+/// Lists EVERY unit, not just the angular subset: when a context reaches no
+/// angular unit the diagnostic question is "then what DID it reach?", and a
+/// pre-filtered list answers that with an empty string. Same reasoning as
+/// `resolved_units_summary` on the #6184 text-level walk in src/handle.rs.
+std::string describe_reached_units(const Handle(Interface_InterfaceModel)& model,
+                                   const Handle(StepBasic_HArray1OfNamedUnit)& units) {
+    std::ostringstream oss;
+    bool first = true;
+    if (!units.IsNull()) {
+        for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+            Handle(StepBasic_NamedUnit) unit = units->Value(k);
+            if (unit.IsNull()) {
+                continue;
+            }
+            if (!first) {
+                oss << ", ";
+            }
+            first = false;
+            oss << "#" << model->Number(unit) << " " << unit->DynamicType()->Name();
+        }
+    }
+    if (first) {
+        return "(none — its reference list resolved to no unit instance)";
+    }
+    return oss.str();
+}
+
+/// Walk `model` and audit every plane-angle unit declaration BY ASSOCIATION.
+///
+/// Five arms, each a distinct failure the others cannot see:
+///   V1  the model carries NO unit-assigned context at all. Also the
+///       anti-naive-downcast tripwire: a direct-only `step_unit_assigned_
+///       context` reports zero on a real file, and V1 is what turns that
+///       silent vacuity into a loud refusal.
+///   V2  a context reaches NO angular unit — a MISSING declaration, which no
+///       "is the declared unit right?" check can catch.
+///   V3  a context reaches an angular unit that is not the unprefixed SI
+///       radian. Fires on a PARTIAL flip, which a file-wide `.RADIAN.` grep
+///       cannot see because the other contexts are still correct.
+///   V4  an angular unit entity that NO context references is not the
+///       unprefixed SI radian. Disjoint from V3 by construction (V3 covers
+///       the referenced ones), so between them every angular unit entity in
+///       the model is checked exactly once. It is deliberately STRONGER than
+///       INV-AD-4 as worded; the V4 block below is where that widening, and
+///       what it costs, are recorded.
+///   V5  a representation context whose SPELLING the walk cannot resolve —
+///       neither to a unit assignment nor to a known unit-free context. This
+///       is the arm that keeps V2/V3 from passing VACUOUSLY on an entity they
+///       never saw, and it is the only one that can catch a PARTIAL blindness
+///       (two contexts resolved, a third skipped): V1 measures the total, so
+///       it stays silent at two. See `step_context_carries_no_units`.
+///
+/// Appends one line per violation to `violations` (when non-null) and returns
+/// the counts either way — the counts are also useful on the accepting path,
+/// where the fixture-hook returns them so a test can prove the walk actually
+/// saw the whole file rather than passing vacuously.
+StepPlaneAngleAuditCounts audit_step_plane_angle_units(
+    const Handle(Interface_InterfaceModel)& model,
+    std::vector<std::string>* violations) {
+    StepPlaneAngleAuditCounts counts;
+    if (model.IsNull()) {
+        if (violations != nullptr) {
+            violations->push_back(
+                REIFY_INV_AD_4_ARM("V1") "the STEP model is null, so no unit "
+                                         "declaration could be verified");
+        }
+        return counts;
+    }
+
+    const Standard_Integer n = model->NbEntities();
+
+    // ONE walk over the model's N entities, not two. Every entity is both a
+    // candidate unit-assigned context AND a candidate angular unit, so both
+    // questions are asked in the same pass; `candidates` then carries the
+    // handful of angular entities forward, and the V4 arm below iterates that
+    // handful rather than re-downcasting all N entities a second time.
+    //
+    // `referenced` records which angular unit entities some context actually
+    // reaches. It can only be complete once the whole model has been walked (a
+    // unit at entity 5 may be referenced by a context at entity 200), which is
+    // why the orphan decision is deferred rather than made inline.
+    struct AngularCandidate {
+        // Default-initialised, matching `StepPlaneAngleAuditCounts`. Today the
+        // loop below writes both before `push_back`, so nothing indeterminate
+        // is ever read — but that safety rests only on the write ORDER, and
+        // the V4 loop feeds `key` to `referenced.count(...)`, where a garbage
+        // pointer is a silent wrong answer rather than a crash in the one arm
+        // whose whole job is deciding whether a unit is an orphan.
+        const Standard_Transient* key = nullptr;
+        Standard_Integer index = 0;
+        StepAngleUnitKind kind = StepAngleUnitKind::NotAngular;
+        std::string detail;
+    };
+    std::unordered_set<const Standard_Transient*> referenced;
+    std::vector<AngularCandidate> candidates;
+    for (Standard_Integer i = 1; i <= n; ++i) {
+        const Handle(Standard_Transient)& entity = model->Value(i);
+
+        {
+            AngularCandidate candidate;
+            candidate.kind = classify_step_angle_unit(entity, &candidate.detail);
+            if (candidate.kind != StepAngleUnitKind::NotAngular) {
+                candidate.key = entity.get();
+                candidate.index = i;
+                candidates.push_back(std::move(candidate));
             }
         }
 
-        // Construct the writer AFTER the schema is set, so its model captures
-        // the requested `write.step.schema`.
-        STEPControl_Writer writer;
-
-        // LENGTH UNIT REGIME. Reify model space is SI METRES; exported STEP is
-        // MILLIMETRES (the CAD-interop default, and the unit OCCT already
-        // declares as SI_UNIT(.MILLI.,.METRE.) in the written file). Setting
-        // these two values is what makes the declaration and the payload
-        // AGREE: without them OCCT's scale factor is 1.0 and reify's metre
-        // coordinates are emitted verbatim under a millimetre declaration, so
-        // a 30 mm part reads back as 30 µm — a 1000x shrink.
-        //
-        // Both APIs express a unit as its SIZE IN MILLIMETRES, so the local
-        // (in-memory) unit is 1000.0 — "reify's coordinates are metres" — and
-        // the write unit is 1.0 — "emit millimetres". OCCT derives the scale
-        // factor from the ratio local/write and applies the x1000 itself; the
-        // declared SI_UNIT line is unchanged, only the payload moves.
-        //
-        // ORDERING IS LOAD-BEARING, for the same reason the `write.step.schema`
-        // ordering above is: the units cannot be set BEFORE the writer is
-        // constructed (the model does not exist yet — Model() is what creates
-        // and owns it) nor AFTER Transfer (which has already computed and
-        // applied the scale factor). Construct writer -> set units -> Transfer
-        // is the only correct order.
-        //
-        // BOTH values are set EXPLICITLY on every call, for the same reason the
-        // schema is re-set per call above: SetWriteLengthUnit is otherwise
-        // uninitialised and falls back to the process-global `write.step.unit`
-        // Interface_Static, which another caller could have moved.
-        //
-        // The PER-MODEL API is chosen deliberately over the equivalent
-        // process-global `xstep.cascade.unit` / `write.step.unit` statics: a
-        // per-model setting cannot leak into a concurrent export or into a
-        // future STEP reader, whereas this function already needs
-        // g_step_export_mutex and a per-call schema re-set precisely because
-        // OCCT's globals do leak.
-        Handle(StepData_StepModel) step_model = writer.Model();
-        if (step_model.IsNull()) {
-            // Fail loudly rather than exporting geometry mislabelled by 1000x.
-            throw std::runtime_error(
-                "STEPControl_Writer::Model() returned null; cannot set the STEP "
-                "length unit regime");
+        bool unrecognised_spelling = false;
+        Handle(StepRepr_GlobalUnitAssignedContext) ctx =
+            step_unit_assigned_context(entity, &unrecognised_spelling);
+        if (unrecognised_spelling) {
+            counts.unrecognised_contexts += 1;
+            if (violations != nullptr) {
+                // V5. Named by DYNAMIC TYPE because that is the only
+                // actionable thing a reader has: the fix is to teach
+                // `step_unit_assigned_context` this spelling, or to add it to
+                // `step_context_carries_no_units` if it genuinely carries no
+                // units, and neither can be done without knowing which type it
+                // was. The name is OUTPUT here, never a decision input.
+                std::ostringstream oss;
+                oss << REIFY_INV_AD_4_ARM("V5") << "entity #" << i << " is a "
+                    << entity->DynamicType()->Name()
+                    << ", a representation context whose spelling this guard "
+                       "can neither resolve to a unit assignment nor recognise "
+                       "as unit-free, so its plane-angle declaration was NOT "
+                       "verified";
+                violations->push_back(oss.str());
+            }
         }
-        step_model->SetLocalLengthUnit(1000.0);  // reify model space: metres
-        step_model->SetWriteLengthUnit(1.0);     // STEP file: millimetres
-
-        writer.Transfer(shape.shape, STEPControl_AsIs);
-
-        // Write to a temporary file, then read back
-        char tmpname[] = "/tmp/reify_step_XXXXXX";
-        int fd = mkstemp(tmpname);
-        if (fd < 0) {
-            throw std::runtime_error("Failed to create temp file for STEP export");
+        if (ctx.IsNull()) {
+            continue;
         }
-        close(fd);
+        counts.contexts += 1;
 
-        IFSelect_ReturnStatus status = writer.Write(tmpname);
-        if (status != IFSelect_RetDone) {
-            std::remove(tmpname);
-            throw std::runtime_error("STEPControl_Writer::Write failed");
+        Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
+        uint32_t angular_here = 0;
+        if (!units.IsNull()) {
+            for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+                Handle(StepBasic_NamedUnit) unit = units->Value(k);
+                if (unit.IsNull()) {
+                    continue;
+                }
+                // `detail` is only ever read on a non-accepting
+                // classification, and `classify_step_angle_unit` only writes
+                // it there, so this costs nothing on the always-on path.
+                std::string detail;
+                StepAngleUnitKind kind = classify_step_angle_unit(unit, &detail);
+                if (kind == StepAngleUnitKind::NotAngular) {
+                    continue;
+                }
+                referenced.insert(unit.get());
+                angular_here += 1;
+                counts.plane_angle_units += 1;
+                if (kind == StepAngleUnitKind::SiRadian) {
+                    counts.radian_ok += 1;
+                } else if (violations != nullptr) {
+                    // V3. An unreadable declaration is deliberately NOT given
+                    // the "is not the unprefixed SI radian" wording: this guard
+                    // did not establish that. It failed to read the declaration
+                    // at all, and saying otherwise would send the reader
+                    // looking for a wrong unit that may not exist. The
+                    // UNVERIFIABLE qualifier is what makes that fork
+                    // machine-readable rather than a matter of phrasing.
+                    const bool unverifiable =
+                        kind == StepAngleUnitKind::UnrecognisedAngular;
+                    std::ostringstream oss;
+                    oss << REIFY_INV_AD_4_ARM("V3");
+                    if (unverifiable) {
+                        oss << REIFY_INV_AD_4_ARM("UNVERIFIABLE");
+                    }
+                    oss << "context #" << i << " reaches plane-angle unit #"
+                        << model->Number(unit)
+                        << (unverifiable
+                                ? ", which it cannot verify: "
+                                : ", which is not the unprefixed SI radian: ")
+                        << detail;
+                    violations->push_back(oss.str());
+                }
+            }
         }
 
-        std::ifstream ifs(tmpname);
-        std::string content((std::istreambuf_iterator<char>(ifs)),
-                            std::istreambuf_iterator<char>());
-        ifs.close();
+        if (angular_here == 0 && violations != nullptr) {
+            // V2 — worded so it cannot be confused with V3/V4: a MISSING
+            // declaration and a WRONG one have different causes and different
+            // fixes, so one shared "bad plane angle unit" string would be a
+            // regression in the guard's only user-visible output.
+            std::ostringstream oss;
+            oss << REIFY_INV_AD_4_ARM("V2") << "context #" << i
+                << " reaches NO plane-angle unit; the units it does reach are: "
+                << describe_reached_units(model, units);
+            violations->push_back(oss.str());
+        }
+    }
+
+    if (counts.contexts == 0 && violations != nullptr) {
+        // V1
+        std::ostringstream oss;
+        oss << REIFY_INV_AD_4_ARM("V1")
+            << "the model declares NO unit-assigned context at all (walked " << n
+            << " entities), so nothing states the plane-angle unit";
+        violations->push_back(oss.str());
+    }
+
+    // V4: an angular unit entity no context references. It cannot mislabel the
+    // payload of a context that never reaches it, but it is still a
+    // declaration in the emitted file, and a reader that resolves units
+    // differently than this walk does would see it.
+    //
+    // THIS ARM IS DELIBERATELY STRONGER THAN INV-AD-4 AS WORDED, and the
+    // widening is a choice, not an artefact of how `referenced` is built.
+    // INV-AD-4 says "every representation context declares the unprefixed SI
+    // radian"; what reify enforces here is "the emitted file contains no
+    // non-radian plane-angle unit AT ALL". `referenced` is populated only from
+    // `StepRepr_GlobalUnitAssignedContext::Units()`, so an angular unit
+    // reachable from some OTHER entity — the `SI_UNIT($,.RADIAN.)` a degree
+    // `CONVERSION_BASED_UNIT` would point at through its
+    // `PLANE_ANGLE_MEASURE_WITH_UNIT` conversion factor, or an angular unit
+    // carried by a dimension/annotation representation — counts as an orphan
+    // and is refused if it is not the unprefixed radian. That is intended:
+    // reify emits exactly ONE plane-angle regime, radians, and a second
+    // spelling anywhere in the same file is a defect regardless of what
+    // references it. Walking the whole model's shared-reference graph instead
+    // would narrow the arm to literal unreachability and let a degree
+    // conversion chain through — which is precisely the shape this refuses.
+    //
+    // WHAT THIS COSTS, stated so a future reader does not have to rediscover
+    // it: a future OCCT or reify path that legitimately emits such a chain
+    // (dimensional annotations, an assembly writer that carries a degree unit
+    // for display) will be refused on an otherwise-correct file, and there is
+    // no break-glass by design. It cannot fire today — reify emits solids
+    // only, and `guard_accepts_a_real_multi_context_export` PINS
+    // `orphan_angular_units == 0` on a real export, so the day some path
+    // starts emitting one, that test reds and this paragraph is the decision
+    // record to revisit.
+    //
+    // The count is maintained unconditionally (including on the accepting
+    // path, where `violations` is null): it is what keeps a V4-only refusal
+    // header from reading as a healthy file. See `orphan_angular_units`.
+    for (const AngularCandidate& candidate : candidates) {
+        if (referenced.count(candidate.key) != 0) {
+            continue;
+        }
+        counts.orphan_angular_units += 1;
+        if (violations == nullptr || candidate.kind == StepAngleUnitKind::SiRadian) {
+            continue;
+        }
+        // Same UNVERIFIABLE fork as V3 above, and it needs its own tag for the
+        // same reason: V4 formats its finding separately (it names an entity,
+        // not a context), so a collapse of the two wordings here is invisible
+        // to anything asserted on V3's branch.
+        const bool unverifiable =
+            candidate.kind == StepAngleUnitKind::UnrecognisedAngular;
+        std::ostringstream oss;
+        oss << REIFY_INV_AD_4_ARM("V4");
+        if (unverifiable) {
+            oss << REIFY_INV_AD_4_ARM("UNVERIFIABLE");
+        }
+        oss << "unreferenced plane-angle unit #" << candidate.index
+            << (unverifiable ? " cannot be verified: "
+                             : " is not the unprefixed SI radian: ")
+            << candidate.detail;
+        violations->push_back(oss.str());
+    }
+
+    return counts;
+}
+
+/// Walk `model` and render the plane-angle refusal, or "" when it may be
+/// written.
+///
+/// A PURE FUNCTION, deliberately: it renders, it does not throw. The
+/// disposition — refuse the export, or report the finding and let a test read
+/// the counts — belongs to the caller, and keeping the RENDERING in one place
+/// is what guarantees the two dispositions cannot report different text for the
+/// same model.
+///
+/// `*counts` (when non-null) always receives what the walk saw, refusal or not:
+/// on the accepting path they prove the walk was not vacuous, and on the
+/// refusing path they are the structured half of the diagnostic.
+std::string step_plane_angle_refusal(const Handle(Interface_InterfaceModel)& model,
+                                     StepPlaneAngleAuditCounts* counts) {
+    std::vector<std::string> violations;
+    StepPlaneAngleAuditCounts walked = audit_step_plane_angle_units(model, &violations);
+    if (counts != nullptr) {
+        *counts = walked;
+    }
+    if (violations.empty()) {
+        return std::string();
+    }
+    std::ostringstream oss;
+    // EVERY count goes in this header, including the two the association walk
+    // does not feed. Why leaving either out would print numbers describing a
+    // healthy file directly above a line saying it is not:
+    // `StepPlaneAngleAuditCounts::orphan_angular_units` / `::unrecognised_contexts`.
+    oss << "refusing to write STEP: INV-AD-4 requires every representation "
+           "context to declare the unprefixed SI radian for plane angles "
+           "(contexts=" << walked.contexts
+        << " plane_angle_units=" << walked.plane_angle_units
+        << " radian_ok=" << walked.radian_ok
+        << " orphan_angular_units=" << walked.orphan_angular_units
+        << " unrecognised_contexts=" << walked.unrecognised_contexts << ")";
+    for (const std::string& v : violations) {
+        oss << "\n  - " << v;
+    }
+    return oss.str();
+}
+
+/// The MODE arm, independent of the five DECLARATION arms above: refuse the
+/// export when the process-global `step.angleunit.mode` static reads as the
+/// DEGREE regime.
+///
+/// WHY THIS CANNOT BE FOLDED INTO THE DECLARATION WALK. `step.angleunit.mode`
+/// is half-wired. `STEPControl_ActorWrite::Transfer` feeds it to
+/// `InitializeFactors(lenFactor, anglemode <= 1 ? 1. : M_PI/180., 1.)`, but its
+/// only write-side consumer is `TopoDSToStep_MakeStepFace::Init` ->
+/// `GeomConvert_Units::RadianToDegree`, which rescales PCURVE PARAMETER space.
+/// The unit declaration ignores it completely — the payload moves, the
+/// declaration does not — so no amount of walking declarations can see this,
+/// and a guard that claimed otherwise would be claiming something its own
+/// evidence contradicts. The measured three-mode diff that establishes this is
+/// the DATED OBSERVATION LOG in `export_step_locked` below, which is the ONE
+/// place those numbers live; do not restate them here, or the copies drift
+/// apart on the next OCCT bump while only the log carries a date to judge them
+/// by.
+///
+/// OBSERVE ONLY, NEVER SET. The #6184 contract states reify "never sets this
+/// static, and MUST NOT" — setting it to Deg is what produces the
+/// self-inconsistent file in the first place. This arm reads it and refuses.
+///
+/// WHY THIS STATIC IS DEFENDED BY REFUSING WHILE `write.step.schema` TWENTY
+/// LINES BELOW IS DEFENDED BY SETTING. The two look like one dimension of
+/// variability handled two ways; they are not, and the discriminator is
+/// whether reify has a choice about writing at all.
+///   - `write.step.schema` carries a PER-EXPORT INPUT. AP203/AP214/AP242 come
+///     from the caller, so there is no value reify could leave in place that
+///     yields a correct file. Given it must write, a per-call explicit set is
+///     the least-bad discipline, and what it stomps is reify's own previous
+///     export's leftovers.
+///   - `step.angleunit.mode` carries NO reify input. The value reify wants is
+///     the one OCCT already defaults to (0=File and 1=Rad both map to a
+///     plane-angle factor of exactly 1.0), so "leave it alone" is available
+///     and is strictly less invasive. Taking the setting posture here would
+///     mean reify starts WRITING a process-global it has no input for, purely
+///     to overwrite a value some other component in this address space chose
+///     deliberately — reify links OCCT alongside gmsh, and `g_step_export_
+///     mutex` serialises reify's exports only, not that component's. Pinning
+///     it to Rad is an identity transform for reify's own bytes and a
+///     non-identity one for a concurrent third-party writer.
+/// So: set what you own and must supply; refuse what you neither own nor need
+/// to change. THE COST OF REFUSING, stated plainly: a third party that sets
+/// this static to Deg and leaves it there hard-blocks every reify STEP export
+/// process-wide, with no break-glass. That is accepted because the diagnostic
+/// below names the static, the value and the fact that reify never writes it,
+/// which is actionable at the only place it can be fixed — the component that
+/// set it. The forcing alternative was reviewed and declined here; reopening
+/// it means reopening #6184's prohibition too, not just this arm.
+///
+/// Pure, for the same reason `step_plane_angle_refusal` is: returns the
+/// refusal text, or "" when the export may proceed.
+std::string step_angle_mode_refusal() {
+    if (Interface_Static::IsPresent("step.angleunit.mode") != Standard_True) {
+        // Absent is OK, deliberately: an OCCT build that never registered the
+        // static cannot be in the degree regime, and refusing on absence would
+        // hard-block every export on such a build for no reason at all.
+        return std::string();
+    }
+    const Standard_Integer mode = Interface_Static::IVal("step.angleunit.mode");
+    if (mode <= 1) {
+        // 0 = File, 1 = Rad — measured byte-identical, and the values
+        // `InitializeFactors` maps to a plane-angle factor of exactly 1.0.
+        return std::string();
+    }
+    std::ostringstream oss;
+    oss << REIFY_INV_AD_4_ARM("MODE")
+        << "refusing to write STEP: the process-global `step.angleunit.mode` "
+           "Interface_Static reads "
+        << mode
+        << ", the DEGREE regime (accepted values are 0=File and 1=Rad). Its "
+           "only write-side consumer is TopoDSToStep_MakeStepFace::Init -> "
+           "GeomConvert_Units::RadianToDegree, which rescales pcurve PARAMETER "
+           "space; the plane-angle unit declaration ignores it and is still "
+           "emitted as SI_UNIT($,.RADIAN.). The result is a silently "
+           "self-inconsistent file — degree pcurves under a radian header — NOT "
+           "a degrees file, which is why this is refused rather than declared. "
+           "reify never sets this static, so an observed degree value was set "
+           "by something else in this process.";
+    return oss.str();
+}
+
+/// Both guards, in the order a reader needs them: "" when the export may be
+/// written, otherwise the ONE refusal text every caller reports.
+///
+/// MODE ARM FIRST. It is the cheaper check and by far the more actionable
+/// diagnostic, and it describes a defect the declaration walk provably cannot
+/// see, so reporting unit findings ahead of it would bury the lede. It also
+/// SHORT-CIRCUITS the walk, which keeps `*counts` honest: all-zero counts say
+/// "the declaration walk did not run", not "it ran and found nothing".
+std::string step_export_guard_refusal(const Handle(Interface_InterfaceModel)& model,
+                                      StepPlaneAngleAuditCounts* counts) {
+    std::string mode = step_angle_mode_refusal();
+    if (!mode.empty()) {
+        return mode;
+    }
+    return step_plane_angle_refusal(model, counts);
+}
+
+/// What `export_step_locked` does when `step_export_guard_refusal` finds
+/// something.
+///
+/// An enum rather than a bool because the two values are not "on/off" — they
+/// are two different contracts about what the caller receives, and a bare
+/// `true` at a call site says neither of them.
+enum class StepGuardDisposition {
+    /// THROW, as production does. A refusal must STOP the file from being
+    /// written, not merely be reported alongside it.
+    Refuse,
+    /// Return the refusal in `StepExportLockedResult::refusal`, still writing
+    /// no file. Test-only, and it exists for one reason: it is what lets a test
+    /// read the guard's COUNTS as numbers instead of scraping digits back out
+    /// of the diagnostic's English.
+    Report,
+};
+
+// The fault VOCABULARY is the shared cxx enum `StepGuardFault`, declared in
+// src/ffi.rs and generated into both languages: every fixture call site is
+// therefore compile-checked, and there is no name-parsing step to get wrong.
+// What each value models is documented on the variant; what it corrupts is
+// `apply_step_guard_fault` below.
+//
+// The seam is an explicit PARAMETER rather than a flag read from the
+// environment or a static, so `export_step`'s `StepGuardFault::None` argument
+// makes the production path provably fault-free BY CONSTRUCTION. The fault is
+// deliberately never threaded into the guard itself — the guard cannot be
+// taught which corruption to expect, so it has to detect it the same way it
+// would detect a real one.
+
+/// RAII override of the `step.angleunit.mode` Interface_Static, used by the
+/// `StepGuardFault::AngleModeDeg` fault.
+///
+/// RESTORATION IS THE WHOLE DESIGN. The static is PROCESS-GLOBAL and the
+/// integration harness runs its tests as threads in one process, so a value
+/// left behind would make every later export in the binary refuse — turning
+/// one negative test into a cascade of unrelated failures. Restoring from a
+/// destructor covers the throwing path, which is the only path this fault ever
+/// takes: the export it enables is refused by
+/// `step_angle_mode_refusal` by construction.
+///
+/// Constructed while the caller already holds `g_step_export_mutex`, so the
+/// temporary value is never observable by a concurrent export either.
+///
+/// This is the ONE place reify writes this static, and it exists solely to
+/// prove the guard that refuses it works. Production code must never set it
+/// (#6184: reify "never sets this static, and MUST NOT").
+class StepAngleModeOverride {
+public:
+    explicit StepAngleModeOverride(bool active) {
+        if (!active) {
+            return;
+        }
+        if (Interface_Static::IsPresent("step.angleunit.mode") != Standard_True) {
+            throw ContractViolation(
+                "cannot inject the AngleModeDeg fault: this OCCT build has "
+                "not registered the `step.angleunit.mode` static, so the trap "
+                "this fault models is unreachable and the test would pass "
+                "vacuously");
+        }
+        saved_ = Interface_Static::IVal("step.angleunit.mode");
+        Interface_Static::SetIVal("step.angleunit.mode", 2);  // 2 = Deg
+        active_ = true;
+    }
+
+    ~StepAngleModeOverride() {
+        if (!active_) {
+            return;
+        }
+        // Swallow: this runs during stack unwinding on the throwing path, and
+        // letting anything escape a destructor there calls std::terminate.
+        try {
+            Interface_Static::SetIVal("step.angleunit.mode", saved_);
+        } catch (...) {
+        }
+    }
+
+    StepAngleModeOverride(const StepAngleModeOverride&) = delete;
+    StepAngleModeOverride& operator=(const StepAngleModeOverride&) = delete;
+
+private:
+    bool active_ = false;
+    Standard_Integer saved_ = 0;
+};
+
+/// Rebuild `ctx`'s `Units()` array, keeping only the units `keep_pred`
+/// accepts, and report through `*dropped` how many were removed.
+///
+/// SHARED BY EVERY FAULT THAT DROPS A UNIT REFERENCE. The filter/refuse-if-
+/// empty/reallocate/`SetUnits` sequence is identical for all of them and only
+/// the predicate differs, so the two copies this replaced had already drifted
+/// (one hard-refused a null `Units()` array, the other skipped it silently).
+/// Whether a null array is a fixture defect or a context that simply cannot
+/// hold the target is genuinely caller-specific, so that ONE decision stays
+/// with the caller: this returns `false` without touching anything, and the
+/// caller says what it means.
+///
+/// Returns `true` when the array was filtered (`*dropped` then says how many
+/// units went; a `*dropped` of 0 means the predicate kept everything and
+/// nothing was written). Throws `ContractViolation` naming `fault_name` when
+/// the filter would leave the context reaching NOTHING: a
+/// `StepBasic_HArray1OfNamedUnit` with lower > upper is not constructible, so
+/// "this context reaches nothing at all" is inexpressible here, and silently
+/// leaving the context untouched would turn the negative test that drove the
+/// fault into a vacuous pass.
+bool rebuild_units_keeping(
+    const Handle(StepRepr_GlobalUnitAssignedContext)& ctx,
+    const std::function<bool(const Handle(StepBasic_NamedUnit)&)>& keep_pred,
+    const char* fault_name,
+    size_t* dropped) {
+    Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
+    if (units.IsNull()) {
+        return false;
+    }
+    std::vector<Handle(StepBasic_NamedUnit)> keep;
+    size_t removed = 0;
+    for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+        Handle(StepBasic_NamedUnit) unit = units->Value(k);
+        if (unit.IsNull()) {
+            continue;
+        }
+        if (keep_pred(unit)) {
+            keep.push_back(unit);
+        } else {
+            removed += 1;
+        }
+    }
+    if (dropped != nullptr) {
+        *dropped = removed;
+    }
+    if (removed == 0) {
+        // Nothing to do — and deliberately no write, so a predicate that
+        // matches nothing leaves the model bit-for-bit as it was.
+        return true;
+    }
+    if (keep.empty()) {
+        std::ostringstream oss;
+        oss << "cannot inject the " << fault_name
+            << " fault: a unit-assigned context reaches only units this "
+               "fault removes, so no non-empty Units() array survives the "
+               "strip (an HArray1 with lower > upper is not constructible) — "
+               "the fixture no longer exercises this arm and needs revisiting";
+        throw ContractViolation(oss.str());
+    }
+    Handle(StepBasic_HArray1OfNamedUnit) rebuilt = new StepBasic_HArray1OfNamedUnit(
+        1, static_cast<Standard_Integer>(keep.size()));
+    for (size_t j = 0; j < keep.size(); ++j) {
+        rebuilt->SetValue(static_cast<Standard_Integer>(j) + 1, keep[j]);
+    }
+    ctx->SetUnits(rebuilt);
+    return true;
+}
+
+/// Substitute, IN PLACE, the first angular unit the first unit-assigned
+/// context reaches with whatever `make_substitute` builds from it.
+///
+/// SHARED BY THE TWO WRONG-FORM FAULTS (`unrecognised_angular` and
+/// `conversion_based`), which differ only in the entity they install.
+/// Replacing in place rather than rebuilding the array is what keeps both of
+/// them tests of the CLASSIFIER: the context still reaches exactly as many
+/// units as before, so V2 (MISSING) stays silent and the classification branch
+/// under test is the only one that can fire.
+///
+/// The substitute is registered with `model->AddEntity` so the diagnostic can
+/// name it by index — `model->Number()` returns 0 for an entity the model does
+/// not carry, and "plane-angle unit #0" is not something a reader can act on.
+///
+/// Returns false when no unit-assigned context reaches an angular unit. The
+/// caller turns that into a `ContractViolation` naming ITS OWN fault, because
+/// a fixture with nothing to corrupt would otherwise make the negative test
+/// pass vacuously, and the message has to say which fault could not be applied.
+bool substitute_first_referenced_angular_unit(
+    const Handle(Interface_InterfaceModel)& model,
+    const std::function<Handle(StepBasic_NamedUnit)(const Handle(StepBasic_NamedUnit)&)>&
+        make_substitute) {
+    const Standard_Integer n = model->NbEntities();
+    for (Standard_Integer i = 1; i <= n; ++i) {
+        Handle(StepRepr_GlobalUnitAssignedContext) ctx =
+            step_unit_assigned_context(model->Value(i));
+        if (ctx.IsNull()) {
+            continue;
+        }
+        Handle(StepBasic_HArray1OfNamedUnit) units = ctx->Units();
+        if (units.IsNull()) {
+            continue;
+        }
+        for (Standard_Integer k = units->Lower(); k <= units->Upper(); ++k) {
+            Handle(StepBasic_NamedUnit) unit = units->Value(k);
+            if (unit.IsNull() || classify_step_angle_unit(unit, nullptr) ==
+                                     StepAngleUnitKind::NotAngular) {
+                continue;
+            }
+            Handle(StepBasic_NamedUnit) substitute = make_substitute(unit);
+            model->AddEntity(substitute);
+            units->SetValue(k, substitute);
+            return true;
+        }
+    }
+    return false;
+}
+
+/// A representation context of a spelling that exists nowhere in OCCT — the
+/// `StepGuardFault::UnrecognisedContext` fixture, and the only way to reach V5.
+///
+/// TEST-ONLY, and it never reaches a file: every disposition returns or throws
+/// on the refusal this entity provokes, so `writer.Write` is unreachable with
+/// it in the model. It inherits `StepRepr_RepresentationContext` so the
+/// guard's discriminating downcast admits it, and declares its RTTI inline so
+/// its `Standard_Type` is distinct from every entry in the V5 allow-list —
+/// which is the entire property under test.
+class StepGuardUnknownContext : public StepRepr_RepresentationContext {
+public:
+    DEFINE_STANDARD_RTTI_INLINE(StepGuardUnknownContext, StepRepr_RepresentationContext)
+};
+
+/// Corrupt exactly ONE thing in `model`, per `fault`.
+///
+/// EXACTLY ONE, deliberately. A partial flip — one context wrong, the rest
+/// still radian — is the strongest signal available, because it is invisible
+/// to any file-wide substring check (the `.RADIAN.` token is still there, in
+/// the contexts that were left alone) and can only be caught by resolving each
+/// context's own unit references.
+///
+/// Throws if the fault could not be applied, rather than returning quietly: a
+/// fixture that no longer contains anything to corrupt would otherwise turn
+/// every negative test into a vacuous pass.
+void apply_step_guard_fault(const Handle(Interface_InterfaceModel)& model,
+                            StepGuardFault fault) {
+    if (fault == StepGuardFault::None || fault == StepGuardFault::AngleModeDeg) {
+        // AngleModeDeg is not a model mutation and is applied EARLIER, before
+        // Transfer, by `StepAngleModeOverride` — the static is consumed during
+        // Transfer, so injecting it here would be too late to change anything.
+        return;
+    }
+    if (model.IsNull()) {
+        throw ContractViolation(
+            "cannot inject a fault: the STEP model is null");
+    }
+    const Standard_Integer n = model->NbEntities();
+
+    if (fault == StepGuardFault::Missing) {
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            Handle(StepRepr_GlobalUnitAssignedContext) ctx =
+                step_unit_assigned_context(model->Value(i));
+            if (ctx.IsNull()) {
+                continue;
+            }
+            // Keep the non-angular entries; drop the angular ones. The dropped
+            // unit ENTITIES stay in the model — that is the whole point: the
+            // file still contains a valid SI_UNIT($,.RADIAN.), it is simply no
+            // longer reachable from this context, which is exactly the defect
+            // a model-wide entity tally cannot see.
+            size_t angular = 0;
+            const bool filtered = rebuild_units_keeping(
+                ctx,
+                [](const Handle(StepBasic_NamedUnit)& unit) {
+                    return classify_step_angle_unit(unit, nullptr) ==
+                           StepAngleUnitKind::NotAngular;
+                },
+                "Missing", &angular);
+            if (!filtered) {
+                // A null Units() on the FIRST context is a fixture defect, not
+                // a context that merely has nothing to strip: there is no
+                // angular reference to remove, so the fault would do nothing.
+                throw ContractViolation(
+                    "cannot inject the Missing fault: the first unit-assigned "
+                    "context already has a null Units() array");
+            }
+            if (angular == 0) {
+                throw ContractViolation(
+                    "cannot inject the Missing fault: the first unit-assigned "
+                    "context already reaches no angular unit, so this negative "
+                    "test would pass without the fault doing anything");
+            }
+            return;
+        }
+        throw ContractViolation(
+            "cannot inject the Missing fault: the transferred model carries "
+            "no unit-assigned context to strip");
+    }
+
+    if (fault == StepGuardFault::OrphanNonRadian) {
+        // Pick the unit FIRST, so the removal below and the rename after it
+        // act on the same entity. Both halves are required: dropping the
+        // reference alone leaves a correct radian, which V4 skips by design,
+        // and renaming alone leaves it referenced, which V3 catches instead.
+        Handle(StepBasic_SiUnitAndPlaneAngleUnit) victim;
+        for (Standard_Integer i = 1; i <= n && victim.IsNull(); ++i) {
+            victim =
+                Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(model->Value(i));
+        }
+        if (victim.IsNull()) {
+            throw ContractViolation(
+                "cannot inject the OrphanNonRadian fault: the transferred "
+                "model carries no SI plane-angle unit to orphan, so this "
+                "negative test would pass vacuously");
+        }
+        // EVERY context, not just the first: a unit one context still reaches
+        // is not an orphan, and V4 would never see it. Whether the emitted
+        // contexts share one unit entity or hold their own is an OCCT
+        // implementation detail this fault must not depend on.
+        size_t removed = 0;
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            Handle(StepRepr_GlobalUnitAssignedContext) ctx =
+                step_unit_assigned_context(model->Value(i));
+            if (ctx.IsNull()) {
+                continue;
+            }
+            size_t dropped_here = 0;
+            const Standard_Transient* target = victim.get();
+            // A null Units() array here is NOT a fixture defect (unlike the
+            // Missing fault above): this loop visits EVERY context, and one
+            // that references nothing simply cannot be holding the victim.
+            if (!rebuild_units_keeping(
+                    ctx,
+                    [target](const Handle(StepBasic_NamedUnit)& unit) {
+                        return unit.get() != target;
+                    },
+                    "OrphanNonRadian", &dropped_here)) {
+                continue;
+            }
+            if (dropped_here == 0) {
+                continue;
+            }
+            removed += 1;
+        }
+        if (removed == 0) {
+            throw ContractViolation(
+                "cannot inject the OrphanNonRadian fault: no unit-assigned "
+                "context referenced the target unit, so it was already an "
+                "orphan and this fault would not be what made it one");
+        }
+        // Now the rename, so the orphan is not the accepted unprefixed radian.
+        // STERADIAN for the same reason NonRadian uses it: a real SI unit
+        // name that is unambiguously not a plane angle.
+        victim->SetName(StepBasic_sunSteradian);
+        return;
+    }
+
+    if (fault == StepGuardFault::UnrecognisedAngular) {
+        const bool applied = substitute_first_referenced_angular_unit(
+            model, [](const Handle(StepBasic_NamedUnit)& unit) {
+                Handle(StepBasic_PlaneAngleUnit) bare = new StepBasic_PlaneAngleUnit();
+                // Carry the dimensional exponents over so the substitute is a
+                // well-formed NAMED_UNIT: the defect under test is the unit's
+                // FORM (a spelling the classifier cannot inspect), not a
+                // half-built entity.
+                bare->SetDimensions(unit->Dimensions());
+                return Handle(StepBasic_NamedUnit)(bare);
+            });
+        if (!applied) {
+            throw ContractViolation(
+                "cannot inject the UnrecognisedAngular fault: no "
+                "unit-assigned context reaches an angular unit to replace, so "
+                "this negative test would pass vacuously");
+        }
+        return;
+    }
+
+    if (fault == StepGuardFault::ConversionBased) {
+        const bool applied = substitute_first_referenced_angular_unit(
+            model, [](const Handle(StepBasic_NamedUnit)& unit) {
+                // A DEGREE unit, spelled the way STEP spells one: a
+                // CONVERSION_BASED_UNIT whose conversion factor is a
+                // PLANE_ANGLE_MEASURE_WITH_UNIT of pi/180 radians, pointing at
+                // the very radian this substitution displaces. Building it out
+                // of the original rather than out of a fresh SI unit is what
+                // makes it a realistic degree declaration instead of a
+                // free-floating entity.
+                StepBasic_Unit radian;
+                radian.SetValue(unit);
+                Handle(StepBasic_MeasureValueMember) factor_value =
+                    new StepBasic_MeasureValueMember();
+                factor_value->SetName("PLANE_ANGLE_MEASURE");
+                factor_value->SetReal(M_PI / 180.0);
+                Handle(StepBasic_MeasureWithUnit) factor =
+                    new StepBasic_MeasureWithUnit();
+                factor->Init(factor_value, radian);
+
+                Handle(StepBasic_ConversionBasedUnitAndPlaneAngleUnit) conv =
+                    new StepBasic_ConversionBasedUnitAndPlaneAngleUnit();
+                conv->Init(unit->Dimensions(),
+                           new TCollection_HAsciiString("degree"), factor);
+                conv->SetPlaneAngleUnit(new StepBasic_PlaneAngleUnit());
+                return Handle(StepBasic_NamedUnit)(conv);
+            });
+        if (!applied) {
+            throw ContractViolation(
+                "cannot inject the ConversionBased fault: no unit-assigned "
+                "context reaches an angular unit to replace, so this negative "
+                "test would pass vacuously");
+        }
+        return;
+    }
+
+    if (fault == StepGuardFault::OrphanUnrecognised) {
+        // Nothing existing is touched: the fault is the ADDITION of an angular
+        // unit entity that no context references. Every context stays
+        // perfectly radian, so V1/V2/V3 must all stay silent and only V4 can
+        // see this — which is what makes it a clean pin on V4's own
+        // "cannot be verified" formatting branch.
+        Handle(StepBasic_PlaneAngleUnit) orphan = new StepBasic_PlaneAngleUnit();
+        model->AddEntity(orphan);
+        if (model->Number(orphan) == 0) {
+            throw ContractViolation(
+                "cannot inject the OrphanUnrecognised fault: the added "
+                "plane-angle unit did not become a model entity, so the walk "
+                "would never see it and this negative test would pass "
+                "vacuously");
+        }
+        return;
+    }
+
+    if (fault == StepGuardFault::TwoPartContext) {
+        // A wrong angular unit, so the added context is a VIOLATION the guard
+        // has to attribute — an added context that reached a correct radian
+        // would be accepted, and the export would then reach `writer.Write`
+        // with a hand-built entity in the model, which is not what this fault
+        // is for.
+        Handle(StepBasic_SiUnitAndPlaneAngleUnit) wrong =
+            new StepBasic_SiUnitAndPlaneAngleUnit();
+        // `hasAprefix = False` makes the prefix argument inert; STERADIAN for
+        // the same reason NonRadian uses it.
+        wrong->Init(Standard_False, StepBasic_spMilli, StepBasic_sunSteradian);
+        wrong->SetPlaneAngleUnit(new StepBasic_PlaneAngleUnit());
+
+        Handle(StepBasic_HArray1OfNamedUnit) units =
+            new StepBasic_HArray1OfNamedUnit(1, 1);
+        units->SetValue(1, wrong);
+        Handle(StepRepr_GlobalUnitAssignedContext) unit_ctx =
+            new StepRepr_GlobalUnitAssignedContext();
+        unit_ctx->SetUnits(units);
+
+        Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)
+            two_part =
+                new StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext();
+        two_part->SetGlobalUnitAssignedContext(unit_ctx);
+
+        model->AddEntity(wrong);
+        model->AddEntity(two_part);
+
+        // Fixture-integrity check via OCCT's OWN accessor, deliberately NOT
+        // via `step_unit_assigned_context`. That function is what this fault
+        // exists to exercise; validating the injection with it would make the
+        // test circular — a missing downcast would red here, at injection
+        // time, instead of showing up as the behaviour difference (V3 vs an
+        // orphaned V4) the test is written to observe.
+        if (two_part->GlobalUnitAssignedContext().IsNull() ||
+            model->Number(two_part) == 0 || model->Number(wrong) == 0) {
+            throw ContractViolation(
+                "cannot inject the TwoPartContext fault: the hand-built "
+                "two-part composite context did not become a well-formed model "
+                "entity, so this negative test would pass vacuously");
+        }
+        return;
+    }
+
+    if (fault == StepGuardFault::UnrecognisedContext) {
+        // A representation context of a spelling the guard cannot resolve.
+        //
+        // NO OCCT 7.8 TYPE FITS, and that is not an accident: the V5
+        // allow-list enumerates every `StepRepr_RepresentationContext`
+        // descendant the headers define, which is precisely what makes V5
+        // unreachable from any model this build can produce. So the fixture
+        // SYNTHESISES the future — a fresh descendant whose `DynamicType()` is
+        // in neither list, which is exactly the shape a later OCCT release, or
+        // a STEPCAFControl/XCAF writer path, would present to this walk.
+        //
+        // The entity is added ALONGSIDE the real contexts rather than
+        // replacing one, so the other counts stay healthy and the test
+        // observes the PARTIAL-blindness case specifically: contexts still
+        // resolve, every one of them is radian, and V5 is the only arm with
+        // anything to say. That is the case V1 cannot see.
+        Handle(StepGuardUnknownContext) unknown = new StepGuardUnknownContext();
+        unknown->Init(new TCollection_HAsciiString("reify-fixture"),
+                      new TCollection_HAsciiString("unknown-spelling"));
+        model->AddEntity(unknown);
+        if (model->Number(unknown) == 0) {
+            throw ContractViolation(
+                "cannot inject the UnrecognisedContext fault: the hand-built "
+                "context did not become a model entity, so this negative test "
+                "would pass vacuously");
+        }
+        // Fixture-integrity check stated in terms of the ALLOW-LIST rather
+        // than of `step_unit_assigned_context`, which is the function under
+        // test. If some future edit adds this fixture type to the allow-list,
+        // the fault becomes inert and the test must say so here rather than
+        // silently observe a healthy export.
+        if (step_context_carries_no_units(unknown)) {
+            throw ContractViolation(
+                "cannot inject the UnrecognisedContext fault: the fixture type "
+                "is on the V5 allow-list, so the guard would recognise it and "
+                "this negative test would pass vacuously");
+        }
+        return;
+    }
+
+    if (fault == StepGuardFault::NoContext) {
+        // Neutralise the composite spelling by nulling the
+        // `GlobalUnitAssignedContext` it composes. There is no way to REMOVE
+        // an entity from an `Interface_InterfaceModel`, so this is how "the
+        // model declares no unit-assigned context" is expressed.
+        size_t cleared = 0;
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            const Handle(Standard_Transient)& entity = model->Value(i);
+            Handle(StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx)
+                three_part =
+                    Handle(StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx)::
+                        DownCast(entity);
+            if (!three_part.IsNull()) {
+                three_part->SetGlobalUnitAssignedContext(
+                    Handle(StepRepr_GlobalUnitAssignedContext)());
+                cleared += 1;
+                continue;
+            }
+            Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)
+                two_part =
+                    Handle(StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext)::
+                        DownCast(entity);
+            if (!two_part.IsNull()) {
+                two_part->SetGlobalUnitAssignedContext(
+                    Handle(StepRepr_GlobalUnitAssignedContext)());
+                cleared += 1;
+            }
+        }
+        if (cleared == 0) {
+            throw ContractViolation(
+                "cannot inject the NoContext fault: the transferred model "
+                "carries no complex representation context to neutralise, so "
+                "this negative test would pass vacuously");
+        }
+        // The fault must leave the walk seeing NOTHING, or V1 does not fire
+        // and the test silently exercises some other arm. A context reachable
+        // as a DIRECT `StepRepr_GlobalUnitAssignedContext` entity cannot be
+        // nulled this way (there is no composite to clear), so say so rather
+        // than proceed on a broken assumption.
+        for (Standard_Integer i = 1; i <= n; ++i) {
+            if (!step_unit_assigned_context(model->Value(i)).IsNull()) {
+                throw ContractViolation(
+                    "cannot inject the NoContext fault: the model still "
+                    "resolves a unit-assigned context after every complex "
+                    "context was cleared, so V1 would not fire and this "
+                    "negative test would exercise a different arm");
+            }
+        }
+        return;
+    }
+
+    for (Standard_Integer i = 1; i <= n; ++i) {
+        Handle(StepBasic_SiUnitAndPlaneAngleUnit) si =
+            Handle(StepBasic_SiUnitAndPlaneAngleUnit)::DownCast(model->Value(i));
+        if (si.IsNull()) {
+            continue;
+        }
+        switch (fault) {
+            case StepGuardFault::NonRadian:
+                si->SetName(StepBasic_sunSteradian);
+                break;
+            case StepGuardFault::Prefixed:
+                // Name deliberately left at RADIAN — the prefix alone is the
+                // defect, and `classify_step_angle_unit`'s `!HasPrefix()`
+                // conjunct is the only thing that catches it.
+                si->SetPrefix(StepBasic_spMilli);
+                break;
+            case StepGuardFault::None:
+            case StepGuardFault::Missing:
+            case StepGuardFault::OrphanNonRadian:
+            case StepGuardFault::UnrecognisedAngular:
+            case StepGuardFault::ConversionBased:
+            case StepGuardFault::OrphanUnrecognised:
+            case StepGuardFault::NoContext:
+            case StepGuardFault::TwoPartContext:
+            case StepGuardFault::UnrecognisedContext:
+            case StepGuardFault::AngleModeDeg:
+                // Handled above or earlier; unreachable here.
+                break;
+        }
+        return;
+    }
+    throw ContractViolation(
+        "cannot inject a fault: the transferred model carries no SI "
+        "plane-angle unit to corrupt, so this negative test would pass "
+        "vacuously");
+}
+
+/// Everything one STEP export produces, before it is narrowed to the FFI
+/// shape the caller asked for.
+struct StepExportLockedResult {
+    std::string content;
+    bool ap242_fell_back = false;
+    StepPlaneAngleAuditCounts audit;
+    /// The guard's refusal text, or empty when the export was accepted.
+    ///
+    /// Only ever non-empty under `StepGuardDisposition::Report`: under
+    /// `Refuse` — every production path — the same text has already left as a
+    /// `ContractViolation` and no result is returned at all.
+    std::string refusal;
+};
+
+// Scope the arm-tag macro to the guard block by hand. A `#define` is NOT
+// namespace-scoped — without this it would leak into the remaining ~1000 lines
+// of this translation unit and into anything included after it, where an
+// unrelated identifier of the same name would be silently rewritten. The
+// enclosing anonymous namespace scopes the functions above; it does nothing
+// for the macro.
+#undef REIFY_INV_AD_4_ARM
+
+}  // anonymous namespace (STEP plane-angle guard)
+
+/// The whole body of `export_step`, factored out so the fixture hook
+/// `export_step_with_injected_fault_for_test` runs the SAME code under the
+/// SAME lock rather than a lookalike copy that could drift from it.
+///
+/// PRECONDITION: the caller already holds `g_step_export_mutex`. This
+/// function does not take it (a non-recursive std::mutex would deadlock) and
+/// it does not install `wrap_occt_call` either — both stay with the callers,
+/// so the exception taxonomy the user sees is identical on both paths.
+static StepExportLockedResult export_step_locked(const OcctShape& shape,
+                                                 rust::Str schema,
+                                                 StepGuardFault fault,
+                                                 StepGuardDisposition disposition) {
+    // Register the STEP statics BEFORE setting them. STEPControl_Controller
+    // ::Init() is the idempotent call that REGISTERS the
+    // `write.step.schema` Interface_Static; calling SetCVal before any
+    // controller exists is a silent no-op (the static is not registered
+    // yet). The writer's own constructor also runs Init(), but it then
+    // immediately builds its model from the STEP Template Model — which
+    // bakes in whatever `write.step.schema` holds AT CONSTRUCTION TIME.
+    // So the correct order is: Init() → SetCVal → construct writer →
+    // Transfer → Write. Setting the static AFTER constructing the writer
+    // is too late: the model has already captured the default schema.
+    STEPControl_Controller::Init();
+
+    // Map the kernel-neutral schema name (StepSchema::as_str()) to the
+    // OCCT `write.step.schema` enum token. The accepted tokens for this
+    // build are AP203 / AP214CD / AP214DIS / AP214IS / AP242DIS; we use
+    // the DIS variants for AP214/AP242. Unknown inputs default to the
+    // AP214 token so a malformed schema never aborts the export.
+    std::string neutral(schema);
+    const char* token = "AP214DIS";
+    bool want_ap242 = false;
+    if (neutral == "AP203") {
+        token = "AP203";
+    } else if (neutral == "AP214") {
+        token = "AP214DIS";
+    } else if (neutral == "AP242") {
+        token = "AP242DIS";
+        want_ap242 = true;
+    }
+
+    // Set the schema EXPLICITLY on every call — including the AP214
+    // default. `write.step.schema` is a process-global Interface_Static;
+    // export_step is serialized by g_step_export_mutex, but the static
+    // persists between calls, so without an explicit per-call set a prior
+    // AP203 export would leak its schema into a later default export.
+    bool ap242_fell_back = false;
+    Standard_Boolean set_ok =
+        Interface_Static::SetCVal("write.step.schema", token);
+
+    // Why `set_ok` is consulted ONLY for AP242 (and not AP203/AP214):
+    // STEPControl_Controller::Init() registers AP203 and all AP214 tokens
+    // (AP214CD/AP214DIS/AP214IS) unconditionally in every STEP-capable
+    // OCCT build, so SetCVal for those tokens cannot fail here — a failure
+    // would mean no STEP controller exists at all, in which case
+    // export_step itself could not run. They also have no safer fallback
+    // target, so reading back set_ok for them would be dead code. AP242DIS
+    // is the only token whose availability varies across OCCT builds/configs
+    // (it can be compiled out of older/minimal builds), so it is the only
+    // one that needs the rejection readback + honest AP214 fallback below.
+    if (want_ap242) {
+        // Honest AP242 degradation: if the linked OCCT rejected AP242DIS
+        // (SetCVal failed, or the static did not actually take the value),
+        // fall back to AP214DIS and report it. The linked OCCT 7.9.3 DOES
+        // support AP242DIS, so this branch is a guard for builds that
+        // don't — it is intentionally not exercised in-tree.
+        const char* current = Interface_Static::CVal("write.step.schema");
+        bool accepted = set_ok && current != nullptr &&
+                        std::string(current) == "AP242DIS";
+        if (!accepted) {
+            Interface_Static::SetCVal("write.step.schema", "AP214DIS");
+            ap242_fell_back = true;
+        }
+    }
+
+    // Construct the writer AFTER the schema is set, so its model captures
+    // the requested `write.step.schema`.
+    STEPControl_Writer writer;
+
+    // LENGTH UNIT REGIME. Reify model space is SI METRES; exported STEP is
+    // MILLIMETRES (the CAD-interop default, and the unit OCCT already
+    // declares as SI_UNIT(.MILLI.,.METRE.) in the written file). Setting
+    // these two values is what makes the declaration and the payload
+    // AGREE: without them OCCT's scale factor is 1.0 and reify's metre
+    // coordinates are emitted verbatim under a millimetre declaration, so
+    // a 30 mm part reads back as 30 µm — a 1000x shrink.
+    //
+    // Both APIs express a unit as its SIZE IN MILLIMETRES, so the local
+    // (in-memory) unit is 1000.0 — "reify's coordinates are metres" — and
+    // the write unit is 1.0 — "emit millimetres". OCCT derives the scale
+    // factor from the ratio local/write and applies the x1000 itself; the
+    // declared SI_UNIT line is unchanged, only the payload moves.
+    //
+    // ORDERING IS LOAD-BEARING, for the same reason the `write.step.schema`
+    // ordering above is: the units cannot be set BEFORE the writer is
+    // constructed (the model does not exist yet — Model() is what creates
+    // and owns it) nor AFTER Transfer (which has already computed and
+    // applied the scale factor). Construct writer -> set units -> Transfer
+    // is the only correct order.
+    //
+    // BOTH values are set EXPLICITLY on every call, for the same reason the
+    // schema is re-set per call above: SetWriteLengthUnit is otherwise
+    // uninitialised and falls back to the process-global `write.step.unit`
+    // Interface_Static, which another caller could have moved.
+    //
+    // The PER-MODEL API is chosen deliberately over the equivalent
+    // process-global `xstep.cascade.unit` / `write.step.unit` statics: a
+    // per-model setting cannot leak into a concurrent export or into a
+    // future STEP reader, whereas this function already needs
+    // g_step_export_mutex and a per-call schema re-set precisely because
+    // OCCT's globals do leak.
+    Handle(StepData_StepModel) step_model = writer.Model();
+    if (step_model.IsNull()) {
+        // Fail loudly rather than exporting geometry mislabelled by 1000x.
+        throw std::runtime_error(
+            "STEPControl_Writer::Model() returned null; cannot set the STEP "
+            "length unit regime");
+    }
+    step_model->SetLocalLengthUnit(1000.0);  // reify model space: metres
+    step_model->SetWriteLengthUnit(1.0);     // STEP file: millimetres
+
+    // PLANE-ANGLE UNIT REGIME. Plane angles cross this boundary as SI
+    // RADIANS in both directions, and — unlike the length regime above —
+    // there is nothing to CALL to make that so. OCCT declares radians
+    // unconditionally: STEPConstruct_UnitContext::Init, the sole builder of
+    // the write-side unit context, emits `SI_UNIT($,.RADIAN.)` with no
+    // branch on any writer option. Contrast the length unit twenty
+    // instructions above, which carries a full conditional
+    // CONVERSION_BASED_UNIT chain driven by `write.step.unit`. So reify's
+    // angular declaration is correct BY CONSTRUCTION — which is precisely
+    // why it needed a DECLARATION: rad = 1 by SI coherence is numerically
+    // right, but until #6184 it was nowhere stated (INV-AD-4).
+    //
+    // THERE IS NO WRITE-SIDE ANGLE KNOB. No SetWriteAngleUnit /
+    // WriteAngleUnit / SetLocalAngleUnit exists, and StepData_StepModel —
+    // which carries SetLocalLengthUnit / SetWriteLengthUnit and a
+    // `myLocalLengthUnit` member — has no angular counterpart of any kind.
+    // This was settled empirically across several OCCT versions; do not
+    // re-investigate. See MEASURED below for the sweep.
+    //
+    // THE TRAP: `step.angleunit.mode`. It is a REGISTERED Interface_Static,
+    // an enum of File/Rad/Deg, and STEPControl_ActorWrite::Transfer
+    // genuinely reads it —
+    // `InitializeFactors(lenFactor, anglemode <= 1 ? 1. : M_PI/180., 1.)`.
+    // But it is HALF-WIRED: its only write-side consumer is
+    // TopoDSToStep_MakeStepFace::Init -> GeomConvert_Units::RadianToDegree,
+    // which rescales PCURVE PARAMETER space; the unit DECLARATION ignores
+    // it entirely. Setting it to Deg therefore emits degree pcurves under a
+    // radian header — a silently self-inconsistent file, NOT a degrees
+    // file. reify never sets this static, and MUST NOT.
+    //
+    // INTERACTION WITH THE LENGTH REGIME above: the two are independent
+    // here ONLY because the plane-angle factor is 1.0. StepData_Factors
+    // carries myLengthFactor and myPlaneAngleFactor as separate members,
+    // and 7.9 added DEFAULTED StepData_Factors arguments across the
+    // GeomToStep_* entry points — so a forgotten-factors regression would
+    // be INVISIBLE in the angle (factor 1.0, no observable change) and
+    // FATAL in the length (factor 1000). Do not infer from "angles are
+    // fine" that the factor plumbing is fine.
+    //
+    // THE GUARANTEE BOUNDARY. reify guarantees the declaration and the
+    // payload AGREE. It does NOT guarantee a consumer honours the
+    // declaration: a 26.565 deg cone semi-angle misread as 0.4636 deg puts
+    // the top edge 14.76 mm off its own surface on a 30 mm part — a
+    // topologically invalid face that importers resolve inconsistently.
+    // Nor do the pins below catch the `step.angleunit.mode` trap: they
+    // quantify over unit DECLARATIONS, and as measured below the
+    // declaration does not move when the payload does. THE SAME IS TRUE OF
+    // #6344's RUNTIME DECLARATION GUARD, and for the same reason — it walks
+    // the model's unit contexts, which the measurement below shows are
+    // byte-identical in all three modes. #6344 therefore closes that trap
+    // with a SEPARATE arm that reads the static directly
+    // (`step_angle_mode_refusal`), not as a consequence of the
+    // unit walk. Do not read either guard as covering the other.
+    //
+    // PINS: export_step_declares_si_radians_in_every_unit_context (BRep /
+    // CONICAL_SURFACE) and ..._for_wireframe_curve_parameters (wireframe /
+    // TRIMMED_CURVE), both in crates/reify-kernel-occt/src/handle.rs. They
+    // quantify over EVERY unit context — a compound emits one per
+    // representation_context, three for a two-cone union — rather than
+    // grepping for one ".RADIAN." token, so a partial flip fails.
+    //
+    // INV-AD-4's THIRD ARM — the runtime refusal guard — LANDED in #6344 and
+    // runs a few lines below, between Transfer and Write:
+    // `step_angle_mode_refusal()` (the separate mode arm named in
+    // THE TRAP paragraph above) and
+    // `step_plane_angle_refusal()`, whose five declaration arms are
+    // (V1) the model carries at least one unit-assigned context, (V2) every
+    // context reaches at least one angular unit, (V3) every angular unit a
+    // context reaches is the unprefixed SI radian, (V4) every angular unit no
+    // context references is too, and (V5) every representation context the
+    // walk MEETS is one whose spelling it can resolve. Why it walks BY
+    // ASSOCIATION rather than comparing global counts:
+    // `StepPlaneAngleAuditCounts` above.
+    //
+    // Its failure arms are unreachable from ordinary inputs — as stated above,
+    // OCCT emits the radian unconditionally, so no input shape and no
+    // Interface_Static can drive a real export into them. They are therefore
+    // exercised through `export_step_with_injected_fault_for_test`, which runs
+    // this same body under this same lock with exactly one corruption applied;
+    // see crates/reify-kernel-occt/tests/harness_step_export/
+    // step_plane_angle_guard_integration.rs.
+    //
+    // ------------------------------------------------------------------
+    // MEASURED 2026-08-29 (task #6184) against SYSTEM OCCT 7.8. Everything
+    // ABOVE this line is version-independent contract; everything BELOW is
+    // a DATED OBSERVATION LOG, kept because it is the evidence the contract
+    // rests on and no test asserts any of it. Read it as "what one run on
+    // one version showed", never as a claim about the OCCT you are linking
+    // today: instance numbers renumber on any writer change, so if they no
+    // longer match, the log is STALE, not the export broken — re-measure
+    // and re-date rather than trusting these numbers. (Longer-term home for
+    // this log is docs/prds/v0_6/angle-dimension-completion.md section 9
+    // B7, where dated findings belong; the move is deferred because #6184
+    // holds no lock on that file.)
+    //
+    // WHICH OCCT. This writer is SYSTEM OCCT 7.8 from
+    // /usr/lib/x86_64-linux-gnu, NOT the 7.9.3 in /opt/reify-deps:
+    // crates/reify-build-utils/src/lib.rs deliberately lists system paths
+    // first for NativeDep::Occt (the deps tree ships 7.9 only as a
+    // transitive gmsh dependency). Both are loaded into one address space,
+    // and exported files carry 'Open CASCADE STEP processor 7.8'.
+    //
+    // NO-ANGLE-KNOB SWEEP. Checked in the 7.8 headers, and additionally in
+    // V7_9_0, V7_9_3, V8_0_1 and master: all clean, and there is no 7.10.
+    // OCCT's own docs describe the one angle parameter as "obsolete ...
+    // when a STEP file is read". Both versions hardcode the radian, which
+    // is why the contract above is stated as version-independent.
+    //
+    // THE step.angleunit.mode DIFF. Exporting one 30 mm cone under each of
+    // the three enum values:
+    //   - modes 0 (File) and 1 (Rad): byte-identical DATA sections.
+    //   - mode 2 (Deg): differs in exactly ONE entity, the pcurve point
+    //     inside a DEFINITIONAL_REPRESENTATION —
+    //       mode 0/1  #39 = CARTESIAN_POINT('',(-6.28318530718,0.))  [-2*pi rad]
+    //       mode 2    #39 = CARTESIAN_POINT('',(-360.,0.))           [same angle, degrees]
+    //   - the declaration is byte-identical in ALL THREE modes:
+    //       #84 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );
+    //     with zero CONVERSION_BASED_UNIT and zero "degree" tokens anywhere
+    //     in the file, in every mode.
+    // The payload moves; the declaration does not. That is the whole defect
+    // in one diff, and the reason the pins cannot catch this trap.
+    // ------------------------------------------------------------------
+    //
+    // Refs: #6184; docs/prds/v0_6/angle-dimension-completion.md (INV-AD-4,
+    // section 9 B7). Length regime above: #6186.
+
+    // The AngleModeDeg fault must be installed BEFORE Transfer, which is
+    // what consumes `step.angleunit.mode` (via STEPControl_ActorWrite::Transfer
+    // -> InitializeFactors). It restores itself on the way out — on the
+    // throwing path under `Refuse` and on the early return under `Report`
+    // alike. Production callers pass StepGuardFault::None, so this constructs
+    // inert.
+    StepAngleModeOverride angle_mode_override(fault == StepGuardFault::AngleModeDeg);
+
+    writer.Transfer(shape.shape, STEPControl_AsIs);
+
+    // INV-AD-4 RUNTIME REFUSAL GUARD (#6344). Placed AFTER Transfer —
+    // which is what populates the model's unit contexts, so there is
+    // nothing to walk before it — and BEFORE Write, so a violation
+    // refuses the export instead of diagnosing a file that already
+    // exists. See the guard's own contract block above `export_step_locked`.
+    // THE ONE AND ONLY fault-injection point, and it sits between Transfer
+    // (which builds the unit contexts) and the guard (which checks them).
+    // Production callers pass StepGuardFault::None, so this is a no-op there.
+    apply_step_guard_fault(step_model, fault);
+
+    // Both arms, rendered once. Under `Refuse` — every production path — a
+    // finding leaves as a `ContractViolation` and no file is written.
+    StepPlaneAngleAuditCounts audit;
+    std::string refusal = step_export_guard_refusal(step_model, &audit);
+    if (!refusal.empty()) {
+        if (disposition == StepGuardDisposition::Refuse) {
+            throw ContractViolation(refusal);
+        }
+        // Reporting disposition: hand the refusal back WITH the counts, and
+        // still write nothing. A test reads the numbers as numbers, and the
+        // byte-identical text proves it is describing the same finding the
+        // production path throws.
+        StepExportLockedResult reported;
+        reported.ap242_fell_back = ap242_fell_back;
+        reported.audit = audit;
+        reported.refusal = std::move(refusal);
+        return reported;
+    }
+
+    // Write to a temporary file, then read back
+    char tmpname[] = "/tmp/reify_step_XXXXXX";
+    int fd = mkstemp(tmpname);
+    if (fd < 0) {
+        throw std::runtime_error("Failed to create temp file for STEP export");
+    }
+    close(fd);
+
+    IFSelect_ReturnStatus status = writer.Write(tmpname);
+    if (status != IFSelect_RetDone) {
         std::remove(tmpname);
+        throw std::runtime_error("STEPControl_Writer::Write failed");
+    }
 
+    std::ifstream ifs(tmpname);
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+    ifs.close();
+    std::remove(tmpname);
+
+    StepExportLockedResult result;
+    result.content = std::move(content);
+    result.ap242_fell_back = ap242_fell_back;
+    result.audit = audit;
+    return result;
+}
+
+/// Narrow one locked export to the FFI probe shape.
+///
+/// Shared by both fixture hooks so the two dispositions cannot drift in what
+/// they report; the only field that differs between them is `refusal`, which
+/// the refusing hook can never populate because that path throws instead.
+static StepGuardProbeResult step_guard_probe(StepExportLockedResult locked) {
+    StepGuardProbeResult out;
+    out.content = rust::String(locked.content);
+    out.refusal = rust::String(locked.refusal);
+    out.contexts = locked.audit.contexts;
+    out.plane_angle_units = locked.audit.plane_angle_units;
+    out.radian_ok = locked.audit.radian_ok;
+    out.orphan_angular_units = locked.audit.orphan_angular_units;
+    out.unrecognised_contexts = locked.audit.unrecognised_contexts;
+    return out;
+}
+
+ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
+    return wrap_occt_call("export_step", [&]() {
+        // Refuse a shape with no topology FIRST — before the process-global
+        // export mutex is taken and before any controller/schema plumbing, so
+        // a doomed export costs nothing and never makes a real export queue
+        // behind it. Same stance as `serialize_brep` below, which refuses to
+        // hand back empty output: Reify does not emit a phantom artifact.
+        //
+        // Without this, `writer.Transfer`'s IFSelect_ReturnStatus is discarded
+        // (in `export_step_locked` above, unlike `writer.Write`), so an empty
+        // shape exports as header-only bytes with a success exit.
+        reject_empty_input_shape(shape.shape, "shape to export");
+
+        std::lock_guard<std::mutex> lock(g_step_export_mutex);
+
+        StepExportLockedResult locked = export_step_locked(
+            shape, schema, StepGuardFault::None, StepGuardDisposition::Refuse);
+        // BELT AND BRACES ON THE DISPOSITION ARGUMENT. `Refuse` above is what
+        // makes a finding throw, and it is a per-call-site value no test can
+        // observe from outside on an accepted export — the two dispositions
+        // differ only on a REFUSED model, which production inputs cannot
+        // produce. So a regression that flipped this one argument to `Report`
+        // would silently convert production from "refuse the write" to
+        // "return an empty file and no error", the warning-not-refusal
+        // weakening this guard exists to prevent, with every test still green.
+        // Re-throwing here makes that flip harmless: the refusal still
+        // refuses, whichever disposition was asked for.
+        if (!locked.refusal.empty()) {
+            throw ContractViolation(locked.refusal);
+        }
+        // The audit counts are deliberately dropped here: the production
+        // signature is unchanged by #6344, and a violation has already been
+        // turned into a refusal by the time control reaches this line.
         ExportStepResult result;
-        result.content = rust::String(content);
-        result.ap242_fell_back = ap242_fell_back;
+        result.content = rust::String(locked.content);
+        result.ap242_fell_back = locked.ap242_fell_back;
         return result;
+    });
+}
+
+StepGuardProbeResult export_step_with_injected_fault_for_test(const OcctShape& shape,
+                                                              rust::Str schema,
+                                                              StepGuardFault fault) {
+    // Same mutex as `export_step`, for the same reason: OCCT's STEP writer
+    // pipeline is backed by process-global state.
+    std::lock_guard<std::mutex> lock(g_step_export_mutex);
+    // DELIBERATELY the production op name, not a fixture-specific one. The
+    // refusal text these tests pin has to be byte-identical to what a real
+    // refusal produces — a hook that stamped its own label would let the
+    // production diagnostic drift without reddening anything.
+    return wrap_occt_call("export_step", [&]() {
+        return step_guard_probe(
+            export_step_locked(shape, schema, fault, StepGuardDisposition::Refuse));
+    });
+}
+
+StepGuardProbeResult step_guard_probe_for_test(const OcctShape& shape,
+                                               rust::Str schema,
+                                               StepGuardFault fault) {
+    // Same mutex, same production op name and same locked body as the refusing
+    // hook above — the ONLY difference is the disposition.
+    std::lock_guard<std::mutex> lock(g_step_export_mutex);
+    return wrap_occt_call("export_step", [&]() {
+        return step_guard_probe(
+            export_step_locked(shape, schema, fault, StepGuardDisposition::Report));
     });
 }
 

@@ -731,7 +731,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
         }
         "joint_jacobian" => {
-            // SE(3) twist column for a joint, returned as
+            // Jacobian column for a joint — the `JacobianColumn` nominal type
+            // (dpose/dq, NOT a Twist / spatial velocity), returned as
             // `Map { "angular": Vector3<DIMENSIONLESS>, "linear": Vector3<DIMENSIONLESS> }`.
             //
             // Per-kind formula (constant w.r.t. the motion variable for v0.1
@@ -977,7 +978,6 @@ fn joint_jacobian_value(value: &Value) -> Value {
 ///
 /// Reference: PRD §5.1 (motion-subspace per joint kind) and §12 Q4 (cylindrical
 /// column ordering).
-#[allow(dead_code)] // consumed by RBD-ε RNEA (not yet landed)
 pub(crate) fn motion_subspace_columns(joint: &Value) -> Option<Vec<SpatialVector6>> {
     let map = match joint {
         Value::Map(m) => m,

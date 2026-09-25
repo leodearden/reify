@@ -124,6 +124,34 @@
 #                                       unset = no narrowing; set it to tighten.
 #                                       Ignored when REIFY_NEXTEST_TEST_THREADS
 #                                       is set (the explicit override wins).
+#   REIFY_NEXTEST_CLI_TEST_THREADS  — NOT an input to the derivation.  It reports
+#                                       the `--test-threads=N` value the CALLER
+#                                       will put on the nextest command line, so
+#                                       the two can be compared here — the one
+#                                       place the derived pool exists.  Three-way
+#                                       contract (task 6375):
+#                                         unset/empty/non-digit -> no output, no
+#                                           behaviour change whatsoever;
+#                                         <= derived pool -> one stderr note
+#                                           naming both values; path still
+#                                           printed, exit 0.  Capping BELOW the
+#                                           pool is the sanctioned offline-lane
+#                                           use and stays legal;
+#                                         >  derived pool -> stderr error naming
+#                                           both values, exit 64, NOTHING on
+#                                           stdout.  nextest's CLI
+#                                           --test-threads outranks
+#                                           --config-file, so such a value would
+#                                           silently RAISE the pool above this
+#                                           derivation — the config file would
+#                                           be generated, honoured by nothing,
+#                                           and the narrowing would read as
+#                                           effective while being absent.
+#                                       Guard: tests/infra/test_verify_test_threads.sh
+#                                       Tests 6a-6e.  verify.sh passes it as a
+#                                       per-invocation env prefix (not exported)
+#                                       at two sites: emit_nextest_pass and the
+#                                       gui-feature pass.
 #
 # occt cap:
 #   Workstation (32t, ~125 GiB): min(24,32,62)=24 — bit-identical to pre-4621.
@@ -316,6 +344,29 @@ esac
 # Same defence the occt ram_bound carries above, which cites the identical
 # nextest rejection for `max-threads = 0`.
 if [ "$tt" -lt 1 ]; then tt=1; fi
+
+# ---------------------------------------------------------------------------
+# CLI --test-threads vs the derived pool (task 6375).
+#
+# Placed AFTER the clamp on purpose: the comparison must use the value actually
+# emitted, not a pre-clamp intermediate.
+#
+# Same strict digits-only parse idiom as the two knobs above, with $(( 10#... ))
+# base-10 forcing, so a leading-zero value cannot abort the script as invalid
+# octal under `set -euo pipefail` and anything unparseable falls through to
+# today's exact behaviour: no output, no behaviour change.
+# ---------------------------------------------------------------------------
+case "${REIFY_NEXTEST_CLI_TEST_THREADS:-}" in
+    (''|*[!0-9]*) ;;
+    (*)
+        _cli_tt=$(( 10#${REIFY_NEXTEST_CLI_TEST_THREADS} ))
+        if [ "$_cli_tt" -gt "$tt" ]; then
+            echo "gen-nextest-config.sh: ERROR — --test-threads=${_cli_tt} exceeds the derived global pool of ${tt}. nextest's CLI --test-threads outranks --config-file, so ${_cli_tt} would REPLACE the generated [profile.default] test-threads = ${tt} and silently raise the pool above this derivation. Refusing to generate a config that nothing would honour." >&2
+            exit 64
+        fi
+        echo "gen-nextest-config.sh: note — --test-threads=${_cli_tt} caps below the derived global pool of ${tt}; the CLI value wins (it outranks --config-file) and the effective pool is ${_cli_tt}." >&2
+        ;;
+esac
 
 # Create a fresh temp file.  Template ends in X's (do NOT combine --suffix with
 # a .toml-terminated template — that form errors on some systems; empirically

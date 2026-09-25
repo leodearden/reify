@@ -391,6 +391,9 @@ impl Engine {
             // Task 4198 (Determinacy β): empty until tessellate_realizations()
             // / tessellate_snapshot() populates it via measure_mesh_deviation.
             achieved_repr_tol: BTreeMap::new(),
+            // DIC α (#5415): per-build ledger, populated by the relate
+            // consumption loop and cleared on every surface.
+            relate_static_facts: Vec::new(),
             // task #3428 step-6: persistent cache — off by default so all
             // existing tests without set_persistent_cache_dir are unaffected.
             persistent_cache_dir: None,
@@ -632,6 +635,38 @@ impl Engine {
         self.achieved_repr_tol.get(occurrence).copied()
     }
 
+    /// The static-relate consumption ledger produced by the LAST build — one
+    /// `(scope_name, facts)` row per ZERO-AUTO relate scope, in `solve_scopes`
+    /// order (DIC α, task 5415).
+    ///
+    /// Each row records how many of that scope's declared relations were
+    /// measured and found satisfied, measured and found violated, or could not
+    /// be decided; the three always sum to the scope's relation count.
+    ///
+    /// An EMPTY slice means this build processed no zero-auto relate scope —
+    /// either the module has no relate block, or every relate scope has `at
+    /// auto` subs and was SOLVED rather than statically verified. Those are
+    /// different ledger rows to ζ (#5420) and are deliberately not folded
+    /// together here: reporting an assembly the solver actually placed as one
+    /// merely checked in place would be a false claim.
+    ///
+    /// Per-build, not cumulative: `reset_per_build_state` clears it on the
+    /// `Build` surface — the one that also repopulates it, from the relate
+    /// consumption loop — so a row can never describe a previous module's
+    /// scopes. The other surfaces deliberately leave it standing: a
+    /// `tessellate_realizations()` after a build (which `reify check` performs on
+    /// any module carrying a `RepresentationWithin` rule) never repopulates, so
+    /// clearing there would hand ζ (#5420) an empty ledger for a module that has
+    /// a relate block — the same conflation, one layer up, that the ledger exists
+    /// to remove.
+    ///
+    /// This task produces the rows; rendering them into the `reify check`
+    /// summary is ζ #5420's leaf
+    /// (`docs/prds/v0_6/declared-intent-consumption-accounting.md` §4.4 V3).
+    pub fn relate_static_facts(&self) -> &[(String, crate::relate_solve::StaticRelateFacts)] {
+        &self.relate_static_facts
+    }
+
     /// **Test-instrumentation only — not a stable public surface.**
     ///
     /// Immutable access to the per-Engine [`reify_types::StructureRegistry`]
@@ -732,7 +767,7 @@ impl Engine {
     /// hook points pinned by tests
     /// `edit_param_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build_snapshot`
     /// and `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
-    /// in `tests/tolerance_wiring_e2e.rs`). This method is the escape hatch
+    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`). This method is the escape hatch
     /// for scenarios that fall OUTSIDE those hook points; it is NOT a
     /// required pre-`build_snapshot` step.
     ///
@@ -758,28 +793,49 @@ impl Engine {
     /// **What this method does NOT reset**: the cache's
     /// [`realization_entries`](crate::realization_cache::RealizationCache::realization_entries)
     /// counter, surfaced as [`CacheStats::realization_entries`](crate::CacheStats::realization_entries).
-    /// It is a monotonic count of realizations PERFORMED over the engine's
-    /// lifetime, not of entries currently resident, so it deliberately survives
-    /// the flush (task 4152) — `clear` empties the buckets in place and cannot
-    /// reach the counter, so this holds by construction rather than by a
-    /// save/restore convention here. Since `edit_param` and `edit_source` both
-    /// flush here, resetting it would zero the metric on every edit. Pinned by
-    /// `realization_entries_survives_clear_realization_cache` in
-    /// `tests/tolerance_wiring_e2e.rs` and by
-    /// `clear_empties_the_cache_but_preserves_realization_entries` in
-    /// `src/realization_cache.rs`.
+    /// It is a monotonic count of realizations PERFORMED over the engine's lifetime, not of
+    /// entries currently resident, so it deliberately survives this flush (task 4152). Why
+    /// that holds by construction, and the tests that pin it, are documented at
+    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear).
     ///
     /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
-    /// in `tests/tolerance_wiring_e2e.rs`.
+    /// in `tests/harness_tolerance/tolerance_wiring_e2e.rs`.
     pub fn clear_realization_cache(&mut self) {
-        // Task 4152: `RealizationCache::clear` drops every entry in place and
-        // structurally cannot reach the monotonic `realization_entries`
-        // counter, so the lifetime metric survives the flush by construction.
-        // Do NOT "simplify" this back to a reseat
-        // (`self.realization_cache = RealizationCache::new()`): that zeroes the
-        // counter, and `edit_param`/`edit_source` flush on every edit, so the
-        // metric would be unusable across edits.
+        // Must stay a clear-in-place; never a reseat to `RealizationCache::new()`.
+        // See `RealizationCache::clear` for why the lifetime counter's survival
+        // depends on that (task 4152).
         self.realization_cache.clear();
+    }
+
+    /// Reset all geometry kernels and drop the realization cache for a GUI
+    /// whole-file reload (task 5212).
+    ///
+    /// Must be called **exactly once per whole-file reload** — the GUI wires
+    /// it at the top of `EngineSession::check_with_solve_slot`, the single
+    /// funnel for `load_file`/`update_source`/`load_from_source`, and never on
+    /// a slider (parameter) edit. It does two coupled things, BOTH required:
+    ///
+    /// 1. Resets every registered geometry kernel (`GeometryKernel::reset`),
+    ///    freeing the previous design's resident native shapes. The reify-eval
+    ///    `Engine` and the kernels it owns are long-lived and reused across
+    ///    reloads, so without this the OCCT kernel's native `shapes` table
+    ///    grows unbounded over a long session.
+    /// 2. Clears the realization cache (via
+    ///    [`clear_realization_cache`](Self::clear_realization_cache)). GUI
+    ///    reloads preserve prior module identity, so build-2 entities collide
+    ///    on `entity_id` with build-1 and would cache-hit a build-1
+    ///    `KernelHandle` whose shape step 1 just evicted → `InvalidReference`
+    ///    → broken render. Clearing forces a cache-miss → fresh re-execution
+    ///    against the reset kernel.
+    ///
+    /// Reset alone frees the native shapes but leaves stale cache handles that
+    /// now resolve to `InvalidReference` (broken render); a cache-clear alone
+    /// keeps the render correct but frees no native memory. Together they
+    /// bound native memory AND keep the reload correct. Idempotent on a cold
+    /// engine (no kernel holds state; the cache is already empty).
+    pub fn reset_geometry_for_reload(&mut self) {
+        self.geometry_kernels.values_mut().for_each(|k| k.reset());
+        self.clear_realization_cache();
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.
@@ -1640,10 +1696,15 @@ impl Engine {
             // so the diagnostic would be misleading. The lowering site in
             // `engine_eval.rs` emits its own diagnostic that DOES mention
             // body-inline fallback, where that wording is accurate.
-            None => Err(vec![reify_core::Diagnostic::error(format!(
-                "@optimized target {:?}: no registered compute trampoline",
-                target
-            ))]),
+            //
+            // Both HARD sites build this via
+            // `crate::engine_compute::hard_no_trampoline_diagnostic`, which
+            // single-sources the message from `NO_TRAMPOLINE_STEM` and pins the
+            // severity unconditionally to Error — see its rustdoc for why the
+            // SOFT sites' empty-registry downgrade does not apply here.
+            None => Err(vec![crate::engine_compute::hard_no_trampoline_diagnostic(
+                target,
+            )]),
         }
     }
 
@@ -3276,6 +3337,68 @@ mod tests {
         assert!(
             engine.demands_volume_mesh("test::vm-demand"),
             "re-registering the same target keeps it demanding",
+        );
+    }
+
+    // ── reset_geometry_for_reload (task 5212 — GUI whole-file reload) ──
+
+    /// `reset_geometry_for_reload()` frees per-design native kernel memory and
+    /// drops the realization cache in one call, so a GUI whole-file reload
+    /// neither leaks prior-design shapes nor re-serves a stale build-N handle
+    /// (module identity is preserved across reloads, so build-2 entities
+    /// collide on entity_id with build-1 and would otherwise cache-hit a
+    /// build-1 handle whose shape was just evicted). A reset-counting mock
+    /// kernel confirms every registered kernel is reset exactly once, and the
+    /// realization cache is emptied.
+    #[test]
+    fn reset_geometry_for_reload_resets_kernels_and_clears_realization_cache() {
+        use reify_core::ContentHash;
+        use reify_ir::{GeometryHandleId, KernelHandle, KernelId, ReprKind};
+        use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Register a reset-counting mock kernel; keep a shared handle to its
+        // reset counter before the mock is boxed into the engine.
+        let mock = MockGeometryKernel::new();
+        let reset_calls = mock.reset_calls_ref();
+        engine
+            .geometry_kernels
+            .insert("occt".to_string(), Box::new(mock));
+
+        // Seed one realization-cache entry — the stale build-N handle a reload
+        // must drop (else it would be re-served against an evicted shape).
+        engine.realization_cache.insert(
+            "Bracket",
+            ReprKind::BRep,
+            0.01,
+            ContentHash(0),
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+        );
+        assert!(
+            !engine.realization_cache().is_empty(),
+            "precondition: realization cache seeded with one entry",
+        );
+        assert_eq!(
+            *reset_calls.lock().unwrap(),
+            0,
+            "precondition: no reset before the reload call",
+        );
+
+        engine.reset_geometry_for_reload();
+
+        assert_eq!(
+            *reset_calls.lock().unwrap(),
+            1,
+            "reset_geometry_for_reload must reset every registered kernel exactly once",
+        );
+        assert!(
+            engine.realization_cache().is_empty(),
+            "reset_geometry_for_reload must clear the realization cache so no \
+             stale build-N handle is re-served after reload",
         );
     }
 

@@ -58,8 +58,8 @@ echo "--- Test 1: single failed spec forwarded (npm test -- <spec>) ---"
 
 # RED before step-2: today the gui block emits plain `npm test`, so the full
 # forwarded chain is absent.
-assert "retry plan: gui chain forwards the failed spec (npm ci && npm run typecheck && npm test -- src/__tests__/foo.test.ts)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && npm test -- src/__tests__/foo.test.ts"' _ "$RETRY_PLAN"
+assert "retry plan: gui chain forwards the failed spec (npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh src/__tests__/foo.test.ts)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh src/__tests__/foo.test.ts"' _ "$RETRY_PLAN"
 
 # ===========================================================================
 # Test 2: multiple failed specs forwarded, order preserved  [RED]
@@ -67,8 +67,8 @@ assert "retry plan: gui chain forwards the failed spec (npm ci && npm run typech
 echo ""
 echo "--- Test 2: multiple failed specs forwarded in order ---"
 
-assert "multi plan: both failed specs forwarded in order (npm test -- foo bar)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "npm test -- src/__tests__/foo.test.ts src/__tests__/bar.test.ts"' _ "$MULTI_PLAN"
+assert "multi plan: both failed specs forwarded in order (runner foo bar)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "../scripts/gui-vitest-run.sh src/__tests__/foo.test.ts src/__tests__/bar.test.ts"' _ "$MULTI_PLAN"
 
 # ===========================================================================
 # Test 3: preservation — plain plan (no env) keeps the full suite, no subset
@@ -77,11 +77,11 @@ assert "multi plan: both failed specs forwarded in order (npm test -- foo bar)" 
 echo ""
 echo "--- Test 3: plain plan (no env) keeps full npm test, no spec forwarding ---"
 
-assert "plain plan: gui chain intact (npm ci && npm run typecheck && npm test)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && npm test"' _ "$PLAIN_PLAN"
+assert "plain plan: gui chain intact (npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh"' _ "$PLAIN_PLAN"
 
-assert "plain plan: no failed-spec forwarding (no 'npm test --')" \
-    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$PLAIN_PLAN"
+assert "plain plan: no failed-spec forwarding (no spec forwarded to the runner)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "gui-vitest-run.sh "' _ "$PLAIN_PLAN"
 
 # ===========================================================================
 # Test 4: §4.3 fallback — empty REIFY_GUI_RETRY_SPECS behaves like plain
@@ -90,11 +90,11 @@ assert "plain plan: no failed-spec forwarding (no 'npm test --')" \
 echo ""
 echo "--- Test 4: empty REIFY_GUI_RETRY_SPECS => full suite (like plain) ---"
 
-assert "empty-env plan: gui chain intact (npm ci && npm run typecheck && npm test)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && npm test"' _ "$EMPTY_PLAN"
+assert "empty-env plan: gui chain intact (npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh"' _ "$EMPTY_PLAN"
 
 assert "empty-env plan: no failed-spec forwarding (empty subset => full-run fallback, §4.3)" \
-    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$EMPTY_PLAN"
+    bash -c '! printf "%s\n" "$1" | grep -qF "gui-vitest-run.sh "' _ "$EMPTY_PLAN"
 
 # ===========================================================================
 # Test 5: isolation — retry touches ONLY the gui line; other suites intact
@@ -125,17 +125,17 @@ INJECT_PLAN="$(REIFY_GUI_RETRY_SPECS='src/__tests__/foo.test.ts; echo INJECTED' 
 SUBST_PLAN="$(REIFY_GUI_RETRY_SPECS='$(echo INJECTED)' bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
 export INJECT_PLAN SUBST_PLAN
 
-assert "inject plan (';'): value not forwarded (no 'npm test --')" \
-    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$INJECT_PLAN"
+assert "inject plan (';'): value not forwarded (no spec forwarded to the runner)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "gui-vitest-run.sh "' _ "$INJECT_PLAN"
 
-assert "inject plan (';'): falls back to full suite (npm ci && npm run typecheck && npm test)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && npm test"' _ "$INJECT_PLAN"
+assert "inject plan (';'): falls back to full suite (npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh"' _ "$INJECT_PLAN"
 
 assert "inject plan (';'): payload never reaches the plan (no 'INJECTED')" \
     bash -c '! printf "%s\n" "$1" | grep -qF "INJECTED"' _ "$INJECT_PLAN"
 
-assert "subst plan ('\$(…)'): value not forwarded (no 'npm test --')" \
-    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$SUBST_PLAN"
+assert "subst plan ('\$(…)'): value not forwarded (no spec forwarded to the runner)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "gui-vitest-run.sh "' _ "$SUBST_PLAN"
 
 assert "subst plan ('\$(…)'): payload never reaches the plan (no 'INJECTED')" \
     bash -c '! printf "%s\n" "$1" | grep -qF "INJECTED"' _ "$SUBST_PLAN"
@@ -155,16 +155,16 @@ FLAG_PLAN="$(REIFY_GUI_RETRY_SPECS='--run' bash "$REPO_ROOT/scripts/verify.sh" t
 MIXED_FLAG_PLAN="$(REIFY_GUI_RETRY_SPECS='src/__tests__/foo.test.ts --coverage' bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
 export FLAG_PLAN MIXED_FLAG_PLAN
 
-assert "flag plan ('--run'): value not forwarded (no 'npm test --')" \
-    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$FLAG_PLAN"
+assert "flag plan ('--run'): value not forwarded (no spec forwarded to the runner)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "gui-vitest-run.sh "' _ "$FLAG_PLAN"
 
-assert "flag plan ('--run'): falls back to full suite (npm ci && npm run typecheck && npm test)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && npm test"' _ "$FLAG_PLAN"
+assert "flag plan ('--run'): falls back to full suite (npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh"' _ "$FLAG_PLAN"
 
-assert "mixed flag plan (spec + '--coverage'): rejected wholesale, not forwarded (no 'npm test --')" \
-    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$MIXED_FLAG_PLAN"
+assert "mixed flag plan (spec + '--coverage'): rejected wholesale, not forwarded (no spec forwarded to the runner)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "gui-vitest-run.sh "' _ "$MIXED_FLAG_PLAN"
 
 assert "mixed flag plan (spec + '--coverage'): falls back to full suite" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && npm test"' _ "$MIXED_FLAG_PLAN"
+    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && ../scripts/gui-vitest-run.sh"' _ "$MIXED_FLAG_PLAN"
 
 test_summary

@@ -1325,6 +1325,38 @@ pub struct CompiledConstraint {
     pub arg_bindings: Vec<(String, CompiledExpr)>,
 }
 
+/// Marks a `RealizationDecl` as one element of a *geometry-list let* —
+/// a `let` whose initializer statically unrolls to a fixed-length sequence of
+/// geometry expressions (`[<geom>, ...]` or `generate(<int literal>, |i|
+/// <geom>)`).
+///
+/// Realizations are compile-time-declared IR nodes that eval hydrates *by
+/// name*, so a list of geometry is represented as N sibling realizations
+/// rather than one realization holding N shapes. This binding is what lets
+/// eval regroup those siblings back into a single `Value::List` cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeometryListBinding {
+    /// The user-facing name of the geometry-list `let` this element belongs to.
+    pub list_name: String,
+    /// This element's 0-based position within the list.
+    pub index: usize,
+    /// The list's COMPILE-TIME element count — i.e. `index < len` for every
+    /// sibling, and every sibling of one list carries the same `len`.
+    ///
+    /// Deliberately not derivable from the emitted siblings. Eval's
+    /// all-or-nothing regrouping must compare what resolved against what the
+    /// compiler *intended*, not against what it managed to emit: the emission
+    /// loop drops an element whenever `compile_geometry_call` returns `None`,
+    /// and two of those returns are diagnostic-free. Counting emitted
+    /// realizations would make a dropped element look like a complete shorter
+    /// list, which would then disagree with the `<list>.count` already
+    /// constant-folded from `scope.geometry_list_elements[name].len()` —
+    /// silently, and in exactly
+    /// the silent-wrong-value class task #5385 exists to eliminate (review
+    /// esc-5385-3).
+    pub len: usize,
+}
+
 /// A realization declaration — specifies geometry to produce.
 #[derive(Debug, Clone)]
 pub struct RealizationDecl {
@@ -1349,6 +1381,47 @@ pub struct RealizationDecl {
     /// `TopologyTemplateBuilder` test helpers likewise default to `false`.
     /// Downstream (reify-eval) reads this to set `MeshSurface.default_visible`.
     pub is_aux: bool,
+    /// Whether this realization exists ONLY to give a geometry *query* an
+    /// evaluable handle, and is therefore not product geometry at all
+    /// (task 5345).
+    ///
+    /// Set exclusively for the synthetic `__geoq_<N>` lets that
+    /// `desugar_inline_geometry_query_args` (entity.rs) mints when hoisting an
+    /// inline geometry call out of a whole-handle query argument — e.g.
+    /// `let v = volume(torus(20mm, 5mm))` desugars to
+    /// `let __geoq_0 = torus(20mm, 5mm); let v = volume(__geoq_0)`. Every
+    /// user-authored `let`/`param` constructs with `false`.
+    ///
+    /// This is deliberately NOT the same axis as [`Self::is_aux`]. `aux` means
+    /// "real geometry the user declared, but with no external geometric
+    /// effect": it is still a body, it still participates in the
+    /// final-realization selection, and a structure whose bodies are ALL aux is
+    /// an error ("all realized bodies are aux; no product geometry to export").
+    /// A query-only realization is not a body at all — it is measurement
+    /// scaffolding synthesized by the desugarer, and the pre-hoist behaviour it
+    /// must preserve is "no realization existed here". Consequently reify-eval
+    /// must exclude it from:
+    ///   * the `had_realization_ops` predicate (so a structure whose only
+    ///     geometry lives inside a query arg exports nothing *without* an
+    ///     error, exactly as it did before the hoist);
+    ///   * final-realization selection AND the export skip set
+    ///     (`non_final_realization_indices`) — otherwise a later-indexed
+    ///     `__geoq_N` would displace the user's real product body from
+    ///     STEP/STL/3MF;
+    ///   * the tessellation body list (otherwise the viewer shows a phantom
+    ///     body the user never declared).
+    ///
+    /// It must NOT be excluded from realization *execution* or from
+    /// `named_steps`/`terminal_handles` recording — the query reads its handle
+    /// from exactly there.
+    pub is_query_only: bool,
+    /// `Some(..)` iff this realization is element `index` of the geometry-list
+    /// let named `list_name`; its `name` is then the synthetic
+    /// `"{list_name}#{index}"`, which cannot collide with a user identifier
+    /// because `#` is not an identifier character.
+    ///
+    /// `None` for every ordinary (single-geometry) realization.
+    pub list_binding: Option<GeometryListBinding>,
     pub operations: Vec<CompiledGeometryOp>,
     pub span: SourceSpan,
 }
@@ -1553,6 +1626,12 @@ pub enum ModifyKind {
     Thicken,
     ZoneSlab,
     OffsetSolid,
+    /// Offset a surface along its normal by a scalar distance
+    /// `offset_surface(surface, distance)` (θ, task 4192). Uses the Skin
+    /// (surface) mode of `BRepOffsetAPI_MakeOffsetShape`, distinct from
+    /// `OffsetSolid`'s `PerformBySimple` solid mode. Produces a fresh Surface.
+    /// Collapses to `Operation::ModifyOffsetSurface` (BRep kernel capability).
+    OffsetSurface,
     /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`
     /// (ι, task 4193). Produces a fresh Wire offset from the target curve by
     /// `distance`. The optional 3rd arg — a reference Surface or a direction
@@ -1575,7 +1654,7 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Fillet,
         Self::Chamfer,
         Self::ChamferAsymmetric,
@@ -1584,6 +1663,7 @@ impl ModifyKind {
         Self::Thicken,
         Self::ZoneSlab,
         Self::OffsetSolid,
+        Self::OffsetSurface,
         Self::OffsetCurve,
     ];
 
@@ -1606,6 +1686,7 @@ impl std::fmt::Display for ModifyKind {
             ModifyKind::Thicken => f.write_str("thicken"),
             ModifyKind::ZoneSlab => f.write_str("zone_slab"),
             ModifyKind::OffsetSolid => f.write_str("offset_solid"),
+            ModifyKind::OffsetSurface => f.write_str("offset_surface"),
             ModifyKind::OffsetCurve => f.write_str("offset_curve"),
         }
     }
@@ -1707,13 +1788,28 @@ impl PatternKind {
     pub const VARIANT_COUNT: usize = Self::ALL.len();
 }
 
+/// CONTRACT: these labels are USER-FACING, not variant nicknames.
+///
+/// `reify_eval::geometry_ops` interpolates this `Display` as the `kind_label`
+/// of its Contract C diagnostics (`{kind_label}: 'spacing' argument expects
+/// Length, got Int`), so each label MUST be the builtin name the `.ri` author
+/// actually TYPED — the only token they can grep for. Rendering the internal
+/// nickname instead (`linear` for `linear_pattern`) names a symbol that appears
+/// nowhere in their source.
+///
+/// Non-compliant today, and user-reachable on this same surface: `Circular`,
+/// `Arbitrary` — see #6874, which owns the flip, its call-site migration, and
+/// deleting this sentence.
+///
+/// Pinned by `pattern_kind_display` below — change a label there and here
+/// together, and migrate the call sites the change newly rejects (C6).
 impl std::fmt::Display for PatternKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PatternKind::Linear => f.write_str("linear"),
+            PatternKind::Linear => f.write_str("linear_pattern"),
             PatternKind::Circular => f.write_str("circular"),
             PatternKind::Mirror => f.write_str("mirror"),
-            PatternKind::Linear2D => f.write_str("linear_2d"),
+            PatternKind::Linear2D => f.write_str("linear_pattern_2d"),
             PatternKind::Arbitrary => f.write_str("arbitrary"),
         }
     }
@@ -2154,6 +2250,7 @@ mod kind_display_tests {
             (ModifyKind::Thicken, "thicken"),
             (ModifyKind::ZoneSlab, "zone_slab"),
             (ModifyKind::OffsetSolid, "offset_solid"),
+            (ModifyKind::OffsetSurface, "offset_surface"),
             (ModifyKind::OffsetCurve, "offset_curve"),
         ]);
     }
@@ -2181,10 +2278,10 @@ mod kind_display_tests {
     #[test]
     fn pattern_kind_display() {
         check(&[
-            (PatternKind::Linear, "linear"),
+            (PatternKind::Linear, "linear_pattern"),
             (PatternKind::Circular, "circular"),
             (PatternKind::Mirror, "mirror"),
-            (PatternKind::Linear2D, "linear_2d"),
+            (PatternKind::Linear2D, "linear_pattern_2d"),
             (PatternKind::Arbitrary, "arbitrary"),
         ]);
     }

@@ -38,6 +38,126 @@ pub mod ffi {
         ap242_fell_back: bool,
     }
 
+    /// Which single corruption the `*_for_test` STEP fixture hooks inject into
+    /// the transferred model before the INV-AD-4 plane-angle guard runs
+    /// (#6344).
+    ///
+    /// WHY INJECTION EXISTS AT ALL — the canonical statement; everything else
+    /// points here. `STEPConstruct_UnitContext::Init`, the sole builder of the
+    /// write-side unit context, emits `SI_UNIT($,.RADIAN.)` as an immediate
+    /// constant with no branch on any writer option (measured for #6184; the
+    /// numbers live in the dated OBSERVATION LOG in `export_step_locked`). So
+    /// NO input shape and NO `Interface_Static` can drive a real export into
+    /// the guard's failure arms: they are unreachable from ordinary inputs,
+    /// and without injection the guard would be DECORATIVE — present, compiled,
+    /// and never once shown to fire. Same argument as `make_null_shape_for_test`
+    /// elsewhere in this bridge, whose crash input "cannot be built from Rust".
+    ///
+    /// A shared cxx enum rather than a fault-name string, so every fixture call
+    /// site is compile-checked and a misspelling cannot reach the C++ side at
+    /// all. Each variant says WHICH defect it models and which guard arm it
+    /// reaches; HOW it is injected is `apply_step_guard_fault` in
+    /// `cpp/occt_wrapper.cpp`, whose branches switch over exactly these
+    /// variants.
+    #[derive(Debug)]
+    #[repr(u8)]
+    enum StepGuardFault {
+        /// No injection. The only value a production export passes, which is
+        /// what makes the production path provably fault-free by construction.
+        None,
+        /// Rename the first SI plane-angle unit to STERADIAN — one unit only,
+        /// so the other contexts stay radian and the flip is PARTIAL, which a
+        /// file-wide `.RADIAN.` grep cannot see. Reaches V3.
+        NonRadian,
+        /// Give the first SI plane-angle unit the MILLI prefix, LEAVING its
+        /// name at RADIAN: `SI_UNIT(.MILLI.,.RADIAN.)`, a milliradian, which a
+        /// name-only check and a `.RADIAN.` grep both accept. Reaches V3.
+        Prefixed,
+        /// Rebuild the first unit-assigned context's `Units()` list without any
+        /// angular unit, leaving the unit ENTITY in the model: that context's
+        /// declaration is MISSING while the file still carries a perfectly
+        /// good `SI_UNIT($,.RADIAN.)` nothing points at. Reaches V2.
+        Missing,
+        /// Drop the first SI plane-angle unit from EVERY context's `Units()`
+        /// list AND rename it to STERADIAN. The only fault that can reach V4:
+        /// `Missing` orphans a unit that is still a correct radian (V4 skips
+        /// it by design) and `NonRadian` leaves it referenced (V3 claims it).
+        OrphanNonRadian,
+        /// Replace, IN PLACE, the first referenced angular unit with a bare
+        /// `StepBasic_PlaneAngleUnit` — the plain NAMED_UNIT/PLANE_ANGLE_UNIT
+        /// pair Part 21 permits and neither `…And…` composite covers. The only
+        /// fault that reaches V3's UNVERIFIABLE branch.
+        UnrecognisedAngular,
+        /// Replace, IN PLACE, the first referenced angular unit with a
+        /// `StepBasic_ConversionBasedUnitAndPlaneAngleUnit` whose conversion
+        /// factor points at the radian it displaced — the spelling a real
+        /// DEGREE unit takes, and the arm closest to the defect INV-AD-4
+        /// exists to prevent. Reaches V3, and NOT as unverifiable.
+        ConversionBased,
+        /// Add a bare `StepBasic_PlaneAngleUnit` that no context references.
+        /// The V4 twin of `UnrecognisedAngular`: same unreadable unit, reached
+        /// through V4's own message-formatting branch instead of V3's.
+        OrphanUnrecognised,
+        /// Null the `GlobalUnitAssignedContext` every complex representation
+        /// context composes, so the model resolves to ZERO unit-assigned
+        /// contexts. The only fault that reaches V1's non-null-model branch.
+        NoContext,
+        /// Add a
+        /// `StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext`
+        /// — the TWO-part complex context spelling reify's own solid export
+        /// does not emit — reaching a steradian. The only fault that reaches
+        /// `step_unit_assigned_context`'s third downcast.
+        TwoPartContext,
+        /// Add a representation context of a spelling that exists nowhere in
+        /// OCCT — synthesised by the fixture, because the V5 allow-list
+        /// enumerates every real one. Added ALONGSIDE the genuine contexts, so
+        /// the other counts stay healthy and the blindness is PARTIAL: the
+        /// case V1, which measures only the total, cannot see. The only fault
+        /// that reaches V5.
+        UnrecognisedContext,
+        /// Set the process-global `step.angleunit.mode` static to the Deg
+        /// regime for ONE export, restored by RAII. Applied BEFORE Transfer
+        /// (which is what consumes it) and caught by the SEPARATE mode arm —
+        /// the declaration walk provably cannot see it.
+        AngleModeDeg,
+    }
+
+    /// Result of `export_step_with_injected_fault_for_test` (#6344): the STEP
+    /// text plus the plane-angle guard's audit counts for that same export.
+    ///
+    /// The counts are what let a test prove the guard actually WALKED the file
+    /// rather than passing vacuously — `contexts` is cross-checked against the
+    /// `GLOBAL_UNIT_ASSIGNED_CONTEXT` occurrences in `content`, and a naive
+    /// direct downcast reports zero on a file that carries three. They count
+    /// (context, angular unit) ASSOCIATIONS rather than model-wide entities;
+    /// the canonical statement of why is on `StepPlaneAngleAuditCounts` in
+    /// `cpp/occt_wrapper.cpp`, which this struct mirrors field for field.
+    struct StepGuardProbeResult {
+        content: String,
+        /// The guard's refusal text, empty iff the export was ACCEPTED.
+        ///
+        /// Only `step_guard_probe_for_test` can ever set this:
+        /// `export_step_with_injected_fault_for_test` throws a refusal, as
+        /// production does, and so returns no result at all. When it is
+        /// non-empty, `content` is empty — a reported refusal still writes
+        /// nothing — and the text is byte-identical to the thrown diagnostic
+        /// minus its `"export_step: "` prefix.
+        refusal: String,
+        contexts: u32,
+        plane_angle_units: u32,
+        radian_ok: u32,
+        /// Angular unit ENTITIES no unit-assigned context references — V4's
+        /// input. Deliberately NOT part of the three association counts above;
+        /// why they are blind to an orphan by construction is on
+        /// `StepPlaneAngleAuditCounts::orphan_angular_units`.
+        orphan_angular_units: u32,
+        /// Representation contexts whose SPELLING the guard could not resolve
+        /// — V5's input, and separate from `contexts` for the same reason:
+        /// a context that was skipped contributes to none of the counts above,
+        /// so without this a V5-only refusal reads as a healthy file.
+        unrecognised_contexts: u32,
+    }
+
     /// Full 3×3 inertia tensor returned from `query_inertia_tensor`.
     ///
     /// Fields are named m{row}{col} in row-major order (m11 = row 1, col 1).
@@ -55,6 +175,27 @@ pub mod ffi {
         m31: f64,
         m32: f64,
         m33: f64,
+    }
+
+    /// A shape's volume together with which arm produced it.
+    ///
+    /// `volume` is bit-identical to what `query_volume` returns: both entry
+    /// points delegate to the single arm-selection site `compute_volume_arm`.
+    ///
+    /// `tessellation_fallback` is `true` iff OCCT's exact volume integral
+    /// returned bitwise 0.0 for a shape whose `ShapeType()` is <=
+    /// `TopAbs_SOLID`, so the tessellation arm produced the number instead.
+    /// Read that NARROWLY: on OCCT 7.8 every shape measured to reach the arm is
+    /// a face-less compound, for which the tessellation arm also iterates zero
+    /// faces and returns 0.0. So `true` today means "this shape has no
+    /// measurable volume, and the rest of the mass-property family is returning
+    /// its degenerate default" — NOT "an approximate number was substituted for
+    /// an exact one". `false` is the good path, mirroring
+    /// `ExportStepResult::ap242_fell_back`.
+    #[derive(Debug)]
+    struct VolumeMeasurement {
+        volume: f64,
+        tessellation_fallback: bool,
     }
 
     /// Topology-map cache build counts for an OcctShape.
@@ -220,6 +361,24 @@ pub mod ffi {
         fn make_half_space(px: f64, py: f64, pz: f64, nx: f64, ny: f64, nz: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Boolean operations ---
+
+        /// Fuse / cut / intersect two shapes.
+        ///
+        /// The returned shape is NORMALIZED, not the raw
+        /// `BRepAlgoAPI_*::Shape()`: BRepAlgoAPI always wraps its answer in a
+        /// bare `TopoDS_COMPOUND`, which fails the SOLID|COMPSOLID|SHELL guard
+        /// in `is_watertight`/`is_closed` and defeats
+        /// `BRepExtrema_DistShapeShape`'s inner-solution test in
+        /// `query_distance`/`min_clearance`. All three ops route through the
+        /// shared `normalize_boolean_result`, which tightens the wrapper to the
+        /// topology-preserving type the result actually is — one solid → bare
+        /// SOLID, several → COMPSOLID, none → the compound untouched
+        /// (task 7054).
+        ///
+        /// Consequence for the Rust side: stamp the stored `BRepKind` via
+        /// `brep_kind_of_shape` (which reads `shape_type_name`), never a
+        /// hardcoded `BRepKind::Solid` — a disjoint fuse really is a
+        /// multi-body COMPSOLID.
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_cut(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn boolean_common(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -531,6 +690,15 @@ pub mod ffi {
             dy: f64,
             dz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Rotate `shape` about the axis `(ax, ay, az)` through the origin.
+        ///
+        /// **Angular unit contract** (INV-AD-4; #6184): `angle_rad` is SI
+        /// RADIANS and crosses this bridge UNSCALED — the C++ side hands it
+        /// straight to `gp_Trsf::SetRotation`, which takes radians too, so no
+        /// layer converts. Lengths cross unscaled here as well (model space is
+        /// SI metres); the x1000 the STEP writer applies is an EXPORT-time
+        /// rescale, not a bridge-time one. Same contract on
+        /// `rotate_around_shape` and `make_revolve`/`make_revolve_with_history`.
         fn rotate_shape(
             shape: &OcctShape,
             ax: f64,
@@ -545,6 +713,9 @@ pub mod ffi {
             cy: f64,
             cz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Rotate `shape` about the axis `(ax, ay, az)` through the pivot
+        /// point `(px, py, pz)`. `angle_rad` is SI radians, unscaled — see
+        /// `rotate_shape` above for the contract (#6184).
         fn rotate_around_shape(
             shape: &OcctShape,
             px: f64,
@@ -591,6 +762,10 @@ pub mod ffi {
         ///
         /// The operation runs with `Copy=true`, so the source shape is never mutated;
         /// a fresh `UniquePtr<OcctShape>` is returned.
+        ///
+        /// The returned shape carries no polygonal representation: any triangulation on
+        /// `shape` is left off the result (and `shape`'s own mesh is untouched), so the
+        /// result is the same whether or not `shape` was tessellated first.
         ///
         /// Singular-input guard: rejects rank-deficient linear parts using a scale-invariant
         /// Hadamard-ratio check (`|det| / (‖row0‖·‖row1‖·‖row2‖) < 1e-12`), with an error
@@ -670,6 +845,12 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Draft ---
+        /// Apply a draft angle to every draftable face, relative to the
+        /// neutral plane taken from `plane_shape`'s first planar face.
+        ///
+        /// `angle_rad` is SI radians, unscaled — consumed by
+        /// `BRepOffsetAPI_DraftAngle::Add`, which takes radians. See
+        /// `rotate_shape` above for the contract (INV-AD-4; #6184).
         fn draft_shape(
             shape: &OcctShape,
             angle_rad: f64,
@@ -679,6 +860,9 @@ pub mod ffi {
         /// Apply `BRepOffsetAPI_DraftAngle` to the curated face subset
         /// identified by 0-based canonical-order face indices. Requires
         /// non-empty `face_indices`; the all-faces path uses `draft_shape`.
+        ///
+        /// `angle_rad` is SI radians, unscaled, exactly as in `draft_shape` —
+        /// see `rotate_shape` above for the contract (INV-AD-4; #6184).
         fn draft_faces_shape(
             shape: &OcctShape,
             angle_rad: f64,
@@ -688,6 +872,11 @@ pub mod ffi {
 
         // --- Thicken / Shell / Offset Solid ---
         fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
+        /// Offset a surface (open face/shell) by `distance` along its normal via
+        /// `BRepOffsetAPI_MakeOffsetShape` in Skin mode (offset_surface θ).
+        /// Positive `distance` offsets along the face's +normal. Errs when
+        /// `distance` is ~0 or the result is degenerate/invalid.
+        fn make_offset_surface(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
         fn zone_slab_shape(face: &OcctShape, width: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(
@@ -755,6 +944,19 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Curve constructors ---
+        /// Build a circular arc wire of `radius` centred at `(cx, cy, cz)` on
+        /// the axis `(ax, ay, az)`.
+        ///
+        /// `start_angle`/`end_angle` are SI radians, unscaled: the C++ side
+        /// passes them to `BRepBuilderAPI_MakeEdge(circle, U1, U2)` as the
+        /// CURVE PARAMETERS of a `Geom_Circle`, and that parameter space is
+        /// radians by OCCT's parameterisation (a full circle is `2*PI`). The
+        /// suffix-free names deliberately spell the same as the compiler-minted
+        /// cross-crate string key (`compile_curve_op` emits it positionally,
+        /// `curve_arc` looks it up by name) and the published `arc(...)`
+        /// signature — an agreed spelling, not an unstated convention. See
+        /// `GeometryOp::Arc` in `reify-ir` for why the suffix is declined, and
+        /// `rotate_shape` above for the contract (INV-AD-4; #6184).
         fn make_arc_wire(
             cx: f64,
             cy: f64,
@@ -766,6 +968,12 @@ pub mod ffi {
             ay: f64,
             az: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Build a helix wire. Takes NO angle: `radius`, `pitch` and `height`
+        /// are all lengths and the turn count is the dimensionless
+        /// `height / pitch`, so no angular value crosses this bridge
+        /// (INV-AD-4). The only angle is C++-internal — the
+        /// `(height/pitch) * 2*PI` u-parameter extent on the cylindrical
+        /// surface, radians. See `GeometryOp::Helix` in `reify-ir` (#6521).
         fn make_helix_wire(radius: f64, pitch: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         /// Build a polyline wire from N >= 2 points (flat 3*N coord slice).
         /// Produces N-1 line edges.  Stable kernel FFI primitive: polygon-face
@@ -830,6 +1038,10 @@ pub mod ffi {
             dz: f64,
             both: bool,
         ) -> Result<UniquePtr<OcctShape>>;
+        /// Revolve `profile` about the axis through `(ox, oy, oz)` with
+        /// direction `(ax, ay, az)`. `angle_rad` is SI radians, unscaled (a
+        /// full revolution is `2*PI`) — see `rotate_shape` for the contract
+        /// (#6184).
         fn make_revolve(
             profile: &OcctShape,
             ox: f64,
@@ -863,6 +1075,10 @@ pub mod ffi {
 
         // --- Queries ---
         fn query_volume(shape: &OcctShape) -> Result<f64>;
+        /// `query_volume`'s number plus which arm produced it. Shares one
+        /// arm-selection site with `query_volume`, so `.volume` is bit-identical
+        /// to `query_volume(shape)` for the same shape.
+        fn query_volume_measurement(shape: &OcctShape) -> Result<VolumeMeasurement>;
         fn query_area(shape: &OcctShape) -> Result<f64>;
         fn query_edge_length(shape: &OcctShape) -> Result<f64>;
         /// Unit tangent of `shape` (must be a TopoDS_Edge) sampled at the
@@ -1153,10 +1369,16 @@ pub mod ffi {
 
         /// Return the canonical name of `shape`'s top-level TopAbs shape type
         /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-        /// "Vertex", or "Shape"). Lets `OcctKernel::fuse_all` classify a
-        /// single-pass fuse result — SOLID (overlapping), COMPSOLID (disjoint),
-        /// or the sole input's kind (identity) — into the right BRepKind
-        /// instead of assuming Solid (task 5213 amendment).
+        /// "Vertex", or "Shape"). Backs `brep_kind_of_shape`, the ONE classifier
+        /// every boolean path uses to stamp the right `BRepKind` instead of
+        /// assuming Solid:
+        ///   - `OcctKernel::fuse_all` — SOLID (overlapping), COMPSOLID
+        ///     (disjoint), or the sole input's kind (identity), task 5213;
+        ///   - all six binary boolean arms — the three plain
+        ///     `Union`/`Difference`/`Intersection` arms of `execute` and the
+        ///     three `boolean_*_with_history` variants, task 7054. Since every
+        ///     boolean result is normalized, a disjoint fuse really is a
+        ///     multi-body COMPSOLID and the old hardcoded Solid was a lie.
         fn shape_type_name(shape: &OcctShape) -> Result<String>;
 
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
@@ -1234,6 +1456,14 @@ pub mod ffi {
         /// Three faces sharing one edge → non-manifold compound.
         fn make_nonmanifold_compound_for_test() -> Result<UniquePtr<OcctShape>>;
 
+        /// EMPTY `TopoDS_Compound` (no children) → the simplest member of
+        /// the face-less-compound class that takes `compute_volume_arm`'s
+        /// tessellation fallback. The class boundary, the measured values and
+        /// why `make_nonmanifold_compound_for_test` cannot serve here live in
+        /// ONE place: the canonical note on this fixture's definition in
+        /// occt_wrapper.cpp. Production `make_compound` refuses empty input.
+        fn make_empty_compound_for_test() -> Result<UniquePtr<OcctShape>>;
+
         /// 10×10×10 mm box missing one face → open shell inside a solid.
         fn make_malformed_solid_for_test() -> Result<UniquePtr<OcctShape>>;
 
@@ -1294,6 +1524,37 @@ pub mod ffi {
             dy: f64,
             dz: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+
+        /// Run the FULL `export_step` body — same mutex, same
+        /// `wrap_occt_call("export_step")` label, same INV-AD-4 plane-angle
+        /// guard — after injecting exactly one fault into the transferred STEP
+        /// model, returning the audit counts alongside the file text.
+        ///
+        /// The `fault` vocabulary is [`StepGuardFault`], which also carries
+        /// the canonical argument for why injection is the only way to reach
+        /// the guard's failure arms.
+        fn export_step_with_injected_fault_for_test(
+            shape: &OcctShape,
+            schema: &str,
+            fault: StepGuardFault,
+        ) -> Result<StepGuardProbeResult>;
+
+        /// The same injected export, REPORTING the guard's finding in
+        /// `StepGuardProbeResult::refusal` instead of throwing it.
+        ///
+        /// The two hooks differ in their `StepGuardDisposition` and in nothing
+        /// else; what that word covers is on the enum itself, in
+        /// `cpp/occt_wrapper.cpp`. This one exists so a test can read the
+        /// audit counts as NUMBERS on the refusing path, where they are
+        /// otherwise reachable only as digits embedded in an English
+        /// diagnostic. A refused export still writes nothing (`content` is
+        /// empty), and `refusal` is byte-identical to the thrown diagnostic
+        /// minus its `"export_step: "` prefix.
+        fn step_guard_probe_for_test(
+            shape: &OcctShape,
+            schema: &str,
+            fault: StepGuardFault,
+        ) -> Result<StepGuardProbeResult>;
 
         // --- Export ---
         /// Export `shape` to STEP using the given kernel-neutral `schema`

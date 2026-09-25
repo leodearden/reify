@@ -116,6 +116,7 @@ vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
   getEntityTree: vi.fn().mockResolvedValue([]),
   setParameter: vi.fn().mockResolvedValue(undefined),
+  previewParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
   pickSavePath: vi.fn().mockResolvedValue('/user/chosen/path.step'),
   pickOpenPath: vi.fn().mockResolvedValue(null),
@@ -269,6 +270,7 @@ beforeEach(() => {
   // usual `bridge as any` spelling) keeps behaviour identical; substituting
   // emptyState here would quietly change what every test sees.
   vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+  vi.mocked((bridge as any).previewParameter).mockResolvedValue(undefined);
   vi.mocked((bridge as any).updateSource).mockResolvedValue(undefined);
   vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
   vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
@@ -433,7 +435,7 @@ describe('App unit ladders (task #5199)', () => {
           cell_id: 'Tank.capacity',
           name: 'capacity',
           value: '7045002.24',
-          unit: 'mm³',
+          unit: 'mm^3',
           determinacy: 'determined',
           entity_path: 'Tank.capacity',
           kind: 'let',
@@ -457,7 +459,7 @@ describe('App unit ladders (task #5199)', () => {
       {
         dimension: 'Volume',
         units: [
-          { label: 'mm³', si_scale: 1e-9, is_default: true },
+          { label: 'mm^3', si_scale: 1e-9, is_default: true },
           { label: 'L', si_scale: 1e-3, is_default: false },
         ],
       },
@@ -485,7 +487,7 @@ describe('App unit ladders (task #5199)', () => {
           cell_id: 'Tank.capacity',
           name: 'capacity',
           value: '7045002.24',
-          unit: 'mm³',
+          unit: 'mm^3',
           determinacy: 'determined',
           entity_path: 'Tank.capacity',
           kind: 'let',
@@ -5615,6 +5617,141 @@ describe('App MechanismPanel integration', () => {
     const tracks = countGridTracks(sidePanel.style.gridTemplateRows);
     const children = sidePanel.children.length;
     expect(tracks).toBe(children);
+  });
+});
+
+
+// ─── Slider cadence: a drag previews, the release writes the source ──────────
+
+describe('App slider parameter cadence', () => {
+  /** One prismatic joint driven by `Kinematic.y_pos`, so the panel renders a slider. */
+  function mockOneSliderMechanism(): void {
+    vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([
+      {
+        cell_id: 'Kinematic.m',
+        entity_path: 'Kinematic',
+        name: 'm',
+        bodies_count: 2,
+        joints: [
+          {
+            joint_index: 0,
+            kind: 'prismatic',
+            dimension: 'length',
+            range_lower_si: 0.0,
+            range_upper_si: 0.8,
+            axis: [0, 1, 0],
+            driving_param_cell_id: 'Kinematic.y_pos',
+            current_value_si: 0.1,
+            binding: { kind: 'param_bound' as const, param_cell_id: 'Kinematic.y_pos', current_value_si: 0.1 },
+          },
+        ],
+      },
+    ]);
+  }
+
+  async function renderSlider(): Promise<HTMLInputElement> {
+    mockOneSliderMechanism();
+    await renderAndWaitForReady();
+    const panel = await waitFor(() => screen.getByTestId('mechanism-panel'));
+    return within(panel).getByRole('slider') as HTMLInputElement;
+  }
+
+  it('a drag frame reaches bridge.previewParameter, never bridge.setParameter', async () => {
+    const slider = await renderSlider();
+
+    fireEvent.input(slider, { target: { value: '400' } });
+
+    await waitFor(() => {
+      expect(vi.mocked((bridge as any).previewParameter)).toHaveBeenCalledWith('Kinematic.y_pos', '400mm');
+    });
+    expect(vi.mocked(bridge.setParameter)).not.toHaveBeenCalled();
+  });
+
+  it('a refused preview raises no toast — a drag would storm one per frame', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
+      vi.mocked((bridge as any).previewParameter).mockRejectedValue(new Error('parameter is not a literal'));
+      const slider = await renderSlider();
+
+      fireEvent.input(slider, { target: { value: '400' } });
+
+      await waitFor(() => {
+        expect(vi.mocked((bridge as any).previewParameter)).toHaveBeenCalled();
+      });
+      await flushMacrotasks();
+
+      expect(screen.queryByTestId('toast')).toBeNull();
+      expect(errorSpy).toHaveBeenCalled();
+    });
+  });
+
+  it('a refused commit drops the optimistic override so the slider stops showing it', async () => {
+    // The frontend half of the discard. A refused commit reverts the engine to
+    // the source value, and the backend now emits that restored state — but the
+    // scrub's optimistic override outranks it in `getEffectiveValueSi`, and
+    // `mechanismStore.refresh()` retires an override only when the committed
+    // value CATCHES UP to it, which a refusal guarantees will never happen. So
+    // without an explicit clear the slider stays parked on 400mm, a value
+    // neither the engine nor the file carries.
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked(bridge.setParameter).mockRejectedValue(new Error('parameter is not a literal'));
+      const slider = await renderSlider();
+
+      fireEvent.input(slider, { target: { value: '400' } });
+      fireEvent.change(slider, { target: { value: '400' } });
+
+      await waitFor(() => {
+        expect(vi.mocked(bridge.setParameter)).toHaveBeenCalled();
+      });
+      await flushMacrotasks();
+
+      expect(slider.value).toBe('100');
+    });
+  });
+
+  it('releasing the slider reaches bridge.setParameter with the final value', async () => {
+    const slider = await renderSlider();
+
+    fireEvent.input(slider, { target: { value: '400' } });
+    fireEvent.change(slider, { target: { value: '400' } });
+
+    await waitFor(() => {
+      expect(vi.mocked(bridge.setParameter)).toHaveBeenCalledWith('Kinematic.y_pos', '400mm');
+    });
+    expect(vi.mocked(bridge.setParameter)).toHaveBeenCalledTimes(1);
+  });
+
+  it('the commit waits for the in-flight preview before writing the source', async () => {
+    const inFlight = deferred<undefined>();
+    vi.mocked((bridge as any).previewParameter).mockReturnValue(inFlight.promise);
+    const slider = await renderSlider();
+
+    fireEvent.input(slider, { target: { value: '250' } });
+    await waitFor(() => {
+      expect(vi.mocked((bridge as any).previewParameter)).toHaveBeenCalled();
+    });
+
+    fireEvent.change(slider, { target: { value: '250' } });
+    await flushMacrotasks();
+    expect(vi.mocked(bridge.setParameter)).not.toHaveBeenCalled();
+
+    inFlight.resolve(undefined);
+
+    await waitFor(() => {
+      expect(vi.mocked(bridge.setParameter)).toHaveBeenCalledWith('Kinematic.y_pos', '250mm');
+    });
+  });
+
+  it('a refused commit does raise a toast — the durable write is what the user must hear about', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked(bridge.setParameter).mockRejectedValue(new Error('parameter is not a literal'));
+      const slider = await renderSlider();
+
+      fireEvent.change(slider, { target: { value: '400' } });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('toast').textContent).toMatch(/parameter is not a literal/i);
+      });
+    });
   });
 });
 

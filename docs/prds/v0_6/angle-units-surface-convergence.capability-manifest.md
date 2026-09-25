@@ -3,10 +3,18 @@
 Mechanizes G3 + G6 for every leaf of `docs/prds/v0_6/angle-units-surface-convergence.md`.
 Built at decompose, **2026-07-29**, against `main` @ `bd10b6d0e1`.
 
-**Drift status:** `git diff --name-only dc83d4fd60..bd10b6d0e1 -- crates/ tree-sitter-reify/
-examples/ gui/` is **EMPTY** — the PRD was authored at `dc83d4fd60` and no source file has moved
-since, so every §3 file:line anchor holds verbatim. Everything in §Corrections is an *author-time
-measurement* re-measured this session, not drift.
+**Drift status (as of decompose, `bd10b6d0e1`):** `git diff --name-only dc83d4fd60..bd10b6d0e1
+-- crates/ tree-sitter-reify/ examples/ gui/` was **EMPTY** — the PRD was authored at `dc83d4fd60`
+and no source file had moved since, so every §3 file:line anchor held verbatim. Everything in
+§Corrections is an *author-time measurement* re-measured that session, not drift.
+
+**Re-anchored 2026-09-18 (task #7550), against `main` @ `ea896581d1`:** that no-drift claim no
+longer holds. `crates/reify-eval/src/arg_acceptance.rs` moved to `crates/reify-ir/` (task #5791's
+decompose), so the §3 anchors naming it are re-measured against TODAY's tree rather than
+`bd10b6d0e1` — read them as-of the re-anchor date, not as-of decompose. One decompose-time PREMISE
+went with it: `angle_spec` is no longer absent repo-wide (see the §3 row below). The verdicts
+themselves are left as the decompose-time record; re-adjudicating them belongs with the producing
+task's status, not here.
 
 **Probe vectors.** `target/release/reify` (built 2026-07-28 20:47; freshness verified — no
 `crates/**/*.rs` or `stdlib/*.ri` is newer) via `reify eval` / `reify check`; `tree-sitter parse
@@ -34,10 +42,21 @@ stamped into the filed task descriptions as `DECOMPOSE ADDENDUM — BINDING`.
 
 ### C1 — κ's scanner contract is factually wrong; coding to it yields a dead branch
 
-PRD §5 C2: *"`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`)"*; §3.8: *"a
+PRD §5 C2, **as it read at decompose**: *"`UNIT_MUL_OP` fires on ASCII `*` **or** U+00B7 (UTF-8 `0xC2 0xB7`)"*; §3.8: *"a
 scanner-local widening … plus a **UTF-8-aware read**"*. `tree-sitter-reify/src/tree_sitter/parser.h:49`
 declares `int32_t lookahead;` — tree-sitter delivers **decoded codepoints**. U+00B7 arrives as the
 single value `0xB7`; `0xC2` is never observable and one unmodified `advance()` consumes both bytes.
+
+**Provenance (2026-08-29, task 5949).** Both quoted strings above are the PRD's **pre-correction**
+wording and are no longer asserted there as fact: task 5949 corrected §5 C2 and §3.8 **in place**.
+Grepping the PRD for either still hits, by design — expect that rather than absence. Every such
+hit is one of two kinds, and neither is C2 or §3.8 asserting the byte contract: the superseded
+wording quoted inside that PRD's `CORRECTION 2026-08-29` block, or the corrected sentence's own
+explicit negation of it (§5 C2: "**not** the UTF-8 byte pair `0xC2 0xB7`"; §3.8: "no UTF-8-aware
+decoding is required"). No hit count is pinned here — that would be a transient fact about a
+companion file, falsified by any later rewording of C2 or §3.8 and checked by nothing. C1 remains
+the binding record of *why* the contract is a codepoint; every anchor, measurement and verdict
+below is unchanged.
 
 Controlled experiment (three isolated repo copies, isolated `XDG_CACHE_HOME`, recompilation proven
 by a deliberate `#error` variant that failed to build):
@@ -279,43 +298,51 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 
 ### β — 5778 · `angle_spec()`
 
+*Every row below was measured at decompose time (2026-07-29, main @ `bd10b6d0e1`), **before** β ran, and is retained verbatim as provenance. β's work was absorbed by the coalesced task #6924 (`metadata.x_coalesced_from = [5778, 5779, 5780, 5781]`) and landed on main in merge commit `1a9cf2b51f301c8716eb545dc43ec8a565d765e9`, β's own commit run inside it being `e72e22bcc7` → `875c0b1c62` → `c2fb3866bd` → `ebb634682a` → `49a3bddf24` — so wherever a row below asserts an absence ("no `angle_spec`", "the hint is absent today") it names a pre-state that no longer holds. The verdicts still stand: re-probed 2026-09-21 at HEAD, `pub fn angle_spec()` and its `migration_hint: Some(reify_core::units::ANGLE_MIGRATION_HINT)` are live — contract C1 invariant 1 holds (`ArgSpec {` and `resolve_scalar_dim_arg` are both zero-hit in `crates/reify-eval/src/geometry_ops.rs`) and invariant 3 holds (`DiagnosticCode::DimensionedArgRejected`, minted by #5743, PRD 1 β, is the attached code with no parallel ANGLE code anywhere).*
+
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `arg_acceptance` has `length_spec`/`density_spec`/`accept_arg` and **no** `angle_spec` | `grep:crates/reify-eval/src/arg_acceptance.rs:86,103,117`; `angle_spec` absent repo-wide | PASS |
+| `arg_acceptance` has `length_spec`/`density_spec`/`accept_arg` and **no** `angle_spec` | `grep:crates/reify-ir/src/arg_acceptance.rs:298,337,635`; `angle_spec` absent repo-wide **at decompose** — since DELIVERED, `pub fn angle_spec()` at `crates/reify-ir/src/arg_acceptance.rs:341` (re-measured 2026-09-21, #7698; was `:411` @ `ea896581d1`, #7550) | PASS *as of `bd10b6d0e1`* (pre-β; angle_spec since landed by #6924 — see section note) |
 | **the ANGLE rejection mechanism fires today** (G6 branch 4) | `probe: reify eval faces_by_normal(b,0.0,0.0,1.0,0.01)` → **exit 1**, `error: faces_by_normal: tol argument expects Angle, got Real` | PASS — rejection observed |
-| the hint is absent today (what β adds is observable) | same probe: **no** `pass a dimensioned angle` clause; `grep:geometry_ops.rs:8755` `resolve_scalar_dim_arg`, call site `:8767-8771` passes `migration_hint: None` | PASS |
+| the hint was absent **at decompose** — what β adds is observable | same probe, **at decompose**: **no** `pass a dimensioned angle` clause; `grep:geometry_ops.rs:8755` `resolve_scalar_dim_arg`, call site `:8767-8771` passed `migration_hint: None` — since DELIVERED, `resolve_scalar_dim_arg` is zero-hit in `crates/reify-eval/src/geometry_ops.rs` and has no definition left in tracked Rust — only backward-looking comments at `crates/reify-ir/src/arg_acceptance.rs:557,1033` still name it — and the clause is minted by `angle_spec()`'s `migration_hint: Some(reify_core::units::ANGLE_MIGRATION_HINT)` (`crates/reify-core/src/units.rs:103`), reached via `resolve_angle_scalar_arg` → the shared `resolve_spec_arg` (re-measured 2026-09-21, #7698) | PASS (pre-β; hint since landed by #6924 — see section note) |
 | the shared `DiagnosticCode` | `producer:task-5743` (PRD 1 β: *"introduce ONE shared DiagnosticCode … PRDs 3 and 5 reuse this code"*) — **upstream** | PASS |
 | `value_short_label` already prints "dimensionless Scalar" (§11 Q5) | `grep:arg_acceptance.rs:134` | PASS |
 
 ### γ — 5779 · gate `rotate` / `rotate_around` / `revolve` / `arc`
 
+*Every row below was measured at decompose time (2026-07-29, main @ `bd10b6d0e1`), **before** γ ran, and is retained verbatim as provenance. γ's work was absorbed by the coalesced task #6924 (`metadata.x_coalesced_from = [5778, 5779, 5780, 5781]`) and landed on main in merge commit `1a9cf2b51f301c8716eb545dc43ec8a565d765e9`, γ's own commit run inside it being `1a1b04f1d6` (RED — the ANGLE reader ladder's three-state contract) → `34807da168` (GREEN — the ANGLE reader ladder, beside the LENGTH one) → `6cd573b708` (RED — the five producer sites, end to end) → `ca0279b9d2` (GREEN — gate the five angle reads, migrated in the same diff) → `f3da072216` (docs — invert the two scope locks the gate silently neutered). The verdicts still stand: re-probed 2026-09-21 at HEAD, the five reads now go through `required_angle_arg` (`crates/reify-eval/src/geometry_ops.rs:731`) / `required_angle_args` (`:795`) at `:3780` rotate, `:3868` rotate_around, `:4629` revolve, and `:5013` arc's start_angle+end_angle group read.*
+
 | Capability | Evidence | Verdict |
 |---|---|---|
-| all five reads are `eval_named_arg_f64` closures | `grep:geometry_ops.rs:2251,2312,2975,3327,3328` (`f64_arg("angle"\|"start_angle"\|"end_angle")`) | PASS |
-| bare angles are silently accepted today | `probe: reify eval` → rotate **0**, rotate_around **0**, revolve(bare 2π) **0**, arc(bare) **0**; zero angle diagnostics in all four | PASS |
+| all five reads were `eval_named_arg_f64` closures **at decompose** | `grep:geometry_ops.rs:2251,2312,2975,3327,3328` (`f64_arg("angle"\|"start_angle"\|"end_angle")`) **at decompose** — since DELIVERED those five reads go through `required_angle_arg`/`required_angle_args` instead (see section note); `eval_named_arg_f64` itself is not gone, it still exists at `crates/reify-eval/src/geometry_ops.rs:223` (re-measured 2026-09-21) and serves other non-angle readers | PASS *as of `bd10b6d0e1`* (pre-γ; the five reads since migrated off it by #6924 — see section note) |
+| bare angles were silently accepted **at decompose** | `probe: reify eval` **at decompose** → rotate **0**, rotate_around **0**, revolve(bare 2π) **0**, arc(bare) **0**; zero angle diagnostics in all four — since DELIVERED all four are rejected by the same gate | PASS (pre-γ; the gate since landed by #6924 — see section note) |
 | dimensioned angles build and must keep building | `probe:` `rotate(…,45deg)` → 0; `arc(…,0deg,90deg)` → 0 | PASS |
-| **B2b: `revolve_full` survives the gate** | `probe: reify eval revolve_full(rectangle(20mm,10mm), -10mm,0mm,0mm, 0.0,1.0,0.0)` → **exit 0** today; `grep:crates/reify-compiler/src/geometry.rs:2064-2067,2080` (TAU literal → the `"angle"` arg); `producer:task-5742` retypes it **ANGLE** (its own text: *"feeding an ANGLE slot → retype ANGLE"*) — **upstream** | PASS — D10 re-ratified |
-| `angle_spec()` | `producer:task-5778` — upstream | PASS |
+| **B2b: `revolve_full` survives the gate** | `probe: reify eval revolve_full(rectangle(20mm,10mm), -10mm,0mm,0mm, 0.0,1.0,0.0)` → **exit 0** today; `grep:crates/reify-compiler/src/geometry.rs:2064-2067,2080` (TAU literal → the `"angle"` arg) **at decompose** — since DELIVERED, #5742's retype landed: the arg is now built `Value::angle(std::f64::consts::TAU)` / `Type::angle()` at `crates/reify-compiler/src/geometry.rs:2348-2351`, exactly what this row's own delivered_check (`Value::Real\(std::f64::consts::TAU\)` absent from that one path) asserts and passes — NOT a repo-wide absence: the old dimensionless literal form still appears at `crates/reify-ir/src/geometry.rs:10120`, outside this row's path scope | PASS — D10 re-ratified (pre-γ boundary probe; retype since landed — see section note) |
+| `angle_spec()` | `producer:task-5778` **at decompose** — delivered by the same merge (#6924) that landed γ itself; no longer a pending upstream dependency | PASS |
 
 ### δ — 5780 · gate `draft.angle`
 
+*Every row below was measured at decompose time (2026-07-29, main @ `bd10b6d0e1`), **before** δ ran, and is retained verbatim as provenance. δ's work was absorbed by the coalesced task #6924 (`metadata.x_coalesced_from = [5778, 5779, 5780, 5781]`) and landed on main in merge commit `1a9cf2b51f301c8716eb545dc43ec8a565d765e9`, δ's own commit run inside it being `a7ba9f5db1` (RED — draft.angle, the R7 raw-Value passthrough) → `a02b6bce4c` (GREEN — gate draft.angle, the last raw-Value passthrough), with `cc35fd8eb1` amending the plane-error test to `expect_err`. Unlike β/γ, MOST rows below are still LIVE, not pre-state — re-probed 2026-09-21 at HEAD: `modify_draft` (`crates/reify-eval/src/geometry_ops.rs:3409`) opens with an in-situ δ BREADCRUMB recording the one-read-site choice and §11 Q4's refutation, then reads the angle through `required_angle_value("angle", …)` (`:763`) above the plane resolution that follows at `:3447-3451`. Only the first row's "ungated" half is retired: the IR field is UNCHANGED (`angle: Value` at `crates/reify-ir/src/geometry.rs:1096`, inside the `Draft {` variant at `:1046`), and the "not eval-reachable" row is unaffected — task #2010's plane-handle placeholder is untouched and the landed code documents it in situ as a pre-existing, out-of-scope approximation.*
+
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `draft.angle` is an R7 raw-`Value` read, ungated | `grep:geometry_ops.rs:1979`; IR `crates/reify-ir/src/geometry.rs:944` `angle: Value` | PASS |
-| ONE read site, not two | C7 | PASS (§11 Q4 refuted) |
-| the angle read precedes plane resolution → δ's diagnostic is observable | `grep:geometry_ops.rs:1979` (angle) vs `:1984-1989` (`plane_id … ok_or_else`) | PASS |
-| **draft is not eval-reachable today** | C6 probes | **signal weakened** per G6(b) |
+| `draft.angle` is an R7 raw-`Value` read, ungated **at decompose** | `grep:geometry_ops.rs:1979` **at decompose** (site since shifted — see section note); IR `crates/reify-ir/src/geometry.rs:944` `angle: Value` **at decompose**, unchanged today at `:1096` — only the "ungated" half is retired: since DELIVERED the read is gated by `required_angle_value` at `crates/reify-eval/src/geometry_ops.rs:763`, but the IR field itself stays raw `Value` by design (the gate sits at the eval read, not in the IR) | PASS *as of `bd10b6d0e1`* (pre-δ premise, half-retired; the read since gated by #6924, the IR field deliberately unchanged — see section note) |
+| ONE read site, not two | C7 **at decompose** (site then `:1979`, now the single read opening `modify_draft` at `:3409` — re-measured 2026-09-21) | PASS (§11 Q4 refuted; still true today, and now pinned in situ by the landed δ BREADCRUMB, not only in this manifest) |
+| the angle read precedes plane resolution → δ's diagnostic is observable | `grep:geometry_ops.rs:1979` (angle) vs `:1984-1989` (`plane_id … ok_or_else`) **at decompose** — re-measured 2026-09-21: same structure, now `required_angle_value("angle", …)` inside `modify_draft` (`:3409`) reads above the plane resolution that follows at `:3447-3451` | PASS — still true, since landed by #6924 |
+| **draft is not eval-reachable today** | C6 probes **at decompose** — re-confirmed 2026-09-21: task #2010's `step_handles.last()` plane-handle placeholder (`geometry_ops.rs:3447-3451`) is untouched by #6924, and the landed δ BREADCRUMB at `modify_draft` (`:3409`) documents it in situ as "a pre-existing approximation … out of scope"; this row is LIVE, not pre-state | **signal weakened** per G6(b) |
 
 ### ε — 5781 · retire `resolve_bare_angle`
 
+*Every row below was measured at decompose time (2026-07-29, main @ `bd10b6d0e1`), **before** ε ran, and is retained verbatim as provenance. ε's work was absorbed by the coalesced task #6924 (`metadata.x_coalesced_from = [5778, 5779, 5780, 5781]`) and landed on main in merge commit `1a9cf2b51f301c8716eb545dc43ec8a565d765e9`, ε's own commit being `268704bbf5` ("retire resolve_bare_angle — circular_pattern converges, REVERSING #1763"), amended by `21acd3f04c` and `c8763d6753`. The verdicts still stand: re-probed 2026-09-21 at HEAD, `resolve_bare_angle` and `bare numeric angle` are both zero-hit in `crates/reify-eval/src/geometry_ops.rs` and in `crates/reify-eval/tests/golden/` — precisely what ε's four delivered_checks (all `expect: absent`) assert, and all four pass. Unlike γ/δ, ε's checks ARE construct-bound: they assert the retirement itself, so here the check and the claim coincide.*
+
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `resolve_bare_angle` + its 2 call sites | `grep:geometry_ops.rs:880,2585,2626` | PASS |
-| warn-and-convert is live and code-less | `probe: reify eval circular_pattern(b,0mm,0mm,0mm,0.0,0.0,1.0,4,360)` → **exit 0** + `warning: circular_pattern: bare numeric angle \`360\` interpreted as 360°; use \`360deg\` or \`6.283185rad\` for explicit units` (verbatim); `grep:crates/reify-core/src/diagnostics.rs:3885` `Diagnostic::warning` sets `code: None` | PASS |
+| `resolve_bare_angle` + its 2 call sites **at decompose** | `grep:geometry_ops.rs:880,2585,2626` **at decompose** — since DELIVERED, `resolve_bare_angle` is zero-hit in `crates/reify-eval/src/geometry_ops.rs` (re-measured 2026-09-21); retired, not relocated | PASS (pre-ε; retired by #6924 — see section note) |
+| warn-and-convert was live and code-less **at decompose** | `probe: reify eval circular_pattern(b,0mm,0mm,0mm,0.0,0.0,1.0,4,360)` **at decompose** → **exit 0** + `warning: circular_pattern: bare numeric angle \`360\` interpreted as 360°; use \`360deg\` or \`6.283185rad\` for explicit units` (verbatim); `grep:crates/reify-core/src/diagnostics.rs:3885` `Diagnostic::warning` sets `code: None` — since DELIVERED, `circular_pattern` rejects a bare angle through the same shared `angle_spec()` reader γ/δ use | PASS (pre-ε; the warning since retired by #6924 — see section note) |
 | `360deg` stays warning-free | `probe:` → exit 0, no warning | PASS |
-| full breakage set (**corrected**) | 2 inverting tests `grep:crates/reify-eval/tests/circular_pattern_angle.rs:47,86`; **+2 byte-compared goldens** `tests/golden/pattern_circular_{base,value}.txt:66,:18`; **+5 fns** `geometry_ops/tests.rs:2990,3056,3102,3150,3194` — C5 | PASS (3 → 9) |
-| the stale doc cite | `grep:docs/prds/v0_6/type-hygiene.md:106` (`:418-439`; real site `:880`) | PASS |
-| task 1763 is the ruling being reversed | `get_task 1763` → `done`, *"circular_pattern angle should accept degrees (CAD convention) or convert internally"* | PASS |
+| full breakage set (**corrected**, at decompose) | 2 inverting tests `grep:crates/reify-eval/tests/circular_pattern_angle.rs:47,86` **at decompose**; **+2 byte-compared goldens** `tests/golden/pattern_circular_{base,value}.txt:66,:18`; **+5 fns** `geometry_ops/tests.rs:2990,3056,3102,3150,3194` — C5 — every line cite above is from decompose and has drifted. The inverting test landed RENAMED as `circular_pattern_bare_360_is_rejected` (`crates/reify-eval/tests/circular_pattern_angle.rs:50`, re-measured 2026-09-21); the warning-free control survives as `circular_pattern_360deg_no_deprecation_warning` (`:92`) | PASS (3 → 9, pre-ε enumeration; the retirement itself since landed by #6924 — see section note) |
+| the stale doc cite **at decompose** | `grep:docs/prds/v0_6/type-hygiene.md:106` (`:418-439`; real site `:880`) **at decompose** — fixed by ε itself: since DELIVERED, §8.1 dropped `resolve_bare_angle` from its resolver list (zero-hit in `type-hygiene.md`, re-measured 2026-09-21) and gained an explicit stale-line-cites note at `:108` | PASS (pre-ε; the doc fixed by #6924 — see section note) |
+| task 1763 is the ruling being reversed | `get_task 1763` → `done`, *"circular_pattern angle should accept degrees (CAD convention) or convert internally"* | PASS — still true, and the reversal is no longer only a plan: the in-situ record is live at `crates/reify-eval/src/geometry_ops.rs:4156` (`TASK #1763 REVERSED HERE`) |
 
 ### ζ — 5782 · ANGLE `CheckableArg` compile slots
 
