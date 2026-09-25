@@ -1,26 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Shared FDM as-printed fixture builders for `reify-eval` integration tests.
-//!
-//! Each public item carries `#[allow(dead_code)]` because its consumers are the
-//! submodules of `harness_fea_solver_e2e`, the sole `mod common;` root, and each uses
-//! only a subset of these helpers.
 
 use reify_core::DimensionVector;
 use reify_ir::{Mesh, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
 /// Registry-free placeholder type id for Rust-constructed StructureInstances
 /// (mirrors `reify_eval::dynamics_ops::REGISTRY_FREE_TYPE_ID`).
-#[allow(dead_code)]
 pub const REGISTRY_FREE: StructureTypeId = StructureTypeId(u32::MAX);
 
 // 40×40×10 mm box (SI metres); Z is the build axis.
-#[allow(dead_code)]
 pub const BOX_MIN: [f64; 3] = [0.0, 0.0, 0.0];
-#[allow(dead_code)]
 pub const BOX_MAX: [f64; 3] = [0.040, 0.040, 0.010];
 
-#[allow(dead_code)]
 pub fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
     let fields: PersistentMap<String, Value> =
         fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
@@ -32,7 +24,6 @@ pub fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
     }))
 }
 
-#[allow(dead_code)]
 pub fn scalar(si: f64, dim: DimensionVector) -> Value {
     Value::Scalar {
         si_value: si,
@@ -40,21 +31,13 @@ pub fn scalar(si: f64, dim: DimensionVector) -> Value {
     }
 }
 
-#[allow(dead_code)]
 pub fn length(m: f64) -> Value {
     scalar(m, DimensionVector::LENGTH)
-}
-
-/// `vec3(x,y,z)` as a `Vector3<Length>`.
-#[allow(dead_code)]
-pub fn vec3_length(v: [f64; 3]) -> Value {
-    Value::Vector(vec![length(v[0]), length(v[1]), length(v[2])])
 }
 
 /// `vec3(x,y,z)` as a `Vector3<Dimensionless>` — mirrors the FDMProcess
 /// `build_direction` representation produced by the stdlib evaluator, whose
 /// quantity slot is dimensionless because it denotes a DIRECTION (task 5848).
-#[allow(dead_code)]
 pub fn vec3_dimensionless(v: [f64; 3]) -> Value {
     Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])])
 }
@@ -62,7 +45,6 @@ pub fn vec3_dimensionless(v: [f64; 3]) -> Value {
 /// A box surface mesh covering `[BOX_MIN, BOX_MAX]`. Only the vertex extent
 /// matters to the trampoline (it derives the AABB from the vertices); the
 /// triangle indices are irrelevant here, so we ship just the 8 corners.
-#[allow(dead_code)]
 pub fn box_mesh() -> Mesh {
     let [x0, y0, z0] = BOX_MIN;
     let [x1, y1, z1] = BOX_MAX;
@@ -88,7 +70,6 @@ pub fn box_mesh() -> Mesh {
 }
 
 /// An ABS-like base filament (E ≈ 2.0 GPa, ν = 0.35, ρ ≈ 1040 kg/m³).
-#[allow(dead_code)]
 pub fn abs_like_material() -> Value {
     structure(
         "ABS_Plastic",
@@ -105,7 +86,6 @@ pub fn abs_like_material() -> Value {
 /// (D-matrix is linear in E for fixed ν), so ONLY youngs_modulus varies
 /// between operators when using this fixture — making the cold-start heuristic
 /// achievability basis (‖K(αE)·u_E − f‖ = |α−1|·‖f‖) exact.
-#[allow(dead_code)]
 pub fn isotropic_material(youngs_pa: f64) -> Value {
     structure(
         "ABS_Plastic",
@@ -118,7 +98,6 @@ pub fn isotropic_material(youngs_pa: f64) -> Value {
 }
 
 /// Default (all-`none`) coupon — no measured-property overrides.
-#[allow(dead_code)]
 pub fn coupon_default() -> Value {
     structure(
         "FDMCouponOverride",
@@ -135,7 +114,6 @@ pub fn coupon_default() -> Value {
 
 /// A walled+infilled FDM process: 3 walls, 4 top/bottom layers, 0.2mm layers,
 /// 20% gyroid infill, Z build axis, ABS-like base material.
-#[allow(dead_code)]
 pub fn fdm_process() -> Value {
     structure(
         "FDMProcess",
@@ -169,7 +147,6 @@ pub fn fdm_process() -> Value {
 ///
 /// The bead centerlines span X∈[0,40], Y∈[0,20], Z∈[0.2,0.4] mm, so the
 /// toolpath-derived AABB (mm→SI) is `[0,0,0.0002] … [0.040,0.020,0.0004]`.
-#[allow(dead_code)]
 pub fn r0_toolpath_gcode() -> &'static str {
     "\
 M83
@@ -210,7 +187,6 @@ G1 X40 Y20 E2.0
 }
 
 /// Default consumer options: 0.4mm line width, no coupon, transverse-isotropic.
-#[allow(dead_code)]
 pub fn as_printed_options() -> Value {
     structure(
         "AsPrintedOptions",
@@ -232,15 +208,12 @@ pub fn as_printed_options() -> Value {
 // precondition).
 
 /// Cantilever length (SI metres).
-#[allow(dead_code)]
 pub const FEA_L: f64 = 0.8;
 
 /// Cantilever width (SI metres).
-#[allow(dead_code)]
 pub const FEA_W: f64 = 0.1;
 
 /// Cantilever height (SI metres).
-#[allow(dead_code)]
 pub const FEA_H: f64 = 0.1;
 
 /// `ElasticOptions` StructureInstance with the `deterministic` flag set as
@@ -248,7 +221,6 @@ pub const FEA_H: f64 = 0.1;
 ///
 /// For bit-stability tests pass `deterministic: true`; for warm-start tests
 /// pass `deterministic: false` (the default).
-#[allow(dead_code)]
 pub fn elastic_options(deterministic: bool) -> Value {
     let fields: PersistentMap<String, Value> = [("deterministic".to_string(), Value::Bool(deterministic))]
         .into_iter()
@@ -263,7 +235,6 @@ pub fn elastic_options(deterministic: bool) -> Value {
 
 /// A single `PointLoad { force: Real(force_n) }` inside a `Value::List`, as
 /// expected by `solve_elastic_static_trampoline`'s `value_inputs[4]`.
-#[allow(dead_code)]
 pub fn point_load_list(force_n: f64) -> Value {
     let fields: PersistentMap<String, Value> =
         [("force".to_string(), Value::Real(force_n))].into_iter().collect();
@@ -277,7 +248,6 @@ pub fn point_load_list(force_n: f64) -> Value {
 
 /// A single `FixedSupport {}` inside a `Value::List`, as expected by
 /// `solve_elastic_static_trampoline`'s `value_inputs[5]`.
-#[allow(dead_code)]
 pub fn support_list() -> Value {
     Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
         type_id: REGISTRY_FREE,
