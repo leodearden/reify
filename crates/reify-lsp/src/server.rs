@@ -131,6 +131,15 @@ pub struct ServerState {
     /// Explicit stdlib path from `initializationOptions.stdlibPath`.
     /// When `None`, goto_definition falls back to the dev-mode heuristic.
     pub stdlib_path: Option<PathBuf>,
+    /// Whether the client declared `workspace.workspaceEdit.documentChanges`.
+    ///
+    /// Decides which of the two `WorkspaceEdit` representations `rename` emits:
+    /// the versioned `documentChanges` array when true, the legacy unversioned
+    /// `changes` map otherwise. Exactly one is ever populated. `false` is the
+    /// LSP default for an unstated client capability, and reify-lsp also runs
+    /// as a stdio server for arbitrary third-party editors (`reify lsp`), so
+    /// silence must keep the legacy shape.
+    pub client_supports_document_changes: bool,
 }
 
 impl ServerState {
@@ -175,6 +184,7 @@ impl ReifyLanguageServer {
                 last_published_diagnostics: HashMap::new(),
                 workspace_root: None,
                 stdlib_path: None,
+                client_supports_document_changes: false,
             })),
             eval_state: Arc::new(Mutex::new(EvalState::new())),
             sink,
@@ -363,10 +373,21 @@ impl LanguageServer for ReifyLanguageServer {
             .and_then(|opts| opts.get("stdlibPath"))
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
+        // Only an explicit `true` opts the client into versioned documentChanges;
+        // an absent capability is the LSP default (false) and keeps the legacy
+        // `changes` map that third-party stdio editors rely on.
+        let supports_document_changes = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.workspace_edit.as_ref())
+            .and_then(|we| we.document_changes)
+            == Some(true);
         {
             let mut state = self.state.write().await;
             state.workspace_root = workspace_root;
             state.stdlib_path = stdlib_path;
+            state.client_supports_document_changes = supports_document_changes;
         }
 
         Ok(InitializeResult {
@@ -786,6 +807,13 @@ impl LanguageServer for ReifyLanguageServer {
         // The workspace_docs (Url, String) list is built inside spawn_blocking
         // because it may need to read closed-importer files from disk.
         let open_docs = state.documents.snapshot_as_path_map();
+        // Task 7118: the version snapshot is taken HERE, under the same lock
+        // acquisition as the text above, so the two provably describe one
+        // instant. Re-reading versions after the join below would stamp a fresh
+        // version onto an edit computed from stale text — the client's guard
+        // would then pass on precisely the skewed edit it exists to reject.
+        let versions = state.documents.snapshot_versions();
+        let stamp_versions = state.client_supports_document_changes;
         drop(state);
 
         let edit = match tokio::task::spawn_blocking(move || {
@@ -815,7 +843,13 @@ impl LanguageServer for ReifyLanguageServer {
                 None
             }
         };
-        Ok(edit)
+        Ok(edit.map(|edit| {
+            if stamp_versions {
+                version_stamped_workspace_edit(edit, &versions)
+            } else {
+                edit
+            }
+        }))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -1113,6 +1147,61 @@ fn collect_ri_files(
     }
 }
 
+/// Convert a `changes`-shaped [`WorkspaceEdit`] into the versioned
+/// `documentChanges` shape, stamping each target with the document version the
+/// edit was computed against.
+///
+/// `versions` is the caller's snapshot of open-document versions, taken under
+/// the SAME lock acquisition as the text the edit was produced from — that
+/// pairing is what makes the stamp trustworthy. A URI absent from `versions` is
+/// not open on the server, so it is stamped `None`: the LSP signal for "the
+/// content on disk is master", which serializes as JSON `null`.
+///
+/// Exactly one representation survives: `changes` is dropped, so a client can
+/// never read an unversioned copy of the same edit. Entries are sorted by URI
+/// because `changes` is a `HashMap` whose iteration order varies per run, and a
+/// non-deterministic wire response is untestable.
+///
+/// An edit that already carries `document_changes` is returned unchanged. Its
+/// producer chose those versions (and any resource operations) itself, and a
+/// client reads that field in preference to `changes`; converting it would
+/// instead replace it with an empty list — a rename reported as successful
+/// that changed nothing.
+///
+/// Pure and total in every build profile — no lock, no I/O, no panic path.
+fn version_stamped_workspace_edit(
+    edit: WorkspaceEdit,
+    versions: &HashMap<Url, i32>,
+) -> WorkspaceEdit {
+    if edit.document_changes.is_some() {
+        return edit;
+    }
+    let mut targets: Vec<TextDocumentEdit> = edit
+        .changes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(uri, edits)| TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier {
+                version: versions.get(&uri).copied(),
+                uri,
+            },
+            edits: edits.into_iter().map(OneOf::Left).collect(),
+        })
+        .collect();
+    targets.sort_by(|a, b| {
+        a.text_document
+            .uri
+            .as_str()
+            .cmp(b.text_document.uri.as_str())
+    });
+
+    WorkspaceEdit {
+        changes: None,
+        document_changes: Some(DocumentChanges::Edits(targets)),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::test_support::RecordingSink;
@@ -1353,6 +1442,58 @@ mod tests {
         assert!(
             state.workspace_root.is_none(),
             "workspace_root should be None when no root_uri provided"
+        );
+    }
+
+    /// The client's `workspace.workspaceEdit.documentChanges` capability decides
+    /// which edit representation `rename` emits. Only an explicit `Some(true)`
+    /// opts a client in; an absent capability is the LSP default — false — which
+    /// is what keeps every third-party editor (and every existing rename test)
+    /// on the legacy unversioned `changes` map.
+    #[tokio::test]
+    async fn initialize_records_client_document_changes_capability() {
+        async fn flag_after_initialize(params: InitializeParams) -> bool {
+            let (service, _socket) = test_service();
+            let server = service.inner();
+            server.initialize(params).await.unwrap();
+            let state = server.state().read().await;
+            state.client_supports_document_changes
+        }
+
+        fn with_workspace_edit(
+            workspace_edit: WorkspaceEditClientCapabilities,
+        ) -> InitializeParams {
+            InitializeParams {
+                capabilities: ClientCapabilities {
+                    workspace: Some(WorkspaceClientCapabilities {
+                        workspace_edit: Some(workspace_edit),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }
+
+        let declared = with_workspace_edit(WorkspaceEditClientCapabilities {
+            document_changes: Some(true),
+            ..Default::default()
+        });
+        assert!(
+            flag_after_initialize(declared).await,
+            "documentChanges: true must opt the client into versioned edits"
+        );
+
+        assert!(
+            !flag_after_initialize(InitializeParams::default()).await,
+            "no workspace capabilities at all means the legacy changes map \
+             (third-party stdio editors must not be broken)"
+        );
+
+        let present_but_unset = with_workspace_edit(WorkspaceEditClientCapabilities::default());
+        assert!(
+            !flag_after_initialize(present_but_unset).await,
+            "workspaceEdit present but documentChanges unstated is still false"
         );
     }
 
@@ -3455,6 +3596,303 @@ structure Assembly {
             reparsed.errors.is_empty(),
             "renamed other.ri buffer must re-parse clean (Invariant 5): {:?}\n{buffer}",
             reparsed.errors
+        );
+    }
+
+    // --- task 7118: versioned WorkspaceEdit.documentChanges ---
+
+    /// Unwrap a `DocumentChanges` into the `(uri, version, edits)` triples a
+    /// test wants to assert on, failing loudly on the resource-operation
+    /// variant the stamper never produces.
+    fn stamped_entries(edit: &WorkspaceEdit) -> Vec<(String, Option<i32>, Vec<TextEdit>)> {
+        match edit
+            .document_changes
+            .as_ref()
+            .expect("document_changes present")
+        {
+            DocumentChanges::Edits(edits) => edits
+                .iter()
+                .map(|e| {
+                    let texts = e
+                        .edits
+                        .iter()
+                        .map(|one| match one {
+                            OneOf::Left(t) => t.clone(),
+                            OneOf::Right(a) => a.text_edit.clone(),
+                        })
+                        .collect();
+                    (
+                        e.text_document.uri.to_string(),
+                        e.text_document.version,
+                        texts,
+                    )
+                })
+                .collect(),
+            DocumentChanges::Operations(_) => {
+                panic!("rename never emits resource operations")
+            }
+        }
+    }
+
+    fn text_edit(line: u32, new_text: &str) -> TextEdit {
+        TextEdit {
+            range: Range::new(Position::new(line, 0), Position::new(line, 4)),
+            new_text: new_text.to_string(),
+        }
+    }
+
+    #[test]
+    fn version_stamped_workspace_edit_stamps_known_versions_and_sorts_by_uri() {
+        let uri_a = Url::parse("file:///a.ri").unwrap();
+        let uri_b = Url::parse("file:///b.ri").unwrap();
+        let edit_a = text_edit(0, "Alpha");
+        let edit_b = text_edit(3, "Beta");
+
+        // Insert b BEFORE a so a HashMap-order pass-through could not produce
+        // the sorted result by accident.
+        let mut changes = HashMap::new();
+        changes.insert(uri_b.clone(), vec![edit_b.clone()]);
+        changes.insert(uri_a.clone(), vec![edit_a.clone()]);
+
+        // Only a.ri is open on the server; b.ri's content on disk is master.
+        let versions = HashMap::from([(uri_a.clone(), 3)]);
+
+        let stamped = version_stamped_workspace_edit(
+            WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            },
+            &versions,
+        );
+
+        assert!(
+            stamped.changes.is_none(),
+            "exactly one representation is emitted — the legacy map must be dropped"
+        );
+        let entries = stamped_entries(&stamped);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(u, _, _)| u.as_str())
+                .collect::<Vec<_>>(),
+            vec![uri_a.as_str(), uri_b.as_str()],
+            "entries are URI-sorted, not in HashMap iteration order"
+        );
+        assert_eq!(
+            entries[0].1,
+            Some(3),
+            "an open document carries its version"
+        );
+        assert_eq!(
+            entries[1].1, None,
+            "a document not open on the server is unversioned (disk is master)"
+        );
+        assert_eq!(
+            entries[0].2,
+            vec![edit_a],
+            "the original TextEdits pass through unchanged"
+        );
+        assert_eq!(entries[1].2, vec![edit_b]);
+    }
+
+    #[test]
+    fn version_stamped_workspace_edit_maps_empty_changes_to_empty_edits() {
+        let stamped = version_stamped_workspace_edit(WorkspaceEdit::default(), &HashMap::new());
+
+        assert!(stamped.changes.is_none());
+        assert!(
+            stamped_entries(&stamped).is_empty(),
+            "an edit with no changes becomes an empty Edits list, never a panic"
+        );
+    }
+
+    #[test]
+    fn version_stamped_workspace_edit_passes_a_document_changes_edit_through_unchanged() {
+        let uri = Url::parse("file:///a.ri").unwrap();
+        let already_versioned = WorkspaceEdit {
+            document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: Some(7),
+                },
+                edits: vec![OneOf::Left(text_edit(0, "Alpha"))],
+            }])),
+            ..Default::default()
+        };
+
+        let stamped =
+            version_stamped_workspace_edit(already_versioned.clone(), &HashMap::from([(uri, 3)]));
+
+        assert_eq!(
+            stamped, already_versioned,
+            "a producer's own documentChanges survive in every build profile, \
+             never replaced by an empty Edits list"
+        );
+    }
+
+    /// `InitializeParams` declaring `workspace.workspaceEdit.documentChanges`.
+    fn versioned_edit_capability(root_uri: Option<Url>) -> InitializeParams {
+        InitializeParams {
+            root_uri,
+            capabilities: ClientCapabilities {
+                workspace: Some(WorkspaceClientCapabilities {
+                    workspace_edit: Some(WorkspaceEditClientCapabilities {
+                        document_changes: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// The stamp must be the document's CURRENT version, not the open-time one:
+    /// opening at 1 and changing to 2 makes those two values distinguishable,
+    /// so a handler that stamped from a stashed open-time version reds here.
+    ///
+    /// It does NOT pin the handler's read ORDER (versions snapshotted under the
+    /// same lock acquisition as the text, before the `spawn_blocking` join).
+    /// `spawn_blocking` runs to completion before this single-threaded test can
+    /// deliver another notification, so moving the snapshot after the join would
+    /// leave this green; that ordering invariant lives in the handler comment.
+    #[tokio::test]
+    async fn rename_stamps_current_document_version_when_client_supports_document_changes() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        server
+            .initialize(versioned_edit_capability(None))
+            .await
+            .unwrap();
+        let uri = open_bracket_source(server).await;
+
+        let source = reify_test_support::bracket_source();
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: source.to_string(),
+                }],
+            })
+            .await;
+
+        let edit = server
+            .rename(rename_params(uri.clone(), 7, 17, "girth"))
+            .await
+            .unwrap()
+            .expect("renaming a width use returns a WorkspaceEdit");
+
+        assert!(
+            edit.changes.is_none(),
+            "a documentChanges-capable client must not also receive the legacy map"
+        );
+        let entries = stamped_entries(&edit);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, uri.to_string());
+        assert_eq!(
+            entries[0].1,
+            Some(2),
+            "the stamp is the version the edit was computed against, not the open-time one"
+        );
+        assert!(
+            !entries[0].2.is_empty(),
+            "the rename edits survive stamping"
+        );
+    }
+
+    /// The mixed open/closed case: the open home file carries its version, the
+    /// closed on-disk importer is `None` (content on disk is master).
+    #[tokio::test]
+    async fn rename_marks_closed_disk_importer_unversioned() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-rename-versioned-");
+        let tmp = guard.path().to_path_buf();
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(tmp.join("parts.ri"), parts_source).unwrap();
+        std::fs::write(
+            tmp.join("other.ri"),
+            "import parts.Hole\nstructure A {\n    sub h = Hole()\n}",
+        )
+        .unwrap();
+
+        let root_uri = Url::from_file_path(&tmp).unwrap();
+        server
+            .initialize(versioned_edit_capability(Some(root_uri)))
+            .await
+            .unwrap();
+
+        let parts_uri = Url::from_file_path(tmp.join("parts.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: parts_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: parts_source.to_string(),
+                },
+            })
+            .await;
+
+        let edit = server
+            .rename(rename_params(parts_uri.clone(), 0, 10, "Bore"))
+            .await
+            .unwrap()
+            .expect("rename returns a WorkspaceEdit");
+
+        let entries = stamped_entries(&edit);
+        let open_entry = entries
+            .iter()
+            .find(|(u, _, _)| u == &parts_uri.to_string())
+            .expect("the OPEN parts.ri must be among the targets");
+        assert_eq!(
+            open_entry.1,
+            Some(1),
+            "an open document carries its server-side version"
+        );
+
+        let closed_entry = entries
+            .iter()
+            .find(|(u, _, _)| u.ends_with("other.ri"))
+            .expect("the CLOSED other.ri must be among the targets (disk-walk discovery)");
+        assert_eq!(
+            closed_entry.1, None,
+            "a closed file has no server version — content on disk is master"
+        );
+    }
+
+    /// A client that never declared the capability — every third-party stdio
+    /// editor, and every other rename test in this file — keeps the legacy shape.
+    #[tokio::test]
+    async fn rename_keeps_unversioned_changes_without_capability() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        server
+            .initialize(InitializeParams::default())
+            .await
+            .unwrap();
+        let uri = open_bracket_source(server).await;
+
+        let edit = server
+            .rename(rename_params(uri.clone(), 7, 17, "girth"))
+            .await
+            .unwrap()
+            .expect("renaming a width use returns a WorkspaceEdit");
+
+        assert!(
+            edit.document_changes.is_none(),
+            "an undeclared capability must not receive documentChanges"
+        );
+        assert!(
+            edit.changes.is_some_and(|c| c.contains_key(&uri)),
+            "the legacy changes map is preserved for undeclared clients"
         );
     }
 

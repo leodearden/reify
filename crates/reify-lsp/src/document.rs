@@ -145,6 +145,22 @@ impl DocumentStore {
             .filter_map(|(uri, doc)| uri.to_file_path().ok().map(|p| (p, doc.text.clone())))
             .collect()
     }
+
+    /// Return a point-in-time snapshot of every open document's current version.
+    ///
+    /// Taken under the same lock acquisition as [`DocumentStore::snapshot_as_path_map`],
+    /// the returned versions pair exactly with that text snapshot: `update`
+    /// replaces the whole [`DocumentState`], so a version read here can never
+    /// belong to different text than the one read beside it.
+    ///
+    /// Unlike its path-map sibling this keeps non-`file:` URIs — a version
+    /// comparison is meaningful for any open document, however it is addressed.
+    pub fn snapshot_versions(&self) -> HashMap<Url, i32> {
+        self.documents
+            .iter()
+            .map(|(uri, doc)| (uri.clone(), doc.version))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +283,52 @@ mod tests {
         let store = DocumentStore::new();
         let map = store.snapshot_as_path_map();
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn snapshot_versions_returns_uri_keyed_versions() {
+        let mut store = DocumentStore::new();
+        let uri_a = test_uri("alpha");
+        let uri_b = test_uri("beta");
+        store.open(uri_a.clone(), "aaa".to_string(), 1);
+        store.open(uri_b.clone(), "bbb".to_string(), 4);
+        store.update(&uri_b, "bbb2".to_string(), 7);
+
+        let versions = store.snapshot_versions();
+
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions.get(&uri_a).copied(), Some(1));
+        assert_eq!(
+            versions.get(&uri_b).copied(),
+            Some(7),
+            "an updated document reports its CURRENT version, not its open-time one"
+        );
+    }
+
+    #[test]
+    fn snapshot_versions_empty_store_returns_empty() {
+        let store = DocumentStore::new();
+        let versions = store.snapshot_versions();
+        assert!(versions.is_empty());
+    }
+
+    #[test]
+    fn snapshot_versions_drops_closed_documents() {
+        let mut store = DocumentStore::new();
+        let uri_open = test_uri("still_open");
+        let uri_closed = test_uri("now_closed");
+        store.open(uri_open.clone(), "aaa".to_string(), 2);
+        store.open(uri_closed.clone(), "bbb".to_string(), 3);
+        store.close(&uri_closed);
+
+        let versions = store.snapshot_versions();
+
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions.get(&uri_open).copied(), Some(2));
+        assert!(
+            !versions.contains_key(&uri_closed),
+            "a closed document has no server-side version to report"
+        );
     }
 
     #[test]

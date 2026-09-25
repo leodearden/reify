@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
 import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand } from '../editor/rename';
-import type { RenameClient, RenameUi } from '../editor/rename';
+import type { RenameClient, RenameSkewGuard, RenameUi } from '../editor/rename';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
 
@@ -166,23 +166,23 @@ describe('applyTextEditsToString', () => {
 // applyWorkspaceEditAcrossFiles — routing orchestrator (DI mocks, no I/O)
 // ---------------------------------------------------------------------------
 
+const ACTIVE_URI = 'file:///proj/main.ri';
+const OPEN_URI = 'file:///proj/lib.ri';
+const CLOSED_URI = 'file:///proj/other.ri';
+
+const EDIT_A = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'AAA' }];
+const EDIT_B = [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 3 } }, newText: 'BBB' }];
+const EDIT_C = [{ range: { start: { line: 2, character: 0 }, end: { line: 2, character: 3 } }, newText: 'CCC' }];
+
+function makeDeps(openUris: string[] = [ACTIVE_URI, OPEN_URI]) {
+  const applyActive = vi.fn();
+  const applyOpenInactive = vi.fn();
+  const applyClosed = vi.fn();
+  const isOpen = vi.fn((uri: string) => openUris.includes(uri));
+  return { applyActive, applyOpenInactive, applyClosed, isOpen };
+}
+
 describe('applyWorkspaceEditAcrossFiles', () => {
-  const ACTIVE_URI = 'file:///proj/main.ri';
-  const OPEN_URI = 'file:///proj/lib.ri';
-  const CLOSED_URI = 'file:///proj/other.ri';
-
-  const EDIT_A = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'AAA' }];
-  const EDIT_B = [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 3 } }, newText: 'BBB' }];
-  const EDIT_C = [{ range: { start: { line: 2, character: 0 }, end: { line: 2, character: 3 } }, newText: 'CCC' }];
-
-  function makeDeps(openUris: string[] = [ACTIVE_URI, OPEN_URI]) {
-    const applyActive = vi.fn();
-    const applyOpenInactive = vi.fn();
-    const applyClosed = vi.fn();
-    const isOpen = vi.fn((uri: string) => openUris.includes(uri));
-    return { applyActive, applyOpenInactive, applyClosed, isOpen };
-  }
-
   it('routes the active URI to applyActive', () => {
     const edit: WorkspaceEdit = { changes: { [ACTIVE_URI]: EDIT_A } };
     const deps = makeDeps();
@@ -259,6 +259,57 @@ describe('applyWorkspaceEditAcrossFiles', () => {
     applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
     // isOpen should NOT have been consulted for the active URI
     expect(deps.isOpen).not.toHaveBeenCalledWith(ACTIVE_URI);
+  });
+
+  // Task 7118: once the client declares the documentChanges capability the
+  // server stops sending `changes` entirely. An applier that only reads
+  // `changes` would become a silent no-op — rename reporting success while
+  // editing nothing. These pin identical routing for the versioned shape.
+
+  it('routes a documentChanges edit exactly like the equivalent changes edit', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [
+        { textDocument: { uri: ACTIVE_URI, version: 4 }, edits: EDIT_A },
+        { textDocument: { uri: OPEN_URI, version: 2 }, edits: EDIT_B },
+        { textDocument: { uri: CLOSED_URI, version: null }, edits: EDIT_C },
+      ],
+    };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyActive).toHaveBeenCalledOnce();
+    expect(deps.applyActive).toHaveBeenCalledWith(ACTIVE_URI, EDIT_A);
+    expect(deps.applyOpenInactive).toHaveBeenCalledOnce();
+    expect(deps.applyOpenInactive).toHaveBeenCalledWith(OPEN_URI, EDIT_B);
+    expect(deps.applyClosed).toHaveBeenCalledOnce();
+    expect(deps.applyClosed).toHaveBeenCalledWith(CLOSED_URI, EDIT_C);
+  });
+
+  it('skips a documentChanges entry with an empty edit list', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [
+        { textDocument: { uri: ACTIVE_URI, version: 4 }, edits: [] },
+        { textDocument: { uri: CLOSED_URI, version: null }, edits: EDIT_C },
+      ],
+    };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyActive).not.toHaveBeenCalled();
+    expect(deps.applyClosed).toHaveBeenCalledWith(CLOSED_URI, EDIT_C);
+  });
+
+  it('applies ONLY documentChanges when a server sends both (LSP precedence)', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [{ textDocument: { uri: OPEN_URI, version: 2 }, edits: EDIT_B }],
+      changes: { [ACTIVE_URI]: EDIT_A },
+    };
+    const deps = makeDeps();
+    applyWorkspaceEditAcrossFiles(edit, ACTIVE_URI, deps);
+    expect(deps.applyOpenInactive).toHaveBeenCalledOnce();
+    expect(deps.applyOpenInactive).toHaveBeenCalledWith(OPEN_URI, EDIT_B);
+    // The ignored `changes` map targets the ACTIVE uri, so an applier that
+    // merged the two representations — or preferred the legacy one — would
+    // dispatch an unversioned edit into the live buffer here.
+    expect(deps.applyActive).not.toHaveBeenCalled();
   });
 });
 
@@ -441,21 +492,75 @@ describe('applyWorkspaceEdit', () => {
       userEvent: 'rename',
     });
   });
+
+  // Task 7118: the same silent-no-op regression pin for the single-uri applier.
+
+  it('dispatches a documentChanges edit exactly like the equivalent changes edit', () => {
+    const textEdit = {
+      range: { start: { line: 2, character: 3 }, end: { line: 2, character: 8 } },
+      newText: 'girth',
+    };
+    const edit: WorkspaceEdit = {
+      documentChanges: [{ textDocument: { uri: URI, version: 9 }, edits: [textEdit] }],
+    };
+    const dispatch = vi.fn();
+    const view = makeMockView({ dispatch });
+
+    const result = applyWorkspaceEdit(view, edit, URI);
+
+    expect(result).toBe(true);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({
+      changes: [{ from: 43, to: 48, insert: 'girth' }],
+      userEvent: 'rename',
+    });
+  });
+
+  it('returns false when a documentChanges edit carries no entry for the uri', () => {
+    const edit: WorkspaceEdit = {
+      documentChanges: [
+        {
+          textDocument: { uri: 'file:///other.ri', version: 1 },
+          edits: [
+            {
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } },
+              newText: 'girth',
+            },
+          ],
+        },
+      ],
+    };
+    const dispatch = vi.fn();
+    const view = makeMockView({ dispatch });
+
+    expect(applyWorkspaceEdit(view, edit, URI)).toBe(false);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
 // renameCommand — CodeMirror Command factory (cursor → prepareRename → UI)
 // ---------------------------------------------------------------------------
 
-/** Build a mocked rename client + ui from individually-trackable vi.fns. */
+/**
+ * Build a mocked rename client + ui + document-version reader from
+ * individually-trackable vi.fns.
+ *
+ * `currentVersion` defaults to returning undefined (an untracked URI), which is
+ * not-stale by construction — so a test only has to stub it when it is actually
+ * exercising the version-skew guard.
+ */
 function makeRenameDeps() {
   const prepareRename = vi.fn();
   const rename = vi.fn();
   const promptNewName = vi.fn();
   const showCannotRename = vi.fn();
   const showRenameFailed = vi.fn();
+  const currentVersion = vi.fn();
+  const syncServer = vi.fn((_view: EditorView): Promise<void> | null => null);
   const client = { prepareRename, rename } as unknown as RenameClient;
   const ui = { promptNewName, showCannotRename, showRenameFailed } as unknown as RenameUi;
+  const guard: RenameSkewGuard = { currentVersion, syncServer };
   return {
     client,
     ui,
@@ -464,6 +569,9 @@ function makeRenameDeps() {
     promptNewName,
     showCannotRename,
     showRenameFailed,
+    currentVersion,
+    syncServer,
+    guard,
   };
 }
 
@@ -873,5 +981,320 @@ describe('renameCommand', () => {
 
     expect(rename).toHaveBeenCalledWith(URI, 0, 5, 'girth');
     expect(applyEdit).not.toHaveBeenCalled();
+  });
+  // -------------------------------------------------------------------------
+  // version-skew guard (injected RenameSkewGuard) — step-13 tests
+  // -------------------------------------------------------------------------
+
+  const GUARD_TARGET = {
+    range: { start: { line: 0, character: 5 }, end: { line: 0, character: 10 } },
+    placeholder: 'width',
+  };
+
+  /** A documentChanges WorkspaceEdit over URI, stamped with `version`. */
+  const stampedEdit = (version: number | null): WorkspaceEdit => ({
+    documentChanges: [
+      {
+        textDocument: { uri: URI, version },
+        edits: [{ range: GUARD_TARGET.range, newText: 'girth' }],
+      },
+    ],
+  });
+
+  /** The legacy unversioned shape of the same edit. */
+  const LEGACY_EDIT: WorkspaceEdit = {
+    changes: { [URI]: [{ range: GUARD_TARGET.range, newText: 'girth' }] },
+  };
+
+  /** The mock view the guard tests share (head 5 → lspLine 0, lspChar 5). */
+  const guardView = () =>
+    makeMockView({
+      state: {
+        selection: { main: { head: 5 } },
+        doc: {
+          lineAt: (_pos: number) => ({ number: 1, from: 0, to: 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+    });
+
+  /** Drive an F2 command through prepareRename → prompt → submit('girth'). */
+  async function submitRename(
+    command: (view: EditorView) => boolean,
+    view: EditorView,
+    promptNewName: ReturnType<typeof vi.fn>,
+  ): Promise<void> {
+    command(view);
+    await flushMacrotasks();
+    const onSubmit = promptNewName.mock.calls[0][3] as (newName: string) => void;
+    onSubmit('girth');
+    await flushMacrotasks();
+  }
+
+  it('(a) version skew: re-issues the rename ONCE and applies only the fresh edit', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const fresh = stampedEdit(2);
+    // First answer was computed against version 1; the client has since sent 2.
+    rename.mockResolvedValueOnce(stampedEdit(1)).mockResolvedValueOnce(fresh);
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(rename).toHaveBeenNthCalledWith(2, URI, 0, 5, 'girth');
+    // ONLY the fresh edit reaches the buffer — the stale one is never applied.
+    expect(applyEdit).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(b) version skew: a second stale edit fails the rename — bounded at one retry, zero edits', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    // The user keeps typing: every answer is stale.
+    rename.mockResolvedValue(stampedEdit(1));
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    // Bounded: exactly two requests, never a third — an unbounded re-issue loop
+    // under a typing user would livelock instead of reporting failure.
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(applyEdit).not.toHaveBeenCalled();
+    expect(showRenameFailed).toHaveBeenCalledTimes(1);
+    expect(showRenameFailed).toHaveBeenCalledWith(view);
+  });
+
+  it('(c) version skew: an already-fresh edit applies with no retry', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const fresh = stampedEdit(2);
+    rename.mockResolvedValue(fresh);
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(d) version skew: a legacy unversioned changes edit applies immediately, no retry', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    rename.mockResolvedValue(LEGACY_EDIT);
+    // A server that never stamps versions must keep working exactly as before,
+    // whatever the client's own counter says.
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, LEGACY_EDIT, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(e) no skew guard: a stale edit applies exactly as it does today', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, syncServer } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const stale = stampedEdit(1);
+    rename.mockResolvedValue(stale);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    // Guard omitted — every existing caller keeps its current behaviour.
+    await submitRename(renameCommand(() => URI, client, ui, applyEdit), view, promptNewName);
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, stale, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+    expect(currentVersion).not.toHaveBeenCalled();
+    expect(syncServer).not.toHaveBeenCalled();
+  });
+
+  it('version skew: a file switch during the retry window blocks the fresh apply', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    let currentUri = URI;
+    rename
+      .mockResolvedValueOnce(stampedEdit(1))
+      .mockImplementationOnce(() => {
+        // The retry opens a SECOND await window — the user switches files inside it.
+        currentUri = 'file:///other.ri';
+        return Promise.resolve(stampedEdit(2));
+      });
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => currentUri, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledTimes(2);
+    // The now-different buffer must not receive the original file's edits.
+    expect(applyEdit).not.toHaveBeenCalled();
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(f) version skew: an untracked URI is judged fresh — applied, never re-issued', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const edit = stampedEdit(4);
+    rename.mockResolvedValue(edit);
+    // The client never tracked this document, so skew is unknowable rather than
+    // proven. Refusing here would break the closed/inactive-file sinks, whose
+    // URIs the client has no counter for at all.
+    currentVersion.mockReturnValue(undefined);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, edit, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A cross-file edit over three documents: the renamed file (tracked, agrees),
+   * a closed importer (no version — disk is master), and a second open buffer
+   * whose version is `openVersion`.
+   */
+  const crossFileEdit = (openVersion: number): WorkspaceEdit => ({
+    documentChanges: [
+      { textDocument: { uri: URI, version: 2 }, edits: [{ range: GUARD_TARGET.range, newText: 'girth' }] },
+      { textDocument: { uri: CLOSED_URI, version: null }, edits: EDIT_C },
+      { textDocument: { uri: OPEN_URI, version: openVersion }, edits: EDIT_B },
+    ],
+  });
+
+  it('(g) version skew: one disagreeing file of a cross-file edit re-issues the whole rename', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const fresh = crossFileEdit(6);
+    rename.mockResolvedValueOnce(crossFileEdit(1)).mockResolvedValueOnce(fresh);
+    currentVersion.mockImplementation(
+      (uri: string) => ({ [URI]: 2, [OPEN_URI]: 6 } as Record<string, number>)[uri],
+    );
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    // The renamed file agreed and the closed importer is unversioned; the ONE
+    // disagreeing buffer is enough to withhold the whole edit, because applying
+    // it partially would rename a symbol in some files and not others.
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(applyEdit).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(h) version skew: an entry that OMITS the version key is not stale', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    // reify's server always sends an explicit null, but the spec lets a server
+    // omit the key. Both spell "no version stated", so neither may be read as a
+    // version that happens to differ from the client's.
+    const omitted: WorkspaceEdit = {
+      documentChanges: [
+        { textDocument: { uri: URI }, edits: [{ range: GUARD_TARGET.range, newText: 'girth' }] },
+      ],
+    };
+    rename.mockResolvedValue(omitted);
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    expect(rename).toHaveBeenCalledOnce();
+    expect(applyEdit).toHaveBeenCalledWith(view, omitted, URI);
+    expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(i) version skew: the server is synced before the first request AND before the re-issue', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, currentVersion, syncServer, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const order: string[] = [];
+    // Each sync settles only after a microtask, so a request that did not wait
+    // for it would be recorded ahead of its 'synced'.
+    syncServer.mockImplementation(() => Promise.resolve().then(() => void order.push('synced')));
+    const fresh = stampedEdit(2);
+    rename
+      .mockImplementationOnce(() => {
+        order.push('rename');
+        return Promise.resolve(stampedEdit(1));
+      })
+      .mockImplementationOnce(() => {
+        order.push('rename');
+        return Promise.resolve(fresh);
+      });
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    // The version comparison only sees text the server was SENT, so the
+    // re-issue must not be answered from an edit still waiting to go out.
+    expect(order).toEqual(['synced', 'rename', 'synced', 'rename']);
+    expect(syncServer).toHaveBeenCalledWith(view);
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
   });
 });
