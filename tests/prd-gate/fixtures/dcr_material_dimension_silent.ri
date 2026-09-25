@@ -34,19 +34,7 @@ module dcr_material_dimension_silent
 //   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
 //   The positive twin `dcr_material_dimension_correct.ri` re-measured EXIT 0,
 //   spring_rate 1.3802083333333335, unchanged.
-//
-//   How β (#6941) reads its B4 signal now:
-//   * a wrong-dimension Material can no longer be built through this ctor call
-//     site, so the flexure reader is unreachable from this file;
-//   * dimensioning the call site (200GPa) turns this file into the positive
-//     twin and erases the defect, so that route is NOT available;
-//   * β reads B4 below the compiler: a Rust test hands the flexure reader a
-//     hand-built Material value whose youngs_modulus is a LENGTH Scalar and
-//     asserts `DiagnosticCode::DimensionedArgRejected` identity (INV-SF-6),
-//     the code ruling esc-5791-3 names for reader rejections;
-//   * the `.ri`-level rejection of `youngs_modulus: 200mm` is now delivered at
-//     check time by δ (ArgTypeMismatch). β's reader gate is a second line
-//     behind it.
+//   How β (#6941) reads B4 instead: docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure def DcrMaterialDimensionSilent {
     let m = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200mm)

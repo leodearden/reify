@@ -29,9 +29,8 @@ module dcr_langsurface_crossdim_silent
 //   (min / max / asin / atan2 / safety_factor / outer / vec3 are builtins or
 //   fns), so the ctor-conformance chokepoint cannot fire here, and the
 //   exit-0 claim above still holds. The exit 0 -> 1 flip is therefore STILL
-//   κ's and θ's own signal. κ/θ (#6942) should assert
-//   `DiagnosticCode::DimensionedArgRejected` identity per offending call
-//   (INV-SF-6; ruling esc-5791-3) while the listed controls stay unchanged.
+//   κ's and θ's (#6942) own signal; see
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure def DcrLangsurfaceCrossdimSilent {
     let min_crossdim  = min(10mm, 5kg)

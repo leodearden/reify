@@ -33,16 +33,8 @@ module dcr_shaper_frequency_dimension_silent
 //   ζ's signal. Machine pin: the gate-resident
 //   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
 //   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
-//
-//   How ζ (#6941) reads its signal now:
-//   * the consuming path this fixture was amended to exercise is unreachable
-//     while `shaper_rads` is in the file;
-//   * ζ reads its rejection signal below the compiler: the consolidated reader
-//     is fed a hand-built ZVShaper value carrying rad·s^-1, and the test asserts
-//     `DiagnosticCode::DimensionedArgRejected` identity (INV-SF-6; ruling
-//     esc-5791-3);
-//   * ζ's floor that the 50Hz half stays byte-identical must be evaluated from
-//     a file WITHOUT `shaper_rads`.
+//   How ζ (#6941) reads its signal instead:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure def DcrShaperFrequencyDimensionSilent {
     let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)

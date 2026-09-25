@@ -42,17 +42,8 @@ module dcr_reader_ctor_dimension_silent
 //   conformance. Machine pin: the gate-resident
 //   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
 //   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
-//
-//   The wrong values can no longer be constructed through these ctor sites, so
-//   nothing in this file can hand them to cell_f64 / mass_properties_from_value,
-//   read_scalar_si, field_scalar or opt_f64. This file's per-binding
-//   ArgTypeMismatch set belongs to δ. ε and η (#6922) and ζ (#6941) each read
-//   their B-row signal below the compiler: a Rust test hands the reader a
-//   hand-built struct value and asserts `DiagnosticCode::DimensionedArgRejected`
-//   identity (INV-SF-6), the code ruling esc-5791-3 names for reader
-//   rejections. OPEN QUESTION, not a known path: a `.ri`-level reader signal
-//   would need a construction path that the ctor-conformance walk does not
-//   govern.
+//   How ε and η (#6922) and ζ (#6941) read their signals instead:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure def DcrReaderCtorDimensionSilent {
     let mass_wrong_dim   = MassProperties(mass: 2m, com: point3(0mm, 0mm, 0mm))

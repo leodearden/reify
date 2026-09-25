@@ -20,12 +20,8 @@ module dcr_solver_load_dropped_bare
 //   and no ctor-conformance diagnostic of any severity.
 //   result.max_von_mises = 5139325.408614099 Pa, iterations = 719, UNCHANGED.
 //   δ cannot reach this file: PointLoad.force is still `Real` and receives a
-//   bare Real.
-//   PREDICTION, probe-backed (a local `param force : Force` twin given
-//   `force: 1000.0` measured a ctor-conformance Error): after γ2 (#6941)
-//   retypes PointLoad.force, this control's own `force: 1000.0` becomes a
-//   compile-time Error, so γ2 must migrate or retire this file in its own
-//   diff. Once migrated it is identical to the dimensioned twin.
+//   bare Real. This control's predicted post-γ2 (#6941) state:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 //
 // γ1 must leave this number UNCHANGED while making the dimensioned twin match it.
 

@@ -14,11 +14,9 @@
 //      is α's own chokepoint.
 //   2. ctor-conformance ArgTypeMismatch on the param-default `kc`: a Warning
 //      before δ, an Error since δ (#5306).
-//   Both are keyed on the same Curvature-vs-rad·m^-1 mismatch. PREDICTION:
-//   α's re-dimension of CURVATURE clears both, so α's check 1 -> 0 flip
-//   survives δ as α's signal. α (#6179) must therefore assert exit 0 with BOTH
-//   codes gone, not merely the loss of ParamDefaultTypeMismatch. α's diff also
-//   deletes this file's `kc` CTOR_CONFORMANCE_CORPUS_RESIDUAL entry.
+//   Both are keyed on the same Curvature-vs-rad·m^-1 mismatch. How α (#6179)
+//   reads its check 1 -> 0 signal now:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 module curvature_rad_literal
 

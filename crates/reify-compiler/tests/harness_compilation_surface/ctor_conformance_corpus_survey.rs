@@ -2666,10 +2666,14 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// # These are DELIBERATE before-images. Do not "fix" them.
 ///
 /// Every site below is a committed RED before-image for another PRD, and the
-/// conformance violation IS the fixture's content. Each `dcr_*` file's own
-/// header says so: it records, SHA-stamped, that the file evaluated clean at
-/// decompose, then a POST-δ block names THIS chokepoint as the source of its
-/// current exit 1 and says how its owning leaf reads its own signal instead.
+/// conformance violation IS the fixture's content. Each listed fixture's header
+/// records its post-δ state. The `dcr_*` files record, SHA-stamped, that they
+/// evaluated clean at decompose, then a POST-δ block names THIS chokepoint as
+/// the source of their current exit 1. `curvature_rad_literal.ri` differs: it
+/// was already red at decompose on its own `ParamDefaultTypeMismatch`, and its
+/// POST-δ block records THIS chokepoint as a second Error on the same mismatch.
+/// How each owning leaf reads its signal instead is recorded once, in
+/// `docs/notes/ctor-conformance-flip-leaf-signals.md`.
 /// `dcr_solver_load_dropped_dimensioned.ri` exists for no other purpose than to
 /// show that the units-CORRECT `force: 1000N` contributes exactly ZERO force to
 /// `solve_elastic_static` while the bare control contributes 1000 N. Dimension

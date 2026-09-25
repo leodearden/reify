@@ -37,27 +37,9 @@ module dcr_load_ctor_dimension_silent
 //   conformance, so eval stops at compile. Machine pin: the gate-resident
 //   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
 //   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
-//
-//   How each leaf reads its own signal now:
-//   * γ2 (#6941) retypes the four fields, which makes its signal compile-time
-//     and direct: both Errors above vanish, and the three bare spellings
-//     (`bare_point`, `bare_pressure`, `body_force`) each raise ctor-conformance
-//     ArgTypeMismatch instead. PREDICTION, probe-backed: a local
-//     `param force : Force` twin given `force: 1000.0` measured the Error
-//     "argument 'force' has type 'Real' but param 'force' requires type
-//     'Scalar[m·kg·s^-2]'". So the file STILL exits 1 after γ2, on the opposite
-//     bindings, and γ2 must read its signal from the per-binding diagnostic
-//     set, never from the exit code. γ2's diff also deletes this file's `force`
-//     and `traction` CTOR_CONFORMANCE_CORPUS_RESIDUAL entries.
-//   * γ3 (#5802): its B2 row (bare spelling -> DimensionedArgRejected) is
-//     pre-empted from `.ri`, because after γ2 a bare load never reaches
-//     `extract_loads`. γ3 observes its reader narrowing below the compiler: a
-//     Rust test hands the load reader a hand-built Value and asserts
-//     `DiagnosticCode::DimensionedArgRejected` identity (INV-SF-6), the code
-//     ruling esc-5791-3 names for reader rejections. Its B3 row
-//     (`FeaLoadKindUnsupported`) needs a solver call, which this file never
-//     makes.
-//   * γ1 (#6922): see `dcr_solver_load_dropped_dimensioned.ri`.
+//   How γ1 (#6922), γ2 (#6941) and γ3 (#5802) read their signals instead, and
+//   this file's predicted post-γ2 diagnostic set:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure def DcrLoadCtorDimensionSilent {
     let dimensioned_point = PointLoad(point: "tip", force: 5000N)

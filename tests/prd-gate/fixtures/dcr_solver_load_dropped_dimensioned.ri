@@ -37,17 +37,9 @@ module dcr_solver_load_dropped_dimensioned
 //   γ1's signal. Machine pin: the gate-resident
 //   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
 //   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
-//
-//   The call site is ALREADY units-correct, so "dimension the call site" does
-//   not apply: the field's `Real` declaration is what fails. γ1 (#6922) can
-//   read its signal in one of two ways:
-//   * below the compiler: a Rust test feeds the shared load reader / solve path
-//     a PointLoad Value whose force is a FORCE Scalar of 1000 N, and compares it
-//     against the bare control;
-//   * or end to end through `.ri`, but only once γ2 (#6941) has retyped
-//     PointLoad.force. Then this file compiles clean, and `max_von_mises` must
-//     equal 5139325.408614099 Pa with non-zero iterations. This route inverts
-//     the current #6941 -> #6922 dependency edge.
+//   The call site is ALREADY units-correct: the field's `Real` declaration is
+//   what fails. How γ1 (#6922) reads its signal instead:
+//   docs/notes/ctor-conformance-flip-leaf-signals.md.
 
 structure DcrSolverLoadDroppedDimensioned {
     param length : Length = 1000mm
