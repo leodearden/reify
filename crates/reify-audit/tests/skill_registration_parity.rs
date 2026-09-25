@@ -49,15 +49,14 @@ const INVOCATION_SURFACES: &[Surface] = &[
     },
 ];
 
-const ROUTING_SURFACES: &[Surface] = &[Surface {
+const ROUTING_REGISTRY: Surface = Surface {
     file: "references/severity-routing.md",
     scope: Scope::Section("## §0 "),
     role: "pattern routing registry",
-}];
+};
 
-fn all_surfaces() -> impl Iterator<Item = &'static Surface> {
-    INVOCATION_SURFACES.iter().chain(ROUTING_SURFACES)
-}
+const TOKEN_COLUMN: &str = "Token";
+const PATTERN_VALUES_COLUMN: &str = "`Finding.pattern` value(s)";
 
 impl Scope {
     fn kind(&self) -> &'static str {
@@ -138,32 +137,81 @@ fn mentions_token(text: &str, token: &str) -> bool {
     })
 }
 
+/// The text of `surface`'s scope, or the gap that stops it being checked.
+fn scope_text(surface: &Surface) -> Result<String, String> {
+    let path = skill_dir().join(surface.file);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("{surface}: unreadable at {}: {e}", path.display()))?;
+    surface
+        .scope
+        .extract(&text)
+        .ok_or_else(|| format!("{surface}: {} not found", surface.scope.kind()))
+}
+
 fn registration_gaps<'a>(
     tokens: &[&str],
     surfaces: impl IntoIterator<Item = &'a Surface>,
 ) -> Vec<String> {
     let mut gaps = Vec::new();
     for surface in surfaces {
-        let path = skill_dir().join(surface.file);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(e) => {
-                gaps.push(format!("{surface}: unreadable at {}: {e}", path.display()));
-                continue;
-            }
-        };
-        let Some(scope_text) = surface.scope.extract(&text) else {
-            gaps.push(format!("{surface}: {} not found", surface.scope.kind()));
-            continue;
-        };
-        gaps.extend(
-            tokens
-                .iter()
-                .filter(|token| !mentions_token(&scope_text, token))
-                .map(|token| format!("{token} missing from {surface}")),
-        );
+        match scope_text(surface) {
+            Ok(text) => gaps.extend(
+                tokens
+                    .iter()
+                    .filter(|token| !mentions_token(&text, token))
+                    .map(|token| format!("{token} missing from {surface}")),
+            ),
+            Err(gap) => gaps.push(gap),
+        }
     }
     gaps
+}
+
+/// The cells of the first markdown table in `text`, row by row, header row
+/// first; the `|---|` separator row is dropped.
+fn table_rows(text: &str) -> Vec<Vec<&str>> {
+    text.lines()
+        .skip_while(|line| !line.starts_with('|'))
+        .take_while(|line| line.starts_with('|'))
+        .filter(|line| !line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')))
+        .map(|line| {
+            line.trim()
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect()
+        })
+        .collect()
+}
+
+/// Each data row's cell under the header cell `heading`, or `None` when no
+/// header cell is `heading`.
+fn table_column<'t>(text: &'t str, heading: &str) -> Option<Vec<&'t str>> {
+    let rows = table_rows(text);
+    let (header, data) = rows.split_first()?;
+    let index = header.iter().position(|cell| *cell == heading)?;
+    Some(
+        data.iter()
+            .filter_map(|row| row.get(index).copied())
+            .collect(),
+    )
+}
+
+/// `names` not named in any cell of the routing registry's `heading` column.
+fn registry_column_gaps(names: &[&str], heading: &str) -> Vec<String> {
+    let surface = &ROUTING_REGISTRY;
+    let text = match scope_text(surface) {
+        Ok(text) => text,
+        Err(gap) => return vec![gap],
+    };
+    let Some(cells) = table_column(&text, heading) else {
+        return vec![format!("{surface}: no table column headed {heading}")];
+    };
+    names
+        .iter()
+        .filter(|name| !cells.iter().any(|cell| mentions_token(cell, name)))
+        .map(|name| format!("{name} missing from the {heading} column of {surface}"))
+        .collect()
 }
 
 /// The names serde gives `T`'s variants: every value a `T` field can carry in
@@ -222,25 +270,25 @@ fn every_pattern_token_is_registered_where_the_skill_invokes_detectors() {
 
 #[test]
 fn every_pattern_token_has_a_routing_registry_row() {
-    let gaps = registration_gaps(pattern_flag::TOKENS, ROUTING_SURFACES);
+    let gaps = registry_column_gaps(pattern_flag::TOKENS, TOKEN_COLUMN);
     assert!(
         gaps.is_empty(),
-        "every `reify-audit --pattern` token needs a row in the /audit skill's routing \
-         registry, which records the token's Finding.pattern values, what its \
-         Finding.task_id carries and its routing notes. {} gap(s):\n  {}",
+        "every `reify-audit --pattern` token needs a row, keyed in the {TOKEN_COLUMN} column, \
+         in the /audit skill's routing registry, which records the token's Finding.pattern \
+         values, what its Finding.task_id carries and its routing notes. {} gap(s):\n  {}",
         gaps.len(),
         gaps.join("\n  ")
     );
 }
 
 #[test]
-fn every_finding_pattern_value_is_in_the_routing_registry() {
-    let gaps = registration_gaps(serde_variant_names::<Pattern>(), ROUTING_SURFACES);
+fn every_finding_pattern_value_is_in_a_routing_registry_row() {
+    let gaps = registry_column_gaps(serde_variant_names::<Pattern>(), PATTERN_VALUES_COLUMN);
     assert!(
         gaps.is_empty(),
-        "every `Finding.pattern` value (a `reify_audit::Pattern` variant) must be named in its \
-         `--pattern` token's row of the /audit skill's routing registry, which is how the skill \
-         maps a finding back to that token's routing notes. {} gap(s):\n  {}",
+        "every `Finding.pattern` value (a `reify_audit::Pattern` variant) must be named in the \
+         {PATTERN_VALUES_COLUMN} column of a row of the /audit skill's routing registry, which \
+         is how the skill maps a finding back to its token's routing notes. {} gap(s):\n  {}",
         gaps.len(),
         gaps.join("\n  ")
     );
@@ -267,15 +315,45 @@ fn mentions_token_matches_whole_tokens_only() {
     assert!(!mentions_token("PDEADX", "PDEAD"));
 }
 
-/// Each surface reports a token no detector has, whether as missing or as
-/// unresolvable, so the parity checks above can fail on every surface.
 #[test]
-fn an_unregistered_token_is_reported_on_every_surface() {
-    let gaps = registration_gaps(&["PNOTAREALDETECTOR"], all_surfaces());
+fn table_column_takes_only_the_named_column_of_the_first_table() {
+    let text = "Intro naming PInProse.\n\
+                \n\
+                | Token | Values | Notes |\n\
+                |---|:---:|---|\n\
+                | `PTOK` | `PValue`, `POther` | see PInNotes |\n\
+                \n\
+                | Token | Values |\n\
+                |---|---|\n\
+                | `PLATER` | `PLaterValue` |\n";
+    assert_eq!(table_column(text, "Token"), Some(vec!["`PTOK`"]));
     assert_eq!(
-        gaps.len(),
-        all_surfaces().count(),
-        "expected exactly one gap per surface; got:\n  {}",
-        gaps.join("\n  ")
+        table_column(text, "Values"),
+        Some(vec!["`PValue`, `POther`"])
     );
+    assert_eq!(table_column(text, "Missing"), None);
+}
+
+/// Each surface and each registry column reports a name nothing registers,
+/// whether as missing or as unresolvable, so the parity checks above can fail
+/// on every one of them.
+#[test]
+fn an_unregistered_name_is_reported_on_every_surface_and_registry_column() {
+    let unregistered = ["PNOTAREALDETECTOR"];
+    let invocation_gaps = registration_gaps(&unregistered, INVOCATION_SURFACES);
+    assert_eq!(
+        invocation_gaps.len(),
+        INVOCATION_SURFACES.len(),
+        "expected exactly one gap per invocation surface; got:\n  {}",
+        invocation_gaps.join("\n  ")
+    );
+    for heading in [TOKEN_COLUMN, PATTERN_VALUES_COLUMN] {
+        let gaps = registry_column_gaps(&unregistered, heading);
+        assert_eq!(
+            gaps.len(),
+            1,
+            "expected exactly one gap for the {heading} registry column; got:\n  {}",
+            gaps.join("\n  ")
+        );
+    }
 }
