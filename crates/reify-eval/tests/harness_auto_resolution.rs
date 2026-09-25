@@ -44,9 +44,10 @@
 //! unit includes nothing from outside its own module directory — is measured and capped
 //! by `tests/infra/test_harness_kloc_cap.sh` rule (a).
 //!
-//! `cost_robustness_tradeoff_underdetermined_diagnostic` (task #6465) was authored here
-//! directly rather than moved: it asserts the strict-auto `ConstraintNonUnique` verdict,
-//! the same resolution-outcome diagnostic two of the modules above already substring-match.
+//! The two `cost_robustness_tradeoff_*` modules (task #6465) were authored here directly
+//! rather than moved: they assert the γ tradeoff form's auto-resolution OUTCOME — the
+//! resolved boundary value, and the strict-auto `ConstraintNonUnique` verdict that two of
+//! the modules above already substring-match.
 //!
 //! Module order: alphabetical by stem. No module here carries a rationale comment whose
 //! ordering matters, and no module here is used by another, so there is no accretion
@@ -65,5 +66,7 @@ mod auto_type_param_determinism_tests;
 mod auto_type_param_topology_trigger_tests;
 #[path = "harness_auto_resolution/auto_type_param_value_population_e2e.rs"]
 mod auto_type_param_value_population_e2e;
+#[path = "harness_auto_resolution/cost_robustness_tradeoff_boundary_e2e.rs"]
+mod cost_robustness_tradeoff_boundary_e2e;
 #[path = "harness_auto_resolution/cost_robustness_tradeoff_underdetermined_diagnostic.rs"]
 mod cost_robustness_tradeoff_underdetermined_diagnostic;
