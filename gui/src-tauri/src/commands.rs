@@ -74,30 +74,16 @@ pub fn initial_state_evaluation(engine: Arc<Mutex<EngineSession>>) -> EvalReques
 
 /// Publish the state a request produced; its reply reports only success.
 fn publish_only(produced: Result<GuiState, String>) -> EvalOutcome<()> {
-    match produced {
-        Ok(state) => EvalOutcome {
-            publish: Some(state),
-            reply: Ok(()),
-        },
-        Err(message) => EvalOutcome {
-            publish: None,
-            reply: Err(message),
-        },
-    }
+    produced.map_or_else(EvalOutcome::failed, |state| {
+        EvalOutcome::succeeded(Some(state), ())
+    })
 }
 
 /// Publish the state a request produced, and reply with it as well.
 fn publish_and_reply(produced: Result<GuiState, String>) -> EvalOutcome<GuiState> {
-    match produced {
-        Ok(state) => EvalOutcome {
-            publish: Some(state.clone()),
-            reply: Ok(state),
-        },
-        Err(message) => EvalOutcome {
-            publish: None,
-            reply: Err(message),
-        },
-    }
+    produced.map_or_else(EvalOutcome::failed, |state| {
+        EvalOutcome::succeeded(Some(state.clone()), state)
+    })
 }
 
 /// A REFUSED durable parameter write, and the state the frontend must render
@@ -196,10 +182,7 @@ pub fn commit_parameter_edit(
 ) -> EvalRequest<()> {
     EvalRequest::edit(EditIdentity::commit(cell_id.as_str(), order), move || {
         match set_parameter_impl(&engine, &cell_id, &value) {
-            Ok(state) => EvalOutcome {
-                publish: Some(state),
-                reply: Ok(()),
-            },
+            Ok(state) => EvalOutcome::succeeded(Some(state), ()),
             Err(RefusedParameterWrite { message, restored }) => EvalOutcome {
                 publish: restored.map(|state| *state),
                 reply: Err(message),
@@ -672,16 +655,9 @@ pub fn disk_reload_edit(engine: Arc<Mutex<EngineSession>>, path: PathBuf) -> Eva
             .and_then(|content| {
                 reload_for_watch_if_changed_impl(&engine, &path.to_string_lossy(), &content)
             });
-        match reloaded {
-            Ok(publish) => EvalOutcome {
-                publish,
-                reply: Ok(()),
-            },
-            Err(message) => EvalOutcome {
-                publish: None,
-                reply: Err(message),
-            },
-        }
+        reloaded.map_or_else(EvalOutcome::failed, |publish| {
+            EvalOutcome::succeeded(publish, ())
+        })
     })
 }
 

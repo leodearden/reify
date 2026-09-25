@@ -228,6 +228,24 @@ pub struct EvalOutcome<T> {
     pub reply: Result<T, String>,
 }
 
+impl<T> EvalOutcome<T> {
+    /// A job that succeeded: publish `publish`, if any, then reply `reply`.
+    pub fn succeeded(publish: Option<GuiState>, reply: T) -> Self {
+        Self {
+            publish,
+            reply: Ok(reply),
+        }
+    }
+
+    /// A job that failed, leaving nothing to publish.
+    pub fn failed(message: String) -> Self {
+        Self {
+            publish: None,
+            reply: Err(message),
+        }
+    }
+}
+
 /// A unit of engine work, as the queue will treat it, and the ticket its reply
 /// arrives on.
 pub struct EvalRequest<T> {
@@ -327,14 +345,12 @@ impl<T> TypedJob<T> {
 impl<T: Send> QueuedJob for TypedJob<T> {
     fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState)) {
         let TypedJob { job, reply } = *self;
-        let outcome =
-            std::panic::catch_unwind(AssertUnwindSafe(job)).unwrap_or_else(|payload| EvalOutcome {
-                publish: None,
-                reply: Err(format!(
-                    "panic in evaluation: {}",
-                    panic_payload_message(&*payload)
-                )),
-            });
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(job)).unwrap_or_else(|payload| {
+            EvalOutcome::failed(format!(
+                "panic in evaluation: {}",
+                panic_payload_message(&*payload)
+            ))
+        });
         if let Some(state) = outcome.publish {
             publish(state);
         }
