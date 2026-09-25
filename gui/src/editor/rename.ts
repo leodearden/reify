@@ -136,6 +136,21 @@ function workspaceEditTargets(edit: WorkspaceEdit): WorkspaceEditTarget[] {
 export type DocumentVersionReader = (uri: string) => number | undefined;
 
 /**
+ * What renameCommand needs to tell an edit computed against the text on screen
+ * from one computed against text the client has since moved past.
+ */
+export interface RenameSkewGuard {
+  currentVersion: DocumentVersionReader;
+  /**
+   * Hand the server any local edit it has not received yet, or return null
+   * when it already has the text on screen. Awaited before EVERY rename
+   * request, the re-issue included, because the version comparison can only
+   * see edits that were sent.
+   */
+  syncServer(view: EditorView): Promise<void> | null;
+}
+
+/**
  * URIs whose edits were computed against a document version the client no
  * longer holds.
  *
@@ -154,9 +169,9 @@ export type DocumentVersionReader = (uri: string) => number | undefined;
  *
  * This detects exactly the race it is named for: the server computed these
  * edits against version N, and the client has since sent M. It cannot see
- * local edits not yet sent, so a caller must make sure the server has the
- * latest text before asking (Editor.tsx flushes the pending didChange before
- * F2); `lspRangeToCmRange`'s null-skip remains a last-resort backstop.
+ * local edits not yet sent, which is why every request is preceded by the
+ * guard's `syncServer`; `lspRangeToCmRange`'s null-skip remains a last-resort
+ * backstop.
  */
 function staleEditTargets(
   edit: WorkspaceEdit,
@@ -329,24 +344,25 @@ export type ApplyEditFn = (view: EditorView, edit: WorkspaceEdit, activeUri: str
  * Returns null when the server refused the name outright, or when the re-issued
  * edit was stale too — both mean "apply nothing, tell the user".
  *
- * With no `currentVersion` reader nothing is ever judged stale, so the single
- * request and its answer pass straight through.
+ * With no `guard` nothing is ever judged stale, so the single request and its
+ * answer pass straight through.
  */
 async function resolveApplicableEdit(
-  client: RenameClient,
-  uri: string,
-  line: number,
-  character: number,
-  newName: string,
-  currentVersion?: DocumentVersionReader,
+  requestRename: () => Promise<WorkspaceEdit | null>,
+  view: EditorView,
+  guard?: RenameSkewGuard,
 ): Promise<WorkspaceEdit | null> {
+  const request = async (): Promise<WorkspaceEdit | null> => {
+    await guard?.syncServer(view);
+    return requestRename();
+  };
   const applicable = (edit: WorkspaceEdit | null): boolean =>
-    !!edit && (!currentVersion || staleEditTargets(edit, currentVersion).length === 0);
+    !!edit && (!guard || staleEditTargets(edit, guard.currentVersion).length === 0);
 
-  const first = await client.rename(uri, line, character, newName);
+  const first = await request();
   if (!first || applicable(first)) return first ?? null;
 
-  const reissued = await client.rename(uri, line, character, newName);
+  const reissued = await request();
   return applicable(reissued) ? reissued : null;
 }
 
@@ -369,17 +385,17 @@ async function resolveApplicableEdit(
  * apply steps re-check that the URI is still current (and the apply step also
  * checks view.dom.isConnected) so stale applies never corrupt the active buffer.
  *
- * `currentVersion`, when supplied, arms the version-skew guard: an edit computed
- * against a document version the client has already moved past is re-requested
- * rather than applied (see resolveApplicableEdit). Omitting it leaves the
- * unguarded behaviour untouched.
+ * `guard`, when supplied, arms the version-skew guard: an edit computed against
+ * a document version the client has already moved past is re-requested rather
+ * than applied (see resolveApplicableEdit). Omitting it leaves the unguarded
+ * behaviour untouched.
  */
 export function renameCommand(
   uriGetter: () => string,
   client: RenameClient,
   ui: RenameUi,
   applyEdit?: ApplyEditFn,
-  currentVersion?: DocumentVersionReader,
+  guard?: RenameSkewGuard,
 ): (view: EditorView) => boolean {
   return (view: EditorView): boolean => {
     const head = view.state.selection.main.head;
@@ -405,7 +421,11 @@ export function renameCommand(
           target.range,
           target.placeholder,
           (newName: string) => {
-            resolveApplicableEdit(client, uri, lspLine, lspChar, newName, currentVersion)
+            resolveApplicableEdit(
+              () => client.rename(uri, lspLine, lspChar, newName),
+              view,
+              guard,
+            )
               .then((edit) => {
                 // The field can outlive the editor, and the user may switch files
                 // while the rename is in flight — never mutate a dead or

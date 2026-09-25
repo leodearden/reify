@@ -2585,4 +2585,46 @@ describe('Editor LSP per-document versions (task 7118)', () => {
       calls.findIndex((c) => c.method === 'textDocument/references'),
     );
   });
+
+  it('a key held behind its flush does not run against a file switched to meanwhile', async () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const calls = captureLspVersionCalls({ 'textDocument/references': [] });
+    // Hold the flushed didChange unanswered so a file switch lands inside its window.
+    const recordAndAnswer = mockInvoke.getMockImplementation()!;
+    let answerDidChange!: () => void;
+    const didChangeAnswered = new Promise<void>((resolve) => {
+      answerDidChange = resolve;
+    });
+    mockInvoke.mockImplementation(async (cmd: string, args: any) => {
+      const answer = recordAndAnswer(cmd, args);
+      if ((args as any)?.method === 'textDocument/didChange') await didChangeAnswered;
+      return answer;
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE1_URI)).toBeDefined();
+    });
+
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F12', shiftKey: true, bubbles: true }),
+    );
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', FILE1_URI)).toBeDefined();
+    });
+
+    store.setActiveFile(file2.path);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', FILE2_URI)).toBeDefined();
+    });
+    answerDidChange();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    // The key asked about file1's text; the view now shows file2, whose cursor
+    // and URI the command would read instead.
+    expect(calls.some((c) => c.method === 'textDocument/references')).toBe(false);
+  });
 });

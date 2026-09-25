@@ -171,8 +171,10 @@ export function Editor(props: EditorProps) {
    * Send the debounced didChange NOW, or null when the server is already current.
    *
    * Requests that must be answered against the text the user is looking at
-   * go through onceServerIsCurrent. Without it the server answers from text up to
-   * EDITOR_DEBOUNCE_MS old while both sides still agree on the version number —
+   * call this first — via onceServerIsCurrent, or as the rename guard's
+   * syncServer before each rename request. Without it the server answers from
+   * text up to EDITOR_DEBOUNCE_MS old while both sides still agree on the
+   * version number —
    * skew that no version comparison downstream can detect, because the stale
    * answer is stamped with the version the client itself last sent.
    *
@@ -194,14 +196,22 @@ export function Editor(props: EditorProps) {
    * Position-based requests (rename, find uses) are only meaningful against
    * the text they were computed from, and pressing the key straight after
    * typing is the most likely way to ask about text the server has not
-   * received yet. The key is consumed either way.
+   * received yet. The key is consumed either way, and a command whose document
+   * was switched away from (or whose view was torn down) while it waited is
+   * dropped rather than run against whatever the view shows now.
    */
   const onceServerIsCurrent =
     (command: (cmView: EditorView) => boolean) =>
     (cmView: EditorView): boolean => {
       const flushed = flushPendingLspChange(cmView);
       if (!flushed) return command(cmView);
-      void flushed.then(() => command(cmView));
+      const uriAtKeypress = currentUri;
+      flushed
+        .then(() => {
+          if (!cmView.dom.isConnected || currentUri !== uriAtKeypress) return;
+          command(cmView);
+        })
+        .catch((err: unknown) => console.error('LSP command after didChange flush failed:', err));
       return true;
     };
 
@@ -394,12 +404,9 @@ export function Editor(props: EditorProps) {
           saveFile(file.path, newContent).catch((err: unknown) =>
             console.error('rename: failed to save inactive buffer', err),
           );
-          // Notify the LSP server (file may not be LSP-open yet — ignore any error).
-          lspClient
-            .didChange(uri, newContent, docVersions.next(versionKey(uri)))
-            .catch((_err: unknown) => {
-              /* file may not be didOpen'd in LSP yet — ignore */
-            });
+          // Notify the LSP server. A document it never opened is only logged
+          // server-side, so a rejection here is a transport failure worth reporting.
+          sendDidChange(uri, newContent);
           // Invalidate cached EditorState so switching to this tab reloads from
           // the updated store content rather than the pre-rename CM snapshot.
           // Use pathToUri(key) — the same decoded, non-percent-encoded form that
@@ -425,14 +432,12 @@ export function Editor(props: EditorProps) {
 
     // F2 rename, armed with the version-skew guard: the reader hands back the
     // version last SENT for the document the server named, under the one key
-    // form both sides agree on.
-    const renameF2 = renameCommand(
-      () => currentUri,
-      lspClient,
-      renameUi,
-      applyEditFn,
-      (uri) => docVersions.current(versionKey(uri)),
-    );
+    // form both sides agree on, and every rename request (the re-issue
+    // included) first sends any didChange still pending.
+    const renameF2 = renameCommand(() => currentUri, lspClient, renameUi, applyEditFn, {
+      currentVersion: (uri) => docVersions.current(versionKey(uri)),
+      syncServer: flushPendingLspChange,
+    });
 
     // Extract extensions into a shared variable for reuse when creating
     // fresh EditorState instances for newly opened files

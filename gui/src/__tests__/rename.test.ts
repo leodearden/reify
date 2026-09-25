@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EditorView } from '@codemirror/view';
 import { applyWorkspaceEdit, applyTextEditsToString, applyWorkspaceEditAcrossFiles, renameCommand } from '../editor/rename';
-import type { RenameClient, RenameUi } from '../editor/rename';
+import type { RenameClient, RenameSkewGuard, RenameUi } from '../editor/rename';
 import type { WorkspaceEdit } from '../editor/lspClient';
 import { flushMacrotasks } from './test-utils';
 
@@ -557,8 +557,10 @@ function makeRenameDeps() {
   const showCannotRename = vi.fn();
   const showRenameFailed = vi.fn();
   const currentVersion = vi.fn();
+  const syncServer = vi.fn((_view: EditorView): Promise<void> | null => null);
   const client = { prepareRename, rename } as unknown as RenameClient;
   const ui = { promptNewName, showCannotRename, showRenameFailed } as unknown as RenameUi;
+  const guard: RenameSkewGuard = { currentVersion, syncServer };
   return {
     client,
     ui,
@@ -568,6 +570,8 @@ function makeRenameDeps() {
     showCannotRename,
     showRenameFailed,
     currentVersion,
+    syncServer,
+    guard,
   };
 }
 
@@ -979,7 +983,7 @@ describe('renameCommand', () => {
     expect(applyEdit).not.toHaveBeenCalled();
   });
   // -------------------------------------------------------------------------
-  // version-skew guard (injected currentVersion reader) — step-13 tests
+  // version-skew guard (injected RenameSkewGuard) — step-13 tests
   // -------------------------------------------------------------------------
 
   const GUARD_TARGET = {
@@ -1028,7 +1032,7 @@ describe('renameCommand', () => {
   }
 
   it('(a) version skew: re-issues the rename ONCE and applies only the fresh edit', async () => {
-    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
     const fresh = stampedEdit(2);
@@ -1039,7 +1043,7 @@ describe('renameCommand', () => {
     const applyEdit = vi.fn();
     const view = guardView();
     await submitRename(
-      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      renameCommand(() => URI, client, ui, applyEdit, guard),
       view,
       promptNewName,
     );
@@ -1053,7 +1057,7 @@ describe('renameCommand', () => {
   });
 
   it('(b) version skew: a second stale edit fails the rename — bounded at one retry, zero edits', async () => {
-    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
     // The user keeps typing: every answer is stale.
@@ -1063,7 +1067,7 @@ describe('renameCommand', () => {
     const applyEdit = vi.fn();
     const view = guardView();
     await submitRename(
-      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      renameCommand(() => URI, client, ui, applyEdit, guard),
       view,
       promptNewName,
     );
@@ -1077,7 +1081,7 @@ describe('renameCommand', () => {
   });
 
   it('(c) version skew: an already-fresh edit applies with no retry', async () => {
-    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
     const fresh = stampedEdit(2);
@@ -1087,7 +1091,7 @@ describe('renameCommand', () => {
     const applyEdit = vi.fn();
     const view = guardView();
     await submitRename(
-      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      renameCommand(() => URI, client, ui, applyEdit, guard),
       view,
       promptNewName,
     );
@@ -1099,7 +1103,7 @@ describe('renameCommand', () => {
   });
 
   it('(d) version skew: a legacy unversioned changes edit applies immediately, no retry', async () => {
-    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
     rename.mockResolvedValue(LEGACY_EDIT);
@@ -1110,7 +1114,7 @@ describe('renameCommand', () => {
     const applyEdit = vi.fn();
     const view = guardView();
     await submitRename(
-      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      renameCommand(() => URI, client, ui, applyEdit, guard),
       view,
       promptNewName,
     );
@@ -1120,8 +1124,8 @@ describe('renameCommand', () => {
     expect(showRenameFailed).not.toHaveBeenCalled();
   });
 
-  it('(e) no currentVersion reader: a stale edit applies exactly as it does today', async () => {
-    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+  it('(e) no skew guard: a stale edit applies exactly as it does today', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, syncServer } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
     const stale = stampedEdit(1);
@@ -1129,17 +1133,18 @@ describe('renameCommand', () => {
 
     const applyEdit = vi.fn();
     const view = guardView();
-    // Reader omitted — every existing caller keeps its current behaviour.
+    // Guard omitted — every existing caller keeps its current behaviour.
     await submitRename(renameCommand(() => URI, client, ui, applyEdit), view, promptNewName);
 
     expect(rename).toHaveBeenCalledOnce();
     expect(applyEdit).toHaveBeenCalledWith(view, stale, URI);
     expect(showRenameFailed).not.toHaveBeenCalled();
     expect(currentVersion).not.toHaveBeenCalled();
+    expect(syncServer).not.toHaveBeenCalled();
   });
 
   it('version skew: a file switch during the retry window blocks the fresh apply', async () => {
-    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
     let currentUri = URI;
@@ -1155,7 +1160,7 @@ describe('renameCommand', () => {
     const applyEdit = vi.fn();
     const view = guardView();
     await submitRename(
-      renameCommand(() => currentUri, client, ui, applyEdit, currentVersion),
+      renameCommand(() => currentUri, client, ui, applyEdit, guard),
       view,
       promptNewName,
     );
@@ -1167,7 +1172,7 @@ describe('renameCommand', () => {
   });
 
   it('(f) version skew: an untracked URI is judged fresh — applied, never re-issued', async () => {
-    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
     const edit = stampedEdit(4);
@@ -1180,7 +1185,7 @@ describe('renameCommand', () => {
     const applyEdit = vi.fn();
     const view = guardView();
     await submitRename(
-      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      renameCommand(() => URI, client, ui, applyEdit, guard),
       view,
       promptNewName,
     );
@@ -1204,7 +1209,7 @@ describe('renameCommand', () => {
   });
 
   it('(g) version skew: one disagreeing file of a cross-file edit re-issues the whole rename', async () => {
-    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
     const fresh = crossFileEdit(6);
@@ -1216,7 +1221,7 @@ describe('renameCommand', () => {
     const applyEdit = vi.fn();
     const view = guardView();
     await submitRename(
-      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      renameCommand(() => URI, client, ui, applyEdit, guard),
       view,
       promptNewName,
     );
@@ -1231,7 +1236,7 @@ describe('renameCommand', () => {
   });
 
   it('(h) version skew: an entry that OMITS the version key is not stale', async () => {
-    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion } =
+    const { client, ui, prepareRename, rename, promptNewName, showRenameFailed, currentVersion, guard } =
       makeRenameDeps();
     prepareRename.mockResolvedValue(GUARD_TARGET);
     // reify's server always sends an explicit null, but the spec lets a server
@@ -1248,7 +1253,7 @@ describe('renameCommand', () => {
     const applyEdit = vi.fn();
     const view = guardView();
     await submitRename(
-      renameCommand(() => URI, client, ui, applyEdit, currentVersion),
+      renameCommand(() => URI, client, ui, applyEdit, guard),
       view,
       promptNewName,
     );
@@ -1256,5 +1261,40 @@ describe('renameCommand', () => {
     expect(rename).toHaveBeenCalledOnce();
     expect(applyEdit).toHaveBeenCalledWith(view, omitted, URI);
     expect(showRenameFailed).not.toHaveBeenCalled();
+  });
+
+  it('(i) version skew: the server is synced before the first request AND before the re-issue', async () => {
+    const { client, ui, prepareRename, rename, promptNewName, currentVersion, syncServer, guard } =
+      makeRenameDeps();
+    prepareRename.mockResolvedValue(GUARD_TARGET);
+    const order: string[] = [];
+    // Each sync settles only after a microtask, so a request that did not wait
+    // for it would be recorded ahead of its 'synced'.
+    syncServer.mockImplementation(() => Promise.resolve().then(() => void order.push('synced')));
+    const fresh = stampedEdit(2);
+    rename
+      .mockImplementationOnce(() => {
+        order.push('rename');
+        return Promise.resolve(stampedEdit(1));
+      })
+      .mockImplementationOnce(() => {
+        order.push('rename');
+        return Promise.resolve(fresh);
+      });
+    currentVersion.mockReturnValue(2);
+
+    const applyEdit = vi.fn();
+    const view = guardView();
+    await submitRename(
+      renameCommand(() => URI, client, ui, applyEdit, guard),
+      view,
+      promptNewName,
+    );
+
+    // The version comparison only sees text the server was SENT, so the
+    // re-issue must not be answered from an edit still waiting to go out.
+    expect(order).toEqual(['synced', 'rename', 'synced', 'rename']);
+    expect(syncServer).toHaveBeenCalledWith(view);
+    expect(applyEdit).toHaveBeenCalledWith(view, fresh, URI);
   });
 });
