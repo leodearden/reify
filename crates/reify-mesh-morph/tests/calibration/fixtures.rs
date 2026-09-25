@@ -259,8 +259,8 @@ pub fn plate_with_hole(
 /// rather than the formula's 24. Calibration points for the two scale
 /// bands this is audited against: **9,936 tets at n=8** and **108,756 at
 /// n=18** (n=17 gives 91,800). Consumer: task #6658's sibling task #6638,
-/// which uses these scale points to characterise morph behaviour as mesh
-/// size grows.
+/// whose `tests/morph_scale_characterisation.rs` uses these scale points to
+/// characterise morph behaviour as mesh size grows.
 pub fn bracket(
     arm_length: f64,
     thickness: f64,

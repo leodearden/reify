@@ -916,10 +916,11 @@ fn require_default_expr<'a>(
     cell: &'a reify_compiler::ValueCellDecl,
     template_name: &str,
 ) -> &'a CompiledExpr {
-    cell.default_expr.as_ref().unwrap_or_else(|| {
+    let Some(expr) = cell.default_expr.as_ref() else {
         let cell_name = &cell.id.member;
         panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
-    })
+    };
+    expr
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from a template you already hold.
@@ -1096,12 +1097,13 @@ pub fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
 #[track_caller]
 pub fn cell_value(result: &reify_eval::EvalResult, structure: &str, member: &str) -> reify_ir::Value {
     let id = reify_core::ValueCellId::new(structure, member);
-    result.values.get(&id).cloned().unwrap_or_else(|| {
+    let Some(value) = result.values.get(&id) else {
         panic!(
             "{structure}.{member} not found in eval result; available: {:?}",
             result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
         )
-    })
+    };
+    value.clone()
 }
 
 /// Sorted `member` list of every cell `result` produced for `entity` — used to
@@ -1608,8 +1610,8 @@ mod tests {
     #[test]
     fn test_compile_template_by_name() {
         let source = r#"
-            structure Alpha { param x: Length = 1 }
-            structure Beta { param y: Length = 2 }
+            structure Alpha { param x: Length = 1mm }
+            structure Beta { param y: Length = 2mm }
         "#;
         let (template, _diags) = super::compile_template(source, "Beta");
         assert_eq!(template.name, "Beta", "should extract template named Beta");
@@ -1758,7 +1760,7 @@ mod tests {
     #[test]
     fn test_make_engine() {
         // Use a simple non-geometry source to avoid coupling to bracket fixture shape.
-        let source = "structure S { param x: Length = 42 }";
+        let source = "structure S { param x: Length = 42mm }";
         let compiled = super::parse_and_compile(source);
         let mut engine = super::make_engine();
         let result = engine.eval(&compiled);

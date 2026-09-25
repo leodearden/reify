@@ -358,6 +358,41 @@ fn resolve_script_and_root() -> (PathBuf, PathBuf) {
     (script, repo_root)
 }
 
+/// The unexecuted [`Command`] [`run_orphan_audit`] spawns for `scope`:
+/// program, argv, `current_dir`, and [`crate::git_env::sanitize`] already
+/// applied. Composes [`build_audit_command`] and [`resolve_script_and_root`]
+/// — no new resolution logic, no new argv — so it cannot fork from what
+/// production actually spawns.
+///
+/// Public because `reify-audit`'s `tests/g_allow.rs` hazard probe needs to
+/// spawn this EXACT command TWICE, under two different environments, to
+/// compare them — something [`run_orphan_audit`] (one spawn, sanitized,
+/// parsed to a JSON envelope) cannot express. Contrast [`OrphanAudit`]'s doc
+/// above, which declines to promote a finer-grained type ahead of a real
+/// external consumer: this item has one, so it is promoted.
+///
+/// # Composition contract
+///
+/// The returned command is ALREADY sanitized. A caller that then adds
+/// `Command::env` for one of [`crate::git_env::REPO_REDIRECT_VARS`] is
+/// deliberately re-poisoning a sanitized command — e.g. to demonstrate a
+/// hazard synthetically — not working around a missing sanitize. See
+/// [`crate::git_env`] for what sanitization is for and why.
+///
+/// # Not a substitute for [`run_orphan_audit`]
+///
+/// Every REAL invocation of the audit goes through [`run_orphan_audit`],
+/// which wraps this same command with the graceful-skip protocol
+/// (`python3`/`git` presence, script-on-disk, `repo_root`-is-a-git-work-tree,
+/// `EXCLUDE_CRATES` membership), the repo-root premise probe, and the
+/// empty-stdout hard failure. Spawning this command directly buys none of
+/// those — it is for a caller that needs the command ITSELF, unexecuted, to
+/// compare against another.
+pub fn audit_command(scope: &str) -> Command {
+    let (script, repo_root) = resolve_script_and_root();
+    build_audit_command(&script, scope, &repo_root)
+}
+
 /// Like [`run_orphan_audit`], but returns the full three-way [`OrphanAudit`]
 /// outcome instead of collapsing two of them to `None`.
 ///
@@ -1121,5 +1156,72 @@ mod tests {
                  {removed:?}"
             );
         }
+    }
+
+    /// The two premises `reify-audit`'s `g_allow.rs` hazard probe used to
+    /// assert about its OWN `CARGO_MANIFEST_DIR` walk — "the script this walk
+    /// names is really on disk" and "this root really holds both crates, so
+    /// the two walks cannot have resolved different trees" — relocated to the
+    /// single resolution site [`audit_command`] now composes, rather than a
+    /// second copy of them at the call site.
+    ///
+    /// One substantive upgrade over the assertions this replaces: those could
+    /// only RECONSTRUCT this crate's root from `reify-audit`'s own walk and
+    /// compare, which does not distinguish this repo from a byte-identical
+    /// vendored copy laid out the same way. Here there is only ONE walk, so
+    /// that reconstruction — and its blind spot — is gone.
+    ///
+    /// The `crates/reify-audit/Cargo.toml` check is kept anyway, even though
+    /// nothing about THIS crate's own resolution needs it: it is what makes
+    /// `audit_command`'s only external consumer (`reify-audit`'s
+    /// `g_allow.rs`) reachable from the root this seam hands back. That is a
+    /// deliberate DOWNWARD reference to a consumer crate by PATH, checked on
+    /// disk — not a dependency edge, which would be a cycle (`reify-audit`
+    /// depends on this crate, never the reverse).
+    ///
+    /// PASSES on arrival: this pins an existing property of
+    /// [`resolve_script_and_root`] at its new home rather than driving new
+    /// behaviour — the relocation is the point, not a fresh RED.
+    ///
+    /// The script's absence is a graceful skip, not a hard assertion: this
+    /// module treats "the script does not exist on disk" as environmentally
+    /// legitimate everywhere else (a packaged crate or a source tarball with
+    /// no `scripts/` tree) — see [`run_orphan_audit_at`]'s
+    /// `EnvUnavailable("audit-orphan-producers.sh not found on disk")` branch
+    /// and `missing_script_is_env_unavailable` above. Hard-asserting here
+    /// would turn that same environmental condition into a red unit test
+    /// instead. The hard assertions this test exists for — that a root
+    /// resolving an EXISTING script also holds both crates' manifests — only
+    /// make sense once the script is confirmed present.
+    #[test]
+    fn audit_command_names_an_existing_script_under_a_root_holding_both_crates() {
+        let cmd = audit_command("crates/reify-audit/src");
+
+        let script = Path::new(cmd.get_program());
+        if !script.exists() {
+            eprintln!(
+                "orphan_audit: skipping \
+                 audit_command_names_an_existing_script_under_a_root_holding_both_crates \
+                 — resolved script {script:?} not found on disk"
+            );
+            return;
+        }
+
+        let root = cmd
+            .get_current_dir()
+            .expect("audit_command sets current_dir");
+        assert!(
+            root.join("crates/reify-test-support/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-test-support/Cargo.toml — this crate's own \
+             manifest is not reachable from the root the seam hands back"
+        );
+        assert!(
+            root.join("crates/reify-audit/Cargo.toml").exists(),
+            "audit_command's resolved root {root:?} holds no \
+             crates/reify-audit/Cargo.toml — audit_command's only external \
+             consumer's crate is not reachable from the root this seam hands \
+             back (a downward reference by path, not a dependency edge)"
+        );
     }
 }

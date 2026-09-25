@@ -4,11 +4,19 @@ Traits are non-entity declarations: no identity, no determinacy state. They are 
 
 ## Syntax
 
-```
+```reify
 pub trait Rigid : Physical {
-    let moment_of_inertia = compute_moi(geometry, material.density) // illustrative placeholder helper, not a compiler/stdlib function — pdoccover:allow — placeholder
+    let body_density = material.density
+    let moment_of_inertia = moment_of_inertia(geometry, body_density)
 }
 ```
+
+Every name above is real: `Physical` is the stdlib trait supplying the
+`geometry` and `material` params, and `moment_of_inertia(solid, density)` is a
+compiler builtin. This is the stdlib's own `Rigid` (`stdlib/structural_physical.ri`)
+minus its positive-definiteness constraint — the `body_density` line is not
+decoration, it binds `material.density` to a name so the builtin receives a
+value reference rather than a member access.
 
 ## Trait Members
 
@@ -26,9 +34,13 @@ Traits do NOT contain geometry or identity/state.
 
 ## Trait Composition
 
-```
+```reify-schematic
 trait MechatronicActuator : MechanicalActuator + ElectricalDevice + Controllable
 ```
+
+**The body is elided above, not optional.** A `trait` declaration always
+carries `{ ... }`, even when composition is all it adds:
+`trait MechatronicActuator : MechanicalActuator + ElectricalDevice + Controllable {}`.
 
 Conflict resolution:
 - Same name, same type → merge silently
@@ -37,7 +49,7 @@ Conflict resolution:
 
 ## Defaults
 
-```
+```reify-fragment
 trait StandardThread {
     param handedness : Handedness = Handedness.Right
 }
@@ -78,7 +90,7 @@ Inside a trait instance `fn`, bare member names (`diameter`, `length`) are sugar
 
 **Required (bodyless) function** — no body; every conformer must supply a matching `fn`, or a conformance error is raised:
 
-```reify
+```reify-fragment
 fn loss_factor(self) -> Real
 ```
 
@@ -95,13 +107,13 @@ trait Defaultable {
 
 **Instance dispatch** — `obj.(Trait::fn)(args)`: resolves to the conformer's associated function (trait default or per-conformer override).
 
-```reify
+```reify-fragment
 let wetted = pin.(Cylindrical::lateral_area)()
 ```
 
 **Static dispatch** — `Trait::fn(args)`: calls a trait-static function directly; no receiver or conformance relationship required.
 
-```reify
+```reify-fragment
 let gap : Length = Defaultable::make_default()
 let wide : Length = Defaultable::scaled(3.0)
 ```

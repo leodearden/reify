@@ -23,8 +23,8 @@ use crate::annotations::{
 };
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::type_resolution::{
-    TypeAliasRegistry, convert_type_params, resolve_enum_type, resolve_type_expr_with_aliases,
-    unresolved_alias_body_name,
+    EnumNameScope, TypeAliasRegistry, convert_type_params, resolve_enum_type,
+    resolve_type_expr_with_aliases, unresolved_alias_body_name,
 };
 use crate::types::{CompiledConstraintDef, CompiledConstraintParam};
 
@@ -47,10 +47,20 @@ pub(crate) fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> St
 /// instantiation sites can read it without re-scanning annotations.
 ///
 /// `structure_names` is the set of structure/occurrence names in scope (both
-/// local and imported via the prelude). Param type names in this set suppress
-/// the "unknown type" diagnostic because the resolved type is discarded at
-/// def-compile time anyway — entity.rs only reads `param.name` and
-/// `param.default` at instantiation time.
+/// local and imported via the prelude). A param type name in this set suppresses
+/// the "unknown type" diagnostic for that structure/occurrence spelling. The
+/// resolved type is NOT discarded: it is stored on `CompiledConstraintParam.ty`
+/// and consumed by `expand_constraint_inst`'s arg type check at instantiation
+/// time (task 4546), which skips any param whose `ty` is `None`.
+///
+/// # Precondition: a live [`EnumNameScope`]
+///
+/// An enum-typed param resolves only while an [`EnumNameScope`] is installed
+/// over the ambient `RESOLUTION_ENUM_NAMES` set; the sole caller,
+/// [`phase_constraint_defs`], installs one across its whole loop (task 6416).
+/// Without it every such param silently stores `ty: None`, which is the defect
+/// 6416 fixed. Why the scope reaches what it does — and what it does NOT reach
+/// — is argued once, on [`unresolved_alias_body_name`].
 fn compile_constraint_def(
     c: &reify_ast::ConstraintDef,
     alias_registry: &TypeAliasRegistry,
@@ -80,11 +90,11 @@ fn compile_constraint_def(
     //    (so users see the error early, not at the instantiation site).
     // 2. Store the resolved type on `CompiledConstraintParam.ty` so that
     //    `expand_constraint_inst` can check arg types at instantiation time
-    //    (task 4546 — previously the resolved type was discarded as dead weight,
-    //    per the former comment at lines 77-80, but instantiation-site type
-    //    checking now needs it).
+    //    (task 4546 — the resolved type used to be discarded as dead weight,
+    //    but instantiation-site type checking now needs it).
     // `None` (never `Type::Error`) is stored when the param is unannotated or
     // resolution fails; type resolution failure is already diagnosed below.
+
     let params: Vec<CompiledConstraintParam> = c
         .params
         .iter()
@@ -107,24 +117,15 @@ fn compile_constraint_def(
             // an error so the user sees the typo at def-compile time rather than silently
             // accepting it and getting a confusing error at the instantiation site.
             //
-            // `enum_defs` is this site's PRIVATE enum namespace — no
-            // `EnumNameScope` is installed around constraint-def compilation, so
-            // the ambient set the deferred alias arm in
-            // `resolve_type_expr_with_aliases_kinded` consults is empty here and
-            // `type AL = Zq` arrives still spelled `AL`. Hop the unresolved-alias
-            // chain to the name the body ultimately spells before the enum
-            // lookup, so an enum-bodied alias is suppressed exactly as the direct
-            // enum spelling is (task 6259).
+            // `enum_defs` is this site's PRIVATE enum namespace. Task 6416 narrowed
+            // its reach to the PARAMETERISED spellings (`Zq<Int>`, `AL<Int>`); that
+            // residue is argued once on `unresolved_alias_body_name` and enforced by
+            // `parameterised_{enum,alias_to_enum}_constraint_def_param_emits_no_unknown_type_diagnostic`
+            // in `tests/harness_statement_semantics/constraint_def_compile_tests.rs`.
+            // Do NOT delete this conjunct or the alias hop below as newly redundant.
             //
-            // This SUPPRESSES the spurious diagnostic and nothing more: `ty` stays
-            // `None`, which is what the DIRECT spelling stores too (measured — the
-            // guard below only gates the diagnostic, it never populates `ty`).
-            // Populating it would change what `expand_constraint_inst` checks at
-            // every instantiation site, which is out of this task's scope.
-            //
-            // The enum lookup moved inside the block so the hop can be named; it
-            // and the `structure_names` test are both pure predicates, so the
-            // reordering is behaviour-preserving.
+            // Both it and the `structure_names` test are pure predicates, so their
+            // ordering within the chain is behaviour-preserving.
             if let Some(te) = &param.type_expr
                 && resolved_ty.is_none()
                 && let reify_ast::TypeExprKind::Named { name, .. } = &te.kind
@@ -197,8 +198,39 @@ pub(crate) fn phase_constraint_defs(
     // phase_traits (traits_phase.rs:71-79).
     let mut structure_names: Option<HashSet<String>> = None;
 
+    // Ambient enum-name set for constraint-def param type resolution (task
+    // 6416), mirroring entity.rs's struct-param scope and functions.rs's
+    // fn-param/return scopes. Held in this binding for the whole loop: it is an
+    // RAII guard, so dropping it early would uninstall the set that
+    // `compile_constraint_def`'s params loop depends on.
+    //
+    // Built here, once for the whole loop, rather than inside
+    // `compile_constraint_def`: the set is the same for every def in the module,
+    // and constructing it clones every name in `ctx.resolution_enums` (prelude
+    // ++ local — 38 enums from stdlib alone). Lazily, on the same
+    // first-`Declaration::Constraint` trigger as `structure_names` above, so a
+    // module with zero constraint defs still allocates nothing.
+    //
+    // Widening its reach from one def to the whole loop is behaviour-preserving:
+    // the only thing that reads `RESOLUTION_ENUM_NAMES` is type resolution, and
+    // the only type resolution in this phase is the params loop inside
+    // `compile_constraint_def`. `emit_constraint_def_shadow_warnings` below,
+    // which the guard now also spans, compares def NAMES only.
+    let mut enum_scope: Option<EnumNameScope> = None;
+
     for decl in &parsed.declarations {
         if let reify_ast::Declaration::Constraint(c) = decl {
+            // Install on first use; the returned reference is not needed — the
+            // guard acts through the thread-local, and `compile_constraint_def`
+            // documents the precondition it satisfies.
+            enum_scope.get_or_insert_with(|| {
+                EnumNameScope::new(
+                    ctx.resolution_enums
+                        .iter()
+                        .map(|e| e.name.clone())
+                        .collect(),
+                )
+            });
             let names = structure_names.get_or_insert_with(|| {
                 ctx.seen_entity_names
                     .iter()

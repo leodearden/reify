@@ -157,6 +157,32 @@ pub(super) enum DeclineCause {
     /// cause with a message to print is the one cause that carries text: no
     /// string is built for an outcome that is filtered out.
     InputsDiffer { detail: String },
+    /// A cell in the call's DIRECT read set exists at ONE of the two scopes and
+    /// not the other, so the gate CANNOT COMPARE the two values and declines
+    /// conservatively. A VISIBILITY fact, not a divergence: the two values are
+    /// very likely identical, and reuse would very likely have been sound.
+    ///
+    /// Both directions are reachable:
+    ///
+    /// * ABSENT AT INSTANCE SCOPE. `child_values` carries the child template's
+    ///   own params, the collapsed sub instances, and a BFS projection over the
+    ///   subs phase 1.5 actually elaborated — so a read of a member of a
+    ///   DECLINED sub (a collection, a keyed sub, a `skip_reason_for_shape`
+    ///   miss, an unresolvable target, a cycle cut) is missing here while the
+    ///   global map holds it from the top-level pass.
+    /// * ABSENT AT TEMPLATE SCOPE. For a prelude/stdlib child structure — the
+    ///   same population [`Self::NoTemplateValue`] describes, absent from
+    ///   `module.templates` — the top-level pass never seeds `{Tmpl}.{param}`
+    ///   into the global map, while `elaborate_child_params_only` always seeds
+    ///   it into the instance map.
+    ///
+    /// This cause IS REPORTED, unlike [`Self::NoTemplateValue`]: the instance
+    /// still falls back to the `.ri` body's sentinel, and staying silent about
+    /// that is precisely the defect #6662 exists to remove. What it must NOT do
+    /// is borrow [`Self::InputsDiffer`]'s framing — that clause names
+    /// constructor overrides and cites #6592 (per-instance dispatch under
+    /// overrides), which is no remedy at all for a read the gate could not see.
+    InputNotComparable { detail: String },
     /// The template-scope OUTPUT cell holds no value at all. NOT reported —
     /// under [`report_optimized_instance_decline`]'s registered-target gate
     /// this cause has no honest message to print:
@@ -177,6 +203,85 @@ pub(super) enum DeclineCause {
     NoTemplateValue,
 }
 
+/// Byte budget for ONE rendered input value inside a
+/// [`DeclineCause::InputsDiffer`] detail.
+///
+/// Chosen so the assembled warning stays a readable paragraph: the detail
+/// carries TWO rendered sides plus a fixed prose frame, and
+/// [`report_optimized_instance_decline`] then wraps that in a fixed body of its
+/// own. `input_divergence_detail_is_bounded_for_an_enormous_value` computes its
+/// ceiling as `2 * INPUT_VALUE_RENDER_BUDGET + frame`, with the frame MEASURED
+/// from that same code path rather than spelled as a literal — so moving this
+/// number moves the ceiling, and that test's near-budget arm (two sides that
+/// each render verbatim just under the budget) keeps the ceiling from going
+/// vacuously slack when it moves.
+const INPUT_VALUE_RENDER_BUDGET: usize = 120;
+
+/// A [`std::fmt::Write`] sink that REFUSES — rather than truncates — the first
+/// chunk that would carry it past [`INPUT_VALUE_RENDER_BUDGET`].
+///
+/// WHY ABORT RATHER THAN TRUNCATE. `Value` derives `Debug`, so `{:?}` over a
+/// `SampledField`, `Matrix` or mesh-bearing `List` walks the entire payload.
+/// Formatting first and cutting the result afterwards would bound only the
+/// string that is KEPT, while still paying the full multi-megabyte transient
+/// allocation and the full traversal — which is the cost this bound exists to
+/// remove — and a byte-wise cut can split a UTF-8 character.
+///
+/// Returning `Err(fmt::Error)` is both safe and effective because derived
+/// `Debug` and std's `debug_struct` / `debug_tuple` / `debug_list` builders
+/// LATCH the first error and propagate it rather than unwrapping: each later
+/// entry runs through an `and_then` whose body is skipped, so no panic and no
+/// further per-element rendering. MEASURED on a 20_000-element `List<Real>`: 6
+/// element renders before the abort, against 20_000 renders and a 460_000-byte
+/// string unbounded — and the same 6 through an `Option` wrapper and through a
+/// nested list, so neither wrapping nor depth defeats the latch.
+///
+/// Refusing WHOLE chunks, rather than filling up to the budget, leaves the
+/// buffer on both a character boundary and a boundary between formatter writes,
+/// so whatever it holds is always intact text.
+struct BoundedValueRender {
+    rendered: String,
+}
+
+impl std::fmt::Write for BoundedValueRender {
+    fn write_str(&mut self, chunk: &str) -> std::fmt::Result {
+        if self.rendered.len() + chunk.len() > INPUT_VALUE_RENDER_BUDGET {
+            return Err(std::fmt::Error);
+        }
+        self.rendered.push_str(chunk);
+        Ok(())
+    }
+}
+
+/// Render one input `Value` for a decline message: its `Debug` form verbatim
+/// when that fits [`INPUT_VALUE_RENDER_BUDGET`], else a contents-free summary
+/// naming the variant alone.
+///
+/// Verbatim-when-small is the point, not a concession. A decline's input
+/// divergence is virtually always a constructor override of a scalar, where
+/// `Int(10)` vs `Int(3)` IS the answer — summarising every side uniformly would
+/// print `Int vs Int` and make the message strictly less actionable than the
+/// unbounded one it replaces.
+///
+/// The fallback delegates to [`Value::kind_name`] rather than spelling a second
+/// variant-name table: that method is the existing single source of truth, is
+/// exhaustive-by-construction (it forbids a `_` arm, so a newly added `Value`
+/// variant fails to compile instead of degrading silently), and its own doc
+/// already states it exists because "a `SampledField` or `Matrix` payload could
+/// be enormous, and this string reaches user-facing surfaces" — which is
+/// precisely this surface.
+fn render_input_value(value: &Value) -> String {
+    use std::fmt::Write as _;
+
+    let mut sink = BoundedValueRender {
+        rendered: String::new(),
+    };
+    match write!(sink, "{value:?}") {
+        Ok(()) => sink.rendered,
+        Err(_) => format!("{}(…)", value.kind_name()),
+    }
+}
+
 /// Decide whether an instance-scope cell may carry the template-scope cell's
 /// already-dispatched `@optimized` value.
 ///
@@ -185,8 +290,18 @@ pub(super) enum DeclineCause {
 /// result is a pure function of the values its reads resolve to. Comparing the
 /// DIRECT read set is therefore sufficient — transitive dependencies are
 /// already folded into the direct reads' values. The comparison is conservative
-/// in the right direction: present-in-one-map vs absent-in-the-other compares
-/// unequal, so the helper declines rather than guesses.
+/// in the right direction: present-in-one-map vs absent-in-the-other is not a
+/// comparison the gate can make at all, so the helper declines rather than
+/// guesses — which is what keeps reuse sound.
+///
+/// That decline is CLASSIFIED apart from a genuine divergence
+/// ([`DeclineCause::InputNotComparable`] rather than
+/// [`DeclineCause::InputsDiffer`]), because a read the gate cannot see is a
+/// VISIBILITY fact and reporting it as a value difference accuses the author of
+/// a constructor override that is very likely not there. Only the
+/// classification and the wording move: the DECLINING SET is bit-identical
+/// either way, so the "Why the two instance maps reach the SAME decision"
+/// argument below is untouched by it.
 ///
 /// SHAPE-EXACTNESS is inherited from template scope, not re-invented: the probe
 /// is [`optimized_target_of`]. So a cell that merely WRAPS an `@optimized` call
@@ -288,19 +403,47 @@ where
     // default of every instance only to discard it on `NotOptimized`.
     let reads = reads();
     for read in reads.as_ref() {
-        let instance_val = instance_values.get(read);
-        let global_val = global_values.get(read);
-        if instance_val != global_val {
-            return OptimizedInstanceResolution::Unreusable {
-                target,
-                cause: DeclineCause::InputsDiffer {
+        // Exhaustive over the PRESENCE PAIR rather than a bare `!=` over two
+        // `Option`s. Absent-at-one-scope and unequal-at-both are distinct facts
+        // about the same read, and only the second is a divergence; matching on
+        // the pair makes that distinction structural, so a future third scope
+        // map cannot silently land in the wrong bucket the way `!=` allowed.
+        let cause = match (instance_values.get(read), global_values.get(read)) {
+            (Some(instance_val), Some(global_val)) if instance_val != global_val => {
+                // Each side goes through [`render_input_value`]'s budget, so an
+                // enormous input summarises to its variant instead of pouring
+                // its whole payload into a user-facing warning.
+                DeclineCause::InputsDiffer {
                     detail: format!(
-                        "input {}.{} differs from the template's ({:?} vs {:?})",
-                        read.entity, read.member, instance_val, global_val
+                        "input {}.{} differs from the template's ({} vs {})",
+                        read.entity,
+                        read.member,
+                        render_input_value(instance_val),
+                        render_input_value(global_val)
                     ),
-                },
-            };
-        }
+                }
+            }
+            // No value is rendered on either not-comparable arm: there is
+            // nothing to compare, and printing the one side that does exist
+            // would invite the reader to hunt for a difference that is not
+            // there.
+            (None, Some(_)) => DeclineCause::InputNotComparable {
+                detail: format!(
+                    "input {}.{} is not visible at instance scope",
+                    read.entity, read.member
+                ),
+            },
+            (Some(_), None) => DeclineCause::InputNotComparable {
+                detail: format!(
+                    "input {}.{} is not visible at template scope",
+                    read.entity, read.member
+                ),
+            },
+            // Equal at both scopes, or named by neither map: this read gives the
+            // gate no reason to decline — exactly as before.
+            (Some(_), Some(_)) | (None, None) => continue,
+        };
+        return OptimizedInstanceResolution::Unreusable { target, cause };
     }
 
     // The template-scope output cell. Absent under either of two conditions
@@ -334,6 +477,79 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
         .any(|n| n.output_value_cells.contains(template_cell))
 }
 
+/// WHERE a decline happened, in the three strings its message names: the
+/// instance-scope cell (`{scoped_entity}.{member}`) and the child template whose
+/// dispatched value could not be reused.
+///
+/// Grouped by value rather than passed as three loose `&str`s so
+/// [`decline_message`]'s arity stays readable and two same-typed strings cannot
+/// be transposed silently at the call site.
+#[derive(Clone, Copy)]
+struct DeclineSite<'a> {
+    scoped_entity: &'a str,
+    member: &'a str,
+    child_template: &'a str,
+}
+
+/// The decline report's TEXT, separated from the gates that decide whether to
+/// emit it: `None` for the cause with nothing honest to print, otherwise the
+/// whole message.
+///
+/// Pure, so the thing under test is the thing that varies — no `Snapshot` and no
+/// hand-minted `ComputeNodeData`, which belong to
+/// [`report_optimized_instance_decline`]'s other two filters and are covered end
+/// to end in `tests/compute_dispatch_registry.rs`.
+///
+/// `key` is a literal PREFIX of every message returned here. That prefix IS the
+/// dedupe mechanism (see the caller's doc), and a cause-specific body is exactly
+/// the edit that could quietly break it, so
+/// `decline_message_does_not_attribute_a_visibility_miss_to_a_constructor_override`
+/// pins the property for both reported causes.
+///
+/// The two reported causes get DIFFERENT clauses because they send the reader to
+/// different places:
+///
+/// * [`DeclineCause::InputsDiffer`] — a constructor override, virtually always.
+///   Look at the override; #6592 tracks per-instance dispatch under one.
+/// * [`DeclineCause::InputNotComparable`] — the input is invisible at one of the
+///   two scopes. Look at projection, not at overrides, and the honest statement
+///   is that nothing was compared at all. Deliberately carries no `#NNNN`: there
+///   is no live task for widening instance-scope projection, and this module's
+///   own precedent (the `tkt_0RTGTE246DRBM0719KQEJWWPYP` note below) is to state
+///   the fact rather than mint a cite that resolves to nothing.
+fn decline_message(key: &str, site: DeclineSite<'_>, cause: &DeclineCause) -> Option<String> {
+    let DeclineSite {
+        scoped_entity,
+        member,
+        child_template,
+    } = site;
+    // Shared across both reported causes, so the key prefix and the
+    // what-was-lost sentence are spelled once and cannot drift per cause.
+    let lede = |detail: &str| {
+        format!(
+            "{key} instance scope {scoped_entity}.{member} cannot reuse the \
+             template's dispatched value ({detail}) — falling back to \
+             body-inlining. Reported once per template cell."
+        )
+    };
+    match cause {
+        DeclineCause::InputsDiffer { detail } => Some(format!(
+            "{} Every other instance of {child_template} whose inputs differ \
+             declines the same way (per-instance dispatch under constructor \
+             overrides is tracked by #6592).",
+            lede(detail)
+        )),
+        DeclineCause::InputNotComparable { detail } => Some(format!(
+            "{} This is a VISIBILITY miss, not a value mismatch: the input is \
+             absent at one of the two scopes, so the gate cannot compare the two \
+             values and declines rather than guessing — they may well be \
+             identical, in which case reuse would have been sound.",
+            lede(detail)
+        )),
+        DeclineCause::NoTemplateValue => None,
+    }
+}
+
 /// Report an instance-scope `@optimized` reuse DECLINE — once per authoring
 /// fact, and only when declining actually costs something.
 ///
@@ -345,9 +561,14 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 ///
 /// Three filters:
 ///
-/// * CAUSE GATE. Only [`DeclineCause::InputsDiffer`] is reported; see
-///   [`DeclineCause::NoTemplateValue`] for why its sibling has nothing honest
-///   to say. Filtering on the structural cause rather than on the presence of a
+/// * CAUSE GATE. TWO causes are reported — [`DeclineCause::InputsDiffer`] and
+///   [`DeclineCause::InputNotComparable`] — each under its own clause, because
+///   one sends the reader to a constructor override and the other to
+///   projection. [`decline_message`] owns that text and returns `None` for the
+///   third cause, and is invoked BEHIND the dedupe scan so its body assembly is
+///   not paid per entry (see COST below); see
+///   [`DeclineCause::NoTemplateValue`] for why it has nothing honest to say.
+///   Filtering on the structural cause rather than on the presence of a
 ///   text-matching Error keeps this independent of any other site's wording.
 /// * REGISTERED-TARGET GATE. Without it the warning fired, with actively
 ///   misleading text, in the plain `reify check` shape — which registers NO
@@ -383,6 +604,12 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 ///   needs no side table. Guarded by
 ///   `instance_scope_optimized_decline_dedupe_is_per_cell_not_per_prefix`.
 ///
+///   THE KEY IS CAUSE-INDEPENDENT, by design. Two instances of one template
+///   cell that decline for DIFFERENT causes are still ONE authoring fact about
+///   ONE cell, and still report once — whichever fires first. Folding the cause
+///   into the key would reintroduce, for the mixed case, exactly the
+///   N-warnings-for-one-fact shape this filter exists to remove.
+///
 ///   The prefix scan is a stand-in for the structured form the house rule asks
 ///   for (match on `DiagnosticCode`, not on message substrings): keying it on a
 ///   `DiagnosticCode::OptimizedInstanceReuseDeclined` needs a variant added to
@@ -395,10 +622,15 @@ fn template_cell_was_dispatched(snapshot: &Snapshot, template_cell: &ValueCellId
 ///   scanned vec short — but it does NOT bound how many times that vec is
 ///   scanned: in the very shape the dedupe was added for (a keyed collection
 ///   `sub` where every element declines) this function is still entered once
-///   per element. The dedupe scan is therefore ordered FIRST, so a repeat entry
-///   costs one `starts_with` walk of a short vec and never touches
-///   [`template_cell_was_dispatched`]'s unbounded `compute_nodes` walk. Making
-///   the repeat case O(1) needs a memo owned by `engine_eval.rs` — #7267.
+///   per element. The dedupe scan is therefore ordered FIRST of the three, so a
+///   repeat entry costs one `starts_with` walk of a short vec and reaches
+///   NEITHER [`template_cell_was_dispatched`]'s unbounded `compute_nodes` walk
+///   nor [`decline_message`]'s body assembly — the cheapest predicate of the
+///   three sits behind it precisely because that assembly is the expensive part
+///   of entering the cause gate, not the match. Only `key` is built ahead of
+///   every filter, because the scan needs it and it must share ONE spelling
+///   with the message. Making the repeat case O(1) needs a memo owned by
+///   `engine_eval.rs` — #7267.
 pub(super) fn report_optimized_instance_decline(
     diagnostics: &mut Vec<Diagnostic>,
     snapshot: &Snapshot,
@@ -408,31 +640,40 @@ pub(super) fn report_optimized_instance_decline(
     target: &str,
     cause: &DeclineCause,
 ) {
-    let DeclineCause::InputsDiffer { detail } = cause else {
-        return;
-    };
+    // Built before the three filters rather than as one of them: the message and
+    // the dedupe scan must share ONE spelling of the key, since the scan works
+    // only because the key is a literal prefix of the message.
     let key = format!(
         "@optimized target {:?} on {}.{}:",
         target, child_template.name, member
     );
-    // Dedupe BEFORE the graph scan: both are pure predicates, so the emitted
-    // set is identical either way, but this ordering keeps the already-reported
-    // case off the unbounded `compute_nodes` walk entirely.
+    // DEDUPE FIRST. All three filters are pure predicates, so the emitted set is
+    // identical whatever the order; the order is chosen by what each filter
+    // COSTS the entries it rejects. The repeat is the entry this function sees
+    // most (see COST above), and rejecting it here costs one `starts_with` walk
+    // of a short vec — no message assembly, and no `compute_nodes` walk.
     if diagnostics.iter().any(|d| d.message.starts_with(&key)) {
         return;
     }
+    // CAUSE GATE. Behind the dedupe so the ~400-byte body is assembled once per
+    // REPORTED fact rather than once per entry, and ahead of the graph walk so a
+    // cause with no honest message never pays for it.
+    let Some(message) = decline_message(
+        &key,
+        DeclineSite {
+            scoped_entity,
+            member,
+            child_template: &child_template.name,
+        },
+        cause,
+    ) else {
+        return;
+    };
     let template_cell = ValueCellId::new(&child_template.name, member);
     if !template_cell_was_dispatched(snapshot, &template_cell) {
         return;
     }
-    diagnostics.push(Diagnostic::warning(format!(
-        "{key} instance scope {scoped_entity}.{member} cannot reuse the \
-         template's dispatched value ({detail}) — falling back to body-inlining. \
-         Reported once per template cell: every other instance of {} whose \
-         inputs differ declines the same way (per-instance dispatch under \
-         constructor overrides is tracked by #6592).",
-        child_template.name,
-    )));
+    diagnostics.push(Diagnostic::warning(message));
 }
 
 #[cfg(test)]
@@ -750,5 +991,445 @@ mod tests {
                 panic!("`geom_opt` carries @optimized; the probe must see it")
             }
         }
+    }
+
+    /// ITEM 1 of task #7021. The [`DeclineCause::InputsDiffer`] detail reaches a
+    /// user-facing warning, and `Value` derives `Debug` — so a `SampledField`,
+    /// `Matrix` or mesh-bearing `List` input renders its WHOLE payload into the
+    /// message, paying a multi-megabyte transient allocation and a full `Debug`
+    /// traversal to print something no reader can use.
+    ///
+    /// Two arms, because the bound is only half the contract:
+    ///
+    /// * (a) THE BOUND — an enormous value must leave the detail short, while
+    ///   still naming the read cell and the elided value's VARIANT. The bound is
+    ///   met by SUMMARISING, not by dropping the identification the reader needs
+    ///   in order to find the input that diverged.
+    /// * (b) THE COMPANION — a small scalar override, which is the dominant real
+    ///   case, must still print its payload verbatim. Without this arm, (a) would
+    ///   be satisfiable by printing variant names only, and `Int vs Int` is
+    ///   strictly less actionable than the message this task set out to improve.
+    ///
+    /// The gate is type-blind (a raw `ValueMap` lookup plus `Value` equality), so
+    /// the maps are hand-built here exactly as
+    /// `resolve_optimized_instance_cell_declines_on_instance_scoped_realization_ref`
+    /// hand-mints its `GeometryHandle`s — the declaration's type is not what the
+    /// comparison reads.
+    #[test]
+    fn input_divergence_detail_is_bounded_for_an_enormous_value() {
+        let source = r#"
+            @optimized("test::bounded")
+            fn bounded_opt(xs : List<Real>) -> Int {
+                7
+            }
+
+            structure BoundedLike {
+                param xs : List<Real> = [1.0]
+                let r = bounded_opt(xs)
+            }
+        "#;
+        let module = reify_test_support::compile_source_with_stdlib(source);
+        let errors = reify_test_support::collect_errors(&module.diagnostics);
+        assert!(errors.is_empty(), "fixture must compile clean: {errors:?}");
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == "BoundedLike")
+            .expect("BoundedLike template");
+        let expr = reify_test_support::get_let_expr_in(&module, "BoundedLike", "r");
+        let names = OptimizedNameIndex::new(&module.functions);
+
+        // The read cell is `BoundedLike.xs`; the template OUTPUT cell is present
+        // in `global_values` so the READ LOOP is what decides, not the
+        // absent-output branch.
+        let declining_detail = |instance: Value, global: Value| -> String {
+            let mut instance_values = ValueMap::new();
+            instance_values.insert(ValueCellId::new("BoundedLike", "xs"), instance);
+            let mut global_values = ValueMap::new();
+            global_values.insert(ValueCellId::new("BoundedLike", "xs"), global);
+            global_values.insert(ValueCellId::new("BoundedLike", "r"), Value::Int(777));
+            match resolve_optimized_instance_cell(
+                expr,
+                &names,
+                template,
+                "r",
+                || extract_dependency_trace(expr).reads,
+                &instance_values,
+                &global_values,
+            ) {
+                OptimizedInstanceResolution::Unreusable {
+                    cause: DeclineCause::InputsDiffer { detail },
+                    ..
+                } => detail,
+                OptimizedInstanceResolution::Unreusable { cause, .. } => {
+                    panic!("two present-and-unequal inputs must decline as InputsDiffer: {cause:?}")
+                }
+                OptimizedInstanceResolution::Reuse(v) => {
+                    panic!("unequal inputs must not reuse the template's value ({v:?})")
+                }
+                OptimizedInstanceResolution::NotOptimized => {
+                    panic!("`bounded_opt` carries @optimized; the probe must see it")
+                }
+            }
+        };
+
+        // THE CEILING, derived rather than tuned. The frame — the detail's fixed
+        // prose plus this fixture's read-cell name — is MEASURED from the same
+        // code path using two renders of known width, so it tracks the format
+        // string automatically and the ceiling moves with
+        // `INPUT_VALUE_RENDER_BUDGET` and with nothing else.
+        let framed = declining_detail(Value::Int(1), Value::Int(2));
+        let frame = framed.chars().count() - "Int(1)".len() - "Int(2)".len();
+        let ceiling = 2 * INPUT_VALUE_RENDER_BUDGET + frame;
+
+        // (a) THE BOUND. A 20_000-element list of long-decimal reals renders to
+        // hundreds of KB under a bare `{:?}`. The OTHER side is an `Int` — the
+        // gate is type-blind, so this is still present-and-unequal — and that is
+        // what makes the `List(…)` assertion below discriminating: the only
+        // operand that can contribute the word `List` is the elided one.
+        let enormous = Value::List(vec![Value::Real(1.234_567_890_123_4); 20_000]);
+        let detail = declining_detail(enormous, Value::Int(1));
+        assert!(
+            detail.chars().count() <= ceiling,
+            "the InputsDiffer detail must stay a readable fragment: the ceiling \
+             is TWO per-side render budgets plus the measured frame between them \
+             ({ceiling} chars), so it tracks INPUT_VALUE_RENDER_BUDGET by \
+             construction rather than by tuning. Got {} chars: {:.200}…",
+            detail.chars().count(),
+            detail
+        );
+        assert!(
+            detail.contains("BoundedLike.xs"),
+            "the bound must not cost the reader the identity of the input that \
+             diverged — the detail is the only place the read cell is named: {detail}"
+        );
+        assert!(
+            detail.contains("List(…)"),
+            "an elided payload must still name its VARIANT — and the `(…)` \
+             spelling is produced ONLY by `render_input_value`'s \
+             `Value::kind_name` fallback, never by a verbatim `Debug`, so this \
+             pins the delegation rather than merely the presence of the word: \
+             {detail}"
+        );
+
+        // (b) THE CEILING IS REACHABLE. Without this the bound above would pass
+        // at any budget, because the enormous side always takes the ~8-byte
+        // abort-fallback: raising `INPUT_VALUE_RENDER_BUDGET` would lift the
+        // ceiling while the measured detail stood still. Two sides that each
+        // render VERBATIM just under the budget close that direction — ten
+        // `Real(1.0)`s render to 116 bytes, and an eleventh would overflow 120
+        // and take the fallback instead.
+        let near_budget = |x: f64| Value::List(vec![Value::Real(x); 10]);
+        let detail = declining_detail(near_budget(1.0), near_budget(2.0));
+        let used = detail.chars().count();
+        assert!(
+            !detail.contains('…'),
+            "both sides must FIT the budget for this arm to exercise the ceiling; \
+             an ellipsis means the fixture overflowed and the arm proves nothing: \
+             {detail}"
+        );
+        assert!(
+            used <= ceiling && used * 20 >= ceiling * 19,
+            "this arm must land within the ceiling AND within 5% of it: its whole \
+             job is to show the ceiling is reachable, so a ceiling made slack by \
+             moving INPUT_VALUE_RENDER_BUDGET without the renders following must \
+             not pass it. Got {used} of {ceiling}: {detail}"
+        );
+
+        // (b) THE COMPANION. The small constructor-override case must keep
+        // printing both payloads verbatim.
+        let detail = declining_detail(Value::Int(10), Value::Int(3));
+        assert!(
+            detail.contains("Int(10)") && detail.contains("Int(3)"),
+            "a small scalar override is the dominant real case and must render \
+             verbatim on both sides; summarising it to `Int vs Int` would be \
+             strictly less actionable than the unbounded message: {detail}"
+        );
+    }
+
+    /// ITEM 2 of task #7021. The read gate compared two `Option<&Value>`s with a
+    /// bare `!=`, so a cell PRESENT at one scope and ABSENT at the other was
+    /// reported as a value that "differs from the template's" — an accusation of
+    /// a constructor override against a read that very likely holds the identical
+    /// value and is merely invisible.
+    ///
+    /// Both directions are reachable, not hypothetical:
+    ///
+    /// * INSTANCE-SIDE ABSENCE. `child_values` is seeded with the child
+    ///   template's own params, the collapsed sub instances, and a BFS
+    ///   projection over the subs phase 1.5 actually elaborated — so a read of a
+    ///   member of a DECLINED sub (a collection, a keyed sub, a
+    ///   `skip_reason_for_shape` miss, an unresolvable target, a cycle cut) is
+    ///   absent at instance scope while the global map holds it from the
+    ///   top-level pass.
+    /// * TEMPLATE-SIDE ABSENCE. For a prelude/stdlib child structure — absent
+    ///   from `module.templates`, the very population
+    ///   [`DeclineCause::NoTemplateValue`]'s doc describes — the top-level pass
+    ///   never seeds `{Tmpl}.{param}` globally, while
+    ///   `elaborate_child_params_only` always seeds it into the instance map.
+    ///
+    /// Arm (c) is the DISCRIMINATOR: without it, (a) and (b) would be satisfied
+    /// by reclassifying every decline, which would move the false positive
+    /// rather than remove it. Arm (d) is the FROZEN INVARIANT: this task changes
+    /// the message, never the value — every read that declined before declines
+    /// after, and a pair that was equal (both absent) still reuses.
+    #[test]
+    fn presence_asymmetry_is_classified_apart_from_a_genuine_value_difference() {
+        let source = r#"
+            @optimized("test::asym")
+            fn asym_opt(x : Int) -> Int {
+                x + 1
+            }
+
+            structure AsymLike {
+                param x : Int = 3
+                let r = asym_opt(x)
+            }
+        "#;
+        let module = reify_test_support::compile_source_with_stdlib(source);
+        let errors = reify_test_support::collect_errors(&module.diagnostics);
+        assert!(errors.is_empty(), "fixture must compile clean: {errors:?}");
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == "AsymLike")
+            .expect("AsymLike template");
+        let expr = reify_test_support::get_let_expr_in(&module, "AsymLike", "r");
+        let names = OptimizedNameIndex::new(&module.functions);
+
+        // The template OUTPUT cell is present on every arm, so the READ LOOP is
+        // what decides and never the absent-output branch.
+        let resolve = |instance: Option<Value>, global: Option<Value>| {
+            let read = ValueCellId::new("AsymLike", "x");
+            let mut instance_values = ValueMap::new();
+            if let Some(value) = instance {
+                instance_values.insert(read.clone(), value);
+            }
+            let mut global_values = ValueMap::new();
+            if let Some(value) = global {
+                global_values.insert(read, value);
+            }
+            global_values.insert(ValueCellId::new("AsymLike", "r"), Value::Int(777));
+            resolve_optimized_instance_cell(
+                expr,
+                &names,
+                template,
+                "r",
+                || extract_dependency_trace(expr).reads,
+                &instance_values,
+                &global_values,
+            )
+        };
+        let declining_cause = |resolution| match resolution {
+            OptimizedInstanceResolution::Unreusable { cause, .. } => cause,
+            OptimizedInstanceResolution::Reuse(v) => panic!(
+                "a read the gate cannot compare must still DECLINE — reuse here is \
+                 the unsoundness #6662 exists to prevent (got {v:?})"
+            ),
+            OptimizedInstanceResolution::NotOptimized => {
+                panic!("`asym_opt` carries @optimized; the probe must see it")
+            }
+        };
+
+        // (a) UNPROJECTED AT INSTANCE SCOPE — the ITEM 2 false positive.
+        match declining_cause(resolve(None, Some(Value::Int(3)))) {
+            DeclineCause::InputNotComparable { detail } => {
+                assert!(
+                    detail.contains("AsymLike.x"),
+                    "the detail is the only place the unreadable input is named: {detail}"
+                );
+                assert!(
+                    detail.contains("instance scope"),
+                    "an input absent from the INSTANCE map must say so, so the \
+                     reader looks at projection and not at overrides: {detail}"
+                );
+                assert!(
+                    !detail.contains("differs"),
+                    "the two values were never compared — one of them does not \
+                     exist — so nothing may claim they differ: {detail}"
+                );
+            }
+            other => panic!(
+                "an input absent at instance scope is a VISIBILITY fact, not a \
+                 value difference: {other:?}"
+            ),
+        }
+
+        // (b) THE REVERSE DIRECTION — a prelude/stdlib child structure.
+        match declining_cause(resolve(Some(Value::Int(3)), None)) {
+            DeclineCause::InputNotComparable { detail } => {
+                assert!(
+                    detail.contains("AsymLike.x"),
+                    "the detail is the only place the unreadable input is named: {detail}"
+                );
+                assert!(
+                    detail.contains("template scope"),
+                    "an input absent from the GLOBAL map must name TEMPLATE scope, \
+                     so the two directions stay distinguishable in the message: {detail}"
+                );
+                assert!(
+                    !detail.contains("differs"),
+                    "the two values were never compared — one of them does not \
+                     exist — so nothing may claim they differ: {detail}"
+                );
+            }
+            other => panic!(
+                "an input absent at template scope is a VISIBILITY fact, not a \
+                 value difference: {other:?}"
+            ),
+        }
+
+        // (c) THE DISCRIMINATOR. Both sides present and unequal is the one case
+        // that genuinely differs, and must keep today's classification and
+        // wording.
+        match declining_cause(resolve(Some(Value::Int(10)), Some(Value::Int(3)))) {
+            DeclineCause::InputsDiffer { detail } => assert!(
+                detail.contains("differs from the template's"),
+                "a genuine divergence must keep the wording it was always \
+                 correct for: {detail}"
+            ),
+            other => panic!(
+                "two present-and-unequal inputs genuinely differ and must stay \
+                 InputsDiffer — reclassifying everything would move the false \
+                 positive, not fix it: {other:?}"
+            ),
+        }
+
+        // (d) THE FROZEN INVARIANT, other half. Two absent sides — the
+        // guarded-group shape, whose member cells are in no `value_cells` at all
+        // — compared EQUAL before and must still compare equal, so the
+        // exhaustive match cannot have widened the declining set.
+        match resolve(None, None) {
+            OptimizedInstanceResolution::Reuse(v) => assert_eq!(
+                v,
+                Value::Int(777),
+                "a read absent from BOTH maps was never a decline and must not \
+                 become one: the declining set is frozen by this task"
+            ),
+            OptimizedInstanceResolution::Unreusable { cause, .. } => panic!(
+                "a read absent at both scopes compares equal and must still \
+                 reuse; declining here would widen the declining set: {cause:?}"
+            ),
+            OptimizedInstanceResolution::NotOptimized => {
+                panic!("`asym_opt` carries @optimized; the probe must see it")
+            }
+        }
+    }
+
+    /// Classifying the cause (task #7021 ITEM 2) fixes the `detail` FRAGMENT,
+    /// but the body wrapped around it was still wrong for the new cause on two
+    /// counts: it told the reader that "every other instance of {T} whose inputs
+    /// differ declines the same way", and it attributed the decline to #6592
+    /// (per-instance dispatch under constructor overrides). #6592 is live and
+    /// stays the right cite for a genuine divergence; it is no remedy at all for
+    /// an input the gate could not see.
+    ///
+    /// This drives the PURE assembler rather than
+    /// [`report_optimized_instance_decline`]: the reporter's other two filters
+    /// (registered-target, per-template-cell dedupe) are gates over a `Snapshot`
+    /// and a diagnostics vec, already covered end to end in
+    /// `tests/compute_dispatch_registry.rs`, and hand-minting a `ComputeNodeData`
+    /// here would test them a second time to say nothing about the text.
+    #[test]
+    fn decline_message_does_not_attribute_a_visibility_miss_to_a_constructor_override() {
+        let key = "@optimized target \"test::asym\" on AsymLike.r:";
+        let site = DeclineSite {
+            scoped_entity: "Asm.beam",
+            member: "r",
+            child_template: "AsymLike",
+        };
+
+        // A GENUINE DIVERGENCE keeps every part of today's message. This is the
+        // case the wording was always correct for — #6662's `Outer3.b` fixture
+        // exercises it end to end — so the fix must not dilute it.
+        let differ_detail = "input AsymLike.x differs from the template's (Int(10) vs Int(3))";
+        let differ_message = decline_message(
+            key,
+            site,
+            &DeclineCause::InputsDiffer {
+                detail: differ_detail.to_string(),
+            },
+        )
+        .expect("a genuine input divergence is reported");
+        assert!(
+            differ_message.contains("#6592"),
+            "a real constructor override must keep pointing at the task that \
+             tracks per-instance dispatch: {differ_message}"
+        );
+        assert!(
+            differ_message.contains("inputs differ"),
+            "the divergence body must keep saying what it always correctly \
+             said: {differ_message}"
+        );
+        assert!(
+            differ_message.contains(differ_detail),
+            "the detail names the input that diverged and must ride through \
+             verbatim: {differ_message}"
+        );
+        assert!(
+            differ_message.starts_with(key),
+            "THE DEDUPE-KEY INVARIANT: the key is an undelimited-prefix scan \
+             over already-emitted diagnostics, so every reported message must \
+             begin with it literally — see \
+             `instance_scope_optimized_decline_dedupe_is_per_cell_not_per_prefix`: \
+             {differ_message}"
+        );
+
+        // A VISIBILITY MISS is reported too — staying silent would reintroduce
+        // exactly the silence #6662 exists to remove, since the instance still
+        // gets the degraded `.ri` sentinel — but under its own clause.
+        let visibility_detail = "input AsymLike.x is not visible at instance scope";
+        let visibility_message = decline_message(
+            key,
+            site,
+            &DeclineCause::InputNotComparable {
+                detail: visibility_detail.to_string(),
+            },
+        )
+        .expect("a visibility miss still degrades the instance and is reported");
+        assert!(
+            !visibility_message.contains("#6592"),
+            "#6592 tracks per-instance dispatch under constructor overrides, \
+             which is not the remedy for an input the gate could not see: \
+             {visibility_message}"
+        );
+        assert!(
+            !visibility_message.contains("differ"),
+            "nothing was compared — one side does not exist — so no part of \
+             this message may suggest the inputs differ: {visibility_message}"
+        );
+        assert!(
+            visibility_message.contains(visibility_detail),
+            "the detail names the input and the scope it is missing from, and \
+             must ride through verbatim: {visibility_message}"
+        );
+        assert!(
+            visibility_message.starts_with(key),
+            "THE DEDUPE-KEY INVARIANT holds for EVERY reported cause: a \
+             cause-specific body is exactly the edit that could quietly break \
+             the prefix property: {visibility_message}"
+        );
+
+        // The POSITIVE signal, stated structurally. The two causes send the
+        // reader to different places, so they must not reach them with the same
+        // body — which is what the negative pins above are protecting. Pinning
+        // that as an inequality rather than as chosen words ("cannot compare",
+        // "identical") means a rewording that preserves the distinction does not
+        // red this test, while collapsing the two clauses into one still does.
+        assert_ne!(
+            differ_message, visibility_message,
+            "a divergence and a visibility miss are different facts about the \
+             cell and must not be reported with identical prose"
+        );
+
+        // The third cause keeps today's silence: neither of the two readings in
+        // its doc has an honest message to print.
+        assert_eq!(
+            decline_message(key, site, &DeclineCause::NoTemplateValue),
+            None,
+            "the absent-output cause has nothing honest to say — template scope \
+             has either already surfaced its own error for the cell or never ran \
+             at all"
+        );
     }
 }

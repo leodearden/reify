@@ -25,6 +25,8 @@ mod let_annotation_type_mismatch_tests;
 mod let_scope_tests;
 #[path = "harness_langcore/let_type_disambiguation_tests.rs"]
 mod let_type_disambiguation_tests;
+#[path = "harness_langcore/member_continuation_hard_error_tests.rs"]
+mod member_continuation_hard_error_tests;
 #[path = "harness_langcore/parametric_alias_def_site_validation_tests.rs"]
 mod parametric_alias_def_site_validation_tests;
 #[path = "harness_langcore/parametric_field_resolution_tests.rs"]

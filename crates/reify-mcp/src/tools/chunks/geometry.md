@@ -9,7 +9,7 @@
 - `Point + Point` → type error
 
 Parameterized by dimensionality and quantity:
-```
+```reify-schematic
 Point<N: Nat, Q: Dimension>     // Position
 Vector<N: Nat, Q: Dimension>    // Displacement
 Scalar<Q: Dimension>            // Dimensioned number
@@ -35,7 +35,7 @@ Geometric traits: `Closed`, `Manifold`, `Orientable`, `Convex`, `Connected`, `Bo
 
 ## Orientation & Transform
 
-```
+```reify-schematic
 Orientation.from_quaternion(w, x, y, z)
 Orientation.from_axis_angle(axis, angle)
 Orientation.from_euler(convention, a, b, c)
@@ -53,7 +53,7 @@ Transform is always rigid (rotation + translation). Sub-structure placement uses
 
 ## Geometry Constructors (Prelude)
 
-```
+```reify-schematic
 point2(x, y)          point3(x, y, z)
 vec2(x, y)            vec3(x, y, z)
 line_segment(x1, y1, z1, x2, y2, z2)
@@ -63,7 +63,7 @@ polygon(x1, y1, x2, y2, x3, y3, ...)   rectangle(width, height)
 
 ## Solid Primitives
 
-```
+```reify-schematic
 box(width, depth, height)                          -> Solid
 box_centered(width, depth, height)                  -> Solid   // alias of box — see below
 cylinder(radius, height)                             -> Solid
@@ -84,7 +84,7 @@ not lengths. Because the result has `Bounded = false` it cannot be used where a 
 required; intersect it with a finite solid to get a bounded result usable for export and
 mass-property queries:
 
-```
+```reify-fragment
 intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
 ```
 
@@ -96,7 +96,7 @@ Worked example: `examples/half_space.ri`.
 at origin (same centring as `box`); `polygon` is the exception — it is positioned by its explicit
 vertex coordinates, not auto-centred (see the Anchoring & orientation table below):
 
-```
+```reify-schematic
 rectangle(width, height)   circle(radius)
 polygon(x1, y1, x2, y2, ...)   ellipse(semi_major, semi_minor)
 rounded_rect(width, depth, corner_r)   -> Surface   // rectangle with the 4 corners rounded
@@ -256,7 +256,7 @@ Constructors that build a geometric-tolerance zone as a real `Solid`, so a zone 
 intersected, differenced and measured like any other body. Every one takes its zone extent
 as a **width**, and every one centres the zone on the geometry it is given (`±width/2`):
 
-```
+```reify-schematic
 zone_slab(face, width)                                 -> Solid   // face offset ±width/2, capped into a slab
 zone_cylinder(axis, width)                             -> Solid   // Ø-zone about an axis wire; width is the DIAMETER
 zone_annulus(axis, nominal_radius, width, length)      -> Solid   // annular shell at nominal_radius ± width/2
@@ -288,7 +288,7 @@ Worked example of all four: `examples/tolerancing/gdt_zones.ri`.
 Two constructors that build geometry from data rather than from a parametric shape —
 a NURBS patch from an explicit control net, and a marching-cubes body from a voxel grid:
 
-```
+```reify-schematic
 nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)  -> Surface
 isosurface(grid)                                     -> Solid  // marching cubes, iso = 0.0
 isosurface(grid, iso: level)                         -> Solid
@@ -300,7 +300,7 @@ isosurface(grid, iso: level, adaptive: flag)         -> Solid
 but `u_knots`/`v_knots` are **flat** clamped knot vectors, and `u_degree`/`v_degree` are plain
 integers. A bilinear patch (degree 1 × 1, clamped knots `[0,0,1,1]`):
 
-```
+```reify-fragment
 nurbs_surface(
     [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
     [[1.0,1.0],[1.0,1.0]],

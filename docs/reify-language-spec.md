@@ -1059,6 +1059,26 @@ aux sub jig : Jig at tool_frame
 
 **`aux` modifier (v0.6).** Prefixing `aux` marks the sub-entity as structure-local (construction) geometry. An `aux sub` is still realized, tessellated, and shipped to the GUI (hidden-by-default, toggleable) but is excluded from product surfacing, STEP export, FEA mesh generation, and mass-property accumulation. Use `aux` to mark boolean-input operands so they do not appear both standalone and inside a composed result (see §8.3 for the boolean-composition idiom and §15 for the grammar production).
 
+**Derived sub (v0.6).** A sub-entity may be *derived* from a sibling sub rather than instantiated, in one of two surface forms:
+
+```
+sub unit_b = mirror of unit_a across plane_yz { z = 55mm  keep capstan }
+sub rail_l = image of rail_r under c2_z      { span_bu = default  exclude web.hub }
+```
+
+The *prototype* (`unit_a`, `rail_r`) is a bare identifier naming a **sibling sub** of the same structure -- not a dotted path, and not a structure name. `mirror of ... across <plane>` reflects the prototype across a plane; `image of ... under <transform>` maps it through an arbitrary transform.
+
+The block is **required** (an empty `{ }` is legal -- the derivation alone is a complete specification). Its items are:
+
+- **parameter overrides** -- `z = 55mm`, and `<param> = default` to *reset* an inherited value back to the prototype's declared default. Overrides accept the same values a specialization body does, including `auto` and `auto(free)`, and each may carry a `where` guard.
+- **`keep <path>`** -- retain the named feature of the prototype unreflected. This is the explicit **chirality break**: the default policy is reflect-all (always geometrically correct; achiral children come out identical), and `keep` opts a feature out of it. The default compensation `M_c` is the derivation plane conjugated into the child's local frame through the child origin.
+- **`exclude <path>`** -- omit the named feature from the derived copy. Paths are dotted (`web.hub`).
+- local **`let`** and **`constraint`** members.
+
+Placement of a derived sub is *derived* from its prototype, so an `at` clause on a derived sub is a **compile error** (`E_DERIVED_SUB_EXPLICIT_AT`), not a parse error -- the grammar accepts it so the compiler can reject it with a good message, the same division of labour `at` on a collection-form sub already uses.
+
+**Reserved, with no v0.6 meaning:** `keep <path> using <plane>` parses (a CATIA-style declared equivalence plane) but carries no semantics; `symmetry` is reserved as a future contextual keyword; and `xs[<element>]` element addressing inside a disposition path is reserved. None of the three is implemented. See [docs/prds/v0_6/assembly-derivation-toolbox.md](docs/prds/v0_6/assembly-derivation-toolbox.md) and §15 for the grammar production.
+
 #### `let` -- Computed Bindings
 
 ```
@@ -1502,19 +1522,38 @@ Strengthened persistent naming and advanced topological queries are deferred to 
 chain casting -> machining -> heat_treat -> finishing
 ```
 
-`chain` is sugar for connecting each occurrence's default output port to the next's default input port. Uses fully implicit matching via default ports only. Non-default port mapping requires explicit `connect`.
+`chain` is sugar for connecting each occurrence's output port to the next's input port, so the designer writes N occurrence names instead of 2N port names. The port each element contributes is inferred from the element alone; anything else requires naming the port explicitly, on that element or with `connect`.
 
-**Desugaring:** `chain` is expanded to a sequence of `connect` statements before evaluation graph construction. Each element must be an occurrence with exactly one `out` port and one `in` port (or ports marked as default for their direction). The desugaring is:
+**Desugaring:** `chain` is expanded to a sequence of `connect` statements before evaluation graph construction. Each element is resolved once **per role** — as a hop's source it contributes a port usable as `out`, as that hop's destination one usable as `in` — and exactly one of its ports must be usable in that role. Candidates are **tiered**, not pooled: the element's ports declared in the needed direction are the candidates, and only when it declares *none* in that direction do its `bidi` ports become the candidates (a `bidi` port is direction-valid in either role). So the common element declaring one `in`, one `out` and some `bidi` ports resolves to its `in`/`out` pair, while an element whose only port is `bidi` resolves to that port in both roles. Given
+
+```
+occurrence def Step {
+    port stock : in Workpiece
+    port part : out Workpiece
+}
+```
+
+the desugaring is:
 
 ```
 chain casting -> machining -> heat_treat -> finishing
 // Desugars to:
-connect casting.default_out -> machining.default_in
-connect machining.default_out -> heat_treat.default_in
-connect heat_treat.default_out -> finishing.default_in
+connect casting.part -> machining.stock
+connect machining.part -> heat_treat.stock
+connect heat_treat.part -> finishing.stock
 ```
 
-If any element has multiple `in` or `out` ports and none is marked as default, `chain` is a compile error for that element. The designer must use explicit `connect` statements instead.
+Resolving per role is what makes a chain longer than two elements direction-valid: `machining` means `machining.stock` as the first hop arrives and `machining.part` as the second leaves, so every hop is `out -> in`.
+
+If an element offers several candidate ports for the role it plays — or none at all — `chain` is a compile error for that element, naming what was found. The designer disambiguates by naming the port on that element (`chain casting.part -> machining`), which the grammar accepts for any element. A named port is taken verbatim in **both** the element's roles, so naming one on an *interior* element pins the same port for the hop arriving and the hop leaving: that resolves an element carrying *several* `bidi` ports, and otherwise the chain is split into explicit `connect` statements. An element naming one of the *enclosing* entity's own ports is likewise taken as that port and never re-inferred, which is what lets `chain` compose an enclosing structure's own `out` → `bidi` → `in` ports.
+
+**A chain element must denote exactly one occurrence.** Inference is per-instance, so naming a `List<T>` or `Keyed<T>` sub *without* an indexer is a compile error: such a name denotes N occurrences, and the port that would be inferred belongs to none of them. An indexer selects an occurrence only of a `List<T>` or `Keyed<T>` sub (on any other sub it selects nothing, and the element is an undefined port). Index the element (`chain vents[0] -> hub`), or chain the collection's occurrences with `forall`:
+
+```
+forall v in vents: chain v -> hub
+```
+
+The same inference applies inside a `forall … : chain …` body, after the bound variable is substituted for each element of the collection — the substituted variable denotes one occurrence, which is what makes it a valid chain element.
 
 ### 6.3 `where` Guards and Blocks
 
@@ -2782,6 +2821,21 @@ where_guard     ::= 'where' expr                         (* per-declaration guar
 param_decl      ::= 'param' IDENT ':' type_expr ('=' expr)? where_guard?
 port_decl       ::= 'port' IDENT ':' dir? type_expr ('{' member* '}')? where_guard?
 sub_decl        ::= 'aux'? 'sub' IDENT ':' type_expr where_guard? ('{' member* '}')? ('at' expr)?
+                  | 'aux'? 'sub' IDENT '=' sub_derivation derived_body ('at' expr)?   (* v0.6 derived sub *)
+
+(* The derived alternative's 'at' tail is deliberate: an explicit 'at' on a
+   derived sub PARSES, and is rejected at COMPILE time as
+   E_DERIVED_SUB_EXPLICIT_AT (§4.7) -- the same division of labour 'at' on a
+   collection-form sub already uses.  Dropping it from this production would
+   invite a "fix" to the grammar that pre-empts the diagnostic. *)
+
+sub_derivation  ::= 'mirror' 'of' IDENT 'across' expr
+                  | 'image'  'of' IDENT 'under'  expr
+derived_body    ::= '{' (derived_override | disposition | let_decl | constraint_line)* '}'
+derived_override ::= IDENT '=' ('default' | expr) where_guard?
+disposition     ::= 'keep' disposition_path ('using' expr)?   (* 'using' RESERVED, no v0.6 meaning *)
+                  | 'exclude' disposition_path
+disposition_path ::= IDENT ('.' IDENT)*
 let_decl        ::= 'pub'? 'aux'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
 constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
 
@@ -2801,7 +2855,15 @@ connect_block   ::= '{' (param_assign | port_mapping)* '}'
 param_assign    ::= IDENT '=' expr
 port_mapping    ::= IDENT '->' IDENT
 
-chain_stmt      ::= 'chain' IDENT ('->' IDENT)+
+chain_stmt      ::= 'chain' chain_elem ('->' chain_elem)+
+chain_elem      ::= IDENT chain_index? ('.' IDENT)* ('@' IDENT ('(' args ')')? )?
+chain_index     ::= '[' (INT_LIT | STRING_LIT) ']'
+
+(* A chain element is a port_ref whose head may carry one indexer. Naming the
+   port on an element (a.p, vents[0].inlet) is how §6.2 inference is
+   disambiguated, so the dotted form is load-bearing rather than merely
+   tolerated; the indexer (vents[0], vents["intake"]) is how an element of a
+   collection or keyed sub is named as the one occurrence §6.2 requires. *)
 
 port_ref        ::= path ('@' IDENT ('(' args ')')? )?
 

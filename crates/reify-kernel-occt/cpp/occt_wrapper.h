@@ -80,8 +80,17 @@ struct Point3;
 struct BBox;
 struct TessResult;
 struct ExportStepResult;
+/// Returned by `export_step_with_injected_fault_for_test` (#6344); defined by
+/// the cxx bridge (ffi.rs).
+struct StepGuardProbeResult;
+/// Taken by the two #6344 fixture hooks; defined by the cxx bridge (ffi.rs),
+/// which is where each value's meaning is documented. Declared opaquely
+/// (underlying type spelled as cxx generates it) because the generated header
+/// includes THIS one before it defines the enum.
+enum class StepGuardFault : ::std::uint8_t;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
+struct VolumeMeasurement;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
 struct RevolveSynthesisPostSortResult;
 /// Returned by `face_analytic_datum` / `edge_analytic_datum` (geometric-relations ε);
@@ -764,6 +773,7 @@ std::unique_ptr<OcctShape> rotate_around_shape(const OcctShape& shape, double px
 
 /// Apply a general non-rigid affine transform (3×3 linear + translation) to `shape`
 /// using gp_GTrsf / BRepBuilderAPI_GTransform (Copy=true; source untouched).
+/// The result carries no mesh, whatever `shape` carried (see ffi.rs).
 /// Row-major linear part (m00..m22) + translation column (tx, ty, tz).
 /// Singular-input guard: rejects |det(linear)| < 1e-12 with an error message containing
 /// "singular". Non-uniform scale and shear are valid. Per PRD affine-map-type.md §5 task ε.
@@ -1039,6 +1049,12 @@ Point3 wire_start_point(const OcctShape& wire);
 // --- Queries ---
 
 double query_volume(const OcctShape& shape);
+
+/// `query_volume`'s number plus which arm produced it. Both functions delegate
+/// to the same `compute_volume_arm` helper, so the returned `volume` is
+/// bit-identical to `query_volume(shape)` and the two can never disagree about
+/// which arm ran. Throws std::runtime_error on null/empty topology.
+VolumeMeasurement query_volume_measurement(const OcctShape& shape);
 double query_area(const OcctShape& shape);
 Point3 query_centroid(const OcctShape& shape);
 
@@ -1528,6 +1544,15 @@ bool shape_is_null(const OcctShape& shape);
 /// The shared edge has 3 incident faces, making the compound non-manifold.
 std::unique_ptr<OcctShape> make_nonmanifold_compound_for_test();
 
+/// Build an EMPTY `TopoDS_Compound` (a compound with no children) — the
+/// simplest member of the face-less-compound class that takes
+/// `compute_volume_arm`'s tessellation fallback. The measured detail, the class
+/// boundary, and why `make_nonmanifold_compound_for_test()` cannot serve here
+/// live in ONE place: the canonical note on this fixture's definition in
+/// occt_wrapper.cpp. Production `make_compound` rejects empty input, hence this
+/// fixture.
+std::unique_ptr<OcctShape> make_empty_compound_for_test();
+
 /// Build a 10×10×10 mm box with one face removed, wrapped in a solid.
 /// The resulting open shell causes BRepCheck_Analyzer::IsValid() to return false.
 std::unique_ptr<OcctShape> make_malformed_solid_for_test();
@@ -1594,6 +1619,63 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
     const OcctShape& shape,
     double ax, double ay, double az, double angle_rad,
     double dx, double dy, double dz
+);
+
+/// Run the FULL `export_step` body — same mutex, same `wrap_occt_call("export_step")`
+/// label, same guard — after injecting exactly one fault into the transferred
+/// STEP model, and return the plane-angle audit counts alongside the file text.
+///
+/// WHY THIS EXISTS: the guard's failure arms are unreachable from ordinary
+/// inputs, so injection is the only way to show it ever fires. The argument in
+/// full is on the `StepGuardFault` enum (declared in `src/ffi.rs`, generated
+/// into this language too), which is also where it stays current.
+///
+/// `fault` selects the corruption, applied inside the export mutex and after
+/// the shape has been transferred. Each value names the defect it models and
+/// the guard arm it reaches on the `StepGuardFault` variant itself (declared in
+/// `src/ffi.rs`, generated into both languages); how it is injected is
+/// `apply_step_guard_fault` in `occt_wrapper.cpp`.
+///
+/// Throws (as a `ContractViolation`, i.e. surfacing as `"export_step: …"`) when
+/// the fault cannot be injected into this fixture — a fixture with nothing to
+/// corrupt would otherwise make a negative test pass vacuously — and, of
+/// course, on a guard REFUSAL, which is the production behaviour these tests
+/// exist to pin. `StepGuardProbeResult::refusal` is therefore always empty
+/// here; use `step_guard_probe_for_test` to read a refusal's counts.
+StepGuardProbeResult export_step_with_injected_fault_for_test(
+    const OcctShape& shape,
+    rust::Str schema,
+    StepGuardFault fault
+);
+
+/// The same injected export, REPORTING the guard's finding instead of throwing
+/// it (#6344). Test-only. It differs from
+/// `export_step_with_injected_fault_for_test` in its `StepGuardDisposition`
+/// and in nothing else; what that word covers is on the enum itself, in
+/// `occt_wrapper.cpp`.
+///
+/// WHY IT EXISTS. On the refusing path the audit counts are reachable only as
+/// digits embedded in an English diagnostic, so every negative test had to
+/// hand-roll a scanner over the message — the meaningful-strings shape the
+/// house heuristics forbid, and fragile in a way that mattered (a scanner
+/// keyed on the first `"contexts="` in the text silently changes meaning when
+/// a line is prepended). This entry point hands the same numbers back as
+/// `u32` fields.
+///
+/// CONTRACT. `refusal` is empty iff the export was accepted. When it is
+/// non-empty NO file was written and `content` is empty, so this reports a
+/// refusal without weakening it into a warning; and the text is byte-identical
+/// to what the refusing hook throws minus its `"export_step: "` prefix,
+/// because both render it from one `step_export_guard_refusal` call. A test
+/// asserting that equality is what keeps the two dispositions from drifting.
+///
+/// Still THROWS for a fault that could not be injected: that is a fixture
+/// defect, not a finding about the model, and reporting it as a refusal would
+/// let a fixture with nothing to corrupt read as a guard hit.
+StepGuardProbeResult step_guard_probe_for_test(
+    const OcctShape& shape,
+    rust::Str schema,
+    StepGuardFault fault
 );
 
 // --- Export ---

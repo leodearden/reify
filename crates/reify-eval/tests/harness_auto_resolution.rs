@@ -24,9 +24,9 @@
 //! second `harness_<subsystem2>.rs`". The auto-binding cluster is the natural seam: all
 //! seven files exercise one subsystem, none of them is referenced by `use crate::…` from
 //! any module that stays behind, and none of them consumes the `common/differential.rs`
-//! include (its sole consumer, `flat_sort_kahn_core_delegation`, stays in
-//! `harness_engine`, so the 2185-line external stays attributed there and is not
-//! duplicated into a second unit).
+//! include, so the split duplicated none of that include's external lines into this
+//! second unit. (The include's one `harness_engine` consumer,
+//! `flat_sort_kahn_core_delegation`, has since moved to `harness_cache`, #7654.)
 //!
 //! Layout-only — no `#[test]` fn is added or removed. Each former file is included as a
 //! stem-named module so its `<file>::<test>` module path (and thus every

@@ -353,4 +353,122 @@ mod tests {
             "references must span main.ri, got {uris:?}"
         );
     }
+
+    /// Task 7118: the versioned wire shape, asserted on the JSON that actually
+    /// crosses the bridge rather than on Rust types.
+    ///
+    /// A client declaring `workspace.workspaceEdit.documentChanges` gets a bare
+    /// `documentChanges` ARRAY (`DocumentChanges` is `#[serde(untagged)]`) whose
+    /// entries carry `textDocument.version` — a number for the open buffer, JSON
+    /// `null` for the closed on-disk file — and NO `changes` key, so the client
+    /// cannot silently read an unversioned copy of the same edit.
+    #[tokio::test]
+    async fn lsp_request_impl_versioned_rename_stamps_open_and_closed_versions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parts_source = "structure Hole {\n    param diameter: Length = 10mm\n}";
+        std::fs::write(dir.path().join("parts.ri"), parts_source).expect("write parts.ri");
+
+        let root_uri = tower_lsp::lsp_types::Url::from_file_path(dir.path())
+            .expect("root uri")
+            .to_string();
+        let main_uri = tower_lsp::lsp_types::Url::from_file_path(dir.path().join("main.ri"))
+            .expect("main uri")
+            .to_string();
+
+        let bridge = LspBridge::new();
+
+        lsp_request_impl(
+            &bridge,
+            "initialize",
+            json!({
+                "rootUri": root_uri,
+                "capabilities": { "workspace": { "workspaceEdit": { "documentChanges": true } } }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("initialize");
+        lsp_request_impl(&bridge, "initialized", "{}".to_string())
+            .await
+            .expect("initialized");
+
+        // main.ri is OPEN at version 1; parts.ri stays CLOSED on disk.
+        let main_source = "import parts.Hole\nstructure Assembly {\n    sub hole = Hole()\n}";
+        lsp_request_impl(
+            &bridge,
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": main_uri.clone(),
+                    "languageId": "reify",
+                    "version": 1,
+                    "text": main_source
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("didOpen");
+
+        let rename_resp = lsp_request_impl(
+            &bridge,
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": main_uri.clone() },
+                "position": { "line": 2, "character": 15 },
+                "newName": "Bore"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("rename");
+
+        let edit: serde_json::Value =
+            serde_json::from_str(&rename_resp).expect("rename response is JSON");
+        assert!(
+            edit.get("changes").is_none_or(|c| c.is_null()),
+            "a documentChanges-capable client must not also receive changes, got {edit}"
+        );
+        let doc_changes = edit
+            .get("documentChanges")
+            .and_then(|d| d.as_array())
+            .expect("documentChanges is a bare JSON array (untagged enum)");
+
+        let version_of = |suffix: &str| -> &serde_json::Value {
+            doc_changes
+                .iter()
+                .find(|entry| {
+                    entry
+                        .pointer("/textDocument/uri")
+                        .and_then(|u| u.as_str())
+                        .is_some_and(|u| u.ends_with(suffix))
+                })
+                .unwrap_or_else(|| panic!("documentChanges must include {suffix}, got {edit}"))
+                .pointer("/textDocument/version")
+                .expect("each entry carries textDocument.version")
+        };
+        assert_eq!(
+            version_of("main.ri").as_i64(),
+            Some(1),
+            "the OPEN main.ri carries its numeric server-side version"
+        );
+        assert!(
+            version_of("parts.ri").is_null(),
+            "the CLOSED parts.ri is null-versioned — content on disk is master"
+        );
+
+        for entry in doc_changes {
+            for e in entry
+                .get("edits")
+                .and_then(|e| e.as_array())
+                .expect("each entry carries an edits array")
+            {
+                assert_eq!(
+                    e.get("newText").and_then(|t| t.as_str()),
+                    Some("Bore"),
+                    "every TextEdit writes the new name Bore"
+                );
+            }
+        }
+    }
 }

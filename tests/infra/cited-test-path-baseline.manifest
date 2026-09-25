@@ -92,14 +92,14 @@ crates/reify-eval/tests/harness_auto_resolution/auto_backtracking_e2e.rs :: crat
 crates/reify-eval/tests/harness_auto_resolution/auto_type_param_determinism_tests.rs :: crates/reify-compiler/tests/printer_print_envelope_example_tests.rs
 crates/reify-eval/tests/harness_auto_resolution/auto_type_param_determinism_tests.rs :: crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs
 crates/reify-eval/tests/harness_engine/fn_body_separator_value_faithfulness.rs :: crates/reify-compiler/tests/examples_smoke.rs
-crates/reify-eval/tests/harness_engine/m8_3_stdlib_integration.rs :: crates/reify-compiler/tests/examples_smoke.rs
-crates/reify-eval/tests/harness_engine/m8_3_stdlib_integration.rs :: crates/reify-compiler/tests/tolerancing_tests.rs
-crates/reify-eval/tests/harness_engine/m8_4_stdlib_integration.rs :: crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-eval/tests/harness_fea_solver_e2e/jacobian_column_member_access.rs :: crates/reify-compiler/tests/buckling_stdlib_compile.rs
 crates/reify-eval/tests/harness_fea_solver_e2e/multi_aspect_objective_example_e2e.rs :: crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_case_stdlib_smoke.rs :: crates/reify-eval/tests/tolerance_wiring_e2e.rs
 crates/reify-eval/tests/harness_fea_solver_e2e/tensegrity_force_density_gauge.rs :: crates/reify-compiler/tests/tensegrity_stdlib_tests.rs
 crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs :: crates/reify-compiler/tests/builtin_arg_signature_tests.rs
+crates/reify-eval/tests/harness_milestone_integration/m8_3_stdlib_integration.rs :: crates/reify-compiler/tests/examples_smoke.rs
+crates/reify-eval/tests/harness_milestone_integration/m8_3_stdlib_integration.rs :: crates/reify-compiler/tests/tolerancing_tests.rs
+crates/reify-eval/tests/harness_milestone_integration/m8_4_stdlib_integration.rs :: crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-eval/tests/harness_process_dfm/process_dfm_e2e.rs :: crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-eval/tests/harness_process_dfm/process_dfm_eval.rs :: crates/reify-compiler/tests/process_stdlib_compile.rs
 crates/reify-eval/tests/harness_process_dfm/process_dfm_metrology_example.rs :: crates/reify-compiler/tests/examples_smoke.rs
@@ -159,9 +159,6 @@ docs/architecture-audit/findings/topology-selectors.md :: crates/reify-eval/test
 docs/architecture-audit/findings/topology-selectors.md :: crates/reify-eval/tests/topology_selector_smoke_tests.rs
 docs/architecture-audit/findings/topology-selectors.md :: crates/reify-kernel-occt/tests/topology_selectors_integration.rs
 docs/design/rigid-moment-of-inertia-shape-2026-06-10.md :: crates/reify-compiler/tests/material_struct_tests.rs
-docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/examples_smoke.rs
-docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/harness_compilation_surface/registry_seed_result_types.rs
-docs/legibility/confusion-codebook.yaml :: crates/reify-compiler/tests/modal_options_validation_tests.rs
 docs/notes/angle-crossing-discoverability-2026-08-10.md :: crates/reify-eval/tests/best_practices_constraint_gate.rs
 docs/notes/angle-literal-migration-ledger.md :: crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
 docs/notes/dimensioned-construction-blast-radius-2026-07-29.md :: crates/reify-compiler/tests/collection_sub_tests.rs
@@ -195,10 +192,8 @@ docs/prds/v0_6/compiler-type-hygiene.md :: crates/reify-compiler/tests/mul_div_s
 docs/prds/v0_6/constrained-2d-sketch.capability-manifest.md :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/constrained-2d-sketch.capability-manifest.yaml :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/dimension-checked-readers.capability-manifest.yaml :: crates/reify-compiler/tests/examples_smoke.rs
-docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.md :: crates/reify-compiler/tests/constraint_def_compile_tests.rs
 docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.md :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.md :: crates/reify-eval/tests/auto_type_param_determinism_tests.rs
-docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.yaml :: crates/reify-compiler/tests/constraint_def_compile_tests.rs
 docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.yaml :: crates/reify-compiler/tests/examples_smoke.rs
 docs/prds/v0_6/dimensioned-construction-strictness.capability-manifest.yaml :: crates/reify-compiler/tests/modal_options_validation_tests.rs
 docs/prds/v0_6/dimensioned-construction-strictness.md :: crates/reify-compiler/tests/constraint_def_compile_tests.rs
@@ -331,7 +326,6 @@ gui/src-tauri/src/tests/engine_tests.rs :: crates/reify-compiler/tests/examples_
 gui/src-tauri/src/tests/engine_tests.rs :: crates/reify-compiler/tests/port_compile_tests.rs
 gui/src-tauri/tests/rpath_smoke.rs :: crates/reify-cli/tests/harness_cli/rpath_smoke.rs
 gui/src/editor/reify.grammar :: crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs
-tests/infra/test_no_new_wallclock_rust_deadlines.sh :: crates/reify-cli/tests/harness_cli/cli_lsp_protocol.rs
 tests/prd-gate/README.md :: crates/reify-compiler/tests/examples_smoke.rs
 tests/prd-gate/fixtures/indexed_sub_spec_arm_baseline.ri :: crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs
 tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri :: crates/reify-compiler/tests/buckling_stdlib_compile.rs

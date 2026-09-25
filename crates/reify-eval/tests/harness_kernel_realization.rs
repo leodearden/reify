@@ -70,6 +70,8 @@ mod kernel_queries_normal_smoke;
 mod kernel_registry_inventory;
 #[path = "harness_kernel_realization/kernel_version_enforcement.rs"]
 mod kernel_version_enforcement;
+#[path = "harness_kernel_realization/medial_alignment_invariance_e2e.rs"]
+mod medial_alignment_invariance_e2e;
 #[path = "harness_kernel_realization/realization_input_cone_hash_pinning.rs"]
 mod realization_input_cone_hash_pinning;
 #[path = "harness_kernel_realization/realization_kernel_provenance.rs"]
@@ -80,3 +82,5 @@ mod realization_produced_repr_pinning;
 mod realization_read_api;
 #[path = "harness_kernel_realization/selective_eviction_changed_realizations.rs"]
 mod selective_eviction_changed_realizations;
+#[path = "harness_kernel_realization/shell_voxel_resolution_window.rs"]
+mod shell_voxel_resolution_window;

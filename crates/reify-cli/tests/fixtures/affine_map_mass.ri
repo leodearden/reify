@@ -1,0 +1,34 @@
+// affine_map_mass.ri — CLI eval fixture: a MASS translation is rejected.
+//
+// The `affine_map` half of the pair `affine_translate_mass.ri` carries for
+// `affine_translate`. R12 gates BOTH builtins, but only one of them was observed
+// end-to-end, so `affine_map`'s 0 -> 1 exit-code flip went unpinned at the CLI
+// surface even though its unit-level wording is pinned byte-for-byte.
+//
+// affine_map(<identity 3x3>, vec3(5kg, 0kg, 0kg)) returns Value::Undef (a
+// translation is a DISPLACEMENT and must be LENGTH — task 5747, units-length
+// ζ / R12), and the post-Undef geometry diagnose hook must emit on stderr:
+//   error: affine_map: translation argument expects Length, got Mass Scalar;
+//          pass a dimensioned length such as `5mm`
+// `reify eval` exits 1. Before ζ the same source exited 0 and printed
+//   affine_map(linear=[[1, 0, 0], [0, 1, 0], [0, 0, 1]], translation=[5, 0, 0])
+// i.e. the MASS dimension was silently discarded and 5 kg became 5 METRES.
+//
+// The LINEAR part is deliberately dimensionless and exactly 3x3, so the only
+// fault is the translation: `classify_affine_map_args` checks the linear part
+// FIRST, and a bad one would make this fixture silent instead.
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
+// runtime Error diagnostic.
+//
+// Declares its module explicitly: without it, `reify eval` also emits
+// W_MODULE_DECL_MISSING ("expected `module affine_map_mass`"), whose text
+// contains the substring "affine_map" and would independently supply an
+// assertion needle for free — the trap task 6155 documented in
+// affine_scale_dim.ri's own header.
+
+module affine_map_mass
+
+structure def AffineMapMass {
+    let m = affine_map(matrix([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), vec3(5kg, 0kg, 0kg))
+}

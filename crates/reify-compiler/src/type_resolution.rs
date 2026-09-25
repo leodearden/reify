@@ -16,10 +16,21 @@ thread_local! {
     /// crate (including unit tests). Threading a new argument through all of them
     /// for a narrow fallback would be large churn with no behavioural change at the
     /// many sites that would pass it empty. Instead the resolver reads this ambient
-    /// set, installed (via [`EnumNameScope`]) ONLY around struct-param resolution
-    /// (`entity.rs`), where the module's `enum_defs` are in scope. It is empty
-    /// everywhere else, so non-`param` type positions are unaffected — the same
-    /// param-position scoping precedent as qualified-assoc resolution (`entity.rs`).
+    /// set, installed (via [`EnumNameScope`]) at exactly four sites, each of which
+    /// has the module's `enum_defs` in scope:
+    ///
+    ///   * `entity.rs`    — struct-param resolution (task 2998);
+    ///   * `functions.rs` — fn param resolution;
+    ///   * `functions.rs` — fn return-type resolution;
+    ///   * `compile_builder/defs_phase.rs::phase_constraint_defs` —
+    ///     constraint-def param resolution, installed once for the whole
+    ///     declaration loop; `compile_constraint_def` documents the
+    ///     precondition it relies on (task 6416).
+    ///
+    /// It is empty everywhere else, so type positions outside those four are
+    /// unaffected — the same param-position scoping precedent as qualified-assoc
+    /// resolution (`entity.rs`). Keep this list in sync: `grep -rn
+    /// 'EnumNameScope::new' crates/` is the authority.
     /// Type resolution is single-threaded per module and the set lives only for the
     /// lifetime of an `EnumNameScope` guard.
     static RESOLUTION_ENUM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
@@ -1578,6 +1589,13 @@ pub(crate) fn resolve_type_alias_expr(
             // registry, which happens after alias resolution. Pass an empty
             // trait-name set so alias bodies resolve only against builtins
             // and the alias registry here.
+            //
+            // These empty sets reach the alias body as an empty
+            // `AliasBodyUseSite` (task 6477). That is the SAME deferral the
+            // sets below document, not an oversight left behind when the use
+            // site started forwarding its real namespaces — the names do not
+            // exist yet at this point in the phase order, so there is nothing
+            // to forward. Do not "fix" this to pass real sets.
             if !type_args.is_empty()
                 && let Some(alias_entry) = alias_registry.lookup(name)
                 && !alias_entry.type_params.is_empty()
@@ -1593,8 +1611,13 @@ pub(crate) fn resolve_type_alias_expr(
                     alias_registry,
                     &mut tmp_diags,
                     0,
-                    &empty_structs,
-                    &empty_traits,
+                    AliasBodyUseSite {
+                        structures: &empty_structs,
+                        traits: &empty_traits,
+                        // The DFS resolves a body of THIS module, so this
+                        // module's own span is the right anchor.
+                        span: type_expr.span,
+                    },
                 ) {
                     return Some(ty);
                 }
@@ -1783,6 +1806,304 @@ pub(crate) fn resolve_type_expr_with_aliases(
     )
 }
 
+/// Resolve a type NAME against all four entity namespaces, applying the
+/// local-enum shadowing precedence.
+///
+/// The single definition of "what does this name denote here?", shared by the
+/// direct spelling (`resolve_type_expr_with_aliases_kinded`) and by a
+/// parametric alias BODY (`resolve_type_alias_expr_with_subst`). That sharing
+/// is the point, not an incidental refactor: #6259 recorded the decision that
+/// alias bodies get NO separate name-resolution rule — a body resolves through
+/// the identical path the direct spelling takes, at the same use site,
+/// including under shadowing. One function is how that decision stops being a
+/// convention two call sites have to keep in sync. Pinned by
+/// `parametric_alias_body_shadow_parity`.
+///
+/// "Identical path" is a claim about THIS function, not about the two callers
+/// end to end: each keeps arms of its own below it, and the alias-body caller
+/// has neither of the `_kinded` caller's two. The E_BARE_SCALAR guard is
+/// deliberately absent. The DEFERRED non-parametric alias arm (#6259) is a real
+/// parity GAP, not a deliberate exclusion: a body naming an entity INDIRECTLY,
+/// through a non-parametric alias that is itself entity-bodied
+/// (`resolved_type: None`), fails where the direct spelling succeeds —
+/// `type Inner = Zq` + `type Outer<T> = Option<Inner>` used as `Outer<Real>`
+/// reports `unresolved type: Outer<Real>` where direct `Option<Inner>` lowers
+/// to `Option(Enum("Zq"))`. Loud rather than silently wrong, and not a
+/// regression; pinned as a known gap by
+/// `parametric_alias_deferred_alias_body_known_gap`.
+///
+/// That sharing covers APPLIED names (`N<Args>`) as well as bare ones, and
+/// only since task #6477. The two applied arms used to sit in
+/// `resolve_type_expr_with_aliases_kinded`, so the alias-body caller silently
+/// lacked them and `type W<U> = Box2<U>` dropped its argument at every use
+/// site — precisely the silent drop arm 1 exists to prevent, reintroduced by
+/// the arm's PLACEMENT. They live here now, which is what makes the paragraph
+/// above structurally true rather than aspirational. Pinned by the applied
+/// rows of `parametric_alias_entity_body_use_site`.
+///
+/// The two callers differ in exactly one thing: how a type ARGUMENT recurses.
+/// That is `resolve_arg` — the direct spelling recurses through
+/// `resolve_type_expr_with_aliases_kinded` with the use site's parameter
+/// scope; an alias body recurses through `resolve_type_alias_expr_with_subst`
+/// with its `subst`, so the alias's own params stay bound inside its arguments
+/// and nothing ambient leaks in.
+///
+/// Order, and why each step is where it is:
+///
+/// 1. Structure-with-args — `N<Args>` where N is a structure or occurrence def
+///    becomes `Type::Applied`, so the arguments survive into the arity/bound
+///    walk instead of being dropped (task 4603 γ).
+///
+/// 2. Trait-with-args — `N<Args>` where N is a trait is rejected outright with
+///    E_TYPE_ARG_ON_TRAIT (task 5049 α). AFTER step 1, so a name that is both
+///    a structure and a trait resolves as the structure.
+///
+/// 3. `resolve_type_with_aliases` — builtins, type params, resolved aliases,
+///    structures, traits.
+///
+/// 4. Shadowing-enum override (task #5429; PRD
+///    docs/prds/v0_6/uniform-member-access.md §4 M5 / D8): a MODULE-LOCAL
+///    `enum N` outranks a same-named PRELUDE `structure def N`, so `enum Fit` +
+///    `param fit : Fit` lowers to `Type::Enum("Fit")` rather than being
+///    conflated with std.tolerancing's `structure def Fit`.
+///
+///    Each conjunct earns its place:
+///
+///    - `type_args.is_empty()` — bare names only, the same gate step 5 uses.
+///      An applied `N<Args>` must keep flowing past, so the generic-enum
+///      Applied path (`entity.rs::resolve_enum_type_with_args`, which only
+///      runs when this resolution yields None) still sees it. Regression
+///      oracle: `tests::applied_form_is_not_shadowed` — without this
+///      conjunct, `Result<Length, String>` collapses to `Enum("Result")` and
+///      four tests in generic_enum_pattern_binder_tests.rs fail.
+///    - `matches!(ty, Type::StructureRef(_))` — only the structure arm is
+///      overridable. Builtins, type params and aliases return EARLIER inside
+///      `resolve_type_with_aliases`, so their precedence is preserved for
+///      free (a local `enum Length` cannot shadow the builtin LENGTH
+///      dimension); trait objects are deliberately left alone
+///      (local-enum-vs-prelude-TRAIT collisions are out of #5429's scope).
+///    - set membership — the set is empty outside a `LocalEnumShadowScope`,
+///      so every caller that installs no scope is unaffected.
+///
+/// 5. Enum-name fallback (task 2998): an enum used as an inner type arg of a
+///    parameterized builtin (e.g. the `QoIDescriptor` in
+///    `Option<QoIDescriptor>`) reaches here because step 1 resolves builtins /
+///    aliases / structures / traits but NOT enums. Consult the ambient enum set
+///    installed by `EnumNameScope` (non-empty around struct-param, fn
+///    param/return and constraint-def param resolution; empty otherwise — see
+///    `RESOLUTION_ENUM_NAMES` for the authoritative install-site list). Bare
+///    names only, for the same reason as step 4: an `Enum<Args>` form keeps
+///    `type_args` non-empty and falls through, and entity.rs then emits "enum
+///    does not accept type arguments". This is the same enum fallback the
+///    struct-param (entity.rs) and enum-variant-payload (enums_phase.rs) paths
+///    use via `resolve_enum_type`, lifted to cover the nested-in-builtin
+///    position that explicit `structure_names` / `trait_names` threading does
+///    not reach.
+///
+/// `None` means the name is unknown in every namespace — in APPLIED position
+/// as well as bare, since steps 1-2 decide those here now. The one caller-level
+/// arm still keyed on that `None` for an applied name is the generic-enum
+/// Applied path (`entity.rs::resolve_enum_type_with_args`), which is why steps
+/// 1-2 must stay keyed on `structure_names` / `trait_names` membership and not
+/// on "has arguments": a generic enum is in neither set and must keep flowing
+/// past (regression oracle: `tests::applied_form_is_not_shadowed`). Beyond
+/// that, the `_kinded` caller keeps two arms of its own below this function —
+/// the deferred non-parametric alias body, the E_BARE_SCALAR guard — which the
+/// alias-body caller does NOT have; see the parity note above for which of the
+/// two absences is deliberate and which is a known gap. Both callers emit their
+/// own `unresolved type` diagnostic.
+#[allow(clippy::too_many_arguments)]
+fn resolve_entity_name_with_shadowing(
+    name: &str,
+    type_args: &[reify_ast::TypeExpr],
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+    resolve_arg: &mut dyn FnMut(&reify_ast::TypeExpr, &mut Vec<Diagnostic>) -> Option<Type>,
+) -> Option<Type> {
+    // Step 1 — structure-with-args arm (task 4603 γ — un-drop fix).
+    //
+    // When `name ∈ structure_names` AND `type_args` is non-empty, the caller is
+    // writing something like `Coupling<Prismatic>`. The simple-name step below
+    // (`resolve_type_with_aliases`) would produce `Type::StructureRef("Coupling")`
+    // and **silently drop** the type args — making `Coupling<Prismatic>` and
+    // `Coupling<Revolute>` identical. This arm intercepts that case first.
+    //
+    // Each arg is resolved recursively through the caller-supplied `resolve_arg`
+    // (the same recursion that `List<T>`, `Map<K,V>`, etc. use for their own
+    // args). An arg that resolves to `None` becomes `Type::Error` (anti-cascade
+    // sentinel — the diagnostic was already pushed).
+    //
+    // Invariant: non-empty `type_args` + `structure_names` hit ⇒ `Type::Applied`;
+    //            empty `type_args` falls through to `resolve_type_with_aliases`
+    //            and becomes `Type::StructureRef` (unchanged).
+    if structure_names.contains(name) && !type_args.is_empty() {
+        let args: Vec<Type> = type_args
+            .iter()
+            .map(|arg_expr| resolve_arg(arg_expr, diagnostics).unwrap_or(Type::Error))
+            .collect();
+        return Some(Type::Applied {
+            name: name.to_string(),
+            args,
+        });
+    }
+
+    // Step 2 — trait-with-args rejection arm (task 5049 α — E_TYPE_ARG_ON_TRAIT).
+    //
+    // When `name ∈ trait_names` AND `type_args` is non-empty, the caller is
+    // writing something like `SpecLike<Foo>`. Unlike the structure-with-args
+    // arm above, trait type-arguments are not yet a supported language
+    // feature: the simple-name step below (`resolve_type_with_aliases`)
+    // would produce bare `Type::TraitObject("SpecLike")` and **silently drop**
+    // the type args, with no diagnostic and no arity/bound check. This arm
+    // intercepts that case first and rejects it outright.
+    //
+    // Placed AFTER the structure arm so a name that is both a structure and a
+    // trait with args still resolves via `Type::Applied` (structure wins over
+    // trait — the same precedence `resolve_type_with_aliases` uses for the
+    // bare-name case). This is a real, constructible branch, not
+    // just defensive ordering: nothing in the unified entity namespace stops
+    // a `structure def` and a `trait` from sharing a name (`Declaration::Trait`
+    // is never run through `record_or_report_duplicate` in
+    // `pre_pass::collect_decl_refs`, unlike `Structure`/`Field`/`Occurrence`/
+    // `Constraint`), so `resolution_trait_names` and `resolution_structure_names`
+    // (built independently in `names_phase::build_resolution_names`) can both
+    // contain the same name. Verified by the integration test
+    // `name_shared_by_structure_and_trait_prefers_structure_applied_path` in
+    // crates/reify-compiler/tests/harness_traits/trait_type_arg_rejection_tests.rs. Placed
+    // BEFORE simple-name resolution so the rejection fires regardless of any
+    // same-name shadow later in the fallthrough.
+    //
+    // Returns Some(Type::Error) (poison sentinel) + one TypeArgOnTrait
+    // diagnostic, suppressing the generic UnresolvedType cascade so the user
+    // sees exactly one clean E_TYPE_ARG_ON_TRAIT error (mirrors the
+    // BareScalarType anti-cascade pattern in `resolve_type_expr_with_aliases_kinded`).
+    //
+    // Deferred alternative (NOT implemented here): extending `Type::Applied`
+    // to traits with their own bound/arity checking, i.e. treating a
+    // type-arg-applied trait object as a first-class generic type rather than
+    // flatly rejecting it. Tracked as task #5024 (generic-trait type-args
+    // language design PRD bookmark) — deliberately out of scope until that
+    // PRD is authored.
+    //
+    // Invariant: non-empty `type_args` + `trait_names` hit (and not already a
+    // structure) ⇒ Type::Error + TypeArgOnTrait; empty `type_args` falls
+    // through to `resolve_type_with_aliases` and becomes `Type::TraitObject`
+    // (unchanged).
+    if trait_names.contains(name) && !type_args.is_empty() {
+        let args_as_written = type_args
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "E_TYPE_ARG_ON_TRAIT: trait '{}' does not accept type arguments (given \
+                 '{}'); trait type-arguments are not yet supported",
+                name, args_as_written
+            ))
+            .with_code(DiagnosticCode::TypeArgOnTrait)
+            .with_label(DiagnosticLabel::new(
+                span,
+                "trait type-arguments are not yet supported",
+            )),
+        );
+        return Some(Type::Error);
+    }
+
+    // Step 3 — builtins, type params, resolved aliases, structures, traits.
+    if let Some(ty) = resolve_type_with_aliases(
+        name,
+        type_param_names,
+        alias_registry,
+        structure_names,
+        trait_names,
+    ) {
+        if type_args.is_empty()
+            && matches!(ty, Type::StructureRef(_))
+            && RESOLUTION_SHADOWING_ENUM_NAMES.with(|s| s.borrow().contains(name))
+        {
+            return Some(Type::Enum(name.to_string()));
+        }
+        return Some(ty);
+    }
+
+    if type_args.is_empty() && RESOLUTION_ENUM_NAMES.with(|s| s.borrow().contains(name)) {
+        return Some(Type::Enum(name.to_string()));
+    }
+
+    None
+}
+
+/// Does `name` denote a type here at all?
+///
+/// The name-existence half of [`resolve_entity_name_with_shadowing`], for
+/// callers that need the verdict without the `Type` —
+/// [`validate_pub_parametric_alias_def_site`] being the one today.
+///
+/// Defined BY that resolver rather than beside it, and that is the point: task
+/// #6477 exists because the def-site guard's own hand-written disjunction and
+/// the resolver's namespace list DRIFTED — the guard had no enum arm while the
+/// resolver had `RESOLUTION_ENUM_NAMES` — so an alias body naming a plainly
+/// declared `enum` was rejected at its own definition site. Asking the resolver
+/// makes the next namespace a single-site addition instead of two copies that
+/// must be kept in step by hand.
+///
+/// Enums answer through the ambient `RESOLUTION_ENUM_NAMES` set, so a caller
+/// that cares about them must install an [`EnumNameScope`] first — the same
+/// channel the `_kinded` and alias-body tails read, rather than a second
+/// plumbing axis for the same question.
+///
+/// Two disjuncts stay OUTSIDE the resolver, neither of them drift:
+///
+/// - `is_parameterized_builtin_name` — `Vector3`, `Keyed`, `Option`, … are
+///   never written bare, so they have no `resolve_type_name` entry and the
+///   bare-name resolver cannot see them. `pub type Vec3<Q: Dimension> =
+///   Vector3<Q>` needs this arm. The canonical predicate is used rather than a
+///   local list, so a builtin added without updating it becomes unreachable
+///   dead code in both places at once.
+/// - an alias entry with `resolved_type: None` — DELIBERATELY more permissive
+///   than the resolver's alias arm, which matches only a resolved entry. An
+///   entity-bodied non-parametric alias (`type Inner = Zq`) carries exactly
+///   that shape until its use site re-resolves it (task #6259), so a def site
+///   that rejected it would be a false positive on a name that does exist.
+fn type_name_is_known(
+    name: &str,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+) -> bool {
+    if is_parameterized_builtin_name(name) || alias_registry.lookup(name).is_some() {
+        return true;
+    }
+    // A name-existence question carries no type arguments, and with `type_args`
+    // empty no arm of the resolver can emit a diagnostic or call `resolve_arg`
+    // — so the span is never read and the scratch vector is never written. The
+    // assert keeps that true if an arm is ever added.
+    let no_type_params = HashSet::new();
+    let mut scratch: Vec<Diagnostic> = Vec::new();
+    let known = resolve_entity_name_with_shadowing(
+        name,
+        &[],
+        &no_type_params,
+        alias_registry,
+        structure_names,
+        trait_names,
+        &mut scratch,
+        SourceSpan::empty(0),
+        &mut |_, _| None,
+    )
+    .is_some();
+    debug_assert!(
+        scratch.is_empty(),
+        "a bare name-existence resolution must not emit diagnostics; got {scratch:?}"
+    );
+    known
+}
+
 /// Dimension-kinded variant of [`resolve_type_expr_with_aliases`].
 ///
 /// Identical to the 6-arg wrapper but accepts a `dim_param_names` set that
@@ -1796,7 +2117,6 @@ pub(crate) fn resolve_type_expr_with_aliases(
 /// Called directly by `compile_function` and `compile_assoc_function` (which
 /// build the dim-param set from `fn_def.type_params`).  All other callers go
 /// through the 6-arg wrapper with an empty dim set.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_type_expr_with_aliases_kinded(
     type_expr: &reify_ast::TypeExpr,
     type_param_names: &HashSet<String>,
@@ -1910,162 +2230,36 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(Type::Error);
     }
 
-    // Structure-with-args arm (task 4603 γ — un-drop fix).
+    // Name resolution across all four namespaces — applied forms included,
+    // then the bare-name steps with the local-enum shadowing precedence.
+    // Shared with the parametric alias-body path so an alias body and the
+    // direct spelling cannot drift (see the helper's doc).
     //
-    // When `name ∈ structure_names` AND `type_args` is non-empty, the caller is
-    // writing something like `Coupling<Prismatic>`. The simple-name fallthrough
-    // below (`resolve_type_with_aliases`) would produce `Type::StructureRef("Coupling")`
-    // and **silently drop** the type args — making `Coupling<Prismatic>` and
-    // `Coupling<Revolute>` identical. This arm intercepts that case first.
-    //
-    // Each arg is resolved recursively via `resolve_type_expr_with_aliases_kinded`
-    // (the same recursion that `List<T>`, `Map<K,V>`, etc. use in
-    // `resolve_parameterized_builtin_type`). An arg that resolves to `None` becomes
-    // `Type::Error` (anti-cascade sentinel — the diagnostic was already pushed).
-    //
-    // Invariant: non-empty `type_args` + `structure_names` hit ⇒ `Type::Applied`;
-    //            empty `type_args` falls through to `resolve_type_with_aliases`
-    //            and becomes `Type::StructureRef` (unchanged).
-    if structure_names.contains(name) && !type_args.is_empty() {
-        let args: Vec<Type> = type_args
-            .iter()
-            .map(|arg_expr| {
-                resolve_type_expr_with_aliases_kinded(
-                    arg_expr,
-                    type_param_names,
-                    dim_param_names,
-                    alias_registry,
-                    diagnostics,
-                    structure_names,
-                    trait_names,
-                )
-                .unwrap_or(Type::Error)
-            })
-            .collect();
-        return Some(Type::Applied {
-            name: name.to_string(),
-            args,
-        });
-    }
-
-    // Trait-with-args rejection arm (task 5049 α — E_TYPE_ARG_ON_TRAIT).
-    //
-    // When `name ∈ trait_names` AND `type_args` is non-empty, the caller is
-    // writing something like `SpecLike<Foo>`. Unlike the structure-with-args
-    // arm above, trait type-arguments are not yet a supported language
-    // feature: the simple-name fallthrough below (`resolve_type_with_aliases`)
-    // would produce bare `Type::TraitObject("SpecLike")` and **silently drop**
-    // the type args, with no diagnostic and no arity/bound check. This arm
-    // intercepts that case first and rejects it outright.
-    //
-    // Placed AFTER the structure arm so a name that is both a structure and a
-    // trait with args still resolves via `Type::Applied` (structure wins over
-    // trait — the same precedence `resolve_type_with_aliases` uses for the
-    // bare-name case, :655-661). This is a real, constructible branch, not
-    // just defensive ordering: nothing in the unified entity namespace stops
-    // a `structure def` and a `trait` from sharing a name (`Declaration::Trait`
-    // is never run through `record_or_report_duplicate` in
-    // `pre_pass::collect_decl_refs`, unlike `Structure`/`Field`/`Occurrence`/
-    // `Constraint`), so `resolution_trait_names` and `resolution_structure_names`
-    // (built independently in `names_phase::build_resolution_names`) can both
-    // contain the same name. Verified by the integration test
-    // `name_shared_by_structure_and_trait_prefers_structure_applied_path` in
-    // crates/reify-compiler/tests/harness_traits/trait_type_arg_rejection_tests.rs. Placed
-    // BEFORE simple-name resolution so the rejection fires regardless of any
-    // same-name shadow later in the fallthrough.
-    //
-    // Returns Some(Type::Error) (poison sentinel) + one TypeArgOnTrait
-    // diagnostic, suppressing the generic UnresolvedType cascade so the user
-    // sees exactly one clean E_TYPE_ARG_ON_TRAIT error (mirrors the
-    // BareScalarType anti-cascade pattern below).
-    //
-    // Deferred alternative (NOT implemented here): extending `Type::Applied`
-    // to traits with their own bound/arity checking, i.e. treating a
-    // type-arg-applied trait object as a first-class generic type rather than
-    // flatly rejecting it. Tracked as task #5024 (generic-trait type-args
-    // language design PRD bookmark) — deliberately out of scope until that
-    // PRD is authored.
-    //
-    // Invariant: non-empty `type_args` + `trait_names` hit (and not already a
-    // structure) ⇒ Type::Error + TypeArgOnTrait; empty `type_args` falls
-    // through to `resolve_type_with_aliases` and becomes `Type::TraitObject`
-    // (unchanged).
-    if trait_names.contains(name) && !type_args.is_empty() {
-        let args_as_written = type_args
-            .iter()
-            .map(|arg| arg.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "E_TYPE_ARG_ON_TRAIT: trait '{}' does not accept type arguments (given \
-                 '{}'); trait type-arguments are not yet supported",
-                name, args_as_written
-            ))
-            .with_code(DiagnosticCode::TypeArgOnTrait)
-            .with_label(DiagnosticLabel::new(
-                type_expr.span,
-                "trait type-arguments are not yet supported",
-            )),
-        );
-        return Some(Type::Error);
-    }
-
-    // Simple name resolution (builtins, type params, non-parameterized aliases,
-    // structure names, trait names).
-    if let Some(ty) = resolve_type_with_aliases(
+    // `resolve_arg` is the only thing the two callers differ in: here, each
+    // type argument recurses through this same kinded resolver, so the use
+    // site's type/dim parameter scope and namespaces apply to it.
+    if let Some(ty) = resolve_entity_name_with_shadowing(
         name,
+        type_args,
         type_param_names,
         alias_registry,
         structure_names,
         trait_names,
+        diagnostics,
+        type_expr.span,
+        &mut |arg_expr, arg_diagnostics| {
+            resolve_type_expr_with_aliases_kinded(
+                arg_expr,
+                type_param_names,
+                dim_param_names,
+                alias_registry,
+                arg_diagnostics,
+                structure_names,
+                trait_names,
+            )
+        },
     ) {
-        // Shadowing-enum override (task #5429; PRD
-        // docs/prds/v0_6/uniform-member-access.md §4 M5 / D8): a MODULE-LOCAL
-        // `enum N` outranks a same-named PRELUDE `structure def N`, so
-        // `enum Fit` + `param fit : Fit` lowers to Type::Enum("Fit") rather than
-        // being conflated with std.tolerancing's `structure def Fit`.
-        //
-        // Each conjunct earns its place:
-        // • `type_args.is_empty()` — bare names only, the same gate the sibling
-        //   enum fallback below uses. An applied `N<Args>` must keep flowing down
-        //   so the generic-enum Applied path (`entity.rs::resolve_enum_type_with_args`,
-        //   which only runs when this simple-name resolution yields None) still
-        //   sees it. Regression oracle: `tests::applied_form_is_not_shadowed` —
-        //   without this conjunct, `Result<Length, String>` collapses to
-        //   Enum("Result") and four tests in generic_enum_pattern_binder_tests.rs
-        //   fail.
-        // • `matches!(ty, Type::StructureRef(_))` — only the structure arm is
-        //   overridable. Builtins, type params and aliases return EARLIER inside
-        //   `resolve_type_with_aliases`, so their precedence is preserved for free
-        //   (a local `enum Length` cannot shadow the builtin LENGTH dimension);
-        //   trait objects are deliberately left alone (local-enum-vs-prelude-TRAIT
-        //   collisions are out of #5429's scope).
-        // • set membership — the set is empty outside a `LocalEnumShadowScope`,
-        //   so every caller that installs no scope is unaffected.
-        if type_args.is_empty()
-            && matches!(ty, Type::StructureRef(_))
-            && RESOLUTION_SHADOWING_ENUM_NAMES.with(|s| s.borrow().contains(name))
-        {
-            return Some(Type::Enum(name.to_string()));
-        }
         return Some(ty);
-    }
-
-    // Enum-name fallback (task 2998): an enum used as an inner type arg of a
-    // parameterized builtin (e.g. the `QoIDescriptor` in `Option<QoIDescriptor>`)
-    // reaches this bare-`Named` tail because `resolve_type_with_aliases` above
-    // resolves builtins / aliases / structures / traits but NOT enums. Consult the
-    // ambient enum set installed by `EnumNameScope` (non-empty ONLY around
-    // struct-param resolution; empty otherwise — see `RESOLUTION_ENUM_NAMES`).
-    // Bare names only: enums are non-parametric in v0.4, so an `Enum<Args>` form
-    // keeps `type_args` non-empty and falls through (entity.rs then emits "enum
-    // does not accept type arguments"). This is the same enum fallback that the
-    // struct-param (entity.rs) and enum-variant-payload (enums_phase.rs) paths
-    // already use via `resolve_enum_type`, lifted to cover the nested-in-builtin
-    // position the explicit structure_names/trait_names threading does not reach.
-    if type_args.is_empty() && RESOLUTION_ENUM_NAMES.with(|s| s.borrow().contains(name)) {
-        return Some(Type::Enum(name.to_string()));
     }
 
     // Deferred non-parametric alias body (task 6259): `type AL = <Body>` whose
@@ -2192,8 +2386,11 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
             alias_registry,
             diagnostics,
             0,
-            structure_names,
-            trait_names,
+            AliasBodyUseSite {
+                structures: structure_names,
+                traits: trait_names,
+                span: type_expr.span,
+            },
         );
     }
 
@@ -2209,38 +2406,52 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
 /// The deferred use-site arm in [`resolve_type_expr_with_aliases_kinded`]
 /// resolves an entity-bodied alias by RECURSING into that same function, so the
 /// body's ENUM-ness is only visible where the ambient [`RESOLUTION_ENUM_NAMES`]
-/// set is live. [`EnumNameScope`] installs it at exactly two places: struct-param
-/// resolution (`entity.rs`) and fn param/return resolution (`functions.rs`).
+/// set is live. [`EnumNameScope`] installs it at four places — struct-param
+/// resolution (`entity.rs`), fn param and fn return resolution (`functions.rs`),
+/// and, since task 6416, constraint-def param resolution (`defs_phase.rs`).
 ///
-/// Three other declared-type positions install no such scope. Each instead owns
-/// a PRIVATE enum namespace, consulted by a post-hoc fallback AFTER
+/// TWO declared-type positions still install no such scope (task 6259 described
+/// three; 6416 converted the constraint-def one). Each remaining position owns a
+/// PRIVATE enum namespace, consulted by a post-hoc fallback AFTER
 /// `resolve_type_expr_with_aliases` has already returned `None`, and keyed on
 /// the OUTER name — which for `type AL = Zq` is `AL`, never `Zq`. The body's
 /// enum-ness is therefore structurally unreachable at:
 ///
 ///   * `compile_builder/enums_phase.rs` — enum variant payload field;
-///   * `traits.rs` — trait member `param`/`let` annotation;
-///   * `compile_builder/defs_phase.rs` — constraint-def param.
+///   * `traits.rs` — trait member `param`/`let` annotation.
 ///
 /// Each of those sites resolves its private namespace against
 /// `unresolved_alias_body_name(name, reg).unwrap_or_else(|| name.to_string())`,
 /// so the lookup sees `Zq` and matches the direct spelling exactly.
 ///
-/// # Why NOT install `EnumNameScope` at those three sites instead
+/// # Why NOT install `EnumNameScope` at the two remaining sites instead
 ///
-/// That uniform-looking alternative perturbs the DIRECT path, and at the
-/// constraint-def site the perturbation is a real semantic change outside this
-/// task's scope. Today `constraint def K { param g : Zq }` stores `ty: None`:
-/// `resolve_type_expr_with_aliases` returns `None` for a bare enum there and
-/// `defs_phase.rs`'s guard only SUPPRESSES the diagnostic via `resolve_enum_type`
-/// — it never populates `ty`. An ambient enum scope would make that same direct
+/// That uniform-looking alternative perturbs the DIRECT path. Whether the
+/// perturbation is WANTED is a per-site judgement, and the constraint-def site
+/// is the worked example of it being wanted: this doc previously argued the
+/// change there was out of scope because it "would make that same direct
 /// spelling start storing `Some(Type::Enum("Zq"))`, changing what
-/// `expand_constraint_inst` type-checks at every instantiation site.
+/// `expand_constraint_inst` type-checks at every instantiation site". That is
+/// exactly what task 6416 then did ON PURPOSE — the check (task 4546) skips
+/// params whose `ty` is `None`, so it had been silently inert for every
+/// enum-typed constraint param, which was the defect. MEASURED after 6416:
+/// `param g : Zq` and `param g : AL` both store `Some(Enum("Zq"))` with zero
+/// diagnostics, and an `Int` arg at the instantiation site now raises exactly
+/// one `ConstraintArgTypeMismatch` through both spellings.
 ///
-/// This helper cannot do that: it is consulted ONLY on a branch the direct
-/// spelling never reaches (the `.or_else(..)` / `is_none()` fallback that runs
-/// after resolution has already failed), so the direct path is provably
-/// unperturbed. Do not "simplify" it back into an `EnumNameScope` install.
+/// So: do not read the paragraph above as a blanket prohibition. Before adding
+/// a scope at `enums_phase.rs` or `traits.rs`, work out what the DIRECT path at
+/// that site would start storing and who consumes it; the constraint-def
+/// precedent says a deliberate, tested change of that consumer is legitimate,
+/// while an incidental one is not.
+///
+/// This helper is still load-bearing at all three of its call sites, INCLUDING
+/// the constraint-def one where a scope is now installed, because the ambient
+/// fallback is gated on `type_args.is_empty()` while this hop is not. MEASURED
+/// at `defs_phase.rs` after 6416: with the hop removed, `param g : AL<Int>`
+/// starts emitting a spurious "unknown type 'AL'", while the bare `param g : AL`
+/// stays clean via the ambient fallback. Its remaining reach there is therefore
+/// exactly the PARAMETERISED alias form. Do not delete it as newly redundant.
 ///
 /// # Contract
 ///
@@ -2311,7 +2522,11 @@ const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
 ///
 /// Builds a substitution map from param names to concrete types, then
 /// resolves the alias body with those substitutions applied.
-#[allow(clippy::too_many_arguments)]
+///
+/// `use_site` is both what the body resolves against and where the caller is
+/// written; it is forwarded unchanged into the body, so every diagnostic the
+/// body raises lands at an offset in the caller's own source. See
+/// [`AliasBodyUseSite`].
 pub(crate) fn resolve_parameterized_alias(
     alias_entry: &TypeAliasEntry,
     type_args: &[reify_ast::TypeExpr],
@@ -2319,8 +2534,7 @@ pub(crate) fn resolve_parameterized_alias(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
-    structure_names: &HashSet<String>,
-    trait_names: &HashSet<String>,
+    use_site: AliasBodyUseSite<'_>,
 ) -> Option<Type> {
     if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
         diagnostics.push(
@@ -2369,8 +2583,8 @@ pub(crate) fn resolve_parameterized_alias(
             type_param_names,
             alias_registry,
             diagnostics,
-            structure_names,
-            trait_names,
+            use_site.structures,
+            use_site.traits,
         );
         if let Some(ty) = resolved {
             subst.insert(param.name.clone(), ty);
@@ -2413,7 +2627,19 @@ pub(crate) fn resolve_parameterized_alias(
         );
         return None;
     };
-    resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics, depth + 1)
+    // The body sees the caller's entity namespaces — which at a use site are
+    // the real ones, and during the alias-DFS pre-pass are deliberately empty
+    // (task 6477; see `AliasBodyUseSite`) — and the caller's span, so a body
+    // diagnostic is anchored in the source it will be rendered against rather
+    // than in the (possibly PRELUDE) source the body was written in.
+    resolve_type_alias_expr_with_subst(
+        body,
+        alias_registry,
+        &subst,
+        diagnostics,
+        depth + 1,
+        use_site,
+    )
 }
 
 /// Substitute resolved type parameters in a `Type` from a name→`Type` map.
@@ -3156,6 +3382,58 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
     }
 }
 
+/// What the USE SITE contributes to resolving an alias body (task 6477): the
+/// entity names the body may reference, and the offset its diagnostics belong
+/// at.
+///
+/// Threaded as one borrowed bundle through the `*_with_subst` family rather
+/// than as positional parameters, so "what does the use site give this body?"
+/// stays a single named concept across ~17 recursion sites instead of a
+/// widening argument list.
+///
+/// Enum names are deliberately NOT a field: they travel on the ambient
+/// `RESOLUTION_ENUM_NAMES` thread-local, which the non-parametric `_kinded`
+/// tail already reads for exactly this purpose. Adding a third set here would
+/// be a second plumbing axis for the same question.
+///
+/// Both name sets are EMPTY on the alias-DFS pre-pass path, and that emptiness
+/// is a load-bearing DEFERRAL rather than a limitation: structures, traits and
+/// enums are not compiled when `phase_aliases` runs, so a body naming one
+/// legitimately leaves that phase `resolved_type: None` and is resolved at each
+/// use site instead. See `aliases_phase.rs`'s module header — that path "must
+/// not be 'fixed' to take the name sets".
+#[derive(Clone, Copy)]
+pub(crate) struct AliasBodyUseSite<'a> {
+    pub(crate) structures: &'a HashSet<String>,
+    pub(crate) traits: &'a HashSet<String>,
+    /// Span of the type expression that triggered this instantiation, in the
+    /// source of the module the resulting diagnostics will be rendered
+    /// against.
+    ///
+    /// Why the body's OWN span is not usable for that: a diagnostic raised
+    /// while resolving a body joins the CONSUMER module's diagnostic list, but
+    /// `Diagnostic`/`DiagnosticLabel` carry no module identity — so for a
+    /// PRELUDE alias a label built from a body span is a raw byte offset into
+    /// a file the reader never opened. Measured: a 253-byte prelude declaring
+    /// `pub type W<U> = Hq<U>` produced a label at bytes 247..252 in a 37-byte
+    /// consumer, ~7x past its end. `reify-cli`'s `mcp_context` feeds the first
+    /// label's span straight to `byte_offset_to_line_col`, whose
+    /// `debug_assert!(offset <= source.len())` then trips in debug builds and
+    /// reports a silently wrong line/col in release.
+    ///
+    /// No secondary "in alias body, defined here" label accompanies it: spans
+    /// carry no module identity, so there is no way to tell the same-module
+    /// body (where such a label would help) from the prelude one (where it
+    /// would reintroduce exactly the offset this field exists to avoid).
+    ///
+    /// Two residues of the same hazard class are deliberately left alone,
+    /// both pre-dating this field: `resolve_parameterized_alias` anchors its
+    /// own arity and internal-error labels at `alias_entry.span`, and the
+    /// message text still echoes the body's arguments AS WRITTEN (`given 'U'`
+    /// where the direct spelling says `given 'Real'`).
+    pub(crate) span: SourceSpan,
+}
+
 /// Resolve a type alias body TypeExpr with parameter substitutions applied.
 ///
 /// Like `resolve_type_alias_expr`, but checks the substitution map first so
@@ -3163,12 +3441,17 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
 ///
 /// The `depth` parameter tracks alias expansion depth to prevent stack overflow
 /// from recursive parameterized type aliases.
+///
+/// `use_site` carries the entity names the body may reference and the span its
+/// diagnostics belong at; see [`AliasBodyUseSite`] and the terminal `Named` arm
+/// below.
 pub(crate) fn resolve_type_alias_expr_with_subst(
     type_expr: &reify_ast::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
+    use_site: AliasBodyUseSite<'_>,
 ) -> Option<Type> {
     if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
         diagnostics.push(
@@ -3198,6 +3481,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     subst,
                     diagnostics,
                     depth,
+                    use_site,
                 )?);
             }
             let resolved_return = resolve_type_alias_expr_with_subst(
@@ -3206,6 +3490,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::Function {
                 params: resolved_params,
@@ -3250,6 +3535,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     subst,
                     diagnostics,
                     depth,
+                    use_site,
                 )
             {
                 return Some(ty);
@@ -3279,6 +3565,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                         subst,
                         diagnostics,
                         depth,
+                        use_site,
                     )?;
                     inner_subst.insert(param.name.clone(), resolved);
                 }
@@ -3294,18 +3581,76 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                     &inner_subst,
                     diagnostics,
                     depth + 1,
+                    use_site,
                 );
             }
-            // Then builtins + alias registry.
-            // Trait and structure name resolution is not applied during
-            // alias-body resolution under substitution: alias bodies are resolved
-            // either during DFS (before traits/structures exist) or during alias
-            // instantiation at a use site where the alias body itself should
-            // only refer to builtins/aliases.
-            let empty = HashSet::new();
-            let empty_structs = HashSet::new();
-            let empty_traits = HashSet::new();
-            resolve_type_with_aliases(name, &empty, alias_registry, &empty_structs, &empty_traits)
+            // Builtins, the alias registry, and the USE SITE's entity
+            // namespaces (task 6477).
+            //
+            // These sets used to be hard-coded EMPTY here, under a comment
+            // asserting an alias body "should only refer to builtins/aliases".
+            // That premise was never true — `type AL<T> = Option<SomeEnum>` is
+            // legal — and #6259 already invalidated it for the NON-parametric
+            // path. Until it was corrected here, every parametric alias whose
+            // body named any of the four entity kinds failed at every use site
+            // with `unresolved type: AL<Args>`, module-locally as well as
+            // across the prelude boundary.
+            //
+            // Resolving against the USE SITE's namespaces (rather than a
+            // snapshot taken where the alias was declared) is the correct rule,
+            // not capture: #6259 recorded the governing decision that alias
+            // bodies get NO separate name-resolution rule — the body resolves
+            // through the same path the direct spelling takes, at the same use
+            // site, including under shadowing. `parametric_alias_entity_body_\
+            // use_site` and `parametric_alias_body_shadow_parity` pin it.
+            //
+            // The alias-DFS pre-pass passes empty sets and so is unaffected;
+            // the emptiness there is a deferral, not a gap.
+            //
+            // Enum names are not in `use_site` — they come from the ambient
+            // `RESOLUTION_ENUM_NAMES` fallback below, the same channel the
+            // non-parametric `_kinded` tail uses.
+            //
+            // The span handed to the resolver is the USE SITE's, not this
+            // body's: the E_TYPE_ARG_ON_TRAIT label it can raise joins the
+            // consumer module's diagnostics, and a prelude body's span is a
+            // raw offset into a file that reader never opened (see
+            // `AliasBodyUseSite::span`).
+            //
+            // The alias's own params arrive through `subst`, checked at the top
+            // of this arm, so the type-param set passed here is EMPTY: a body
+            // must never see the use site's parameter scope (pinned by
+            // `parametric_alias_body_param_hygiene`).
+            //
+            // `resolve_arg` recurses through THIS resolver, so an applied
+            // entity's type arguments keep arriving with `subst` bound — the
+            // alias's own params stay resolvable inside them, and nothing
+            // ambient leaks in. The argument recursion counts as a level
+            // (`depth + 1`) rather than reusing `depth`: it re-enters this
+            // same resolver, so counting it keeps the guard a true upper bound
+            // on nesting, and MAX_ALIAS_INSTANTIATION_DEPTH (64) is far above
+            // any nesting a real alias body carries.
+            let no_type_params = HashSet::new();
+            resolve_entity_name_with_shadowing(
+                name,
+                type_args,
+                &no_type_params,
+                alias_registry,
+                use_site.structures,
+                use_site.traits,
+                diagnostics,
+                use_site.span,
+                &mut |arg_expr, arg_diagnostics| {
+                    resolve_type_alias_expr_with_subst(
+                        arg_expr,
+                        alias_registry,
+                        subst,
+                        arg_diagnostics,
+                        depth + 1,
+                        use_site,
+                    )
+                },
+            )
         }
         reify_ast::TypeExprKind::IntegerLiteral(n) => {
             diagnostics.push(
@@ -3770,6 +4115,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
+    use_site: AliasBodyUseSite<'_>,
 ) -> Option<Type> {
     // Gate: fast-path None for any name not in the canonical builtin set.
     // Mirrors the gate in resolve_parameterized_builtin_type so both are
@@ -3785,6 +4131,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::List(Box::new(inner)))
         }
@@ -3795,6 +4142,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::Set(Box::new(inner)))
         }
@@ -3805,6 +4153,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             let val = resolve_type_alias_expr_with_subst(
                 &type_args[1],
@@ -3812,6 +4161,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
@@ -3822,6 +4172,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::Keyed(Box::new(inner)))
         }
@@ -3832,6 +4183,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::Option(Box::new(inner)))
         }
@@ -3842,6 +4194,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::Range(Box::new(inner)))
         }
@@ -3884,6 +4237,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::tensor(rank, n, quantity))
         }
@@ -3896,6 +4250,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::matrix(m, n, quantity))
         }
@@ -3908,6 +4263,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             let codomain = resolve_type_alias_expr_with_subst(
                 &type_args[1],
@@ -3915,6 +4271,7 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 subst,
                 diagnostics,
                 depth,
+                use_site,
             )?;
             Some(Type::Field {
                 domain: Box::new(domain),
@@ -4404,14 +4761,18 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// # Case (a) — name-existence check (step-2)
 ///
 /// `collect_type_expr_names(body)` yields every referenced type name in the
-/// alias body (e.g. {Q, Time} for `Q / Time`).  For each name that is NOT
-/// the alias's own type param, attempt to resolve it in isolation:
+/// alias body (e.g. {Q, Time} for `Q / Time`).  Each name that is NOT the
+/// alias's own type param goes to [`type_name_is_known`] in isolation; a name
+/// that is known nowhere gets a def-site `UnresolvedType` Error at
+/// `entry.span`.
 ///
-/// - `resolve_type_name(name).is_some()` → builtin/dimension name → OK
-/// - `alias_registry.lookup(name).is_some()` → known alias → OK
-/// - `structure_names.contains(name)` → known structure/occurrence → OK
-/// - `trait_names.contains(name)` → known trait → OK
-/// - Otherwise → push a def-site `UnresolvedType` Error at `entry.span`.
+/// The question "which namespaces exist here?" is answered by the RESOLVER,
+/// not by a list maintained here — see [`type_name_is_known`].  Task #6477
+/// exists because the two drifted: this guard had no enum arm while the
+/// resolver had `RESOLUTION_ENUM_NAMES`, so `pub type G<T> = Option<SomeEnum>`
+/// failed its own definition site with "references unknown name" for a plainly
+/// declared name.  The enum names arrive through an [`EnumNameScope`] rather
+/// than a direct set membership for exactly that reason.
 ///
 /// Resolving names in isolation (rather than re-resolving the whole body)
 /// avoids false-positives on valid `Rate<Q>=Q/Time` (Q is a free param; the
@@ -4432,11 +4793,19 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// the concrete use-site — entity.rs comment "bounds enforced at the
 /// concrete instantiation site").  At the definition site the param IS the
 /// subject of the check.
+// Eight distinct inputs, none derivable from another: the entry under test,
+// the four namespaces its body may name, and the two registries case (b) needs
+// for required-bound metadata.  Eight is one past clippy's threshold, which is
+// why this allow is here and why the seven-argument resolvers in this file
+// carry none — an allow that suppresses nothing only invites the signature to
+// grow past the real limit unnoticed.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_pub_parametric_alias_def_site(
     entry: &TypeAliasEntry,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
+    enum_names: &HashSet<String>,
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4455,42 +4824,38 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
 
     // ── Case (a): name-existence check ────────────────────────────────────────
     // Emit an error for each name referenced in the body that is not the alias's
-    // own type param and cannot be resolved as a builtin, alias, structure, or
-    // trait.  Track seen names (as owned Strings) to suppress duplicate errors
-    // for the same name across the body.
-    let mut seen: HashSet<String> = HashSet::new();
-    for name in collect_type_expr_names(body) {
-        if !seen.insert(name.clone()) {
-            continue; // already checked this name
-        }
-        if type_param_names.contains(name.as_str()) {
-            continue; // own type param — valid at def site
-        }
-        let is_known = resolve_type_name(&name).is_some()
-            // Parameterized built-in types are valid name references even though
-            // `resolve_type_name` only handles non-parameterized forms.  E.g.
-            // `pub type Vec3<Q: Dimension> = Vector3<Q>` references `Vector3`
-            // which is always applied (never bare), so it has no entry in
-            // `resolve_type_name`.  Use the canonical predicate (rather than a
-            // separate hardcoded list) so the guard stays in sync with the
-            // resolver automatically — any future builtin arm added without
-            // updating the predicate becomes unreachable dead code.
-            || is_parameterized_builtin_name(name.as_str())
-            || alias_registry.lookup(&name).is_some()
-            || structure_names.contains(&name)
-            || trait_names.contains(&name);
-        if !is_known {
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "type alias '{}' body references unknown name '{}'",
-                    entry.name, name
-                ))
-                .with_code(DiagnosticCode::UnresolvedType)
-                .with_label(DiagnosticLabel::new(
-                    entry.span,
-                    format!("'{}' is not defined in this scope", name),
-                )),
-            );
+    // own type param and is known in no namespace.  Track seen names (as owned
+    // Strings) to suppress duplicate errors for the same name across the body.
+    //
+    // The scope is what puts ENUMS in front of `type_name_is_known`: the
+    // resolver reads enum names from the ambient set, so installing
+    // `enum_names` here is how this guard asks about them through the same
+    // channel every other caller uses instead of keeping its own arm. It is
+    // scoped to case (a) alone — case (b) below deliberately keeps its existing
+    // "body did not reduce to a Type ⇒ skip the bound check" behaviour.
+    {
+        let _enum_scope = EnumNameScope::new(enum_names.clone());
+        let mut seen: HashSet<String> = HashSet::new();
+        for name in collect_type_expr_names(body) {
+            if !seen.insert(name.clone()) {
+                continue; // already checked this name
+            }
+            if type_param_names.contains(name.as_str()) {
+                continue; // own type param — valid at def site
+            }
+            if !type_name_is_known(&name, alias_registry, structure_names, trait_names) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type alias '{}' body references unknown name '{}'",
+                        entry.name, name
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        entry.span,
+                        format!("'{}' is not defined in this scope", name),
+                    )),
+                );
+            }
         }
     }
 
@@ -5784,18 +6149,29 @@ mod tests {
     #[test]
     fn resolve_parameterized_builtin_type_with_subst_resolves_keyed_distinct_from_list() {
         let reg = TypeAliasRegistry::new();
-        // The subst path is structure-name-blind by design (alias DFS runs before
-        // structures are compiled — see the hardcoded empty `structure_names` in
-        // `resolve_type_alias_expr_with_subst`). The inner type arg is therefore
-        // supplied through the substitution map, which is exactly what this
+        // No use site here, so no entity names are in scope — the same empty
+        // bundle the alias-DFS pre-pass passes. The inner type arg is supplied
+        // through the substitution map instead, which is exactly what this
         // resolver variant exists to exercise: `Keyed<T>` with `T := Vent`.
+        let no_entities = HashSet::new();
+        let use_site = AliasBodyUseSite {
+            structures: &no_entities,
+            traits: &no_entities,
+            span: SourceSpan::empty(0),
+        };
         let mut subst = HashMap::new();
         subst.insert("T".to_string(), Type::StructureRef("Vent".into()));
         let args = [named_type_expr("T")];
 
         let mut diags = Vec::new();
         let keyed = resolve_parameterized_builtin_type_with_subst(
-            "Keyed", &args, &reg, &subst, &mut diags, 0,
+            "Keyed",
+            &args,
+            &reg,
+            &subst,
+            &mut diags,
+            0,
+            use_site,
         );
         assert_eq!(
             keyed,
@@ -5812,6 +6188,7 @@ mod tests {
             &subst,
             &mut list_diags,
             0,
+            use_site,
         );
         assert_eq!(
             list,

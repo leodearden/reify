@@ -1,4 +1,4 @@
-import { type Component, For, Show, createSignal, createEffect } from 'solid-js';
+import { type Component, For, Show, createSignal, createEffect, onCleanup } from 'solid-js';
 import type { MechanismDescriptor, JointDescriptor } from '../types';
 import { jointCurrentSi } from '../stores/mechanismStore';
 import styles from './MechanismPanel.module.css';
@@ -17,7 +17,7 @@ function radToDeg(si: number): number {
   return si * (180 / Math.PI);
 }
 
-/** Format a slider display-unit value as a string with unit suffix for `set_parameter`. */
+/** Format a slider display-unit value as a unit-suffixed literal the engine can parse. */
 function formatParamValue(displayValue: number, kind: string): string {
   if (kind === 'prismatic') {
     return `${displayValue}mm`;
@@ -77,7 +77,8 @@ function displayToSi(displayValue: number, kind: string): number {
 
 interface JointRowProps {
   joint: JointDescriptor;
-  onSetParameter: (cellId: string, value: string) => void;
+  onSetParameter: (cellId: string, value: string) => void | Promise<void>;
+  onPreviewParameter: (cellId: string, value: string) => void | Promise<void>;
   onScrubLocal: (cellId: string | null, jointIndex: number, valueSi: number) => void;
   mechanismCellId: string;
   /**
@@ -104,8 +105,8 @@ const JointRow: Component<JointRowProps> = (props) => {
    * - literal_bound → binding.synth_param_name (the engine-session virtual param)
    * - coupling_derived / fixed_no_motion → null (not scrubbable)
    *
-   * This is the id passed to onSetParameter and used as the first arg to
-   * onScrubLocal; the RAF-coalesced set_parameter IPC reuses it unchanged.
+   * This is the id passed to onPreviewParameter and onSetParameter, and used
+   * as the first arg to onScrubLocal; both cadences reuse it unchanged.
    */
   const effectiveParamCellId = (): string | null => {
     const b = joint().binding;
@@ -164,25 +165,73 @@ const JointRow: Component<JointRowProps> = (props) => {
     if (disp !== null) setSliderValue(disp);
   });
 
-  // RAF coalescing: one pending setParameter per joint slot
+  // One pending preview frame per joint slot.  A drag emits input events far
+  // faster than the engine can answer them, so only each frame's last value is
+  // previewed; `lastPreview` is the in-flight one the commit waits on.
   let pendingValue: number | null = null;
   let rafId: number | null = null;
+  let lastPreview: Promise<void> = Promise.resolve();
 
-  function scheduleSetParameter(displayValue: number): void {
+  /**
+   * How long after a durable write the next one is held back and coalesced.
+   *
+   * A range input fires `change` once per pointer release — and once per ARROW
+   * KEY, where auto-repeat delivers roughly 30 a second. Each of those is a
+   * full recompile plus an atomic `.ri` rewrite, which is precisely the
+   * frame-rate write cadence the preview/commit split exists to prevent; the
+   * RAF coalescer cannot help, because it sits on `input` and it is `change`
+   * that schedules the commit.
+   *
+   * Comfortably longer than that repeat interval, so a held key coalesces;
+   * short enough that two deliberate gestures in a row still feel immediate.
+   */
+  const COMMIT_COALESCE_MS = 200;
+
+  // Leading edge, then one trailing write per cooldown. Leading deliberately:
+  // a pointer release must not be able to end a gesture with the durable write
+  // still only scheduled, or a row unmounted in that window would drop it.
+  let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
+  let deferredCommit: number | null = null;
+
+  function schedulePreview(displayValue: number): void {
     pendingValue = displayValue;
-    if (rafId === null) {
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
-        if (pendingValue === null) return;
-        const val = pendingValue;
-        pendingValue = null;
-        const param = effectiveParamCellId();
-        if (param !== null) {
-          props.onSetParameter(param, formatParamValue(val, kind()));
-        }
-      });
-    }
+    if (rafId !== null) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      const val = pendingValue;
+      pendingValue = null;
+      const param = effectiveParamCellId();
+      if (val === null || param === null) return;
+      // A refused preview must not cancel the gesture's commit: the commit is
+      // the durable write and reports the same refusal itself.
+      lastPreview = Promise.resolve(
+        props.onPreviewParameter(param, formatParamValue(val, kind())),
+      ).catch(() => undefined);
+    });
   }
+
+  function cancelPendingPreview(): void {
+    if (rafId === null) return;
+    cancelAnimationFrame(rafId);
+    rafId = null;
+    pendingValue = null;
+  }
+
+  // An unmount mid-drag must not leave a frame behind to preview into a dead
+  // row — but a coalesced commit is the opposite case and is FLUSHED, not
+  // dropped: a preview is transient by definition, while a durable write the
+  // user has already made is theirs whether or not this row survives to see it
+  // land.
+  onCleanup(() => {
+    cancelPendingPreview();
+    if (coalesceTimer !== null) {
+      clearTimeout(coalesceTimer);
+      coalesceTimer = null;
+    }
+    const val = deferredCommit;
+    deferredCommit = null;
+    if (val !== null) void commitDisplayValue(val);
+  });
 
   function handleInput(event: Event): void {
     const input = event.target as HTMLInputElement;
@@ -197,9 +246,57 @@ const JointRow: Component<JointRowProps> = (props) => {
     const param = effectiveParamCellId();
     props.onScrubLocal(param, joint().joint_index, valueSi);
 
-    // Schedule the actual set_parameter IPC call via RAF coalescing
+    // Show the value transiently, at frame cadence
     // (display units are correct here — the backend parser reads "400mm" / "90deg")
-    scheduleSetParameter(displayValue);
+    schedulePreview(displayValue);
+  }
+
+  /**
+   * The gesture's durable write: drop the preview frame still pending, let the
+   * one already dispatched go first, then commit.
+   *
+   * ORDER, not this `await`, is what keeps an intermediate drag value from
+   * landing after the commit and snapping the viewport back. `lastPreview`
+   * holds only the most RECENT preview promise — the RAF re-arms as soon as a
+   * frame fires, so frame N+1 can dispatch while frame N's IPC is outstanding,
+   * and awaiting N+1 proves nothing about N. The real guarantee is that every
+   * one of these calls is submitted to `large_stack::run_on_worker`'s ENGINE
+   * lane, which has a single consumer and serves its queue in order: the
+   * engine applies them in the order they were submitted, and the commit was
+   * submitted last. The await is belt-and-braces for the RESPONSE path, so the
+   * commit's state is the last one this row reasons about.
+   */
+  async function commitDisplayValue(displayValue: number): Promise<void> {
+    const param = effectiveParamCellId();
+    cancelPendingPreview();
+    await lastPreview;
+    if (param === null) return;
+    props.onSetParameter(param, formatParamValue(displayValue, kind()));
+  }
+
+  function openCoalesceWindow(): void {
+    coalesceTimer = setTimeout(() => {
+      coalesceTimer = null;
+      const val = deferredCommit;
+      deferredCommit = null;
+      if (val === null) return;
+      void commitDisplayValue(val);
+      // A burst still in flight keeps its cadence bounded rather than
+      // resuming at key-repeat rate the moment one window closes.
+      openCoalesceWindow();
+    }, COMMIT_COALESCE_MS);
+  }
+
+  function handleChange(event: Event): void {
+    const displayValue = Number((event.target as HTMLInputElement).value);
+    if (coalesceTimer !== null) {
+      // Only the LAST value of a burst is worth writing: the ones before it
+      // are positions the slider has already left.
+      deferredCommit = displayValue;
+      return;
+    }
+    void commitDisplayValue(displayValue);
+    openCoalesceWindow();
   }
 
   // Compute the data-binding marker for testability and visual distinction.
@@ -246,6 +343,7 @@ const JointRow: Component<JointRowProps> = (props) => {
           step={kind() === 'prismatic' ? 1 : 0.1}
           value={sliderValue()}
           onInput={handleInput}
+          onChange={handleChange}
           aria-label={`${kind()} #${joint().joint_index} slider`}
         />
         <span class={styles.sliderValue}>
@@ -264,7 +362,8 @@ const JointRow: Component<JointRowProps> = (props) => {
 
 interface MechanismSectionProps {
   descriptor: MechanismDescriptor;
-  onSetParameter: (cellId: string, value: string) => void;
+  onSetParameter: (cellId: string, value: string) => void | Promise<void>;
+  onPreviewParameter: (cellId: string, value: string) => void | Promise<void>;
   onScrubLocal: (cellId: string | null, jointIndex: number, valueSi: number) => void;
   getEffectiveValueSi: (cellId: string, jointIndex: number, fallback: number | null) => number | null;
 }
@@ -282,6 +381,7 @@ const MechanismSection: Component<MechanismSectionProps> = (props) => {
             <JointRow
               joint={joint}
               onSetParameter={props.onSetParameter}
+              onPreviewParameter={props.onPreviewParameter}
               onScrubLocal={(_cellId, jointIndex, valueSi) =>
                 props.onScrubLocal(props.descriptor.cell_id, jointIndex, valueSi)
               }
@@ -315,8 +415,17 @@ export interface MechanismPanelProps {
    * only the "final" (largest) mechanism should pre-filter this array.
    */
   descriptors: MechanismDescriptor[];
-  /** Called when a slider value is committed (RAF-coalesced). */
-  onSetParameter: (cellId: string, value: string) => void;
+  /**
+   * Called once per gesture, when the user releases the slider: the DURABLE
+   * write, which rewrites the parameter's default in the source file.
+   */
+  onSetParameter: (cellId: string, value: string) => void | Promise<void>;
+  /**
+   * Called at frame cadence while the slider is being dragged (RAF-coalesced):
+   * a TRANSIENT value that keeps the viewport tracking the pointer and expires.
+   * Only `onSetParameter` makes the edit durable.
+   */
+  onPreviewParameter: (cellId: string, value: string) => void | Promise<void>;
   /**
    * Called on every slider input for optimistic UI updates.
    *
@@ -360,6 +469,7 @@ export const MechanismPanel: Component<MechanismPanelProps> = (props) => {
             <MechanismSection
               descriptor={descriptor}
               onSetParameter={props.onSetParameter}
+              onPreviewParameter={props.onPreviewParameter}
               onScrubLocal={props.onScrubLocal}
               getEffectiveValueSi={effectiveFn}
             />

@@ -544,17 +544,17 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 ///   `max(vertex_sizes)`, at the "Mesh-size clamp: set explicitly, never
 ///   inherited" block in `refine_volume.rs` — so its output is a function of
 ///   its own arguments rather than of whatever a sibling last left behind.
-/// * *Producer, #6298*: `mesh_to_volume` no longer leaves that clamp behind at
-///   all. It arms `mesh_size_clamp::MeshSizeClampReset` on entry (in
-///   `kernel_real.rs`), which restores gmsh's defaults on every exit path,
-///   early `?` returns included. Pinned by
-///   `tests/mesh_to_volume_clamp_hermeticity.rs::mesh_to_volume_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`.
+/// * *Producer, #6298 and #6968*: `mesh_to_volume` no longer leaves that clamp
+///   behind at all. It enters `mesh_size_scope::MeshSizeScope` (in
+///   `kernel_real.rs`), which establishes gmsh's defaults for every size option
+///   on entry and restores them on every exit path, early `?` returns included.
 ///
-/// The end-to-end sequence this note is about — seed via `mesh_to_volume`,
-/// then refine with a size field — is itself pinned, in that same crate, by
-/// `tests/mesh_to_volume_clamp_hermeticity.rs::refine_after_mesh_to_volume_honours_its_own_size_field`,
-/// which measured that it takes the loss of BOTH halves to reproduce the
-/// original symptom.
+/// Both halves — and the end-to-end sequence this note is about, seed via
+/// `mesh_to_volume` then refine with a size field — are pinned by guards in
+/// `reify-kernel-gmsh`, which measured that it takes the loss of BOTH to
+/// reproduce the original symptom. That crate's `mesh_size_scope` module doc
+/// maps each writer to its guard; naming them here would be a third copy of
+/// that map, in another crate, with nothing to keep it in step.
 ///
 /// **Why it stays hand-built anyway.** (i) *Producer symmetry*: the section
 /// above re-based the baseline onto this same function precisely so both sides
@@ -593,12 +593,15 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 ///
 /// The producer-side half was filed as **task #6298** — out of #6200's scope
 /// (#6200 owns the `classify_surfaces` feature angle; the leak was a distinct
-/// bug in a different function) — and has since landed. What remains open is
-/// **#6212**: `refine_volume_with_size_field`'s own outbound
-/// `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
-/// `MeshSizeExtendFromBoundary` leak, the same defect class in the same
-/// direction for a different option set, and the reason a future producer-side
-/// write could still reach this test.
+/// bug in a different function) — and has since landed. The remaining half,
+/// `refine_volume_with_size_field`'s own outbound `Mesh.MeshSizeFromPoints` /
+/// `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` leak, was **#6212**
+/// and is closed by **#6968**, which put all four gmsh entry points on one
+/// scope covering all five size options in both directions. Measured there:
+/// this crate's numbers do not move, because refine already wrote all five
+/// values itself and `MeshSizeExtendFromBoundary` has no effect under the shut
+/// `MeshSizeMin == MeshSizeMax` clamp every reachable `mesh_to_volume` path
+/// writes.
 #[test]
 fn localized_size_reduction_refines_marked_region_only() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -672,11 +675,11 @@ fn localized_size_reduction_refines_marked_region_only() {
          the loss of BOTH to reproduce this symptom. Check \
          `refine_volume.rs`'s inbound writes at the 'Mesh-size clamp: set \
          explicitly, never inherited' block (#6211) and \
-         `mesh_size_clamp::MeshSizeClampReset` armed in \
-         `kernel_real.rs::mesh_to_volume` (#6298). The guards in \
-         reify-kernel-gmsh's `tests/refine_volume_tests.rs` and \
-         `tests/mesh_to_volume_clamp_hermeticity.rs` would have gone red too; \
-         if they are green, suspect the size field after all. See the \
+         `mesh_size_scope::MeshSizeScope` entered in \
+         `kernel_real.rs::mesh_to_volume` (#6298, #6968). That crate's own \
+         size-option guards — listed in its `mesh_size_scope` module doc — \
+         would have gone red too; if they are green, suspect the size field \
+         after all. See the \
          'Why the seed is hand-built' note on this test."
     );
 

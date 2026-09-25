@@ -12,7 +12,7 @@
 //! now the single definition for the whole workspace. The `pub use` list
 //! survives only so the consumers that spell `common::` paths today keep
 //! compiling — `tests/fill_metrics_tests.rs`, `tests/volume_fill_fraction.rs`,
-//! `tests/classify_feature_angle.rs`, `tests/mesh_to_volume_clamp_hermeticity.rs`
+//! `tests/classify_feature_angle.rs`, `tests/mesh_size_option_hermeticity.rs`
 //! and `tests/node_attachment_producer.rs`. They sat outside #6387's locked
 //! file set, so re-pointing them was not #6387's to do.
 //!

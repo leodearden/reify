@@ -61,9 +61,24 @@ export async function refreshFullState(): Promise<GuiState> {
   return convertRawGuiState(raw);
 }
 
-/** Set a parameter value by cell ID. Returns the updated GUI state for optional reconciliation. */
+/**
+ * Set a parameter value DURABLY by cell ID: the backend writes it back into the
+ * `.ri` source (INV-GUI-3). One call per user gesture — Enter/blur in the edit
+ * box, release of a slider. Returns the updated GUI state for optional
+ * reconciliation.
+ */
 export async function setParameter(cellId: string, value: string): Promise<GuiState> {
   const raw = await invoke<RawGuiState>('set_parameter', { cellId, value });
+  return convertRawGuiState(raw);
+}
+
+/**
+ * Show a parameter value TRANSIENTLY — the per-frame cadence of a drag, which
+ * keeps the viewport tracking the pointer without rewriting the design at RAF
+ * rate. The value expires; {@link setParameter} is what makes an edit durable.
+ */
+export async function previewParameter(cellId: string, value: string): Promise<GuiState> {
+  const raw = await invoke<RawGuiState>('preview_parameter', { cellId, value });
   return convertRawGuiState(raw);
 }
 

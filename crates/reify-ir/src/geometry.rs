@@ -924,6 +924,62 @@ pub enum GeometryOp {
         z2: f64,
     },
     /// Create a circular arc wire.
+    ///
+    /// `start_angle`/`end_angle` are SI RADIANS — see [`GeometryOp::Rotate`]
+    /// for the full angular unit contract (INV-AD-4; #6184). They cross to
+    /// OCCT completely unconverted, where they are the CURVE PARAMETERS of the
+    /// `Geom_Circle` handed to `BRepBuilderAPI_MakeEdge(circle, U1, U2)` in
+    /// `make_arc_wire` (`reify-kernel-occt/cpp/occt_wrapper.cpp`). For a
+    /// `Geom_Circle` that parameter space IS radians, by OCCT's own
+    /// parameterisation rather than by an explicit angle argument — so a full
+    /// circle is `2.0 * PI`, not 360. Pinned end to end by
+    /// `export_step_declares_si_radians_for_wireframe_curve_parameters`
+    /// (`reify-kernel-occt/src/handle.rs`), which reads the two angles back out
+    /// of the exported STEP `TRIMMED_CURVE` as its `PARAMETER_VALUE` bounds.
+    /// Arc — not [`GeometryOp::Helix`] — is the wireframe op on that path.
+    ///
+    /// **Why these two carry no `_rad` suffix.** These are crate-local Rust
+    /// identifiers and the enum derives no serde, so a rename is
+    /// COMPILE-CHECKED: it would break loudly at every construct and
+    /// destructure site — eval's shorthand struct literal, the kernel's
+    /// dispatch arm, the tests — never silently. What it would also do is
+    /// diverge from two INDEPENDENT identifiers that merely spell the same:
+    /// the untyped string key of the compiler→eval boundary (`compile_curve_op`
+    /// in `reify-compiler/src/geometry_curve.rs` mints them as owned literals;
+    /// `curve_arc` in `reify-eval/src/geometry_ops.rs` looks them up by name),
+    /// and the published `arc(...)` signature in
+    /// `docs/reify-stdlib-reference.md`. No `.ri` source names them — the
+    /// compiler checks an exact 9-argument count and assigns those keys
+    /// POSITIONALLY — so no design file is involved either way. Churn plus
+    /// cosmetic divergence, in exchange for a suffix: the rename was
+    /// CONSIDERED AND DECLINED (#6521), so the absence is a recorded decision,
+    /// not an oversight, and `Rotate`'s "the `_rad` suffix IS the contract" is
+    /// discharged HERE, by this comment, instead. The eval gate below does not
+    /// supersede the question either: `required_angle_args` hands back
+    /// `[f64; N]`, so these two fields are still raw SI-radian `f64` past it
+    /// and a `_rad` suffix would still be type-accurate.
+    ///
+    /// **GATED at eval.** A dimensioned `90deg` literal is resolved to radians
+    /// in the units layer (`reify-core/src/units.rs`: `deg` = PI/180 tagged
+    /// `DimensionVector::ANGLE`), and a BARE number is REJECTED rather than
+    /// read silently as radians: `curve_arc` (`reify-eval/src/geometry_ops.rs`)
+    /// reads BOTH positions through `required_angle_args(["start_angle",
+    /// "end_angle"], ..)`, which classifies each against `angle_spec()` and,
+    /// on a dimensionless one, pushes the contract-C1 `Diagnostic::error`
+    /// coded `DimensionedArgRejected` ("expects Angle, got Real; pass a
+    /// dimensioned angle such as `45deg` or `1.5rad`") and drops the op. It is
+    /// the GROUP reader, so a pair of bare angles is named in ONE rebuild
+    /// rather than one slot per rebuild. What reaches these two fields FROM
+    /// EVAL is therefore always an ACCEPTED SI-radian magnitude — but
+    /// directly-constructed IR bypasses the gate entirely, and the kernel's
+    /// `Arc` dispatch (`reify-kernel-occt/src/lib.rs`) validates only `radius`
+    /// and `axis`, so a non-finite angle from hand-built IR reaches
+    /// `make_arc_wire` unchecked.
+    ///
+    /// Landed under #6924, which delivered leaves γ/δ/ε of
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` in one pass;
+    /// chartered by #5779 (leaf γ, these two positions) and #5780 (leaf δ,
+    /// [`GeometryOp::Draft`]'s angle).
     Arc {
         center: [f64; 3],
         radius: f64,
@@ -932,6 +988,39 @@ pub enum GeometryOp {
         axis: [f64; 3],
     },
     /// Create a helix wire.
+    ///
+    /// **No angular value crosses this boundary** (INV-AD-4; #6521) — that
+    /// absence is the declaration, not an omission of one. `radius`, `pitch`
+    /// and `height` are all LENGTHS, and all three are length-GATED at eval by
+    /// `required_length_args` in `curve_helix`
+    /// (`reify-eval/src/geometry_ops.rs`), whose note already records that
+    /// `pitch` is a length PER TURN rather than an angle. The turn count is the
+    /// dimensionless ratio `height / pitch`, so INV-AD-4's crossing clause is
+    /// not triggered here.
+    ///
+    /// **The only angle is internal to the C++ and is RADIANS.**
+    /// `make_helix_wire` (`reify-kernel-occt/cpp/occt_wrapper.cpp`) derives
+    /// `n_turns = height / pitch` and then a total sweep `u_length = n_turns *
+    /// 2.0 * M_PI` in the u-parameter of a `Geom_CylindricalSurface`, whose
+    /// (u, v) space that source annotates "u = angle". The `2*PI` — not 360 —
+    /// is what makes it radians (doctrine D4,
+    /// `docs/prds/v0_6/angle-dimension-completion.md`). It is a DERIVED
+    /// INTERNAL quantity, so it is declared for the reader rather than gated:
+    /// there is no angular argument here to gate.
+    ///
+    /// **Helix is not on the wireframe STEP angle path AS EXERCISED TODAY**;
+    /// [`GeometryOp::Arc`] is. #6184's wireframe pin
+    /// (`export_step_declares_si_radians_for_wireframe_curve_parameters`,
+    /// `reify-kernel-occt/src/handle.rs`) is fixtured on an arc, and no test in
+    /// the tree exports a helix handle. That is a statement about the FIXTURES,
+    /// not a property of the system: `OcctKernel::export`
+    /// (`reify-kernel-occt/src/lib.rs`) is shape-type agnostic — it resolves
+    /// any handle through `get_shape` and hands it straight to
+    /// `ffi::export_step` — so a helix WIRE can be exported directly, exactly
+    /// as that pin exports a bare arc wire, at which point its pcurve on the
+    /// `Geom_CylindricalSurface` carries the radian u-parameter above into the
+    /// STEP output. In practice a helix usually reaches STEP as BRep instead,
+    /// after being consumed as a sweep/pipe spine into a solid.
     Helix {
         radius: f64,
         pitch: f64,
@@ -958,6 +1047,52 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         /// Curated face selection. Empty = all draftable faces (3-arg back-compat).
         faces: Vec<GeometryHandleId>,
+        /// Draft angle. The `Value`'s SI magnitude is RADIANS — see
+        /// [`GeometryOp::Rotate`] for the full angular unit contract
+        /// (INV-AD-4; #6184).
+        ///
+        /// This position is weaker than every site #6184 touched: being a
+        /// `Value` rather than an `f64`, it carries neither a `_rad` suffix nor
+        /// an f64's implied convention, so the contract has nowhere to live but
+        /// here. The kernel DISCARDS the dimension tag — `extract_f64`
+        /// in the `GeometryOp::Draft` dispatch arm
+        /// (`reify-kernel-occt/src/lib.rs`) takes the SI magnitude and hands
+        /// the bare f64 to `BRepOffsetAPI_DraftAngle::Add`, which reads
+        /// radians. `Value::angle(x)` and `Value::Real(x)` are therefore
+        /// DELIBERATELY equivalent here, not accidentally so: pinned at the
+        /// `Value` layer by `angle_and_real_agree_bit_exactly_under_as_f64`
+        /// (`reify-ir/src/value.rs`) and at real OCCT output by
+        /// `draft_angle_dimensioned_matches_bare_real_volume`
+        /// (`reify-kernel-occt/src/lib.rs`).
+        ///
+        /// Since the gate below landed, that equivalence reaches only
+        /// DIRECTLY-CONSTRUCTED IR — which is exactly what both pins build.
+        /// `required_angle_value` re-wraps the ACCEPTED radians through
+        /// `reify_ir::Value::angle`, so a bare `Value::Real` no longer arrives
+        /// here from eval at all. The equivalence still holds and still
+        /// matters — it is what lets the kernel read this field with a
+        /// tag-blind `extract_f64`, and lets a test hand-build the op either
+        /// way — but it is no longer what decides how an author's bare number
+        /// is read.
+        ///
+        /// **Not pinned:** that a draft angle of `0.1` means 0.1 RADIANS
+        /// rather than 0.1 degrees. Both tests above prove tag-transparency,
+        /// not magnitude, and `draft_angle_on_box` is a smoke test that
+        /// tolerates `OperationFailed`. The radian-vs-degree separation is
+        /// ~57x, so a behavioural pin is achievable — it needs a measured
+        /// numeric oracle over OCCT draft geometry, and is filed as #7119
+        /// rather than guessed at here.
+        ///
+        /// **GATED at eval**, like [`GeometryOp::Arc`]'s two angles: a bare
+        /// number is REJECTED, not read silently as radians. `modify_draft`
+        /// (`reify-eval/src/geometry_ops.rs`) reads this slot through
+        /// `required_angle_value("angle", ..)`, above the plane resolution —
+        /// leaf δ's breadcrumb there records why that ONE read is the whole
+        /// gate, and that the `eval_arg` closure it replaced "died with the
+        /// change", so no ungated route from eval into this field survives.
+        /// Landed under #6924; chartered by #5780, leaf δ of
+        /// `docs/prds/v0_6/angle-units-surface-convergence.md`, whose C1
+        /// gated-position list carries this position and Arc's together.
         angle: Value,
         plane: GeometryHandleId,
     },

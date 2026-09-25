@@ -723,6 +723,7 @@ const SCOPE_EXCLUDE_PREFIXES: &[&str] = &[
 /// row this predicate refuses (no live scan could ever clear it), and the
 /// baseline tests drive that rule directly rather than waiting for a
 /// hand-edited manifest to exhibit it.
+// G-allow: pub for the cross-crate integration test tests/pdiag_baseline.rs, which drives this sweep-scope rule directly; production callers (parse_baseline, live_counts) are same-file, and the orphan audit counts only cross-file call sites
 pub fn is_swept_path(path: &str) -> bool {
     if !path.ends_with(".rs") {
         return false;

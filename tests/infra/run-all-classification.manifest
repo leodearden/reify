@@ -76,7 +76,7 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (167, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (170, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
@@ -90,13 +90,13 @@ test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
 test_cpu_governed_exec.sh pool
-test_deterministic_gate_closure_staleness_sweep.sh pool
 test_engine_hash_closure.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
 test_ensure_warm_base.sh pool
 test_event_inventory_wired.sh pool
 test_fea_e2e_crate_occt_free.sh pool
 test_find_uses_smoke_runner.sh pool
+test_flake_density_report.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
 test_git_rerere_guard.sh pool
@@ -104,6 +104,7 @@ test_govtest_slice_reaper.sh pool
 test_gui_dist_gitignored.sh pool
 test_gui_test_script.sh pool
 test_gui_typecheck_test_side.sh pool
+test_gui_vitest_rpc_hardening.sh pool
 test_harness_baseline_registration_gate.sh pool
 test_harness_kloc_cap.sh pool
 test_heavy_filter_atoms.sh pool
@@ -120,9 +121,11 @@ test_jobserver_role_fifo.sh pool
 test_jobserver_tuning_harness.sh pool
 test_land_script.sh pool
 test_landlock_exec_refer.sh pool
+test_lane_lock_probe.sh pool
 test_lane_task_status.sh pool
 test_lane_x_flock.sh pool
 test_lean_debuginfo_profile.sh pool
+test_lib_task_citation.sh pool
 test_linker_config.sh pool
 test_load_tolerance_lib.sh pool
 test_lock_charter_decompose_guard.sh pool
@@ -156,7 +159,9 @@ test_prd_decompose_verify.sh pool
 test_prd_gate_compiler_type_hygiene.sh pool
 test_prd_gate_corpus.sh pool
 test_prd_gate_objective_inheritance.sh pool
+test_prd_gate_struct_ctor_conformance.sh pool
 test_prd_gate_substrate_guard.sh pool
+test_pre_commit_ts_guard.sh pool
 test_proc_reaper.sh pool
 test_project_checks_typecheck.sh pool
 test_provision_warm_lane_fs.sh pool
@@ -214,6 +219,7 @@ test_spec_anchor_lint.sh pool
 test_stash_guard.sh pool
 test_sync_comments_grep.sh pool
 test_target_per_lane_independence.sh pool
+test_task_branch_contamination_sweep.sh pool
 test_test_binary_concurrency_sampler.sh pool
 test_test_helpers.sh pool
 test_test_pycache_gitignored.sh pool

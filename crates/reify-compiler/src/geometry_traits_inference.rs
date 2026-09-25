@@ -947,10 +947,128 @@ fn fold_geometry_args_in_env(
     env: &dyn LetBindingEnv,
 ) -> InferredTraits {
     args.iter()
-        .filter(|a| a.result_type == reify_core::Type::Geometry)
-        .map(|a| infer_traits_for_expr_in_env(a, env))
+        .flat_map(|a| geometry_operand_traits_in_env(a, env))
         .reduce(combine)
         .unwrap_or(InferredTraits::all())
+}
+
+/// The traits of each geometry OPERAND contributed by a single argument.
+///
+/// A single geometry argument contributes itself — either a `Type::Geometry`
+/// value-ref, as the plain `result_type == Type::Geometry` filter always did,
+/// or a direct geometry builtin CALL, which the expression compiler types as a
+/// `Type::dimensionless_scalar()` placeholder (see [`is_geometry_operand`]).
+/// Accepting the placeholder here is what makes the multi-argument form
+/// `union_all(box(…), half_space(…))` fold over real operands instead of
+/// filtering them all out and taking the `all()` default.
+///
+/// Task #5385 made a single `List<Geometry>` argument legal for
+/// `union_all`/`intersection_all`, so such an argument contributes each of its
+/// ELEMENTS. Without this the arg is filtered out entirely, the fold sees
+/// nothing, and its defensive `InferredTraits::all()` default silently claims
+/// `bounded` for a list containing an unbounded `half_space` — the exact
+/// failure the `union_all` dispatch arms were added to prevent.
+///
+/// DO NOT gate the list arm on `result_type == List<Geometry>` (review
+/// esc-5385-4): that shape is one the expression compiler never emits for a
+/// list LITERAL of geometry calls, so the arm would be dead and the safety
+/// check inert. `expr.rs`'s `is_geometry_function` arm types every geometry
+/// builtin call as a `Type::dimensionless_scalar()` PLACEHOLDER, and the
+/// `ListLiteral` arm derives its element type from the FIRST compiled element,
+/// so `[box(…), half_space(…)]` compiles to `List<Real>`. The arm therefore
+/// keys on the KIND (`ListLiteral`) plus a per-element geometry-operand test
+/// that accepts that placeholder — the same `extract_function_call_name(..)
+/// .map(is_geometry_function)` fallback `conformance/mod.rs` already applies to
+/// a scalar-placeholder arg.
+///
+/// The INLINE `generate` fold form is handled by its own arm (review
+/// esc-5385-7). `resolve_geometry_list_arg` accepts `generate(<literal>, |i|
+/// <geom>)` as a single fold argument, but such an arg compiles to a
+/// `FunctionCall` whose callee is `generate` — not a geometry builtin, so
+/// [`is_geometry_operand`] rejects it — and it is not a `ListLiteral` either.
+/// It therefore contributed ZERO operands and the fold's
+/// `.unwrap_or(InferredTraits::all())` default silently claimed `bounded` for
+/// `union_all(generate(2, |i| half_space(…)))`. Unlike the named-let residual
+/// below, the lambda body is syntactically visible right here, so no new env is
+/// needed: the arm contributes the BODY's traits ONCE. The element count is
+/// irrelevant to the fold because `combine` (both the `union_all` and the
+/// `intersection_all` variant) is idempotent over identical operands, so `n`
+/// copies of one operand fold to the same result as one.
+///
+/// KNOWN RESIDUAL (task #5385): only a syntactically-visible `ListLiteral` or
+/// inline `generate` exposes its elements here. `union_all(holes)` naming a
+/// geometry-list LET compiles to a `ValueRef`, and `LetBindingEnv` maps a cell
+/// to one `InferredTraits` rather than to a list of them, so that form still
+/// takes the `all()` default. Narrowing it needs a list-aware `LetBindingEnv`
+/// (a new per-element accessor plus the conformance-walker env that implements
+/// it), which is why it is a follow-up rather than a widening of this task —
+/// filed as task #6418 (review esc-5385-3, suggestion 5).
+///
+/// That residual is PINNED, not merely described, by
+/// `union_all_over_a_named_geometry_list_let_is_a_known_soundness_gap` in this
+/// module's tests (review esc-5385-6): it asserts both the mechanism (a named
+/// list arg contributes zero operands) and the consequence (the fold claims
+/// `bounded`), so the follow-up cannot land without deliberately flipping it.
+///
+/// Failing CLOSED here instead is NOT an acceptable stopgap: claiming
+/// not-`bounded` for the common all-bounded case would emit spurious errors for
+/// the very idiom this task exists to make legal.
+fn geometry_operand_traits_in_env(
+    arg: &CompiledExpr,
+    env: &dyn LetBindingEnv,
+) -> Vec<InferredTraits> {
+    if is_geometry_operand(arg) {
+        return vec![infer_traits_for_expr_in_env(arg, env)];
+    }
+    // A list LITERAL every element of which is a geometry operand contributes
+    // each element. Non-empty is required: an empty literal is not evidence of
+    // a geometry list, and `all()` over zero elements is vacuously true.
+    if let CompiledExprKind::ListLiteral(elements) = &arg.kind
+        && !elements.is_empty()
+        && elements.iter().all(is_geometry_operand)
+    {
+        return elements
+            .iter()
+            .map(|e| infer_traits_for_expr_in_env(e, env))
+            .collect();
+    }
+    // An inline `generate(<count>, |i| <geom>)` fold arg contributes its lambda
+    // BODY's traits once (see the doc-comment: `combine` is idempotent, so the
+    // count cannot change the fold's result).
+    //
+    // Matching `CompiledExprKind::FunctionCall` by name is builtin-only by
+    // construction: a user-defined `fn generate` lowers to `UserFunctionCall`
+    // (expr.rs), never to this variant, so a user override cannot be mistaken
+    // for the builtin combinator here.
+    if let CompiledExprKind::FunctionCall { function, args } = &arg.kind
+        && function.name == "generate"
+        && let [_count, lambda] = args.as_slice()
+        && let CompiledExprKind::Lambda { body, .. } = &lambda.kind
+        && is_geometry_operand(body)
+    {
+        return vec![infer_traits_for_expr_in_env(body, env)];
+    }
+    Vec::new()
+}
+
+/// Is this compiled expression a geometry OPERAND?
+///
+/// Two accepted shapes, mirroring `conformance/mod.rs`'s `is_geometry_arg`:
+///   1. `result_type == Type::Geometry` — a `ValueRef` to a `let g = box(…)`,
+///      which `entity.rs` registers with the real geometry type; and
+///   2. a `FunctionCall` whose callee is in [`crate::units::is_geometry_function`]
+///      — `box(…)`/`half_space(…)` etc., which `expr.rs` types as a
+///      `Type::dimensionless_scalar()` placeholder, NOT `Type::Geometry`.
+///
+/// Shape 2 is the one that actually occurs inside a geometry list literal;
+/// omitting it is what made the previous `List<Geometry>` gate dead code.
+fn is_geometry_operand(expr: &CompiledExpr) -> bool {
+    expr.result_type == reify_core::Type::Geometry
+        || matches!(
+            &expr.kind,
+            CompiledExprKind::FunctionCall { function, .. }
+                if crate::units::is_geometry_function(function.name.as_str())
+        )
 }
 
 /// Find the first two geometry-typed arguments and recurse on each with the
@@ -976,6 +1094,137 @@ fn first_two_geometry_args_in_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- task #5385: union_all over a single List<Geometry> argument ---
+
+    /// Build a `CompiledExpr` for the geometry call `name()` in **the shape the
+    /// expression compiler actually emits**: `expr.rs`'s `is_geometry_function`
+    /// arm types every geometry builtin call as a `Type::dimensionless_scalar()`
+    /// PLACEHOLDER, never `Type::Geometry`.
+    ///
+    /// Hand-building these with `result_type: Type::Geometry` (as this helper
+    /// did before review esc-5385-4) makes the test pass against an input shape
+    /// the compiler never produces, which is exactly how the dead
+    /// `List<Geometry>` gate went unnoticed.
+    fn geom_call(name: &str) -> CompiledExpr {
+        assert!(
+            crate::units::is_geometry_function(name),
+            "geom_call({name}) must name a real geometry builtin, or this test \
+             pins a shape the compiler never emits",
+        );
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args: vec![],
+            },
+            result_type: reify_core::Type::dimensionless_scalar(),
+            content_hash: reify_core::ContentHash(0),
+        }
+    }
+
+    /// `union_all` given ONE `List<Geometry>` argument must fold over the
+    /// list's ELEMENTS, exactly as the multi-argument form folds over its args.
+    ///
+    /// Task #5385 made `union_all(<list>)` legal. Without this, the
+    /// `result_type == Type::Geometry` filter in `fold_geometry_args_in_env`
+    /// drops the single List-typed arg, the fold sees nothing, and the
+    /// defensive `InferredTraits::all()` default silently claims `bounded`
+    /// for a union containing an unbounded `half_space`.
+    #[test]
+    fn union_all_over_a_geometry_list_folds_over_its_elements() {
+        // `List<Real>`, NOT `List<Geometry>` — `expr.rs`'s ListLiteral arm takes
+        // the element type from the FIRST compiled element, and that element is
+        // a geometry call carrying the `dimensionless_scalar` placeholder. This
+        // is the shape real compilation produces (review esc-5385-4).
+        let list_arg = CompiledExpr {
+            kind: CompiledExprKind::ListLiteral(vec![geom_call("half_space"), geom_call("box")]),
+            result_type: reify_core::Type::List(Box::new(
+                reify_core::Type::dimensionless_scalar(),
+            )),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        let via_list = try_infer_traits_for_function_call("union_all", &[list_arg])
+            .expect("union_all must be dispatched");
+        let via_args =
+            try_infer_traits_for_function_call("union_all", &[geom_call("half_space"), geom_call("box")])
+                .expect("union_all must be dispatched");
+
+        assert_eq!(
+            via_list, via_args,
+            "union_all over a List<Geometry> must infer exactly what the \
+             equivalent multi-arg call infers",
+        );
+        assert!(
+            !via_list.bounded,
+            "a union containing half_space is NOT bounded; got {via_list:?}",
+        );
+    }
+
+    /// GAP PIN (review esc-5385-6) — a geometry-list LET passed by NAME does
+    /// NOT fold over its elements, so `union_all(holes)` at a `Bounded` slot is
+    /// accepted even when an element is unbounded.
+    ///
+    /// This asserts the CURRENT, UNSOUND disposition on purpose: the KNOWN
+    /// RESIDUAL on [`geometry_operand_traits_in_env`] describes the gap in
+    /// prose, and prose alone is silently satisfied if the follow-up is dropped.
+    /// Pinning the mechanism directly — a `ValueRef` typed `List<Geometry>`
+    /// contributes ZERO operands — means the follow-up that threads per-element
+    /// traits through `LetBindingEnv` MUST come here and flip this test rather
+    /// than leave a stale claim behind.
+    ///
+    /// Both halves matter: the empty-operand assertion is the mechanism, and the
+    /// `bounded` assertion is its user-visible consequence, contrasted against
+    /// the syntactically-adjacent LITERAL form which does fold (pinned by
+    /// `union_all_over_a_geometry_list_folds_over_its_elements` above).
+    #[test]
+    fn union_all_over_a_named_geometry_list_let_is_a_known_soundness_gap() {
+        // `entity.rs` pass 1 registers a geometry-list let at exactly this type,
+        // and `expr.rs` compiles a bare reference to it as a `ValueRef` — the
+        // shape `union_all(holes)` really produces.
+        let named_list = CompiledExpr {
+            kind: CompiledExprKind::ValueRef(ValueCellId::new("S", "holes")),
+            result_type: reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+            content_hash: reify_core::ContentHash(0),
+        };
+
+        assert!(
+            geometry_operand_traits_in_env(&named_list, &EmptyLetEnv).is_empty(),
+            "MECHANISM: a named geometry-list arg contributes no operands today.              If this now yields per-element traits, the gap is CLOSED — delete              this test and the KNOWN RESIDUAL rustdoc, and re-point the              consequence assertion below.",
+        );
+
+        let via_name = try_infer_traits_for_function_call("union_all", &[named_list])
+            .expect("union_all must be dispatched");
+        assert!(
+            via_name.bounded,
+            "CONSEQUENCE: with no operands the fold takes its              `InferredTraits::all()` default, which claims `bounded`. This is              the gap, not the contract.",
+        );
+
+        // Contrast: the same geometry, written as a LITERAL, is correctly
+        // unbounded. One syntactic step apart, two different verdicts — which is
+        // exactly what makes the gap worth pinning.
+        let via_literal = try_infer_traits_for_function_call(
+            "union_all",
+            &[CompiledExpr {
+                kind: CompiledExprKind::ListLiteral(vec![
+                    geom_call("half_space"),
+                    geom_call("box"),
+                ]),
+                result_type: reify_core::Type::List(Box::new(
+                    reify_core::Type::dimensionless_scalar(),
+                )),
+                content_hash: reify_core::ContentHash(0),
+            }],
+        )
+        .expect("union_all must be dispatched");
+        assert!(
+            !via_literal.bounded,
+            "control: the literal form must still fold over its elements — if              this regresses, the gap pin above is measuring nothing",
+        );
+    }
 
     // --- wedge inference (task-4158, step-7 RED) ---
 

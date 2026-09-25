@@ -1363,7 +1363,10 @@ pub struct EntityTreeNode {
     pub display_name: Option<String>,
     /// Whether this entity has at least one realization (tessellatable geometry).
     pub has_mesh: bool,
-    /// Heuristic: member is named `"geometry"` AND the parent template has `"Physical"` in `trait_bounds`.
+    /// Member is named `"geometry"` AND the parent template's trait bounds
+    /// equal-or-transitively-refine `Physical` — resolved against the merged
+    /// module + prelude trait defs, so `: Rigid` matches via `Rigid : Physical`
+    /// while a lookalike name such as `PhysicalMock` does not.
     pub trait_geometry: bool,
     /// Child nodes (value cells, sub-components, ports of this template).
     pub children: Vec<EntityTreeNode>,

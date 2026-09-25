@@ -15,15 +15,12 @@ use fault_diagnosis::{
     MAX_DIAGNOSTICS, collect_let_anchors, faults_strictly_inside, last_let_anchor_before,
 };
 
-/// Check a child node for errors before lowering it. If the node has errors,
-/// push a parse error and return None. Otherwise, evaluate the lowering expression.
+/// Check a child node for errors before lowering it. If the node has errors, refuse it
+/// through [`Lowering::refuse_if_faulty`] and return None. Otherwise, evaluate the lowering
+/// expression.
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
-        if $child.is_error() || $child.has_error() {
-            $self.push_error(
-                format!("invalid {}: {}", $label, $self.node_text($child)),
-                $self.span($child),
-            );
+        if $self.refuse_if_faulty($child, $label) {
             None
         } else {
             $lower
@@ -73,6 +70,14 @@ pub fn parse_with_prelude_enums<'a>(
 
     let mut lowering = Lowering::with_prelude_enums(source, prelude_enum_names);
     lowering.lower_source_file(root);
+
+    // INV-SF-7 (#7094): report member-list bodies where a member silently
+    // absorbed the following line. All logic lives in `member_continuation`;
+    // this stays a call site so the merge surface against the pending
+    // `ts_parser.rs` work on `task/5392` is one hunk.
+    for (span, message) in crate::member_continuation::check_member_continuations(root) {
+        lowering.push_error(message, span);
+    }
 
     let content_hash = ContentHash::of_str(source);
 
@@ -233,12 +238,40 @@ impl<'a> Lowering<'a> {
     /// missing `;` in a function body evaporate a `let` binding and change the
     /// program's value with no diagnostic at all.
     ///
-    /// Deliberately does NOT interpolate `node_text` into the message: echoing a
+    /// `message` must be one line and must never interpolate RAW `node_text`: echoing a
     /// multi-line slice of source is what made these diagnostics unreadable and
-    /// mislocated. `message` must be a fixed, one-line description.
+    /// mislocated. A bounded [`Self::snippet`] excerpt is the only permitted source text
+    /// (see [`Self::push_fault_error_with_excerpt`]).
     fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
         let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
         self.push_error(message.into(), self.span(anchor));
+    }
+
+    /// Push `<what>: <snippet(node)>`, located at `node`'s first fault by
+    /// [`Self::push_fault_error`]'s rule.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), tasks
+    /// #5392 and #6156: the excerpt says WHICH construct or text, the span says WHERE.
+    /// Spanning the whole node instead reported every fault inside a body at the start of
+    /// the construct enclosing it.
+    fn push_fault_error_with_excerpt(&self, node: tree_sitter::Node, what: &str) {
+        self.push_fault_error(node, format!("{what}: {}", self.snippet(node)));
+    }
+
+    /// Report `node` as `invalid <label>: <excerpt>` if it carries a CST fault, and return
+    /// whether it did: a faulty node's lowered AST would no longer match its source, so it
+    /// must not be lowered. This is the refusal `check_and_lower!` applies before every
+    /// lowering it guards.
+    ///
+    /// The excerpt is bounded, never the raw node text, and the report is located at the
+    /// node's first fault (see [`Self::push_fault_error_with_excerpt`] — INV-SF-7, tasks
+    /// #5392 and #6156).
+    fn refuse_if_faulty(&self, node: tree_sitter::Node, label: &str) -> bool {
+        let faulty = node.is_error() || node.has_error();
+        if faulty {
+            self.push_fault_error_with_excerpt(node, &format!("invalid {label}"));
+        }
+        faulty
     }
 
     /// Diagnose an `ERROR` node, anchoring the report to the `let` binding whose missing `;`
@@ -2006,14 +2039,21 @@ impl<'a> Lowering<'a> {
                 }
                 "let_declaration" => {
                     // let declarations in constraint def body are ignored for now
-                    // (captured in params/predicates separation; future: add lets field)
+                    // (captured in params/predicates separation; future: add lets field),
+                    // but a FAULTY let is still refused loudly: its recovery can absorb the
+                    // following predicate (INV-SF-7).
+                    self.refuse_if_faulty(child, "constraint let");
                 }
                 "constraint_def_predicate" => {
-                    if let Some(expr_node) = child.child_by_field_name("expr")
-                        && let Some(expr) = self.lower_expr(expr_node)
-                    {
-                        predicates.push(expr);
-                    }
+                    let _ = check_and_lower!(
+                        self,
+                        child,
+                        "constraint predicate",
+                        child
+                            .child_by_field_name("expr")
+                            .and_then(|e| self.lower_expr(e))
+                            .map(|p| predicates.push(p))
+                    );
                 }
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
@@ -2024,10 +2064,7 @@ impl<'a> Lowering<'a> {
                 // before the loop via child_by_field_name / lower_type_parameters.
                 "identifier" | "type_parameters" => {}
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in constraint body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in constraint body");
                 }
                 _ => self.warn_unexpected_child(child, "constraint body"),
             }
@@ -2601,9 +2638,8 @@ impl<'a> Lowering<'a> {
             // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
             // task #5392: this was the ONE member kind without a `has_error()` guard, so a
             // fault inside a member fn body evaporated silently. Routed through
-            // `lower_function_checked` rather than `check_and_lower!` so the diagnostic
-            // avoids that macro's `node_text` source echo and so a more specific inner
-            // message is not overwritten by a vague outer one. A bodyless
+            // `lower_function_checked` rather than `check_and_lower!` so a more specific
+            // inner message is not overwritten by a vague outer one. A bodyless
             // `function_signature` is well-formed and lowers to `body: None` as before —
             // the guard fires on CST faults, never on a legitimately absent body.
             "function_definition" | "function_signature" => {
@@ -2807,10 +2843,8 @@ impl<'a> Lowering<'a> {
                 }
                 "ERROR" => {
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // Shadowed by `check_and_lower!("guarded block")` in `lower_member`.
+                    self.diagnose_error_node(child, "guarded block");
                 }
                 _ => {
                     let annotations = std::mem::take(&mut pending_annotations);
@@ -3039,6 +3073,20 @@ impl<'a> Lowering<'a> {
     fn lower_sub(&mut self, node: tree_sitter::Node) -> Option<SubDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
+
+        // DERIVED arm first — `sub b = mirror of a across <plane> { … }` /
+        // `sub b = image of a under <transform> { … }`
+        // (assembly-derivation-toolbox.md, leaf A-alpha, task #6615).
+        //
+        // This branch MUST precede the `structure_name` lookup below. That
+        // lookup is a `?` early return, and the derived arm has no
+        // `structure_name` field at all — so reaching it would silently DROP
+        // the entire declaration: `lower_sub` returns None, the member never
+        // lands in the AST, and the user sees a `sub` that parsed cleanly and
+        // then vanished with no diagnostic.
+        if let Some(derivation_node) = node.child_by_field_name("derivation") {
+            return self.lower_derived_sub(node, name, derivation_node);
+        }
 
         let struct_node = node.child_by_field_name("structure_name")?;
         // A `namespaced_name` structure_name (`sub p = pp.Pulley()`, task 5495 μ)
@@ -3359,8 +3407,264 @@ impl<'a> Lowering<'a> {
             index_binder,
             index_domain,
             relate_relations,
+            // The derived arm returns early from `lower_sub` above, so this
+            // construction site is reached only by the three non-derived arms.
+            derivation: None,
             span: self.span(node),
             content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower the DERIVED `sub` arm into a `SubDecl` carrying a `SubDerivation`
+    /// (assembly-derivation-toolbox.md, leaf A-alpha, task #6615).
+    ///
+    /// Split out of `lower_sub` rather than inlined because the derived arm
+    /// shares almost nothing with the other three: no `structure_name`, no
+    /// constructor args, no type args, no specialization body. Every one of
+    /// those fields is set to its empty value here, upholding the discriminator
+    /// invariant documented on `SubDecl::derivation` AT THE SINGLE PRODUCER.
+    ///
+    /// `at <pose>` and the inline relate-block are still lowered: placement of
+    /// a derived sub is derived, so an explicit `at` is an error — but it is
+    /// `E_DERIVED_SUB_EXPLICIT_AT` (T8), A-beta's (#6616) COMPILE-scope
+    /// diagnostic, per the D3-adversary ownership ruling. Rejecting it here
+    /// would pre-empt T8 with a worse message.
+    ///
+    /// No interim "not yet elaborated" rejection is emitted, deliberately
+    /// unlike the indexed-sub `#5482` case above. There is no silent-miscompile
+    /// window to close here: a derived `SubDecl` carries an EMPTY
+    /// `structure_name`, so the compiler's unknown-structure path rejects it
+    /// loudly rather than elaborating it to something wrong. MEASURED on
+    /// `tests/prd-gate/fixtures/adt_mirror_of_arm.ri`, that rejection reads
+    /// `error: sub-component "unit_b" references unknown structure ""` — no
+    /// panic and no miscompile, so the safety argument holds, but the empty
+    /// quotes point nowhere useful. Giving that path a derived-aware message is
+    /// COMPILE-scope work and therefore A-beta's (#6616), which deletes the
+    /// whole interval by elaborating the arm.
+    fn lower_derived_sub(
+        &mut self,
+        node: tree_sitter::Node,
+        name: String,
+        derivation_node: tree_sitter::Node,
+    ) -> Option<SubDecl> {
+        // JOINT lowering, the discipline already documented on `index_binder`:
+        // if the derivation cannot be lowered whole, `lower_sub_derivation`
+        // pushes a diagnostic and returns None, and the declaration is dropped
+        // rather than emitted with a half-populated `SubDerivation`.
+        let derivation =
+            self.lower_sub_derivation(derivation_node, node.child_by_field_name("body"), &name)?;
+
+        let pose_expr = node
+            .child_by_field_name("pose")
+            .and_then(|n| self.lower_binding_value(n));
+        let relate_relations = node
+            .child_by_field_name("relations")
+            .map(|n| self.lower_relation_members(n))
+            .unwrap_or_default();
+
+        Some(SubDecl {
+            name,
+            // ── the discriminator invariant, upheld here ──
+            structure_name: String::new(),
+            type_args: Vec::new(),
+            args: Vec::new(),
+            is_collection: false,
+            body: None,
+            spec_param_overrides: Vec::new(),
+            keyed_members: Vec::new(),
+            // ── fields the derived arm genuinely carries ──
+            where_clause: None,
+            is_aux: self.has_aux_keyword(node),
+            is_priv: self.has_priv_keyword(node),
+            pose_expr,
+            index_binder: None,
+            index_domain: None,
+            relate_relations,
+            derivation: Some(Box::new(derivation)),
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower a `sub_derivation` node plus its sibling `derived_body`.
+    ///
+    /// Returns None — after pushing a diagnostic — when the plane/transform
+    /// operand fails to lower, so a caller never sees a `SubDerivation` whose
+    /// constructor is missing its operand.
+    ///
+    /// `body_node` is PASSED IN rather than reached by hopping up to
+    /// `derivation_node.parent()`: the only caller already holds the
+    /// `sub_declaration` node, and an upward hop would couple this helper to
+    /// where it is mounted AND fail open — a parent that is ever not the
+    /// `sub_declaration` (a future wrapper node, an alias) would silently yield
+    /// a `SubDerivation` with no overrides, dispositions or members, which is
+    /// exactly the half-lowering the `None` return above exists to prevent.
+    fn lower_sub_derivation(
+        &mut self,
+        derivation_node: tree_sitter::Node,
+        body_node: Option<tree_sitter::Node>,
+        sub_name: &str,
+    ) -> Option<SubDerivation> {
+        let prototype_node = derivation_node.child_by_field_name("prototype")?;
+        let prototype = SpannedIdent {
+            name: self.node_text(prototype_node).to_string(),
+            // The prototype token's OWN span, not the derivation's: A-beta's
+            // unknown / non-sibling / cyclic-prototype diagnostics underline
+            // exactly it.
+            span: self.span(prototype_node),
+        };
+
+        // The two alternatives are distinguished by which operand field the
+        // grammar produced — `plane` for `mirror … across`, `transform` for
+        // `image … under`. Both are mandatory in their own alternative, so a
+        // missing operand means an ERROR CST node.
+        let kind = if let Some(plane_node) = derivation_node.child_by_field_name("plane") {
+            match self.lower_expr(plane_node) {
+                Some(plane) => SubDerivationKind::Mirror { plane },
+                None => {
+                    self.push_error(
+                        format!(
+                            "invalid mirror plane for `sub {sub_name} = mirror of {} across …`: \
+                             the plane expression could not be lowered",
+                            prototype.name,
+                        ),
+                        self.span(derivation_node),
+                    );
+                    return None;
+                }
+            }
+        } else if let Some(transform_node) = derivation_node.child_by_field_name("transform") {
+            match self.lower_expr(transform_node) {
+                Some(transform) => SubDerivationKind::Image { transform },
+                None => {
+                    self.push_error(
+                        format!(
+                            "invalid image transform for `sub {sub_name} = image of {} under …`: \
+                             the transform expression could not be lowered",
+                            prototype.name,
+                        ),
+                        self.span(derivation_node),
+                    );
+                    return None;
+                }
+            }
+        } else {
+            return None;
+        };
+
+        let mut param_overrides: Vec<SubParamOverride> = Vec::new();
+        let mut param_resets: Vec<SpannedIdent> = Vec::new();
+        let mut dispositions: Vec<SubDisposition> = Vec::new();
+        let mut members: Vec<MemberDecl> = Vec::new();
+
+        if let Some(body_node) = body_node {
+            let mut cursor = body_node.walk();
+            for child in body_node.named_children(&mut cursor) {
+                match child.kind() {
+                    "derived_param_assignment" => {
+                        let Some(name_node) = child.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let Some(value_node) = child.child_by_field_name("value") else {
+                            continue;
+                        };
+                        let param = SpannedIdent {
+                            name: self.node_text(name_node).to_string(),
+                            span: self.span(name_node),
+                        };
+                        if value_node.kind() == "default_reset" {
+                            // `<param> = default` RESETS to the prototype's
+                            // declared default. It carries no expression at
+                            // all, so it goes to `param_resets`, not to
+                            // `param_overrides` under a sentinel value.
+                            param_resets.push(param);
+                        } else if let Some(value) = self.lower_binding_value(value_node) {
+                            // `lower_binding_value`, not `lower_expr`, so
+                            // `auto` / `auto(free)` overrides lower to
+                            // `ExprKind::Auto` exactly as on the
+                            // specialization arm.
+                            param_overrides.push(SubParamOverride {
+                                name: param,
+                                value,
+                                // The grammar's `optional(field('guard', …))`
+                                // tail, lowered through the SAME helper every
+                                // other guarded declaration uses. Stored, never
+                                // dropped: an override the source made
+                                // CONDITIONAL must not reach A-beta looking
+                                // unconditional.
+                                guard: self.lower_where_clause(child),
+                            });
+                        }
+                    }
+                    "keep_disposition" => {
+                        if let Some(d) = self.lower_disposition(child, SubDispositionKind::Keep) {
+                            dispositions.push(d);
+                        }
+                    }
+                    "exclude_disposition" => {
+                        if let Some(d) = self.lower_disposition(child, SubDispositionKind::Exclude) {
+                            dispositions.push(d);
+                        }
+                    }
+                    // `let_declaration` / `constraint_declaration`.
+                    _ => {
+                        if let Some(member) = self.lower_member(child) {
+                            members.push(member);
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(SubDerivation {
+            kind,
+            prototype,
+            param_overrides,
+            param_resets,
+            dispositions,
+            members,
+            span: self.span(derivation_node),
+        })
+    }
+
+    /// Lower one `keep_disposition` / `exclude_disposition` node.
+    ///
+    /// The `kind` is passed in rather than re-derived from `node.kind()` so the
+    /// two call sites above stay the single place the mapping is stated.
+    fn lower_disposition(
+        &mut self,
+        node: tree_sitter::Node,
+        kind: SubDispositionKind,
+    ) -> Option<SubDisposition> {
+        let path_node = node.child_by_field_name("path")?;
+        let mut path = Vec::new();
+        let mut cursor = path_node.walk();
+        for segment in path_node.named_children(&mut cursor) {
+            if segment.kind() == "identifier" {
+                // Each segment carries its OWN span so A-beta's
+                // unresolvable-path diagnostic underlines the failing hop.
+                path.push(SpannedIdent {
+                    name: self.node_text(segment).to_string(),
+                    span: self.span(segment),
+                });
+            }
+        }
+        if path.is_empty() {
+            // Only reachable on an ERROR CST node — the grammar makes
+            // `disposition_path` at least one identifier. That node surfaces
+            // its own diagnostic; dropping the disposition here keeps a
+            // path-less entry out of the AST.
+            return None;
+        }
+        // RESERVED (PRD §3.3/§11): parsed and stored, no v1 meaning.
+        let using_plane = node
+            .child_by_field_name("plane")
+            .and_then(|n| self.lower_expr(n));
+        Some(SubDisposition {
+            kind,
+            path,
+            using_plane,
+            span: self.span(node),
         })
     }
 
@@ -3515,10 +3819,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in port body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in port body");
                 }
                 _ => self.warn_unexpected_child(child, "port body"),
             }
@@ -3650,10 +3951,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.push_error(
-                        format!("syntax error in connect body: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.push_fault_error_with_excerpt(child, "syntax error in connect body");
                 }
                 _ => self.warn_unexpected_child(child, "connect body"),
             }
@@ -4305,6 +4603,9 @@ impl<'a> Lowering<'a> {
             index_binder: None,
             index_domain: None,
             relate_relations: Vec::new(),
+            // The match-arm sub grammar is `sub name : structure_name` only —
+            // no derivation clause is reachable here.
+            derivation: None,
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),
         };
@@ -7311,8 +7612,9 @@ mod tests {
 
     #[test]
     fn lower_connect_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside connect_body.
-        // When lower_connect_body is called directly, the ERROR arm fires.
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // connect_body. When lower_connect_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
         // NOTE: we use `: BoltSet` to specify a connector_type before the brace
         // block, making `{` unambiguously the start of connect_body.  Without
         // the connector_type, the new variant_construction GLR fork (task α,
@@ -7322,20 +7624,11 @@ mod tests {
         // `{ … }` as a member-level ERROR node rather than a connect_body,
         // causing `find_node_by_kind("connect_body")` to fail.  The connector
         // type `: BoltSet` consumes the `b :` prefix so the `{` is unambiguous.
-        let errors = lower_body_with_errors(
-            "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { >= } }",
-        );
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in connect body")),
-            "expected 'syntax error in connect body', got: {:?}",
-            errors
-        );
+        let source = "structure S {\n  port a : out T\n  port b : in T\n  connect a -> b : BoltSet {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_body_with_errors(source);
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in connect body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
@@ -7464,20 +7757,14 @@ mod tests {
 
     #[test]
     fn lower_port_body_error_node_emits_diagnostic() {
-        // `{ >= }` produces an ERROR child inside port_body.
-        // When lower_port_body is called directly, the ERROR arm should fire.
-        let errors = lower_port_body_with_errors("structure S { port a : in T { >= } }");
-        assert!(
-            !errors.is_empty(),
-            "expected body-level diagnostic for ERROR node, got none"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("syntax error in port body")),
-            "expected 'syntax error in port body', got: {:?}",
-            errors
-        );
+        // `{ >= ) <= ( }` across two lines produces a multi-line ERROR child inside
+        // port_body. When lower_port_body is called directly, the ERROR arm fires and
+        // reports a one-line excerpt located at the ERROR's start (INV-SF-7, task #6156).
+        let source = "structure S {\n  port a : in T {\n    >= )\n    <= (\n  }\n}\n";
+        let errors = lower_port_body_with_errors(source);
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in port body: >= )…");
+        assert_eq!(errors[0].span.start as usize, source.find(">= )").unwrap());
     }
 
     #[test]
@@ -7532,6 +7819,24 @@ mod tests {
             "expected no errors for syntactically valid port body with comment, got: {:?}",
             errors
         );
+    }
+
+    // ── Guarded block ERROR arm ────────────────────────────────
+
+    /// A guarded block is a member list, so its `ERROR` arm takes the member-list policy
+    /// (`diagnose_error_node`): no source echo, located at the fault (INV-SF-7, task #6156).
+    ///
+    /// Only a direct call reaches this arm. Through `parse`, `lower_member` refuses a faulty
+    /// `guarded_block` via `check_and_lower!` before `lower_guarded_block` ever runs.
+    #[test]
+    fn lower_guarded_block_error_node_emits_diagnostic() {
+        let source = "structure S {\n  param x: Real = 1\n  where x > 0 {\n    let a = 1\n    ) (\n      ] [\n    let b = 2\n  }\n}\n";
+        let errors = lower_node_with_errors(source, "guarded_block", |l, n| {
+            l.lower_guarded_block(n);
+        });
+        assert_eq!(errors.len(), 1, "expected one diagnostic, got: {errors:?}");
+        assert_eq!(errors[0].message, "syntax error in guarded block");
+        assert_eq!(errors[0].span.start as usize, source.find(") (").unwrap());
     }
 
     // ── Constraint def defensive catch-all tests ───────────────

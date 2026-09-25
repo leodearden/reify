@@ -419,6 +419,40 @@ pub fn topology_selector_result_type(name: &str) -> Option<reify_core::Type> {
     })
 }
 
+/// The complete set of **selector-composition** builtin names — the single
+/// source of truth for [`selector_composition_result_type`].
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
+/// [`selector_composition_result_type`]. Pinned in BOTH directions, so the
+/// slice and the resolver cannot drift: the resolver *reads* this slice as its
+/// membership gate (forward — a name cannot reach the resolver without being
+/// here), and
+/// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
+/// iterates this slice directly — not a hand-maintained fixture — asserting
+/// every entry is claimed for two `Selector`-typed operands (reverse). Without
+/// the reverse test a stale entry could linger here after its resolver arm was
+/// removed, and `is_known_builtin` would keep vouching for a name the compiler
+/// no longer understands — suppressing the very `UnresolvedFunction` warning
+/// this module exists to emit.
+///
+/// **Deliberate overlap with [`GEOMETRY_FUNCTION_NAMES`]**: `union` and
+/// `difference` are ALSO CSG geometry functions. The collision is resolved by
+/// operand shape, not by name — `selector_composition_result_type` returns
+/// `None` when no operand is `Type::Selector(_)`, so the CSG forms fall
+/// through to the `is_geometry_function` arm. `intersect` is
+/// selector-composition-only (the CSG spelling is `intersection`).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const SELECTOR_COMPOSITION_NAMES: &[&str] = &["union", "intersect", "difference"];
+
+/// Is `name` in the selector-composition vocabulary? Name-only classification
+/// — a `.contains` over [`SELECTOR_COMPOSITION_NAMES`]. Says nothing about
+/// whether a given CALL is a selector composition (that is operand-shaped);
+/// use [`selector_composition_result_type`] for that.
+pub(crate) fn is_selector_composition_name(name: &str) -> bool {
+    SELECTOR_COMPOSITION_NAMES.contains(&name)
+}
+
 /// Classify `union`/`intersect`/`difference` calls whose operands are
 /// `Type::Selector(kind)` — the selector-composition algebra (task 4119 δ).
 ///
@@ -453,7 +487,7 @@ pub(crate) fn selector_composition_result_type(
     call_span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Type> {
-    if !matches!(name, "union" | "intersect" | "difference") {
+    if !is_selector_composition_name(name) {
         return None;
     }
 
@@ -591,6 +625,55 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
     }
 }
 
+/// The complete set of **construction-datum constructor** names — the single
+/// source of truth for [`datum_constructor_result_type`].
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
+/// [`datum_constructor_result_type`]. Pinned in BOTH directions, so the slice
+/// and the resolver cannot drift: the resolver *reads* this slice as its
+/// membership gate (forward — a name can never be in the `match` without being
+/// here), and
+/// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
+/// iterates this slice directly — not a hand-maintained fixture — asserting
+/// every entry resolves to `Some` at arity 2 (reverse). Without the reverse
+/// test a stale entry could linger here after its resolver arm was removed, and
+/// `is_known_builtin` would keep vouching for a name the compiler no longer
+/// understands — suppressing the very `UnresolvedFunction` warning this module
+/// exists to emit.
+///
+/// **`offset` is arity-gated**, not arity-blind like its thirteen siblings:
+/// only the arity-2 `offset(Plane, Length) -> Plane` form is a construction
+/// datum (the arity-3 form is a γ relation in
+/// [`crate::relation_signatures::RELATION_FN_NAMES`]). It is a member of this
+/// slice — membership is a NAME fact — but membership alone does not imply
+/// the resolver claims a given call.
+/// `datum_constructor_names_are_disjoint_from_other_families` iterates this
+/// slice and deliberately SKIPS `offset` for that reason; the slice itself
+/// does not, because `is_known_builtin` asks a pure name question.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const DATUM_CONSTRUCTOR_NAMES: &[&str] = &[
+    "midplane",
+    "plane_through",
+    "axis_through",
+    "frame_at",
+    "plane_xy",
+    "plane_xz",
+    "plane_yz",
+    "axis_x",
+    "axis_y",
+    "axis_z",
+    // BoundingBox constructor and its two accessors (task 6081's
+    // bounding-box vocabulary). Arity-blind like their siblings: the
+    // quantity slot is fixed at LENGTH by the 6081 ruling, so no argument
+    // needs inspecting to type them.
+    "bbox",
+    "bbox_size",
+    "bbox_center",
+    // Arity-gated: construction datum at arity 2 only (see above).
+    "offset",
+];
+
 /// Arg-aware result type for the construction-datum **constructor**
 /// free-functions recognised by the compiler (geometric-relations η, task
 /// 4387). A sibling resolver to the constructor families above
@@ -695,6 +778,15 @@ pub(crate) fn datum_constructor_result_type(
     name: &str,
     args: &[reify_ir::CompiledExpr],
 ) -> Option<reify_core::Type> {
+    // `DATUM_CONSTRUCTOR_NAMES` is the vocabulary `is_known_builtin` reads; it
+    // is deliberately NOT consulted as a guard here. The arms below already
+    // encode membership exactly, and gating on the slice would make an arm
+    // added here without a slice entry silently DEAD — it would return `None`
+    // before its own arm was reached, ride the terminal fallback, and earn a
+    // spurious `UnresolvedFunction` warning. Unguarded, the same drift merely
+    // leaves the name invisible to the closed-world union, which is the far
+    // safer failure. The slice→resolver direction stays pinned by
+    // `resolver_only_family_slices_match_their_resolvers`.
     match name {
         "midplane" | "plane_through" => Some(reify_core::Type::Plane),
         "axis_through" => Some(reify_core::Type::Axis),
@@ -766,6 +858,49 @@ pub(crate) fn tolerancing_marker_result_type(name: &str) -> Option<reify_core::T
     }
 }
 
+/// The complete set of **AffineMap algebra** free-function names — the single
+/// source of truth for [`affine_map_algebra_result_type`].
+///
+/// **Maintenance contract**: adding a name here REQUIRES a parallel arm in
+/// [`affine_map_algebra_result_type`]. Pinned in BOTH directions, so the slice
+/// and the resolver cannot drift: the resolver *reads* this slice as its
+/// membership gate (forward), and
+/// `unresolved_function::tests::resolver_only_family_slices_match_their_resolvers`
+/// iterates this slice directly — not a hand-maintained fixture — asserting
+/// every entry resolves to `Some` for a PER-NAME well-shaped first argument
+/// (reverse). The per-name part matters: a single shared `AffineMap` fixture
+/// would silently under-test `affine_apply`, which gates on `Type::Point`.
+/// Without the reverse test a stale entry could linger here after its resolver
+/// arm was removed, and `is_known_builtin` would keep vouching for a name the
+/// compiler no longer understands.
+///
+/// **Two members are shadowed in the `expr.rs` ladder** and are listed here
+/// because this slice describes the RESOLVER, not the ladder:
+/// * `affine_apply` is also in [`GEOMETRY_FUNCTION_NAMES`], whose arm sits
+///   EARLIER, so the ladder never reaches this resolver for it.
+/// * `determinant` is also in [`crate::math_signatures::MATH_OPERATION_NAMES`],
+///   whose arm sits LATER — so a non-`AffineMap` first arg returns `None`
+///   here and is then claimed by the math arm (that is the matrix-determinant
+///   behaviour this resolver deliberately preserves).
+///
+/// Neither can therefore reach the terminal first-arg fallback.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub(crate) const AFFINE_ALGEBRA_NAMES: &[&str] = &[
+    "affine_compose",
+    "affine_inverse",
+    // First-arg-gated members — see the shadowing note above.
+    "determinant",
+    "affine_apply",
+];
+
+/// Is `name` in the AffineMap-algebra vocabulary? Name-only classification —
+/// a `.contains` over [`AFFINE_ALGEBRA_NAMES`]. Arg-blind; use
+/// [`affine_map_algebra_result_type`] when the first-arg gate matters.
+pub(crate) fn is_affine_map_algebra_name(name: &str) -> bool {
+    AFFINE_ALGEBRA_NAMES.contains(&name)
+}
+
 /// Return-type inference for the AffineMap **algebra** free-functions (task γ,
 /// PRD §4.3).  Separate from [`affine_map_constructor_result_type`] because
 /// (a) `affine_inverse` returns `Option<AffineMap(3)>` and `determinant`
@@ -774,22 +909,36 @@ pub(crate) fn tolerancing_marker_result_type(name: &str) -> Option<reify_core::T
 ///
 /// `first_arg_type` is used to disambiguate `determinant`: when the first arg
 /// is an `AffineMap(3)` the result is `Real`; when it is something else
-/// (e.g. a Matrix) we return `None` and let the caller fall through to the
-/// existing first-arg fallback, preserving the matrix-determinant behaviour.
+/// (e.g. a Matrix) we return `None` and let the caller fall through,
+/// preserving the matrix-determinant behaviour.
+///
+/// That fall-through does **not** reach the terminal first-arg fallback — as
+/// this comment asserted until task #5371 measured it. `determinant` is also
+/// in [`crate::math_signatures::MATH_OPERATION_NAMES`], whose ladder arm sits
+/// LATER and claims it, typing the matrix determinant dimensionally (`Q^N`) —
+/// strictly better than first-arg typing. The stale wording here is what made
+/// #5371's plan expect a reachable affine shape-mismatch path; see the
+/// shadowing note on [`AFFINE_ALGEBRA_NAMES`], which has it right, and the
+/// guard test `affine_algebra_names_never_reach_the_terminal_fallback`.
 ///
 /// Returns `None` for any name / arg-type combination not in scope here.
 pub(crate) fn affine_map_algebra_result_type(
     name: &str,
     first_arg_type: Option<&reify_core::Type>,
 ) -> Option<reify_core::Type> {
+    // `AFFINE_ALGEBRA_NAMES` is read by `is_known_builtin`, not consulted as a
+    // guard here — see `datum_constructor_result_type` for why gating on the
+    // slice inverts the failure mode for an unlisted arm.
     match name {
         "affine_compose" => Some(reify_core::Type::AffineMap(3)),
         "affine_inverse" => Some(reify_core::Type::Option(Box::new(
             reify_core::Type::AffineMap(3),
         ))),
         "determinant" => {
-            // Only override when the first arg is an AffineMap; otherwise fall
-            // through to the existing matrix-determinant first-arg fallback.
+            // Only override when the first arg is an AffineMap; otherwise
+            // fall through to the LATER math arm, which types the matrix
+            // determinant dimensionally (Q^N). NOT to the terminal first-arg
+            // fallback — this arm cannot reach it (#5371).
             if matches!(first_arg_type, Some(reify_core::Type::AffineMap(_))) {
                 Some(reify_core::Type::dimensionless_scalar())
             } else {
@@ -1790,14 +1939,31 @@ mod tests {
     // future colliding name added to EITHER slice).
     use crate::orientation_signatures::ORIENTATION_TYPED_FN_NAMES;
 
-    // Local fixtures for name families that have no pub single-source slice —
-    // they are hardcoded match arms in `affine_map_algebra_result_type` and
-    // `infer_list_helper_return_type`. Keep in sync with those functions.
-    // Hoisted to module level so both the operation and transcendental
-    // disjointness tests share a single copy, and a future addition to either
-    // family only requires one edit here.
-    const AFFINE_ALGEBRA_NAMES: &[&str] = &["affine_compose", "affine_inverse", "determinant"];
-    const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
+    // These two families used to need LOCAL test fixtures here, because their
+    // vocabulary lived only as `match` arms inside `affine_map_algebra_result_type`
+    // / `infer_list_helper_return_type` with no slice to iterate. Task #5371
+    // promoted both to production slices beside their resolvers, so the
+    // fixtures are gone and the disjointness tests below now read the real
+    // thing.
+    //
+    // That is not a cosmetic swap: both fixtures had already DRIFTED. The
+    // affine one omitted `affine_apply` and the list-helper one omitted
+    // `generate` (handled by the resolver since task 3994), so every
+    // disjointness assert written against them silently skipped those names —
+    // exactly the failure mode a hand-maintained mirror of a `match` invites.
+    // `AFFINE_ALGEBRA_NAMES` arrives via `use super::*`; `LIST_HELPER_NAMES`
+    // lives in a sibling module, so it needs an explicit import.
+    use crate::list_helpers::LIST_HELPER_NAMES;
+    use crate::unresolved_function::FIRST_ARG_TYPED_NAMES;
+
+    // Euler DECOMPOSER family (task #6082) — single source of truth in
+    // `crate::orientation_signatures`, imported here for the same reason as the
+    // sibling slices above. Its own disjointness test below checks against ALL
+    // sibling slices, INCLUDING ORIENTATION_TYPED_FN_NAMES from the same
+    // module: `orient_euler` (constructor) and `orient_to_euler` (decomposer)
+    // are near-identical spellings owned by two different resolvers, so that
+    // one pair is the collision most worth locking.
+    use crate::orientation_signatures::ORIENTATION_EULER_FN_NAMES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -2421,6 +2587,15 @@ mod tests {
     #[test]
     fn geometry_query_names_are_disjoint_from_other_families() {
         for name in GEOMETRY_QUERY_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -2475,6 +2650,11 @@ mod tests {
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
+            );
         }
     }
 
@@ -2488,6 +2668,15 @@ mod tests {
     #[test]
     fn dynamics_query_names_are_disjoint_from_other_families() {
         for name in DYNAMICS_QUERY_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -2547,6 +2736,11 @@ mod tests {
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
+            );
         }
     }
 
@@ -2572,6 +2766,15 @@ mod tests {
     #[test]
     fn math_typed_fn_names_are_disjoint_from_other_families() {
         for name in MATH_CONSTRUCTION_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Resolver-level (not slice-level) disjointness — see doc comment.
             // Probed at arities 1..=3 so `offset`'s arity-2 gate and the
             // three-argument `point3`/`vec3` shapes are all covered.
@@ -2657,6 +2860,11 @@ mod tests {
                  MATH_TRANSCENDENTAL_NAMES (§1.2 trig/transcendental family, task 4352 — \
                  constructors and transcendentals are disjoint slices)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
+            );
         }
     }
 
@@ -2684,9 +2892,16 @@ mod tests {
     /// disambiguated), so it is the documented exception.
     #[test]
     fn math_operation_fn_names_are_disjoint_from_other_families() {
-        // AFFINE_ALGEBRA_NAMES / LIST_HELPER_NAMES are hoisted to module level
-        // (shared with `math_transcendental_fn_names_are_disjoint_from_other_families`).
         for name in MATH_OPERATION_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -2780,6 +2995,11 @@ mod tests {
                  MATH_TRANSCENDENTAL_NAMES (§1.2 trig/transcendental family, task 4352 — \
                  operations and transcendentals are disjoint slices)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
+            );
         }
     }
 
@@ -2799,6 +3019,15 @@ mod tests {
     #[test]
     fn math_transcendental_fn_names_are_disjoint_from_other_families() {
         for name in MATH_TRANSCENDENTAL_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -2889,6 +3118,11 @@ mod tests {
                 !LIST_HELPER_NAMES.contains(name),
                 "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be a \
                  list-helper (`single` / `flat_map` — earlier arm would shadow it)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
             );
         }
     }
@@ -3399,6 +3633,15 @@ mod tests {
     #[test]
     fn tolerancing_marker_names_are_disjoint_from_other_families() {
         for &name in TOLERANCING_MARKER_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(&name),
+                "TOLERANCING_MARKER_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -3429,6 +3672,10 @@ mod tests {
                 "{name} in AFFINE_MAP_CONSTRUCTOR_NAMES"
             );
             assert!(!is_field_op(name), "{name} in FIELD_OP_NAMES");
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(&name),
+                "{name} in ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
+            );
         }
     }
 
@@ -3794,6 +4041,15 @@ mod tests {
     #[test]
     fn joint_typed_fn_names_are_disjoint_from_other_families() {
         for name in JOINT_TYPED_FN_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -3852,6 +4108,11 @@ mod tests {
                 !FEA_ENVELOPE_NAMES.contains(name),
                 "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
             );
         }
     }
@@ -4133,6 +4394,15 @@ mod tests {
     #[test]
     fn dynamics_constructor_names_are_disjoint_from_other_families() {
         for name in DYNAMICS_CONSTRUCTOR_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -4196,6 +4466,11 @@ mod tests {
                 !FEA_ENVELOPE_NAMES.contains(name),
                 "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
             );
         }
     }
@@ -4305,6 +4580,15 @@ mod tests {
     #[test]
     fn fea_envelope_names_are_disjoint_from_other_families() {
         for name in FEA_ENVELOPE_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -4362,6 +4646,11 @@ mod tests {
                 !FIELD_OP_NAMES.contains(name),
                 "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in FIELD_OP_NAMES"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
+            );
         }
     }
 
@@ -4415,15 +4704,24 @@ mod tests {
     /// RED until `FIELD_OP_NAMES` is defined in `units.rs`.
     #[test]
     fn field_op_names_are_disjoint_from_other_families() {
-        // List-helper free-fn names (`infer_list_helper_return_type`'s match
-        // arms) have no public single-source slice — they are hardcoded match
-        // arms — so this local fixture mirrors them (amendment: reviewer
-        // suggestion S3). The list-helper arm sits EARLIER in expr.rs's
-        // NoUserFunctions ladder, so a field-op name colliding with one would
-        // be silently shadowed and the field-op arm would become dead code.
-        const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
+        // The list-helper arm sits EARLIER in expr.rs's NoUserFunctions ladder,
+        // so a field-op name colliding with one would be silently shadowed and
+        // the field-op arm would become dead code. This used to assert against
+        // a local fixture mirroring `infer_list_helper_return_type`'s match
+        // arms (amendment: reviewer suggestion S3); task #5371 gave that
+        // resolver a real slice, so the module-level `LIST_HELPER_NAMES` import
+        // is now the single source of truth here too.
 
         for name in FIELD_OP_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -4497,6 +4795,11 @@ mod tests {
                  (`single` / `flat_map` — earlier arm in the NoUserFunctions \
                  ladder would shadow it)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
+            );
         }
     }
 
@@ -4520,6 +4823,15 @@ mod tests {
     #[test]
     fn relation_fn_names_are_disjoint_from_other_families() {
         for name in RELATION_FN_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -4594,6 +4906,11 @@ mod tests {
                 !FIELD_OP_NAMES.contains(name),
                 "RELATION_FN_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
             );
         }
     }
@@ -5150,6 +5467,15 @@ mod tests {
     fn registry_row_names_are_disjoint_from_legacy_families() {
         for name in reify_builtins::rows().iter().map(|r| r.name) {
             let name = &name;
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "registry row {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             // Reciprocal of `orientation_typed_fn_names_are_disjoint_from_other_families`
             // (task 5344) — pins the OTHER direction so a collision is caught
             // whichever slice it is added to.
@@ -5251,6 +5577,170 @@ mod tests {
                  (`single`/`flat_map` — earlier arm in the NoUserFunctions \
                  ladder would shadow it)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "registry row {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler decomposer family, task #6082)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task #6082 — exhaustive Euler-decomposer-family disjointness
+    // -----------------------------------------------------------------------
+
+    /// Disjointness regression-lock for the Euler DECOMPOSER family (task
+    /// #6082): every entry of `ORIENTATION_EULER_FN_NAMES` must be absent from
+    /// every sibling classification family, so `orient_to_euler` routes
+    /// exclusively through the `is_orientation_euler_fn` arm in `expr.rs`'s
+    /// `NoUserFunctions` ladder.
+    ///
+    /// Checks against every sibling slice that exists today, starting with the
+    /// one that matters most — `ORIENTATION_TYPED_FN_NAMES`, the constructor
+    /// family in the SAME module.
+    ///
+    /// This FORWARD direction is what actually guards every family. Reciprocal
+    /// clauses (a sibling's own test asserting it holds no Euler name) exist in
+    /// 12 sibling tests but NOT in all of them — `GEOMETRY_FUNCTION_NAMES`,
+    /// `GEOMETRY_QUERY_HELPER_NAMES`, `GEOMETRY_KINEMATIC_QUERY_NAMES`,
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, `AFFINE_MAP_CONSTRUCTOR_NAMES`,
+    /// `AFFINE_ALGEBRA_NAMES` and `LIST_HELPER_NAMES` have none. Nothing is
+    /// unguarded, because the loop below covers all of them; what those seven
+    /// lack is only the redundant second failure site. Stated plainly because
+    /// the earlier claim that "every sibling test carries the reciprocal" was
+    /// not true of the tree it described.
+    ///
+    /// The `orient_euler` / `orient_to_euler` pair is the exception that does
+    /// have a hard reciprocal, and a stronger one than a slice check:
+    /// `orientation_signatures`'s own
+    /// `is_orientation_typed_fn_rejects_the_four_decomposers` names
+    /// `orient_to_euler` literally.
+    ///
+    /// GREEN on arrival — a regression lock that fails if a colliding name is
+    /// later added to either `ORIENTATION_EULER_FN_NAMES` or a sibling slice.
+    /// The collision it most plausibly guards is a future task #6004 registry
+    /// claiming the remaining mistyped `orient_*` names and reaching for this
+    /// one as well.
+    #[test]
+    fn orientation_euler_fn_names_are_disjoint_from_other_families() {
+        for name in ORIENTATION_EULER_FN_NAMES {
+            // The nearest neighbour, and the whole reason this is a SECOND
+            // family rather than more rows in the first: `orient_euler` (the
+            // CONSTRUCTOR, typed Orientation(3) by task 5344) and
+            // `orient_to_euler` (the DECOMPOSER, typed List<Angle> here) are
+            // near-identical spellings resolved by two different functions in
+            // ONE module. A name in both slices would be double-classified,
+            // and `expr.rs` would silently resolve it with whichever ladder arm
+            // comes first — a contract nobody should have to read the ladder
+            // order to know. Reciprocal of
+            // `is_orientation_typed_fn_rejects_the_four_decomposers`.
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_TYPED_FN_NAMES (orientation/transform/frame \
+                 CONSTRUCTOR family, task 5344) — the two resolvers live in the \
+                 same module and a shared name would be typed by both"
+            );
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family)"
+            );
+            assert!(
+                !TOLERANCING_MARKER_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 TOLERANCING_MARKER_NAMES (tolerancing-marker family)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !MATH_TRANSCENDENTAL_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_TRANSCENDENTAL_NAMES (trig/transcendental family, task 4352)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
+            );
+            assert!(
+                !RELATION_FN_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 RELATION_FN_NAMES (geometric-relation family, task 4383)"
+            );
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (names that deliberately mirror their \
+                 first argument's type — claiming one here would REPLACE a \
+                 correct first-arg fallback with a fixed type)"
+            );
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be an \
+                 affine-algebra name (`affine_compose`/`affine_inverse`/\
+                 `determinant` — earlier arm in the NoUserFunctions ladder would \
+                 shadow it)"
+            );
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be a \
+                 list-helper (`single`/`flat_map` — earlier arm in the \
+                 NoUserFunctions ladder would shadow it)"
+            );
         }
     }
 
@@ -5280,6 +5770,15 @@ mod tests {
     #[test]
     fn orientation_typed_fn_names_are_disjoint_from_other_families() {
         for name in ORIENTATION_TYPED_FN_NAMES {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "ORIENTATION_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
             assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");
             assert!(!GEOMETRY_QUERY_HELPER_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_HELPER_NAMES");
             assert!(!GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_KINEMATIC_QUERY_NAMES");
@@ -5326,55 +5825,112 @@ mod tests {
         );
     }
 
+
+    /// Disjointness regression-lock for the type-preserving allowlist family
+    /// (task #5371) — the sibling of
+    /// `datum_constructor_names_are_disjoint_from_other_families` above.
+    ///
+    /// `FIRST_ARG_TYPED_NAMES` is unlike every other family here: it adds NO
+    /// ladder arm and resolves NO type. It is a pure membership set whose
+    /// claim is "the terminal first-arg fallback already types these names
+    /// CORRECTLY". That claim is only meaningful for a name no other family
+    /// claims — if a sibling family owned the name, the fallback would never
+    /// see it and the allowlist entry would be an unfalsifiable assertion
+    /// about dead code. Hence the disjointness lock, in both directions (the
+    /// reciprocal `!FIRST_ARG_TYPED_NAMES.contains(name)` assert is in each of
+    /// the fifteen sibling tests above).
+    #[test]
+    fn first_arg_typed_names_are_disjoint_from_other_families() {
+        for name in FIRST_ARG_TYPED_NAMES {
+            assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");
+            assert!(!GEOMETRY_QUERY_HELPER_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_HELPER_NAMES");
+            assert!(!GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_KINEMATIC_QUERY_NAMES");
+            assert!(!GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name), "{name:?} in GEOMETRY_TOPOLOGY_SELECTOR_NAMES");
+            assert!(!GEOMETRY_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_NAMES");
+            assert!(!DYNAMICS_QUERY_NAMES.contains(name), "{name:?} in DYNAMICS_QUERY_NAMES");
+            assert!(!DYNAMICS_CONSTRUCTOR_NAMES.contains(name), "{name:?} in DYNAMICS_CONSTRUCTOR_NAMES");
+            assert!(!AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name), "{name:?} in AFFINE_MAP_CONSTRUCTOR_NAMES");
+            assert!(!TOLERANCING_MARKER_NAMES.contains(name), "{name:?} in TOLERANCING_MARKER_NAMES");
+            assert!(!MATH_CONSTRUCTION_NAMES.contains(name), "{name:?} in MATH_CONSTRUCTION_NAMES");
+            assert!(!MATH_OPERATION_NAMES.contains(name), "{name:?} in MATH_OPERATION_NAMES");
+            assert!(!MATH_TRANSCENDENTAL_NAMES.contains(name), "{name:?} in MATH_TRANSCENDENTAL_NAMES");
+            assert!(!JOINT_TYPED_FN_NAMES.contains(name), "{name:?} in JOINT_TYPED_FN_NAMES");
+            assert!(!RELATION_FN_NAMES.contains(name), "{name:?} in RELATION_FN_NAMES");
+            // The analysis and parse families no longer own compiler-side name
+            // slices: their signatures are rows in `reify-builtins` (task #6001
+            // α, PRD §7.3). One registry assert covers BOTH former slices —
+            // the same reciprocal leg `registry_row_names_are_disjoint_from_legacy_families`
+            // runs in the other direction.
+            assert!(
+                reify_builtins::name_group(name).is_empty(),
+                "{name:?} is also a builtin-signature-registry row name \
+                 (reify-builtins — the former ANALYSIS_FN_NAMES / \
+                 PARSE_FN_NAMES families)"
+            );
+            assert!(!FEA_ENVELOPE_NAMES.contains(name), "{name:?} in FEA_ENVELOPE_NAMES");
+            assert!(!FIELD_OP_NAMES.contains(name), "{name:?} in FIELD_OP_NAMES");
+
+            // The four resolver-only families have no slice in the loop above
+            // until #5371 promoted them; hand-patch them here so the lock is
+            // complete rather than 18/22 of the way there.
+            assert!(!DATUM_CONSTRUCTOR_NAMES.contains(name), "{name:?} in DATUM_CONSTRUCTOR_NAMES");
+            assert!(!SELECTOR_COMPOSITION_NAMES.contains(name), "{name:?} in SELECTOR_COMPOSITION_NAMES");
+            assert!(!LIST_HELPER_NAMES.contains(name), "{name:?} in LIST_HELPER_NAMES");
+            assert!(!AFFINE_ALGEBRA_NAMES.contains(name), "{name:?} in AFFINE_ALGEBRA_NAMES");
+
+            // ...and the two slice-less vocabularies.
+            assert!(
+                !crate::relation_signatures::is_relation_shared_verb(name),
+                "{name:?} is an arity-gated relation shared verb"
+            );
+            assert!(
+                !crate::expr::DETERMINACY_PREDICATE_NAMES.contains(name),
+                "{name:?} in DETERMINACY_PREDICATE_NAMES"
+            );
+        }
+    }
+
     /// Disjointness regression-lock for the DATUM constructor vocabulary — the
     /// sibling of `orientation_typed_fn_names_are_disjoint_from_other_families`
     /// directly above, for the family this change extended with the six
     /// axis-aligned neighbours.
     ///
-    /// The datum family has no name SLICE (it is a resolver,
-    /// `datum_constructor_result_type`), so the fixture below is the local stand-in
-    /// for one. Without this lock the six new names had no disjointness cover at
-    /// all: if a future task added e.g. `axis_x` to `GEOMETRY_QUERY_NAMES` or any
-    /// other slice whose arm sits EARLIER in the `expr.rs` `NoUserFunctions`
-    /// ladder, that arm would silently win and the datum arm would go dead with no
-    /// failing test. This vocabulary already carries one deliberate cross-family
-    /// overlap (`offset`, below), so that is a live hazard class rather than a
-    /// theoretical one.
+    /// Driven by [`DATUM_CONSTRUCTOR_NAMES`] itself, matching the shape of
+    /// every other family's disjointness lock (task #5371 promoted the slice
+    /// out of the resolver's `match`, so this family now has one; before that
+    /// the test carried a hand-maintained fixture, which was merely a second
+    /// place for the vocabulary to drift). Without this lock a new datum name
+    /// has no disjointness cover at all: if a future task added e.g. `axis_x`
+    /// to `GEOMETRY_QUERY_NAMES` or any other slice whose arm sits EARLIER in
+    /// the `expr.rs` `NoUserFunctions` ladder, that arm would silently win and
+    /// the datum arm would go dead with no failing test. This vocabulary
+    /// already carries one deliberate cross-family overlap (`offset`, below),
+    /// so that is a live hazard class rather than a theoretical one.
     ///
-    /// **`offset` is deliberately NOT in the fixture.** It is genuinely in BOTH
-    /// this vocabulary and `RELATION_FN_NAMES`; the collision is resolved by an
+    /// **`offset` is deliberately SKIPPED.** It is genuinely in BOTH this
+    /// vocabulary and `RELATION_FN_NAMES`; the collision is resolved by an
     /// arity gate (arity-2 → `Type::Plane` here, arity-3 → `Type::Relation`
     /// there), pinned by `datum_constructor_vocabulary_survives_the_neighbour_extension`
     /// below. Asserting blanket absence for it would contradict that design.
     #[test]
     fn datum_constructor_names_are_disjoint_from_other_families() {
-        // The arity-blind datum names — every entry of the resolver's match
-        // except the arity-gated `offset`.
-        const DATUM_NAMES: &[&str] = &[
-            "midplane",
-            "plane_through",
-            "axis_through",
-            "frame_at",
-            "plane_xy",
-            "plane_xz",
-            "plane_yz",
-            "axis_x",
-            "axis_y",
-            "axis_z",
-            // BoundingBox constructor/accessors (task 6081). This fixture is
-            // the family's ONLY membership record — the resolver has no
-            // `*_NAMES` slice const — so listing them here is what proves the
-            // three new names collide with no sibling family.
-            "bbox",
-            "bbox_size",
-            "bbox_center",
-        ];
-        for name in DATUM_NAMES {
-            // Premise guard: each fixture entry really is claimed by the datum
+        // The arity-blind datum names — every slice entry except the
+        // arity-gated `offset`.
+        for name in DATUM_CONSTRUCTOR_NAMES.iter().filter(|n| **n != "offset") {
+            // Reciprocal of `first_arg_typed_names_are_disjoint_from_other_families`
+            // (task #5371) — the type-preserving allowlist is a membership set, not
+            // a ladder arm, so a name landing in BOTH would silently claim the
+            // fallback is correct for a name this family already types.
+            assert!(
+                !FIRST_ARG_TYPED_NAMES.contains(name),
+                "DATUM_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 FIRST_ARG_TYPED_NAMES (task #5371 type-preserving allowlist)"
+            );
+            // Premise guard: each slice entry really is claimed by the datum
             // resolver, so an absence assert below is meaningful.
             assert!(
                 datum_constructor_result_type(name, &[]).is_some(),
-                "fixture drift: {name:?} is no longer claimed by \
+                "slice drift: {name:?} is no longer claimed by \
                  datum_constructor_result_type"
             );
             assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");

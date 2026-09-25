@@ -49,7 +49,7 @@
 //   ascending f1 < … < f5" gate knife-edge. The asymmetric section separates
 //   the bending families so all 5 requested modes are distinct and strictly
 //   ordered, which the e2e gate
-//   (crates/reify-eval/tests/modal_analysis_e2e.rs::e2e_printer_gantry_prints_five_modes)
+//   (crates/reify-eval-fea-tests/tests/modal_analysis_e2e.rs::e2e_printer_gantry_prints_five_modes)
 //   verifies as the sole accuracy criterion (no analytic tolerance; see PRD §1).
 //
 // Argument binding (IMPORTANT — this note previously said the opposite):
