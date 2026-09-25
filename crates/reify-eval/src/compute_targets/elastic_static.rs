@@ -3863,7 +3863,7 @@ impl RealizedAdaptiveProblem {
 
 impl AdaptiveProblem for RealizedAdaptiveProblem {
     /// A gmsh remesh CAN fail at runtime (an open or non-manifold surface,
-    /// zero classified corner entities, or libgmsh absent from this build —
+    /// a gmsh FFI error, or libgmsh absent from this build —
     /// `RefineError::GmshUnavailable` and `RefineError::Gmsh(..)` are
     /// distinct, already-modelled variants). The wiring site catches this and
     /// re-runs on the uniform lane rather than failing the solve.

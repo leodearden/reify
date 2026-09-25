@@ -929,17 +929,18 @@ fn box_surface_mesh(lx: f64, ly: f64, lz: f64) -> Mesh {
 }
 
 /// Seed an initial [`VolumeMesh`] from a closed `surface` via a UNIFORM
-/// per-vertex size field — the real-gmsh counterpart to the procedural
+/// background size field — the real-gmsh counterpart to the procedural
 /// [`box_p1_mesh`] fixtures above.
 ///
 /// `refine` performs a full remesh FROM `surface` (see
-/// `reify_solver_elastic::volume_refine`'s module doc), and its nearest-
-/// surface-vertex size projection is only meaningful when the mesh being
-/// refined already came from that same surface — established by
-/// `tests/volume_refine_tests.rs::localized_size_reduction_refines_marked_region_only`,
-/// which seeds via `GmshKernel::mesh_to_volume` rather than a procedural
-/// mesh. A uniform size field is the initial-seed equivalent of that
-/// baseline call.
+/// `reify_solver_elastic::volume_refine`'s module doc) under a background
+/// size field built on the current volume mesh's own tets, and a background
+/// field only sizes the region its tets cover. Seeding from that same
+/// `surface` makes the seed fill exactly the region `surface` bounds, so
+/// every point gmsh queries for a size during a refine lies inside some field
+/// tet — the field-support argument `volume_refine::boundary_surface_mesh`'s
+/// doc makes for the realized path, where the surface is extracted from the
+/// volume mesh instead.
 ///
 /// # Panics
 ///
@@ -1045,16 +1046,15 @@ fn nearest_element_size_at(
 /// `(element_index, centroid)` satisfies `in_region` — the region-averaged
 /// counterpart to [`nearest_element_size_at`]'s single-point sample.
 ///
-/// A single far element's characteristic size is sensitive to exactly where
-/// it lands within gmsh's size-field interpolation: [`box_surface_mesh`] has
-/// only 8 vertices, so the size hints `refine_marked_elements` projects onto
-/// the surface are necessarily coarse, and a lone sample point can pick up
-/// more of that coarse interpolation's gradient than the "roughly unchanged"
-/// claim intends. Averaging over a whole region is the same robust
-/// methodology `tests/volume_refine_tests.rs::mean_tet_edge_where`
-/// already relies on for its own "unmarked region roughly unchanged" check —
-/// against that identical 8-vertex box surface, the regional average holds
-/// within tolerance even though a single-point sample would not.
+/// A single element's characteristic size depends on exactly where it lands
+/// in the independent tetrahedralization gmsh builds on every remesh: the
+/// size hints reach gmsh as a per-vertex background field over the
+/// pre-refine mesh's tets (each vertex taking the MIN of its incident
+/// elements' hints), so an element near a marked region samples that field's
+/// gradient, and element sizes scatter around the target even where the
+/// field is flat. Averaging over a whole region is the same methodology
+/// `tests/volume_refine_tests.rs::mean_tet_edge_where` relies on for its own
+/// far-band "unmarked region roughly unchanged" check.
 ///
 /// # Panics
 ///
@@ -1198,12 +1198,16 @@ fn fea_adaptive_problem_refine_shrinks_marked_region_grows_mesh() {
 /// the boundary surface (there is no incremental/local-split path), so gmsh
 /// regenerates an independent tetrahedralization on every call. The
 /// far-region average size is therefore only heuristically stable, and a
-/// fixed ±25% band on an 8-vertex box surface with coarse size hints is
+/// fixed ±25% band on a coarse (`mesh_size = 0.25`) unit box — where each
+/// vertex of a marked element takes that element's halved hint, so the fine
+/// region reaches up to one coarse element past the marked set — is
 /// plausibly flaky across gmsh versions/platforms — being in the always-on
 /// set would turn any such flake into a recurring red gate. The
 /// version-independent claims (element count strictly grows, marked-region
 /// size strictly shrinks) already carry the CI gate above; this on-demand
-/// check adds the softer regional-stability claim without that risk.
+/// check adds the softer regional-stability claim without that risk. Its
+/// band and its `FAR_REGION_X` predate #7447's background-field refiner;
+/// re-measuring them is task #7891.
 #[test]
 #[ignore = "flaky: far-region average characteristic size after a full gmsh \
             remesh-from-surface is only heuristically stable across gmsh \
@@ -1229,10 +1233,9 @@ fn fea_adaptive_problem_refine_far_region_size_roughly_unchanged() {
         is_marked[m] = true;
     }
 
-    // "Far" region: the domain half opposite the x=0 clamp (mirroring
-    // tests/volume_refine_tests.rs's own half-domain x >= 0.5 split), which
-    // for this cantilever-bending fixture is far from where mark_dorfler
-    // concentrates its top-indicator elements. See avg_size_in_region's doc
+    // "Far" region: the domain half opposite the x=0 clamp, which for this
+    // cantilever-bending fixture is far from where mark_dorfler concentrates
+    // its top-indicator elements. See avg_size_in_region's doc
     // for why this must be a region average, not a single-point sample.
     const FAR_REGION_X: f64 = 0.5;
     let far_region = |e: usize, c: [f64; 3]| c[0] >= FAR_REGION_X && !is_marked[e];
@@ -1321,18 +1324,19 @@ impl<P: AdaptiveProblem> AdaptiveProblem for RecordingProblem<P> {
 ///
 /// `mesh_size = 0.25` is not an arbitrary choice: it is the specific
 /// resolution measured during impl to give a genuine (non-noise) global-
-/// indicator drop on the FIRST Dörfler refine — currently ≈15%, though the
-/// absolute indicator values move whenever the mesher is recalibrated, which
-/// is why callers key their targets off a measured seed rather than off a
-/// number quoted here. Coarser/finer meshes and other θ values were also
-/// measured and
-/// found noisier (the volume-weighted-average ZZ recovery is not the full
-/// SPR scheme — see `error_estimator.rs`'s module doc — and a full remesh
-/// from surface regenerates an independent tetrahedralization each refine,
-/// so the global indicator does not decrease monotonically over MANY
-/// iterations at CI-affordable resolution); this fixture's role is the
-/// cheap, always-on "one clean refine converges" sanity check, not a deep
-/// rate study (that is step-9/10's `#[ignore]`'d heavy test).
+/// indicator drop on the FIRST Dörfler refine — 41.9% since #7447 (0.3412 ->
+/// 0.1983, 761 -> 4166 tets; it was ≈15% before), though the absolute
+/// indicator values move whenever the mesher is recalibrated, which is why
+/// callers key their targets off a measured seed rather than off a number
+/// quoted here. Coarser/finer meshes and other θ values were also measured
+/// before #7447 and found noisier (the volume-weighted-average ZZ recovery
+/// is not the full SPR scheme — see `error_estimator.rs`'s module doc — and
+/// a full remesh from surface regenerates an independent tetrahedralization
+/// each refine, so the global indicator did not decrease monotonically over
+/// MANY iterations at CI-affordable resolution; the post-#7447 rate study's
+/// 3-point sequences do). This fixture's role is the cheap, always-on "one
+/// clean refine converges" sanity check, not a deep rate study (that is
+/// step-9/10's `#[ignore]`'d heavy test).
 fn cantilever_gmsh_problem() -> FeaAdaptiveProblem {
     let (lx, ly, lz) = (2.0_f64, 1.0, 1.0);
     let mesh_size = 0.25_f64;
@@ -1386,7 +1390,9 @@ fn cantilever_gmsh_problem() -> FeaAdaptiveProblem {
 /// The 0.95 factor is what makes the trajectory non-vacuous: it must undercut
 /// the seed (else iteration 0 converges immediately) while staying above the
 /// once-refined indicator (else the budget's iteration cap trips first). The
-/// measured first-refine drop is ≈15%, so 5% leaves margin on both sides.
+/// measured first-refine drop is 41.9% since #7447 (≈15% before), so the
+/// once-refined indicator sits at 0.58x the seed: 5% still undercuts the
+/// seed, and the target is still met by exactly one refine.
 #[test]
 fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {

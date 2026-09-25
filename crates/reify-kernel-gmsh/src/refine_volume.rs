@@ -260,9 +260,11 @@ pub fn refine_volume_with_size_field(
     // geometry (90° dihedral angles at each edge), this ensures all 12 edges
     // become 1D curve entities and all 8 cube-corner vertices become 0D point
     // entities.  A PI/2 threshold would emit no corner entities at all (gmsh's
-    // sharp-edge test is strictly-greater-than and 90° is NOT > PI/2), leaving
-    // nowhere to attach per-vertex size hints; that is also what broke
-    // `mesh_to_volume` in #6200, which is why it no longer uses PI/2 either.
+    // sharp-edge test is strictly-greater-than and 90° is NOT > PI/2); that
+    // is what broke `mesh_to_volume` in #6200, which is why it no longer uses
+    // PI/2 either.  Before #7447 this path also attached its size hints to
+    // those corner entities; since #7447 sizing comes from the background
+    // field below, and `Mesh.MeshSizeFromPoints=0` keeps the corners out of it.
     // PI/12 stays deliberately sharper than PI/4 (this path wants every edge
     // hard, not just the feature edges), so it is NOT folded into the shared
     // constant.

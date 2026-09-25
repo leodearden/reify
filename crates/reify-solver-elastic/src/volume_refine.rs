@@ -8,11 +8,12 @@
 //!
 //! # Projection algorithm: per-element → per-vertex (min over incident elements)
 //!
-//! Gmsh's `SetSize` API assigns a target characteristic length to each surface
-//! vertex. The error indicator produces per-*element* hints. The projection
-//! uses a conservative `min` over all elements incident to each vertex: any
-//! element that wants a smaller mesh wins at the shared vertex. A mean would
-//! dilute the refinement signal at marked/unmarked boundaries.
+//! The kernel-gmsh remesher takes one size per volume-mesh vertex (a
+//! [`BackgroundSizeField`] over that mesh's own tets). The error indicator
+//! produces per-*element* hints. The projection uses a conservative `min`
+//! over all elements incident to each vertex: any element that wants a
+//! smaller mesh wins at the shared vertex. A mean would dilute the
+//! refinement signal at marked/unmarked boundaries.
 //!
 //! # Stub-build routing
 //!
