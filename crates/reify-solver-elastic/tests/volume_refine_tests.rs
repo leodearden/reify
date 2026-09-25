@@ -95,10 +95,11 @@ fn three_tet_p1_vm() -> VolumeMesh {
 /// Every tet shares the main diagonal 0→6, one per monotone lattice path from
 /// (0,0,0) to (1,1,1); together they partition the cube exactly.
 ///
-/// This is a *seed* only: `refine_with_size_field` needs a `VolumeMesh` to
-/// attach per-element size hints to, and this supplies one without invoking
-/// gmsh. See `localized_size_reduction_refines_marked_region_only` for why the
-/// seed must not come from `mesh_to_volume`.
+/// The minimal sizing mesh spanning the box: it carries a UNIFORM size field
+/// into a remesh without invoking gmsh, and a uniform field needs no more
+/// resolution than the 8 corners. A field that varies in space needs
+/// `kuhn_lattice_unit_cube_vm`'s interior vertices instead — see
+/// `localized_size_reduction_refines_marked_region_only`.
 fn kuhn_6tet_unit_cube_vm() -> VolumeMesh {
     VolumeMesh {
         vertices: vec![
@@ -557,106 +558,112 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 // step-7: localized refinement integration test (runtime-gated on GMSH_AVAILABLE)
 // ---------------------------------------------------------------------------
 
-/// Localized size reduction refines only the marked (x < 0.5) region.
+/// Localized size reduction refines the marked (x < 0.5) half and leaves the
+/// far end of the unmarked half alone.
 ///
-/// Baseline: the unit cube run through `refine_with_size_field` itself with a
-/// uniform 0.5 size field. Refinement: the same call, with marked tets
-/// (centroid x < 0.5) given size 0.125 (4× finer) and unmarked tets keeping
-/// 0.5.
+/// Both calls remesh the unit cube through `refine_with_size_field` over the
+/// SAME hint carrier, `kuhn_lattice_unit_cube_vm(8)` (3072 tets): the baseline
+/// under a uniform 0.5 field, the refinement under 0.125 (4x finer) on every
+/// carrier tet whose centroid has x < 0.5 and 0.5 elsewhere.
 ///
-/// Skipped at runtime when libgmsh is not present (`GMSH_AVAILABLE = false`).
-/// On stub builds `refine_with_size_field` returns `GmshUnavailable`, so this
-/// test exits early rather than asserting on a stub result.
+/// Skipped at runtime when libgmsh is not present (`GMSH_AVAILABLE = false`):
+/// on stub builds `refine_with_size_field` returns `GmshUnavailable`.
 ///
 /// Assertions when gmsh IS available:
-/// (a) `refine_with_size_field` returns `Ok`.
-/// (b) Refined mesh has strictly more tets with centroid x < 0.5 than baseline.
-/// (c) Average tet edge length in unmarked region (centroid x ≥ 0.5) is
-///     within ±25% of baseline average (not over-refined; generous tolerance
-///     for gmsh's spatial smoothing extent).
+/// (a) Both calls return `Ok`.
+/// (b) The refined mesh has strictly more tets with centroid x < 0.5.
+/// (c) Over the FAR unmarked band, centroid x >= `FAR_BAND_MIN_X` (0.75), the
+///     mean tet edge is within ±25% of the baseline's — after asserting that
+///     both meshes have tets there, so (c) cannot pass on an empty band.
+///
+/// # Why (c) reads the far band, not the whole unmarked half
+///
+/// The mesh is SUPPOSED to be graded next to the marked boundary. The carrier's
+/// hints reach gmsh as a per-vertex field by MIN projection, and a cell width
+/// of 1/8 puts a vertex plane at exactly x = 0.5, so the requested field is
+/// 0.125 up to x = 0.5 and ramps to 0.5 across the next cell; gmsh's gradient
+/// limiter then grades the mesh further out than that. Measured on this
+/// fixture (task #7447, libgmsh 4.15.2, bit-stable across repeated runs) —
+/// mean tet edge, tet count in parentheses:
+///
+/// | band                                 | baseline    | refined      | ratio |
+/// |--------------------------------------|-------------|--------------|-------|
+/// | whole unmarked half, x >= 0.5        | 0.4140 (86) | 0.3028 (200) | 0.731 |
+/// | far band, x >= 0.75                  | 0.3782 (57) | 0.3414 (71)  | 0.903 |
+/// | far band, refined UNIFORMLY at 0.125 | 0.3782 (57) | 0.1562 (688) | 0.413 |
+///
+/// Whole meshes: 181 tets baseline, 1335 refined; marked half 95 -> 1135.
+///
+/// The whole half reads 0.731, outside ±25% — correctly: that is the graded
+/// transition, not over-refinement. The far band reads 0.903, ~1.2x inside the
+/// lower bound. The last row is the discrimination check, run by temporarily
+/// making the refined field uniform: a refiner that does NOT localize reads
+/// 0.413 and fails (c) with ~1.8x to spare, so the bound separates the two.
+/// The band and the bound were fixed by ruling (esc-7447-7); a drifted 0.903 is
+/// a finding to escalate, not a bound to widen.
+///
+/// The carrier used to be the baseline mesh itself (181 gmsh tets), whose
+/// coarse tets straddling x = 0.5 dragged the MIN-projected fine hint a whole
+/// tet's width into the unmarked half. Once the background field made the
+/// refiner honour every vertex's hint (#7447), the whole-half ratio on that
+/// carrier read 0.576 — the fixture, not the refiner, was what failed.
 ///
 /// # Why the baseline is `refine_with_size_field`, not `mesh_to_volume`
 ///
 /// It used to be `GmshKernel::mesh_to_volume(mesh_size = 0.5)`, and #6200
 /// exposed that control as invalid: it compared two *different* producers —
 /// `mesh_to_volume` applies a global target, while this path installs a
-/// background size field over the seed's own tets — so no inequality between
-/// them pins a property of the function under test. It passed only because the pre-#6200
-/// `mesh_to_volume` baseline was an *undersized* mesh (a 90° `classify_surfaces`
-/// feature angle left the box only ~74–86% tetrahedralized). Completing the box
-/// roughly doubles that baseline at the same nominal size and the assertion
-/// inverts against an unchanged refine result: measured on this branch,
-/// (b) failed with `baseline=99, refined=95`.
+/// background size field over the carrier's tets — so no inequality between
+/// them pins a property of the function under test. It passed only because
+/// the pre-#6200 `mesh_to_volume` baseline was an *undersized* mesh (a 90°
+/// `classify_surfaces` feature angle left the box only ~74–86%
+/// tetrahedralized). Completing the box roughly doubled that baseline at the
+/// same nominal size and the assertion inverted against an unchanged refine
+/// result: (b) failed with `baseline=99, refined=95`.
 ///
-/// Re-based on this function's own coarser output, both sides come from one
-/// producer and the test checks what its name claims. Measured after re-basing:
-/// 141 tets (baseline, uniform 0.5) → 238 tets (refined); marked-region tets
-/// 76 → 177; unmarked-region average tet edge 0.4487 → 0.4414, ratio 0.9837.
-///
-/// This is the same remedy applied one crate over to
+/// Based on this function's own output, both sides come from one producer and
+/// the test checks what its name claims. This is the same remedy applied one
+/// crate over to
 /// `reify-kernel-gmsh/tests/refine_volume_tests.rs::uniform_smaller_size_field_produces_more_tets`
 /// (commit 187e3751f27d, plan step-7) for the identical cause.
 ///
-/// # Why the seed is hand-built (`kuhn_6tet_unit_cube_vm`, not `mesh_to_volume`)
+/// # Why the carrier is hand-built (`kuhn_lattice_unit_cube_vm`, not `mesh_to_volume`)
 ///
-/// `refine_with_size_field` needs *some* `VolumeMesh` to attach per-element
-/// hints to, and this one is written out by hand. The reason it was originally
-/// hand-built has since been closed at BOTH ends — consumer by #6211, producer
-/// by #6298 — but the reasons it stays that way never depended on either.
+/// The reason a hand-built carrier was first needed has since been closed at
+/// BOTH ends. `mesh_to_volume` sets the **global** gmsh options
+/// `Mesh.MeshSizeMin` and `Mesh.MeshSizeMax` to its resolved size, and
+/// `ffi::clear()` clears *models*, not *options*; before task #6211
+/// `refine_volume_with_size_field` wrote neither, so a `mesh_to_volume` seed
+/// squeezed every later size in the process into `[size, size]` and the size
+/// field silently became a no-op. Today the refine writes the pair itself on
+/// entry (#6211), and every entry point enters `mesh_size_scope::MeshSizeScope`,
+/// which establishes gmsh's defaults for every size option on entry and
+/// restores them on every exit path (#6298, #6968). `reify-kernel-gmsh` pins
+/// both halves and the end-to-end seed-then-refine sequence; its
+/// `mesh_size_scope` module doc maps each writer to its guard, so that map is
+/// not restated here.
 ///
-/// **The original reason, closed by #6211 and #6298.** `mesh_to_volume` sets
-/// the **global** gmsh options `Mesh.MeshSizeMin` and `Mesh.MeshSizeMax` to its
-/// resolved size, and `ffi::clear()` clears *models*, not *options*. Before
-/// task #6211 `refine_volume_with_size_field` wrote neither option, so every
-/// later per-corner `SetSize` in the same process was squeezed into
-/// `[size, size]` and the size field silently became a no-op.
+/// **Why it stays hand-built anyway.** (i) *Producer symmetry*: a
+/// `mesh_to_volume` carrier would put a second producer's sizing semantics
+/// back on one side of the comparison the section above made single-producer.
+/// (ii) *Determinism*: the lattice is fixed in source, so it cannot drift under
+/// a gmsh version bump and needs no gmsh at all to build. (iii) *Where the fine
+/// front lands*: the carrier's vertices decide where the MIN projection puts
+/// the marked boundary, which the section above shows (c) is sensitive to; a
+/// meshed carrier would hand that decision to the mesher.
 ///
-/// Both ends of that leak are now shut, and each has its own guard one crate
-/// over in `reify-kernel-gmsh`:
-///
-/// * *Consumer, #6211*: the refine writes the pair itself on entry —
-///   `MeshSizeMin` to gmsh's `0.0` default, `MeshSizeMax` to the size field's
-///   own `max_size()`, at the "Mesh-size clamp: set explicitly, never
-///   inherited" block in `refine_volume.rs` — so its output is a function of
-///   its own arguments rather than of whatever a sibling last left behind.
-/// * *Producer, #6298 and #6968*: `mesh_to_volume` no longer leaves that clamp
-///   behind at all. It enters `mesh_size_scope::MeshSizeScope` (in
-///   `kernel_real.rs`), which establishes gmsh's defaults for every size option
-///   on entry and restores them on every exit path, early `?` returns included.
-///
-/// Both halves — and the end-to-end sequence this note is about, seed via
-/// `mesh_to_volume` then refine with a size field — are pinned by guards in
-/// `reify-kernel-gmsh`, which measured that it takes the loss of BOTH to
-/// reproduce the original symptom. That crate's `mesh_size_scope` module doc
-/// maps each writer to its guard; naming them here would be a third copy of
-/// that map, in another crate, with nothing to keep it in step.
-///
-/// **Why it stays hand-built anyway.** (i) *Producer symmetry*: the section
-/// above re-based the baseline onto this same function precisely so both sides
-/// of the comparison come from one producer, and a `mesh_to_volume` seed would
-/// put a second producer's sizing semantics back on one side of it. (ii)
-/// *Determinism*: this 6-tet Kuhn partition is fixed in source, so the seed
-/// cannot drift under a gmsh version bump and needs no gmsh at all to build.
-///
-/// Both surviving reasons are independent of the clamp leak, so closing #6211
-/// and #6298 does not make the hand-built seed obsolete. Reverting it to a
-/// `mesh_to_volume` seed would re-introduce exactly the cross-producer confound
-/// the section above removed — measured then as baseline=99 vs refined=95,
-/// with the assertion inverted.
-///
-/// One candidate mechanism for that confound is settled and is NOT the cause:
-/// the two producers' differing clamps. Measured for #7447, one process per
-/// reading, unit cube, P1 — `mesh_to_volume(S)`'s hard `[S, S]` against this
-/// path's `[0, S]` at the same `S` — 186 vs 188 tets at S=0.5, 403 vs 397 at
-/// S=0.25, 2513 vs 2549 at S=0.125. Same density to within seed noise at every
-/// size, so the clamp asymmetry is not a confound and needs no further
-/// investigation; reason (i) above rests on the producers' sizing SEMANTICS,
-/// which is a separate thing and still stands.
+/// One candidate mechanism for the #6200 confound is settled and is NOT the
+/// cause: the two producers' differing clamps. Measured for #7447, one process
+/// per reading, unit cube, P1 — `mesh_to_volume(S)`'s hard `[S, S]` against
+/// this path's `[0, S]` at the same `S` — 186 vs 188 tets at S=0.5, 403 vs 397
+/// at S=0.25, 2513 vs 2549 at S=0.125. Same density to within seed noise at
+/// every size, so the clamp asymmetry is not a confound; reason (i) rests on
+/// the producers' sizing SEMANTICS, which is a separate thing and still stands.
 ///
 /// Measured **before #6211 and #6298**, one process per reading (unit cube,
-/// P1) — the two `mesh_to_volume →` rows record the inbound leak as it behaved
-/// then, when the producer still leaked its clamp and the consumer still
-/// inherited it. Historical evidence, NOT a description of today's behaviour:
+/// P1, the pre-#7447 corner-anchor sizing) — the two `mesh_to_volume →` rows
+/// record the inbound leak as it behaved then. Historical evidence, NOT a
+/// description of today's behaviour:
 ///
 /// | call sequence                              | tets |
 /// |--------------------------------------------|------|
@@ -670,25 +677,14 @@ fn refine_marked_elements_errors_on_out_of_range_tet_index() {
 /// The last row was the direction-flipping confirmation: a *coarser* requested
 /// field yielded a 17× denser mesh because the seed's 0.125 clamp, not the
 /// field, decided the size. With a `mesh_to_volume` seed the baseline and the
-/// refined call returned bit-identical meshes (181 vs 181, equal average edge
-/// length), so assertion (b) could not pass no matter how the field was built —
-/// which is why re-basing alone was not sufficient here. Kept as measured: it
-/// is the evidence for the defect #6211 and #6298 fixed between them.
-///
-/// The producer-side half was filed as **task #6298** — out of #6200's scope
-/// (#6200 owns the `classify_surfaces` feature angle; the leak was a distinct
-/// bug in a different function) — and has since landed. The remaining half,
-/// `refine_volume_with_size_field`'s own outbound `Mesh.MeshSizeFromPoints` /
-/// `MeshSizeFromCurvature` / `MeshSizeExtendFromBoundary` leak, was **#6212**
-/// and is closed by **#6968**, which put all four gmsh entry points on one
-/// scope covering all five size options in both directions. Measured there:
-/// this crate's numbers do not move, because refine already wrote all five
-/// values itself and `MeshSizeExtendFromBoundary` has no effect under the shut
-/// `MeshSizeMin == MeshSizeMax` clamp every reachable `mesh_to_volume` path
-/// writes. The same scope now also returns #7447's `FromPoints = 0` write to
-/// gmsh's default, which leaked would disable point-driven sizing process-wide.
+/// refined call returned bit-identical meshes (181 vs 181), so (b) could not
+/// pass no matter how the field was built. Kept as measured: it is the
+/// evidence for the defect #6211 and #6298 fixed between them.
 #[test]
 fn localized_size_reduction_refines_marked_region_only() {
+    /// Centroid-x lower edge of the far unmarked band (c) is measured over.
+    const FAR_BAND_MIN_X: f64 = 0.75;
+
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
         eprintln!("skipping: libgmsh not available in this build");
         return;
@@ -701,51 +697,33 @@ fn localized_size_reduction_refines_marked_region_only() {
         ..Default::default()
     };
 
-    // Seed mesh. Its ONLY role is to carry a size field into
-    // `refine_with_size_field`, which needs a `VolumeMesh` to attach
-    // per-element hints to. Because that field is UNIFORM, the seed cannot
-    // influence the baseline: `project_per_element_sizes_to_vertices` takes a
-    // min over incident elements (0.5 everywhere regardless of density or
-    // topology), so the background field gmsh receives is the constant 0.5
-    // whatever the seed looked like. That is what removes the
-    // cross-producer confound — the baseline below is produced entirely by the
-    // function under test.
-    //
-    // The seed is hand-built rather than meshed by `mesh_to_volume` for
-    // producer symmetry and determinism — see "Why the seed is hand-built" in
-    // the doc comment above. It is NOT a clamp-leak workaround any more: since
-    // #6211 (consumer) and #6298 (producer) a `mesh_to_volume` seed can no
-    // longer disable the size field. Both surviving reasons are independent of
-    // that, so the fixture stays.
-    let vm_seed = kuhn_6tet_unit_cube_vm();
-    let n_seed_tets = vm_seed.tet_indices().expect("seed is tet-only").len() / 4;
-    assert!(n_seed_tets > 0, "seed must have at least one tet");
+    // One hint carrier for BOTH calls, so the baseline and the refinement
+    // differ in nothing but the hints. Cell width 1/8 puts a vertex plane at
+    // x = 0.5, so the MIN-projected fine front lands exactly on the marked
+    // boundary rather than a cell's width past it.
+    let carrier = kuhn_lattice_unit_cube_vm(8);
+    let n_carrier_tets = carrier.tet_indices().expect("carrier is tet-only").len() / 4;
+    assert_eq!(
+        n_carrier_tets, 3072,
+        "fixture sanity: 6 tets per cell, 8^3 cells"
+    );
 
-    // Baseline: same producer as the refinement, uniform 0.5 field.
-    let vm_baseline = refine_with_size_field(&cube, &vm_seed, &vec![0.5_f64; n_seed_tets], &opts)
-        .expect("baseline refine_with_size_field must succeed");
+    let vm_baseline =
+        refine_with_size_field(&cube, &carrier, &vec![0.5_f64; n_carrier_tets], &opts)
+            .expect("baseline refine_with_size_field must succeed");
 
-    let n_base_tets = vm_baseline.tet_indices().expect("baseline is tet-only").len() / 4;
-    assert!(n_base_tets > 0, "baseline must have at least one tet");
-
-    // Build per-element size hints: 4× finer in marked region (x < 0.5).
-    // Derived per BASELINE tet — `refine_with_size_field` validates the hint
-    // count against the mesh it is handed, so the field must be rebuilt against
-    // whichever mesh serves as the baseline.
-    let per_element_sizes: Vec<f64> = (0..n_base_tets)
+    // 4x finer where the CARRIER tet's centroid is in the marked half.
+    let localized_sizes: Vec<f64> = (0..n_carrier_tets)
         .map(|e| {
-            let cx = tet_centroid_x(&vm_baseline, e);
-            if cx < 0.5 { 0.125 } else { 0.5 }
+            if tet_centroid_x(&carrier, e) < 0.5 {
+                0.125
+            } else {
+                0.5
+            }
         })
         .collect();
-
-    let result = refine_with_size_field(&cube, &vm_baseline, &per_element_sizes, &opts);
-    let vm_refined = result.expect("refine_with_size_field must return Ok");
-
-    assert!(
-        vm_refined.tet_indices().expect("refined is tet-only").len() / 4 > 0,
-        "refined mesh must have at least one tet"
-    );
+    let vm_refined = refine_with_size_field(&cube, &carrier, &localized_sizes, &opts)
+        .expect("refine_with_size_field must return Ok");
 
     // (b) More tets in marked region.
     let base_marked = count_tets_with_centroid_x_lt(&vm_baseline, 0.5);
@@ -754,32 +732,34 @@ fn localized_size_reduction_refines_marked_region_only() {
         refined_marked > base_marked,
         "marked region must have more tets after refinement: \
          baseline={base_marked}, refined={refined_marked}.\n\
-         If those two counts are EQUAL and the whole meshes are bit-identical, \
-         the size field did not reach gmsh at all — most likely one half of the \
-         Mesh.MeshSizeMin/Max clamp discipline has regressed, since it takes \
-         the loss of BOTH to reproduce this symptom. Check \
-         `refine_volume.rs`'s inbound writes at the 'Mesh-size clamp: set \
-         explicitly, never inherited' block (#6211) and \
-         `mesh_size_scope::MeshSizeScope` entered in \
-         `kernel_real.rs::mesh_to_volume` (#6298, #6968). That crate's own \
-         size-option guards — listed in its `mesh_size_scope` module doc — \
-         would have gone red too; if they are green, suspect the size field \
-         after all. See the \
-         'Why the seed is hand-built' note on this test."
+         EQUAL counts mean the size field did not reach gmsh. Check, in \
+         reify-kernel-gmsh's refine_volume.rs, that the PostView background field \
+         is still installed (BackgroundFieldGuard) with Mesh.MeshSizeFromPoints = 0, \
+         and that MeshSizeScope is still entered there: a Mesh.MeshSizeMin/Max \
+         clamp leaked by a sibling entry point pins every element to one size. \
+         That crate's size-option guards (mapped in its mesh_size_scope module \
+         doc) go red on a scope regression; mid_span_size_reduction_refines_the_\
+         mid_span_band here goes red on a background-field one."
     );
 
-    // (c) Unmarked region not over-refined (±25% tolerance).
-    let base_avg = avg_tet_edge_in_region_x_ge(&vm_baseline, 0.5);
-    let refined_avg = avg_tet_edge_in_region_x_ge(&vm_refined, 0.5);
-    if base_avg > 0.0 && refined_avg > 0.0 {
-        let ratio = refined_avg / base_avg;
-        assert!(
-            (0.75..=1.25).contains(&ratio),
-            "unmarked region avg edge ratio {ratio:.3} is outside [0.75, 1.25] — \
-             refine_with_size_field over-refines the unmarked region \
-             (baseline avg={base_avg:.4}, refined avg={refined_avg:.4})"
-        );
-    }
+    // (c) The far unmarked band is not over-refined (±25%).
+    let (base_far_count, base_far_mean) =
+        mean_tet_edge_where(&vm_baseline, |cx| cx >= FAR_BAND_MIN_X);
+    let (refined_far_count, refined_far_mean) =
+        mean_tet_edge_where(&vm_refined, |cx| cx >= FAR_BAND_MIN_X);
+    assert!(
+        base_far_count > 0 && refined_far_count > 0,
+        "both meshes must have tets in the far band x >= {FAR_BAND_MIN_X}: \
+         baseline={base_far_count}, refined={refined_far_count}"
+    );
+    let ratio = refined_far_mean / base_far_mean;
+    assert!(
+        (0.75..=1.25).contains(&ratio),
+        "far unmarked band (x >= {FAR_BAND_MIN_X}) mean tet edge ratio {ratio:.3} is outside \
+         [0.75, 1.25] — refine_with_size_field over-refines away from the marked region \
+         (baseline {base_far_mean:.4} over {base_far_count} tets, \
+         refined {refined_far_mean:.4} over {refined_far_count} tets)"
+    );
 }
 
 /// The size field's INTERIOR is honoured, not just its boundary values.
@@ -939,39 +919,6 @@ fn tet_centroid_x(vm: &VolumeMesh, elem_idx: usize) -> f64 {
 fn count_tets_with_centroid_x_lt(vm: &VolumeMesh, threshold: f64) -> usize {
     let n = vm.tet_indices().expect("fixture is tet-only").len() / 4;
     (0..n).filter(|&e| tet_centroid_x(vm, e) < threshold).count()
-}
-
-fn avg_tet_edge_in_region_x_ge(vm: &VolumeMesh, threshold: f64) -> f64 {
-    let tet_indices = vm.tet_indices().expect("fixture is tet-only");
-    let n = tet_indices.len() / 4;
-    let mut total_edge = 0.0_f64;
-    let mut count = 0usize;
-    for e in 0..n {
-        if tet_centroid_x(vm, e) < threshold {
-            continue;
-        }
-        let base = e * 4;
-        let verts: Vec<[f64; 3]> = (0..4)
-            .map(|k| {
-                let vi = tet_indices[base + k] as usize;
-                [
-                    vm.vertices[vi * 3] as f64,
-                    vm.vertices[vi * 3 + 1] as f64,
-                    vm.vertices[vi * 3 + 2] as f64,
-                ]
-            })
-            .collect();
-        for i in 0..4 {
-            for j in (i + 1)..4 {
-                let dx = verts[i][0] - verts[j][0];
-                let dy = verts[i][1] - verts[j][1];
-                let dz = verts[i][2] - verts[j][2];
-                total_edge += (dx * dx + dy * dy + dz * dz).sqrt();
-                count += 1;
-            }
-        }
-    }
-    if count == 0 { 0.0 } else { total_edge / count as f64 }
 }
 
 // ---------------------------------------------------------------------------

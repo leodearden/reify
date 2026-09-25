@@ -1051,7 +1051,7 @@ fn nearest_element_size_at(
 /// the surface are necessarily coarse, and a lone sample point can pick up
 /// more of that coarse interpolation's gradient than the "roughly unchanged"
 /// claim intends. Averaging over a whole region is the same robust
-/// methodology `tests/volume_refine_tests.rs::avg_tet_edge_in_region_x_ge`
+/// methodology `tests/volume_refine_tests.rs::mean_tet_edge_where`
 /// already relies on for its own "unmarked region roughly unchanged" check —
 /// against that identical 8-vertex box surface, the regional average holds
 /// within tolerance even though a single-point sample would not.
