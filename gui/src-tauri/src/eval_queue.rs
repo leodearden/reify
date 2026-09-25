@@ -425,7 +425,7 @@ struct QueueState {
     pending: VecDeque<Entry>,
     ledger: EditLedger,
     /// A drainer is posted or running; it clears this when it finds the queue
-    /// empty, under the same lock as every push.
+    /// empty, under the same lock as every push, or when it unwinds.
     draining: bool,
     /// Accepted edits and evaluations not yet finished, queued or running.
     outstanding: usize,
@@ -484,6 +484,20 @@ impl QueueState {
             }
         }
         self.pending = kept;
+    }
+}
+
+/// Repairs the queue if its drainer unwinds past `process`'s own catches, as a
+/// job's panic payload that panics again when dropped makes it. Otherwise
+/// `draining` would stay set with no drainer behind it, and every later request
+/// would queue unrun.
+struct DrainerUnwind<'a>(&'a Arc<EvalQueue>);
+
+impl Drop for DrainerUnwind<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.recover_from_unwound_drainer();
+        }
     }
 }
 
@@ -577,8 +591,34 @@ impl EvalQueue {
 
     /// The drainer: run queued entries one at a time until none are left.
     fn drain(self: Arc<Self>) {
+        let _unwind = DrainerUnwind(&self);
         while let Some(entry) = self.next_entry() {
             self.process(entry);
+        }
+    }
+
+    /// Hand the queue on after its drainer unwound: post a new drainer for what
+    /// is still queued — or, when none can be posted, resolve all of it `Err` —
+    /// and recount `outstanding`, since nothing is running any more.
+    fn recover_from_unwound_drainer(self: &Arc<Self>) {
+        let mut state = self.lock_state();
+        state.draining = false;
+        if !state.pending.is_empty()
+            && let Err(error) = self.ensure_drainer(&mut state)
+        {
+            let message = format!("the evaluation could not be rescheduled: {error}");
+            for entry in std::mem::take(&mut state.pending) {
+                entry.into_job().fail(message.clone());
+            }
+        }
+        let was_busy = state.outstanding > 0;
+        state.outstanding = state
+            .pending
+            .iter()
+            .filter(|entry| entry.generation().is_some())
+            .count();
+        if was_busy && state.outstanding == 0 {
+            self.report(EvalActivity::Idle);
         }
     }
 

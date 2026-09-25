@@ -1,5 +1,6 @@
 //! Tests for [`crate::eval_queue`].
 
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
 use crate::diff::{StateDelta, advance_baseline, compute_delta, diff_gui_state};
@@ -614,6 +615,76 @@ fn a_refused_drainer_resolves_the_ticket_err_and_leaves_the_queue_idle() {
         Some(&EvalActivity::Evaluating),
         "a refused request must not leave the queue busy"
     );
+
+    rig.executor.refuse(false);
+    let next = rig.evaluation("next");
+    rig.executor.run_pending();
+    assert_eq!(settled(next), Ok("next".to_string()));
+    assert_eq!(rig.ran(), ["next"]);
+}
+
+/// A panic payload that panics again when dropped, `.0` more times: the one way
+/// a job's panic escapes both of the queue's catches, since each catch drops
+/// the payload it caught.
+struct PanickingPayload(u32);
+
+impl Drop for PanickingPayload {
+    fn drop(&mut self) {
+        if let Some(again) = self.0.checked_sub(1) {
+            std::panic::panic_any(PanickingPayload(again));
+        }
+    }
+}
+
+/// Submit a job whose panic unwinds out of the drainer running it, then one
+/// evaluation behind it.
+fn escaping_then_behind(rig: &ManualRig) -> (EvalTicket<()>, EvalTicket<String>) {
+    let escaping = rig.queue.submit(EvalRequest::<()>::evaluation(|| {
+        std::panic::panic_any(PanickingPayload(2))
+    }));
+    (escaping, rig.evaluation("behind"))
+}
+
+fn run_pending_expecting_an_unwind(rig: &ManualRig) {
+    let unwound = std::panic::catch_unwind(AssertUnwindSafe(|| rig.executor.run_pending()));
+    assert!(
+        unwound.is_err(),
+        "the payload's last panic must escape the drainer"
+    );
+}
+
+#[test]
+fn a_drainer_that_unwinds_hands_what_is_queued_to_a_new_drainer() {
+    let rig = ManualRig::new();
+    let (escaping, behind) = escaping_then_behind(&rig);
+
+    run_pending_expecting_an_unwind(&rig);
+    rig.executor.run_pending();
+
+    assert!(settled(escaping).is_err());
+    assert_eq!(settled(behind), Ok("behind".to_string()));
+    assert_eq!(rig.ran(), ["behind"]);
+    assert_eq!(
+        rig.timeline(),
+        ["Evaluating", "delta behind", "Idle"],
+        "the busy period still ends"
+    );
+}
+
+#[test]
+fn a_drainer_that_unwinds_with_no_executor_left_fails_what_is_queued() {
+    let rig = ManualRig::new();
+    let (escaping, behind) = escaping_then_behind(&rig);
+    rig.executor.refuse(true);
+
+    run_pending_expecting_an_unwind(&rig);
+
+    assert!(settled(escaping).is_err());
+    assert!(
+        settled(behind).is_err(),
+        "a request no drainer can reach must resolve Err, not hang"
+    );
+    assert_eq!(rig.timeline(), ["Evaluating", "Idle"]);
 
     rig.executor.refuse(false);
     let next = rig.evaluation("next");
