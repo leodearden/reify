@@ -2666,8 +2666,10 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// # These are DELIBERATE before-images. Do not "fix" them.
 ///
 /// Every site below is a committed RED before-image for another PRD, and the
-/// conformance violation IS the fixture's content. Several of these files say so
-/// in their own header, verbatim: *"This file must EVAL CLEAN (exit 0) today."*
+/// conformance violation IS the fixture's content. Each `dcr_*` file's own
+/// header says so: it records, SHA-stamped, that the file evaluated clean at
+/// decompose, then a POST-δ block names THIS chokepoint as the source of its
+/// current exit 1 and says how its owning leaf reads its own signal instead.
 /// `dcr_solver_load_dropped_dimensioned.ri` exists for no other purpose than to
 /// show that the units-CORRECT `force: 1000N` contributes exactly ZERO force to
 /// `solve_elastic_static` while the bare control contributes 1000 N. Dimension
