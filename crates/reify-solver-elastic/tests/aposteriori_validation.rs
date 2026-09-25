@@ -2060,12 +2060,13 @@ fn l_shaped_adaptive_vs_uniform_rate_gap() {
 // vertex count.
 //
 // `PLATE_MESH_SIZE = 0.09` is the specific value measured during impl to give
-// BOTH a genuine localization signal (measured ratio ≈1.51, against the
-// test's conservatively-calibrated `K = 1.3` — see the test's own comment for
-// why `K` sits well below the measured value rather than pinned to it) AND a
-// genuine (not noise-dominated) peak-von-Mises INCREASE on the first Dörfler
-// refine — the same "sweep for a clean, robust configuration" methodology
-// already used for `L_SHAPE_MESH_SIZE`. Coarser meshes (`>= 0.15`)
+// BOTH a genuine localization signal (measured ratio ≈1.51 at the fixture's
+// original task-#3002 calibration, 7.80 on the #7447 background-field seed;
+// against the test's conservatively-calibrated `K = 1.3` — see the test's own
+// comment for why `K` sits below the measured value rather than pinned to it)
+// AND a genuine (not noise-dominated) peak-von-Mises INCREASE on the first
+// Dörfler refine — the same "sweep for a clean, robust configuration"
+// methodology already used for `L_SHAPE_MESH_SIZE`. Coarser meshes (`>= 0.15`)
 // under-resolve the hole boundary badly enough that the coarse-mesh peak sits
 // far below `3·σ_far` and a single refine's recovered peak barely moves;
 // `0.09` starts close enough to the hole's curvature scale (`hole_radius /
@@ -2075,6 +2076,30 @@ fn l_shaped_adaptive_vs_uniform_rate_gap() {
 // see the test's `FAR_RADIUS_LO`/`FAR_RADIUS_HI` comment for the bounded-shell
 // reasoning that excludes the loaded edge's own discretization artifact from
 // the "far field" baseline.
+//
+// # Calibration note: one refine, not two (#7447)
+//
+// Since #7447 the refiner drives gmsh from a background size field, so a
+// Dörfler refine really applies h/2 at every marked element. The test's
+// original `max_refinement_iterations: 2` was set against the pre-#7447
+// quasi-uniform refiner; on the #7447 tree it reaches a third solve whose
+// CG exhausts `CgSolverOptions::default()`'s 1000 iterations, and
+// `solve_p1_pipeline` panics. Measured 2026-09-25 (libgmsh 4.15.2; tet, dof
+// and CG counts are load-independent because gmsh is pinned to one thread):
+//
+// | solve | marked        | tets  | dofs  | CG iters (cap 1000) | relative_error | peak VM |
+// |-------|---------------|-------|-------|---------------------|----------------|---------|
+// | 0     | —             | 2841  | 2559  | 379                 | 0.0812         | 3.035   |
+// | 1     | 425 of 2841   | 10494 | 8028  | 606                 | 0.0697         | 3.070   |
+// | 2     | 2679 of 10494 | 61468 | 39111 | 1000, unconverged   | —              | —       |
+//
+// The budget is therefore one refinement: it keeps a real refine
+// (`history.len() == 2`), every solve converges inside the default CG cap,
+// and the test ran in 2.3-3.2 s wall (4/4 runs, host load ~113-115 on 32
+// cores).
+// The recovered peak (`peak VM`, `PEAK_REGION_RADIUS`-restricted) rises
+// 3.035 -> 3.070, under `BAND`'s 3.45 bound. Both peaks already sit above
+// `3·σ_far`: what the test pins is the increase and the upper band.
 //
 // A single anchor node's z-DOF (nearest `(PLATE_HALF_WIDTH, 0, 0)`) is pinned
 // to remove an otherwise-unconstrained rigid-body Z-translation: neither
@@ -2414,11 +2439,12 @@ fn plate_with_hole_indicator_localizes_and_peak_von_mises_approaches_kirsch_scf_
         near_mean / far_mean,
     );
 
-    // K=1.3 is calibrated conservatively below the ~1.51 ratio measured
-    // during impl at (PLATE_MESH_SIZE, NEAR_RADIUS, FAR_RADIUS_LO/HI) above —
-    // leaving comfortable headroom (mirroring the L-shaped localization
-    // test's own measured-ratio-vs-K margin), rather than pinning K to the
-    // measured value itself.
+    // K=1.3 was calibrated conservatively below the ~1.51 ratio measured at
+    // task #3002's impl at (PLATE_MESH_SIZE, NEAR_RADIUS, FAR_RADIUS_LO/HI)
+    // above — leaving comfortable headroom (mirroring the L-shaped
+    // localization test's own measured-ratio-vs-K margin), rather than
+    // pinning K to the measured value itself. The #7447 background-field
+    // seed measures 7.80 (see the fixture's calibration notes).
     const K: f64 = 1.3;
     assert!(
         near_mean >= K * far_mean,
@@ -2428,9 +2454,11 @@ fn plate_with_hole_indicator_localizes_and_peak_von_mises_approaches_kirsch_scf_
     );
 
     let mut recording = RecordingProblem::new(problem);
+    // One refinement — see the fixture's "one refine, not two (#7447)"
+    // calibration note for the measured per-solve table.
     let budget = RefinementBudget {
         target_accuracy: 1e-6,
-        max_refinement_iterations: 2,
+        max_refinement_iterations: 1,
         max_dofs: 1_000_000,
     };
     let status = run_adaptive_refinement(&mut recording, &budget, DORFLER_THETA)
