@@ -1459,18 +1459,12 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       const { camera, scene, renderer, controls } = vp;
 
-      // Apply pose — set up before lookAt/controls.update so orientation is correct.
-      //
-      // Setting camera.up alone changes the camera's OWN orientation basis but NOT the
-      // OrbitControls orbit frame: three 0.183.2 derives that frame once, in the
-      // constructor (OrbitControls.js:406), and never again.  Without syncOrbitUpAxis
-      // the very next orbit_camera/zoom_camera would swing the camera about the
-      // PREVIOUS axis (#6497).  It must run before controls.update() below, because
-      // update() reads the frame at OrbitControls.js:695/784 to rotate into and out of
-      // it — a sync afterwards would take effect only on the following command.
+      // Apply pose — set up before lookAt/controls.update so orientation is correct
       camera.position.set(...position);
       if (up !== undefined) {
         camera.up.set(...up);
+        // Re-derive the OrbitControls orbit frame from the new up BEFORE controls.update()
+        // (docs/debug-mcp-contract.md §6 point 2, #6497).
         if (controls) syncOrbitUpAxis(controls);
       }
       if (controls) {
@@ -1491,19 +1485,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       camera.updateMatrixWorld();
       renderer.render(scene, camera);
 
-      // `applied` is ALWAYS the LIVE pose after OrbitControls has applied its
-      // constraints — never the request.  OrbitControls can legitimately relocate a
-      // commanded pose (_clampDistance on the orbit radius, minTargetRadius /
-      // maxTargetRadius on the target), and echoing the request back would report every
-      // such relocation as a faithful success: the #6496 signature, where a fitted
-      // 75 mm part was reported at the distance asked for while sitting at the floor.
-      //
-      // These are the same four field reads, from the same sources, as Viewport.tsx's
-      // snapshotCamera() (line 209) — so the pose set_camera reports, the pose persisted
-      // to the viewport store, and viewport_state agree by construction rather than by
-      // coincidence.  `target` is the one exception: the no-controls branch oriented via
-      // camera.lookAt, which leaves no target state to read, so there the request is the
-      // only truthful answer available.
+      // `applied` is the LIVE post-constraint pose (same reads as Viewport.tsx
+      // snapshotCamera), never the request; see docs/debug-mcp-contract.md §6 point 1.
       const appliedPosition: [number, number, number] = [
         camera.position.x,
         camera.position.y,
@@ -1898,16 +1881,6 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
      * Omitted x/y → canvas centre (rect.left+rect.width/2, rect.top+rect.height/2).
      * Lazy import of Raycaster/Vector2 avoids polluting the top-level three import
      * (sibling tests vi.mock('three') with only {Box3,Vector3}).
-     *
-     * INVARIANT: the pick camera is the LIVE camera.  Raycaster.setFromCamera consumes
-     * camera.matrixWorld and projectionMatrixInverse only, and nothing on the camera-move
-     * path leaves matrixWorld consistent: OrbitControls.update() ends with
-     * object.lookAt(target), and Object3D.lookAt() refreshes matrixWorld BEFORE writing
-     * the new quaternion — so matrixWorld keeps the current position with the previous
-     * rotation.  A render would resynchronise it, but Viewport.tsx's loop is
-     * render-on-demand (controls.update() every frame, renderer.render() only when
-     * needsRender), so a render is not guaranteed to have happened.  Hence the explicit
-     * updateMatrixWorld() below (#6496).
      */
     pick_entity_at: async (params) => {
       const picked = pickViewport(ctx, params);
@@ -1938,9 +1911,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       );
       const rc = new Raycaster();
       (rc as any).firstHitOnly = true;
-      // Resynchronise matrixWorld with the live position/quaternion before casting —
-      // see the INVARIANT note above.  Query-only: updateMatrixWorld() derives the
-      // matrix from state the camera already holds, so it changes no pose.
+      // Resync matrixWorld before casting: a camera move leaves its rotation stale. See
+      // docs/debug-mcp-contract.md §5 'The pick camera is the render camera' (#6496).
       vp.camera.updateMatrixWorld();
       rc.setFromCamera(ndc, vp.camera);
 
