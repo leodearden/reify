@@ -55,10 +55,14 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// - `speed` → `Velocity` (m·s⁻¹, from mm·min⁻¹)
 /// - `nominal_temp` → `Temperature` (K, from °C via the +273.15 the language
 ///   itself declares for `degC`)
+/// - `nominal_temp_observed` → `Bool`, `false` exactly when the parser saw no
+///   `M104`/`M109` before the bead, in which case `nominal_temp` carries the
+///   `0degC` not-observed sentinel ([`NOT_OBSERVED_NOMINAL_TEMP_C`])
 ///
-/// `layer_index` / `index` / `bead_indices` stay `Int`: dimensionless by
-/// nature. Because each field's declared type now names its own unit, there is
-/// no carve-out left to remember or to document. The `.ri` half of the
+/// `layer_index` / `index` / `bead_indices` stay `Int` and
+/// `nominal_temp_observed` stays `Bool`: dimensionless by nature. Because each
+/// field's declared type now names its own unit, there is no carve-out left to
+/// remember or to document. The `.ri` half of the
 /// contract is `crates/reify-compiler/stdlib/fdm_slice.ri`, whose declared
 /// field types must agree with the list above; `fdm_slice_e2e.rs`'s
 /// `stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime` is what
@@ -125,6 +129,10 @@ fn bead_to_value(b: &Bead) -> Value {
             (
                 "nominal_temp",
                 super::temperature_deg_c(b.nominal_temp.unwrap_or(NOT_OBSERVED_NOMINAL_TEMP_C)),
+            ),
+            (
+                "nominal_temp_observed",
+                Value::Bool(b.nominal_temp.is_some()),
             ),
             ("speed", super::velocity_mm_per_min(b.speed)),
         ],
