@@ -443,7 +443,7 @@ describe('debug bridge set_camera', () => {
       const stub = makeViewportStub();
       // Stand-in for OrbitControls._clampDistance: push the camera back out to the
       // floor along the same direction.  This is exactly what the real 0.5 m floor did
-      // to a fitted 75 mm part (#6496) while set_camera reported the request as applied.
+      // to a fitted 75 mm part (#6965) while set_camera reported the request as applied.
       const FLOOR = 0.5;
       stub.controls.update.mockImplementation(() => {
         const t = stub.controls.target;

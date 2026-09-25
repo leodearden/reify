@@ -83,8 +83,8 @@ describe("evaluateAssertion", () => {
 
   // 'atMost' is the mirror of 'atLeast' and exists because neither of the other
   // three ops can express an UPPER bound. Task 6965 needs exactly that: "the live
-  // orbit distance is BELOW the old 0.5 m floor" (the #6496 regression) is not
-  // expressible as atLeast, and equals cannot tolerate float drift in a distance
+  // orbit distance is BELOW the old 0.5 m floor" (the litter-tray round-3 regression) is
+  // not expressible as atLeast, and equals cannot tolerate float drift in a distance
   // computed through a projection.
   it("'atMost' passes when actual <= expected (3 <= 50)", () => {
     const a: Assertion = { path: "count", op: "atMost", expected: 50 };

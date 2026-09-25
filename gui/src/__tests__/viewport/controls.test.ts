@@ -103,7 +103,7 @@ describe('createControls', () => {
   // no bounds to derive a floor from.  It applies the SAME policy to the startup orbit
   // distance instead, which rules out both degenerate seeds: a guessed absolute blocks
   // commanded poses closer than itself (0.5 m made a fitted 75 mm part unreachable —
-  // #6496), while ORBIT_MIN_DISTANCE_FLOOR blocks nothing at all and lets the wheel dolly
+  // #6965), while ORBIT_MIN_DISTANCE_FLOOR blocks nothing at all and lets the wheel dolly
   // an empty scene to a 1e-6 radius that is ~160 multiplicative ticks from workable.
   it('seeds minDistance by applying the policy to the startup orbit distance', () => {
     const { camera } = setup();
@@ -141,7 +141,10 @@ describe('createControls', () => {
 // retuning the padding or the field of view moves these expectations with the shipped
 // behaviour instead of leaving them pinned to a stale hand-derived multiple.
 describe('orbitFloorFor', () => {
-  /** The two real scales from the #6496 defect report, four orders of magnitude apart. */
+  /**
+   * Two real scales, four orders of magnitude apart: the 75 mm litter-tray round-3 probe
+   * (#6965) and the 1 m printer from the printer_v01 repro (#6496).
+   */
   const SCALES = [
     { label: '75 mm probe', radius: 0.0375 },
     { label: '1 m printer', radius: 0.87 },

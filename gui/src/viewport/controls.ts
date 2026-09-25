@@ -20,7 +20,7 @@ export interface ControlsContext {
  *
  * Neither degenerate alternative is used.  A guessed absolute (the previous 0.5 m)
  * blocks commanded poses: a fitted 75 mm part sits at ~86 mm, so the clamp silently
- * relocated the camera ~6× too far out (#6496).  Seeding `ORBIT_MIN_DISTANCE_FLOOR`
+ * relocated the camera ~6× too far out (#6965).  Seeding `ORBIT_MIN_DISTANCE_FLOOR`
  * instead blocks nothing at all — including the wheel, which can then dolly an empty
  * scene to a 1e-6 orbit radius that takes ~160 multiplicative ticks to climb out of.
  *

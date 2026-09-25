@@ -610,7 +610,7 @@ describe('debug contract — small-part camera framing (real three + real OrbitC
   let capturedHandler: DebugRequestHandler | undefined;
   let controls: import('three/addons/controls/OrbitControls.js').OrbitControls;
 
-  // A 75 mm-long probe, matching the dogfood part in #6496.  Dimensions in metres.
+  // A 75 mm-long probe, matching the litter-tray round-3 dogfood part (#6965).  Metres.
   const PROBE = { x: 0.075, y: 0.02, z: 0.01 };
   // fitCameraToBox frames the sphere circumscribing the box: radius = ½·diagonal.
   const RADIUS = 0.5 * Math.hypot(PROBE.x, PROBE.y, PROBE.z);

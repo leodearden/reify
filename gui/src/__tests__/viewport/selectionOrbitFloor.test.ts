@@ -1,5 +1,5 @@
 /**
- * Does the SHIPPED fitToView path actually establish the orbit floor? (#6496)
+ * Does the SHIPPED fitToView path actually establish the orbit floor? (#6965)
  *
  * Every other test of the floor supplies its own wiring: `fitCamera.test.ts` calls
  * `fitCameraToBox` directly, and `debugContract.test.ts` installs a viewport whose
@@ -29,7 +29,7 @@ import { createSelection } from '../../viewport/selection';
 import { CAMERA_FOV_DEG } from '../../viewport/scene';
 import { fittedDistanceFor, orbitFloorFor } from '../../viewport/orbitDistance';
 
-/** The 75 mm probe from the #6496 report — the scale the old 0.5 m floor swallowed. */
+/** The 75 mm litter-tray probe (#6965) — the scale the old 0.5 m floor swallowed. */
 const PROBE = { x: 0.075, y: 0.02, z: 0.01 };
 const RADIUS = 0.5 * Math.hypot(PROBE.x, PROBE.y, PROBE.z);
 const ASPECT = 800 / 600;
@@ -46,8 +46,8 @@ const FLOAT32_RELATIVE_DIGITS = 6;
 
 /**
  * A sentinel no policy value could coincide with, so "rewritten" and "happened to already
- * hold the right number" stay distinguishable.  0.5 is also the exact value #6496 was
- * about, which makes a regression to the old behaviour read as an unchanged sentinel.
+ * hold the right number" stay distinguishable.  0.5 is also the exact old floor #6965
+ * replaced, which makes a regression to the old behaviour read as an unchanged sentinel.
  */
 const SENTINEL_MIN_DISTANCE = 0.5;
 

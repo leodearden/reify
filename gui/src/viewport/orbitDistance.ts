@@ -24,8 +24,8 @@
  * What this replaces, and why a fraction rather than a smaller constant: the floor used to
  * be an absolute 0.5 m in a workspace whose parts span four orders of magnitude.  A 75 mm
  * probe fits at ~86 mm, so the floor silently relocated the camera ~6× too far out and made
- * `zoom_camera` a no-op (#6496).  Any absolute value merely moves that cliff to some other
- * part size; only a fraction cannot recur.
+ * `zoom_camera` a no-op (#6965, litter-tray round-3 dogfood).  Any absolute value merely
+ * moves that cliff to some other part size; only a fraction cannot recur.
  */
 
 /**
@@ -78,7 +78,7 @@ export const ORBIT_MIN_DISTANCE_FLOOR = 1e-6;
 /**
  * The far limit, deliberately left an ABSOLUTE distance rather than model-derived.
  *
- * Unlike the floor it is not implicated by #6496 and has no scale cliff in reach: it binds
+ * Unlike the floor it is not implicated by #6965 and has no scale cliff in reach: it binds
  * only on a model whose bounding sphere exceeds ~227 m in radius (≈455 m across), since
  * such a model's own fitted distance would exceed it and `_clampDistance` would pull the
  * framing inward.  Reify parts are four orders of magnitude smaller than that.  Should a
