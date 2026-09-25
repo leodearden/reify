@@ -563,9 +563,9 @@ pub struct EngineSession {
     /// `commit_state` cycle, or before any reload has been attempted).
     ///
     /// Set by `record_reload_error` at the `commands::update_source_impl`
-    /// chokepoint — AFTER `with_engine_lock` has caught and converted any
-    /// `check()` panic to `Err` — so recording is panic-safe.  Covers both
-    /// the compile-error path and the check-panic path uniformly.
+    /// chokepoint: inside the failing reload's own lock for a compile error,
+    /// and in a second acquisition — after `with_engine_lock` has converted it
+    /// to `Err` — for a `check()` panic.  Covers both paths uniformly.
     ///
     /// Cleared in `commit_state` (alongside `compile_failure`) so any
     /// successful reeval auto-resets staleness.
@@ -3298,10 +3298,10 @@ impl EngineSession {
 
     /// Record a hot-reload failure message as the authoritative staleness signal.
     ///
-    /// Called from `commands::update_source_impl` AFTER `with_engine_lock` has
-    /// caught and converted any `check()` panic to `Err` — so this call is always
-    /// panic-safe.  Covers both the compile-error path and the check-panic path
-    /// uniformly: any `Err` return from `update_source` triggers this recording.
+    /// Called from `commands::update_source_impl` for any `Err` from
+    /// `update_source`: inside the same lock as the failing reload, or — for a
+    /// `check()` panic, which `with_engine_lock` converts to `Err` — in a second
+    /// acquisition. Covers the compile-error and check-panic paths uniformly.
     ///
     /// Cleared in `commit_state` so a subsequent successful reeval auto-resets
     /// the staleness flag.

@@ -4,12 +4,13 @@
 // registration is automatic via the cfg(has_occt)-gated inventory::submit! in
 // reify-kernel-occt::register. The kernel_status::current_kernel_status() call surfaces the
 // build-time OCCT_AVAILABLE constant for the startup banner. Wraps in AppState and starts the
-// Tauri application with all command handlers. After state-mutating commands, diffs old vs new
-// state and emits targeted events.
+// Tauri application with all command handlers. Engine-touching commands submit to the
+// evaluation queue, which publishes each evaluation's delta and the evaluation status through
+// TauriEvalObserver.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use tracing::warn;
@@ -19,11 +20,12 @@ use tauri::{Emitter, Manager};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::SolverProgressSink;
 use reify_gui::commands::AppState;
-use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
+use reify_gui::diff::{StateDelta, delta_to_events};
 use reify_gui::engine::{
     AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaConvergenceEmitter,
     FeaDiagnosticsEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter,
 };
+use reify_gui::eval_queue::{EditOrder, EvalActivity, EvalObserver, EvalQueue, EvalRequest};
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
@@ -52,15 +54,23 @@ fn emit_status(app: &tauri::AppHandle, phase: &str) {
     .ok();
 }
 
-/// RAII guard that emits `evaluation-status: idle` when dropped.
-///
-/// Ensures the frontend never gets stuck in "evaluating" state, even if
-/// a called function panics (provided the panic is caught or unwinds).
-struct IdleGuard(tauri::AppHandle);
+/// Tells the frontend what the evaluation queue did: its activity as
+/// `evaluation-status`, and each published delta as targeted events.
+struct TauriEvalObserver {
+    app: tauri::AppHandle,
+}
 
-impl Drop for IdleGuard {
-    fn drop(&mut self) {
-        emit_status(&self.0, "idle");
+impl EvalObserver for TauriEvalObserver {
+    fn activity(&self, activity: EvalActivity) {
+        let phase = match activity {
+            EvalActivity::Evaluating => "evaluating",
+            EvalActivity::Idle => "idle",
+        };
+        emit_status(&self.app, phase);
+    }
+
+    fn delta(&self, delta: &StateDelta) {
+        emit_delta(&self.app, delta);
     }
 }
 
@@ -249,7 +259,8 @@ impl SolverProgressSink for TauriSolverProgressEmitter {
     }
 }
 
-/// Create a FileWatcher for the given file, wired to update the engine and emit events.
+/// Create a FileWatcher for the given file: a change queues a reload of it and
+/// hands the editor the new content; a removal tells the editor.
 fn create_watcher(
     app_handle: &tauri::AppHandle,
     file_path: &std::path::Path,
@@ -263,46 +274,18 @@ fn create_watcher(
             FileEvent::Changed(changed_path) => {
                 if let Ok(content) = std::fs::read_to_string(&changed_path) {
                     let state: tauri::State<'_, AppState> = handle.state();
-                    let path_str = changed_path.to_string_lossy().to_string();
+                    let evals: tauri::State<'_, Arc<EvalQueue>> = handle.state();
+                    // Not awaited: the queue publishes the reload, and this
+                    // callback must never wait on an evaluation, because
+                    // `FileWatcher::drop` joins the thread it runs on.
+                    drop(evals.submit(reify_gui::commands::disk_reload_edit(
+                        Arc::clone(&state.engine),
+                        changed_path.clone(),
+                    )));
 
-                    emit_status(&handle, "evaluating");
-                    {
-                        let _idle = IdleGuard(handle.clone());
-                        // reload_for_watch_if_changed_impl returns Ok(Some) on a
-                        // real reload: success gives the fresh state; failure gives
-                        // the last-good state carrying the reload-error diagnostic in
-                        // compile_diagnostics. The failure path therefore surfaces a
-                        // compile-diagnostics Tauri event to the frontend instead of
-                        // being silently dropped (the former behaviour with
-                        // update_source_impl's Err branch).
-                        //
-                        // Ok(None) is this process's own write coming back: nothing
-                        // was recompiled, so there is no delta to emit. The
-                        // `file-changed` event below still fires, because that is how
-                        // the editor buffer learns what a parameter write put on disk
-                        // — the echo the guard drops is the redundant RECOMPILE, not
-                        // the reconciliation.
-                        // Defense-in-depth (task 5357): this is the
-                        // highest-frequency full-recompile path (edit the .ri on
-                        // disk → notify event → recompile), and it runs on the
-                        // FileWatcher's own worker thread (watcher.rs spawns it
-                        // with a bare `std::thread::spawn`, i.e. the default
-                        // ~2 MiB stack). Route it onto the large-stack thread
-                        // like the Tauri-command entry points. The scoped helper
-                        // borrows the locals/`State` deref directly — no clone.
-                        let reload_result = reify_gui::large_stack::run_on_large_stack(|| {
-                            reify_gui::commands::reload_for_watch_if_changed_impl(
-                                &state.engine,
-                                &path_str,
-                                &content,
-                            )
-                        });
-                        if let Ok(Some(gui_state)) = reload_result {
-                            let delta = compute_delta(&state.last_state, &gui_state);
-                            emit_delta(&handle, &delta);
-                        }
-                    }
-
+                    // Sent even for this process's own write coming back, which
+                    // the reload skips: it is how the editor buffer learns what
+                    // a parameter write put on disk.
                     handle
                         .emit(
                             "file-changed",
@@ -337,156 +320,131 @@ fn create_watcher(
     }
 }
 
+/// Point the file watcher at `file`, replacing the previous one.
+fn watch_file(app: &tauri::AppHandle, state: &AppState, file: &Path) {
+    let watcher = create_watcher(app, file);
+    if let Ok(mut watcher_guard) = state.watcher.lock() {
+        *watcher_guard = watcher;
+    }
+}
+
 // --- Tauri command wrappers ---
-// These thin wrappers delegate to the _impl functions in commands.rs,
-// extracting the engine from Tauri's managed state.
-// State-mutating commands emit evaluation-status and targeted events.
+// Engine-touching commands are async: each submits a request to the evaluation
+// queue and awaits its reply, so no thread — the GTK main thread least of all —
+// blocks on engine work, and the queue publishes deltas and evaluation status.
+// The remaining commands never touch the engine, so they stay sync.
+
+/// Run `call` against the engine as an ordered request that publishes nothing.
+async fn engine_call<T: Send + 'static>(
+    state: &AppState,
+    evals: &Arc<EvalQueue>,
+    call: impl FnOnce(&Mutex<EngineSession>) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let engine = Arc::clone(&state.engine);
+    evals
+        .submit(EvalRequest::engine_call(move || call(&engine)))
+        .await
+}
 
 #[tauri::command]
-fn get_initial_state(
-    app: tauri::AppHandle,
+async fn get_initial_state(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
 ) -> Result<reify_gui::types::GuiState, String> {
-    // Task 5772: engine-bearing projection commands run on the PERSISTENT
-    // large-stack worker. Same 256 MiB headroom as the compile tier, but one
-    // mapping for the process lifetime instead of one per call — these fire far
-    // too often for a fresh 256 MiB mmap each. The worker takes `'static`
-    // closures, so the `Arc` is cloned and the owned args move in; `emit_status`,
-    // the `IdleGuard`, `compute_delta` and `emit_delta` all STAY on the command
-    // thread, mirroring how 5357 wrapped the compile paths.
     let engine = Arc::clone(&state.engine);
-    let result =
-        reify_gui::large_stack::run_on_worker(move || {
-            reify_gui::commands::get_initial_state_impl(&engine)
-        });
-    if let Ok(ref gui_state) = result {
-        // Store as last_state so subsequent commands produce correct diffs
-        let delta = compute_delta(&state.last_state, gui_state);
-        emit_delta(&app, &delta);
-        emit_status(&app, "idle");
-    }
-    result
+    evals
+        .submit(reify_gui::commands::initial_state_evaluation(engine))
+        .await
 }
 
 /// The DURABLE parameter write (INV-GUI-3, task 5099 η) — one per user gesture.
 #[tauri::command]
-fn set_parameter(
-    app: tauri::AppHandle,
+async fn set_parameter(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     cell_id: String,
     value: String,
-) -> Result<reify_gui::types::GuiState, String> {
-    emit_status(&app, "evaluating");
-    let _idle = IdleGuard(app.clone());
+    order: EditOrder,
+) -> Result<(), String> {
     let engine = Arc::clone(&state.engine);
-    let result = reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::set_parameter_impl(&engine, &cell_id, &value)
-    });
-    // BOTH arms emit, which is what makes this command differ from every other
-    // one here. A refusal is a state mutation: it discards whatever
-    // `preview_parameter` left in the engine, so the frontend is holding the
-    // preview's geometry and values while the engine has gone back to the
-    // source. It has no other way to learn that — the shared telemetry
-    // choke-point carries auto-resolve and FEA events, never meshes or values —
-    // so a return that only carried the message would strand the viewport on
-    // geometry neither the engine nor the disk holds.
-    match result {
-        Ok(gui_state) => {
-            let delta = compute_delta(&state.last_state, &gui_state);
-            emit_delta(&app, &delta);
-            Ok(gui_state)
-        }
-        Err(refused) => {
-            if let Some(restored) = refused.restored.as_deref() {
-                let delta = compute_delta(&state.last_state, restored);
-                emit_delta(&app, &delta);
-            }
-            Err(refused.message)
-        }
-    }
+    evals
+        .submit(reify_gui::commands::commit_parameter_edit(
+            engine, cell_id, value, order,
+        ))
+        .await
 }
 
 /// The TRANSIENT parameter preview — one per slider-drag frame. Identical
 /// plumbing to `set_parameter` above; only the engine cadence differs.
 #[tauri::command]
-fn preview_parameter(
-    app: tauri::AppHandle,
+async fn preview_parameter(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     cell_id: String,
     value: String,
-) -> Result<reify_gui::types::GuiState, String> {
-    emit_status(&app, "evaluating");
-    let _idle = IdleGuard(app.clone());
+    order: EditOrder,
+) -> Result<(), String> {
     let engine = Arc::clone(&state.engine);
-    let result = reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::preview_parameter_impl(&engine, &cell_id, &value)
-    });
-    if let Ok(ref gui_state) = result {
-        let delta = compute_delta(&state.last_state, gui_state);
-        emit_delta(&app, &delta);
-    }
-    result
+    evals
+        .submit(reify_gui::commands::preview_parameter_edit(
+            engine, cell_id, value, order,
+        ))
+        .await
 }
 
 /// Register the GUI's PASSIVE observed-demand sources (selective-demand
 /// precondition, task 4532). OBSERVATIONAL ONLY — never perturbs evaluation, so
-/// it emits no status/delta: the recorded would-prune measurement rides back on
-/// the next `set_parameter` response's `GuiState.demand_prune_measurement`.
+/// it publishes nothing.
 #[tauri::command]
-fn sync_observed_demand(
+async fn sync_observed_demand(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     visible_realizations: Vec<String>,
     displayed_cells: Vec<String>,
     panel_constraints: Vec<String>,
 ) -> Result<(), String> {
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
+    engine_call(&state, &evals, move |engine| {
         reify_gui::commands::sync_observed_demand_impl(
-            &engine,
+            engine,
             &visible_realizations,
             &displayed_cells,
             &panel_constraints,
         )
     })
+    .await
 }
 
 /// Register the GUI's viewport-visible realizations as the PRODUCTION selective
 /// demand (ENFORCEMENT, task 4737 α). Drives the registry `compute_eval_set`
 /// reads, so a HIDDEN body's exclusive cells are pruned from the next warm
-/// `edit_param`; the effect rides back on the next `set_parameter` response, so
-/// this emits no status/delta.
+/// `edit_param`; the effect reaches the frontend with that edit's published
+/// state, so this publishes nothing.
 #[tauri::command]
-fn sync_demand(
+async fn sync_demand(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     visible_realizations: Vec<String>,
 ) -> Result<(), String> {
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::sync_demand_impl(&engine, &visible_realizations)
+    engine_call(&state, &evals, move |engine| {
+        reify_gui::commands::sync_demand_impl(engine, &visible_realizations)
     })
+    .await
 }
 
 #[tauri::command]
-fn update_source(
-    app: tauri::AppHandle,
+async fn update_source(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     path: String,
     content: String,
-) -> Result<reify_gui::types::GuiState, String> {
-    emit_status(&app, "evaluating");
-    let _idle = IdleGuard(app.clone());
-    // Defense-in-depth (task 5357): run the full recompile on a dedicated
-    // large-stack thread so deeply-nested geometry cannot overflow the ~2 MiB
-    // tokio worker stack. The scoped helper borrows &state.engine/&path/&content
-    // directly (no Arc clone); surrounding logic stays on the command thread.
-    let result = reify_gui::large_stack::run_on_large_stack(|| {
-        reify_gui::commands::reload_for_watch_impl(&state.engine, &path, &content)
-    });
-    if let Ok(ref gui_state) = result {
-        let delta = compute_delta(&state.last_state, gui_state);
-        emit_delta(&app, &delta);
-    }
-    result
+    order: EditOrder,
+) -> Result<(), String> {
+    let engine = Arc::clone(&state.engine);
+    evals
+        .submit(reify_gui::commands::editor_source_edit(
+            engine, path, content, order,
+        ))
+        .await
 }
 
 #[tauri::command]
@@ -500,118 +458,118 @@ fn open_file(path: String) -> Result<reify_gui::types::FileData, String> {
 }
 
 #[tauri::command]
-fn open_file_engine(
+async fn open_file_engine(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     path: String,
 ) -> Result<reify_gui::types::GuiState, String> {
-    emit_status(&app, "evaluating");
-    let _idle = IdleGuard(app.clone());
-    // Defense-in-depth (task 5357): run the compile on a dedicated large-stack
-    // thread so deeply-nested geometry cannot overflow the ~2 MiB tokio worker
-    // stack. The scoped helper borrows &state.engine/&path directly (no Arc
-    // clone); the watcher re-target and delta emission stay on the command thread.
-    let result = reify_gui::large_stack::run_on_large_stack(|| {
-        reify_gui::commands::open_file_engine_impl(&state.engine, &path)
-    });
-    if let Ok(ref gui_state) = result {
-        let delta = compute_delta(&state.last_state, gui_state);
-        emit_delta(&app, &delta);
-
-        // Re-target the file watcher to the newly opened file
-        let new_watcher = create_watcher(&app, std::path::Path::new(&path));
-        if let Ok(mut watcher_guard) = state.watcher.lock() {
-            *watcher_guard = new_watcher;
-        }
-    }
-    result
-}
-
-#[tauri::command]
-fn export(state: tauri::State<'_, AppState>, format: String, path: String) -> Result<(), String> {
     let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::export_impl(&engine, &format, &path)
-    })
+    let opened = evals
+        .submit(reify_gui::commands::open_file_evaluation(
+            engine,
+            path.clone(),
+        ))
+        .await?;
+    watch_file(&app, &state, Path::new(&path));
+    Ok(opened)
 }
 
 #[tauri::command]
-fn get_source_location(
+async fn export(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
+    format: String,
+    path: String,
+) -> Result<(), String> {
+    engine_call(&state, &evals, move |engine| {
+        reify_gui::commands::export_impl(engine, &format, &path)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_source_location(
+    state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     entity_path: String,
 ) -> Result<reify_mcp::SourceLocationInfo, String> {
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::get_source_location_impl(&engine, &entity_path)
+    engine_call(&state, &evals, move |engine| {
+        reify_gui::commands::get_source_location_impl(engine, &entity_path)
     })
+    .await
 }
 
 #[tauri::command]
-fn get_entity_tree(
+async fn get_entity_tree(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
 ) -> Result<Vec<reify_gui::types::EntityTreeNode>, String> {
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::get_entity_tree_impl(&engine)
-    })
+    engine_call(&state, &evals, reify_gui::commands::get_entity_tree_impl).await
 }
 
 #[tauri::command]
-fn get_entity_identity_map(
+async fn get_entity_identity_map(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
 ) -> Result<std::collections::HashMap<String, reify_gui::types::EntityIdentity>, String> {
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::get_entity_identity_map_impl(&engine)
-    })
+    engine_call(
+        &state,
+        &evals,
+        reify_gui::commands::get_entity_identity_map_impl,
+    )
+    .await
 }
 
 #[tauri::command]
-fn get_mechanism_descriptors(
+async fn get_mechanism_descriptors(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
 ) -> Result<Vec<reify_gui::types::MechanismDescriptor>, String> {
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::get_mechanism_descriptors_impl(&engine)
-    })
+    engine_call(
+        &state,
+        &evals,
+        reify_gui::commands::get_mechanism_descriptors_impl,
+    )
+    .await
 }
 
 #[tauri::command]
-fn get_def_preview(
+async fn get_def_preview(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     def_name: String,
 ) -> Result<reify_gui::types::GuiState, String> {
-    // Evaluates a definition, so this is recursion-bearing in the same way the
-    // compile paths are — the strongest single reason to cover all 14, not just
-    // the four the task description named.
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::get_def_preview_impl(&engine, &def_name)
+    engine_call(&state, &evals, move |engine| {
+        reify_gui::commands::get_def_preview_impl(engine, &def_name)
     })
+    .await
 }
 
 #[tauri::command]
-fn get_containing_definition(
+async fn get_containing_definition(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     line: u32,
     col: u32,
 ) -> Result<Option<reify_gui::types::DefInfo>, String> {
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::get_containing_definition_impl(&engine, line, col)
+    engine_call(&state, &evals, move |engine| {
+        reify_gui::commands::get_containing_definition_impl(engine, line, col)
     })
+    .await
 }
 
 #[tauri::command]
-fn get_entity_at_source_location(
+async fn get_entity_at_source_location(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     line: u32,
     col: u32,
 ) -> Result<Option<String>, String> {
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::get_entity_at_source_location_impl(&engine, line, col)
+    engine_call(&state, &evals, move |engine| {
+        reify_gui::commands::get_entity_at_source_location_impl(engine, line, col)
     })
+    .await
 }
 
 #[tauri::command]
@@ -639,70 +597,25 @@ fn update_selection(
 }
 
 #[tauri::command]
-fn mcp_tool_call(
+async fn mcp_tool_call(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     name: String,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    // Clone app before moving into the event_emitter closure
-    let app_for_emitter = app.clone();
-    let ctx = reify_gui::mcp_context::TauriToolContext::builder(state.engine.clone())
-        .with_event_emitter(move |event_name, payload| {
-            app_for_emitter.emit(event_name, payload).ok();
-        })
-        .with_selection(state.selection.clone())
-        .build();
-
-    // Bracket the MCP call with evaluation-status events
-    emit_status(&app, "evaluating");
-    let _idle = IdleGuard(app.clone());
-
-    // Task 5466: the last engine-bearing Tauri command onto the PERSISTENT
-    // large-stack worker. Why relocating this ONE call covers the command's
-    // whole engine surface is on `mcp_context::mcp_tool_call_on_large_stack`.
-    // Everything else — the builder chain, `emit_status`, the `IdleGuard`,
-    // `compute_delta` and `emit_delta` — STAYS on the command thread, exactly
-    // as the task-5772 wrappers split them.
-    let result = reify_gui::mcp_context::mcp_tool_call_on_large_stack(ctx, name, params);
-
-    // Sync state and emit delta events (conservative: runs even after read-only tools,
-    // since build_gui_state is cheap for unchanged state and compute_delta produces
-    // an empty delta when nothing changed).
-    //
-    // `get_initial_state_impl` IS this lock-then-`build_gui_state`, so this is a
-    // reuse rather than a second bespoke lock site — and `build_gui_state` walks
-    // the evaluated model, making it recursion-bearing and lane-worthy in its
-    // own right.
-    //
-    // The one behavioural delta this ACCEPTS, from routing through
-    // `with_engine_lock` rather than the hand-rolled `state.engine.lock()`:
-    // `with_engine_lock` also `catch_unwind`s the closure, so a panic inside
-    // `build_gui_state` arrives here as an `Err` where it previously unwound out
-    // of `mcp_tool_call` and reached the frontend as an IPC error. The frontend
-    // is no longer told. Accepted because raising it would fail a tool call that
-    // SUCCEEDED, which is the worse report — and it is a delta rather than a
-    // silence: the `Err` arm logs, so a skipped sync is diagnosable. Poison
-    // recovery is a strict GAIN from the same move — a poisoned engine mutex
-    // still emits the delta, where `if let Ok(..) = state.engine.lock()`
-    // silently skipped it.
     let engine = Arc::clone(&state.engine);
-    match reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::get_initial_state_impl(&engine)
-    }) {
-        Ok(gui_state) => {
-            let delta = compute_delta(&state.last_state, &gui_state);
-            emit_delta(&app, &delta);
-        }
-        // Also the arm a genuine `build_gui_state` error takes, which is the
-        // likelier of the two in practice.
-        Err(e) => warn!(
-            "mcp_tool_call: delta sync failed, frontend model may be stale: {}",
-            e
-        ),
-    }
-
-    result
+    let ctx = reify_gui::mcp_context::TauriToolContext::builder(Arc::clone(&engine))
+        .with_event_emitter(move |event_name, payload| {
+            app.emit(event_name, payload).ok();
+        })
+        .with_selection(Arc::clone(&state.selection))
+        .build();
+    evals
+        .submit(reify_gui::mcp_context::mcp_tool_call_evaluation(
+            ctx, engine, name, params,
+        ))
+        .await
 }
 
 /// Task 5772: dispatched on the persistent large-stack LSP lane rather than on
@@ -888,7 +801,7 @@ fn get_unit_ladders() -> Vec<reify_gui::display_units::DimensionLadder> {
 /// follow-on task.
 #[tauri::command]
 fn cancel_solve(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    reify_gui::commands::cancel_solve_impl(&*state)
+    reify_gui::commands::cancel_solve_impl(&state)
 }
 
 /// Return the currently active FEA case name (task 3026 case-picker).
@@ -896,34 +809,36 @@ fn cancel_solve(state: tauri::State<'_, AppState>) -> Result<(), String> {
 /// `None` means the active case has never been set (engine defaults to
 /// lex-first). Returns `Some(name)` after a `set_active_fea_case` call.
 #[tauri::command]
-fn get_active_fea_case(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
-    let engine = Arc::clone(&state.engine);
-    reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::get_active_fea_case_impl(&engine)
-    })
+async fn get_active_fea_case(
+    state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
+) -> Result<Option<String>, String> {
+    engine_call(
+        &state,
+        &evals,
+        reify_gui::commands::get_active_fea_case_impl,
+    )
+    .await
 }
 
-/// Switch to the named FEA case and return a rebuilt GuiState (task 3026 case-picker).
+/// Switch to the named FEA case (task 3026 case-picker).
 ///
-/// Stores the case name in the engine session, re-applies FEA scalar channels
-/// from the cached tessellation snapshot (no re-evaluation, no re-tessellation),
-/// and returns the updated GuiState so the frontend can apply the re-sourced
-/// contour.  Unknown case names fall back to the lex-first default.
+/// Stores the case name in the engine session and re-applies FEA scalar channels
+/// from the cached tessellation snapshot (no re-evaluation, no re-tessellation);
+/// the re-sourced contour reaches the frontend as a published delta. Unknown
+/// case names fall back to the lex-first default.
 #[tauri::command]
-fn set_active_fea_case(
-    app: tauri::AppHandle,
+async fn set_active_fea_case(
     state: tauri::State<'_, AppState>,
+    evals: tauri::State<'_, Arc<EvalQueue>>,
     case: String,
-) -> Result<reify_gui::types::GuiState, String> {
+) -> Result<(), String> {
     let engine = Arc::clone(&state.engine);
-    let result = reify_gui::large_stack::run_on_worker(move || {
-        reify_gui::commands::set_active_fea_case_impl(&engine, &case)
-    });
-    if let Ok(ref gui_state) = result {
-        let delta = compute_delta(&state.last_state, gui_state);
-        emit_delta(&app, &delta);
-    }
-    result
+    evals
+        .submit(reify_gui::commands::active_fea_case_evaluation(
+            engine, case,
+        ))
+        .await
 }
 
 fn main() {
@@ -939,48 +854,10 @@ fn main() {
     let checker = SimpleConstraintChecker;
     let kernel_status = reify_gui::kernel_status::current_kernel_status();
     let session = EngineSession::with_registered_kernel(Box::new(checker));
-
-    // Check for initial file from command-line args or environment.
-    // `resolve_initial_file_path` canonicalises the argv path to an absolute
-    // realpath before loading so the engine's `file_path` field (used by
-    // `update_source` for import resolution) is always an absolute canonical
-    // path, regardless of how the user spelled the CLI argument.
-    // `engine_arc` is built BEFORE the argv load so the load can go through the
-    // shared open funnel (`load_initial_file_impl`), which takes a
-    // `&Mutex<EngineSession>`. The previous inline `session.load_file(..)` here was
-    // a SECOND copy of the load body that could — and did — drift from the
-    // File-Open path; routing through the funnel leaves exactly one, and surfaces a
-    // load failure as a warning instead of silently ignoring it. The emitter/sink
-    // installation block still runs later in `setup()` against this same
-    // `engine_arc`.
-    //
-    // SCOPE — this does NOT, on its own, give an argv-launched frontend the
-    // canonical absolute `files[].path` entries of the #5193 identity contract.
-    // `UnresolvedGuiState::resolve` inside the funnel mutates only the RETURNED
-    // `GuiState`, and this call site uses that return value for its `Err` arm only:
-    // the frontend's startup path is `initApp` → `get_initial_state` →
-    // `build_gui_state`, which rebuilds `files[]` from the stem-only `source_map()`
-    // keys. Closing that end to end means applying the resolve where the frontend
-    // actually reads it; see `commands::load_initial_file_impl`'s docs, which carry
-    // the follow-up.
     let engine_arc = Arc::new(Mutex::new(session));
 
-    let mut initial_file: Option<std::path::PathBuf> = None;
-    if let Some(path_str) = std::env::args().nth(1) {
-        if let Some(canonical_path) = reify_gui::commands::resolve_initial_file_path(&path_str) {
-            if let Err(e) =
-                reify_gui::commands::load_initial_file_impl(&engine_arc, &canonical_path)
-            {
-                eprintln!(
-                    "Warning: failed to load initial file {}: {}",
-                    canonical_path.display(),
-                    e
-                );
-            } else {
-                initial_file = Some(canonical_path);
-            }
-        }
-    }
+    // Loaded in `setup()`, through the evaluation queue.
+    let argv = std::env::args().nth(1).unwrap_or_default();
 
     let debug_enabled = std::env::var("REIFY_DEBUG").is_ok_and(|v| v == "1");
     let selection_arc = Arc::new(RwLock::new(reify_mcp::SelectionInfo::default()));
@@ -992,19 +869,18 @@ fn main() {
     let solve_cancel_slot: Arc<Mutex<Option<reify_eval::CancellationHandle>>> =
         Arc::new(Mutex::new(None));
 
-    // Shared delta baseline — the SAME `Arc` is handed to `DebugServerState`
-    // below so a debug-driven mutation and a normal Tauri command diff
-    // against the SAME baseline (INV-GUI-2, task 5035 L6).
+    // Shared delta baseline — the SAME `Arc` is handed to the evaluation queue
+    // and to `DebugServerState` below, so a debug-driven mutation and a queued
+    // evaluation diff against the SAME baseline (INV-GUI-2, task 5035 L6).
     let last_state_arc: Arc<Mutex<Option<reify_gui::types::GuiState>>> =
         Arc::new(Mutex::new(None));
 
     let app_state = AppState {
         engine: Arc::clone(&engine_arc),
-        last_state: Arc::clone(&last_state_arc),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::clone(&selection_arc),
-        initial_file: Mutex::new(initial_file.clone()),
+        initial_file: Mutex::new(None),
         pending_solve_cancel: Arc::clone(&solve_cancel_slot),
     };
 
@@ -1104,6 +980,41 @@ fn main() {
                 );
             }
 
+            // Only now, after the engine lock above: were an evaluation already
+            // running, taking that lock would stall the main thread behind it.
+            let evals = EvalQueue::on_engine_lane(
+                Arc::clone(&last_state_arc),
+                Arc::new(TauriEvalObserver {
+                    app: app.handle().clone(),
+                }),
+            );
+            app.manage(Arc::clone(&evals));
+
+            // The main loop dispatches no invoke until setup() returns, so the
+            // frontend's first get_initial_state queues behind this load, and
+            // the window paints while it runs.
+            if let Some((file, load)) =
+                reify_gui::commands::begin_initial_file_load(&evals, Arc::clone(&engine_arc), &argv)
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match load.await {
+                        Ok(_) => {
+                            let state: tauri::State<'_, AppState> = handle.state();
+                            watch_file(&handle, &state, &file);
+                            if let Ok(mut initial_file) = state.initial_file.lock() {
+                                *initial_file = Some(file);
+                            }
+                        }
+                        Err(e) => eprintln!(
+                            "Warning: failed to load initial file {}: {}",
+                            file.display(),
+                            e
+                        ),
+                    }
+                });
+            }
+
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)
             let debug_bridge = Arc::new(reify_gui::debug::DebugBridge::new(app.handle().clone()));
             app.manage(debug_bridge.clone());
@@ -1135,15 +1046,6 @@ fn main() {
 
             // Notify the frontend of the kernel availability at startup.
             app.handle().emit("kernel-status", &kernel_status).ok();
-
-            // If an initial file was loaded, start watching its parent directory
-            if let Some(ref file_path) = initial_file {
-                let watcher = create_watcher(app.handle(), file_path);
-                let state: tauri::State<'_, AppState> = app.state();
-                if let Ok(mut watcher_guard) = state.watcher.lock() {
-                    *watcher_guard = watcher;
-                }
-            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

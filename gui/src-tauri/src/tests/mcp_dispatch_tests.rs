@@ -660,22 +660,7 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
     );
 }
 
-// ── Task 5466: the MCP dispatch entry point ──────────────────────────────────
-//
-// `main.rs::mcp_tool_call` is the last engine-bearing Tauri command not on a
-// large stack. It cannot be exercised headlessly — it takes `tauri::AppHandle`
-// and `tauri::State`, and `main.rs` is a `required-features = ["gui"]` `[[bin]]`
-// — so the lib-side entry point it delegates to is what carries the guards,
-// following the convention task 5772 used for its own wrappers.
-//
-// This section owns what the dispatch COMPUTES: that relocating it preserves a
-// read's result, and that a WRITE still lands in the caller's engine. Where it
-// RUNS is pinned once, in
-// `large_stack_tests::the_mcp_dispatch_shares_the_one_engine_lane`, by `ThreadId`
-// equality against `run_on_worker` — a strictly stronger check than the thread
-// NAME this file could assert (a second lane built with the same `&'static str`
-// passes a name check and fails an identity one), and it belongs beside the lane
-// invariant it constrains rather than duplicated here.
+// ── Reading a `reify_get_parameters` result ──────────────────────────────────
 
 /// The sorted set of `cell_id`s in a `reify_get_parameters` result.
 ///
@@ -701,51 +686,6 @@ fn sorted_cell_ids(result: &serde_json::Value) -> Vec<String> {
     ids
 }
 
-/// Dispatching through `mcp_tool_call_on_large_stack` reports the same
-/// parameters as dispatching directly: relocating the call must not change what
-/// it computes.
-///
-/// Compared as the order-insensitive sorted `cell_id` SET rather than with a
-/// whole-JSON `assert_eq!`. The two results necessarily come from two
-/// independently constructed `EngineSession`s, so a full comparison would
-/// additionally be asserting run-to-run determinism of every formatted float in
-/// `ParameterInfo.value` and of the collection's order — neither is the property
-/// under test, and either could go flaky for a reason with nothing to do with
-/// `large_stack`, pointing the failure at the wrong subsystem. Same reasoning
-/// already written on `commands_tests::assert_same_salient_state`.
-#[test]
-fn mcp_tool_call_on_large_stack_is_result_preserving() {
-    let wrapped = crate::mcp_context::mcp_tool_call_on_large_stack(
-        TauriToolContext::builder(make_engine()).build(),
-        "reify_get_parameters".to_string(),
-        serde_json::json!({}),
-    )
-    .expect("dispatch through the large-stack entry point should succeed");
-    let wrapped_ids = sorted_cell_ids(&wrapped);
-
-    // Non-vacuity: without this, the comparison below would also pass for two
-    // EMPTY sets — which is precisely what a dispatch that silently returned
-    // nothing would produce.
-    assert!(
-        wrapped_ids.iter().any(|id| id == "Bracket.width"),
-        "the wrapped dispatch must report the bracket fixture's parameters; got: {wrapped_ids:?}"
-    );
-
-    let direct = mcp_tool_call_impl(
-        "reify_get_parameters",
-        serde_json::json!({}),
-        &make_tauri_context(),
-    )
-    .expect("direct dispatch should succeed");
-
-    assert_eq!(
-        wrapped_ids,
-        sorted_cell_ids(&direct),
-        "relocating the dispatch onto a large stack must not change the set of \
-         parameters it reports"
-    );
-}
-
 /// The `value` string a `reify_get_parameters` result reports for `cell_id`.
 ///
 /// Panics rather than returning an error, for the reason [`sorted_cell_ids`]
@@ -764,67 +704,136 @@ fn parameter_value(result: &serde_json::Value, cell_id: &str) -> String {
         .to_owned()
 }
 
-/// A WRITE dispatched through `mcp_tool_call_on_large_stack` mutates the
-/// CALLER's engine — the contract the by-value signature rests on.
-///
-/// A persistent lane needs a `'static` closure, so the `TauriToolContext` is
-/// moved whole into the job. What must survive that move is the `Arc` inside it:
-/// an implementation that satisfied the `'static` bound by rebuilding a context
-/// over a FRESH `EngineSession` inside the closure would return a
-/// correctly-shaped result for every read-only tool — passing the guard above
-/// and the lane-identity one alike — while silently discarding every MCP write.
-/// That is why the probe is a write, and why the mutating tools are the ones
-/// this routing exists for: `open_file`, `update_source` and `set_parameter`
-/// drive the full recursive compiles the 256 MiB stack is there to hold.
-///
-/// The read-back deliberately goes through a SECOND context over the SAME `Arc`,
-/// via the DIRECT dispatcher. Sharing nothing with the first context but the
-/// engine handle is what makes the assertion about the handle rather than about
-/// one context object, and keeping the read on the un-relocated path means a
-/// failure points at the write.
-#[test]
-fn a_write_dispatched_on_the_lane_lands_in_the_callers_engine() {
-    // The probe is a WRITE, so the session needs a canonical `.ri` on disk to
-    // write back to (INV-GUI-3) — the in-memory `make_engine` fixture the
-    // read-only guards use would fail the write before the lane is exercised.
-    let (_dir, _path, engine) = make_engine_on_disk();
+// ── The MCP tool call as a queued evaluation (task 7442) ──────────────────────
 
-    // Non-vacuity: pin what the fixture starts at, so "100" below cannot pass by
-    // having been there all along.
-    let before = mcp_tool_call_impl(
-        "reify_get_parameters",
-        serde_json::json!({}),
-        &TauriToolContext::builder(Arc::clone(&engine)).build(),
-    )
-    .expect("baseline dispatch should succeed");
-    assert_eq!(
-        parameter_value(&before, "Bracket.width"),
-        "80",
-        "the bracket fixture must start at its declared default"
-    );
+mod queued_tool_call {
+    use std::sync::{Arc, Mutex};
 
-    let written = crate::mcp_context::mcp_tool_call_on_large_stack(
-        TauriToolContext::builder(Arc::clone(&engine)).build(),
-        "reify_set_parameter".to_string(),
-        serde_json::json!({"cell_id": "Bracket.width", "value": "100mm"}),
-    )
-    .expect("a write through the large-stack entry point should succeed");
-    assert_eq!(
-        written["success"], true,
-        "the tool must report the write as applied; got: {written}"
-    );
+    use super::{
+        make_engine, make_engine_on_disk, make_tauri_context, parameter_value, sorted_cell_ids,
+    };
+    use crate::eval_queue::{EvalActivity, EvalQueue};
+    use crate::mcp_context::{TauriToolContext, mcp_tool_call_evaluation, mcp_tool_call_impl};
+    use crate::tests::test_helpers::{ManualQueue, RecordingObserver, settled};
 
-    let after = mcp_tool_call_impl(
-        "reify_get_parameters",
-        serde_json::json!({}),
-        &TauriToolContext::builder(Arc::clone(&engine)).build(),
-    )
-    .expect("read-back dispatch should succeed");
-    assert_eq!(
-        parameter_value(&after, "Bracket.width"),
-        "100",
-        "a write performed ON THE LANE must be visible through the engine handle \
-         the caller still holds — otherwise the lane mutated a copy and the GUI's \
-         model silently diverges from the one MCP tools edit"
-    );
+    fn queued_call(
+        rig: &ManualQueue,
+        engine: &Arc<Mutex<crate::engine::EngineSession>>,
+        name: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let ctx = TauriToolContext::builder(Arc::clone(engine)).build();
+        let ticket = rig.queue.submit(mcp_tool_call_evaluation(
+            ctx,
+            Arc::clone(engine),
+            name.to_string(),
+            params,
+        ));
+        rig.executor.run_pending();
+        settled(ticket)
+    }
+
+    #[test]
+    fn a_queued_read_tool_reports_what_a_direct_dispatch_does() {
+        let rig = ManualQueue::new();
+
+        let queued = queued_call(
+            &rig,
+            &make_engine(),
+            "reify_get_parameters",
+            serde_json::json!({}),
+        )
+        .expect("the queued dispatch should succeed");
+        let direct = mcp_tool_call_impl(
+            "reify_get_parameters",
+            serde_json::json!({}),
+            &make_tauri_context(),
+        )
+        .expect("the direct dispatch should succeed");
+
+        let queued_ids = sorted_cell_ids(&queued);
+        assert!(queued_ids.iter().any(|id| id == "Bracket.width"));
+        assert_eq!(queued_ids, sorted_cell_ids(&direct));
+    }
+
+    /// Parameter writes need the ON-DISK fixture: they write back to the .ri
+    /// (INV-GUI-3).
+    #[test]
+    fn a_queued_write_lands_in_the_callers_engine_and_publishes_it() {
+        let (_dir, _path, engine) = make_engine_on_disk();
+        let rig = ManualQueue::new();
+
+        let written = queued_call(
+            &rig,
+            &engine,
+            "reify_set_parameter",
+            serde_json::json!({"cell_id": "Bracket.width", "value": "100mm"}),
+        )
+        .expect("the queued write should succeed");
+
+        assert_eq!(written["success"], true, "got: {written}");
+        let after = mcp_tool_call_impl(
+            "reify_get_parameters",
+            serde_json::json!({}),
+            &TauriToolContext::builder(Arc::clone(&engine)).build(),
+        )
+        .expect("read-back dispatch should succeed");
+        assert_eq!(parameter_value(&after, "Bracket.width"), "100");
+        let published = rig
+            .observer
+            .published_value("Bracket.width")
+            .expect("the post-dispatch state must be published");
+        assert_eq!(published.value, "100");
+    }
+
+    /// The post-dispatch sync runs even when the tool fails.
+    #[test]
+    fn a_failed_tool_replies_err_and_still_publishes_the_synced_state() {
+        let rig = ManualQueue::new();
+
+        let error = queued_call(
+            &rig,
+            &make_engine(),
+            "reify_no_such_tool",
+            serde_json::json!({}),
+        )
+        .expect_err("an unknown tool must fail");
+
+        assert!(!error.is_empty());
+        assert_eq!(rig.observer.deltas().len(), 1);
+        assert_eq!(
+            rig.observer.activities(),
+            [EvalActivity::Evaluating, EvalActivity::Idle]
+        );
+    }
+
+    /// `sync_channel`, because the event emitter must be `Sync`.
+    #[tokio::test]
+    async fn a_queued_tool_call_fires_its_events_from_the_engine_lane() {
+        use crate::large_stack::WORKER_THREAD_NAME;
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Option<String>>(1);
+        let engine = make_engine();
+        let ctx = TauriToolContext::builder(Arc::clone(&engine))
+            .with_event_emitter(move |_name, _payload| {
+                let _ = tx.send(std::thread::current().name().map(str::to_owned));
+            })
+            .build();
+        let queue = EvalQueue::on_engine_lane(
+            Arc::new(Mutex::new(None)),
+            Arc::new(RecordingObserver::default()),
+        );
+
+        queue
+            .submit(mcp_tool_call_evaluation(
+                ctx,
+                engine,
+                "reify_focus_entity".to_string(),
+                serde_json::json!({"entity_path": "Bracket"}),
+            ))
+            .await
+            .expect("reify_focus_entity should dispatch");
+
+        assert_eq!(rx.try_recv(), Ok(Some(WORKER_THREAD_NAME.to_string())));
+    }
 }

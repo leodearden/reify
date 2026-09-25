@@ -62,30 +62,49 @@ export async function refreshFullState(): Promise<GuiState> {
 }
 
 /**
+ * When an edit was made: `epoch` identifies the page load and `seq` grows with
+ * every edit. The backend uses it to run only the newest edit of each cell or
+ * editor buffer, so older queued edits of that target resolve without running.
+ */
+export interface EditOrder {
+  epoch: number;
+  seq: number;
+}
+
+// Random rather than clock-based: the backend compares epochs only for
+// equality, and a reload restarts `seq`.
+const EDIT_EPOCH = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+let lastEditSeq = 0;
+
+function nextEditOrder(): EditOrder {
+  lastEditSeq += 1;
+  return { epoch: EDIT_EPOCH, seq: lastEditSeq };
+}
+
+/**
  * Set a parameter value DURABLY by cell ID: the backend writes it back into the
  * `.ri` source (INV-GUI-3). One call per user gesture — Enter/blur in the edit
- * box, release of a slider. Returns the updated GUI state for optional
- * reconciliation.
+ * box, release of a slider. Resolves once the edit was applied or superseded by
+ * a newer edit of the cell; the resulting state arrives through delta events.
  */
-export async function setParameter(cellId: string, value: string): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('set_parameter', { cellId, value });
-  return convertRawGuiState(raw);
+export async function setParameter(cellId: string, value: string): Promise<void> {
+  await invoke('set_parameter', { cellId, value, order: nextEditOrder() });
 }
 
 /**
  * Show a parameter value TRANSIENTLY — the per-frame cadence of a drag, which
  * keeps the viewport tracking the pointer without rewriting the design at RAF
  * rate. The value expires; {@link setParameter} is what makes an edit durable.
+ * Resolves like {@link setParameter}.
  */
-export async function previewParameter(cellId: string, value: string): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('preview_parameter', { cellId, value });
-  return convertRawGuiState(raw);
+export async function previewParameter(cellId: string, value: string): Promise<void> {
+  await invoke('preview_parameter', { cellId, value, order: nextEditOrder() });
 }
 
 /**
  * Register the GUI's PASSIVE observed-demand sources (selective-demand
  * precondition, task 4532). OBSERVATIONAL ONLY — the backend records a
- * would-prune measurement that rides back on the NEXT `set_parameter` response's
+ * would-prune measurement onto the NEXT edit's state, as
  * `GuiState.demand_prune_measurement`; this command itself returns nothing and
  * cannot perturb evaluation.
  *
@@ -117,10 +136,13 @@ export async function syncDemand(visibleRealizations: string[]): Promise<void> {
   return invoke('sync_demand', { visibleRealizations });
 }
 
-/** Update source file content. Returns the updated GUI state for optional reconciliation. */
-export async function updateSource(path: string, content: string): Promise<GuiState> {
-  const raw = await invoke<RawGuiState>('update_source', { path, content });
-  return convertRawGuiState(raw);
+/**
+ * Sync the editor's buffer for `path` to the backend, which recompiles it.
+ * Resolves once the sync was applied or superseded by a newer sync of the
+ * buffer; the resulting state arrives through delta events.
+ */
+export async function updateSource(path: string, content: string): Promise<void> {
+  await invoke('update_source', { path, content, order: nextEditOrder() });
 }
 
 /** Save a file to disk. */
