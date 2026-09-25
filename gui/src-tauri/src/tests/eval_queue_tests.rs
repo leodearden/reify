@@ -432,6 +432,11 @@ fn previews_arriving_while_an_edit_runs_coalesce_to_the_newest() {
         ["B", "A5"],
         "only the newest queued preview runs"
     );
+    assert_eq!(
+        rig.timeline(),
+        ["Evaluating", "delta B", "delta A5", "Idle"],
+        "superseded previews leave the busy period, and are never published"
+    );
     assert_eq!(settled(running), Ok(()));
     let arrivals = std::mem::take(&mut *arrivals.lock().expect("arrivals"));
     for ticket in arrivals {
@@ -451,6 +456,10 @@ fn a_queued_commit_survives_newer_previews_of_its_cell() {
     rig.executor.run_pending();
 
     assert_eq!(rig.ran(), ["commit", "frame 3"]);
+    assert_eq!(
+        rig.timeline(),
+        ["Evaluating", "delta commit", "delta frame 3", "Idle"]
+    );
     for ticket in tickets {
         assert_eq!(settled(ticket), Ok(()));
     }
@@ -490,6 +499,10 @@ fn ordered_requests_are_barriers_a_superseding_edit_never_jumps() {
     rig.executor.run_pending();
 
     assert_eq!(rig.ran(), ["call", "evaluation", "A2", "again", "again"]);
+    assert_eq!(
+        rig.timeline(),
+        ["Evaluating", "delta evaluation", "delta A2", "Idle"]
+    );
     assert_eq!(settled(first_edit), Ok(()));
     assert_eq!(settled(call), Ok("call".to_string()));
     assert_eq!(settled(evaluation), Ok("evaluation".to_string()));
