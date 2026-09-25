@@ -3237,9 +3237,10 @@ fn vec3_dimensioned_first_component_at_dimensionless_vector_param_stays_clean() 
     let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONED_FIRST_COMPONENT_AT_DIMENSIONLESS);
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -3281,9 +3282,10 @@ fn vec_builtin_heterogeneous_list_at_dimensionless_vector_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_VEC_HETEROGENEOUS_LIST_AT_DIMENSIONLESS);
     // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
@@ -3911,7 +3913,7 @@ structure def Root {
 "#;
 
 /// THE FALSE-REJECT the rule used to produce (task 5889): a correctly-declared
-/// BLOCK-STRUCTURED engineering matrix, warned on cell `[0][0]` alone.
+/// BLOCK-STRUCTURED engineering matrix, rejected on cell `[0][0]` alone.
 ///
 /// A stiffness/compliance matrix — equivalently a screw-theory spatial Jacobian
 /// — mixes translational and rotational blocks: uniform `N/m` within one row
@@ -3932,9 +3934,9 @@ structure def Root {
 /// to compare. Per-cell dimension checking is a separate, larger ruling.
 ///
 /// Non-vacuity beyond the compile guard:
-/// [`matrix_builtin_cross_dimension_at_inertia_param_warns_arg_type_mismatch`]
+/// [`matrix_builtin_cross_dimension_at_inertia_param_errors_arg_type_mismatch`]
 /// and
-/// [`matrix_builtin_dimensioned_at_dimensionless_matrix_param_warns_arg_type_mismatch`]
+/// [`matrix_builtin_dimensioned_at_dimensionless_matrix_param_errors_arg_type_mismatch`]
 /// both reach this same arm through `matrix(…)` and REJECT, so silence here is
 /// a property of the literal's heterogeneity and not of the arm being
 /// unreachable.
@@ -3946,9 +3948,10 @@ fn matrix_builtin_block_heterogeneous_at_rotational_stiffness_param_stays_clean(
     // or an `N*m/rad^2` literal that failed to parse, would emit zero
     // ctor-conformance diagnostics and read as a RULE success.
     assert!(
-        errors_only(&module).is_empty(),
-        "fixture must compile cleanly, got: {:?}",
-        errors_only(&module)
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
     );
     let diags = ctor_conformance_diags(&module);
     assert!(
