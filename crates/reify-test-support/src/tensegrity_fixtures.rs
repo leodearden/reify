@@ -13,10 +13,10 @@
 //! Copies elsewhere in the workspace are still being collapsed onto this module.
 //! Each remaining one is inventoried by exact path in the task that closes it —
 //! #7286 for the `harness_fea_solver_e2e` siblings, #7292 for
-//! reify-solver-elastic’s `tests/`, and a third #6152 follow-up for the
-//! `#[cfg(test)]`-internal ones — rather than listed here, where nothing would
-//! keep the list true. `triplex_node_coords` below is the raw-coordinate seam
-//! those collapses are meant to land on.
+//! reify-solver-elastic’s `tests/`, and #7721 for the `#[cfg(test)]`-internal
+//! ones — rather than listed here, where nothing would keep the list true.
+//! `triplex_node_coords` below is the raw-coordinate seam those collapses are
+//! meant to land on.
 //!
 //! Two axes on which the superseded copies genuinely differed are preserved
 //! rather than normalised away, because both are load-bearing inputs to a solve:
