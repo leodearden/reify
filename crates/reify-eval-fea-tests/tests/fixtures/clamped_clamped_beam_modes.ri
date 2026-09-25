@@ -26,13 +26,14 @@
 // answers — not collapsed onto either.
 //
 // NOTE on `f1_propped`: it reads ≈ 614.62 Hz, a propped BENDING mode −0.98%
-// from the 620.70 Hz analytic, because `PinnedSupport` also anchors the lateral
-// (Y) DOF at the x_max face's neutral-axis node, exactly as the pin-pin
-// realization always did (task 7055). Before that it read ≈ 141.7 Hz: x_max was
-// laterally FREE, so the fundamental was a lateral clamped-free cantilever. The
-// square section makes every configuration's two bending directions
-// near-degenerate, so `modal_analysis_e2e.rs` reads its bands on the Z-dominant
-// family, exactly as the simply-supported e2e in that file already does.
+// from the 620.70 Hz analytic, because `PinnedSupport` anchors the lateral (Y)
+// DOF at the x_max face's neutral-axis node as well as pinning Z across the
+// face — the same simple support the pin-pin configuration realizes at each
+// end. A laterally free x_max would instead make the fundamental a lateral
+// clamped-free cantilever mode, ≈ 4.4× lower. The square section makes every
+// configuration's two bending directions near-degenerate, so
+// `modal_analysis_e2e.rs` reads its bands on the Z-dominant family, exactly as
+// the simply-supported e2e in that file already does.
 //
 // WHY `n_modes: 4` AND NOT 2 (task 6663 amendment): the section is SQUARE, so
 // each configuration's vertical (Z) and lateral (Y) bending families are nearly
@@ -44,9 +45,8 @@
 // wrong member — or an empty family. Four modes give the selection headroom:
 // MEASURED, every configuration's Z-dominant family then holds TWO members
 // (pinned [395.22, 1558.34], fixed [887.55, 2384.63], propped [615.14,
-// 1953.26]) instead of exactly one, and when n_modes was raised from 2 the low
-// modes came back bit-identical. The cost is nil, because the shift-invert Krylov
-// window is `max(2·n_modes, 32).max(64)` = 64 either way.
+// 1953.26]) instead of exactly one. The cost is nil, because the shift-invert
+// Krylov window is `max(2·n_modes, 32).max(64)` = 64 either way.
 //
 // AUTHORING TRAP — `ModalOptions` argument binding is POSITIONAL: the `name:`
 // labels are cosmetic and the parser binds by DECLARATION order (n_modes,

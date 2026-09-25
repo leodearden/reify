@@ -198,10 +198,10 @@ const CC_BETA_L_PROPPED: f64 = 3.926602;
 ///
 /// # Where bit-preservation IS asserted (amendment, review suggestion 2)
 ///
-/// Not here, and no longer anywhere in this file. The claim — neither task 6663
-/// nor task 7055 changes the pin-pin Dirichlet set (7055 re-composes it from the
-/// per-face realization plus one axial anchor) — is STRUCTURAL, and is asserted
-/// structurally and exactly at the unit level, on the DOF sets themselves:
+/// Not here, and no longer anywhere in this file. The claim — the pin-pin
+/// Dirichlet set is unchanged by the kind-aware realization around it — is
+/// STRUCTURAL, and is asserted structurally and exactly at the unit level, on
+/// the DOF sets themselves:
 ///
 ///   * `modal_ops::tests::build_dirichlet_bcs_discriminates_support_kind`
 ///     case (i) — two `PinnedSupport`s still select the pin-pin set;
@@ -278,8 +278,6 @@ const CC_FIXTURE_FIXED_REL_TOL: f64 = 0.03;
 /// ```text
 /// [modal bc-kind]   result_propped mode 0: f=614.6174 Hz, participation_z=5.226507e-2
 /// [modal bc-kind]   result_propped mode 1: f=615.1370 Hz, participation_z=7.646929e-1
-/// [modal bc-kind]   result_propped mode 2: f=1943.3014 Hz, participation_z=4.031941e-5
-/// [modal bc-kind]   result_propped mode 3: f=1953.2602 Hz, participation_z=8.120895e-3
 /// [modal bc-kind]   result_propped vertical (Z-dominant) family: [615.1370, 1953.2602]
 /// [modal bc-kind] f1_propped (raw fundamental) = 614.6174 Hz
 /// [modal bc-kind] f1z_propped=615.1370 Hz (analytic 620.702, err -0.90%)
@@ -291,10 +289,8 @@ const CC_FIXTURE_FIXED_REL_TOL: f64 = 0.03;
 /// Deliberately the SAME 3% construction as the two headline bands above, so all
 /// three are read the same way, and anchored the same way: on a first-hand
 /// release measurement of THIS fixture at THIS mesh, not on a prediction. The
-/// measured −0.90% (vertical, signal (f)) and −0.98% (raw, signal (i)) leave
-/// 2.10% and 2.02% of margin — between the pinned band's 2.47% and the clamped
-/// band's 1.54%, because the propped mode is well resolved at this
-/// discretization, not because the band was loosened.
+/// measured −0.90% (vertical, signal (f)) and −0.98% (raw, signal (i)) each
+/// leave about 2% of margin.
 ///
 /// What this band is for: under the pre-6663 defect all three configurations
 /// returned the bit-identical pinned answer, so a band that merely excluded
@@ -305,15 +301,12 @@ const CC_FIXTURE_FIXED_REL_TOL: f64 = 0.03;
 /// cantilever on its OWN analytic rather than on "not the one wrong answer we
 /// happened to name".
 ///
-/// Read twice since task 7055: by signal (f) on the VERTICAL (Z-dominant)
-/// fundamental, like the other two bands, and by signal (i) on the raw
-/// `first_frequency`, which is now a propped bending mode — the non-Z-dominant
-/// (lateral) member of a near-degenerate pair, 614.6174 / 615.1370 Hz, a 0.08%
-/// split — that signal (h) also orders between the pinned and fixed
-/// fundamentals. Before task 7055 a laterally free pinned x_max made the raw
-/// fundamental 141.70 Hz, a lateral clamped-free cantilever mode 4.4× below the
-/// propped bending mode; that measurement is what first moved these bands onto
-/// the vertical family.
+/// Read twice: by signal (f) on the VERTICAL (Z-dominant) fundamental, like the
+/// other two bands, and by signal (i) on the raw `first_frequency`. The raw
+/// fundamental is a propped bending mode too — the lateral member of the
+/// near-degenerate pair above — because a pinned end restrains its lateral DOF
+/// (at its neutral-axis node) as well as its transverse one; signal (h) orders
+/// it between the pinned and fixed raw fundamentals.
 const CC_FIXTURE_PROPPED_REL_TOL: f64 = 0.03;
 
 /// The headline acceptance signal: clamping both end faces must be a genuinely
@@ -627,10 +620,10 @@ fn e2e_mode_frequency_is_dimensioned_scalar() {
 // support — the transverse Z DOF on every node (the bending rotation dw/dx
 // stays free, carried by the axial u(z)) plus a lateral Y anchor at its
 // neutral-axis node (z = h/2) — and the pin-pin special case adds one axial X
-// anchor at the x_min neutral-axis node (task 7055; the set is unchanged). This yields the (nπ)² simply-supported family rather than the
-// fixed-fixed family the all-DOF clamp would produce. Selection is by
-// coordinate, so it catches the P2 edge-midpoint nodes once the trampoline
-// promotes the mesh.
+// anchor at the x_min neutral-axis node. This yields the (nπ)² simply-supported
+// family rather than the fixed-fixed family the all-DOF clamp would produce.
+// Selection is by coordinate, so it catches the P2 edge-midpoint nodes once the
+// trampoline promotes the mesh.
 //
 // Task 6663 re-aimed that discriminator: it used to fire on the target face
 // NAMES alone, so the fixture's then-two-`FixedSupport`s took the pin-pin branch
@@ -1096,18 +1089,15 @@ fn e2e_printer_gantry_prints_five_modes() {
 // square section makes every configuration's vertical and lateral bending
 // families near-degenerate — pinned 391.05 lateral / 395.22 vertical, fixed
 // 887.55 vertical / 890.90 lateral, propped 614.62 lateral / 615.14 vertical —
-// so the raw fundamental is the lateral mode in two of the three. (Before task
-// 7055 the propped pair split 4.4×: a laterally free pinned x_max made its raw
-// fundamental a 141.70 Hz lateral cantilever.) The fixture requests
-// `n_modes: 4` so that selection has headroom rather than picking out of a
-// window holding exactly one near-degenerate pair (see the fixture's own "WHY
-// n_modes: 4" note). MEASURED headroom at 4 modes: every configuration's
+// so the raw fundamental is the lateral mode in two of the three. The fixture
+// requests `n_modes: 4` so that selection has headroom rather than picking out
+// of a window holding exactly one near-degenerate pair (see the fixture's own
+// "WHY n_modes: 4" note). MEASURED headroom at 4 modes: every configuration's
 // Z-dominant family has TWO members, not one — pinned [395.22, 1558.34], fixed
-// [887.55, 2384.63], propped [615.14, 1953.26] — and when `n_modes` was raised
-// from 2 the four low modes came back bit-identical, so the extra window costs
-// nothing numerically (the shift-invert Krylov window is 64 either way). The raw
-// cells are still read and guarded finite — that keeps the `first_frequency`
-// builtin exercised — and (h)/(i) assert on them.
+// [887.55, 2384.63], propped [615.14, 1953.26]. The extra window costs nothing
+// numerically: the shift-invert Krylov window is 64 either way. The raw cells
+// are still read and guarded finite — that keeps the `first_frequency` builtin
+// exercised — and (h)/(i) assert on them.
 //
 // Signals asserted:
 //   (a) no Error-severity diagnostics after parse + eval
@@ -1128,20 +1118,19 @@ fn e2e_printer_gantry_prints_five_modes() {
 //       single band can express
 //   (h) the RAW `first_frequency` cells order strictly, pinned < propped <
 //       fixed — a Courant–Fischer consequence of the Dirichlet superset chain
-//       pinned ⊊ propped ⊊ fixed over identical K and M (task 7055)
+//       pinned ⊊ propped ⊊ fixed over identical K and M
 //   (i) the mixed pair's RAW fundamental within CC_FIXTURE_PROPPED_REL_TOL of
 //       the CP analytic — first_frequency on a propped cantilever is a propped
-//       bending mode, not a lateral cantilever (task 7055)
+//       bending mode, not a lateral cantilever
 //
 // NOT asserted here (amendment, review suggestion 2): bit-preservation of the
-// pin-pin Dirichlet set. A since-removed raw-frequency signal (then labelled
-// (i), unrelated to today's) pinned the pinned configuration's
-// RAW `first_frequency` to 391.0495 Hz ± 0.5% and claimed to be that guard; it
-// was not, because that number also depends on the derived mesh, the P2
-// promotion, the assembly and the shift-invert tolerance, so any legitimate
-// improvement in any of them would have reported "the pin-pin Dirichlet set must
-// be unchanged". The property IS asserted — structurally and exactly, on the DOF
-// sets — by the unit tests `CC_FIXTURE_PINNED_REL_TOL`'s doc names.
+// pin-pin Dirichlet set. Pinning the pinned configuration's RAW
+// `first_frequency` (391.0495 Hz) to a tight band cannot be that guard, because
+// that number also depends on the derived mesh, the P2 promotion, the assembly
+// and the shift-invert tolerance, so any legitimate improvement in any of them
+// would report "the pin-pin Dirichlet set must be unchanged". The property IS
+// asserted — structurally and exactly, on the DOF sets — by the unit tests
+// `CC_FIXTURE_PINNED_REL_TOL`'s doc names.
 //
 // Why (f)–(i) live in THIS test rather than a sibling: all three solves come
 // from one eval of one fixture, so a sibling test would re-run the two heavy
@@ -1324,8 +1313,8 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
         (f1z_fixed - cc_fixed_analytic_hz) / cc_fixed_analytic_hz * 100.0,
         f1_fixed
     );
-    // Compared to the clamped-pinned analytic by (i) below: since task 7055 the
-    // mixed configuration's RAW fundamental is a propped bending mode.
+    // Compared to the clamped-pinned analytic by (i) below: the mixed
+    // configuration's RAW fundamental is a propped bending mode.
     eprintln!("[modal bc-kind] f1_propped (raw fundamental) = {f1_propped:.4} Hz");
     eprintln!(
         "[modal bc-kind] ratio f1z_fixed/f1z_pinned = {:.4} (analytic 2.267)",
@@ -1407,12 +1396,11 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
     //
     // Asserted on the VERTICAL (Z-dominant) family, like (c)/(d) and for the
     // same reason: the square section makes this configuration's two bending
-    // directions near-degenerate too (MEASURED: 614.62 lateral / 615.14
-    // vertical, a 0.08% split; pinned 391.05 / 395.22; fixed 887.55 / 890.90),
-    // so a raw mode index could land on either member. Selecting the vertical
-    // family is the same move — and the same helper — the simply-supported e2e
-    // above already makes. (i) separately bands the raw fundamental, which may be
-    // either member.
+    // directions near-degenerate too (see the measured pairs in the header
+    // above), so a raw mode index could land on either member. Selecting the
+    // vertical family is the same move — and the same helper — the
+    // simply-supported e2e above already makes. (i) separately bands the raw
+    // fundamental, which may be either member.
     eprintln!(
         "[modal bc-kind] f1z_propped={:.4} Hz (analytic {:.3}, err {:+.2}%)",
         f1z_propped,
@@ -1453,7 +1441,7 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
     );
 
     // (h) The RAW `first_frequency` cells order strictly: pinned < propped <
-    // fixed. Task 7055 made the three Dirichlet sets a strict superset chain,
+    // fixed. The three Dirichlet sets form a strict superset chain,
     // pinned ⊊ propped ⊊ fixed (pinned structurally by the unit test
     // `build_dirichlet_bcs_realizes_a_pinned_beam_end_identically_in_every_configuration`
     // (c)), and K and M are identical across the three solves, so by
@@ -1476,8 +1464,8 @@ fn e2e_two_fixed_supports_are_clamped_clamped_not_simply_supported() {
     // (i) The mixed pair's RAW fundamental is a propped BENDING mode: it lands
     // within CC_FIXTURE_PROPPED_REL_TOL of the clamped-pinned analytic. The
     // section is square, so the mode may bend in either direction; what it must
-    // not be is a lateral cantilever — before task 7055 a laterally free pinned
-    // x_max made this cell 141.70 Hz, a clamped-free Y-bending mode.
+    // not be is the lateral clamped-free cantilever mode a laterally free pinned
+    // x_max would leave, ≈ 4.4× below the analytic.
     let propped_raw_err = (f1_propped - cc_propped_analytic_hz).abs() / cc_propped_analytic_hz;
     assert!(
         propped_raw_err < CC_FIXTURE_PROPPED_REL_TOL,

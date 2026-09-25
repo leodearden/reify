@@ -29,12 +29,12 @@
 //   (task 6663): each pinned end face is a simple support — transverse Z on
 //   every node of the face plus a lateral Y anchor at its neutral-axis node —
 //   and, because BOTH end faces are named by PINNED supports, one axial X
-//   anchor is added at the x_min neutral-axis node (task 7055; the resulting
-//   set is unchanged). Coordinate-based (catches P2 edge-midpoints), removes
-//   all 6 rigid-body modes, and yields real/positive/distinct natural
-//   frequencies. A single support is the cantilever clamp; two `FixedSupport`s
-//   would now mean a genuinely CLAMPED-CLAMPED crossbeam (a ~2.27x higher
-//   fundamental), which is not what a rested crossbeam is.
+//   anchor is added at the x_min neutral-axis node. Coordinate-based (catches
+//   P2 edge-midpoints), removes all 6 rigid-body modes, and yields
+//   real/positive/distinct natural frequencies. A single support is the
+//   cantilever clamp; two `FixedSupport`s would now mean a genuinely
+//   CLAMPED-CLAMPED crossbeam (a ~2.27x higher fundamental), which is not what
+//   a rested crossbeam is.
 //
 // Material coercion (same pattern as sibling fixtures):
 //   `modal_analysis` declares `material : ElasticMaterial`. Wrap the material
