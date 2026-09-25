@@ -8059,11 +8059,11 @@ mod tests {
     /// [`emit_if_quantity_conflict`] is shared by all three shape arms, but the
     /// ruling's new cell was pinned only at the `Vector` one, and
     /// `crates/reify-core/src/ty.rs` asserts a consequence specific to THIS arm:
-    /// a heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param can
-    /// now be rejected on cell `[0][0]` alone, where before only a dimensioned
-    /// param slot could trip it. That claim is only true if this arm actually
-    /// reaches the STRICT param-side predicate — the arm's one other quantity
-    /// fixture (`matrix_builtin_cross_dimension_at_inertia_param_errors_…` in
+    /// a dimensioned `matrix(…)` at a `Matrix<M, N, Dimensionless>` param is
+    /// rejected, where before only a dimensioned param slot could trip it. That
+    /// claim is only true if this arm actually reaches the STRICT param-side
+    /// predicate — the arm's one other quantity fixture
+    /// (`matrix_builtin_cross_dimension_at_inertia_param_errors_…` in
     /// `struct_ctor_field_conformance_tests.rs`) is concrete×concrete and was
     /// already green under task 5766's symmetric rule, so it cannot tell the two
     /// predicates apart. Without this probe, routing the arm through the

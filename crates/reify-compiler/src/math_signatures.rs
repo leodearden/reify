@@ -1190,7 +1190,8 @@ mod tests {
     // ── vec3/vec2 result-type tests (task 4622 S1 RED) ───────────────────────
 
     /// (c-4622a) `vec3` over 3 dimensionless Real args →
-    /// `Vector{n:3, quantity:Real}` (n fixed from name, quantity from first arg).
+    /// `Vector{n:3, quantity:Real}` (n fixed from name, quantity from the
+    /// dimension the components agree on).
     ///
     /// RED until S2 adds the `"vec3"` arm to `math_fn_result_type`.
     #[test]
@@ -1207,7 +1208,8 @@ mod tests {
     }
 
     /// (c-4622b) `vec2` over 2 `Scalar<Length>` args →
-    /// `Vector{n:2, quantity:Scalar<Length>}` (quantity from first arg).
+    /// `Vector{n:2, quantity:Scalar<Length>}` (quantity from the dimension the
+    /// components agree on).
     ///
     /// RED until S2 adds the `"vec2"` arm to `math_fn_result_type`.
     #[test]
@@ -1331,9 +1333,10 @@ mod tests {
     }
 
     /// `point3` over dimensionless args → `Point{n:3, quantity:Real}`: `n` is
-    /// fixed from the NAME, the quantity slot tracks the first argument. Pins
-    /// that the quantity is argument-DERIVED (not hard-coded to Length), which
-    /// is the whole reason this family needs the args-aware resolver shape.
+    /// fixed from the NAME, the quantity slot tracks the dimension the arguments
+    /// agree on. Pins that the quantity is argument-DERIVED (not hard-coded to
+    /// Length), which is the whole reason this family needs the args-aware
+    /// resolver shape.
     ///
     /// RED until the `"point3"` arm is added to `math_fn_result_type`.
     #[test]
@@ -1346,7 +1349,8 @@ mod tests {
                 quantity: Box::new(Type::dimensionless_scalar())
             },
             "point3(0, 0, 1) must type as Point{{n:3, quantity:Real}} — the quantity \
-             slot is derived from the first argument, not fixed to Length"
+             slot is derived from the dimension the arguments agree on, not fixed to \
+             Length"
         );
     }
 
