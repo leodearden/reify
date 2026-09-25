@@ -467,48 +467,6 @@ fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
 /// Usage line printed to stderr for any `reify check` usage error.
 const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
-/// `reify check <file>` — lightweight static constraint checker.
-///
-/// ## Engine posture: deliberately NO compute trampolines
-///
-/// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
-/// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
-/// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
-/// FEA/buckling/modal compute trampolines
-/// ([`register_compute_trampolines`]).
-///
-/// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
-/// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
-/// against the body-inline `undef` fallback and report **Indeterminate** under
-/// `reify check`.  They are NOT a gate; `reify build` or `reify eval` are the
-/// FEA exit-code gate.
-///
-/// **Rationale:** registering compute trampolines here would run a potentially
-/// slow FEA solve inside the lightweight static-check path, violating the design
-/// intent that *check attaches no kernel by design*.  The trampoline-free posture
-/// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
-/// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
-///
-/// **Severity of the missing-trampoline diagnostic (task 5311):** `reify check`
-/// surfaces the engine-owned "no registered compute trampoline (falling back to
-/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves at
-/// `Severity::Warning`, carrying
-/// `DiagnosticCode::NoRegisteredComputeTrampoline`.  The engine conditions that
-/// severity on its compute registry being entirely EMPTY, which is exactly this
-/// function's posture — `cmd_check` never calls `register_compute_trampolines`,
-/// so a missing trampoline here is the declared posture rather than a defect.
-/// `reify eval` and `reify build` DO register the production bundle, so the
-/// same diagnostic stays `Severity::Error` there and keeps gating their exit
-/// codes.  The contrast is pinned by
-/// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
-/// in `crates/reify-cli/tests/harness_cli/cli_check.rs`.
-///
-/// **Other `error:` lines still printed at exit 0.** Task 5311 removed this
-/// diagnostic from that set but did not empty it; the residual shapes across
-/// `examples/**/*.ri` are inventoried and classified in #7308, which also
-/// records the sweep command that measures them.  Triage is required there
-/// BEFORE #5403 (leaf gamma) lands the general `Severity::Error` ⇒
-/// non-zero-exit gate for `check`, or each becomes a spurious CI failure.
 /// The constraint-indeterminacy message grammar, as one pair of literals:
 /// `constraint {label-or-id} indeterminate: {reason}`.
 ///
@@ -749,6 +707,49 @@ fn drop_falsified_indeterminate_diagnostics(
         .collect()
 }
 
+/// `reify check <file>` — lightweight static constraint checker.
+///
+/// ## Engine posture: deliberately NO compute trampolines
+///
+/// The non-[`RepresentationWithin`] path uses `Engine::new(None) + check()`;
+/// the [`RepresentationWithin`] path uses `Engine::with_registered_kernel +
+/// check()`.  Neither path calls [`configured_eval_engine`] nor registers the
+/// FEA/buckling/modal compute trampolines
+/// ([`register_compute_trampolines`]).
+///
+/// Consequence: `@optimized("solver::elastic_static")` FEA-result constraints
+/// (e.g. `constraint peak_stress < limit` over `result.max_von_mises`) evaluate
+/// against the body-inline `undef` fallback and report **Indeterminate** under
+/// `reify check`.  They are NOT a gate; `reify build` or `reify eval` are the
+/// FEA exit-code gate.
+///
+/// **Rationale:** registering compute trampolines here would run a potentially
+/// slow FEA solve inside the lightweight static-check path, violating the design
+/// intent that *check attaches no kernel by design*.  The trampoline-free posture
+/// is an executable contract locked by `check_fea_violated_constraint_is_not_gated`
+/// in `cli_build_fea.rs`; changing it requires updating that test intentionally.
+///
+/// **Severity of the missing-trampoline diagnostic (task 5311):** `reify check`
+/// surfaces the engine-owned "no registered compute trampoline (falling back to
+/// body-inlining)" diagnostic on stderr for `@optimized` FEA solves at
+/// `Severity::Warning`, carrying
+/// `DiagnosticCode::NoRegisteredComputeTrampoline`.  The engine conditions that
+/// severity on its compute registry being entirely EMPTY, which is exactly this
+/// function's posture — `cmd_check` never calls `register_compute_trampolines`,
+/// so a missing trampoline here is the declared posture rather than a defect.
+/// `reify eval` and `reify build` DO register the production bundle, so the
+/// same diagnostic stays `Severity::Error` there and keeps gating their exit
+/// codes.  The contrast is pinned by
+/// `check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring`
+/// in `crates/reify-cli/tests/harness_cli/cli_check.rs`.
+///
+/// **Other `error:` lines.** Task 5311 removed this diagnostic from the set of
+/// `error:` lines `check` used to print at exit 0, but did not empty it; the
+/// residual shapes across `examples/**/*.ri` are inventoried and classified in
+/// #7308, which also records the sweep command that measures them.  Each of
+/// them now exits non-zero under `check` through [`check_gating_error`] unless
+/// a [`CHECK_ERROR_EXIT_ALLOWLIST`] entry excuses it.  #7308 owns triaging
+/// them, and never by adding allowlist entries.
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
@@ -1074,8 +1075,8 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // Both deleted escalations are SUBSUMED, not lost:
         // `GdtIllegalModifier` has a single, unconditionally-`Diagnostic::
         // error` emission site (`engine_constraints::illegal_modifier_error`),
-        // and the deleted `dfm_has_error_diagnostic` was this same severity
-        // test plus an `E_DFM_` message filter. Locked by
+        // and the deleted DFM predicate was this same severity test plus an
+        // `E_DFM_` message filter. Locked by
         // `check_error_gate_tests::the_deleted_bolt_ons_are_subsumed`.
         // Warning-severity diagnostics (GdtRemoved2018, W_DFM_*) stay
         // non-fatal, as before (C1).
@@ -5438,8 +5439,7 @@ mod check_error_exit_allowlist_ratchet {
 
 /// Unit behaviour for INV-SF-2's two pure exit-gate helpers, built from
 /// synthetic [`reify_core::Diagnostic`] values — no OCCT, no CLI exec, so
-/// these run in a stub-mode build, as the `dfm_error_escalation_tests` module
-/// this one replaces did.
+/// these run in a stub-mode build.
 #[cfg(test)]
 mod check_error_gate_tests {
     use super::{check_gating_error, has_error_diagnostic};
@@ -5540,8 +5540,7 @@ mod check_error_gate_tests {
     }
 
     /// EXECUTABLE PROOF of PRD §3 Leg B item 3 — "behavior stays byte-identical
-    /// for those classes" — replacing the coverage the deleted
-    /// `dfm_error_escalation_tests` provided.
+    /// for those classes".
     ///
     /// Both bolt-ons this task removes escalated a strict SUBSET of what the
     /// general `Severity::Error` gate catches:
@@ -5550,9 +5549,9 @@ mod check_error_gate_tests {
     ///   (`engine_constraints::illegal_modifier_error`) and it is
     ///   unconditionally `Diagnostic::error`, so every diagnostic the deleted
     ///   code-scoped escalation could see is Error-severity;
-    /// - the deleted `dfm_has_error_diagnostic` matched `severity == Error &&
-    ///   message contains "E_DFM_"`, which is the general predicate AND a
-    ///   message filter.
+    /// - the deleted `E_DFM_` message-filter predicate matched `severity ==
+    ///   Error && message contains "E_DFM_"`, which is the general predicate
+    ///   AND a message filter.
     ///
     /// Deleting them therefore cannot lose a gate, only widen one.
     #[test]
@@ -6955,10 +6954,9 @@ mod d2_pass_ordering_tests {
     /// the split the two ad-hoc escalations depended on: the harvest error IS
     /// in the merged set (D2 — it must reach the user) and is NOT in the
     /// predicate's input (β — it must not move the exit), because feeding the
-    /// merged set to the since-deleted `dfm_has_error_diagnostic` would have
-    /// widened the gate off
-    /// the back of a pure COLLECTION change, with no `.ri` fixture exercising
-    /// it. Its doc named this test as the one γ must update.
+    /// merged set to the deleted `E_DFM_` message-filter predicate would have
+    /// widened the gate off the back of a pure COLLECTION change, with no `.ri`
+    /// fixture exercising it. Its doc named this test as the one γ must update.
     ///
     /// γ makes exactly that widening, deliberately: `check_gating_error` is a
     /// general `Severity::Error` gate, `E_DFM_BUILD_VOLUME` (appended

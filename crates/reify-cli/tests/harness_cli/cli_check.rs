@@ -937,9 +937,9 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
 /// above exercises.
 ///
 /// NOT an exit-gate flip: this asserts FAILURE on a COMPILE `Severity::Error`,
-/// which `cmd_check` has always produced.  The two `status.success()` assertions
-/// above are about BUILD-only diagnostics and stay as they are until #5403 (leaf
-/// γ) lands the general Severity::Error gate.
+/// which `cmd_check` has always produced.  The sibling decoded-value tests above
+/// assert FAILURE on BUILD-only diagnostics, through #5403's general
+/// Severity::Error gate over the merged set.
 #[test]
 fn check_rejects_bare_scalar_mirror_origin_before_reaching_build() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -1582,9 +1582,9 @@ structure def TrampolineSeverityProbe {
     let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["check", path_str]);
     assert!(
         status.success(),
-        "`reify check` must still exit 0 here — this task changes the SEVERITY \
-         of the fallback diagnostic, not the exit gate (#5403 / leaf γ owns \
-         that).\nstdout: {stdout}\nstderr: {stderr}"
+        "`reify check` must still exit 0 here — the fallback diagnostic is a \
+         Warning under check, and a Warning never moves #5403's \
+         Severity::Error exit gate.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stderr.contains(&warning_line),
