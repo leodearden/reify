@@ -5368,9 +5368,9 @@ mod check_error_exit_allowlist_ratchet {
 
         let expected: Vec<(String, CheckErrorAllowlistDisposition, &'static str)> = vec![
             (
-                r#"MessageContains("no registered compute trampoline")"#.to_string(),
+                "Code(NoRegisteredComputeTrampoline)".to_string(),
                 CheckErrorAllowlistDisposition::Demote,
-                "#5311",
+                "#5404",
             ),
             (
                 r#"MessageContains("is unresolved (Undef)")"#.to_string(),
@@ -5432,15 +5432,26 @@ mod check_error_gate_tests {
     use super::{check_gating_error, has_error_diagnostic};
     use reify_core::{Diagnostic, DiagnosticCode};
 
-    /// The message the seeded allowlist's first entry excuses, verbatim from
-    /// the MEASURED corpus sweep.
+    /// The SOFT missing-trampoline message, verbatim as
+    /// `engine_compute.rs::soft_no_trampoline_diagnostic` builds it.
     const TRAMPOLINE: &str =
         "@optimized target \"solver::elastic_static\": no registered compute trampoline \
          (falling back to body-inlining)";
 
-    /// The sibling emission that SHARES the `@optimized target ` prefix and
-    /// must keep gating — the reason the matcher is `MessageContains`, not the
-    /// PRD's sketched `MessagePrefix`.
+    /// The missing-trampoline diagnostic on a NON-empty compute registry:
+    /// `reify eval` / `reify build`, or `reify check` once #6693 gives it one.
+    fn trampoline_error() -> Diagnostic {
+        Diagnostic::error(TRAMPOLINE).with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
+    }
+
+    /// The same diagnostic on an EMPTY compute registry — `reify check`'s
+    /// posture today.
+    fn trampoline_warning() -> Diagnostic {
+        Diagnostic::warning(TRAMPOLINE).with_code(DiagnosticCode::NoRegisteredComputeTrampoline)
+    }
+
+    /// The code-less sibling emission that SHARES the `@optimized target `
+    /// prefix and must keep gating.
     const TRAMPOLINE_CANCELLED: &str =
         "@optimized target \"solver::elastic_static\": compute trampoline was cancelled";
 
@@ -5466,10 +5477,29 @@ mod check_error_gate_tests {
             "any Severity::Error makes this true"
         );
         assert!(
-            has_error_diagnostic(&[Diagnostic::error(TRAMPOLINE)]),
+            has_error_diagnostic(&[trampoline_error()]),
             "the trampoline Error is allowlisted for `check` ONLY; the shared \
              predicate must still report it, or `reify build` / `reify eval` \
              would silently stop gating on it"
+        );
+    }
+
+    /// Both real shapes of the missing-trampoline diagnostic, carrying the
+    /// same `NoRegisteredComputeTrampoline` code: a Warning on an empty compute
+    /// registry, an Error on a non-empty one.
+    #[test]
+    fn missing_trampoline_warning_never_gates_and_its_error_is_excused() {
+        assert!(
+            check_gating_error(&[trampoline_warning()]).is_none(),
+            "check's empty-registry Warning never gates"
+        );
+        assert!(
+            check_gating_error(&[trampoline_error()]).is_none(),
+            "entry 1 (#5404) excuses the coded Error under check"
+        );
+        assert!(
+            has_error_diagnostic(&[trampoline_error()]),
+            "eval/build keep gating on the coded Error"
         );
     }
 
@@ -5561,8 +5591,8 @@ mod check_error_gate_tests {
     #[test]
     fn seeded_allowlist_entries_excuse_their_families() {
         assert!(
-            check_gating_error(&[Diagnostic::error(TRAMPOLINE)]).is_none(),
-            "entry 1 (#5311): check attaches no compute trampoline BY DESIGN"
+            check_gating_error(&[trampoline_error()]).is_none(),
+            "entry 1 (#5404): check attaches no compute trampoline BY DESIGN"
         );
         assert!(
             check_gating_error(&[Diagnostic::error(
@@ -5593,9 +5623,7 @@ mod check_error_gate_tests {
         );
     }
 
-    /// The matcher must not be over-broad.  This is the whole reason
-    /// `CheckErrorAllowlistMatcher::MessageContains` exists instead of the
-    /// PRD's sketched `MessagePrefix`: `TRAMPOLINE_CANCELLED` shares the
+    /// The matcher must not be over-broad: `TRAMPOLINE_CANCELLED` shares the
     /// `@optimized target "solver::elastic_static": ` prefix with the excused
     /// message and is a genuine failure that must keep gating.
     #[test]
@@ -5607,22 +5635,63 @@ mod check_error_gate_tests {
         );
     }
 
+    /// A `MessageContains` entry excuses CODE-LESS diagnostics only, and entry
+    /// 1 keys on its code rather than its text.
+    ///
+    /// This is the executable form of the 2026-08-26 ruling that codes minted
+    /// after the gate can never be excused: once an emission is coded — #6608's
+    /// replacement of the code-less "per-instance re-realization compile error
+    /// … is unresolved (Undef)" family in particular — no legacy substring
+    /// entry may silently keep excusing it.  The code attached below is
+    /// arbitrary; it is one no `Code(..)` entry names.
+    #[test]
+    fn message_entries_excuse_only_code_less_diagnostics() {
+        for msg in [
+            "failed to compile geometry operation: argument 'depth' for box is \
+             unresolved (Undef)",
+            "all geometry operations failed; no geometry output produced",
+        ] {
+            assert!(
+                check_gating_error(&[
+                    Diagnostic::error(msg).with_code(DiagnosticCode::ArgTypeMismatch)
+                ])
+                .is_some(),
+                "a CODED Error must not be excused by a legacy substring: {msg:?}"
+            );
+        }
+
+        assert!(
+            check_gating_error(&[Diagnostic::error("no registered compute trampoline")])
+                .is_some(),
+            "entry 1 keys on NoRegisteredComputeTrampoline, not on its message text"
+        );
+    }
+
     /// The load-bearing composition: an allowlisted Error must neither invent a
     /// gate nor mask a co-resident one.
     #[test]
     fn an_excused_error_neither_gates_nor_masks() {
         assert!(
             check_gating_error(&[
-                Diagnostic::error(TRAMPOLINE),
+                trampoline_error(),
                 Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
             ])
             .is_none(),
-            "exactly the mix in `cli_build_fea.rs::\
-             check_fea_violated_constraint_is_not_gated`, which must stay exit 0"
+            "an excused Error beside a Warning must not gate"
+        );
+        assert!(
+            check_gating_error(&[
+                trampoline_warning(),
+                Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit"),
+            ])
+            .is_none(),
+            "check's empty-registry trampoline Warning — what \
+             `cli_build_fea.rs::check_fea_violated_constraint_is_not_gated` \
+             sees — beside a DFM Warning must stay exit 0"
         );
 
         let mixed = [
-            Diagnostic::error(TRAMPOLINE),
+            trampoline_error(),
             Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit"),
         ];
         let gating = check_gating_error(&mixed)
