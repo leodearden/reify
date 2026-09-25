@@ -19,6 +19,28 @@ module dcr_yield_stress_dimension_silent
 // default is `Some(310000000 kg*m^-1*s^-2)`. `material_field_si`
 // (crates/reify-stdlib/src/flexures/common.rs:126) then reads 0.31 as Pa.
 //
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 1 / `reify eval` EXIT 1, one Error:
+//   * ArgTypeMismatch, Steel_AISI_1045.yield_stress on `wrong`: Scalar[m]
+//     where Scalar[kg·m^-1·s^-2] is declared (the walk sees through the
+//     Option).
+//   CHOKEPOINT: compile-time struct-ctor field conformance. This exit 1 is NOT
+//   β's signal. Machine pin: the gate-resident
+//   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
+//   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
+//   The whole file fails to compile, so the positive half (`correct` / `j_ok`)
+//   is no longer evaluated here either.
+//
+//   How β (#6941) reads its B5 signal now: the same way as B4 in
+//   `dcr_material_dimension_silent.ri`. The wrong value is unconstructible
+//   through this ctor site, so β asserts below the compiler: a Rust test hands
+//   the flexure reader a hand-built value whose yield_stress is
+//   `Some(<LENGTH Scalar>)` and asserts `DiagnosticCode::DimensionedArgRejected`
+//   identity (INV-SF-6; ruling esc-5791-3). β's floor that `some(310MPa)` keeps
+//   prb_validity_range ±0.08726646259971647 rad must be read from a file
+//   WITHOUT the `wrong` binding.
+//
 // NOTE for leaf α (contract §7): this is the `Option<Pressure>` shape.
 // `accept_arg` (crates/reify-eval/src/arg_acceptance.rs:117-130) has NO
 // `Value::Option` arm — it matches Undef / Scalar / `other => Rejected`. Making

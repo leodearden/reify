@@ -17,8 +17,36 @@ module dcr_material_dimension_silent
 // ROTATIONAL_STIFFNESS (Leo's 2026-07-29 ruling); both si_values above are
 // unchanged (a radian is numerically 1), so the 1e12x ratio still holds.
 //
-// This file must EVAL CLEAN (exit 0) today. When β lands it must exit 1 with a
-// coded `ArgDimensionMismatch` Error naming prb_cantilever_beam/youngs_modulus.
+// At decompose this file EVALUATED CLEAN (exit 0), and β was to make it exit 1
+// with a coded Error naming prb_cantilever_beam/youngs_modulus. Since δ (#5306)
+// it exits 1 BEFORE β lands, on the ctor-conformance chokepoint recorded below.
+// That exit 1 is NOT β's signal.
+//
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 1 / `reify eval` EXIT 1, one Error:
+//   * ArgTypeMismatch, Material.youngs_modulus on `m`: Scalar[m] where
+//     Pressure is declared.
+//   CHOKEPOINT: compile-time struct-ctor field conformance. Eval stops at
+//   compile, so prb_cantilever_beam and material_field_si never run and no
+//   spring_rate is produced. Machine pin: the gate-resident
+//   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
+//   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
+//   The positive twin `dcr_material_dimension_correct.ri` re-measured EXIT 0,
+//   spring_rate 1.3802083333333335, unchanged.
+//
+//   How β (#6941) reads its B4 signal now:
+//   * a wrong-dimension Material can no longer be built through this ctor call
+//     site, so the flexure reader is unreachable from this file;
+//   * dimensioning the call site (200GPa) turns this file into the positive
+//     twin and erases the defect, so that route is NOT available;
+//   * β reads B4 below the compiler: a Rust test hands the flexure reader a
+//     hand-built Material value whose youngs_modulus is a LENGTH Scalar and
+//     asserts `DiagnosticCode::DimensionedArgRejected` identity (INV-SF-6),
+//     the code ruling esc-5791-3 names for reader rejections;
+//   * the `.ri`-level rejection of `youngs_modulus: 200mm` is now delivered at
+//     check time by δ (ArgTypeMismatch). β's reader gate is a second line
+//     behind it.
 
 structure def DcrMaterialDimensionSilent {
     let m = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200mm)
