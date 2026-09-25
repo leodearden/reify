@@ -1162,19 +1162,20 @@ fn collect_ri_files(
 /// because `changes` is a `HashMap` whose iteration order varies per run, and a
 /// non-deterministic wire response is untestable.
 ///
-/// Pure and total — no lock, no I/O, no panic path.
+/// An edit that already carries `document_changes` is returned unchanged. Its
+/// producer chose those versions (and any resource operations) itself, and a
+/// client reads that field in preference to `changes`; converting it would
+/// instead replace it with an empty list — a rename reported as successful
+/// that changed nothing.
+///
+/// Pure and total in every build profile — no lock, no I/O, no panic path.
 fn version_stamped_workspace_edit(
     edit: WorkspaceEdit,
     versions: &HashMap<Url, i32>,
 ) -> WorkspaceEdit {
-    // The `changes`-shaped precondition, enforced rather than merely stated: a
-    // producer that grew a `document_changes` arm (or the resource operations
-    // that share it) would otherwise have its edits dropped here and report a
-    // successful rename that changed nothing.
-    debug_assert!(
-        edit.document_changes.is_none(),
-        "version_stamped_workspace_edit only converts changes-shaped edits"
-    );
+    if edit.document_changes.is_some() {
+        return edit;
+    }
     let mut targets: Vec<TextDocumentEdit> = edit
         .changes
         .unwrap_or_default()
@@ -3702,6 +3703,30 @@ structure Assembly {
         assert!(
             stamped_entries(&stamped).is_empty(),
             "an edit with no changes becomes an empty Edits list, never a panic"
+        );
+    }
+
+    #[test]
+    fn version_stamped_workspace_edit_passes_a_document_changes_edit_through_unchanged() {
+        let uri = Url::parse("file:///a.ri").unwrap();
+        let already_versioned = WorkspaceEdit {
+            document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: Some(7),
+                },
+                edits: vec![OneOf::Left(text_edit(0, "Alpha"))],
+            }])),
+            ..Default::default()
+        };
+
+        let stamped =
+            version_stamped_workspace_edit(already_versioned.clone(), &HashMap::from([(uri, 3)]));
+
+        assert_eq!(
+            stamped, already_versioned,
+            "a producer's own documentChanges survive in every build profile, \
+             never replaced by an empty Edits list"
         );
     }
 
