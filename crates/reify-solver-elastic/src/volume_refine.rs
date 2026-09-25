@@ -490,7 +490,9 @@ fn sorted_face_key(face: [u32; 3]) -> [u32; 3] {
 /// field yields 181 P1 tets; this function extracts 150 triangles over 77
 /// vertices from it, which satisfies `V - E + F = 77 - 225 + 150 = 2` — a
 /// closed genus-0 manifold. `refine_marked_elements` accepts that extracted
-/// boundary and remeshes 181 -> 667 tets when the `x < 0.5` half is marked.
+/// boundary and remeshes 181 -> 2030 tets when the `x < 0.5` half (95 tets) is
+/// marked — the task #7447 background-field reading; the pre-#7447 corner
+/// path, which reached gmsh with only 8 corner sizes, gave 667.
 ///
 /// On that same output, 0 of 181 tets were emitted NEGATIVELY oriented, so
 /// the orientation swap in [`outward_tet_faces`] was dormant: the canonical
@@ -1125,7 +1127,8 @@ mod tests {
             assert!(
                 volume_positions.contains(&p),
                 "surface vertex {v} at {p:?} is not bit-equal to any volume \
-                 vertex - the distance-0 nearest-vertex identity is broken",
+                 vertex - the boundary no longer bounds exactly the tets the \
+                 background size field is built over",
             );
         }
     }
