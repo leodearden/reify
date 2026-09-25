@@ -8,16 +8,14 @@ use reify_ir::EnumDef;
 use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
 
 // Facade re-export, and NOT an ownership claim: `reify_core::overload` is the
-// normative home of these three, alongside the two tier predicates imported
+// normative home of these two, alongside the two tier predicates imported
 // above. It survives only because `crate::expr`,
 // `crate::compile_builder::entities_phase` and `crate::variant_construct`
 // still reach them through `crate::type_compat`, and those three modules were
 // outside #5689's scope. A NEW call site should import from
 // `reify_core::overload` directly; the alias is expected to be retired once
 // the three modules can be edited.
-pub(crate) use reify_core::overload::{
-    type_carries_dim_param, type_carries_trait_object, type_carries_type_param,
-};
+pub(crate) use reify_core::overload::{type_carries_trait_object, type_carries_type_param};
 
 /// Returns `true` if `ty` is a scalar-like leaf type eligible as the `Q`
 /// (quantity) side of Rules 2a/2b/2c.
