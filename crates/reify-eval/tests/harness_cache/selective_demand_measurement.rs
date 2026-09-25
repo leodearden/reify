@@ -355,7 +355,7 @@ fn scenario_b_measurement_is_populated_and_shows_pruning() {
 /// Visible under:
 ///
 /// ```text
-/// cargo test -p reify-eval --test harness_selective_demand -- \
+/// cargo test -p reify-eval --test harness_cache -- \
 ///     selective_demand_measurement::emit_distribution_table --nocapture
 /// ```
 ///

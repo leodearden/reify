@@ -3,14 +3,14 @@
 //! Include the type and counter in a test binary with:
 //!
 //! ```rust,ignore
-//! mod common;
+//! #[path = "common/alloc_counter.rs"]
+//! mod alloc_counter;
 //!
 //! #[global_allocator]
-//! static GLOBAL: common::alloc_counter::CountingAllocator =
-//!     common::alloc_counter::CountingAllocator;
+//! static GLOBAL: alloc_counter::CountingAllocator = alloc_counter::CountingAllocator;
 //! ```
 //!
-//! Then reference `common::alloc_counter::ALLOCATIONS` to snapshot the counter.
+//! Then reference `alloc_counter::ALLOCATIONS` to snapshot the counter.
 //!
 //! # Why the `#[global_allocator]` static stays in each binary root
 //!
@@ -21,26 +21,20 @@
 //!
 //! # Counter isolation
 //!
-//! Because each file under `tests/` compiles to a separate binary, each binary gets
-//! its own copy of `ALLOCATIONS` — there is no cross-binary sharing.  This is the
-//! desired behaviour: counters are isolated per process.
+//! Because each file under `tests/` compiles to a separate binary, each binary that
+//! includes this file gets its own copy of `ALLOCATIONS` — there is no cross-binary
+//! sharing.  This is the desired behaviour: counters are isolated per process.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Thin wrapper around [`std::alloc::System`] that counts every `alloc` call.
-///
-/// `#[allow(dead_code)]` because shared `tests/common/*` modules are re-compiled
-/// into every test binary under `tests/`, and binaries that don't use this
-/// helper would otherwise trip the `dead_code` lint.
-#[allow(dead_code)]
 pub struct CountingAllocator;
 
 /// Global counter incremented on every allocation.
 ///
-/// Each test binary that includes this module via `mod common;` gets its own
-/// independent copy of this static — sharing only the type definition, not state.
-#[allow(dead_code)]
+/// Each test binary that includes this file gets its own independent copy of this
+/// static — sharing only the type definition, not state.
 pub static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 unsafe impl GlobalAlloc for CountingAllocator {

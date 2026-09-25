@@ -3,7 +3,8 @@
 //! Tests for evaluating guarded groups: conditional member activation,
 //! else branches, undef guards, and schema re-elaboration.
 
-mod common;
+#[path = "common/guarded_groups.rs"]
+mod guarded_groups;
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -20,7 +21,7 @@ use reify_test_support::{
 
 use reify_compiler::{CompiledConstraint, ValueCellDecl, ValueCellKind, Visibility};
 
-use common::ten_bool_guarded_groups;
+use guarded_groups::ten_bool_guarded_groups;
 
 /// Helper to create a ValueCellDecl for tests.
 fn make_param_decl(entity: &str, member: &str, cell_type: Type, default: Value) -> ValueCellDecl {
