@@ -1026,8 +1026,9 @@ fn tool_defs() -> Vec<ToolDef> {
             name: "reify_set_parameter",
             description: "Set a parameter's value by CELL ID, rewriting the parameter's default \
                           literal in the `.ri` SOURCE ON DISK (the user's canonical document), \
-                          then recompiling. This is the durable counterpart of dragging the \
-                          property-panel slider, which only overrides engine state ephemerally. \
+                          then recompiling. This is the same mechanism the property panel \
+                          commits through, so an AI edit and a user edit are indistinguishable \
+                          once made; only a slider's in-flight DRAG is ephemeral. \
                           Only the default literal's own span is rewritten — comments, \
                           formatting and every other declaration are left byte-identical. \
                           Returns { success, new_value, unit, diagnostics }.",
@@ -1873,11 +1874,19 @@ pub async fn set_fea_case_on_engine(
 /// (a) **One seam, ONE stated exception.** Four of the five write tools reach
 /// the baseline refresh through here; `reify_open_file` reaches the SAME
 /// refresh through [`open_source_into_engine_and_refresh_baseline`] — see (d).
-/// So the structural claim θ (task 5100) anchors on is "every write tool
-/// refreshes the baseline through one of the two shared
-/// `*_and_refresh_baseline` seams", NOT "all five route through this
-/// function". A tool that refreshes the baseline its own way, outside both
-/// seams, is the defect that anchor exists to catch.
+/// So the structural claim is "every write tool refreshes the baseline
+/// through one of the two shared `*_and_refresh_baseline` seams", NOT "all
+/// five route through this function". A tool that refreshes the baseline its
+/// own way, outside both seams, is the defect that claim exists to catch, and
+/// `gui/src-tauri/src/tests/debug_write_tool_routing_tests.rs` now enforces
+/// it mechanically: it enumerates the `reify_*` dispatch arms rather than a
+/// fixed list, and checks that every name the `ToolDef` registry advertises
+/// (:1019-1024) appears in that set, so a SIXTH write tool that skips both
+/// seams reds rather than losing telemetry silently — and so does one whose
+/// arm the scanner cannot read, which reds as unenumerated instead of
+/// vanishing from the sweep. Adding a write tool therefore means adding BOTH
+/// the registry entry and the dispatch arm, which is what that registry
+/// comment already tells you to do.
 ///
 /// (b) **The `StateDelta` is deliberately DISCARDED.** `compute_delta` is
 /// called for its SIDE EFFECT — advancing `last_state` — only; the full
@@ -2159,16 +2168,28 @@ pub(crate) fn reify_export_envelope(output_path: &str) -> Value {
 
 /// Engine-routing core of the `reify_set_parameter` write tool: apply
 /// `value` to `cell_id`'s default literal IN THE `.ri` SOURCE (INV-GUI-3,
-/// via γ's [`EngineSession::apply_param_to_source_str`]), then refresh the
-/// delta baseline.
+/// via [`EngineSession::commit_parameter`]), then refresh the delta baseline.
 ///
-/// This is the AI counterpart of the property-panel slider, and it is
-/// deliberately NOT the slider's mechanism: the slider's
-/// `EngineSession::set_parameter` is an EPHEMERAL engine-state override,
-/// while this writes the user's canonical document. Both share one
-/// dimension-aware parse (#5757), so `value` is a UNIT-BEARING literal
-/// (`"120mm"`) on any dimensioned cell — see `apply_param_to_source_str`
-/// for the full unit contract.
+/// This is the AI counterpart of the property panel, and since η it is
+/// deliberately the SAME mechanism, down to the entry point: the panel's
+/// commit, the Tauri-invoke `TauriToolContext::set_parameter` and this tool
+/// all call `commit_parameter`, which is γ's `apply_param_to_source_str`
+/// with a preview discard in front of its error arm. Only a slider's
+/// in-flight DRAG is an ephemeral engine-state override
+/// (`EngineSession::preview_parameter`), and it never outlives the gesture.
+///
+/// Calling the bare `apply_param_to_source_str` here instead would be the
+/// cheaper-looking spelling and the wrong one: an AI write can land while a
+/// user drag is live, and γ's ledger — which guarantees a refusal moves none
+/// of ITS four surfaces — says nothing about the preview's override in
+/// `last_check`, which it never reads. A refusal on this surface would then
+/// strand a value no source carries, which is esc-7281-4 on the one path that
+/// had opted out of the fix. The discard runs on the error arm only, so the
+/// success path this doc describes costs exactly what it did before.
+///
+/// The dimension-aware parse is shared too (#5757), so `value` is a
+/// UNIT-BEARING literal (`"120mm"`) on any dimensioned cell — see
+/// `apply_param_to_source_str` for the full unit contract.
 ///
 /// Extracted from [`handle_reify_set_parameter`] so the routing is
 /// unit-testable without a [`DebugServerState`]/`AppHandle` (mirrors
@@ -2184,7 +2205,7 @@ pub async fn reify_set_parameter_on_engine_and_refresh_baseline(
     let cell_id = cell_id.to_owned();
     let value = value.to_owned();
     write_on_engine_and_refresh_baseline(engine, last_state, move |s| {
-        s.apply_param_to_source_str(&cell_id, &value)
+        s.commit_parameter(&cell_id, &value)
     })
     .await
 }
@@ -4824,11 +4845,18 @@ mod tests {
             "set_fea_case_on_engine_and_refresh_baseline must refresh last_state to S1"
         );
 
-        // A normal command now runs: set_parameter changes exactly one cell
-        // (width) — unrelated to the FEA-case switch itself.
+        // A normal command now runs: a parameter edit changes exactly one
+        // cell (width) — unrelated to the FEA-case switch itself.
+        //
+        // The TRANSIENT cadence, because this session was built by
+        // `load_from_source` and so has no on-disk `.ri` for the durable one
+        // to write; `set_parameter_impl` would refuse it (task 5099 η). The
+        // baseline-freshness claim under test is indifferent to which cadence
+        // produced S2 — it only needs one command's worth of engine mutation
+        // to diff.
         let s2 =
-            crate::commands::set_parameter_impl(&engine, "FeaMultiCaseBracket.width", "150mm")
-                .expect("set_parameter_impl must succeed");
+            crate::commands::preview_parameter_impl(&engine, "FeaMultiCaseBracket.width", "150mm")
+                .expect("preview_parameter_impl must succeed");
 
         // The normal command's delta is computed against the FRESH (S1)
         // baseline, so it must be minimal: it must NOT re-report the
@@ -4841,7 +4869,8 @@ mod tests {
                 .iter()
                 .any(|v| v.cell_id == "FeaMultiCaseBracket.length"),
             "fresh-baseline delta must be MINIMAL: it must NOT re-report \
-             'FeaMultiCaseBracket.length', which set_parameter never touched"
+             'FeaMultiCaseBracket.length', which the parameter edit never \
+             touched"
         );
     }
 

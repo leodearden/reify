@@ -35,7 +35,7 @@ use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
     partition_driving_set, pose_from_frame,
 };
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
     realize_operand_datums, solve_relate_scope, trace_to_ground,
@@ -289,15 +289,24 @@ fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
 // `crates/reify-eval/src/relate_solve.rs` — RED-by-missing-symbol (the file fails to
 // compile against the absent function/type).
 
-/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate{}` block
-/// holds the two §1 driving relations (concentric + flush) plus one extra `third`
-/// relation. Pure test data — the B2 redundant-remainder + B3 conflict variants.
-/// Built from the SAME self-contained primitives as
+/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate {}` block
+/// holds exactly `members`, in declaration order — optionally preceded by a
+/// top-level `fn` declaration (`extra_fn`, e.g. a `Relation`-typed wrapper like
+/// `fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }`). Pure test data —
+/// the ONE fixture builder every bolt_plate-shaped relate-solve test in this file
+/// is built from (SPOT: `Bolt`/`Plate`/`BoltPlate` is written exactly once). Built
+/// from the SAME self-contained primitives as
 /// `examples/geometric_relations/bolt_plate.ri`.
-fn bolt_plate_with_third(third: &str) -> String {
+fn bolt_plate_scope_source(extra_fn: Option<&str>, members: &[&str]) -> String {
+    let extra_fn = match extra_fn {
+        Some(f) => format!("{f}\n\n"),
+        None => String::new(),
+    };
+    let relate_block: Vec<String> = members.iter().map(|m| format!("        {m}")).collect();
+    let relate_block = relate_block.join("\n");
     format!(
         r#"
-structure Bolt {{
+{extra_fn}structure Bolt {{
     let shank = cylinder(3mm, 20mm)
     let shank_axis : Axis = shank.axis
     let seat = rectangle(12mm, 12mm)
@@ -316,13 +325,45 @@ structure BoltPlate {{
     sub bolt : Bolt at auto
     sub plate : Plate
     relate {{
-        concentric(bolt.shank_axis, plate.hole_axis)
-        flush(bolt.seat_plane, plate.top_plane)
-        {third}
+{relate_block}
     }}
 }}
 "#
     )
+}
+
+/// The §1 `Bolt`/`Plate` structures + a `BoltPlate` scope whose `relate{}` block
+/// holds the two §1 driving relations (concentric + flush) plus one extra `third`
+/// relation. Pure test data — the B2 redundant-remainder + B3 conflict variants.
+/// A thin wrapper over [`bolt_plate_scope_source`] — byte-identical to its
+/// pre-generalization body, so every existing call site is unaffected.
+fn bolt_plate_with_third(third: &str) -> String {
+    bolt_plate_scope_source(
+        None,
+        &[
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            "flush(bolt.seat_plane, plate.top_plane)",
+            third,
+        ],
+    )
+}
+
+/// The `Relation`-typed wrapper every task-7050 un-consumable-member fixture below
+/// builds from (SPOT: written once rather than re-typed per test) — a call to a
+/// user-defined `fn ... -> Relation` function type-checks to `Type::Relation` (the
+/// compiler accepts it inside a `relate {}` block) but is not itself a direct
+/// geometric-relation `FunctionCall`, so the solve cannot build a `RelationInstance`
+/// from it.
+const MATE_FN: &str = "fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }";
+/// A call to [`MATE_FN`] — the un-consumable relate member itself.
+const MATE_CALL: &str = "mate(bolt.shank_axis, plate.hole_axis)";
+
+/// The diagnostics among `diags` carrying `code` — the
+/// `.iter().filter(|d| d.code == Some(code)).collect()` shape every task-7050
+/// diagnostic-code assertion below needs, whether `diags` is a `RelateSolution`'s
+/// diagnostics or a compiled module's own.
+fn diags_with_code(diags: &[Diagnostic], code: DiagnosticCode) -> Vec<&Diagnostic> {
+    diags.iter().filter(|d| d.code == Some(code)).collect()
 }
 
 /// An identity placeholder seed Frame for the bolt's `at auto` unknown (the local
@@ -434,6 +475,70 @@ fn remainder_violated_relation_emits_diagnostic() {
     assert!(
         errors.iter().any(|m| m.contains("perpendicular")),
         "the assertion diagnostic must name the violated relation `perpendicular`, got: {errors:?}"
+    );
+}
+
+/// Pins the instance→source crossing's SECOND consumer: the redundant-remainder
+/// `colocated` check (`operand_refs(built.relation(i))` /
+/// `operand_refs(built.relation(d))`), distinct from
+/// `conflict_diagnostic_unshifted_by_a_non_call_relate_member`'s
+/// `SolveResult::Infeasible` path — a wrong, non-panicking outcome that test alone
+/// does not pin. Same shape as that test's baseline/shifted pair: prepend the
+/// unconsumable member and assert the emitted diagnostic is byte-identical to the
+/// unshifted baseline.
+#[test]
+fn remainder_conflict_unshifted_by_a_non_call_relate_member() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping remainder_conflict_unshifted_by_a_non_call_relate_member: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    const CONCENTRIC: &str = "concentric(bolt.shank_axis, plate.hole_axis)";
+    const FLUSH: &str = "flush(bolt.seat_plane, plate.top_plane)";
+    const PERPENDICULAR: &str = "perpendicular(bolt.shank_axis, plate.hole_axis)";
+
+    let baseline_source = bolt_plate_with_third(PERPENDICULAR);
+    let shifted_source =
+        bolt_plate_scope_source(Some(MATE_FN), &[MATE_CALL, CONCENTRIC, FLUSH, PERPENDICULAR]);
+
+    let baseline_solution = solve_bolt_plate(&baseline_source);
+    let shifted_solution = solve_bolt_plate(&shifted_source);
+
+    // The solve itself is unaffected by the leading skipped member.
+    assert_eq!(shifted_solution.driving, 2, "concentric + flush are still the driving set");
+    assert_eq!(
+        shifted_solution.redundant, 1,
+        "perpendicular is still the rank-redundant remainder"
+    );
+
+    // The single Error diagnostic naming the violated remainder relation.
+    let violated_message = |solution: &RelateSolution, label: &str| -> String {
+        let matches: Vec<&str> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.message.contains("perpendicular"))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "{label}: expected exactly one Error diagnostic naming `perpendicular`, got: {:?}",
+            solution.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        matches[0].to_string()
+    };
+    let baseline_msg = violated_message(&baseline_solution, "baseline");
+    let shifted_msg = violated_message(&shifted_solution, "shifted");
+
+    // An unconsumable member shifts NOTHING in the `colocated` crossing either —
+    // the redundant-remainder conflict diagnostic is identical to the baseline.
+    assert_eq!(
+        shifted_msg, baseline_msg,
+        "a relate member the solve cannot consume must not change the redundant- \
+         remainder conflict diagnostic"
     );
 }
 
@@ -1278,6 +1383,441 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
         (centre_distance - expected).abs() < 1e-6,
         "the placed roller axis must stand r1 + r2 = {expected} m from the idler axis \
          (external tangency), measured {centre_distance} m"
+    );
+}
+
+// ─── task 7050 — a non-FunctionCall relate member must not corrupt diagnostics ───
+//
+// `Relation` is a first-class nameable type — a user-defined wrapper such as
+// `fn mate(a: Axis, b: Axis) -> Relation { concentric(a, b) }` type-checks and is
+// accepted inside a `relate {}` block — so a relate member need not be a bare
+// geometric-relation `FunctionCall`; it can be a `CompiledExprKind::UserFunctionCall`
+// the solve cannot build a [`RelationInstance`] for.
+//
+// `build_relation_instances`'s `filter_map` silently DROPPED such a member, making
+// `instances` SHORTER than `scope.relations`. Pre-fix, `solve_relate_scope` and
+// `conflict_diagnostic` nonetheless cross from an INSTANCE position back to
+// `scope.relations` using that SAME position as if it were a source index — so
+// from the first dropped member onward the two addressings disagree, and the
+// conflict diagnostic's name, subjects and shares-a-datum test are all read off
+// the WRONG relation.
+//
+// step-1 (below) pins the invariant an unconsumable member must satisfy: it must
+// change NOTHING about the conflict diagnostic a scope without it would produce.
+// step-3 pins the complementary invariant — the drop itself must be diagnosed, not
+// silent (INV-SF-3) — and step-5 pins that the diagnosis survives the B6
+// global-float short-circuit.
+
+/// A relate member the solve cannot consume (a user-defined `Relation`-typed
+/// wrapper) must not change WHICH relation the conflict diagnostic names.
+#[test]
+fn conflict_diagnostic_unshifted_by_a_non_call_relate_member() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping conflict_diagnostic_unshifted_by_a_non_call_relate_member: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    const CONCENTRIC: &str = "concentric(bolt.shank_axis, plate.hole_axis)";
+    const PERPENDICULAR: &str = "perpendicular(bolt.shank_axis, plate.hole_axis)";
+    const FLUSH: &str = "flush(bolt.seat_plane, plate.top_plane)";
+
+    let baseline_source = bolt_plate_scope_source(None, &[CONCENTRIC, PERPENDICULAR, FLUSH]);
+    let shifted_source = bolt_plate_scope_source(
+        Some(MATE_FN),
+        &[MATE_CALL, CONCENTRIC, PERPENDICULAR, FLUSH],
+    );
+
+    // (p1) the shifted module compiles with NO Error-severity diagnostics — the
+    // non-call member is a supported authoring surface, accepted by the compiler.
+    let shifted_module = compile_source_with_stdlib(&shifted_source);
+    let shifted_compile_errors: Vec<&str> = shifted_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        shifted_compile_errors.is_empty(),
+        "the shifted module (leading `mate(...)` relate member) must compile with no \
+         Error diagnostics, got: {shifted_compile_errors:?}"
+    );
+
+    // (p2) the collected scope carries all 4 members; the leading one is NOT a
+    // FunctionCall (the solve cannot build a RelationInstance for it) yet still
+    // type-checks to Type::Relation (the reachability premise).
+    let shifted_bp = template(&shifted_module, "BoltPlate");
+    let shifted_scope = collect_relate_scope(shifted_bp);
+    assert_eq!(
+        shifted_scope.relations.len(),
+        4,
+        "the shifted scope must collect all 4 relate-block members, got kinds {:?}",
+        shifted_scope.relations.iter().map(|r| format!("{:?}", r.kind)).collect::<Vec<_>>()
+    );
+    assert!(
+        !matches!(shifted_scope.relations[0].kind, CompiledExprKind::FunctionCall { .. }),
+        "the leading `mate(...)` member must NOT be a FunctionCall, got {:?}",
+        shifted_scope.relations[0].kind
+    );
+    assert_eq!(
+        shifted_scope.relations[0].result_type,
+        Type::Relation,
+        "the leading `mate(...)` member must type-check to Type::Relation, got {:?}",
+        shifted_scope.relations[0].result_type
+    );
+
+    let baseline_solution = solve_bolt_plate(&baseline_source);
+    let shifted_solution = solve_bolt_plate(&shifted_source);
+
+    // The single Error diagnostic whose message opens with "conflicting relations".
+    let conflict_message = |solution: &RelateSolution, label: &str| -> String {
+        let matches: Vec<&str> = solution
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error && d.message.starts_with("conflicting relations")
+            })
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "{label}: expected exactly one 'conflicting relations' Error diagnostic, got: {:?}",
+            solution.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        matches[0].to_string()
+    };
+
+    let baseline_msg = conflict_message(&baseline_solution, "baseline");
+    let shifted_msg = conflict_message(&shifted_solution, "shifted");
+
+    // (a) the shifted diagnostic names BOTH mutually-inconsistent relations …
+    assert!(
+        shifted_msg.contains("perpendicular") && shifted_msg.contains("concentric"),
+        "the conflict diagnostic must name both `perpendicular` and `concentric`, \
+         got: {shifted_msg:?}"
+    );
+    // (b) … and excludes `flush`, the consistent, independent driving relation.
+    assert!(
+        !shifted_msg.contains("flush"),
+        "the consistent, independent `flush` relation must be excluded from the \
+         minimal conflict set, got: {shifted_msg:?}"
+    );
+    // (c) `perpendicular` — the newest-declared member OF THE CONFLICT SET — is
+    //     flagged as the primary conflict.
+    assert!(
+        shifted_msg.contains("`perpendicular` is")
+            && (shifted_msg.contains("newest") || shifted_msg.contains("primary")),
+        "`perpendicular` must be flagged as the newest-declared/primary conflict, \
+         got: {shifted_msg:?}"
+    );
+    // (d) the primary's rendered subjects are perpendicular's REAL operands …
+    assert!(
+        shifted_msg.contains("`perpendicular` requires bolt.shank_axis and plate.hole_axis"),
+        "the primary conflict's rendered subjects must be perpendicular's own \
+         operands (bolt.shank_axis, plate.hole_axis), got: {shifted_msg:?}"
+    );
+    // … NOT flush's operands (which the misaligned read would substitute in).
+    assert!(
+        !shifted_msg.contains("bolt.seat_plane") && !shifted_msg.contains("plate.top_plane"),
+        "flush's operands must not appear in the conflict diagnostic, got: {shifted_msg:?}"
+    );
+    // (e) an unconsumable member shifts NOTHING — the message is identical to the
+    //     baseline scope that never had one.
+    assert_eq!(
+        shifted_msg, baseline_msg,
+        "a relate member the solve cannot consume must not change the conflict diagnostic"
+    );
+}
+
+/// A relate member no pass can consume is DIAGNOSED, not silently dropped
+/// (INV-SF-3, `docs/legibility/design-invariants.md`: a declaration is either
+/// consumed by a solve/verify pass this run, or generates a diagnostic naming why
+/// not).
+#[test]
+fn non_call_relate_member_is_diagnosed_not_silently_dropped() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_call_relate_member_is_diagnosed_not_silently_dropped: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    // Leading `mate(...)` (position 1) + the two §1 driving relations. This scope
+    // solves cleanly today — the bolt is placed and `solution.diagnostics` is
+    // EMPTY, which is exactly the silent skip this step closes.
+    let source = bolt_plate_scope_source(
+        Some(MATE_FN),
+        &[
+            MATE_CALL,
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            "flush(bolt.seat_plane, plate.top_plane)",
+        ],
+    );
+
+    let solution = solve_bolt_plate(&source);
+
+    // (a) at least one Error-severity diagnostic exists — the skip is no longer silent.
+    assert!(
+        solution.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "an un-consumable relate member must raise an Error diagnostic, got none \
+         (solution.diagnostics = {:?})",
+        solution.diagnostics
+    );
+
+    // (b)+(c) exactly one diagnostic carries RelateExpectsRelation and identifies
+    // the un-consumed member's 1-based declaration position (member 1) as a call
+    // the relate-solve cannot verify.
+    let skip_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        skip_diags.len(),
+        1,
+        "expected exactly one RelateExpectsRelation diagnostic, got: {:?}",
+        solution.diagnostics
+    );
+    let skip = skip_diags[0];
+    assert_eq!(
+        skip.severity,
+        Severity::Error,
+        "the un-consumed-member diagnostic must be Error severity, got {:?}",
+        skip.severity
+    );
+    assert!(
+        skip.message.contains("member 1"),
+        "the diagnostic must identify the un-consumed member's 1-based declaration \
+         position (member 1), got: {:?}",
+        skip.message
+    );
+    assert!(
+        skip.message.contains("cannot verify"),
+        "the diagnostic must say the relate-solve cannot verify the member, got: {:?}",
+        skip.message
+    );
+
+    // (d) the report is about the skipped member, nothing else.
+    assert!(
+        !skip.message.contains("concentric") && !skip.message.contains("flush"),
+        "the un-consumed-member diagnostic must not name the consumable relations, \
+         got: {:?}",
+        skip.message
+    );
+
+    // (e) diagnosing the skip does not disturb the solve that DID run.
+    assert_eq!(
+        solution.driving, 2,
+        "concentric + flush are still the driving set, unaffected by the skip"
+    );
+    assert!(
+        matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the bolt must still receive a solved Frame despite the skip diagnostic"
+    );
+}
+
+/// The B6 global-float short-circuit must not MASK the un-consumable member: both
+/// diagnostics must fire, distinct.
+#[test]
+fn non_call_relate_member_is_diagnosed_even_when_the_assembly_floats() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_call_relate_member_is_diagnosed_even_when_the_assembly_floats: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    // The relate block holds ONLY `mate(...)` — `trace_to_ground` also skips
+    // non-FunctionCall members, so the auto `bolt` reaches no anchor and the B6
+    // global-float short-circuit fires before any instance is built.
+    let source = bolt_plate_scope_source(Some(MATE_FN), &[MATE_CALL]);
+
+    let solution = solve_bolt_plate(&source);
+
+    // (a) B6 still fires — this step must not weaken the existing global-float
+    //     contract.
+    let float_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::AssemblyGlobalFloat);
+    assert_eq!(
+        float_diags.len(),
+        1,
+        "the B6 global-float diagnostic must still fire, got: {:?}",
+        solution.diagnostics
+    );
+
+    // (b) the un-consumable-member diagnostic is ALSO present, naming position 1.
+    let skip_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        skip_diags.len(),
+        1,
+        "the un-consumable-member diagnostic must fire even when the assembly \
+         floats, got: {:?}",
+        solution.diagnostics
+    );
+    assert!(
+        skip_diags[0].message.contains("member 1"),
+        "the skip diagnostic must name the member's 1-based declaration position \
+         (member 1), got: {:?}",
+        skip_diags[0].message
+    );
+
+    // (c) the two are DISTINCT diagnostics — the float error is not repurposed to
+    //     carry the skip message.
+    assert_ne!(
+        float_diags[0].message, skip_diags[0].message,
+        "the B6 float diagnostic and the skip diagnostic must be distinct messages"
+    );
+    assert_eq!(
+        solution.diagnostics.len(),
+        2,
+        "exactly the B6 float diagnostic + the skip diagnostic, nothing else, got: {:?}",
+        solution.diagnostics
+    );
+}
+
+/// The skip-detection/diagnosis logic is pure (kernel-free): it branches on
+/// `CompiledExprKind`/`result_type` alone, never on `realized`. Unlike its
+/// OCCT-gated neighbours, this test needs no kernel, so it is real coverage in a
+/// kernel-less build. Same fixture as
+/// `non_call_relate_member_is_diagnosed_even_when_the_assembly_floats`, but drives
+/// `solve_relate_scope` directly against `RealizedDatums::default()`.
+#[test]
+fn non_call_relate_member_is_diagnosed_without_a_kernel() {
+    let source = bolt_plate_scope_source(Some(MATE_FN), &[MATE_CALL]);
+    let module = compile_source_with_stdlib(&source);
+    let bp = template(&module, "BoltPlate");
+    let scope = collect_relate_scope(bp);
+
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+
+    let skip_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        skip_diags.len(),
+        1,
+        "the un-consumable-member diagnostic must fire with no geometry kernel \
+         involved, got: {:?}",
+        solution.diagnostics
+    );
+    assert!(
+        skip_diags[0].message.contains("member 1"),
+        "the skip diagnostic must name the member's 1-based declaration position \
+         (member 1), got: {:?}",
+        skip_diags[0].message
+    );
+}
+
+/// The reported member position is the DECLARATION index, not a skip-ordinal
+/// counter over just the skipped members (indistinguishable from that in a fixture
+/// where the unconsumable member always sits at index 0). Interleaves two
+/// `mate(...)` members with the two real driving relations —
+/// `[concentric, mate, flush, mate]` — so the reported positions (2 and 4) can only
+/// come from the declaration index.
+#[test]
+fn non_call_relate_member_position_is_the_declaration_index_not_a_skip_ordinal() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_call_relate_member_position_is_the_declaration_index_not_a_skip_ordinal: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    let source = bolt_plate_scope_source(
+        Some(MATE_FN),
+        &[
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            MATE_CALL,
+            "flush(bolt.seat_plane, plate.top_plane)",
+            MATE_CALL,
+        ],
+    );
+
+    let solution = solve_bolt_plate(&source);
+
+    // The solve itself is unaffected — the two CONSUMED relations (positions 1, 3)
+    // are still the driving set and the bolt is still placed.
+    assert_eq!(solution.driving, 2, "concentric + flush are still the driving set");
+    assert!(
+        matches!(solution.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the bolt must still receive a solved Frame"
+    );
+
+    let skip_diags = diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        skip_diags.len(),
+        2,
+        "expected exactly two RelateExpectsRelation diagnostics (one per skipped \
+         `mate(...)` member), got: {:?}",
+        solution.diagnostics
+    );
+    assert!(
+        skip_diags.iter().any(|d| d.message.contains("member 2")),
+        "one skip diagnostic must name declaration position 2 (the FIRST \
+         `mate(...)`, right after the leading `concentric`), got: {:?}",
+        skip_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        skip_diags.iter().any(|d| d.message.contains("member 4")),
+        "one skip diagnostic must name declaration position 4 (the SECOND \
+         `mate(...)`, last in the block), got: {:?}",
+        skip_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        !skip_diags
+            .iter()
+            .any(|d| d.message.contains("member 1") || d.message.contains("member 3")),
+        "neither skip diagnostic may name position 1 or 3 — those are the CONSUMED \
+         concentric/flush members, got: {:?}",
+        skip_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// `unconsumable_relation_diagnostic` must fire ONLY for a `Type::Relation` member
+/// the solve still can't build an instance for. A member the compiler already
+/// rejected as NOT `Type::Relation` (`check_relate_relations`,
+/// `crates/reify-compiler/src/entity.rs`) already carries an accurate
+/// `RelateExpectsRelation` diagnostic there; a second, differently-worded one would
+/// contradict it. Kernel-free: skip detection never touches `realized`, and the
+/// relate block's only member is not a `FunctionCall`, so B6's global-float
+/// short-circuit fires before any datum would be read.
+#[test]
+fn non_relation_typed_member_is_left_to_the_compilers_own_diagnostic() {
+    let source = bolt_plate_scope_source(None, &["1mm == 1mm"]);
+    let module = compile_source_with_stdlib(&source);
+
+    // The compiler's own check already flags this member — a `Bool`, not a
+    // `Relation` — with `RelateExpectsRelation` (`check_relate_relations`).
+    let compiler_diags =
+        diags_with_code(&module.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert_eq!(
+        compiler_diags.len(),
+        1,
+        "the compiler must flag the non-Relation relate member once, got: {:?}",
+        module.diagnostics
+    );
+
+    let bp = template(&module, "BoltPlate");
+    let scope = collect_relate_scope(bp);
+    assert_eq!(scope.relations.len(), 1, "the ill-typed member is still threaded onto the scope");
+    assert_ne!(
+        scope.relations[0].result_type,
+        Type::Relation,
+        "the member must type-check to something other than Relation (Bool), got {:?}",
+        scope.relations[0].result_type
+    );
+
+    let solution = solve_relate_scope(&scope, &RealizedDatums::default());
+
+    // The eval side must NOT also diagnose it — a second, differently-worded
+    // RelateExpectsRelation diagnostic would contradict the compiler's.
+    let eval_skip_diags =
+        diags_with_code(&solution.diagnostics, DiagnosticCode::RelateExpectsRelation);
+    assert!(
+        eval_skip_diags.is_empty(),
+        "a non-Relation-typed relate member is already diagnosed by the compiler; \
+         the relate-solve must not pile a second RelateExpectsRelation diagnostic \
+         on top, got: {:?}",
+        eval_skip_diags
     );
 }
 

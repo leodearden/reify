@@ -96,10 +96,36 @@ pub struct MedialOptions {
     /// with `|φ(v)| > narrow_band_half_width_voxels × spacing` are
     /// excluded from the inner loop, emulating OpenVDB's sparse
     /// active-voxel iterator on top of a dense `SampledField`.
-    /// Default `3.0` covers the smallest medial axis at the PRD's
-    /// `thickness/3` voxel-size default (smallest medial slab is 3
-    /// voxels thick → half-width 1.5; 3 leaves headroom for
-    /// gradient-stencil sampling at the boundary voxels).
+    ///
+    /// **This field sets the extractor's UPPER resolution edge.** A
+    /// wall's medial plane sits at `|φ| = half-thickness`, so the band
+    /// filter (this file, ~:617) admits it only while
+    ///
+    /// ```text
+    /// voxels-per-thickness ≤ 2 × narrow_band_half_width_voxels
+    /// ```
+    ///
+    /// — 6 voxels per thickness at the default `3.0`. Refining past
+    /// that edge does not improve the measurement, it destroys it, and
+    /// silently: the filter runs BEFORE `medial_walk_direction`, so
+    /// #7527's ridge fallback never gets the chance to rescue a
+    /// dropped mid-plane voxel.
+    ///
+    /// The field is bounded BELOW by its producer, which this crate
+    /// cannot see: `reify-kernel-openvdb` will not build a grid coarser
+    /// than `MIN_FEATURE_VOXELS_ACROSS` voxels across the thinnest
+    /// feature, so `2 × nb` must stay ≥ that constant or no grid the
+    /// producer serves is measurable at all. **Do not lower this field
+    /// to "re-match" a voxel-size default** without re-checking that.
+    ///
+    /// Derivation, measured basis and the unclosed producer-side gap
+    /// are owned by the 2026-09-18 update in
+    /// `docs/prds/v0_4/structural-analysis-shells.md`. Pinned by
+    /// `tests/medial_resolution_window.rs` (the upper edge, which also
+    /// reproduces the measurement) and
+    /// `crates/reify-eval/tests/harness_kernel_realization/shell_voxel_resolution_window.rs`
+    /// (the cross-crate bracket — named in prose only, since this crate
+    /// deliberately carries no kernel/eval dependency).
     pub narrow_band_half_width_voxels: f64,
     /// Surface-patch distinctness threshold on the dot product of the
     /// SDF gradients sampled at the two surface-hit points. The
@@ -1646,10 +1672,10 @@ mod tests {
     ///
     /// - `distance_tolerance == 0.05` — the PRD's "~5%" relative-distance
     ///   equality threshold for the bidirectional ray walk.
-    /// - `narrow_band_half_width_voxels == 3.0` — covers the smallest medial
-    ///   axis at the PRD's `thickness/3` voxel-size default (smallest
-    ///   medial slab is 3 voxels thick → half-width 1.5; 3 leaves headroom
-    ///   for gradient sampling at the boundary voxels).
+    /// - `narrow_band_half_width_voxels == 3.0` — the extractor's UPPER
+    ///   resolution edge, at `2 × nb = 6` voxels across the thickness. See
+    ///   [`MedialOptions::narrow_band_half_width_voxels`] for the window
+    ///   derivation; do not restate it here.
     /// - `normal_antiparallel_threshold == -0.5` — opposing-face hits whose
     ///   gradients dot to less than this (i.e. roughly antiparallel,
     ///   ≥120° between normals) count as "distinct surface patches" per

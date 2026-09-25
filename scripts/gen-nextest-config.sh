@@ -148,7 +148,10 @@
 #                                           and the narrowing would read as
 #                                           effective while being absent.
 #                                       Guard: tests/infra/test_verify_test_threads.sh
-#                                       Test 6.  verify.sh exports it at one site.
+#                                       Tests 6a-6e.  verify.sh passes it as a
+#                                       per-invocation env prefix (not exported)
+#                                       at two sites: emit_nextest_pass and the
+#                                       gui-feature pass.
 #
 # occt cap:
 #   Workstation (32t, ~125 GiB): min(24,32,62)=24 — bit-identical to pre-4621.

@@ -90,18 +90,18 @@
 //! deliberately does not touch them — a gate that quietly widened itself into
 //! prose scanning would be asserting a coverage claim it cannot keep.
 //!
-//! The one *fenced* body that does overstate v1 is `functions.md`'s
-//! `## Overloading` listing, whose 3-arg `rotate(geometry, axis, angle)`
-//! overload is the very phantom
+//! `functions.md`'s `## Overloading` listing used to overstate v1 the same way,
+//! with a 3-arg `rotate(geometry, axis, angle)` overload — the very phantom
 //! `a_reify_fence_whose_body_calls_the_phantom_three_arg_rotate_is_reported`
 //! plants below. It is `reify-schematic` (a signature listing, not compilable
-//! source), so this gate exempts it by design; rather than let the tag make it
-//! cosmetically green, the chunk carries a markdown annotation directly above
-//! that fence, narrowed to what #6890 actually measured — a user 3-arg
-//! DECLARATION wins over the builtin, so the hazard is copying the CALL form
-//! alone, not the overload itself. `.md` is outside `ptodo.rs`'s scanned
-//! extensions (:786), so nothing will flag that `#6890` cite when the task
-//! closes — the follow-up deletes the annotation along with the defect.
+//! source), so this gate exempts it by design and could not have caught it.
+//! What closed it instead was renaming the example to `align`, a name no
+//! builtin arity-gates, so copying the CALL form alone now fails as an
+//! undefined function rather than as a misleading arity error on a real
+//! builtin. The arity of every signature the chunk declares is now pinned
+//! directly by `functions_chunk_overloading_smoke.rs` — a scan over chunk
+//! text, not a fence gate, which is why that guard lives beside this one
+//! rather than inside it.
 //!
 //! The third gap is `reify-fragment`, and it is WIDER than the tag's wording
 //! admits. "Member-level or otherwise context-dependent" asserts that SOME
@@ -1358,8 +1358,9 @@ fn several_malformed_files_are_all_reported_by_a_single_run() {
 /// which builds a genuine `Severity::Error` `Diagnostic`.
 ///
 /// This is not a hypothetical shape either: `functions.md`'s overloading
-/// example ships exactly this 3-arg `rotate` form today. Finding it costs a
-/// printer_v01 probe cycle; this gate is what makes the compiler say it first.
+/// example shipped exactly this 3-arg `rotate` form until #6890 renamed it to
+/// `align`. Finding it cost a printer_v01 probe cycle; this gate is what makes
+/// the compiler say it first.
 #[test]
 fn a_reify_fence_whose_body_calls_the_phantom_three_arg_rotate_is_reported() {
     let md = "prose\n\

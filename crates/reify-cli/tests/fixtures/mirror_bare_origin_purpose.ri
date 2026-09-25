@@ -15,17 +15,25 @@ module mirror_bare_origin_purpose
 // `circular_pattern` arms of `builtin_arg_slots` in
 // `crates/reify-compiler/src/builtin_signatures.rs`.
 //
-// Verified baseline, MEASURED at task 5662:
+// Verified baseline, RE-MEASURED at task 5746 (units-length ε, R11 —
+// `docs/prds/v0_6/units-length-gate-completion.md`), which is what changed the
+// stderr below: `plane_yz(0)` is now rejected at the PRODUCER, so `mirror` never
+// receives a Plane and the consumer-side ox/oy/oz triple is no longer reached.
+// The fixture stays deliberately BARE — it is now a test OF that gate.
 //
 //   reify check --purpose mfg_ready=MirrorBareOriginPurpose <this file>   exit 0
 //     stdout: "  OK purpose:mfg_ready@MirrorBareOriginPurpose#constraint[0]"
 //             "All constraints satisfied."
-//     stderr: error: mirror: ox argument expects Length, got Int; pass a
-//                    dimensioned length such as `5mm`   (+ oy/oz as Real)
-//             error: failed to compile geometry operation: mirror: missing or
-//                    non-Length argument 'ox' for mirror        [exactly ONCE]
-//             (the ox/oy/oz triple then repeats once — it is emitted per
-//              realization pass — followed by the unresolvable-GeomRef error)
+//     stderr: error: plane_yz: offset argument expects Length, got Int; pass a
+//                    dimensioned length such as `5mm`
+//             error: failed to compile geometry operation: mirror: expected a
+//                    Plane value, got undef                     [exactly ONCE]
+//             error: failed to compile geometry operation: unresolvable
+//                    GeomRef::Step(1) — index out of bounds or INVALID handle
+//
+//   The compile-gate line is emitted per realization pass, so `reify build` on
+//   this file prints it TWICE (measured) and `check`'s accumulating dedup
+//   collapses it to one — which is the property the count pin asserts.
 //
 // Before leaf β the stderr did NOT contain "failed to compile geometry
 // operation" at all.  After it, the error appears exactly once; the exit code

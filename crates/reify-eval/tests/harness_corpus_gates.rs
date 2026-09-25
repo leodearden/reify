@@ -42,3 +42,6 @@ mod eval_gate_support;
 
 #[path = "harness_corpus_gates/eval_invariant_corpus_sweep.rs"]
 mod eval_invariant_corpus_sweep;
+
+#[path = "harness_corpus_gates/units_length_corpus_end_state.rs"]
+mod units_length_corpus_end_state;

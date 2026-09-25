@@ -8,7 +8,7 @@
 //!
 //! # Cache-invalidation contract
 //!
-//! Different `vertex_sizes` slices produce byte-distinct `VolumeMesh` outputs
+//! Different size fields produce byte-distinct `VolumeMesh` outputs
 //! (different tet counts and connectivity) so upstream cache keys — which are
 //! keyed on all inputs — diverge automatically. No new cache-key field is
 //! needed; the existing `volume_mesh_cache_key` derivation already covers this.
@@ -22,23 +22,14 @@
 //!   call rather than inheriting whatever a sibling entry point last left
 //!   behind, so its output is a function of its own arguments alone and not of
 //!   call order within the process; and
-//! * **outbound**: restores that same option pair to gmsh's documented
-//!   defaults before returning (via [`crate::mesh_size_clamp::MeshSizeClampReset`]),
+//! * **outbound**: restores every size option to gmsh's documented defaults
+//!   before returning (via [`crate::mesh_size_scope::MeshSizeScope`]),
 //!   so a later *defaults-relying* call — e.g. `mesh_plane_2d` with no
 //!   requested size, which deliberately writes no clamp — is not silently
 //!   pinned to a fine `MeshSizeMax` left over from an adaptive-refinement
 //!   iteration.
 //!
-//! Since task #7447 the same outbound discipline covers the size-SOURCE trio
-//! this function writes — `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature`
-//! / `MeshSizeExtendFromBoundary` — via
-//! [`crate::mesh_size_clamp::MeshSizeSourceReset`]. #7447 is what made that
-//! mandatory rather than tidy: switching to a background size field changed
-//! the `FromPoints` write from `1` to `0`, and a leaked `0` DISABLES
-//! point-driven sizing for every later call in the process, where the leaked
-//! `1` had merely re-asserted gmsh's own default.
-//!
-//! That guard now lives in [`crate::mesh_size_clamp`] rather than in this
+//! That guard now lives in [`crate::mesh_size_scope`] rather than in this
 //! file: since task #6298 it is shared infrastructure with a second consumer,
 //! `kernel_real::GmshKernel::mesh_to_volume`, and one implementation cannot
 //! drift from itself the way two hand-written resets could.
@@ -51,14 +42,22 @@
 //! `refine_leaves_the_default_clamp_behind_for_a_later_defaults_relying_call`,
 //! which straddles a refine with exactly the `mesh_plane_2d` call named above.
 //!
-//! Scope of that guarantee: it covers THIS entry point. Task #6212 stays open
-//! and still owns bringing `mesh_profile_2d::mesh_plane_2d` and
-//! `mesh_boundary`'s surface remesh onto the same seam, and adding the
-//! `option_get_number` FFI getter that would let a restore be *as found*
-//! rather than to gmsh's defaults. Only the clamp half has a behavioural
-//! guard; the size-source half has no victim to observe it through, and
-//! `mesh_size_clamp`'s module doc records why and what would be owed if one
-//! appeared.
+//! Scope of that guarantee: since task #6968 it covers all five size options,
+//! not just the `MeshSizeMin`/`MeshSizeMax` pair. The
+//! `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+//! `MeshSizeExtendFromBoundary` writes below used to be left behind for a
+//! later caller to inherit; `MeshSizeScope` now restores them too. Two of the
+//! three deviate from gmsh 4.15.2's measured defaults.
+//! `MeshSizeExtendFromBoundary` — written `0` here against a default of `1` —
+//! was the only one before task #7447, and it deviated far enough to change a
+//! later caller's mesh, which is why the leak was invisible for so long.
+//! `MeshSizeFromPoints` joined it when #7447 moved sizing onto a background
+//! field: it is now written `0` against a default of `1`, and a leaked `0`
+//! would DISABLE point-driven sizing for every later call in the process,
+//! where the `1` this function used to write merely re-asserted the default.
+//! See the inline rationale at the option writes below, and
+//! [`crate::mesh_size_scope`] for which guard holds this writer; that map is
+//! kept in one place rather than restated per writer.
 //!
 //! # Cost basis: full remesh from surface
 //!
@@ -97,7 +96,7 @@ use crate::background_size_field::BackgroundSizeField;
 use crate::options::MeshingOptions;
 
 #[cfg(has_gmsh)]
-use crate::mesh_size_clamp::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeClampReset, MeshSizeSourceReset};
+use crate::mesh_size_scope::{GMSH_MESH_SIZE_MIN_DEFAULT, MeshSizeScope};
 
 /// Remesh the volume enclosed by `surface`, sized by a background size field.
 ///
@@ -185,6 +184,11 @@ pub fn refine_volume_with_size_field(
     // --- Acquire lock + initialise ---
     let _guard = init::lock()?;
     init::ensure_initialized();
+    // Declared after `_guard` so it drops first (Rust drops locals in reverse
+    // declaration order): its restore writes land while GMSH_LOCK is still
+    // held. Hoisted above the first `?` below so every early return is
+    // covered, not only the success path — see `mesh_size_scope`.
+    let _size_scope = MeshSizeScope::entered(_guard.size_scope_witness())?;
     ffi::clear()?;
     ffi::option_set_number("General.Terminal", 0.0)?;
 
@@ -291,11 +295,10 @@ pub fn refine_volume_with_size_field(
 
     // --- Background size field ---
     //
-    // The whole size field, interior included. Taken once, used by all three
-    // guards below, so the `clamp_reset_witness` accessor keeps a single call
-    // site here (see its doc in `init.rs`).
-    let witness = _guard.clamp_reset_witness();
-    let _background_field = BackgroundFieldGuard::install(witness, size_field)?;
+    // The whole size field, interior included. Declared after `_size_scope`,
+    // so the field is torn down before the size options are restored, and
+    // both land before `_guard` releases the lock.
+    let _background_field = BackgroundFieldGuard::install(_guard.size_scope_witness(), size_field)?;
 
     // --- Size sources: the background field and nothing else ---
     //
@@ -310,14 +313,15 @@ pub fn refine_volume_with_size_field(
     // fine patch on one face extends its fineness deep into the interior,
     // overriding what the background field asks for there.
     //
-    // All three are process-global and survive `gmshClear()`. `FromPoints = 0`
-    // deviates from gmsh's default of 1 in the DANGEROUS direction — it
-    // disables point-driven sizing for every later call in the process, where
-    // the `1` this function used to write merely re-asserted the default.
-    // `MeshSizeSourceReset` closes that outbound direction on every exit path,
-    // early `?`-returns included, so the trio is returned to gmsh's defaults
-    // and nothing downstream inherits this call's size sources (task #7447).
-    let _size_source_reset = MeshSizeSourceReset::armed(witness);
+    // All three are written unconditionally and independently of
+    // `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS`: each is a REQUIREMENT of
+    // the background field, so this function states it rather than inheriting
+    // it from a default that is gmsh's to change. `FromCurvature = 0` happens
+    // to coincide with today's default; see "no test can tell" below for what
+    // that costs. `FromPoints = 0` and `ExtendFromBoundary = 0` deviate from
+    // it, and `_size_scope` (armed above) returns all three to gmsh's defaults
+    // on every exit path, early `?`-returns included, so nothing downstream
+    // inherits this call's size sources.
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;
@@ -325,26 +329,25 @@ pub fn refine_volume_with_size_field(
     // --- Mesh-size clamp: set explicitly, never inherited (task #6211) ---
     //
     // INVARIANT: `size_field` alone decides element size here. Gmsh's option
-    // table is process-global and is NOT reset by `gmshClear()`, and the
-    // sibling entry points `mesh_profile_2d::mesh_plane_2d` and
-    // `mesh_boundary`'s surface remesh still write
-    // `Mesh.MeshSizeMin`/`MeshSizeMax` without restoring them. Without the two
-    // writes below, either of those running earlier in the process pins every
-    // element of THIS remesh to ITS size and the per-vertex field becomes
-    // inert (task #6211: one identical tet count for every hint).
+    // table is process-global and is NOT reset by `gmshClear()`, so a sibling
+    // entry point that wrote `Mesh.MeshSizeMin`/`MeshSizeMax` and never
+    // restored them used to pin every element of THIS remesh to ITS size,
+    // leaving the per-vertex field inert (task #6211: one identical tet count
+    // for every hint). Since task #6968 every entry point in this crate enters
+    // a `mesh_size_scope::MeshSizeScope`, so the table these writes land on
+    // holds gmsh's defaults whatever ran earlier in the process.
     //
-    // `kernel_real::GmshKernel::mesh_to_volume` used to belong on that list and
-    // no longer does — since task #6298 it arms the same
-    // `mesh_size_clamp::MeshSizeClampReset` on entry. These two writes stay
-    // load-bearing regardless: the other two entry points are still open, and
-    // an inbound clamp that depends on no sibling's outbound discipline is the
-    // only form that makes this function's output a pure function of its own
-    // arguments.
-    //
-    // Both writes are load-bearing, not belt-and-braces: with a leaked
-    // Min == Max, lowering only Max leaves Min > Max (gmsh still floors at the
-    // leaked value) and lowering only Min leaves the leaked Max capping
-    // everything.
+    // NO TEST CAN TELL whether a write whose value coincides with gmsh's
+    // current default is present: while the scope is armed it is a behavioural
+    // no-op, so deleting it leaves `tests/` green. Stated here rather than
+    // left for a future author to discover by deleting one and finding the
+    // suite still green. They stay because they are this function's
+    // requirements, and specifically so `MeshSizeMin` and `MeshSizeMax` read
+    // as ONE clamp rather than half of one: written as a
+    // pair against a hostile Min == Max, lowering only Max would leave
+    // Min > Max (gmsh still floors at the leaked value) and lowering only Min
+    // would leave the leaked Max capping everything. That is the shape an
+    // inbound clamp needs if it is ever to stand without the scope beneath it.
     //
     // Min = gmsh's default: no floor, so the finest hint is honoured.
     // Deliberately not the field's finest value, which would forbid gmsh from
@@ -362,10 +365,10 @@ pub fn refine_volume_with_size_field(
     // every emitted size at construction, so `max_size()` is finite and
     // positive by construction.
     //
-    // `MeshSizeClampReset` closes the outbound direction: this pair is returned
-    // to gmsh's defaults on every exit path, so the same leak does not run from
-    // here into a later defaults-relying call.
-    let _clamp_reset = MeshSizeClampReset::armed(witness);
+    // `MeshSizeScope` closes the outbound direction: every size option — this
+    // pair and the three set above — is returned to gmsh's defaults on every
+    // exit path, so the same leak does not run from here into a later
+    // defaults-relying call.
     ffi::option_set_number("Mesh.MeshSizeMin", GMSH_MESH_SIZE_MIN_DEFAULT)?;
     ffi::option_set_number("Mesh.MeshSizeMax", size_field.max_size())?;
 
@@ -456,7 +459,7 @@ pub fn refine_volume_with_size_field(
 /// every later mesh in the process — the same defect class as task #6211.
 ///
 /// Borrows the `GMSH_LOCK` guard for its lifetime on the same reasoning as
-/// [`MeshSizeClampReset`]: the FFI calls in `drop` mutate process-global gmsh
+/// [`MeshSizeScope`]: the FFI calls in `drop` mutate process-global gmsh
 /// state, so the type is unconstructible without a live lock guard in hand and
 /// dropck forces the removal to land before that lock is released.
 #[cfg(has_gmsh)]
@@ -512,7 +515,7 @@ impl<'g> BackgroundFieldGuard<'g> {
 #[cfg(has_gmsh)]
 impl Drop for BackgroundFieldGuard<'_> {
     fn drop(&mut self) {
-        // Best-effort, like `MeshSizeClampReset` and the trailing
+        // Best-effort, like `MeshSizeScope`'s restore and the trailing
         // `ffi::clear()`: a failure here cannot be reported from `drop` and
         // must not mask the real result.
         if let Some(field_tag) = self.field_tag {

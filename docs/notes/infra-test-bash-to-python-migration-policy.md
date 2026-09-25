@@ -6,7 +6,8 @@
 
 ## The rule
 
-The policy has two arms. **They are not both in force yet.**
+The policy has two arms. **Both are now in force** (Arm 2 reopened by task
+#7626, 2026-09-19).
 
 ### Arm 1 — new infra tests are authored in Python. **ACTIVE.**
 
@@ -16,49 +17,68 @@ prerequisite: `tests/infra/test_flake_density_report.py` and its thin
 holds `run-all-classification.manifest` row `:99`, so `run_all.sh` executes a
 Python member for real today. Copy that pair when adding a new infra test.
 
-### Arm 2 — port a bash member when it is next touched for a flake. **DEFERRED.**
+### Arm 2 — port a bash member when it is next touched for a flake. **ACTIVE.**
 
-The intended rule is that a flake fix to a bash member and that member's port
-to Python land together, with **no scheduled mass migration** — `tests/infra`
-is 194 files and ~140k lines, and a migration run at that scale would itself be
-the largest source of gate churn on the repo. Coupling the port cadence to the
-flake cadence moves the files that actually cost the gate and leaves the quiet
-ones alone.
+A flake fix to a bash member and that member's port to Python land together,
+with **no scheduled mass migration** — `tests/infra` is 194 files and ~140k
+lines, and a migration run at that scale would itself be the largest source of
+gate churn on the repo. Coupling the port cadence to the flake cadence moves
+the files that actually cost the gate and leaves the quiet ones alone.
 
-**Do not port a member today.** Porting one silently removes it from a
-load-bearing guard. `test_slot_timeout_marker.sh` derives which suites are
-deadline-capable, and whether each such site leaks stderr, by reading the
-**text of sibling `.sh` files**: its Section F builds the closure from
-`test_*.sh` plus `run_all.sh`, and its invocation-edge grammar admits only the
-verbs `bash`, `sh` and `source`. A ported member is therefore not a node, and a
-`python3`-verb invocation of a nested suite creates no edge — so the member
-drops out of F's derived roster and out of Section G's non-vacuity check
-**without any assertion failing to announce it**. Measured on the one port
-attempted: replacing `test_verify_env_ambient_isolation.sh` with its wrapper
-took that guard from 144/0 to 141/3 (`FC6b`, `F1`, `G3`).
+This arm was deferred until **task #7626**, because porting a member used to
+remove it *silently* from a load-bearing guard. `test_slot_timeout_marker.sh`
+derives which suites are deadline-capable, and whether each such site leaks
+stderr, by reading the **text of sibling `.sh` files**, and its
+invocation-edge grammar admitted only the verbs `bash`, `sh` and `source`.
+#7626 taught Section F a **text-attribution** rule and a Python edge dialect,
+and Section G a Python diversion dialect, so a ported member now **stays** in
+F's derived roster with its real route and **stays** inside G's non-vacuity
+check. A `.py` is still never a node: the roster, `D_ROSTER`, the `G0` slice,
+the manifest row and every doc reference stay keyed on the `.sh` basename.
 
-Teaching Sections F and G a Python-sibling shape is the prerequisite, and it is
-not a small edit: every rule in that grammar carries a measured
-false-admission rationale, and widening it carelessly produces **false greens
-in a deadline-capability check** — the opposite of what this policy is for. It
-needs its own RED and its own review. Owned by **task #7626** (filed as ticket
-`tkt_0RTQTESPHBBB84KKAJCHKJF6X0`); once it lands, this arm reopens.
+`test_verify_env_ambient_isolation` is the landed proof, and it lives in the
+tree now rather than in a branch-local commit —
+`tests/infra/test_verify_env_ambient_isolation.py` (27/27, a real suite and
+not a stub) behind the thin `tests/infra/test_verify_env_ambient_isolation.sh`
+wrapper. `FC6b`
+pins its derived route as `via:test_occt_flock_gate.sh` — *not*
+`via:run_all.sh`, which is what a grammar loose enough to read docstring prose
+as an invocation would have derived — and `G3`/`G1` read that file's single
+spawn, the `subprocess.Popen` in `run_under_ambient`, for 1 site / 0
+unredirected. Cited by SYMBOL, not by line: nothing asserts on a line number,
+so a stale one is silent.
 
-That follow-up also carries the port already written for
-`test_verify_env_ambient_isolation.sh`: 540 lines, 26/26 green, validated by
-five mutants rather than RED-first. **Recover it from git history rather than
-rewriting it** — find it by **commit subject**, *"Port the verify_env
-ambient-isolation guard to Python"*, via
-`git log --all --oneline --grep='Port the verify_env'`.
+### The Python dialect a port must emit
 
-Match on the subject, not on a hash. Any SHA for it is branch-local and
-therefore unstable: it was `750fc72439` when task 7430's escalation quoted it,
-`eac9251c59` after that lane was rebased, and it becomes something else again
-if the branch is rebased before merge. A SHA cited in a committed doc is only
-durable when it names a **main** commit; this one never can, because the
-commit's whole purpose is to hold a file that main does not keep.
+Sections F and G read a port's **text**, so the shapes below are a
+**contract**, not a free choice. A port that spells its invocation another way
+runs correctly and still drops out of one or both guards.
 
-### What a port is, when the arm reopens
+1. **The wrapper must really run the sibling.** Attribution is gated on an
+   anchored `python3`/`python` invocation of a same-stem `.py`, never on the
+   sibling merely existing — a stray unrun `.py` stays inert here for the same
+   reason `run_all.sh`'s `test_*.sh` glob makes it inert there.
+2. **The nested invocation must be an argv list headed by a QUOTED exec
+   verb** — `["bash", str(NESTED)]`. The target is either bound by a real
+   assignment (`NESTED = SCRIPT_DIR / "test_x.sh"`, `str()` and `os.fspath()`
+   both fine) or written as a string literal inside that same list. A list
+   headed by a bare name (`[sys.executable, ...]`) is deliberately not an
+   invocation for this purpose, and neither is a **docstring** naming the
+   suite in prose — `#`-stripping is shared with Python but does not remove a
+   docstring, so prose is rejected by rule rather than by luck.
+3. **The spawn must divert stderr** — `stderr=subprocess.PIPE`,
+   `stderr=subprocess.DEVNULL`, `capture_output=True`, or
+   `stderr=subprocess.STDOUT` **paired with a diverted stdout**. Unlike bash,
+   the merge branch takes no order test: Python kwargs carry no ordering, so
+   `stdout=..., stderr=...` and the reverse are the same call.
+4. **Write a multi-line spawn with its closing paren on its own line**, or
+   keep the whole call on one line. Section G stamps a multi-line spawn from
+   its body at a line beginning `)`; a call whose closing paren trails the
+   last kwarg is never seen to close, and the fail-safe counts an unclosed
+   spawn as NOT captured. That direction is deliberate — it costs a false RED,
+   never a false green — but it is still a RED you do not want.
+
+### What a port is
 
 A port is a **behaviour-preserving** rewrite. It is not licence to change what
 the test asserts. Because a port is green on arrival by construction, RED-first
@@ -204,7 +224,8 @@ re-satisfying four bidirectional asserts in `test_run_all_classification.sh` —
 a large blast radius on load-bearing verify-pipeline artifacts, inside a task
 whose purpose was *reducing* infra-gate reds.
 
-That deferral has three measured costs. All are real; none was hidden:
+That deferral has four measured costs. All are real; none is hidden — though
+cost 4 below *was*, and how it stayed off this list is part of its entry:
 
 1. **Every Python member needs a hand-written wrapper.** Forgetting the
    manifest row is caught (the classification gate fails in both directions);
@@ -229,29 +250,89 @@ That deferral has three measured costs. All are real; none was hidden:
    port: the door the ratchet exists to hold shut stands open for exactly the
    population the policy now sends through it. A bound you cannot avoid belongs
    in a `.sh` member until the grammar can see it.
-3. **The deadline-capable-suite derivation does not see Python.** Entry points
-   are `_f_node_list` (`test_slot_timeout_marker.sh:1704`) and
-   `F_EDGE_VERB_RE` (`:1743`). This is the cost that **defers Arm 2 outright**
-   — see "The rule" above for the mechanism and the measurement; it is not
-   restated here.
+3. **The deadline-capable-suite derivation did not see Python. CLOSED by
+   #7626.** This was the cost that deferred Arm 2 outright. It was not fixed
+   by widening the node set — a `.py` is still not a node — but by giving
+   `_f_strip_node` a text-attribution rule that reads a delegating wrapper
+   together with its sibling, plus a separately-named Python edge dialect and,
+   in Section G, a Python diversion dialect selected from the scan target's
+   extension. See "The Python dialect a port must emit" above for the shapes a
+   port must now write.
+4. **The merge gate's full-gate admission oracle did not see Python.
+   IDENTIFIED AND CLOSED by #7626 — and it had never been on this list.**
+   Measured before that task: this document contained zero matches for
+   *verify-pipeline-guard*, *full gate*, *trivial-pass* or *config-only*. That
+   omission is exactly why #7626 could close cost 3 and still ship this one
+   open. It is recorded here rather than quietly patched, because a cost list
+   that merely *looks* complete is how the next gap gets missed the same way.
+
+   `scripts/verify-pipeline-guard.sh` is the oracle dark-factory's merge worker
+   consults to decide whether a diff may take the trivial-pass fast path. Its
+   infra-test clause matched `^tests/infra/[^/]*\.sh$` — so an Arm 2 port split
+   a single member across that boundary: the thin wrapper kept routing to the
+   full gate while the sibling holding every assertion classified as
+   config-only, and the *identical* assertion edit changed route purely by
+   having moved file. Measured on the port itself before the fix:
+
+   | path | `requires-full-gate` |
+   |---|---|
+   | `tests/infra/test_verify_env_ambient_isolation.sh` | exit 0 |
+   | `tests/infra/test_verify_env_ambient_isolation.py` | exit 1 |
+   | `tests/infra/test_flake_density_report.py` | exit 1 |
+   | `tests/infra/cpu_gov_instrument.py` | exit 1 |
+
+   with no `.py` row anywhere in `scripts/verify-pipeline-paths.txt` to catch
+   them by another route. This is a regression **Arm 2 creates**: Arm 1 only
+   ever produced new tests, wrapper and sibling both new together; Arm 2 moves
+   an *existing* gate member's body across the clause.
+
+   Closed by widening that clause to `^tests/infra/[^/]*\.(sh|py)$`, lifted to
+   one shared `_INFRA_GLOB_ERE` constant so the `requires-full-gate` and
+   `is-registered` arms cannot drift apart. The rule stays directory-anchored
+   and is deliberately NOT `test_`-prefixed, so a port may add a plain Python
+   helper beside its member without a second gate edit —
+   `tests/infra/cpu_gov_instrument.py`, driven directly by
+   `test_cpu_load_governance.sh`, is the live case that forced that shape.
+
+   **The check a future porter runs**, on every new file under `tests/infra/`:
+
+   ```
+   bash scripts/verify-pipeline-guard.sh requires-full-gate tests/infra/<new-file>
+   ```
+
+   Exit 0 means the gate sees it. Exit 1 on a file that holds assertions means
+   the gate does not, and editing those assertions will fast-path past them.
 
 Costs 1 and 2 are **task #7445**'s charter (native `test_*.py` discovery, which
 retires the wrapper idiom, plus teaching the wall-clock guard Python — read
 its Part B as the grammar extension cost 2 describes, not only the scan-scope
-widening it is worded as). Cost 3 is owned by **task #7626**, described under
-Arm 2.
+widening it is worded as). Costs 3 and 4 are closed.
 
-The three fail in different directions, which is what decides how each is held.
+Costs 2, 3 and 4 are one family, and naming it is the cheapest defence against
+a fifth: each is a **guard whose scan scope or grammar is bash-shaped**, so
+moving a member's body into `.py` moves it out from under that guard while
+every roster, row and wrapper still looks intact. Cost 1 is the odd one out —
+it is about discovery, not about a guard going quiet. When auditing for the
+next gap, enumerate the guards, not the rosters.
+
+They fail in different directions, which is what decides how each is held.
 Cost 1 fails **loudly**: a missing manifest row reds the classification gate in
 both directions. Cost 2 fails **quietly but non-silently** — an unratcheted
 wall-clock assert still runs and still asserts, so no coverage is lost; what is
 lost is the ratchet that stops a retired flake class from being re-admitted,
 which is why cost 2 is carried by the interim rule above rather than by a
-guard. Cost 3 is the one to watch: it fails **silently and in the green
+guard. Cost 3 **was** the one to watch, and that analysis is kept because it
+is what decided the sequencing: it failed **silently and in the green
 direction** — the member keeps passing, the roster keeps deriving, and a
 deadline-capability guard simply stops covering one suite. A migration policy
 that traded loud coverage for quiet coverage loss would be worse than no
-policy, which is why Arm 2 waits.
+policy, which is why Arm 2 waited for #7626 rather than shipping alongside it.
+Cost 4 failed the same way but one level worse, and that is why it is worth
+the space it takes above: cost 3 lost coverage *within* a gate that still ran,
+whereas cost 4 skipped the gate entirely — the diff is classified config-only,
+takes the merge worker's trivial pass, and lands on `main` without the ported
+member ever having been executed. Nothing reds, so the only signal is the
+oracle, which is why the porter's check above is a step and not a suggestion.
 
 ---
 

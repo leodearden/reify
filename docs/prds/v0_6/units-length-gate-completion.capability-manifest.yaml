@@ -486,7 +486,7 @@ tasks:
   capabilities:
   - name: corpus-and-compile-gate
     binding: capability→producer (upstream, on main) — examples/best_practices/INDEX.md
-      and crates/reify-compiler/tests/examples_smoke.rs (auto-compile + bidirectional
+      and crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (auto-compile + bidirectional
       index invariant)
     verdict: PASS
     delivered_check:

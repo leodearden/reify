@@ -30,6 +30,8 @@ mod angle_crossings_diagnostics_smoke;
 mod enums_chunk_option_smoke;
 #[path = "harness_doc_chunks/fence_gate.rs"]
 mod fence_gate;
+#[path = "harness_doc_chunks/functions_chunk_overloading_smoke.rs"]
+mod functions_chunk_overloading_smoke;
 #[path = "harness_doc_chunks/geometry_chunk_smoke.rs"]
 mod geometry_chunk_smoke;
 #[path = "harness_doc_chunks/oracle_xref_smoke.rs"]

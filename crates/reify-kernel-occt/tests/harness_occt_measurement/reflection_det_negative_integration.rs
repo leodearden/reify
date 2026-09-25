@@ -41,35 +41,29 @@
 //! normal against the AABB-centre reference direction
 //! ([`assert_outward_wound_closed_manifold`]) actually observes it.
 //!
-//! **5. Two real GTransform hazards, orthogonal to determinant sign** (test
-//! 4). `BRepBuilderAPI_GTransform` rewrites every analytic surface as a
+//! **5. A real GTransform hazard, orthogonal to determinant sign** (test 4).
+//! `BRepBuilderAPI_GTransform` rewrites every analytic surface as a
 //! B-spline approximation: measured relative volume error vs source is
 //! +8.615e-3 (cylinder), +8.250e-3 (cone), +1.553e-3 (torus), -4.373e-4
 //! (sphere), 0 (box), and STEP loses analytic entity types (e.g. a cylinder's
 //! `CYLINDRICAL_SURFACE`/`PLANE(` counts drop to 0, replaced by
-//! `B_SPLINE_SURFACE`). Separately, `BRepTools_GTrsfModification` carries the
-//! source's `Poly_Triangulation` across a `GTransform` UNCHANGED: if the
-//! source was tessellated before the transform, that stale triangulation no
-//! longer matches the rewritten B-spline geometry and
-//! `BRepCheck_Analyzer::IsValid()` (`GeometryQuery::IsWatertight`) reports
-//! `false` (test 4 half (b), a pinned characterization of a known defect).
-//! Both hazards — the exactness loss (half (a)) and the pre-tessellation
-//! invalidity (half (b)) — are tracked by follow-up task **#6652** (filed as
-//! ticket `tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC`, which the curator resolved to
-//! that task number); every pinning assertion in test 4 names #6652 and
-//! states what its own failure would mean. BOTH hazards reproduce
-//! identically under the IDENTITY linear map `diag(1,1,1)` (det = +1,
-//! geometrically a no-op), which is the proof that they belong to
-//! `BRepBuilderAPI_GTransform` itself and are NOT a `det<0` orientation
-//! defect. [`GeometryOp::Mirror`] is immune to both: bit-exact volume,
-//! preserves analytic surface types, and stays `IsWatertight` regardless of
-//! tessellation ordering.
+//! `B_SPLINE_SURFACE`). This exactness loss is tracked by follow-up task
+//! **#7735**; every pinning assertion in test 4 names #7735 and states what
+//! its own failure would mean. It reproduces identically under the IDENTITY
+//! linear map `diag(1,1,1)` (det = +1, geometrically a no-op), which is the
+//! proof that it belongs to `BRepBuilderAPI_GTransform` itself and is NOT a
+//! `det<0` orientation defect. [`GeometryOp::Mirror`] is immune to it:
+//! bit-exact volume, and analytic surface types preserved. A second hazard
+//! this probe found, pre-tessellation ordering, was fixed by #6652 in
+//! `ffi::gtransform_shape` and is now owned by
+//! `gtransform_tessellation_ordering_integration` in the `harness_occt`
+//! binary.
 //!
 //! **6. Conclusion for A-δ (#6618).** Lower reflective derivation via
 //! [`GeometryOp::Mirror`] (`SetMirror`), never `AffineApply` with a `det<0`
-//! linear map — `Mirror` is bit-exact, preserves analytic surface types, and
-//! is immune to the pre-tessellation hazard. This corroborates PRD §3.7's
-//! already-chosen v1 lowering with measured evidence rather than assumption.
+//! linear map — `Mirror` is bit-exact and preserves analytic surface types.
+//! This corroborates PRD §3.7's already-chosen v1 lowering with measured
+//! evidence rather than assumption.
 //!
 //! **7. A second A-δ-facing finding: OCCT's conical parametrization emits
 //! negative 2D seam parameters.** Probing exported STEP text for baked
@@ -112,9 +106,8 @@ use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernel};
 /// Fixtures are deliberately primitive-derived (never a boolean result: a
 /// boolean returns a COMPOUND, and `IsWatertight` hard-returns `false` for
 /// any non-SOLID/COMPSOLID/SHELL shape regardless of validity) and are NOT
-/// tessellated before reflecting here — pre-tessellation ordering is
-/// [`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]'s
-/// subject, and tessellating in this test would contaminate its answer.
+/// tessellated before reflecting here — pre-tessellation ordering is owned by
+/// `harness_occt`'s `gtransform_tessellation_ordering_integration`.
 ///
 /// Tolerances: `Mirror` is bit-exact against the source (measured identical
 /// to the last printed digit, e.g. cylinder 2.261946710585e-6 m³ both
@@ -287,10 +280,8 @@ fn both_reflection_paths_yield_valid_positive_volume_solids() {
 /// [`both_reflection_paths_tessellate_to_outward_wound_closed_manifold`]'s
 /// doc comment for why that matters (the AABB-centre outward reference) and
 /// the measured concave-fixture counter-example.
-// Fixture dimensions — single source of truth shared by `convex_fixtures` and
-// `fresh_pretessellated_cylinder`, so the two can never silently drift apart:
-// `fresh_pretessellated_cylinder` must build the exact same `cylinder_r6_h20`
-// that `convex_fixtures` does.
+// Fixture dimensions, used by `convex_fixtures` and by `build_cylinder`, which
+// builds its `cylinder_r6_h20`.
 const BOX_WIDTH: f64 = 0.010;
 const BOX_HEIGHT: f64 = 0.020;
 const BOX_DEPTH: f64 = 0.030;
@@ -397,11 +388,11 @@ fn affine_bbox_tolerance(fixture_name: &str) -> f64 {
 /// Build a single `cylinder_r6_h20` fixture (`GeometryOp::Cylinder` +
 /// `GeometryOp::Translate` to x>0), via the shared `CYLINDER_*` consts.
 ///
-/// Extracted so [`convex_fixtures`], [`fresh_pretessellated_cylinder`], and
-/// [`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]'s
-/// half (a) all build the IDENTICAL cylinder from one call site, instead of
-/// three independently-maintained `execute` sequences that could silently
-/// drift apart (e.g. if a fixture gained a third op).
+/// Extracted so [`convex_fixtures`] and
+/// [`gtransform_path_is_lossy_unlike_setmirror`] both build the IDENTICAL
+/// cylinder from one call site, instead of two independently-maintained
+/// `execute` sequences that could silently drift apart (e.g. if a fixture
+/// gained a third op).
 fn build_cylinder(kernel: &mut OcctKernel) -> GeometryHandleId {
     let cyl_src = kernel
         .execute(&GeometryOp::Cylinder {
@@ -422,9 +413,8 @@ fn build_cylinder(kernel: &mut OcctKernel) -> GeometryHandleId {
 
 /// Mirror `target` across the x=0 (y-z) plane via [`GeometryOp::Mirror`]
 /// (`gp_Trsf::SetMirror`) — the v1 reflective-derivation lowering PRD §3.7
-/// names, and the path this module's probe finds bit-exact and immune to
-/// both GTransform hazards
-/// ([`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]).
+/// names, and the path this module's probe finds bit-exact and
+/// analytic-preserving ([`gtransform_path_is_lossy_unlike_setmirror`]).
 fn mirror_across_yz(kernel: &mut OcctKernel, target: GeometryHandleId) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Mirror {
@@ -439,11 +429,10 @@ fn mirror_across_yz(kernel: &mut OcctKernel, target: GeometryHandleId) -> Geomet
 /// Apply the general dense 3×3 linear map `linear` (zero translation) to
 /// `target` via [`GeometryOp::AffineApply`] (`gp_GTrsf` /
 /// `BRepBuilderAPI_GTransform`). [`affine_reflect_x`] delegates here with
-/// `diag(-1,1,1)`;
-/// [`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]
-/// reuses this general form directly with the IDENTITY `diag(1,1,1)` to
-/// prove its two GTransform hazards are determinant-independent rather than
-/// reflection artifacts.
+/// `diag(-1,1,1)`; [`gtransform_path_is_lossy_unlike_setmirror`] reuses this
+/// general form directly with the IDENTITY `diag(1,1,1)` to prove the
+/// GTransform exactness loss is determinant-independent rather than a
+/// reflection artifact.
 fn affine_linear(
     kernel: &mut OcctKernel,
     target: GeometryHandleId,
@@ -883,8 +872,7 @@ fn reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement
 /// Export `id` to STEP text via an in-memory buffer:
 /// `kernel.export(id, ExportFormat::Step, &mut buf)` then
 /// `String::from_utf8(buf)`, both unwrapped with a message naming the
-/// handle. Reused by
-/// [`gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror`]'s
+/// handle. Reused by [`gtransform_path_is_lossy_unlike_setmirror`]'s
 /// cross-path entity-count comparison.
 fn step_text(kernel: &OcctKernel, id: GeometryHandleId) -> String {
     let mut buf = Vec::<u8>::new();
@@ -990,65 +978,36 @@ fn positive_x_3d_point_count(step_text: &str) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4 — GTransform hazards are real but ORTHOGONAL to determinant sign:
-// analytic-geometry loss and pre-tessellation fragility. This is the
-// A-δ-informing payload of the probe.
+// Test 4 — the GTransform hazard is real but ORTHOGONAL to determinant sign:
+// analytic-geometry loss. This is the A-δ-informing payload of the probe.
 // ---------------------------------------------------------------------------
 
-/// Two `BRepBuilderAPI_GTransform` hazards that a reader could otherwise
+/// A `BRepBuilderAPI_GTransform` hazard that a reader could otherwise
 /// mis-attribute to the det<0 orientation question tests 1-3 above answer
-/// cleanly: they are real, but they are artifacts of
+/// cleanly: it is real, but it is an artifact of
 /// `GTransform`/`BRepTools_GTrsfModification` itself, not of reflection or
-/// determinant sign. Both halves below also exercise the IDENTITY linear map
-/// `diag(1,1,1)` (det = +1, geometrically a no-op) alongside the det<0
-/// reflection: reproducing a hazard under the identity map is what turns
-/// "OCCT mishandles det<0" from a plausible misreading of this probe into a
-/// disproven one — precisely the distinction PRD §4's open question turns on.
+/// determinant sign. It is tracked by follow-up task **#7735**.
 ///
-/// Both hazards below are tracked by follow-up task **#6652** (filed as
-/// ticket `tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC`, which the curator resolved to
-/// that task number).
-///
-/// **Half (a) — analytic geometry is destroyed** (fixture never tessellated).
+/// **Analytic geometry is destroyed** (fixture never tessellated).
 /// `BRepBuilderAPI_GTransform` rewrites every analytic surface (planes,
 /// cylinders, ...) as a B-spline approximation; `GeometryOp::Mirror`
 /// (`gp_Trsf::SetMirror`) does not, so analytic surface types and exact
-/// volume survive it unchanged. Its four det<0 assertions pin TODAY's lossy
+/// volume survive it unchanged. The four det<0 assertions pin TODAY's lossy
 /// behaviour as a hard gate, and are then repeated VERBATIM against the
-/// IDENTITY linear map (the same determinant-independence control half (b)
-/// uses) — without that repeat, this half would only ever have exercised
-/// det<0, and a reader could not tell this hazard apart from a genuine det<0
-/// orientation defect, which is exactly the ambiguity PRD §4's open question
-/// turns on — **if any of them FAILS (det<0 OR identity), OCCT has gotten
-/// BETTER at preserving analytic geometry under GTransform: update that
-/// assertion and this module's doc (and #6652), rather than treating the
-/// failure as a regression.**
-///
-/// **Half (b) — pre-tessellation fragility**, and why it needs a CURVED
-/// fixture. `BRepTools_GTrsfModification` (GTransform's modifier) rewrites
-/// analytic geometry but carries the source's `Poly_Triangulation` across
-/// UNCHANGED. If the source was tessellated before the transform, that stale
-/// triangulation no longer matches the new B-spline geometry and
-/// `BRepCheck_Analyzer::IsValid()` (`GeometryQuery::IsWatertight`) reports
-/// `false`. A box fixture would NOT show this: the B-spline image of a flat
-/// plane is exact, so a stale planar triangulation still matches it — only a
-/// curved surface exposes the mismatch, hence the cylinder. `GeometryOp::Mirror`
-/// is immune: `gp_Trsf` is a true isometry that never touches the shape's
-/// underlying geometry representation, so the carried triangulation always
-/// still matches.
-///
-/// The two `IsWatertight == false` assertions in half (b) are CHARACTERIZATION
-/// PINS of this known defect (follow-up task #6652 / ticket
-/// `tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC`), not desired behaviour — **if either
-/// assertion FAILS, the defect has been FIXED: delete that pin, update this
-/// module's doc, and close #6652.**
+/// IDENTITY linear map `diag(1,1,1)` (det = +1, geometrically a no-op).
+/// Reproducing the hazard under the identity map is what turns "OCCT
+/// mishandles det<0" from a plausible misreading of this probe into a
+/// disproven one — precisely the distinction PRD §4's open question turns
+/// on. **If any of them FAILS (det<0 OR identity), OCCT has gotten BETTER at
+/// preserving analytic geometry under GTransform: update that assertion and
+/// this module's doc (and #7735), rather than treating the failure as a
+/// regression.**
 #[test]
-fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
+fn gtransform_path_is_lossy_unlike_setmirror() {
     if !OCCT_AVAILABLE {
         return;
     }
 
-    // --- Half (a): analytic geometry is destroyed (never-tessellated source) ---
     let mut kernel = OcctKernel::new();
     let cylinder = build_cylinder(&mut kernel);
 
@@ -1106,29 +1065,26 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
         0,
         "AffineApply det<0 should destroy the analytic CYLINDRICAL_SURFACE entirely \
          (BRepBuilderAPI_GTransform rewrites it as a B-spline). Characterization pin \
-         (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion \
-         FAILS, OCCT has gotten BETTER at preserving analytic geometry under GTransform: \
-         update this pin and this module's doc rather than treating the failure as a \
-         regression."
+         (follow-up task #7735) — if this assertion FAILS, OCCT has gotten BETTER at \
+         preserving analytic geometry under GTransform: update this pin and this module's doc \
+         rather than treating the failure as a regression."
     );
     assert_eq!(
         step_entity_count(&affine_text, "PLANE("),
         0,
         "AffineApply det<0 should destroy the analytic PLANE( entities entirely. \
-         Characterization pin (follow-up task #6652 / ticket \
-         tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion FAILS, OCCT has gotten BETTER \
-         at preserving analytic geometry under GTransform: update this pin and this module's \
-         doc rather than treating the failure as a regression."
+         Characterization pin (follow-up task #7735) — if this assertion FAILS, OCCT has \
+         gotten BETTER at preserving analytic geometry under GTransform: update this pin and \
+         this module's doc rather than treating the failure as a regression."
     );
     assert!(
         step_entity_count(&affine_text, "B_SPLINE_SURFACE") > 0,
         "AffineApply det<0 should introduce >=1 B_SPLINE_SURFACE entity (measured 5); \
          asserted as > 0 rather than an exact count since the entity name mixes plain and \
-         complex-entity spellings. Characterization pin (follow-up task #6652 / ticket \
-         tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion FAILS, OCCT has gotten BETTER \
-         at preserving analytic geometry under GTransform (no B-spline substitution needed): \
-         update this pin and this module's doc rather than treating the failure as a \
-         regression."
+         complex-entity spellings. Characterization pin (follow-up task #7735) — if this \
+         assertion FAILS, OCCT has gotten BETTER at preserving analytic geometry under \
+         GTransform (no B-spline substitution needed): update this pin and this module's doc \
+         rather than treating the failure as a regression."
     );
     let affine_volume = volume_of(&kernel, affine);
     let affine_rel_err = (affine_volume - source_volume).abs() / source_volume;
@@ -1136,21 +1092,19 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
         affine_rel_err > 1e-4,
         "AffineApply det<0 volume should differ from source by more than 1e-4 relative \
          (measured +8.615e-3) — this is a real analytic-to-B-spline approximation loss, not \
-         noise, got rel_err={affine_rel_err:e}. Characterization pin (follow-up task #6652 / \
-         ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion FAILS, OCCT has gotten \
-         BETTER at preserving analytic geometry under GTransform (volume now survives \
-         intact): update this pin and this module's doc rather than treating the failure as \
-         a regression."
+         noise, got rel_err={affine_rel_err:e}. Characterization pin (follow-up task #7735) \
+         — if this assertion FAILS, OCCT has gotten BETTER at preserving analytic geometry \
+         under GTransform (volume now survives intact): update this pin and this module's \
+         doc rather than treating the failure as a regression."
     );
 
     // Determinant-independence control: the SAME four assertions repeated
     // against the IDENTITY linear map diag(1,1,1) (det = +1, geometrically a
-    // no-op). Without this, half (a) would only ever have exercised det<0,
+    // no-op). Without this, this test would only ever have exercised det<0,
     // and "OCCT mishandles det<0" would be a plausible misreading of the
-    // four assertions above — exactly the ambiguity half (b)'s own identity
-    // check (below) exists to close for the pre-tessellation hazard.
-    // Reproducing all four findings unchanged at det=+1 proves this hazard
-    // belongs to GTransform itself, not to reflection.
+    // four assertions above. Reproducing all four findings unchanged at
+    // det=+1 proves this hazard belongs to GTransform itself, not to
+    // reflection.
     let identity = affine_linear(
         &mut kernel,
         cylinder,
@@ -1163,29 +1117,26 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
         "AffineApply IDENTITY (det=+1, geometrically a no-op) should ALSO destroy the analytic \
          CYLINDRICAL_SURFACE entirely — determinant-independence control, proving this hazard \
          is a GTransform artifact rather than a det<0 orientation defect. Characterization pin \
-         (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion \
-         FAILS, OCCT has gotten BETTER at preserving analytic geometry under GTransform: \
-         update this pin and this module's doc rather than treating the failure as a \
-         regression."
+         (follow-up task #7735) — if this assertion FAILS, OCCT has gotten BETTER at \
+         preserving analytic geometry under GTransform: update this pin and this module's doc \
+         rather than treating the failure as a regression."
     );
     assert_eq!(
         step_entity_count(&identity_text, "PLANE("),
         0,
         "AffineApply IDENTITY should ALSO destroy the analytic PLANE( entities entirely \
          (determinant-independence control — see the CYLINDRICAL_SURFACE assertion above). \
-         Characterization pin (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — \
-         if this assertion FAILS, OCCT has gotten BETTER at preserving analytic geometry under \
-         GTransform: update this pin and this module's doc rather than treating the failure as \
-         a regression."
+         Characterization pin (follow-up task #7735) — if this assertion FAILS, OCCT has \
+         gotten BETTER at preserving analytic geometry under GTransform: update this pin and \
+         this module's doc rather than treating the failure as a regression."
     );
     assert!(
         step_entity_count(&identity_text, "B_SPLINE_SURFACE") > 0,
         "AffineApply IDENTITY should ALSO introduce >=1 B_SPLINE_SURFACE entity \
-         (determinant-independence control). Characterization pin (follow-up task #6652 / \
-         ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — if this assertion FAILS, OCCT has gotten \
-         BETTER at preserving analytic geometry under GTransform (no B-spline substitution \
-         needed): update this pin and this module's doc rather than treating the failure as a \
-         regression."
+         (determinant-independence control). Characterization pin (follow-up task #7735) — \
+         if this assertion FAILS, OCCT has gotten BETTER at preserving analytic geometry under \
+         GTransform (no B-spline substitution needed): update this pin and this module's doc \
+         rather than treating the failure as a regression."
     );
     let identity_volume = volume_of(&kernel, identity);
     let identity_rel_err = (identity_volume - source_volume).abs() / source_volume;
@@ -1194,88 +1145,9 @@ fn gtransform_path_is_lossy_and_pretessellation_fragile_unlike_setmirror() {
         "AffineApply IDENTITY volume should ALSO differ from source by more than 1e-4 relative \
          (determinant-independence control: this is a GTransform analytic-to-B-spline \
          approximation-loss artifact, not a det<0 effect), got rel_err={identity_rel_err:e}. \
-         Characterization pin (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC) — \
-         if this assertion FAILS, OCCT has gotten BETTER at preserving analytic geometry under \
-         GTransform (volume now survives intact): update this pin and this module's doc rather \
-         than treating the failure as a regression."
+         Characterization pin (follow-up task #7735) — if this assertion FAILS, OCCT has \
+         gotten BETTER at preserving analytic geometry under GTransform (volume now survives \
+         intact): update this pin and this module's doc rather than treating the failure as a \
+         regression."
     );
-
-    // --- Half (b): pre-tessellation fragility, determinant-independent ---
-    let (mut kernel_b, base) = fresh_pretessellated_cylinder(1e-4);
-
-    let mirrored_b = mirror_across_yz(&mut kernel_b, base);
-    assert!(
-        flag_of(&kernel_b, GeometryQuery::IsWatertight(mirrored_b)),
-        "Mirror on a pre-tessellated source should remain IsWatertight=true — this is the \
-         invariant A-δ (#6618) depends on, and it is the stable half of this test"
-    );
-
-    let affine_b = affine_reflect_x(&mut kernel_b, base);
-    assert!(
-        !flag_of(&kernel_b, GeometryQuery::IsWatertight(affine_b)),
-        "Known defect (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC): \
-         AffineApply det<0 on a pre-tessellated source is IsWatertight=false — \
-         BRepTools_GTrsfModification carries the source's stale Poly_Triangulation across the \
-         analytic-to-B-spline rewrite, so it no longer matches the new geometry and \
-         BRepCheck_Analyzer::IsValid() fails. If this assertion FAILS, the defect has been \
-         FIXED — delete this characterization pin, update this module's doc, and close #6652 \
-         (ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC)."
-    );
-
-    let identity_b = affine_linear(
-        &mut kernel_b,
-        base,
-        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-    );
-    assert!(
-        !flag_of(&kernel_b, GeometryQuery::IsWatertight(identity_b)),
-        "Known defect (follow-up task #6652 / ticket tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC): \
-         determinant-independence proof — AffineApply with the IDENTITY linear map on a \
-         pre-tessellated source is ALSO IsWatertight=false, proving this hazard belongs to \
-         BRepBuilderAPI_GTransform itself and is NOT a det<0 orientation defect. If this \
-         assertion FAILS, the defect has been FIXED — delete this characterization pin, \
-         update this module's doc, and close #6652 (ticket \
-         tkt_0RSXJ6CYZKF1B8Z31FWEMRF2GC)."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Pre-tessellation fragility helper
-// ---------------------------------------------------------------------------
-
-/// Build a FRESH `OcctKernel` containing only a fresh, untransformed
-/// `cylinder_r6_h20` fixture (same dimensions as [`convex_fixtures`], via the
-/// shared `CYLINDER_*` consts so the two can never drift apart), tessellate
-/// it ONCE at `deflection`, and return the kernel plus the still-untransformed
-/// handle.
-///
-/// The fresh kernel and the tessellate-before-reflect ordering are both
-/// load-bearing:
-///
-///   - **Fresh kernel.** The pre-tessellation must apply to THIS test's
-///     source handle only. Reusing a shared kernel/fixture would silently
-///     contaminate the assertions in tests 1-3
-///     (`both_reflection_paths_yield_valid_positive_volume_solids`,
-///     `both_reflection_paths_tessellate_to_outward_wound_closed_manifold`,
-///     `reflected_brep_step_export_bakes_geometry_and_emits_no_det_negative_placement`),
-///     which all require an UNTESSELLATED source — tessellating a fixture
-///     before reflecting it is exactly the hazard test 4 half (b) is
-///     characterizing.
-///   - **Tessellate-then-reflect ordering.** Verified 3-way in the probe:
-///     (A) no pre-tessellation → both `Mirror` and `AffineApply` (det<0 and
-///     identity) report `IsWatertight=true`; (B) pre-tessellate the SOURCE
-///     (this helper's case) → `AffineApply` det<0 AND identity both report
-///     `IsWatertight=false` while `Mirror` stays `true`; (C) tessellating the
-///     RESULT after the transform is harmless. Only ordering (B) exposes the
-///     `BRepTools_GTrsfModification` stale-`Poly_Triangulation` hazard that
-///     test 4 half (b) pins.
-fn fresh_pretessellated_cylinder(deflection: f64) -> (OcctKernel, GeometryHandleId) {
-    let mut kernel = OcctKernel::new();
-    let base = build_cylinder(&mut kernel);
-
-    kernel.tessellate(base, deflection).unwrap_or_else(|e| {
-        panic!("pre-tessellation of cylinder_r6_h20 at {deflection:e} should succeed: {e:?}")
-    });
-
-    (kernel, base)
 }

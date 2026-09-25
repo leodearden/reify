@@ -120,7 +120,7 @@ tasks:
       reason: substrate premise verified pre-state; ζ exemplar exercises aux centerlines
         via symmetric()
   - name: exemplar-ci-gate
-    binding: substrate — examples/best_practices auto-compile gate crates/reify-compiler/tests/examples_smoke.rs
+    binding: substrate — examples/best_practices auto-compile gate crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs
       (corpus seeded by task "#5397")
     verdict: PASS
     delivered_check:

@@ -497,8 +497,8 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
 /// `D_ff x_f = −D_fa x_a` by inspection) and the free path rests on the homogeneity of
 /// the GroupRatios SEARCH. Here the geometry comes from a cotangent fixed point, so
 /// covariance is a property of its STOPPING RULE: `form_find.rs` judges
-/// `free_equilibrium_residual_relative` — `max|(D·x)_free|` divided by
-/// `d_scale = ‖D‖_∞` over the free rows — against `SURFACE_EQUILIBRIUM_REL_TOL`.
+/// `free_equilibrium_residual_relative` — each free row's `|(D·x)_i|` divided by that
+/// row's own `Σ_j |D_ij|` — against `SURFACE_EQUILIBRIUM_REL_TOL`.
 /// Numerator and denominator each pick up exactly one factor of λ, so the ratio is
 /// gauge-free and both gauges stop at the same iterate. Until task **#6119** that stop
 /// test was an ABSOLUTE tolerance on a residual normalised by geometry scale only: a
@@ -515,7 +515,8 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
 /// only to f64 rounding — and the tolerances below are deliberately NOT sized on it, so do
 /// not invoke exactness to tighten them. They are sized on the larger hazard: that same
 /// rounding can in principle push the two runs one iterate apart, and the stop residual
-/// (`SURFACE_EQUILIBRIUM_REL_TOL = 1e-11` × a measured `d_scale ≈ 9`) bounds that
+/// (`SURFACE_EQUILIBRIUM_REL_TOL = 1e-11`, a row's net force over that row's own
+/// `Σ_j |D_ij|` — in effect a nodal displacement) bounds that
 /// displacement at ~1e-11 m — so 1e-9 keeps ~2 orders over
 /// the hazard and ~7 over the measurement. Do not slacken either without re-measuring:
 /// the defect this locks moves the converged shape by far more than 1e-9, or fails

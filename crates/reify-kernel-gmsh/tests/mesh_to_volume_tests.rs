@@ -7,6 +7,13 @@
 
 #![cfg(has_gmsh)]
 
+// The shared size-option read-back is declared by path rather than through
+// `common/mod.rs`, which #6387 reduced to a re-export shim over
+// `reify_test_support::fixtures` and which is scheduled for deletion; see
+// `common/clamp_probe.rs` for why one copy of the loop matters.
+#[path = "common/clamp_probe.rs"]
+mod clamp_probe;
+
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions};
 use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, QueryError};
 use reify_test_support::fixtures::unit_cube_mesh;
@@ -541,3 +548,69 @@ fn mesh_to_volume_leaves_the_gmsh_logger_stopped() {
 //
 // Deliberate mesher failures live in `tests/mesher_poison_recovery.rs`, whose
 // header carries the mechanism and why they are kept out of this binary.
+
+/// `mesh_to_volume` leaves every mesh-size process-global at gmsh's default.
+///
+/// One of the four per-entry-point outbound guards task #6968 added, all four
+/// sharing the read-back loop
+/// [`clamp_probe::assert_all_size_options_at_gmsh_defaults`], which iterates
+/// the production `mesh_size_scope::GMSH_SIZE_OPTION_DEFAULTS` rather than
+/// naming options — so a sixth process-global added to the production list is
+/// asserted against every writer on the day it lands.
+///
+/// # Outbound only, and where the rest of the guard lives
+///
+/// This function is the one writer whose outbound guard needs a POISONED table
+/// to be worth anything for the size-SOURCE trio: `mesh_to_volume` never writes
+/// `Mesh.MeshSizeFromPoints` / `MeshSizeFromCurvature` /
+/// `MeshSizeExtendFromBoundary`, so from a defaults table it leaves them at
+/// defaults whether or not the scope is armed. Those three rows are therefore
+/// vacuous here, said plainly rather than left to imply a sensitivity they
+/// lack. What bites here is the clamp pair the function does write.
+///
+/// Poisoning cannot happen in this binary. It takes a second `GMSH_LOCK`
+/// acquisition before the call, and this binary holds 13 unserialised
+/// `mesh_to_volume` calls that can land in the gap and erase the poison —
+/// leaving the leg green for the wrong reason, which
+/// `clamp_probe::CLAMP_TEST_ORDER`'s own doc calls the worse direction for a
+/// regression guard. Taking that mutex here would serialise thirteen unrelated
+/// tests as a side effect. So the poisoned form — both the trio read-back and
+/// the inbound tet count — lives in `tests/mesh_size_option_hermeticity.rs`,
+/// which owns its process and serialises its bodies, as
+/// `mesh_to_volume_enters_and_leaves_gmshs_size_defaults_whatever_the_table_held`.
+///
+/// What remains here is order-independent and needs no mutex, for the reason
+/// [`mesh_to_volume_leaves_the_gmsh_logger_stopped`] gives: "the table is at
+/// defaults" is what every sibling in this binary also leaves behind, so an
+/// interleaving sibling cannot flip the result.
+///
+/// # Measured RED
+///
+/// With `MeshSizeScope::entered` commented out of `kernel_real::mesh_to_volume`
+/// — unit cube, `deterministic: true`, P1, exactly the call below:
+///
+/// ```text
+/// table read              armed    disarmed
+/// Mesh.MeshSizeMin            0           1   <- RED
+/// Mesh.MeshSizeMax         1e22           1   <- RED
+/// ```
+///
+/// The `1` is this cube's extent: with no scope to restore them, the
+/// `Min == Max == resolved_size` pair the function writes itself outlives the
+/// call. `deterministic: true` and `ElementOrderTag::P1` match the
+/// measurement, and the `mesh_size: None` path is deliberate — it is the one
+/// that makes `resolved_size` gmsh's own derivation rather than a literal a
+/// reader would have to trace back.
+#[test]
+fn mesh_to_volume_leaves_every_size_option_at_gmsh_defaults() {
+    let cube = unit_cube_mesh();
+    let options = MeshingOptions { deterministic: true, ..Default::default() };
+    GmshKernel::new()
+        .mesh_to_volume(&cube, &options, ElementOrderTag::P1)
+        .expect("mesh_to_volume must succeed for a closed unit-cube surface");
+
+    clamp_probe::assert_all_size_options_at_gmsh_defaults(
+        "mesh_to_volume(mesh_size: None)",
+        "`MeshSizeScope` in kernel_real.rs",
+    );
+}

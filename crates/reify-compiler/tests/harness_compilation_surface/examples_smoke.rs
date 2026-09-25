@@ -8,8 +8,12 @@
 
 use std::path::{Path, PathBuf};
 
+use reify_test_support::ctor_conformance_debt::{
+    CTOR_CONFORMANCE_MIGRATION_DEBT, debt_entry_matches, is_migration_debt_diagnostic,
+    param_name_from_ctor_diagnostic,
+};
 use reify_test_support::missing_paths_under;
-use reify_test_support::{CTOR_DIAGNOSTIC_ARG_PREFIX, is_ctor_conformance_code};
+use reify_test_support::is_ctor_conformance_code;
 
 /// Absolute path to the workspace `examples/` directory, resolved at compile
 /// time from this crate's manifest directory (two levels up).
@@ -138,55 +142,6 @@ const SKIP_SET: &[(&str, &str)] = &[
          Positive (coherent) coverage lives in the sibling multi_aspect_objective.ri \
          (NOT skipped) and both are exercised end-to-end by \
          crates/reify-eval/tests/harness_fea_solver_e2e/multi_aspect_objective_example_e2e.rs.",
-    ),
-];
-
-/// Per-SITE waivers for ctor-conformance diagnostics that a shipped example
-/// still emits because its call site has not been migrated yet, and cannot be
-/// migrated by the task that promoted the family.
-///
-/// Each entry is `(relative_path, param_name, owning_task)`:
-/// * `relative_path` is the same forward-slash `relative_to_examples_dir` key
-///   form `SKIP_SET` uses (`"trajectory/printer_print_envelope.ri"`, never the
-///   repo-relative `"examples/trajectory/..."` spelling);
-/// * `param_name` is the offending ctor param, parsed back out of the
-///   diagnostic by [`param_name_from_ctor_diagnostic`];
-/// * `owning_task` is the live task that owns retiring the entry, in the
-///   canonical `#NNNN` cite form required by the repo's citation convention.
-///
-/// # This is NOT `SKIP_SET`, and must never be merged into it
-///
-/// `SKIP_SET` is for files that cannot reach a clean compile AT ALL — the file
-/// is dropped from the walk entirely, so it gets no coverage of any kind.
-/// `printer_print_envelope.ri` compiles cleanly; it merely carries two
-/// un-migrated call sites. It stays fully walked, and every OTHER diagnostic it
-/// emits still fails the gate.
-///
-/// # The waiver is per-SITE, never per-file
-///
-/// Matching is on the `(file, param)` PAIR. A future diagnostic in the same file
-/// at a different param is unwaived and fails the gate, as does a diagnostic at
-/// one of these params that carries a different, non-`argument '<name>'`
-/// wording.
-///
-/// # Retirement
-///
-/// Task #5847 owns deleting BOTH entries in the same diff that dimensions
-/// `trajectory/printer_print_envelope.ri:154` / `:155` (esc-5627-5 option A).
-/// The sites cannot be dimensioned in isolation without collapsing the TOTS
-/// solve, which is the whole reason the debt exists rather than the migration
-/// simply having been done. Leaving the entries behind after that lands is
-/// caught by [`ctor_conformance_migration_debt_entries_are_all_live`].
-pub(super) const CTOR_CONFORMANCE_MIGRATION_DEBT: &[(&str, &str, &str)] = &[
-    (
-        "trajectory/printer_print_envelope.ri",
-        "velocity_limit",
-        "#5847",
-    ),
-    (
-        "trajectory/printer_print_envelope.ri",
-        "acceleration_limit",
-        "#5847",
     ),
 ];
 
@@ -647,12 +602,22 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
         return;
     }
 
-    // Compile phase — filter to Error severity only.
+    // Compile phase — filter to Error severity only, less the per-SITE waivers.
+    //
+    // δ (#5306) flipped CTOR_FIELD_CONFORMANCE_SEVERITY to Error, which put the two
+    // un-migrated `trajectory/printer_print_envelope.ri` ctor sites in front of this
+    // gate. They stay WAIVED rather than fixed: esc-5305-3 (Leo) ruled explicitly
+    // against both migrating them here and taking a dependency edge on #5847, which
+    // owns dimensioning them — they cannot be dimensioned in isolation without
+    // collapsing the TOTS solve. `is_migration_debt_diagnostic` is the one place that
+    // rule is stated; it is keyed on `(file, param)` AND `ArgTypeMismatch` AND Error,
+    // so every OTHER diagnostic this file can emit still fails the gate.
     let compiled = compile_with_stdlib(&parsed);
     let errors: Vec<String> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .filter(|d| !is_migration_debt_diagnostic(rel_key, d))
         .map(|d| d.message.clone())
         .collect();
 
@@ -717,50 +682,6 @@ fn ctor_conformance_corpus_walk() -> &'static CtorConformanceWalk {
     })
 }
 
-/// Recover the offending param name from a ctor-conformance diagnostic message.
-///
-/// A `Diagnostic` carries no structured param field, so the only handle the
-/// per-site waiver has is the wording: the text between the first pair of single
-/// quotes following the `argument '` prefix. Returns `None` for any message that
-/// does not have that shape (the non-`ArgTypeMismatch` ctor-conformance codes),
-/// which makes such a diagnostic unwaivable rather than silently waived.
-///
-/// This is a real coupling to diagnostic prose, and it is deliberately guarded
-/// rather than merely commented: if the wording ever drifts so extraction stops
-/// matching, [`ctor_conformance_migration_debt_entries_are_all_live`] goes red
-/// naming the entry that stopped matching. The prefix it keys on is the shared
-/// `reify_test_support::ctor_conformance::CTOR_DIAGNOSTIC_ARG_PREFIX`, whose
-/// doc comment is where that coupling is recorded.
-///
-/// Single copy, not a duplication: this EXTRACTS the param name, where the
-/// shared `ctor_diagnostic_names_arg` only TESTS for a given one.
-fn param_name_from_ctor_diagnostic(message: &str) -> Option<String> {
-    let start = message.find(CTOR_DIAGNOSTIC_ARG_PREFIX)? + CTOR_DIAGNOSTIC_ARG_PREFIX.len();
-    let rest = &message[start..];
-    let end = rest.find('\'')?;
-    Some(rest[..end].to_owned())
-}
-
-/// Whether `entry` (a [`CTOR_CONFORMANCE_MIGRATION_DEBT`] row) waives the site
-/// `(file, param)`.
-///
-/// Both halves of the key must match: the file AND the param. An entry whose
-/// param does not match — including because extraction returned `None` — waives
-/// nothing.
-///
-/// Takes the two key halves rather than a [`CtorConformanceViolation`] so the
-/// sibling `ctor_conformance_corpus_survey` module can apply the SAME rule to a
-/// `SurveySite`, which carries the same pair under different field names. The
-/// rule stays defined exactly once.
-pub(super) fn debt_entry_matches(
-    entry: &(&str, &str, &str),
-    file: &str,
-    param: Option<&str>,
-) -> bool {
-    entry.0 == file && param == Some(entry.1)
-}
-
-/// Whether any debt entry waives `v`.
 fn violation_is_waived(v: &CtorConformanceViolation) -> bool {
     CTOR_CONFORMANCE_MIGRATION_DEBT
         .iter()

@@ -80,8 +80,37 @@ per tick" at 100K measured **123.98 s**, ~41x the estimate.
 
 Over 9.9K -> 108.8K elements (10.9x) the morph goes 0.537 s -> 123.98 s, a 231x
 increase — roughly `O(N^2.2)`. Over 9.1K -> 109.1K (12.0x) gmsh goes 0.685 s ->
-1.98 s, a 2.9x increase. The morph arm is the deliberately serial,
-unpreconditioned Jacobi-CG path, and this is what that costs at 61,617 DOF.
+1.98 s, a 2.9x increase.
+
+**CORRECTION 2026-09-23.** The original text here read "the morph arm is the
+deliberately serial, unpreconditioned Jacobi-CG path, and this is what that
+costs at 61,617 DOF." That attribution was a guess and it is wrong. The harness
+was rebuilt at main HEAD (release) and the n=18 morph leg sampled 104 times
+with gdb (`perf` is unavailable on this host: `perf_event_paranoid=4`), with
+an exact CG iteration count taken by a breakpoint on
+`reify_solver_elastic::solver::spmv_seq`:
+
+```text
+top frame, 104 samples over the n=18 morph leg
+ 100  96.2%  reify_solver_elastic::boundary::dirichlet::apply_dirichlet_row_elimination
+   2   1.9%  reify_solver_elastic::assembly::global::assemble_global_stiffness
+   1   1.0%  sysmalloc
+   1   1.0%  (pre-timer input prep in the harness)
+   0   0.0%  any CG / SpMV / faer symbol
+CG iterations: n=18 -> 208 (61,617 DOF), n=8 -> 89 (6,507 DOF), both converged
+baseline wall-clock this run: n=8 592 ms, n=18 156.1 s (loaded host)
+```
+
+The cost is `apply_dirichlet_row_elimination`
+(`crates/reify-solver-elastic/src/boundary/dirichlet.rs`): for every
+prescribed DOF it scans all `n` rows of K, so it is O(n × |bcs|). The morph
+pins every surface node — 13,932 prescribed DOFs at n=18 against 61,617 rows —
+which is exactly the "pinned-surface scale" its own `# Complexity` note names
+as the case where a column-indexed mirror is needed. The CG solve is at most
+~3% of the leg (rule-of-three bound on 0/104 samples; 208 iterations). Fix:
+task #7834. Expected post-fix n=18 morph leg: single-digit seconds — roughly
+par with gmsh, not 10x faster. Re-measurement is #7834's acceptance step and
+will be appended below.
 
 The two curves cross just above the 10K scale, which is why a measurement taken
 only at 10K would have supported the PRD's premise and a measurement at 100K

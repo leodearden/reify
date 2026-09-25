@@ -449,6 +449,113 @@ class TestBindPremises(unittest.TestCase):
 # step-05 (RED): synthesize_batch() blocking semantics + captured-output mandate
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# #6876 step-11 (RED): the "value" assertion kind
+# ---------------------------------------------------------------------------
+
+class TestValueAssertionKind(unittest.TestCase):
+    """Binding a premise that asserts something about the PRINTED VALUE.
+
+    `ir` is exit-code-only on the clean branch, so a premise of the shape "eval
+    exits 0 AND prints a finite in-range number" bound as `ir` asserts only the
+    first half.  `value` is the kind that can see the second half; this pins
+    that an Enumerator emitting `assertion_kind="value"` reaches it.
+
+    The non-vacuity rules are NOT re-implemented here — they are α's, inherited
+    through pcc.load_probe_set, and that is exactly what these tests measure.
+    """
+
+    _FIXTURE = "tests/prd-gate/fixtures/value_clean_eval_cells.ri"
+    _SPEC = {
+        "pattern": r"ValueCleanEvalCells\.damping_ratio = ([-+0-9.eE]+)",
+        "min": 0.01,
+        "max": 0.03,
+    }
+
+    def _premise(self, match=None, fixture=None, assertion_kind="value"):
+        return pdv.Premise(
+            text="damping_ratio evaluates to a finite in-range number",
+            assertion_kind=assertion_kind,
+            fixture=fixture if fixture is not None else self._FIXTURE,
+            match=match if match is not None else {"stdout_value": dict(self._SPEC)},
+            capability="damping ratio is finite and in range",
+        )
+
+    # ── premise_to_probe ──────────────────────────────────────────────────────
+
+    def test_value_binds_value_probe_kind(self):
+        self.assertEqual(
+            pdv.premise_to_probe(self._premise())["probe_kind"], "value"
+        )
+
+    def test_value_binds_observation_present(self):
+        """The asserted value IS present — the same polarity the rejection row
+        documents: probe that the assertion HOLDS, not that a failure is absent."""
+        self.assertEqual(
+            pdv.premise_to_probe(self._premise())["expected"]["observation"],
+            "present",
+        )
+
+    def test_match_is_passed_through_verbatim(self):
+        """α owns the predicate's shape; D3 must not reshape it on the way."""
+        match = {"stdout_value": dict(self._SPEC)}
+        probe = pdv.premise_to_probe(self._premise(match=match))
+        self.assertEqual(probe["expected"]["match"], match)
+
+    def test_fixture_path_is_preserved(self):
+        probe = pdv.premise_to_probe(self._premise())
+        self.assertEqual(probe["fixture"], self._FIXTURE)
+
+    def test_unknown_assertion_kind_still_rejected_and_lists_value(self):
+        with self.assertRaises(ValueError) as ctx:
+            pdv.premise_to_probe(self._premise(assertion_kind="nonsense"))
+        message = str(ctx.exception)
+        self.assertIn("nonsense", message)
+        for kind in ("rejection", "parses", "resolves", "produces", "ir", "value"):
+            self.assertIn(kind, message)
+
+    # ── bind_premises → α round-trip ──────────────────────────────────────────
+
+    def test_bind_premises_round_trips_through_alpha(self):
+        result = pdv.bind_premises([self._premise()])
+        probes = pcc.load_probe_set(json.dumps(result))
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0].probe_kind, "value")
+        self.assertEqual(
+            probes[0].expected["match"]["stdout_value"], self._SPEC
+        )
+
+    def test_bind_premises_rejects_a_value_premise_with_no_predicate(self):
+        """Inherited from α's single validation site, not re-checked here."""
+        with self.assertRaises(ValueError) as ctx:
+            pdv.bind_premises([self._premise(match={})])
+        self.assertIn("stdout_value", str(ctx.exception))
+
+    def test_bind_premises_rejects_a_value_premise_with_no_constraint(self):
+        with self.assertRaises(ValueError) as ctx:
+            pdv.bind_premises([
+                self._premise(match={"stdout_value": {"pattern": r"X = ([0-9.]+)"}})
+            ])
+        message = str(ctx.exception)
+        self.assertIn("probe[0]", message)
+        for constraint in ("min", "max", "finite"):
+            self.assertIn(constraint, message)
+
+    # ── REGRESSION: the five existing bindings are unchanged ──────────────────
+
+    def test_existing_bindings_unchanged(self):
+        expected = {
+            "rejection": ("check", "present"),
+            "parses": ("grammar", "present"),
+            "resolves": ("check", "present"),
+            "produces": ("ir", "present"),
+            "ir": ("ir", "absent"),
+        }
+        for kind, (probe_kind, observation) in expected.items():
+            with self.subTest(assertion_kind=kind):
+                self.assertEqual(pdv._ASSERTION_KIND_MAP[kind], (probe_kind, observation))
+
+
 class TestSynthesizeBatch(unittest.TestCase):
     """Tests for BatchVerdict + synthesize_batch() blocking semantics.
 

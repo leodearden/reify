@@ -86,7 +86,7 @@ use reify_ir::GeometryError;
 /// message it lands in flows on into logs and the GUI, where an unbounded
 /// tail is a cost paid by every reader.
 ///
-/// `pub` (like [`crate::mesh_size_clamp`]'s defaults, and for the same
+/// `pub` (like [`crate::mesh_size_scope`]'s defaults, and for the same
 /// reason) so this crate's `tests/` binaries — separate compilation units —
 /// can assert against the cap rather than re-declaring a literal that could
 /// drift away from the value this module actually applies.
@@ -157,11 +157,11 @@ pub fn annotated(err: GeometryError, lines: &[String]) -> GeometryError {
 /// drops — which forces the stop to land *before* the lock is released.
 ///
 /// The witness is [`crate::init::GmshGuard`], not the weaker
-/// `&MutexGuard<'_, ()>` that [`crate::mesh_size_clamp::MeshSizeClampReset`]
+/// `&MutexGuard<'_, ()>` that [`crate::mesh_size_scope::MeshSizeScope`]
 /// still takes. `GmshGuard`'s own doc calls that weak form "exactly the
 /// witness this type was introduced to stop handing out, so the one site that
-/// still needs it names it", and names `MeshSizeClampReset` as that one site —
-/// so reaching for `GmshGuard::clamp_reset_witness` here would falsify it. The
+/// still needs it names it", and names `MeshSizeScope` as that one site — so
+/// reaching for `GmshGuard::size_scope_witness` here would falsify it. The
 /// strong witness is the honest one anyway: a `GmshGuard` proves libgmsh was
 /// alive when the lock was taken, and a capture is a read of a buffer that
 /// lives inside the library.
@@ -206,7 +206,7 @@ impl<'g> LogCapture<'g> {
 
 impl Drop for LogCapture<'_> {
     fn drop(&mut self) {
-        // Best-effort, like `MeshSizeClampReset::drop`: a failure here cannot
+        // Best-effort, like `MeshSizeScope::drop`: a failure here cannot
         // be reported from `drop` and must not mask the real result.
         let _ = crate::ffi::logger_stop();
     }

@@ -69,6 +69,32 @@ pub use solvespace::{SolveSpaceSolver, solve_sketch};
 use reify_core::{Diagnostic, DiagnosticCode};
 use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction, Value};
 
+/// Does any leaf operand of `expr` resolve to `Undef` in `values`?
+///
+/// This is the canonical has-undefined-leaf predicate: collect every leaf
+/// `ValueRef` (and `CrossSubGeometryRef` — see the `CrossSubGeometryRef` note
+/// on [`classify_undef`]) and ask whether any of them is undefined in
+/// `values`. [`classify_undef`] below is built on exactly this check, and
+/// `reify-eval`'s `Engine::dispatch_constraints` (task 6169 ζ) calls this
+/// function directly so its RepresentationWithin decline stays exact rather
+/// than an independently-maintained copy that could silently diverge from
+/// `classify_undef`'s has-undef half (task 6480).
+///
+/// Allocates: walks the expression tree and collects every leaf id per
+/// call; intended for diagnostic/decline paths, not per-evaluation hot
+/// loops.
+pub fn has_undefined_leaf(expr: &reify_ir::CompiledExpr, values: &reify_ir::ValueMap) -> bool {
+    any_undef(&expr.collect_value_refs(), values)
+}
+
+/// Borrow-only definedness check over an already-collected leaf-id slice;
+/// avoids the `get_or_undef` clone since only a boolean is needed here. An
+/// absent id counts as undefined, matching `get_or_undef`'s
+/// absence-maps-to-`Value::Undef` semantics.
+fn any_undef(ids: &[reify_core::ValueCellId], values: &reify_ir::ValueMap) -> bool {
+    ids.iter().any(|id| values.get(id).is_none_or(Value::is_undef))
+}
+
 /// Classify `Value::Undef` by leaf-ValueRef definedness.
 ///
 /// Returns:
@@ -95,11 +121,23 @@ fn classify_undef(
     use std::collections::HashSet;
 
     let leaf_ids = expr.collect_value_refs();
+
+    if !any_undef(&leaf_ids, values) {
+        let mut defined_kinds: Vec<String> = Vec::new();
+        let mut kinds_seen: HashSet<String> = HashSet::new();
+        for id in &leaf_ids {
+            let v = values.get_or_undef(id);
+            let kind = value_kind_label(&v);
+            if kinds_seen.insert(kind.clone()) {
+                defined_kinds.push(kind);
+            }
+        }
+        defined_kinds.sort();
+        return (false, defined_kinds);
+    }
+
     let mut undef_names: Vec<String> = Vec::new();
     let mut undef_seen: HashSet<String> = HashSet::new();
-    let mut defined_kinds: Vec<String> = Vec::new();
-    let mut kinds_seen: HashSet<String> = HashSet::new();
-
     for id in &leaf_ids {
         let v = values.get_or_undef(id);
         if v.is_undef() {
@@ -107,21 +145,10 @@ fn classify_undef(
             if undef_seen.insert(name.clone()) {
                 undef_names.push(name);
             }
-        } else {
-            let kind = value_kind_label(&v);
-            if kinds_seen.insert(kind.clone()) {
-                defined_kinds.push(kind);
-            }
         }
     }
-
-    if !undef_names.is_empty() {
-        undef_names.sort();
-        (true, undef_names)
-    } else {
-        defined_kinds.sort();
-        (false, defined_kinds)
-    }
+    undef_names.sort();
+    (true, undef_names)
 }
 
 /// A short human-readable label for the kind of a defined `Value`.
@@ -261,6 +288,20 @@ mod tests {
         let thickness = CompiledExpr::value_ref(vcid("Bracket", "thickness"), Type::length());
         let two_mm = CompiledExpr::literal(mm(2.0), Type::length());
         CompiledExpr::binop(BinOp::Gt, thickness, two_mm, Type::Bool)
+    }
+
+    /// Pins the public `has_undefined_leaf` contract directly, independent
+    /// of the message-formatting tests that only exercise it transitively
+    /// through `classify_undef`. In particular this covers the degenerate
+    /// edge — an expression with no ValueRef leaves is vacuously
+    /// all-defined — which `classify_undef` routes into its `(false, [])`
+    /// arm.
+    #[test]
+    fn has_undefined_leaf_direct_contract() {
+        let literal_only = CompiledExpr::literal(Value::Int(42), Type::Int);
+        assert!(!has_undefined_leaf(&literal_only, &ValueMap::new()));
+
+        assert!(has_undefined_leaf(&thickness_gt_2mm(), &ValueMap::new()));
     }
 
     #[test]

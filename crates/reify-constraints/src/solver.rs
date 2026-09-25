@@ -511,6 +511,7 @@ fn extract_initial_point(
     let intervals = derive_param_intervals(
         &problem.auto_params,
         &problem.constraints,
+        &problem.dependent_cells,
         &problem.current_values,
         &problem.functions,
         dispatch,
@@ -1080,13 +1081,328 @@ fn worst_unmet_floor_term(
         .max_by(|(a_got, a_need), (b_got, b_need)| (a_need - a_got).total_cmp(&(b_need - b_got)))
 }
 
+/// A point that VERIFIABLY satisfies `target`, or `None` when no candidate does.
+///
+/// THE CONTRACT STOPS THERE: the witness is verified against `target` AND
+/// NOTHING ELSE.  Callers that want to speak about a different constraint set
+/// must ASK FOR THAT SET — never re-check a witness found for a neighbouring one
+/// and read the outcome as a verdict on the set it was not searched against.
+/// That is a soundness rule, not a style preference: the floor's per-side
+/// margins are ASYMMETRIC (`collect_floor_terms` reads each off its own `Lt`/`Le`
+/// bound at the seed), while rung 2 below maximises the RAW minimum slack — so
+/// the un-floored centre sits OUTSIDE a non-empty floored window across a whole
+/// band of shapes.  That band, its measured margins and the boundary they put
+/// the class transition at are asserted in closed form by
+/// `floored_window_emptiness_decides_the_class_across_the_band`
+/// (`tests/robustness_floor.rs`), whose two consts are the executed copy of
+/// those numbers; the two #5714 cuts that each read one set's witness as a
+/// verdict on the other are recorded in that task's escalation history.
+///
+/// Hence `target`: the caller passes `effective_constraints` when it needs a
+/// point verified against the floor, and `problem.constraints` when it needs one
+/// verified against the originals only.  Neither answer is ever inferred from
+/// the other.
+///
+/// A `None` is a statement about THE SEARCH, not about the region: it means no
+/// candidate on either rung was verified, which is weaker than emptiness.  Every
+/// message keyed off it must stay worded accordingly.
+///
+/// Two rungs, cheapest first:
+///
+///   1. `converged` — a point the CALLER already holds, typically the floored
+///      solve's own converged point.  Free: it is already in hand.  A shallow
+///      objective leaves it inside the user's box, so this rung carries the
+///      `q ∈ [99, 100]` shape by itself, with the slack digits it has always
+///      reported.  `None` skips the rung, and a caller that already knows the
+///      point misses `target` must pass `None` rather than pay a full re-
+///      evaluation to be told so again.  That is why rung 1 is live for the
+///      ORIGINALS target only: the floored call comes from an emit site reached
+///      exactly when the residual against `effective_constraints` ALREADY
+///      exceeds `FEASIBILITY_THRESHOLD`, so offering it that same point would be
+///      a guaranteed-false re-computation of a value in hand.
+///   2. one bounded FEASIBILITY-ONLY re-solve — floor off, objective dropped.
+///      A Money objective steep relative to `PENALTY_WEIGHT` parks the floored
+///      penalty minimiser outside the user's box (measured, `x > 10mm ∧
+///      x < 10.3mm` under `5 USD × (x / 1mm)` lands at x ≈ 8.85e-3), which is
+///      what rung 1 cannot rescue and what this rung is for (task #5714).
+///      Dropping the objective is what makes the rung immune to that steepness
+///      by construction rather than by luck — see the rung itself.
+///
+/// The return is deliberately a WITNESS — a concrete point re-checked against
+/// `target` — never an inference from a derived box.
+/// `derive_param_intervals` SKIPs nonlinear and multi-auto shapes, so a
+/// non-degenerate derived box is not evidence of satisfiability: measured,
+/// `2·x > 60mm ∧ 2·x < 20mm` derives `DerivedInterval { lo: None, hi: None }`
+/// and hence the non-degenerate `default_bounds_for(Length) = (1e-6, 10.0)` for
+/// a region that is genuinely EMPTY.  A box-emptiness shortcut would over-claim
+/// exactly there; control test
+/// `underivable_empty_box_keeps_the_region_empty_wording`.
+///
+/// RECURSION is exactly one level deep BY CONSTRUCTION, not by a counter: rung 2
+/// passes `apply_robustness_floor = false`, so `floor_applied` is false inside
+/// that solve and [`floor_infeasible_diagnostic`] — the only caller — is
+/// structurally unreachable there.
+fn constraints_witness(
+    problem: &ResolutionProblem,
+    target: &[(ConstraintNodeId, CompiledExpr)],
+    converged: Option<&ValueMap>,
+    sd_tolerance: f64,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Option<ValueMap> {
+    let satisfies_target = |values: &ValueMap| {
+        max_constraint_residual(target, values, &problem.functions, dispatch)
+            <= FEASIBILITY_THRESHOLD
+    };
+
+    // ── rung 1: a point the caller already holds (free) ──────────────────────
+    if let Some(converged) = converged
+        && satisfies_target(converged)
+    {
+        return Some(converged.clone());
+    }
+
+    // ── rung 2: one floor-free, OBJECTIVE-FREE re-solve ──────────────────────
+    //
+    // Dropping the objective is the root-cause fix, not a trick.  A Money
+    // objective steep relative to `PENALTY_WEIGHT` is exactly what parks the
+    // penalty minimiser outside the user's box, so a witness search that keeps
+    // it inherits the very defect it is meant to route around: MEASURED, the
+    // objective-KEEPING form returns `Infeasible` on `2·x ∈ (60mm, 61mm)` (its
+    // minimiser of `5000·x + 1e6·(0.060 − 2x)²` sits at x ≈ 2.9375e-2, residual
+    // 1.25e-3), while the objective-DROPPED form returns x = 3.025e-2 at
+    // residual 0.0 — and still returns x = 1.015e-2 on the headline bracket.
+    //
+    // With `objective: None`, `solve_core_with_sd_tolerance` synthesises the eta
+    // centrality (Chebyshev-centre) objective from the SAME slack terms via
+    // `build_centrality_objective`, so the search MAXIMISES THE MINIMUM SLACK
+    // and cannot be pulled off the feasible set by cost at all.
+    //
+    // Both genuinely-empty controls still decline under this form (MEASURED
+    // `Infeasible`): `x >= 50mm ∧ x <= 10mm` and `2·x > 60mm ∧ 2·x < 20mm`.
+    //
+    // `..problem.clone()` functional-update form, not an explicit field literal:
+    // it is the established idiom (`registry.rs:453`, `:789`) and it is what
+    // keeps a future seventh `ResolutionProblem` field from being silently
+    // dropped here — the compile tripwire is
+    // `resolution_problem_field_set_is_pinned_at_the_solver_spread_sites`.  The
+    // clone is paid once on an already-failing path; its only real cost is the
+    // `CompiledExpr` deep clone of `constraints`.
+    //
+    // `constraints: target` is what makes the rung answer the question the
+    // caller actually asked.  Searching the originals and then re-checking the
+    // floor is NOT equivalent — see the asymmetric-margin band in the doc
+    // comment above — so the floored search must be driven by the floored set
+    // from the start, seed box and centrality objective included.
+    let feasibility_problem = ResolutionProblem {
+        objective: None,
+        constraints: target.to_vec(),
+        ..problem.clone()
+    };
+    let seed = extract_initial_point(&feasibility_problem, dispatch);
+    let (result, _) = solve_core_with_sd_tolerance(
+        &feasibility_problem,
+        &seed,
+        sd_tolerance,
+        /* apply_robustness_floor = */ false,
+        dispatch,
+    );
+    let SolveResult::Solved { values, .. } = result else {
+        // `Infeasible` and `NoProgress` both mean "no witness found HERE" — a
+        // fact about this search, not about `target`'s region.  The caller words
+        // its message accordingly rather than upgrading it to emptiness.
+        return None;
+    };
+    // `SolveResult::Solved` carries only the autos, so rebuild the full map the
+    // residual check needs — dependent cells included — via the same helper the
+    // solve itself uses.  Any missing or non-numeric auto declines.
+    let xs: Vec<f64> = problem
+        .auto_params
+        .iter()
+        .map(|p| values.get(&p.id).and_then(Value::as_f64))
+        .collect::<Option<_>>()?;
+    let witness = build_trial_values(
+        &problem.current_values,
+        &problem.auto_params,
+        &xs,
+        &problem.dependent_cells,
+        &problem.functions,
+        dispatch,
+    );
+    satisfies_target(&witness).then_some(witness)
+}
+
+/// The `RobustnessFloorInfeasible` diagnostic for a solve that failed WITH the
+/// synthesised floor applied (tasks #5618 step-10, #5714).
+///
+/// `final_max_residual` is measured against `effective_constraints`, i.e. the
+/// user's constraints PLUS the floor.  On its own it cannot tell the three
+/// situations below apart, and the message used to assert the worst of them in
+/// all cases.  For a tight-but-satisfiable bracket that is simply false, and it
+/// was the original report's sharpest complaint: the diagnostic sent the user
+/// off relaxing a design that was never over-constrained.
+///
+/// So SEARCH FOR A WITNESS, and search the set the claim is about — two
+/// searches, each verified against the constraint set it speaks for, tried
+/// strongest-evidence first:
+///
+///   3. a point meeting `effective_constraints` (originals AND every floor
+///      term) → nothing is over-constrained at all; the floored solve simply
+///      did not converge to it.  None of class 2's remedies apply.
+///      `wide_underivable_bracket_does_not_blame_a_satisfiable_margin`
+///   2. else a point meeting `problem.constraints` → the originals are
+///      satisfiable but the floored search declined; report the shortfall at
+///      that point, WITHOUT claiming the floor is unmeetable anywhere.
+///      `steep_objective_over_an_underivable_bracket_still_names_the_margin`
+///   1. else neither search found anything → keep the original region-empty
+///      wording.  `underivable_empty_box_keeps_the_region_empty_wording`
+///
+/// Two SEARCHES, never one-plus-a-re-check: a witness found for one set is no
+/// verdict on the other, for the asymmetric-margin reason documented on
+/// [`constraints_witness`] and swept by
+/// `floored_window_emptiness_decides_the_class_across_the_band`.
+///
+/// Every claim stays about a CONCRETE POINT, never about the feasible region —
+/// verified, not inferred.  Classes 2 and 1 rest on a search DECLINING, which is
+/// weaker than emptiness, so their wording asserts only what was searched and
+/// what was found.
+///
+/// COST: up to two extra bounded solves on an already-failing path (class 3 pays
+/// one, and the originals search's rung 1 is free).
+///
+/// TODO(#7643): under `solve_ranked_impl` multistart this is paid `K = 2·(dim+1)`
+/// times and every copy is DISCARDED — that loop consumes only the
+/// `Solved`/not-`Solved` bit and re-solves once more via `solve_with_meta` to
+/// build the message it actually returns.  Making the construction lazy for that
+/// loop is a signature/ownership call on `solve_core`, deferred rather than
+/// bolted on as a sixth flag through `solve_core_with_sd_tolerance`.
+fn floor_infeasible_diagnostic(
+    problem: &ResolutionProblem,
+    effective_constraints: &[(ConstraintNodeId, CompiledExpr)],
+    final_values: &ValueMap,
+    final_max_residual: f64,
+    sd_tolerance: f64,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> reify_core::Diagnostic {
+    // `converged: None` — this function is reached only when `final_max_residual`
+    // against `effective_constraints` already exceeds `FEASIBILITY_THRESHOLD`, so
+    // offering `final_values` as a floored candidate would re-derive a value
+    // already in hand and known to fail.  Rung 1 is live for the ORIGINALS search
+    // below, where the answer is genuinely unknown.
+    let floored_witness =
+        constraints_witness(problem, effective_constraints, None, sd_tolerance, dispatch);
+    if floored_witness.is_some() {
+        // ── CLASS 3: everything is satisfiable; the solve just did not get ──
+        // there.  The witness is verified against `effective_constraints`, so
+        // BOTH halves of the claim below are proved at one concrete point — no
+        // inference.  Offer NONE of class 2's remedies: nothing is
+        // over-constrained and there is no cost/robustness conflict to trade
+        // off, so all three would be wrong advice.  `final_max_residual` is
+        // reported because it describes the point the solve actually REACHED —
+        // at the witness it is 0.0, which would tell the user nothing about the
+        // failure.
+        //
+        // TODO(#7632): the witness is a verified feasible point and is thrown
+        // away — the user gets a hard `Infeasible` on a model this function is
+        // holding a solution to.  Returning it instead is a change to solver
+        // SEMANTICS (result class, uniqueness, and the eval-layer
+        // `RobustnessFloorApplied` suppression that keys off this code), which
+        // is why it is tracked rather than done here.
+        return reify_core::Diagnostic::error(format!(
+            "infeasible under robustness floor: the original constraints \
+             and the synthesised {:.0}% robustness margin are both \
+             satisfiable — verified at a point that meets every one of \
+             them — but the floored solve did not converge to it (max \
+             absolute residual at the point it reached: {:.2e}); this is \
+             a solver convergence limit, not an over-constrained design",
+            REL_MARGIN * 100.0,
+            final_max_residual
+        ))
+        .with_code(DiagnosticCode::RobustnessFloorInfeasible);
+    }
+
+    let Some(witness) = constraints_witness(
+        problem,
+        &problem.constraints,
+        Some(final_values),
+        sd_tolerance,
+        dispatch,
+    ) else {
+        // ── CLASS 1: neither search found anything.  This is the pre-#5618 ──
+        // wording, kept deliberately: it is the one case where no verified point
+        // exists to talk about, so the message stays as it always was rather
+        // than inventing a weaker claim the user has no use for.
+        return reify_core::Diagnostic::error(format!(
+            "infeasible under robustness floor: the floored feasible \
+             region is empty (max absolute residual: {:.2e}); relax \
+             opposing constraints or widen the tolerance margin",
+            final_max_residual
+        ))
+        .with_code(DiagnosticCode::RobustnessFloorInfeasible);
+    };
+
+    // ── CLASS 2: the originals are satisfiable, the floored search is not. ──
+    // The ONLY region-level claim made is the positive one about the originals,
+    // which a verified point does license.  The floor half is worded as what
+    // happened — a search declined — because that is all that was established;
+    // asserting "the margin cannot be met" here is what the asymmetric-margin
+    // band falsified.
+    //
+    // The floor terms occupy the tail of `effective_constraints` past the
+    // originals — the ORDERING INVARIANT documented at the
+    // `synthesise_floor_constraints` call site is what makes this slice
+    // well-defined.  Evaluated AT THE WITNESS: the margins are constant literals
+    // synthesised once from the seed, so the shortfall is the one the user would
+    // hit at the point being reported as satisfiable.
+    let shortfall = match worst_unmet_floor_term(
+        &effective_constraints[problem.constraints.len()..],
+        &witness,
+        &problem.functions,
+        dispatch,
+    ) {
+        Some((achieved, required)) => format!(
+            "; the margin falls short at that point (worst \
+             slack there: {achieved:.3e} achieved vs \
+             {required:.3e} required)"
+        ),
+        // NO NUMBERS TO STAND BEHIND → no clause, and the sentence below is
+        // written to stand on its own without it.  `worst_unmet_floor_term`
+        // documents three routes here: every floor term met at this witness, an
+        // empty floor tail, and a term that does not evaluate numerically.  The
+        // first is the interesting one and is NOT excluded by reaching class 2 —
+        // the floored search declining is a fact about THAT search, and the two
+        // searches optimise different centrality objectives, so this witness may
+        // well meet every floor term.  It is, however, not constructible on
+        // demand: any point meeting both sets is a valid class-3 witness, so
+        // getting here needs the floored feasibility solve to miss a point the
+        // originals solve found — solver non-convergence, not a shape.  Hence
+        // the arm is DEFENSIVE and unexercised by the suite; do not read its
+        // absence from the fixtures as proof it is dead.
+        None => String::new(),
+    };
+    reify_core::Diagnostic::error(format!(
+        "infeasible under robustness floor: the original \
+         constraints ARE satisfiable — verified at a point \
+         that meets them — but no point satisfying the \
+         synthesised {:.0}% robustness margin as well was \
+         found{}; relax opposing constraints, widen the \
+         tolerance margin, or take explicit control with \
+         `minimize cost_robustness_tradeoff(<cost-expr>, λ)`",
+        REL_MARGIN * 100.0,
+        shortfall
+    ))
+    .with_code(DiagnosticCode::RobustnessFloorInfeasible)
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constraint-derived parameter bounds (task #5618)
 //
 // `AutoParam.bounds` is **always `None`** in production — all three construction
-// sites hardcode it (`reify-eval/src/engine_eval.rs:1436`, `engine_edit.rs:1470`,
-// `:3635`) and no `.ri` surface sets it.  So `effective_bounds` always degrades to
-// `default_bounds_for`, which for a dimensionless Real is `(-1e6, 1e6)`: useless as
+// sites hardcode it (`build_auto_param_list` in `reify-eval/src/engine_eval.rs`,
+// and the inline `AutoParam` literals in `Engine::edit_param` and
+// `Engine::edit_source` in `engine_edit.rs`) and no `.ri` surface sets it.  So
+// `effective_bounds` always degrades to `default_bounds_for`, which for a
+// dimensionless Real is `(-1e6, 1e6)`: useless as
 // a seed source, as a Nelder-Mead step scale, and as a clamp target.  A Money
 // objective over an auto bracketed away from 0 (`q >= 1 ∧ q <= 100`) therefore
 // seeded at the fixed `0.01`, outside the synthesised robustness floor's window,
@@ -1153,6 +1469,111 @@ impl DerivedInterval {
     }
 }
 
+/// Everything the bound-derivation family reads and nothing it mutates:
+/// [`derive_param_intervals`], [`params_in_underivable_constraints`] and the
+/// per-leaf workers they drive ([`derive_from_expr`], [`derive_from_side`],
+/// [`collect_underivable_in_leaf`], [`constant_operand_value`]).
+///
+/// One context rather than a positional quartet repeated at every hop: the
+/// family is six functions deep and each signature used to re-list
+/// `(auto_index, values, functions, dispatch)` verbatim, which is what pushed
+/// [`derive_from_side`] past clippy's argument-count threshold. A lookup the
+/// whole family needs is then a new MEMBER here, not a seventh parameter on six
+/// signatures.
+///
+/// Built once per derivation walk by the two entry points, which are the only
+/// members holding `auto_params`; every inner member takes `&DerivationCtx`.
+///
+/// COST: `auto_reads` and `cell_ids` are pure functions of
+/// `(dependent_cells, auto_params)`, neither of which changes across a
+/// resolution — yet both are rebuilt at every entry-point call, which over one
+/// resolution is `extract_initial_point` + [`derived_seed_box`] + one per
+/// `solve_core_with_sd_tolerance` across the multistart points + two in
+/// `verify_uniqueness`. A model with NO dependent cells pays nothing
+/// (`dependent_cell_auto_reads` early-returns an empty map and the `cell_ids`
+/// collect is over an empty slice), and otherwise the reachability DFS is
+/// dwarfed by the Nelder-Mead fold it precedes — so this is priced, not
+/// overlooked. Hoisting the pair to once per resolution means threading a
+/// prebuilt context through all four consumers, which is task #7728 rather
+/// than part of the fix this context exists to carry.
+struct DerivationCtx<'a> {
+    /// Position of each auto param within `auto_params` — the index every
+    /// `DerivedInterval` buffer in the family is addressed by, and the family's
+    /// test for "is this ref an auto?".
+    auto_index: HashMap<ValueCellId, usize>,
+    /// Per dependent cell, the autos it reads TRANSITIVELY —
+    /// [`crate::decompose::dependent_cell_auto_reads`] verbatim, reused rather
+    /// than reimplemented. A constant-only cell is present with an EMPTY set, a
+    /// cycle-tainted one is ABSENT; [`DerivationCtx::varies_with_solve`] is the
+    /// only reader and owns what each of those means here.
+    auto_reads: HashMap<ValueCellId, HashSet<ValueCellId>>,
+    /// Every dependent-cell id, including the cycle-tainted ones `auto_reads`
+    /// omits. This is what tells an omission apart from an ordinary value:
+    /// both are absent from the map, and only one of them varies.
+    cell_ids: HashSet<ValueCellId>,
+    values: &'a ValueMap,
+    functions: &'a [CompiledFunction],
+    dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+}
+
+impl<'a> DerivationCtx<'a> {
+    fn new(
+        auto_params: &[AutoParam],
+        dependent_cells: &[(ValueCellId, CompiledExpr)],
+        values: &'a ValueMap,
+        functions: &'a [CompiledFunction],
+        dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+    ) -> Self {
+        Self {
+            auto_index: auto_params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.id.clone(), i))
+                .collect(),
+            auto_reads: crate::decompose::dependent_cell_auto_reads(dependent_cells, auto_params),
+            cell_ids: dependent_cells.iter().map(|(id, _)| id.clone()).collect(),
+            values,
+            functions,
+            dispatch,
+        }
+    }
+
+    /// Does a ref to `id` MOVE when the solver moves?
+    ///
+    /// True for an auto param itself, and for a dependent cell that either
+    /// transitively reads one or has UNKNOWN auto dependence. All of them are
+    /// finite numbers in the map the family evaluates against —
+    /// `build_trial_values` binds the autos and folds every cell — so
+    /// evaluating is no evidence of constancy, and this is the only question
+    /// that separates a bound from a snapshot.
+    ///
+    /// Unknown resolves to "varies" because the caller is a GUARD, where the
+    /// cost of the two errors is not symmetric: treating a constant as varying
+    /// only widens a box, while treating a varying cell as constant returns a
+    /// wrong answer silently.
+    fn varies_with_solve(&self, id: &ValueCellId) -> bool {
+        if self.auto_index.contains_key(id) {
+            return true;
+        }
+        match self.auto_reads.get(id) {
+            Some(reads) => !reads.is_empty(),
+            // Absent from the map and a known cell id ⇒ cycle-tainted, auto
+            // dependence UNKNOWN. Absent and not a cell id at all ⇒ an ordinary
+            // value or param, which nothing makes vary. Both are absences, so
+            // membership in `cell_ids` is what tells them apart.
+            None => self.cell_ids.contains(id),
+        }
+    }
+
+    /// The expression-evaluation context for a far operand. Assembled per
+    /// operand, exactly as the family did before these three borrows moved into
+    /// the context — [`ctx_with`] is the single place that knows how a
+    /// `dispatch` is attached.
+    fn eval_ctx(&self) -> reify_expr::EvalContext<'a> {
+        ctx_with(self.values, self.functions, self.dispatch)
+    }
+}
+
 /// Evaluate a constraint operand that must be CONSTANT with respect to the auto
 /// params, returning its finite SI value.
 ///
@@ -1166,26 +1587,71 @@ impl DerivedInterval {
 /// scaled can still take its absolute floor.  A bound that cannot be evaluated
 /// must never become a clamp, so here the whole constraint is skipped.
 ///
-/// The auto-param test uses `CompiledExpr::collect_value_refs()`
-/// (`reify-ir/src/expr.rs`), which is exactly the query needed.  It is load-bearing
-/// for the CLAMP box: that box is derived against `trial_values`, in which the auto
-/// params ARE bound, so an expression naming one would evaluate to a perfectly
-/// finite number that is nonetheless not a constant.
-fn constant_operand_value(
-    expr: &CompiledExpr,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> Option<f64> {
+/// The operand's refs come from `CompiledExpr::collect_value_refs()`
+/// (`reify-ir/src/expr.rs`), and each is put to [`DerivationCtx::varies_with_solve`].
+/// This test is load-bearing for the CLAMP box: that box is derived against
+/// `trial_values`, in which the auto params ARE bound and every dependent cell
+/// has been FOLDED to a number, so evaluating successfully proves nothing about
+/// constancy — an operand that moves with the solve evaluates to a perfectly
+/// finite value that is nonetheless not a bound.
+///
+/// `collect_value_refs` alone was not that test (task #6146). It is a purely
+/// SYNTACTIC walk: it recurses into sub-expressions, so an inline
+/// `if up then 3.0 else 5.0` is caught, but it never expands
+/// `dependent_cells`. A derived cell that reads an auto names no auto itself,
+/// so `a >= side` with `side = 3*c` mined this trial's `side` as a HARD lower
+/// bound on `a` — then held `a` to it while `c`, and with it the real value of
+/// `side`, moved away. `varies_with_solve` closes that by following the cell's
+/// transitive auto reads. A cell that reads NO auto (a named alias for a
+/// constant, `let yield_limit = 310MPa`) stays minable: nothing about it moves.
+///
+/// A CYCLE-TAINTED cell is treated as varying too, which resolves — for THIS
+/// consumer, locally — the residual `decompose_into_components_with_reads`
+/// flags ("Closing it properly means returning the omitted-id set alongside the
+/// map … larger than a doc correction and outside task #5467's lock set"). Such
+/// a cell is omitted from the map rather than published with a partial set,
+/// which is the fail-safe direction for that map's drop-side filter and the
+/// UNSAFE one here; `DerivationCtx::cell_ids` recovers the distinction without
+/// widening `dependent_cell_auto_reads`' interface or changing its semantics.
+/// The CONNECTIVITY consumer's copy of the same residual is untouched and
+/// stays open.
+///
+/// The `floor_applied` gate that decides whether a CLAMP box is built at all is
+/// a separate question, settled by task #5711 — not re-litigated here.
+///
+/// # One policy for all four consumers, and what that costs
+///
+/// This rejection is applied UNIFORMLY, though the four consumers do not all
+/// need it. Only the CLAMP box and `verify_uniqueness`' bracketing predicate
+/// require a genuine INVARIANT bound; `extract_initial_point`,
+/// [`derived_seed_box`]/[`multistart_points`] and the perturbation anchors need
+/// only a plausible SEED, for which a trial snapshot of a derived cell would be
+/// harmless — and better than the fallback.
+///
+/// The cost is therefore real and priced, not overlooked: for an auto floored
+/// ONLY by a derived cell, `extract_initial_point` falls through to the fixed
+/// `0.01` and the seed boxes fall back to `default_bounds_for`, giving up
+/// exactly the #5618 improvement those paths exist for. Pinned by
+/// `extract_initial_point_derived_cell_floor_falls_through_to_fixed_default`.
+///
+/// One rule is still preferred over a per-consumer split, on three grounds:
+/// the corpus survey (`docs/notes/derived-cell-bound-derivation-survey.md`)
+/// found ZERO models of that shape, so the loss is latent; the fallback is the
+/// documented pre-#5618 behaviour rather than a new defect; and a second
+/// seed/clamp axis here would cross the one [`resolve_bounds`] already carries
+/// (`include_strict`), leaving two independent switches for a future reader to
+/// keep aligned. If a real model ever pays this cost, the split is a
+/// `snapshot_operands_ok` flag on [`DerivationCtx`] and the test above is the
+/// assertion that should flip.
+fn constant_operand_value(expr: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Option<f64> {
     if expr
         .collect_value_refs()
         .iter()
-        .any(|id| auto_index.contains_key(id))
+        .any(|id| ctx.varies_with_solve(id))
     {
         return None;
     }
-    reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch))
+    reify_expr::eval_expr(expr, &ctx.eval_ctx())
         .as_f64()
         .filter(|v| v.is_finite())
 }
@@ -1229,6 +1695,7 @@ fn for_each_leaf_conjunct(expr: &CompiledExpr, f: &mut impl FnMut(&CompiledExpr)
 fn derive_param_intervals(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -1237,14 +1704,10 @@ fn derive_param_intervals(
     if auto_params.is_empty() {
         return out;
     }
-    let auto_index: HashMap<ValueCellId, usize> = auto_params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (p.id.clone(), i))
-        .collect();
+    let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     for (_, expr) in constraints {
         for_each_leaf_conjunct(expr, &mut |leaf| {
-            derive_from_expr(leaf, &auto_index, values, functions, &mut out, dispatch);
+            derive_from_expr(leaf, &ctx, &mut out);
         });
     }
     out
@@ -1262,14 +1725,7 @@ fn derive_param_intervals(
 /// suggestion 3 — [`collect_underivable_in_leaf`] used to carry a second copy
 /// of that recursion). Calling this directly on an `A AND B` node therefore
 /// derives NOTHING, by design; go through [`for_each_leaf_conjunct`].
-fn derive_from_expr(
-    expr: &CompiledExpr,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    out: &mut [DerivedInterval],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) {
+fn derive_from_expr(expr: &CompiledExpr, ctx: &DerivationCtx<'_>, out: &mut [DerivedInterval]) {
     let CompiledExprKind::BinOp { op, left, right } = &expr.kind else {
         return;
     };
@@ -1277,22 +1733,14 @@ fn derive_from_expr(
         BinOp::Ge | BinOp::Gt => {
             // left ≥ right → `left` bounded BELOW by right, `right` bounded ABOVE by left.
             let strict = matches!(op, BinOp::Gt);
-            derive_from_side(
-                left, right, true, strict, auto_index, values, functions, out, dispatch,
-            );
-            derive_from_side(
-                right, left, false, strict, auto_index, values, functions, out, dispatch,
-            );
+            derive_from_side(left, right, true, strict, ctx, out);
+            derive_from_side(right, left, false, strict, ctx, out);
         }
         BinOp::Le | BinOp::Lt => {
             // left ≤ right → `left` bounded ABOVE by right, `right` bounded BELOW by left.
             let strict = matches!(op, BinOp::Lt);
-            derive_from_side(
-                left, right, false, strict, auto_index, values, functions, out, dispatch,
-            );
-            derive_from_side(
-                right, left, true, strict, auto_index, values, functions, out, dispatch,
-            );
+            derive_from_side(left, right, false, strict, ctx, out);
+            derive_from_side(right, left, true, strict, ctx, out);
         }
         // And (split upstream by `for_each_leaf_conjunct`, so it cannot appear
         // here on the intended call path), Eq, Ne, Or and every arithmetic op:
@@ -1314,25 +1762,20 @@ fn derive_from_expr(
 ///
 /// (the "`far OP p`" shape is covered by the caller invoking this function once per
 /// operand side).  Anything else is skipped.
-#[allow(clippy::too_many_arguments)]
 fn derive_from_side(
     near: &CompiledExpr,
     far: &CompiledExpr,
     lower: bool,
     strict: bool,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
+    ctx: &DerivationCtx<'_>,
     out: &mut [DerivedInterval],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
-    let Some(far_value) = constant_operand_value(far, auto_index, values, functions, dispatch)
-    else {
+    let Some(far_value) = constant_operand_value(far, ctx) else {
         return;
     };
     match &near.kind {
         CompiledExprKind::ValueRef(id) => {
-            if let Some(&i) = auto_index.get(id) {
+            if let Some(&i) = ctx.auto_index.get(id) {
                 record_bound(&mut out[i], far_value, lower, strict);
             }
         }
@@ -1343,18 +1786,16 @@ fn derive_from_side(
         } => {
             // `p − k OP far` → `p OP far + k`
             if let CompiledExprKind::ValueRef(id) = &left.kind
-                && let Some(&i) = auto_index.get(id)
-                && let Some(k) =
-                    constant_operand_value(right, auto_index, values, functions, dispatch)
+                && let Some(&i) = ctx.auto_index.get(id)
+                && let Some(k) = constant_operand_value(right, ctx)
             {
                 record_bound(&mut out[i], far_value + k, lower, strict);
                 return;
             }
             // `k − p OP far` → `p OP′ k − far`  (multiplying by −1 flips the direction)
             if let CompiledExprKind::ValueRef(id) = &right.kind
-                && let Some(&i) = auto_index.get(id)
-                && let Some(k) =
-                    constant_operand_value(left, auto_index, values, functions, dispatch)
+                && let Some(&i) = ctx.auto_index.get(id)
+                && let Some(k) = constant_operand_value(left, ctx)
             {
                 record_bound(&mut out[i], k - far_value, !lower, strict);
             }
@@ -1448,6 +1889,7 @@ fn derived_seed_box(
         &derive_param_intervals(
             &problem.auto_params,
             &problem.constraints,
+            &problem.dependent_cells,
             &problem.current_values,
             &problem.functions,
             dispatch,
@@ -1534,9 +1976,31 @@ fn seed_box_from_intervals(
 /// mentions it is opaque.
 ///
 /// Pure function of its inputs — no solve, no I/O, no mutation.
+///
+/// # The MENTIONS test stays syntactic, by design and not by oversight
+///
+/// [`collect_underivable_in_leaf`] asks which autos a leaf MENTIONS using the
+/// raw `leaf.collect_value_refs()`, so an auto a constraint reaches only
+/// THROUGH a derived cell is invisible to it. Since task #6146 the far-operand
+/// test on the other side of this family IS transitive
+/// ([`DerivationCtx::varies_with_solve`]), so the two halves are deliberately
+/// asymmetric.
+///
+/// The asymmetry has a cost, pre-dating #6146 and unchanged by it:
+/// `constraint side >= 5` with `side = 3*c` bounds nothing for strict auto `c`
+/// AND never adds `c` to this set, so `c` is neither bracketed nor abstaining
+/// and the γ path reports `ConstraintNonUnique` — the same class of §11.6 false
+/// negative #6146 removed, in the mirror direction.
+///
+/// Widening it is NOT a doc-sized change: `decompose::expand_refs_through_dependent_cells`
+/// exists and would supply the reach, but it needs the cycle-tainted treatment
+/// [`DerivationCtx::varies_with_solve`] encodes, and growing this set moves
+/// models from erroring to `Solved` — a §11.6 verdict change that wants its own
+/// regression sweep rather than a ride-along. Tracked as task #7727.
 fn params_in_underivable_constraints(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
@@ -1545,11 +2009,7 @@ fn params_in_underivable_constraints(
     if auto_params.is_empty() {
         return out;
     }
-    let auto_index: HashMap<ValueCellId, usize> = auto_params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (p.id.clone(), i))
-        .collect();
+    let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     // One scratch buffer for the whole walk, reset per leaf conjunct rather than
     // reallocated (review suggestion 1): `collect_underivable` scores EVERY leaf,
     // so a per-leaf `vec![DerivedInterval::default(); n]` allocated a fresh Vec
@@ -1557,15 +2017,7 @@ fn params_in_underivable_constraints(
     let mut scratch = vec![DerivedInterval::default(); auto_params.len()];
     for (_, expr) in constraints {
         for_each_leaf_conjunct(expr, &mut |leaf| {
-            collect_underivable_in_leaf(
-                leaf,
-                &auto_index,
-                values,
-                functions,
-                &mut scratch,
-                &mut out,
-                dispatch,
-            );
+            collect_underivable_in_leaf(leaf, &ctx, &mut scratch, &mut out);
         });
     }
     out
@@ -1586,17 +2038,14 @@ fn params_in_underivable_constraints(
 /// documented on [`params_in_underivable_constraints`] depends on the reset.
 fn collect_underivable_in_leaf(
     leaf: &CompiledExpr,
-    auto_index: &HashMap<ValueCellId, usize>,
-    values: &ValueMap,
-    functions: &[CompiledFunction],
+    ctx: &DerivationCtx<'_>,
     scratch: &mut [DerivedInterval],
     out: &mut HashSet<usize>,
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) {
     scratch.fill(DerivedInterval::default());
-    derive_from_expr(leaf, auto_index, values, functions, scratch, dispatch);
+    derive_from_expr(leaf, ctx, scratch);
     for id in leaf.collect_value_refs() {
-        if let Some(&i) = auto_index.get(&id)
+        if let Some(&i) = ctx.auto_index.get(&id)
             && scratch
                 .get(i)
                 .is_some_and(|iv| iv.lo.is_none() && iv.hi.is_none())
@@ -2332,6 +2781,7 @@ fn solve_core_with_sd_tolerance(
             &derive_param_intervals(
                 &problem.auto_params,
                 &effective_constraints,
+                &problem.dependent_cells,
                 &trial_values,
                 &problem.functions,
                 dispatch,
@@ -2560,82 +3010,14 @@ fn solve_core_with_sd_tolerance(
         return (
             SolveResult::Infeasible {
                 diagnostics: vec![if floor_applied {
-                    // ── Diagnostic honesty (task #5618 step-10) ──────────────────
-                    // `final_max_residual` above is measured against
-                    // `effective_constraints`, i.e. the user's constraints PLUS the
-                    // synthesised floor.  It cannot tell "your constraints admit no
-                    // solution" apart from "your constraints do, but my 2% margin
-                    // does not fit inside them" — and the message used to assert the
-                    // former in both cases.  For a tight-but-satisfiable bracket that
-                    // is simply false, and it was the original report's sharpest
-                    // complaint: the diagnostic sent the user off relaxing a design
-                    // that was never over-constrained.
-                    //
-                    // So re-measure against `problem.constraints` — the ORIGINAL set,
-                    // floor excluded — at the point actually being reported.  This is
-                    // deliberately a claim about THAT POINT, not about the feasible
-                    // region: it is verified, not inferred, so the new wording can
-                    // never over-claim.  Deriving the raw box instead (via
-                    // `derive_param_intervals`) would be cheaper but unsound —
-                    // that helper SKIPs nonlinear and multi-auto shapes, so a
-                    // non-degenerate derived box is not evidence of satisfiability.
-                    //
-                    // KNOWN GAP (not a regression; #5618 does not close it): the
-                    // honest branch is only reachable when the returned point stays
-                    // inside the user's box.  Under a steep objective it need not —
-                    // measured, `x > 10mm ∧ x < 10.3mm` with `5 USD × (x / 1mm)`
-                    // (gradient 5000/m vs PENALTY_WEIGHT = 1e6) parks ~1.25e-3 m below
-                    // the floored lower bound, outside the 0.3mm-wide user box, so
-                    // this check correctly declines and the region-empty wording
-                    // stands even though the region is not empty.  Making it reachable
-                    // means changing WHICH point a floor-infeasible solve reports —
-                    // solver semantics, and its own task: #5714, which carries this
-                    // measurement and the reason the cheap box-emptiness shortcut is
-                    // unsound.  See the
-                    // `margin_only_infeasibility_names_the_margin_not_an_empty_region`
-                    // doc comment in `tests/robustness_floor.rs` for the measurement.
-                    let original_max_residual = max_constraint_residual(
-                        &problem.constraints,
+                    floor_infeasible_diagnostic(
+                        problem,
+                        &effective_constraints,
                         &final_values,
-                        &problem.functions,
+                        final_max_residual,
+                        sd_tolerance,
                         dispatch,
-                    );
-                    if original_max_residual <= FEASIBILITY_THRESHOLD {
-                        // The floor terms occupy the tail of `effective_constraints`
-                        // past the originals — the ORDERING INVARIANT documented at
-                        // the `synthesise_floor_constraints` call site is what makes
-                        // this slice well-defined.
-                        let shortfall = match worst_unmet_floor_term(
-                            &effective_constraints[problem.constraints.len()..],
-                            &final_values,
-                            &problem.functions,
-                            dispatch,
-                        ) {
-                            Some((achieved, required)) => format!(
-                                " (worst slack at that point: {achieved:.3e} achieved vs \
-                                 {required:.3e} required)"
-                            ),
-                            None => String::new(),
-                        };
-                        reify_core::Diagnostic::error(format!(
-                            "infeasible under robustness floor: the original constraints ARE \
-                             satisfied at the returned point — it is the synthesised {:.0}% \
-                             robustness margin that cannot be met{}; relax opposing \
-                             constraints, widen the tolerance margin, or take explicit \
-                             control with `minimize cost_robustness_tradeoff(<cost-expr>, λ)`",
-                            REL_MARGIN * 100.0,
-                            shortfall
-                        ))
-                        .with_code(DiagnosticCode::RobustnessFloorInfeasible)
-                    } else {
-                        reify_core::Diagnostic::error(format!(
-                            "infeasible under robustness floor: the floored feasible region is \
-                             empty (max absolute residual: {:.2e}); relax opposing constraints \
-                             or widen the tolerance margin",
-                            final_max_residual
-                        ))
-                        .with_code(DiagnosticCode::RobustnessFloorInfeasible)
-                    }
+                    )
                 } else {
                     reify_core::Diagnostic::error(format!(
                         "constraints could not be satisfied (max absolute residual: {:.2e})",
@@ -2995,12 +3377,15 @@ mod resolution_problem_spread_pin {
     /// `resolution_problem_field_set_is_pinned_at_the_registry_spread_sites`,
     /// whose doc carries the full rationale.
     ///
-    /// SIX production sites in this crate build a `ResolutionProblem` with
+    /// SEVEN production sites in this crate build a `ResolutionProblem` with
     /// functional-update syntax, inheriting every field their literal does not
     /// name:
     ///
     /// - `solver.rs`: `solve_cost_robustness_tradeoff`'s `cost_problem`,
-    ///   `rob_problem` and `blend_problem` — the three directly above
+    ///   `rob_problem` and `blend_problem` — the three directly above — and
+    ///   `constraints_witness`'s `feasibility_problem`, which is NOT directly
+    ///   above: it sits ~2000 lines up, so the break still lands in this file
+    ///   but the reader has to go find that one
     /// - `registry.rs`: `solve_inner`'s `sub_problem`,
     ///   `solve_lexicographic`'s `stage_problem` and its degenerate
     ///   single-priority `ws_problem`
@@ -3485,6 +3870,7 @@ fn verify_uniqueness(
     let intervals = derive_param_intervals(
         &problem.auto_params,
         &problem.constraints,
+        &problem.dependent_cells,
         &problem.current_values,
         &problem.functions,
         dispatch,
@@ -3553,6 +3939,7 @@ fn verify_uniqueness(
             &params_in_underivable_constraints(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 dispatch,
@@ -4364,9 +4751,10 @@ mod tests {
     ///
     /// The DEBUG-count assertion is the key TDD signal: if the early-return is
     /// absent, at least the `"verifying uniqueness via perturbation"` debug event
-    /// at solver.rs:818 fires (DEBUG ≥ 1), plus additional debug events from
-    /// inside `solve_core`'s no-constraint / no-objective early-return path
-    /// (DEBUG ≥ 2).  Zero DEBUG events proves both were skipped.
+    /// (emitted inside `verify_uniqueness` itself) fires (DEBUG ≥ 1), plus
+    /// additional debug events from inside `solve_core`'s no-constraint /
+    /// no-objective early-return path (DEBUG ≥ 2).  Zero DEBUG events proves
+    /// both were skipped.
     #[test]
     fn verify_uniqueness_skips_solve_core_when_param_missing() {
         use std::collections::HashMap;
@@ -5631,6 +6019,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5655,6 +6044,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5690,6 +6080,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5724,6 +6115,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &constraints,
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5802,6 +6194,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![both_readable]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5822,6 +6215,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![mixed]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5857,6 +6251,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &params,
                 &as_constraints(vec![disjunction]),
+                &[],
                 &ValueMap::new(),
                 &[],
                 None,
@@ -5889,6 +6284,7 @@ mod tests {
             super::params_in_underivable_constraints(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 Some(&mock),
@@ -5949,6 +6345,142 @@ mod tests {
                 &HashSet::from([0]),
             ),
             "param 1 has no unreadable-constraint evidence, so the verdict must stay false"
+        );
+    }
+
+    /// CHARACTERISATION (task #6146): the one user-visible verdict this task
+    /// moves, pinned so the next "optimisation" of the derivation guard cannot
+    /// revert it silently.
+    ///
+    /// A STRICT auto whose only constraint is `a >= side`, with `side = 3*c` a
+    /// derived cell varying with auto `c` — the shape #6146's corpus survey
+    /// found ZERO instances of in 715 tracked `.ri` files, which is why this is
+    /// characterisation rather than a regression fixture.
+    ///
+    /// Unlike its neighbours above this routes through the REAL
+    /// `derive_param_intervals` / `params_in_underivable_constraints` rather
+    /// than hand-built `DerivedInterval`s: what changed is which intervals and
+    /// which abstention set those two produce for this model, and a hand-built
+    /// pair would pin the prediction instead of the behaviour.
+    ///
+    /// MEASURED on this branch, same fixture, by flipping only
+    /// `DerivationCtx::varies_with_solve` back to its pre-#6146 body
+    /// (`auto_index.contains_key(id)`) and re-running:
+    ///
+    /// | | `a`'s interval | abstention set | γ verdict |
+    /// |---|---|---|---|
+    /// | BEFORE | `lo = Some((0.0075, false))`, `hi = None` | `{}` | `ConstraintNonUnique` |
+    /// | AFTER  | `lo = None`, `hi = None` | `{0}` | `Solved` |
+    ///
+    /// BEFORE, the bogus bound populated `lo`, so `collect_underivable_in_leaf`
+    /// saw a readable side and withheld the abstention — and the model errored
+    /// on the strength of a bound the user never wrote. AFTER, `a` derives
+    /// neither side, lands in the abstention set, and the esc-5711-3 abstention
+    /// counts it as bracketed.
+    ///
+    /// The direction is MONOTONE, which is the test's actual point: the fix can
+    /// only GROW the abstention set, and `strict_autos_constraint_bracketed` is
+    /// documented monotone in it ("growing that set can only move a param from
+    /// 'not bracketed' to 'abstain', never the reverse"). So no previously-
+    /// `Solved` γ model can newly fail — the verdict moves `false → true` or
+    /// not at all.
+    ///
+    /// SCOPE: that argument covers the γ branch ONLY. The non-γ path reuses the
+    /// same `intervals` through `seed_box_from_intervals` to build its
+    /// PERTURBATION ANCHORS, and a widened box there re-anchors the confirming
+    /// re-solve, which can land on a different local optimum and so move a
+    /// verdict in EITHER direction. Nothing here pins that; it is latent for
+    /// the same reason the rest of this task is (the corpus survey found no
+    /// model of this shape), and it is a property of the anchor box, not of the
+    /// abstention monotonicity this test asserts.
+    #[test]
+    fn gamma_strict_auto_floored_only_by_a_derived_cell_abstains_not_errors() {
+        use std::collections::HashSet;
+
+        use reify_core::{ConstraintNodeId, DimensionVector, Type, ValueCellId};
+        use reify_ir::{AutoParam, BinOp, CompiledExpr, Value};
+
+        let a = ValueCellId::new("Part", "a");
+        let c = ValueCellId::new("Part", "c");
+        let side = ValueCellId::new("Part", "side");
+        let length_ref = |id: &ValueCellId| CompiledExpr::value_ref(id.clone(), Type::length());
+
+        // `a` is the strict auto under test; `c` is free, so it carries no
+        // §11.6 obligation and the verdict turns on `a` alone.
+        let params = vec![
+            AutoParam {
+                id: a.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            },
+            AutoParam {
+                id: c.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: true,
+            },
+        ];
+        // `side = 3 * c`.
+        let cells = vec![(
+            side.clone(),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::literal(
+                    Value::Scalar {
+                        si_value: 3.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Type::dimensionless_scalar(),
+                ),
+                length_ref(&c),
+                Type::length(),
+            ),
+        )];
+        // The model's ONLY constraint on `a`.
+        let constraints = vec![(
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(BinOp::Ge, length_ref(&a), length_ref(&side), Type::Bool),
+        )];
+        let values =
+            super::build_trial_values(&ValueMap::new(), &params, &[0.0, 0.0025], &cells, &[], None);
+
+        let intervals =
+            super::derive_param_intervals(&params, &constraints, &cells, &values, &[], None);
+        let underivable = super::params_in_underivable_constraints(
+            &params,
+            &constraints,
+            &cells,
+            &values,
+            &[],
+            None,
+        );
+
+        assert_eq!(
+            (intervals[0].lo, intervals[0].hi),
+            (None, None),
+            "`a >= side` with `side = 3*c` must leave BOTH sides of `a` underived; \
+             before #6146 the lower side held this trial's 0.0075"
+        );
+        assert!(
+            underivable.contains(&0),
+            "a constraint that now derives nothing for `a` is exactly the \
+             unreadable-constraint evidence the abstention keys on, so `a` must \
+             enter the abstention set — before #6146 the bogus `lo` looked like \
+             a readable side and withheld it"
+        );
+        assert!(
+            super::strict_autos_constraint_bracketed(&params, &intervals, &underivable),
+            "`a` abstains, so the γ path reports the model determined rather than \
+             erroring on the strength of a bound the user never wrote"
+        );
+        assert!(
+            !super::strict_autos_constraint_bracketed(&params, &intervals, &HashSet::new()),
+            "MONOTONICITY, the point of this fixture: the empty-evidence call \
+             `verify_uniqueness` makes FIRST still reports not-bracketed, so the \
+             new verdict comes only from GROWING the abstention set. A larger set \
+             can move a param `not bracketed` → `abstain` and never the reverse, \
+             so no previously-`Solved` γ model can newly fail"
         );
     }
 
@@ -8918,6 +9450,7 @@ mod tests {
             &derive_param_intervals(
                 &problem.auto_params,
                 &problem.constraints,
+                &problem.dependent_cells,
                 &problem.current_values,
                 &problem.functions,
                 None,
@@ -9094,10 +9627,262 @@ mod tests {
         let params = vec![real_auto_param(id.clone())];
         let constraints = as_constraints(exprs);
         let values = ValueMap::new();
-        super::derive_param_intervals(&params, &constraints, &values, &[], None)
+        super::derive_param_intervals(&params, &constraints, &[], &values, &[], None)
             .into_iter()
             .next()
             .expect("one interval per auto param")
+    }
+
+    /// Derive intervals for a problem with SEVERAL autos and DEPENDENT CELLS,
+    /// against the ValueMap the CLAMP box is really derived against.
+    ///
+    /// [`derive_one`] cannot express these cases: it is single-param and
+    /// derives against an EMPTY map, in which no dependent cell resolves at
+    /// all. Here the map comes from `build_trial_values` itself — the
+    /// production fold — so every cell id holds the NUMBER this trial's auto
+    /// assignment materialises it to, which is the precondition that makes a
+    /// varying cell look like a constant to the derivation guard.
+    ///
+    /// `base` is what the model's map already holds before this trial
+    /// (`problem.current_values`' role); `autos` pairs each auto id with its
+    /// value in this trial; `cells` are folded in order over both, so a later
+    /// cell may read an earlier one.
+    fn derive_with_dependent_cells(
+        base: &[(&reify_core::ValueCellId, f64)],
+        autos: &[(&reify_core::ValueCellId, f64)],
+        cells: &[(reify_core::ValueCellId, reify_ir::CompiledExpr)],
+        exprs: Vec<reify_ir::CompiledExpr>,
+    ) -> Vec<super::DerivedInterval> {
+        use reify_core::DimensionVector;
+        let params: Vec<reify_ir::AutoParam> = autos
+            .iter()
+            .map(|(id, _)| real_auto_param((*id).clone()))
+            .collect();
+        let trial: Vec<f64> = autos.iter().map(|&(_, v)| v).collect();
+        let mut prior = ValueMap::new();
+        for &(id, v) in base {
+            prior.insert(
+                id.clone(),
+                reify_ir::Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+        }
+        let values = super::build_trial_values(&prior, &params, &trial, cells, &[], None);
+        super::derive_param_intervals(&params, &as_constraints(exprs), cells, &values, &[], None)
+    }
+
+    /// `<a> OP <b>` between two cell refs — the derived-cell far-operand shape
+    /// `cmp_ref_lit` cannot build.
+    fn cmp_ref_ref(
+        op: reify_ir::BinOp,
+        a: &reify_core::ValueCellId,
+        b: &reify_core::ValueCellId,
+    ) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        reify_ir::CompiledExpr::binop(op, real_ref(a), real_ref(b), Type::Bool)
+    }
+
+    /// `<k> * <id>` — a dependent cell body that VARIES with `id`.
+    fn scaled_ref(k: f64, id: &reify_core::ValueCellId) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        reify_ir::CompiledExpr::binop(
+            reify_ir::BinOp::Mul,
+            real_lit(k),
+            real_ref(id),
+            Type::dimensionless_scalar(),
+        )
+    }
+
+    // ── The dependent-cell indirection hole (task #6146) ────────────────────
+    //
+    // `constant_operand_value` rejects a far operand that SYNTACTICALLY names
+    // an auto, via `collect_value_refs`. That walk is purely syntactic: it
+    // never expands `dependent_cells`. A derived cell that transitively reads
+    // an auto is therefore invisible to it, while `build_trial_values` has
+    // already folded that cell into the map as a finite number — so a
+    // quantity that MOVES with the solve is mined as a fixed bound.
+
+    /// ONE HOP: `a >= side` where `side = 3*c` and `c` is an auto.
+    #[test]
+    fn derive_intervals_rejects_far_operand_that_is_an_auto_reading_dependent_cell() {
+        use reify_core::ValueCellId;
+        use reify_ir::BinOp;
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let side = ValueCellId::new("Derive", "side");
+        let cells = vec![(side.clone(), scaled_ref(3.0, &c))];
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= side` with `side = 3*c` must derive NO lower bound for `a`: \
+             `side` is a VARYING quantity (it moves with auto `c`), and this \
+             trial's materialised 7.5 is a snapshot of it, not a constant. \
+             Deriving from it turns a moving quantity into a fixed clamp on \
+             `a`, held while `c` walks away from the value that produced it"
+        );
+    }
+
+    /// TWO HOPS: `side = 3*mid`, `mid = 2*c`. Pins that the rejection follows
+    /// the chain TRANSITIVELY rather than stopping at the cell's own refs —
+    /// `side`'s body never names an auto at all.
+    #[test]
+    fn derive_intervals_rejects_far_operand_reading_an_auto_two_cells_away() {
+        use reify_core::ValueCellId;
+        use reify_ir::BinOp;
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let mid = ValueCellId::new("Derive", "mid");
+        let side = ValueCellId::new("Derive", "side");
+        let cells = vec![
+            (mid.clone(), scaled_ref(2.0, &c)),
+            (side.clone(), scaled_ref(3.0, &mid)),
+        ];
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&c, 1.25)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= side` with `side = 3*mid` and `mid = 2*c` must derive NO \
+             lower bound: `side` names no auto DIRECTLY, so a one-hop check \
+             would pass it and still clamp `a` against a quantity varying with \
+             auto `c`. Auto dependence has to be followed transitively"
+        );
+    }
+
+    /// ANTI-VACUITY CONTROL — green today and must STAY green. A derived cell
+    /// reading NO auto is a named alias for a constant
+    /// (`examples/fea_bracket_minimize_mass.ri`'s `let yield_limit = 310MPa`),
+    /// and mining a bound from it is CORRECT. Without this case the fix above
+    /// could pass by rejecting every dependent cell outright.
+    #[test]
+    fn derive_intervals_still_mines_a_dependent_cell_that_reads_no_auto() {
+        use reify_core::ValueCellId;
+        use reify_ir::BinOp;
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let yield_limit = ValueCellId::new("Derive", "yield_limit");
+        let cells = vec![(yield_limit.clone(), real_lit(310.0))];
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &yield_limit)],
+        );
+        assert_eq!(
+            ivs[0].lo,
+            Some((310.0, false)),
+            "`a >= yield_limit` with `yield_limit` a constant-only derived cell \
+             must STILL derive 310.0: nothing about it varies with the solve, \
+             so it is a genuine bound. Rejecting every dependent cell would \
+             silently widen the box of every model that names its limits"
+        );
+    }
+
+    /// CONTROL — green today and must STAY green. An INLINE far operand naming
+    /// an auto (`docs/prds/v0_6/fixtures/discrete_mixed.ri`'s
+    /// `constraint t >= (if up then 3.0 else 5.0)`) is already rejected,
+    /// because `collect_value_refs` recurses into `Conditional`. The hole is
+    /// the dependent-cell INDIRECTION specifically, not inline expressions.
+    #[test]
+    fn derive_intervals_still_rejects_an_inline_far_operand_naming_an_auto() {
+        use reify_core::{Type, ValueCellId, hash::ContentHash};
+        use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
+        let a = ValueCellId::new("Derive", "a");
+        let up = ValueCellId::new("Derive", "up");
+        let condition = real_ref(&up);
+        let then_branch = real_lit(3.0);
+        let else_branch = real_lit(5.0);
+        let content_hash = ContentHash::of(&[TAG_CONDITIONAL])
+            .combine(condition.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash);
+        let far = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::dimensionless_scalar(),
+            content_hash,
+        };
+        let ivs = derive_with_dependent_cells(
+            &[],
+            &[(&a, 0.0), (&up, 1.0)],
+            &[],
+            vec![CompiledExpr::binop(BinOp::Ge, real_ref(&a), far, Type::Bool)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= (if up then 3.0 else 5.0)` must derive NO lower bound: the \
+             branch taken varies with auto `up`, and `collect_value_refs` \
+             already sees `up` through the `Conditional`. A fix for the \
+             dependent-cell hole must not regress this syntactic arm"
+        );
+    }
+
+    /// RESIDUAL HOLE: a CYCLE-TAINTED cell is OMITTED from
+    /// `dependent_cell_auto_reads` rather than published with the partial set
+    /// its DFS accumulated (`if incomplete[i] { continue; }`, decompose.rs).
+    /// Omission is the FAIL-SAFE direction for that map's primary consumer, the
+    /// registry's drop-side subset filter — but it is the UNSAFE direction for a
+    /// guard deciding "does this operand vary?", because an absent entry reads
+    /// as "no autos" and the bogus bound is mined anyway.
+    ///
+    /// `p = q + c` and `q = p` are both cycle-tainted AND transitively read auto
+    /// `c`. Reaching `derive_param_intervals` directly is what makes this
+    /// testable: reify-eval's `build_dependent_cells` pre-drops cycles, which is
+    /// the only reason the hole is unreachable in production — and decompose.rs
+    /// says so itself, that the masking "is a property of the CALLER, though,
+    /// not of anything enforced here, so a future producer that stops
+    /// pre-dropping cycles re-opens it with no compile error and no test
+    /// failure". This test is that missing failure.
+    #[test]
+    fn derive_intervals_rejects_a_cycle_tainted_dependent_cell_far_operand() {
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::{BinOp, CompiledExpr};
+        let a = ValueCellId::new("Derive", "a");
+        let c = ValueCellId::new("Derive", "c");
+        let p = ValueCellId::new("Derive", "p");
+        let q = ValueCellId::new("Derive", "q");
+        let cells = vec![
+            (
+                p.clone(),
+                CompiledExpr::binop(
+                    BinOp::Add,
+                    real_ref(&q),
+                    real_ref(&c),
+                    Type::dimensionless_scalar(),
+                ),
+            ),
+            (q.clone(), real_ref(&p)),
+        ];
+        // `q` carries a value from the model's last evaluation, so the fold
+        // still resolves the cycle to finite numbers (p = q + c = 3.5) — the
+        // guard cannot lean on an `Undef` to save it.
+        let ivs = derive_with_dependent_cells(
+            &[(&q, 1.0)],
+            &[(&a, 0.0), (&c, 2.5)],
+            &cells,
+            vec![cmp_ref_ref(BinOp::Ge, &a, &p)],
+        );
+        assert_eq!(
+            ivs[0].lo, None,
+            "`a >= p` with `p = q + c` and `q = p` must derive NO lower bound: \
+             `p` is cycle-tainted, so `dependent_cell_auto_reads` OMITS it — and \
+             a non-empty-set test reads that absence as `no autos` and mines the \
+             bound. For this consumer an unknown auto dependence must be treated \
+             as a varying one; absence is the UNSAFE direction here"
+        );
     }
 
     /// (a) A plain `q >= 1.0` / `q <= 100.0` pair derives the raw constraint box,
@@ -9197,7 +9982,7 @@ mod tests {
         let params = vec![real_auto_param(q.clone())];
         let constraints = as_constraints(vec![cmp_ref_lit(BinOp::Gt, &q, 1.0)]);
         let values = ValueMap::new();
-        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[], None);
+        let intervals = super::derive_param_intervals(&params, &constraints, &[], &values, &[], None);
         assert_eq!(
             intervals[0].lo,
             Some((1.0, true)),
@@ -9281,7 +10066,7 @@ mod tests {
         let q_le_inf = cmp_ref_lit(BinOp::Le, &q, f64::INFINITY);
 
         let constraints = as_constraints(vec![q_ge_p, sum_ge, q_eq, q_ne, q_ge_undef, q_le_inf]);
-        let intervals = super::derive_param_intervals(&params, &constraints, &values, &[], None);
+        let intervals = super::derive_param_intervals(&params, &constraints, &[], &values, &[], None);
 
         assert_eq!(
             intervals[0],
@@ -9333,7 +10118,7 @@ mod tests {
 
         // Lower only.
         let lower_only = as_constraints(vec![cmp_ref_lit(BinOp::Ge, &q, 1.0)]);
-        let iv = super::derive_param_intervals(&params, &lower_only, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &lower_only, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (1.0, default_hi),
@@ -9342,7 +10127,7 @@ mod tests {
 
         // Upper only.
         let upper_only = as_constraints(vec![cmp_ref_lit(BinOp::Le, &q, 100.0)]);
-        let iv = super::derive_param_intervals(&params, &upper_only, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &upper_only, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, 100.0),
@@ -9350,7 +10135,7 @@ mod tests {
         );
 
         // Neither.
-        let iv = super::derive_param_intervals(&params, &[], &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &[], &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -9376,7 +10161,7 @@ mod tests {
             cmp_ref_lit(BinOp::Ge, &q, 50.0),
             cmp_ref_lit(BinOp::Le, &q, 10.0),
         ]);
-        let iv = super::derive_param_intervals(&params, &inverted, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &inverted, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -9388,7 +10173,7 @@ mod tests {
             cmp_ref_lit(BinOp::Ge, &q, 5.0),
             cmp_ref_lit(BinOp::Le, &q, 5.0),
         ]);
-        let iv = super::derive_param_intervals(&params, &degenerate, &values, &[], None);
+        let iv = super::derive_param_intervals(&params, &degenerate, &[], &values, &[], None);
         assert_eq!(
             super::resolve_bounds(&params, &iv, false)[0],
             (default_lo, default_hi),
@@ -9444,6 +10229,73 @@ mod tests {
             objective: None,
             functions: vec![].into(),
         }
+    }
+
+    /// [`seed_problem`] with dependent cells, for the #6146 seed-path fixtures.
+    fn seed_problem_with_cells(
+        auto_params: Vec<reify_ir::AutoParam>,
+        exprs: Vec<reify_ir::CompiledExpr>,
+        current_values: ValueMap,
+        dependent_cells: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)>,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            dependent_cells,
+            ..seed_problem(auto_params, exprs, current_values)
+        }
+    }
+
+    /// (f) SEED-PATH CONSEQUENCE of the #6146 derivation guard — pinned here
+    /// rather than left to be inferred from the interval assertions.
+    ///
+    /// `extract_initial_point` is one of the three SEED consumers of
+    /// `derive_param_intervals`, and unlike the CLAMP box it does not need an
+    /// invariant bound — any plausible start point will do. The guard is
+    /// nevertheless applied UNIFORMLY, so for an auto floored ONLY by a derived
+    /// cell the derivation now yields `(None, None)` and the seed falls all the
+    /// way through to the fixed `0.01`, rather than starting from this trial's
+    /// snapshot of `side`.
+    ///
+    /// That is a deliberate, priced trade — see `constant_operand_value`'s doc
+    /// for why one rule beats a per-consumer split — and this test is what makes
+    /// it visible. If a future change gives the seed paths their own policy,
+    /// THIS is the assertion that should flip, consciously.
+    #[test]
+    fn extract_initial_point_derived_cell_floor_falls_through_to_fixed_default() {
+        use reify_core::{DimensionVector, ValueCellId};
+        use reify_ir::{BinOp, Value};
+
+        let a = ValueCellId::new("Seed", "a");
+        let c = ValueCellId::new("Seed", "c");
+        let side = ValueCellId::new("Seed", "side");
+
+        // The model's evaluated state: `c` and the derived `side = 3*c` both
+        // resolve, `a` does not — so the current-value arm cannot short-circuit
+        // and the derived-box arm is the one under test.
+        let mut values = ValueMap::new();
+        for (id, v) in [(&c, 2.5), (&side, 7.5)] {
+            values.insert(
+                id.clone(),
+                Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            );
+        }
+        let problem = seed_problem_with_cells(
+            vec![real_auto_param(a.clone()), real_auto_param(c.clone())],
+            vec![cmp_ref_ref(BinOp::Ge, &a, &side)],
+            values,
+            vec![(side.clone(), scaled_ref(3.0, &c))],
+        );
+
+        assert_eq!(
+            super::extract_initial_point(&problem, None)[0],
+            0.01,
+            "`a >= side` with `side = 3*c` derives neither side for `a`, so the \
+             seed falls through to the fixed default — the guard is applied to \
+             the SEED paths too, giving up #5618's derived start point for this \
+             shape rather than starting from a snapshot that moves with `c`"
+        );
     }
 
     /// (a) Two derived sides → the seed is the derived box's MIDPOINT, not the

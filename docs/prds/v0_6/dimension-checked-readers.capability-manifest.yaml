@@ -769,7 +769,7 @@ tasks:
   capabilities:
   - name: corpus-and-index-exist-and-are-compile-gated
     binding: grep — examples/best_practices/ holds 6 exemplars + INDEX.md, auto-compile-gated
-      by crates/reify-compiler/tests/examples_smoke.rs; `.claude/skills/reify-design/SKILL.md:22`
+      by crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs; `.claude/skills/reify-design/SKILL.md:22`
       instructs authors to grep that index before probing the language. The idiom
       shape to imitate is examples/best_practices/negation.ri.
     verdict: PASS

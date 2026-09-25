@@ -46,6 +46,10 @@
 //!   layer, the family table in `crates/reify-eval/src/arg_acceptance.rs` —
 //!   the canonical enumeration of every position routed through the eval-layer
 //!   LENGTH chokepoint.
+//! - The Euler builtins' `convention` slot (task #6082) — `orient_euler` and
+//!   `orient_to_euler`. SO(3) builtins, not geometry; like `generate` they host
+//!   here only because the mechanism is name-keyed and generic. They are the
+//!   table's only `ExpectedArg::Enum` slots.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
@@ -298,6 +302,26 @@ pub(crate) enum ExpectedArg {
     /// `None` literally.
     Int {
         /// Human-readable type name for diagnostic messages (always `"Int"`).
+        type_name: &'static str,
+    },
+    /// A specific declared enum type, matched by name against `Type::Enum(_)`
+    /// (the Euler builtins' `convention` slot, task #6082).
+    ///
+    /// No `enum_defs` plumbing is needed to make this sound: `expr.rs`'s
+    /// `EnumAccess` arm validates the variant against
+    /// `reify_ir::EnumDef::contains_variant` before it ever produces a
+    /// `Type::Enum(_)`, so a value of this type is already guaranteed to name a
+    /// DECLARED enum with an EXISTING variant. This slot only has to pin WHICH
+    /// enum — an `OutputFormat` value in a convention slot is the mismatch it
+    /// exists to catch, alongside the `String` that motivated it.
+    ///
+    /// Like `Int`, carries no `migration_hint`: there is no dimensioned-literal
+    /// spelling to migrate to, so [`emit_mismatch`] is passed `None`.
+    Enum {
+        /// The required enum type name (e.g. `"EulerConvention"`).
+        enum_name: &'static str,
+        /// Human-readable type name for diagnostic messages (normally the same
+        /// as `enum_name`).
         type_name: &'static str,
     },
 }
@@ -985,6 +1009,51 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(1, "semi_minor"),
         ] },
 
+        // ── Euler builtins: the convention is an enum, not a String (#6082) ──
+        // orient_euler(convention, a, b, c) — a CONSTRUCTOR, so the convention
+        // comes FIRST and selects the meaning of the three angles that follow
+        // (R_xyz(a, b, c) notation).
+        //
+        // arg0: convention → EulerConvention.
+        // args1-3: the three angles — deliberately UNCHECKED. They are
+        //   semantically ANGLE, but an ANGLE slot would break a live call site
+        //   today: `kinematic_stdlib_smoke.rs` passes bare Reals (0.1, 0.2,
+        //   0.3), not rad-suffixed literals, so the slot would turn a valid
+        //   call into a hard compile error and drag a separable
+        //   dimensioned-literal migration into #6082. Same decision-4
+        //   gradualism as the rest of the table; adding the ANGLE slots means
+        //   migrating those call sites first.
+        //
+        // The arity guard is forward-compat, matching `linear_pattern`'s: 4 is
+        // the only accepted arity today (the eval arm returns Undef otherwise),
+        // so without it a future overload would silently inherit a slot at an
+        // index that denotes a different parameter.
+        "orient_euler" if arg_count == 4 => &[CheckableArg {
+            index: 0,
+            name: "convention",
+            expected: ExpectedArg::Enum {
+                enum_name: "EulerConvention",
+                type_name: "EulerConvention",
+            },
+        }],
+
+        // orient_to_euler(q, convention) — a DECOMPOSER, so it is SUBJECT-first
+        // like its siblings orient_log(q) / orient_to_axis_angle(q) /
+        // orient_inverse(q), which puts the convention at arg 1. The asymmetry
+        // with the constructor above is deliberate; see #6082 and the comment
+        // on the `EulerConvention` declaration in `stdlib/geometry_traits.ri`.
+        //
+        // arg0: q — the Orientation subject, unchecked (arg0 is never a slot).
+        // arg1: convention → EulerConvention.
+        "orient_to_euler" if arg_count == 2 => &[CheckableArg {
+            index: 1,
+            name: "convention",
+            expected: ExpectedArg::Enum {
+                enum_name: "EulerConvention",
+                type_name: "EulerConvention",
+            },
+        }],
+
         // All other names: empty (no dimensioned-scalar arg to check).
         _ => &[],
     }
@@ -1171,6 +1240,33 @@ pub(crate) fn check_builtin_arg_types(
                 }
             },
 
+            ExpectedArg::Enum {
+                enum_name,
+                type_name,
+            } => match &arg.result_type {
+                // Gradualism: poison + unresolved pass silently.
+                Type::Error | Type::TypeParam(_) => continue,
+
+                // Correct — a value of the required enum type. The variant is
+                // already validated upstream (see `ExpectedArg::Enum`).
+                Type::Enum(actual) if actual == enum_name => continue,
+
+                // Any other concrete type — a `String` (the form task #6082
+                // removed), or an enum of the wrong type — is a definite
+                // mismatch.
+                other => {
+                    emit_mismatch(
+                        name,
+                        slot.name,
+                        type_name,
+                        other,
+                        None,
+                        call_span,
+                        diagnostics,
+                    );
+                }
+            },
+
             ExpectedArg::Int { type_name } => match &arg.result_type {
                 // Gradualism: poison + unresolved pass silently.
                 //
@@ -1339,7 +1435,12 @@ mod tests {
     /// to close: a key added to one copy and not the other would make
     /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] vacuous for
     /// precisely that key, a silent false GREEN.
-    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate"];
+    ///
+    /// Task #6082 added the two Euler builtins for the same structural reason:
+    /// `orient_*` belongs to no units.rs family slice either, so without these
+    /// entries the completeness arm would stay silently vacuous for their
+    /// `convention` slots.
+    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate", "orient_euler", "orient_to_euler"];
 
     /// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
     /// members of `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` (task 5652).
@@ -1418,6 +1519,11 @@ mod tests {
         "generate",
         "linear_pattern",
         "linear_pattern_2d",
+        // Task #6082 — SO(3) builtins, not topology selectors, and members of
+        // no units.rs family slice; their `convention` slot is the table's
+        // only ExpectedArg::Enum.
+        "orient_euler",
+        "orient_to_euler",
         // Task 5750 — primitives.
         "box",
         "box_centered",
@@ -3894,10 +4000,22 @@ mod tests {
     ///
     /// The FINDING-2 guard therefore covers the geometry-LOWERING families —
     /// task 5750's subject, and the 26 arity-agnostic arms that motivated the
-    /// finding — and NOT task 4493/3994's selector family. Nobody should read the
-    /// guard as broader than that. The nine selectors plus `generate` are also
-    /// the names least exposed to the hazard: none is overloaded today, and a
-    /// value-form overload is a producer-side notion (task 5351).
+    /// finding — and NOT task 4493/3994's selector family, nor task #6082's two
+    /// Euler builtins. Nobody should read the guard as broader than that. The
+    /// nine selectors plus `generate` are also the names least exposed to the
+    /// hazard: none is overloaded today, and a value-form overload is a
+    /// producer-side notion (task 5351).
+    ///
+    /// The two Euler builtins are unobservable for a DIFFERENT reason worth
+    /// stating, because it is not the selectors': they have no lowering arm at
+    /// all. Both are pure eval-builtins dispatched through
+    /// `reify_stdlib::eval_builtin`, which answers a wrong-arity call with
+    /// `Value::Undef` at EVAL time rather than a compile diagnostic — so there
+    /// is no arity check for the probe to observe. They are also the one pair
+    /// here that does NOT rely on this exemption for its safety: both arms carry
+    /// an explicit `if arg_count ==` guard (4 and 2), which is the stronger fix
+    /// the agnostic-arm rule asks for, so their slot indices cannot fire on the
+    /// wrong argument even if a future overload appears.
     const ARITY_UNOBSERVABLE_SLOT_KEYS: &[&str] = &[
         // The nine geometry topology selectors (task 4493).
         "center_of_mass",
@@ -3911,6 +4029,13 @@ mod tests {
         "extremal_by_centroid",
         // The task-3994 list combinator, the table's lone `Int` count slot.
         "generate",
+        // The two Euler builtins (task #6082), the table's only
+        // `ExpectedArg::Enum` slots. MEASURED, not assumed: the probe reports
+        // {0..=14} for both — every arity accepted, i.e. no arity diagnostic at
+        // any of them — the same full-set signature as the nine selectors above
+        // and unlike a ledgered name such as `fillet` ({2, 3}).
+        "orient_euler",
+        "orient_to_euler",
     ];
 
     /// Names that legitimately accept MORE THAN ONE arity while being served by

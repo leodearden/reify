@@ -18,6 +18,18 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/**
+ * The client capabilities `initialize` must declare.
+ *
+ * Declaring `workspace.workspaceEdit.documentChanges` is what makes the server
+ * answer rename with the VERSIONED documentChanges representation instead of the
+ * unversioned `changes` map — without it the client has no server-stamped
+ * version to compare against and the skew guard can never fire.
+ */
+const VERSIONED_EDIT_CAPABILITIES = {
+  workspace: { workspaceEdit: { documentChanges: true } },
+};
+
 describe('createLspClient', () => {
   it('creates a client object with LSP methods', () => {
     const client = createLspClient();
@@ -67,7 +79,10 @@ describe('createLspClient', () => {
     });
     const callArgs = mockInvoke.mock.calls[0];
     const params = JSON.parse((callArgs[1] as { params: string }).params);
-    expect(params).toEqual({ rootUri: 'file:///workspace', capabilities: {} });
+    expect(params).toEqual({
+      rootUri: 'file:///workspace',
+      capabilities: VERSIONED_EDIT_CAPABILITIES,
+    });
   });
 
   it('initialize omits rootUri when called without one (single-file fallback unchanged)', async () => {
@@ -78,7 +93,7 @@ describe('createLspClient', () => {
 
     const callArgs = mockInvoke.mock.calls[0];
     const params = JSON.parse((callArgs[1] as { params: string }).params);
-    expect(params).toEqual({ capabilities: {} });
+    expect(params).toEqual({ capabilities: VERSIONED_EDIT_CAPABILITIES });
     expect(params).not.toHaveProperty('rootUri');
   });
 

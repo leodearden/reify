@@ -40,7 +40,7 @@
 #![cfg(has_gmsh)]
 
 // The clamp probe and its serialising mutex, shared verbatim with
-// `tests/refine_volume_tests.rs` and `tests/mesh_to_volume_clamp_hermeticity.rs`.
+// `tests/refine_volume_tests.rs` and `tests/mesh_size_option_hermeticity.rs`.
 // Declared by path rather than through `common/mod.rs`, whose stated scope is
 // the #6200 geometry fixtures; see `common/clamp_probe.rs` for why one copy
 // matters.
@@ -48,7 +48,7 @@
 mod clamp_probe;
 
 // The uniform size field the two refine calls below remesh under, shared by
-// `#[path]` with `tests/mesh_to_volume_clamp_hermeticity.rs`.
+// `#[path]` with `tests/mesh_size_option_hermeticity.rs`.
 #[path = "common/size_field.rs"]
 mod size_field;
 
@@ -245,7 +245,7 @@ fn a_failed_mesh_to_volume_leaves_the_sibling_meshers_usable() {
 /// options — the state a `gmshFinalize`+`gmshInitialize` recycle leaves behind.
 ///
 /// Measured in this binary. The same probe reads 242 under a leaked
-/// `[0.1, 0.1]` clamp, the pair `tests/mesh_to_volume_clamp_hermeticity.rs`
+/// `[0.1, 0.1]` clamp, the pair `tests/mesh_size_option_hermeticity.rs`
 /// records, so the equality below has an 80-triangle margin rather than a
 /// rounding one.
 const PROBE_TRIANGLES_AT_DEFAULT_OPTIONS: usize = 162;
@@ -253,7 +253,7 @@ const PROBE_TRIANGLES_AT_DEFAULT_OPTIONS: usize = 162;
 /// A `mesh_to_volume` that fails AT THE MESHER must leave gmsh's process-global
 /// options at their defaults, exactly as a successful one does.
 ///
-/// `tests/mesh_to_volume_clamp_hermeticity.rs` pins that for the SUCCESS path
+/// `tests/mesh_size_option_hermeticity.rs` pins that for the SUCCESS path
 /// (#6298). The failure path reaches the same end by a different route and was
 /// unpinned: `mesh_to_volume` writes `Mesh.MeshSizeMin`/`MeshSizeMax` BEFORE it
 /// reaches `mesh_generate`, so a call that fails there has already poisoned the

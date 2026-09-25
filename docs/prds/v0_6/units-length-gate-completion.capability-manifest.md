@@ -220,7 +220,7 @@ would block. **No binding in this manifest resolves to a blocking value.**
 
 | Capability | Binding | Verdict |
 |---|---|---|
-| the corpus + its compile gate | `grep:examples/best_practices/INDEX.md`, `crates/reify-compiler/tests/examples_smoke.rs` — the auto-compile + bidirectional-index invariant | PASS |
+| the corpus + its compile gate | `grep:examples/best_practices/INDEX.md`, `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` — the auto-compile + bidirectional-index invariant | PASS |
 | the cheatsheet index | `grep:.claude/skills/reify-design/SKILL.md` | PASS |
 | **the stale claim to correct is real** | `grep:examples/best_practices/symmetry_mirror.ri:30-35` — "TRAP: that error does NOT appear under `reify check` … A green check is not evidence that a geometry call's argument dimensions are right." True today (probed), FALSE for statically-visible positions after η | PASS |
 | DAG-direction | ν (5759) upstream → transitively γ, η, β. The exemplar is written against landed behaviour | PASS |

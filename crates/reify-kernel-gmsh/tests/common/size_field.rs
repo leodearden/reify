@@ -1,5 +1,5 @@
 //! The uniform [`BackgroundSizeField`] that this crate's gmsh-driving test
-//! binaries remesh under: `tests/mesh_to_volume_clamp_hermeticity.rs` and
+//! binaries remesh under: `tests/mesh_size_option_hermeticity.rs` and
 //! `tests/mesher_poison_recovery.rs`.
 //!
 //! It is an instrument rather than a fixture under test — what varies between

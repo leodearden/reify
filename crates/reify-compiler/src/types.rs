@@ -1325,6 +1325,38 @@ pub struct CompiledConstraint {
     pub arg_bindings: Vec<(String, CompiledExpr)>,
 }
 
+/// Marks a `RealizationDecl` as one element of a *geometry-list let* —
+/// a `let` whose initializer statically unrolls to a fixed-length sequence of
+/// geometry expressions (`[<geom>, ...]` or `generate(<int literal>, |i|
+/// <geom>)`).
+///
+/// Realizations are compile-time-declared IR nodes that eval hydrates *by
+/// name*, so a list of geometry is represented as N sibling realizations
+/// rather than one realization holding N shapes. This binding is what lets
+/// eval regroup those siblings back into a single `Value::List` cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeometryListBinding {
+    /// The user-facing name of the geometry-list `let` this element belongs to.
+    pub list_name: String,
+    /// This element's 0-based position within the list.
+    pub index: usize,
+    /// The list's COMPILE-TIME element count — i.e. `index < len` for every
+    /// sibling, and every sibling of one list carries the same `len`.
+    ///
+    /// Deliberately not derivable from the emitted siblings. Eval's
+    /// all-or-nothing regrouping must compare what resolved against what the
+    /// compiler *intended*, not against what it managed to emit: the emission
+    /// loop drops an element whenever `compile_geometry_call` returns `None`,
+    /// and two of those returns are diagnostic-free. Counting emitted
+    /// realizations would make a dropped element look like a complete shorter
+    /// list, which would then disagree with the `<list>.count` already
+    /// constant-folded from `scope.geometry_list_elements[name].len()` —
+    /// silently, and in exactly
+    /// the silent-wrong-value class task #5385 exists to eliminate (review
+    /// esc-5385-3).
+    pub len: usize,
+}
+
 /// A realization declaration — specifies geometry to produce.
 #[derive(Debug, Clone)]
 pub struct RealizationDecl {
@@ -1383,6 +1415,13 @@ pub struct RealizationDecl {
     /// `named_steps`/`terminal_handles` recording — the query reads its handle
     /// from exactly there.
     pub is_query_only: bool,
+    /// `Some(..)` iff this realization is element `index` of the geometry-list
+    /// let named `list_name`; its `name` is then the synthetic
+    /// `"{list_name}#{index}"`, which cannot collide with a user identifier
+    /// because `#` is not an identifier character.
+    ///
+    /// `None` for every ordinary (single-geometry) realization.
+    pub list_binding: Option<GeometryListBinding>,
     pub operations: Vec<CompiledGeometryOp>,
     pub span: SourceSpan,
 }

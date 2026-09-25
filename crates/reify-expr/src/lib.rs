@@ -610,9 +610,15 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // arm — inside `apply_lambda`, with captures already cloned
                     // into `ctx.values` — the field is in scope. We dispatch via
                     // `apply_lambda_with_point_unpacking` to mirror the `sample`
-                    // path. Builtins are matched in earlier arms, so they are
-                    // never shadowed; non-field names yield `Undef` from the
-                    // cell lookup and fall through to `eval_builtin` unchanged.
+                    // path. Builtins intercepted by the NAMED arms above (whole-
+                    // field `max`/`min`/`argmax`/`argmin`, `flat_map`,
+                    // `worst_case`, `generate`, `from_samples`, `restrict`,
+                    // `von_mises`, …) never reach this arm, so they are never
+                    // shadowed by a field cell. A stdlib builtin resolved by the
+                    // `eval_builtin` call below IS shadowable, because this
+                    // field-cell lookup runs first; non-field names yield
+                    // `Undef` from the cell lookup and fall through to
+                    // `eval_builtin` unchanged.
                     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &function.name);
                     let candidate = ctx.values.get_or_undef(&field_id);
                     if let Value::Field { lambda, .. } = &candidate
@@ -1900,11 +1906,10 @@ fn interp_render(value: &Value) -> String {
 }
 
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
-/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β)
-/// plus the `transform_exp` twist-angular dimension gate (#6080),
-/// inverse-dynamics body mass, ISO tolerancing, and the `orient_exp`
-/// rotation-vector dimension gate (#6080) — for a builtin call whose `result` is
-/// `Value::Undef`.
+/// FEA (`linear_combine`, task #10), the geometry-builtin dimension family (see
+/// `geometry_diagnose`'s own doc for the name list), inverse-dynamics body
+/// mass, ISO tolerancing, and the `orient_exp` rotation-vector dimension gate
+/// (#6080) — for a builtin call whose `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -1915,8 +1920,8 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The six name families (stackup math builtins / `"linear_combine"` /
-/// `affine_*` constructors + `"transform_exp"` / inverse-dynamics /
+/// The six name families (stackup math builtins / `"linear_combine"` / the
+/// geometry-builtin family (`geometry_diagnose`) / inverse-dynamics /
 /// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
 /// six classifiers returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
@@ -1937,10 +1942,9 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     if let Some(diag) = reify_stdlib::fea_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
-    // AffineMap-constructor warnings: `affine_scale` zero (degenerate, det=0) or
-    // dimensioned scale factor (the linear part of an affine map is dimensionless).
-    // Also the #6080 Error for a `transform_exp` twist whose `angular` half is
-    // not Vector3<Angle> — same classifier, different severity per arm.
+    // Geometry-builtin diagnostics: post-`Undef`-only, one classifier with
+    // severity split by fault class, disjoint from the sibling hooks here.
+    // See `geometry_diagnose`'s own doc comment for the per-name breakdown.
     if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }

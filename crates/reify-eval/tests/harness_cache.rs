@@ -15,12 +15,12 @@
 //! # Shared `differential` module — the tests/common dedup
 //!
 //! `differential` (tests/common/differential.rs) is declared ONCE here rather than once
-//! per includer. Four submodules below reference it —
-//! `unified_dag_boundary_cases`, `unified_dag_differential_corpus`,
-//! `unified_dag_edit_path`, `unified_dag_warm_path` — and each previously carried its own
-//! `#[path = "common/differential.rs"] mod differential;`, so the same source was
-//! compiled four times. One shared copy removes 3 of those 4 duplicate compilations of
-//! `differential.rs` with no behavioral difference: differential.rs declares 0
+//! per includer. FIVE submodules below reference it — `unified_dag_boundary_cases`,
+//! `unified_dag_differential_corpus`, `unified_dag_edit_path`, `unified_dag_warm_path`
+//! and `flat_sort_kahn_core_delegation` — and the first four each previously carried
+//! their own `#[path = "common/differential.rs"] mod differential;`, so the same source
+//! was compiled four times. One shared copy removes 3 of those 4 duplicate compilations
+//! of `differential.rs` with no behavioral difference: differential.rs declares 0
 //! `#[test]` fns, so collapsing the copies cannot change the nextest test count.
 //! Submodules reach it via `use crate::differential::{…}`. No extra `#![allow]` is needed
 //! at this root — differential.rs carries its own `#![allow(dead_code)]`.
@@ -34,17 +34,16 @@
 //! DONE — `common/differential.rs`, by far the largest member of `tests/common/`, is now
 //! declared once per compile unit instead of once per includer. Inside this unit that is
 //! 4 copies collapsed to the 1 declaration below, which is where nearly all of the
-//! available duplicated-compilation payload lived.
+//! available duplicated-compilation payload lived. Task #7654 then retired
+//! `harness_engine`'s separate copy by moving that unit's one consumer of it,
+//! `flat_sort_kahn_core_delegation`, into this unit, which already declared the include.
 //!
-//! NOT DONE — `differential.rs` is still compiled separately into `harness_engine` and
-//! `harness_selective_demand` (one root-level declaration each). That is not an oversight
-//! and no further `#[path]` bookkeeping can fix it: each integration-test root is its own
-//! crate, so a module cannot be shared across binaries. Removing those two compilations
-//! means merging the three units into one, which the PRD §7 cap forbids outright — their
-//! combined size, even after the two duplicate `differential` copies are netted out, is
-//! well past the cap, and `harness_engine` is already the unit that cap forced a split
-//! out of (see `harness_auto_resolution`). Re-measure with
-//! `tests/infra/test_harness_kloc_cap.sh` rather than trusting a number pinned here.
+//! NOT DONE — `harness_selective_demand` still compiles its own copy, for the
+//! `selective_demand_*` modules that consume it. Each integration-test root is its own
+//! crate, so a module cannot be shared across binaries; only the set of modules assigned
+//! to a root can move. Those consumers are a whole subsystem with its own root, not one
+//! stray module, so moving them here would be a subsystem re-grouping decision (PRD §3
+//! W1 / §5 C1 group tests by subsystem), not a line-accounting one.
 //!
 //! NOT DONE — the `mod common;` half of the BONUS is untouched. Its includers are left
 //! standalone, each for a reason that consolidating would violate:
@@ -82,6 +81,8 @@ mod differential;
 mod compute_cache_key_population;
 #[path = "harness_cache/eval_cached_diagnostics.rs"]
 mod eval_cached_diagnostics;
+#[path = "harness_cache/flat_sort_kahn_core_delegation.rs"]
+mod flat_sort_kahn_core_delegation;
 #[path = "harness_cache/freshness_only_production_trigger.rs"]
 mod freshness_only_production_trigger;
 #[path = "harness_cache/freshness_only_propagation.rs"]
