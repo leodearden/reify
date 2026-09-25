@@ -24,7 +24,7 @@ module mirror_bare_origin
 // reached on this route, and ONE producer rejection replaces it.  The fixture
 // stays deliberately BARE — it is now a test OF that gate.
 //
-//   reify check <this file>                                          exit 0
+//   reify check <this file>                                          exit 1
 //     stdout: "  OK MirrorBareOrigin#constraint[0]"
 //             "All constraints satisfied."
 //     stderr: error: plane_yz: offset argument expects Length, got Int; pass a
@@ -44,8 +44,12 @@ module mirror_bare_origin
 // module carrying no Conforms / RepresentationWithin / DFMRule constraint.  Leaf
 // β (D1 geometry routing + D2 build-diagnostic merge) is what makes it truthful,
 // and D2's accumulating dedup is what pins the 'ox' line at exactly one
-// occurrence.  The exit code stays 0 until leaf γ (#5403) lands the
-// Severity::Error gate.
+// occurrence.  `check` exits non-zero because `check_gating_error` gates on
+// any non-allowlisted Severity::Error in the merged set (#5403), and no
+// CHECK_ERROR_EXIT_ALLOWLIST entry covers the plane_yz producer rejection or
+// the geometry-compile family — deliberately: they are genuine design errors,
+// as `reify eval` agrees.  Asserted by
+// cli_check.rs::check_surfaces_geometry_compile_error_from_discarded_build.
 
 structure MirrorBareOrigin {
     param arm_len       : Length = 40mm
