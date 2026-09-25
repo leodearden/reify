@@ -314,7 +314,7 @@ to go from a pixel in a capture to the entity behind it:
 - **`distanceDelta: 0` from `zoom_camera` means the request SATURATED a distance
   limit** — the dolly did nothing. It is not an error and `ok` is still `true`. Reach
   for `fit_to_view` first if you have not framed the model, since that is what derives
-  the limits from its bounds; before those limits tracked the model, a fitted 75 mm
+  the floor from its bounds; before that floor tracked the model, a fitted 75 mm
   part was held at a fixed 0.5 m floor and every dolly into it reported exactly
   `{distance: 0.5, distanceDelta: 0}`.
 
@@ -345,7 +345,7 @@ transport and error-envelope specification.
 
 ---
 
-## 7. The in-app assistant's tool surface
+## 8. The in-app assistant's tool surface
 
 The GUI's Claude sidecar calls this server's tools as `mcp__reify-debug__<name>`.
 Its system prompt, `gui/sidecar/src/system-prompt.ts`, advertises a curated,

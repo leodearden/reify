@@ -16,7 +16,7 @@
 | §4 Synthetic-event fidelity gaps | [step-7] `debugContract.test.ts` — pick↔raycast |
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
 | §5 The pick camera is the render camera | `debugCanvasInteraction.test.ts` — live-pose raycast (#6496) |
-| §6 Camera-state coherence | `debugCanvasInteraction.test.ts` (set\_camera{up} → orbit\_camera), `viewport/orbitUpAxis.test.ts`, `debugContract.test.ts` (small-part framing + zoom) |
+| §6 Camera-state coherence | `debugBridge.test.tsx` (set\_camera `applied` read-back), `debugCanvasInteraction.test.ts` (set\_camera{up} → orbit\_camera), `viewport/orbitUpAxis.test.ts`, `debugContract.test.ts` (small-part framing + zoom), `viewport/controls.test.ts` + `viewport/fitCamera.test.ts` (floor policy), `viewport/selectionOrbitFloor.test.ts` (the shipped `fitToView` path). Live-only e2e, NOT verify-gated: the camera `VALUE_SCENARIOS` in `gui/test/visual/assertions.ts` (`npm run test:e2e`) |
 
 The Rust transport seam (query\_frontend ↔ resolve round-trip) is validated
 separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
@@ -146,7 +146,7 @@ than a sweep, so a NEW entry point there that skips the choke-point is caught
 by neither. Closing that asymmetry belongs to `gui-state-sync`, which owns the
 seam; `docs/invariants.md` records the resulting split registry status.
 
-Both seams refresh the delta baseline via `crate::diff::compute_delta` (§6.2
+Both seams refresh the delta baseline via `crate::diff::compute_delta` (`docs/prds/v0_6/ai-native-editing.md` §6.2
 invariant (a)) and deliberately DISCARD the returned `StateDelta` — the full
 `GuiState` reaches the frontend through the caller's synchronous
 `query_frontend("apply_gui_state", …)` push, never `emit_delta`. There is no
@@ -310,7 +310,7 @@ selector constants kept deliberately separate for this reason:
 `gui/test/visual/railLengtheningGate.mjs`'s `PIN_RAIL_SPAN_CELL` docblock.
 
 **The no-stale-baseline invariant is NOT observable from this surface, by
-design.** §6.2 caveat (i) — restated on `write_on_engine_and_refresh_baseline` —
+design.** `docs/prds/v0_6/ai-native-editing.md` §6.2 caveat (i) — restated on `write_on_engine_and_refresh_baseline` —
 has the debug path DISCARD the `StateDelta` and push the full `GuiState`
 instead, so no tool here returns a delta or a changed-set, and none is
 missing: a client cannot ask whether the baseline advanced, and does not need
@@ -328,7 +328,7 @@ tool as this design decision, not as a gap to fill.
 
 **`reify_save_file` and `reify_export` are pure I/O — but they still push.**
 Neither commits new engine state, yet both route through
-`write_on_engine_and_refresh_baseline` so §6.2 invariant (a) holds across the
+`write_on_engine_and_refresh_baseline` so `docs/prds/v0_6/ai-native-editing.md` §6.2 invariant (a) holds across the
 four seam-routed tools without a per-tool exception. The seam's
 `build_gui_state()` is a genuine REBUILD, not a cached snapshot: it calls
 `mark_demand_pruned_pending()`, re-runs `tessellate_snapshot` and resolves
@@ -347,7 +347,7 @@ material resolution, and then a frontend `engine.initFromState(…)` (store
 re-init + mesh rebuild), to write bytes already in memory. A cheap
 committed-buffer accessor would avoid both and would be safe — nothing changed,
 so nothing need be pushed — but it trades the four-tools-one-seam structure
-that §6.2 invariant (a) and task 5100's structural claim rest on, which is a
+that `docs/prds/v0_6/ai-native-editing.md` §6.2 invariant (a) and task 5100's structural claim rest on, which is a
 design change rather than an optimisation. The cost has **not** been measured
 on a real (non-mock) kernel; the number belongs here once it exists.
 
@@ -857,16 +857,19 @@ establish for itself, because three gives it away by default (#6496):
 
 - `Raycaster.setFromCamera` consumes **only** `camera.matrixWorld` and
   `camera.projectionMatrixInverse`.  It never recomputes either.
-- `OrbitControls.update()` writes `camera.position` and calls `object.lookAt()` (so
-  `quaternion` moves), but **never refreshes `matrixWorld`**.
+- `OrbitControls.update()` writes `camera.position` and then ends with
+  `object.lookAt(target)`.  `Object3D.lookAt()` calls `updateWorldMatrix(true, false)`
+  **before** it writes the new `quaternion`, and does not refresh `matrixWorld` again.
+  So after a camera move `matrixWorld` holds the **current** position with the
+  **previous** rotation (measured, esc-6965-3).
 - The usual refresher is `renderer.render()` — and `Viewport.tsx`'s loop is
   **render-on-demand**: `controls.update()` runs every RAF frame, `renderer.render()`
-  only when `needsRender`.  So a render is *not* a reliable refresher, and
-  `camera.matrixWorld` can describe a pose several camera moves stale.
+  only when `needsRender`.  So a render is *not* a reliable refresher, and the rotation
+  in `camera.matrixWorld` can lag the live pose.
 
-Left alone, the pick therefore casts through the last-rendered pose and silently
-resolves the wrong entity — the ray's origin and rotation belong to a camera the
-caller has already moved away from.  `pick_entity_at` closes this by calling
+Left alone, the pick therefore casts a half-stale ray and silently resolves the wrong
+entity: the origin is correct, but the aim is the rotation of a camera the caller has
+already turned away from.  `pick_entity_at` closes this by calling
 `camera.updateMatrixWorld()` itself, immediately before `setFromCamera`.  The call is
 idempotent and cheap, and it keeps the tool query-only: it does **not** call
 `controls.update()`.
@@ -893,18 +896,20 @@ This pins the screen→NDC→raycast convention that `pick_entity_at` is built o
 
 The live-pose invariant above is guarded separately by `debugCanvasInteraction.test.ts`,
 which moves the camera exactly as `OrbitControls.update()` plus the render-on-demand loop
-leave it — mutating `position`/`quaternion` with **no** `updateMatrixWorld()` and no render
-— and asserts the pick resolves the entity under the *new* pose. Because it asserts on the
-resolved entity rather than on the presence of a call, it still fails if a future refactor
-drops the sync.
+leave it: `position.set(...)` then `lookAt(0, 0, 0)` — the tail of `update()` — with **no**
+subsequent `updateMatrixWorld()` and no render. It then asserts the pick resolves the
+entity under the *new* pose. Because it asserts on the resolved entity rather than on the
+presence of a call, it still fails if a future refactor drops the sync.
 
 ---
 
 ## §6 Camera-state coherence
 
-Three camera defects repaired under #6496/#6497 shared a single signature: **the command
-reported what was requested while the live OrbitControls-governed state disagreed.** The
-contract that replaces it is one rule, stated once:
+Three camera defects shared a single signature: the stale pick camera (#6496, §5), the
+stale up-axis orbit frame (#6497, point 2 below) and the fixed 0.5 m orbit distance floor
+(repaired under #6965, point 3 below). In each, **the command reported what was requested
+while the live OrbitControls-governed state disagreed.** The contract that replaces it is
+one rule, stated once:
 
 > **Every camera command reports LIVE state.** A caller can trust the response without a
 > follow-up `viewport_state`.
@@ -931,22 +936,31 @@ Concretely:
    current `camera.up` before calling `update()` (after would take effect only on the
    following command).
 
-3. **The orbit distance floor is model-derived, not a fixed absolute.** It is a fixed
-   fraction of the framed bounding-sphere radius, established by `fit_to_view` (which is
-   the only place that radius is computed). Since the fitted distance is itself a multiple
-   of that radius, the floor is a constant fraction of the fitted distance at *every*
-   scale — so any model can be dollied in by the same factor from its fitted pose. The
-   previous fixed 0.5 m floor was an absolute distance in a workspace whose parts span
+3. **The orbit distance floor is model-derived, not a fixed absolute.** It is
+   `orbitFloorFor(d)`: a fixed fraction, `ORBIT_MIN_DISTANCE_FRACTION_OF_FIT`, of the
+   distance `d` at which `fittedDistanceFor` places a framed subject.
+   `gui/src/viewport/orbitDistance.ts` is the single home of that policy and its
+   constants. Because the floor is stated against the fitted distance, any model can be
+   dollied in by the same factor from its fitted pose, at every scale.
+
+   `fitCameraToBox` writes the floor on **every** framing: `fit_to_view`, the viewport's
+   one-shot auto-fit when the first geometry arrives, and the GUI's fly-to-entity. Before
+   anything is framed, `createControls` seeds the floor by applying the same policy to the
+   startup orbit distance. So a close-in `set_camera` on an **empty** scene is still
+   clamped until something is framed, and `applied` (point 1) reports that clamp.
+
+   The previous fixed 0.5 m floor was an absolute distance in a workspace whose parts span
    four orders of magnitude: it silently snapped a fitted 75 mm part back out to ~6× its
    framing distance, and the subsequent `zoom_camera` reported `distanceDelta: 0` — a
    saturated request indistinguishable from a satisfied one.
 
-   Only the NEAR limit is model-derived. The far limit is deliberately still a fixed
-   absolute (500 m), so zoom-*out* does not track the model — it binds only on a model
-   whose bounding sphere exceeds ~227 m in radius, where `_clampDistance` would pull the
-   framing itself inward and `fit_to_view` would under-frame. Reify parts are four orders
-   of magnitude below that, so the cliff is out of reach rather than absent; a caller
-   working at that scale should expect the same saturation signature at the far end.
+   Only the NEAR limit is model-derived. The far limit, `ORBIT_MAX_DISTANCE`, is
+   deliberately still a fixed absolute, so zoom-*out* does not track the model. It binds
+   only when a model's own fitted distance exceeds `ORBIT_MAX_DISTANCE`, where
+   `_clampDistance` would pull the framing itself inward and `fit_to_view` would
+   under-frame. Reify parts are four orders of magnitude below that, so the cliff is out
+   of reach rather than absent; a caller working at that scale should expect the same
+   saturation signature at the far end.
 
 Per §0's rule, this section deliberately does **not** enumerate per-tool return shapes;
 `tool_defs()` stays authoritative for those, and each tool's own `description` carries them.
