@@ -19,13 +19,9 @@ use std::collections::HashMap;
 /// The test intentionally does NOT pin describe() wording via substring checks —
 /// that would relocate the rewording-fragility the enum was introduced to remove.
 /// The real behavioral contract (which variant fires the gate) is covered by
-/// `best_found_reason_iteration_limit_vs_converged` in solver.rs and the
-/// two-variant `matches!` gate in engine_eval.rs.
+/// `best_found_reason_stopped_at_budget_classifies_every_variant` below.
 ///
 /// RED until step-3 introduces the enum in ranked.rs and re-exports it from lib.rs.
-/// Extended by task #6553, which adds the fourth variant `EnumerationBudget` so a
-/// capped exact enumeration can say so honestly instead of borrowing
-/// `IterationLimit`'s derivative-free wording.
 #[test]
 fn best_found_reason_variants_describe() {
     // All four variants must be constructible and are Copy + PartialEq.
@@ -51,27 +47,24 @@ fn best_found_reason_variants_describe() {
     assert_ne!(il_desc, cb_desc, "IterationLimit and ConvergedWithinBudget must describe() differently");
     assert_ne!(il_desc, ur_desc, "IterationLimit and Unreported must describe() differently");
     assert_ne!(cb_desc, ur_desc, "ConvergedWithinBudget and Unreported must describe() differently");
-    assert_ne!(
-        eb_desc, il_desc,
-        "EnumerationBudget and IterationLimit must describe() differently — \
-         collapsing them is the #6553 defect (a capped exact enumeration is neither \
-         derivative-free nor iteration-limited)"
-    );
+    assert_ne!(eb_desc, il_desc, "EnumerationBudget and IterationLimit must describe() differently");
     assert_ne!(eb_desc, cb_desc, "EnumerationBudget and ConvergedWithinBudget must describe() differently");
     assert_ne!(eb_desc, ur_desc, "EnumerationBudget and Unreported must describe() differently");
 
     // OptimalityStatus::BestFound accepts BestFoundReason in the reason field.
     let status = OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit };
     assert!(matches!(status, OptimalityStatus::BestFound { reason: BestFoundReason::IterationLimit }));
+}
 
-    // ... including the new variant, which must round-trip back out of a match.
-    let budget_status = OptimalityStatus::BestFound { reason: BestFoundReason::EnumerationBudget };
-    match budget_status {
-        OptimalityStatus::BestFound { reason } => {
-            assert_eq!(reason, BestFoundReason::EnumerationBudget);
-        }
-        _ => panic!("expected BestFound"),
-    }
+/// `stopped_at_budget()` is the one predicate the engine's
+/// `W_SOLVER_OPTIMALITY_UNPROVEN` gate consults, so this pins that classification
+/// for every variant.
+#[test]
+fn best_found_reason_stopped_at_budget_classifies_every_variant() {
+    assert!(BestFoundReason::IterationLimit.stopped_at_budget());
+    assert!(BestFoundReason::EnumerationBudget.stopped_at_budget());
+    assert!(!BestFoundReason::ConvergedWithinBudget.stopped_at_budget());
+    assert!(!BestFoundReason::Unreported.stopped_at_budget());
 }
 
 // ── OptimalityStatus ─────────────────────────────────────────────────────────

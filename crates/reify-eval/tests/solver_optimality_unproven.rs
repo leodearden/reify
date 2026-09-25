@@ -455,9 +455,6 @@ fn empty_ranked_candidates_trips_i2_assert_registry_seam() {
 /// Both describe() strings are computed from the enum rather than spelled as literals,
 /// so this pins variant-to-string ROUTING without pinning prose — the same stance
 /// `ranked_solve_result.rs` takes when it declines to substring-check wording.
-///
-/// RED until the per-template gate widens: it matches `IterationLimit` alone, so the
-/// mock's `EnumerationBudget` produces no diagnostic at all.
 #[test]
 fn enumeration_budget_objective_emits_solver_optimality_unproven_warning() {
     let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
@@ -501,8 +498,7 @@ fn enumeration_budget_objective_emits_solver_optimality_unproven_warning() {
     assert!(
         !w.message
             .contains(BestFoundReason::IterationLimit.describe()),
-        "warning must NOT carry IterationLimit.describe() — an exact enumeration that hit \
-         a node cap is neither derivative-free nor iteration-limited (#6553), got: {:?}",
+        "warning must NOT carry IterationLimit.describe(), got: {:?}",
         w.message
     );
 }

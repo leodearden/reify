@@ -1343,11 +1343,9 @@ fn merged_cluster_iteration_limit_emits_solver_optimality_unproven() {
 ///
 /// Assertion set is deliberately identical to
 /// `enumeration_budget_objective_emits_solver_optimality_unproven_warning` in
-/// `solver_optimality_unproven.rs`: the merged and per-template arms claim to
-/// mirror each other verbatim, so they are pinned to one contract. This test is
-/// what makes a single-arm widening unlandable -- without it, the merged path
-/// could silently keep the narrow gate and drop the warning entirely, which is
-/// the D5 "truncation is never silent" violation.
+/// `solver_optimality_unproven.rs`: both paths report through one shared finding,
+/// so they are pinned to one contract, and this test is what catches the merged
+/// path failing to report it (D5: truncation is never silent).
 #[test]
 fn merged_cluster_enumeration_budget_emits_solver_optimality_unproven() {
     let module = spanning_objective_cluster_module();
@@ -1392,8 +1390,7 @@ fn merged_cluster_enumeration_budget_emits_solver_optimality_unproven() {
         !warnings[0]
             .message
             .contains(BestFoundReason::IterationLimit.describe()),
-        "warning must NOT carry IterationLimit.describe() -- an exact enumeration that \
-         hit a node cap is neither derivative-free nor iteration-limited (#6553); got: {}",
+        "warning must NOT carry IterationLimit.describe(); got: {}",
         warnings[0].message,
     );
 }

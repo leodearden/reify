@@ -23,25 +23,34 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BestFoundReason {
     /// The derivative-free solver exhausted its iteration budget before the simplex
-    /// converged.  This is the gate condition for `W_SOLVER_OPTIMALITY_UNPROVEN`.
+    /// converged.
     IterationLimit,
     /// An exact solver stopped at a node/enumeration cap with part of the discrete
     /// search space never visited, so the best candidate it saw may not be the global
-    /// optimum.  This too is a gate condition for `W_SOLVER_OPTIMALITY_UNPROVEN`
-    /// (task #6553; PRD `docs/prds/v0_6/discrete-cost-minimisation.md` §4.2).
+    /// optimum (PRD `docs/prds/v0_6/discrete-cost-minimisation.md` §4.2).
     ///
     /// Distinct from [`Self::IterationLimit`] because the account differs, not just the
     /// wording: nothing here is derivative-free, and nothing iterated to a limit.
     EnumerationBudget,
     /// The solver converged within the iteration budget (no optimality proof, but not
-    /// iteration-limited).  Does NOT trigger `W_SOLVER_OPTIMALITY_UNPROVEN`.
+    /// iteration-limited).
     ConvergedWithinBudget,
     /// The solver does not report an optimality status (default lift for solvers that
-    /// only implement `ConstraintSolver::solve`).  Does NOT trigger the warning.
+    /// only implement `ConstraintSolver::solve`).
     Unreported,
 }
 
 impl BestFoundReason {
+    /// Whether the solver halted because it ran out of a search budget, leaving part of
+    /// the search undone.  This is the whole gate for `W_SOLVER_OPTIMALITY_UNPROVEN`:
+    /// a solve that converged, or that never said why it stopped, is not flagged.
+    pub fn stopped_at_budget(&self) -> bool {
+        match self {
+            BestFoundReason::IterationLimit | BestFoundReason::EnumerationBudget => true,
+            BestFoundReason::ConvergedWithinBudget | BestFoundReason::Unreported => false,
+        }
+    }
+
     /// Returns the human-readable reason string.  For the three variants migrated by
     /// #4871 these are identical to the strings formerly inlined at the diagnostic site.
     pub fn describe(&self) -> &'static str {
