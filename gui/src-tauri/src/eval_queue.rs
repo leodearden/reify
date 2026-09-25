@@ -228,62 +228,60 @@ pub struct EvalOutcome<T> {
     pub reply: Result<T, String>,
 }
 
-/// A unit of engine work, and how the queue treats it.
+/// A unit of engine work, as the queue will treat it, and the ticket its reply
+/// arrives on.
 pub struct EvalRequest<T> {
-    role: Role<T>,
-    job: Box<dyn FnOnce() -> EvalOutcome<T> + Send>,
-}
-
-enum Role<T> {
-    /// `superseded` is the reply a superseded edit resolves to.
-    Edit {
-        identity: EditIdentity,
-        superseded: T,
-    },
-    Evaluation,
-    EngineCall,
+    work: Work,
+    ticket: EvalTicket<T>,
 }
 
 impl EvalRequest<()> {
-    /// A coalescable edit that publishes its snapshot.
+    /// A coalescable edit that publishes its snapshot. It replies only whether
+    /// it succeeded — its state reaches the frontend as a delta — so an edit a
+    /// newer one supersedes resolves `Ok(())` unrun.
     pub fn edit(
         identity: EditIdentity,
         job: impl FnOnce() -> EvalOutcome<()> + Send + 'static,
     ) -> Self {
-        Self {
-            role: Role::Edit {
-                identity,
-                superseded: (),
-            },
-            job: Box::new(job),
-        }
+        Self::new(job, |job| Work::Edit(identity, Box::new(job)))
     }
 }
 
-impl<T: 'static> EvalRequest<T> {
+impl<T: Send + 'static> EvalRequest<T> {
     /// An ordered evaluation that publishes its snapshot.
     pub fn evaluation(job: impl FnOnce() -> EvalOutcome<T> + Send + 'static) -> Self {
-        Self {
-            role: Role::Evaluation,
-            job: Box::new(job),
-        }
+        Self::new(job, |job| Work::Evaluation(Box::new(job)))
     }
 
     /// An ordered read or registration that publishes nothing.
     pub fn engine_call(job: impl FnOnce() -> Result<T, String> + Send + 'static) -> Self {
+        let job = move || EvalOutcome {
+            publish: None,
+            reply: job(),
+        };
+        Self::new(job, |job| Work::EngineCall(Box::new(job)))
+    }
+
+    /// Join `job` to the sender of its ticket, and make it the work `as_work`
+    /// says it is.
+    fn new(
+        job: impl FnOnce() -> EvalOutcome<T> + Send + 'static,
+        as_work: impl FnOnce(TypedJob<T>) -> Work,
+    ) -> Self {
+        let (reply, receiver) = tokio::sync::oneshot::channel();
         Self {
-            role: Role::EngineCall,
-            job: Box::new(move || EvalOutcome {
-                publish: None,
-                reply: job(),
+            work: as_work(TypedJob {
+                job: Box::new(job),
+                reply,
             }),
+            ticket: EvalTicket { reply: receiver },
         }
     }
 }
 
-/// Resolves to its request's reply once the request ran, or to the superseded
-/// reply when a newer edit made it redundant. A request dropped without a reply
-/// resolves `Err`, so a ticket never hangs.
+/// Resolves to its request's reply once the request ran, or to `Ok(())` for an
+/// edit a newer edit made redundant. A request dropped without a reply resolves
+/// `Err`, so a ticket never hangs.
 pub struct EvalTicket<T> {
     reply: tokio::sync::oneshot::Receiver<Result<T, String>>,
 }
@@ -320,8 +318,15 @@ struct TypedJob<T> {
 }
 
 impl<T> TypedJob<T> {
-    fn run_now(self, publish: &mut dyn FnMut(GuiState)) {
-        let TypedJob { job, reply } = self;
+    fn resolve(self, reply: Result<T, String>) {
+        // A dropped ticket means nobody is waiting for the reply.
+        let _ = self.reply.send(reply);
+    }
+}
+
+impl<T: Send> QueuedJob for TypedJob<T> {
+    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState)) {
+        let TypedJob { job, reply } = *self;
         let outcome =
             std::panic::catch_unwind(AssertUnwindSafe(job)).unwrap_or_else(|payload| EvalOutcome {
                 publish: None,
@@ -337,40 +342,14 @@ impl<T> TypedJob<T> {
         let _ = reply.send(outcome.reply);
     }
 
-    fn resolve(self, reply: Result<T, String>) {
-        let _ = self.reply.send(reply);
-    }
-}
-
-impl<T: Send> QueuedJob for TypedJob<T> {
-    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState)) {
-        self.run_now(publish);
-    }
-
     fn fail(self: Box<Self>, message: String) {
         self.resolve(Err(message));
     }
 }
 
-struct TypedEdit<T> {
-    job: TypedJob<T>,
-    superseded: T,
-}
-
-impl<T: Send> QueuedJob for TypedEdit<T> {
-    fn run(self: Box<Self>, publish: &mut dyn FnMut(GuiState)) {
-        self.job.run_now(publish);
-    }
-
-    fn fail(self: Box<Self>, message: String) {
-        self.job.resolve(Err(message));
-    }
-}
-
-impl<T: Send> QueuedEdit for TypedEdit<T> {
+impl QueuedEdit for TypedJob<()> {
     fn supersede(self: Box<Self>) {
-        let TypedEdit { job, superseded } = *self;
-        job.resolve(Ok(superseded));
+        self.resolve(Ok(()));
     }
 }
 
@@ -538,22 +517,9 @@ impl EvalQueue {
 
     /// Accept `request` and return the ticket its reply arrives on. Never
     /// blocks and never runs the job itself.
-    pub fn submit<T: Send + 'static>(self: &Arc<Self>, request: EvalRequest<T>) -> EvalTicket<T> {
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        let job = TypedJob {
-            job: request.job,
-            reply,
-        };
-        let work = match request.role {
-            Role::Edit {
-                identity,
-                superseded,
-            } => Work::Edit(identity, Box::new(TypedEdit { job, superseded })),
-            Role::Evaluation => Work::Evaluation(Box::new(job)),
-            Role::EngineCall => Work::EngineCall(Box::new(job)),
-        };
-        self.accept(work);
-        EvalTicket { reply: receiver }
+    pub fn submit<T>(self: &Arc<Self>, request: EvalRequest<T>) -> EvalTicket<T> {
+        self.accept(request.work);
+        request.ticket
     }
 
     fn accept(self: &Arc<Self>, work: Work) {
