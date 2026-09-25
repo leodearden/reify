@@ -527,33 +527,12 @@ fn pattern_selects(pattern: &str, token: &str) -> bool {
     pattern.split(',').map(str::trim).any(|t| t == token)
 }
 
-/// Return true when at least one jcodemunch-backed detector is in the run set
-/// for the given args: a pattern-less run (the default sweep includes P1), or
-/// any [`JCODEMUNCH_BACKED`] token. P2/P5 run without jcodemunch; pre_done
-/// always skips it.
-///
-/// The connect decision (RealJCodemunchOps vs NoopJCodemunchOps) is separated
-/// from the per-detector dispatch predicates (run_p1, run_pdead, …) so that
-/// adding PDEAD here does not accidentally make P1 run on `--pattern PDEAD`.
+/// Return true when at least one selected detector queries jcodemunch, so the
+/// run needs a live client. `--pre-done` never does: it runs P5 alone.
 fn needs_jcodemunch(args: &Args) -> bool {
-    if args.pre_done {
-        return false;
-    }
-    args.pattern.as_deref().is_none_or(|p| {
-        JCODEMUNCH_BACKED
-            .iter()
-            .any(|token| pattern_selects(p, token))
-    })
+    !args.pre_done
+        && selected_detectors(args.pattern.as_deref()).any(|detector| detector.queries_jcodemunch)
 }
-
-/// The detectors that cannot produce a finding without querying jcodemunch;
-/// [`needs_jcodemunch`] and [`jcodemunch_only_run_set`] both derive from it.
-const JCODEMUNCH_BACKED: [&str; 4] = [
-    pattern_flag::P1,
-    pattern_flag::PDEAD,
-    pattern_flag::PUNTESTED,
-    pattern_flag::PLAYER,
-];
 
 /// Return true when EVERY detector selected by `--pattern` is
 /// jcodemunch-backed, i.e. a refusal costs the run nothing it could still
@@ -576,171 +555,64 @@ const JCODEMUNCH_BACKED: [&str; 4] = [
 ///
 /// `false` for a pattern-less run: the default sweep is mixed by definition.
 fn jcodemunch_only_run_set(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_some_and(|p| p.split(',').map(str::trim).all(|t| JCODEMUNCH_BACKED.contains(&t)))
+    args.pattern.is_some()
+        && selected_detectors(args.pattern.as_deref()).all(|detector| detector.queries_jcodemunch)
 }
 
-/// Default-sweep dispatch predicate for P1: true when no `--pattern` is given
-/// OR when `P1` is in the comma-separated set. Deliberately independent of
-/// [`needs_jcodemunch`], which also covers PDEAD/PUNTESTED/PLAYER: P1 must not
-/// fire on `--pattern PDEAD`.
-fn run_p1(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_none_or(|p| pattern_selects(p, pattern_flag::P1))
-}
-
-/// Default-sweep dispatch predicate for P2, the same shape as [`run_p1`].
-fn run_p2(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_none_or(|p| pattern_selects(p, pattern_flag::P2))
-}
-
-/// Default-sweep dispatch predicate for P5, the same shape as [`run_p1`].
-fn run_p5(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_none_or(|p| pattern_selects(p, pattern_flag::P5))
-}
-
-/// Opt-in dispatch predicate for PDEAD: true only when `PDEAD` is in the
-/// comma-separated `--pattern` set (not part of the default all-detector sweep).
-fn run_pdead(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_some_and(|p| pattern_selects(p, pattern_flag::PDEAD))
-}
-
-/// Opt-in dispatch predicate for PUNTESTED: true only when `PUNTESTED` is in the
-/// comma-separated `--pattern` set (not part of the default all-detector sweep).
-fn run_puntested(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_some_and(|p| pattern_selects(p, pattern_flag::PUNTESTED))
-}
-
-/// Opt-in dispatch predicate for PLAYER: true only when `PLAYER` is in the
-/// comma-separated `--pattern` set (not part of the default all-detector sweep).
-fn run_player(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_some_and(|p| pattern_selects(p, pattern_flag::PLAYER))
-}
-
-/// Default-sweep dispatch predicate for PTODO (ε: added to the no-`--pattern`
-/// default all-detector sweep, mirroring run_p1/run_p2/run_p5). True when no
-/// `--pattern` is given OR when `PTODO` is in the comma-separated set. PTODO
-/// emits Medium findings; exit code = High-severity count, so it is
-/// exit-neutral / warn-first by construction (PRD §6.5). PTODO is the
-/// *structural* TODO-tracking lane — deterministic grep + read-only sqlite,
-/// never contacts jcodemunch — intentionally absent from `needs_jcodemunch`.
-fn run_ptodo(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_none_or(|p| pattern_selects(p, pattern_flag::PTODO))
-}
-
-/// Default-sweep dispatch predicate for PDSSENTINEL (task #4650). True when no
-/// `--pattern` is given OR when `PDSSENTINEL` is in the comma-separated set.
-/// Mirrors `run_ptodo`: advisory / Medium severity, exit-neutral, structural
-/// (working-tree fs reads + ls_files only — never contacts jcodemunch).
-fn run_dssentinel(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_none_or(|p| pattern_selects(p, pattern_flag::PDSSENTINEL))
-}
-
-/// Opt-in dispatch predicate for PDIAG (task #5405): true only when `PDIAG` is
-/// in the comma-separated `--pattern` set.
-///
-/// `is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER — deliberately NOT the
-/// `is_none_or` default-sweep shape P1/P2/P5/PTODO use. PTODO could safely
-/// join the default sweep because it is exit-neutral (Medium only); PDIAG is
-/// not. Its `Exceeded`/`NewFile` verdicts are High by design (that IS the hard
-/// gate), and the exit code is the High-severity count, so a PDIAG in the
-/// default sweep would make every bare `reify-audit` invocation — the /audit
-/// skill, `test_reify_audit_predone_wrapper.sh`, any consumer that omits
-/// `--pattern` — start exiting nonzero the moment this baseline drifted.
-/// That couples unrelated infra to this ratchet; `tests/infra/
-/// test_reify_audit_pdiag.sh` always passes the flag, so opt-in loses no
-/// coverage.
-///
-/// Structural lane like PTODO/PDSSENTINEL — `ls_files` enumeration plus
-/// working-tree reads, no jcodemunch and no task DB — hence deliberately
-/// absent from `needs_jcodemunch`.
-fn run_pdiag(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_some_and(|p| pattern_selects(p, pattern_flag::PDIAG))
-}
-
-/// Opt-in dispatch predicate for PDOCCOVER (task #5478): true only when
-/// `PDOCCOVER` is in the comma-separated `--pattern` set.
-///
-/// Structural like PTODO and PDSSENTINEL — working-tree `ls_files` + fs reads,
-/// never jcodemunch — but `is_some_and` rather than `is_none_or`, so it stays
-/// OUT of the default all-detector sweep. PDOCCOVER findings are High, and the
-/// exit code is the High-severity count, so a detector that currently reports
-/// ~80 undocumented names would turn every default audit run non-zero. It joins
-/// the default sweep when #5480 seeds `pdoccover-baseline.txt` and the residual
-/// count is zero — the same warn-first-then-ratchet path PTODO took.
-fn run_pdoccover(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_some_and(|p| pattern_selects(p, pattern_flag::PDOCCOVER))
-}
-
-/// Opt-in dispatch predicate for PDCHECK (task #7550): true only when
-/// `PDCHECK` is in the comma-separated `--pattern` set.
-///
-/// `is_some_and`, mirroring PDEAD/PUNTESTED/PLAYER/PDIAG/PDOCCOVER — NOT the
-/// `is_none_or` default-sweep shape P1/P2/P5/PTODO use. The shape is otherwise
-/// indistinguishable from an oversight, so: `delivered-check-unsatisfiable-path`
-/// is High by design (a dead `expect: present` pathspec blocks every dependent
-/// forever at mark-done, which IS the gate), the process exit code is the
-/// High-severity count (see `high_severity_exit_code`), and the no-`--pattern`
-/// default sweep is what `scripts/reify-audit-predone-wrapper.sh` and the
-/// /audit skill run — so a High-capable detector there would turn both non-zero
-/// the moment any task's check row went stale.
-///
-/// Reads the tracked-file list via `ls_files` plus a read-only
-/// `.taskmaster/tasks/tasks.db`, never jcodemunch — hence deliberately absent
-/// from `needs_jcodemunch` and `JCODEMUNCH_BACKED`.
-fn run_pdcheck(args: &Args) -> bool {
-    args.pattern
-        .as_deref()
-        .is_some_and(|p| pattern_selects(p, pattern_flag::PDCHECK))
-}
-
-/// One detector a sweep can dispatch: the predicate deciding whether this run
-/// selects it, and its check.
+/// One detector a sweep can dispatch. Every fact the binary knows about a
+/// detector is a field of its row, so selection, the jcodemunch connect
+/// decision and the check it runs cannot drift apart.
 struct Detector {
-    selected: fn(&Args) -> bool,
+    /// The [`pattern_flag`] token that selects it.
+    token: &'static str,
+    /// Whether a pattern-less run includes it. The exit code is the
+    /// High-severity count and every bare `reify-audit` invocation runs this
+    /// sweep, so a detector whose High findings track a standing backlog or a
+    /// drifting baseline (PDIAG, PDOCCOVER, PDCHECK) stays opt-in: in the
+    /// sweep it would turn those invocations non-zero for reasons unrelated
+    /// to the work under audit.
+    in_default_sweep: bool,
+    /// Whether it cannot produce a finding without querying jcodemunch.
+    /// Selecting it makes the run connect ([`needs_jcodemunch`]), and a run of
+    /// nothing else hard-refuses on a stale index ([`jcodemunch_only_run_set`]),
+    /// so a structural detector marked `true` would exit 125 on every stale
+    /// index while never reading it.
+    queries_jcodemunch: bool,
     check: fn(&AuditContext<'_>) -> Vec<Finding>,
+}
+
+impl Detector {
+    /// `None` is the pattern-less default sweep.
+    fn selected_by(&self, pattern: Option<&str>) -> bool {
+        pattern.map_or(self.in_default_sweep, |p| pattern_selects(p, self.token))
+    }
 }
 
 /// Every detector a sweep can dispatch, one row per [`pattern_flag::TOKENS`]
 /// member in the same (`--help`) order, which is the order their findings are
-/// emitted in. `main` runs exactly the rows whose predicate selects them, so a
-/// token without a row would be accepted and run nothing;
-/// `every_pattern_token_selects_exactly_its_own_detector` pins each row's
-/// predicate to its token.
+/// emitted in.
 #[rustfmt::skip]
 const DETECTORS: &[Detector] = &[
-    Detector { selected: run_p1,         check: p1_producer_orphan::check },
-    Detector { selected: run_p2,         check: p2_consumer_stub::check },
-    Detector { selected: run_p5,         check: p5_phantom_done::check },
-    Detector { selected: run_pdead,      check: pdead_dead_code::check },
-    Detector { selected: run_puntested,  check: puntested::check },
-    Detector { selected: run_player,     check: player::check },
-    Detector { selected: run_ptodo,      check: ptodo::check },
-    Detector { selected: run_dssentinel, check: pdssentinel::check },
-    Detector { selected: run_pdiag,      check: pdiag::check },
-    Detector { selected: run_pdoccover,  check: pdoccover::check },
-    Detector { selected: run_pdcheck,    check: pdcheck::check },
+    Detector { token: pattern_flag::P1,          in_default_sweep: true,  queries_jcodemunch: true,  check: p1_producer_orphan::check },
+    Detector { token: pattern_flag::P2,          in_default_sweep: true,  queries_jcodemunch: false, check: p2_consumer_stub::check },
+    Detector { token: pattern_flag::P5,          in_default_sweep: true,  queries_jcodemunch: false, check: p5_phantom_done::check },
+    Detector { token: pattern_flag::PDEAD,       in_default_sweep: false, queries_jcodemunch: true,  check: pdead_dead_code::check },
+    Detector { token: pattern_flag::PUNTESTED,   in_default_sweep: false, queries_jcodemunch: true,  check: puntested::check },
+    Detector { token: pattern_flag::PLAYER,      in_default_sweep: false, queries_jcodemunch: true,  check: player::check },
+    Detector { token: pattern_flag::PTODO,       in_default_sweep: true,  queries_jcodemunch: false, check: ptodo::check },
+    Detector { token: pattern_flag::PDSSENTINEL, in_default_sweep: true,  queries_jcodemunch: false, check: pdssentinel::check },
+    Detector { token: pattern_flag::PDIAG,       in_default_sweep: false, queries_jcodemunch: false, check: pdiag::check },
+    Detector { token: pattern_flag::PDOCCOVER,   in_default_sweep: false, queries_jcodemunch: false, check: pdoccover::check },
+    Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, queries_jcodemunch: false, check: pdcheck::check },
 ];
+
+/// The [`DETECTORS`] rows a run with this `--pattern` value dispatches, in
+/// row order.
+fn selected_detectors(pattern: Option<&str>) -> impl Iterator<Item = &'static Detector> {
+    DETECTORS
+        .iter()
+        .filter(move |detector| detector.selected_by(pattern))
+}
 
 // -----------------------------------------------------------------------
 // Main
@@ -932,9 +804,7 @@ fn main() -> ExitCode {
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
         // Spot-check or window sweep: every detector this run selects.
-        DETECTORS
-            .iter()
-            .filter(|detector| (detector.selected)(&args))
+        selected_detectors(args.pattern.as_deref())
             .flat_map(|detector| (detector.check)(&ctx))
             .collect()
     };
@@ -1217,6 +1087,11 @@ mod tests {
         }
     }
 
+    /// Whether a run with this `--pattern` value dispatches `token`'s detector.
+    fn selects(token: &str, pattern: Option<&str>) -> bool {
+        selected_detectors(pattern).any(|detector| detector.token == token)
+    }
+
     #[test]
     fn needs_jcodemunch_pre_done_always_false() {
         // pre_done ⇒ false regardless of pattern
@@ -1250,26 +1125,22 @@ mod tests {
     /// Guard: PDEAD and PUNTESTED are opt-in only — neither may run in the
     /// default (no --pattern) all-detector sweep.  A future refactor that
     /// accidentally folds either into the default run will trip this test.
-    ///
-    /// Tests the actual `run_pdead`/`run_puntested` dispatch predicates rather
-    /// than just the fixture construction, so a real change to the dispatch
-    /// logic would be caught.
     #[test]
     fn pdead_and_puntested_not_in_default_sweep() {
         assert!(
-            !run_pdead(&make_args(false, None)),
+            !selects(pattern_flag::PDEAD, None),
             "PDEAD must be opt-in only (not part of the default sweep)"
         );
         assert!(
-            run_pdead(&make_args(false, Some("PDEAD"))),
+            selects(pattern_flag::PDEAD, Some("PDEAD")),
             "PDEAD must activate when --pattern PDEAD is given"
         );
         assert!(
-            !run_puntested(&make_args(false, None)),
+            !selects(pattern_flag::PUNTESTED, None),
             "PUNTESTED must be opt-in only (not part of the default sweep)"
         );
         assert!(
-            run_puntested(&make_args(false, Some("PUNTESTED"))),
+            selects(pattern_flag::PUNTESTED, Some("PUNTESTED")),
             "PUNTESTED must activate when --pattern PUNTESTED is given"
         );
     }
@@ -1299,17 +1170,15 @@ mod tests {
     }
 
     /// Guard: PLAYER is opt-in only — must not run in the default (no --pattern)
-    /// all-detector sweep. Tests the actual `run_player` dispatch predicate rather
-    /// than just the fixture construction, so a real change to the dispatch logic
-    /// would be caught (e.g. accidentally folding PLAYER into the default sweep).
+    /// all-detector sweep.
     #[test]
     fn player_not_in_default_sweep() {
         assert!(
-            !run_player(&make_args(false, None)),
+            !selects(pattern_flag::PLAYER, None),
             "PLAYER must be opt-in only (not part of the default sweep)"
         );
         assert!(
-            run_player(&make_args(false, Some("PLAYER"))),
+            selects(pattern_flag::PLAYER, Some("PLAYER")),
             "PLAYER must activate when --pattern PLAYER is given"
         );
     }
@@ -1426,25 +1295,42 @@ mod tests {
     /// `--help` order, and `--pattern <token>` selecting that row and no other.
     #[test]
     fn every_pattern_token_selects_exactly_its_own_detector() {
+        let row_tokens: Vec<&str> = DETECTORS.iter().map(|detector| detector.token).collect();
         assert_eq!(
-            DETECTORS.len(),
-            pattern_flag::TOKENS.len(),
+            row_tokens,
+            pattern_flag::TOKENS,
             "DETECTORS must hold one row per --pattern token, in --help order"
         );
-        for (row, &token) in pattern_flag::TOKENS.iter().enumerate() {
-            let args = make_args(false, Some(token));
-            let selected: Vec<usize> = DETECTORS
-                .iter()
-                .enumerate()
-                .filter(|(_, detector)| (detector.selected)(&args))
-                .map(|(index, _)| index)
+        for &token in pattern_flag::TOKENS {
+            let selected: Vec<&str> = selected_detectors(Some(token))
+                .map(|detector| detector.token)
                 .collect();
             assert_eq!(
                 selected,
-                [row],
-                "--pattern {token} must select exactly DETECTORS[{row}], its own row"
+                [token],
+                "--pattern {token} must select exactly its own row"
             );
         }
+    }
+
+    /// The pattern-less sweep is what every bare `reify-audit` invocation, and
+    /// the /audit skill, runs. The skill documents exactly these five.
+    #[test]
+    fn default_sweep_is_exactly_p1_p2_p5_ptodo_pdssentinel() {
+        let swept: Vec<&str> = selected_detectors(None)
+            .map(|detector| detector.token)
+            .collect();
+        assert_eq!(
+            swept,
+            [
+                pattern_flag::P1,
+                pattern_flag::P2,
+                pattern_flag::P5,
+                pattern_flag::PTODO,
+                pattern_flag::PDSSENTINEL,
+            ],
+            "the no-`--pattern` default sweep must run exactly these detectors, in row order"
+        );
     }
 
     /// Trailing or leading commas (`--pattern P1,` / `--pattern ,P2`) produce
@@ -1499,32 +1385,32 @@ mod tests {
     fn opt_in_detectors_selected_via_comma_list() {
         // PDEAD reached as a non-leading token in a comma list.
         assert!(
-            run_pdead(&make_args(false, Some("P2,PDEAD"))),
+            selects(pattern_flag::PDEAD, Some("P2,PDEAD")),
             "P2,PDEAD must enable PDEAD"
         );
         assert!(
-            !run_pdead(&make_args(false, Some("P2,P5"))),
+            !selects(pattern_flag::PDEAD, Some("P2,P5")),
             "P2,P5 must not enable PDEAD (token absent)"
         );
         assert!(
-            !run_pdead(&make_args(false, None)),
+            !selects(pattern_flag::PDEAD, None),
             "no --pattern must not enable PDEAD (opt-in only)"
         );
 
         // PUNTESTED reached as a non-leading token in a comma list.
         assert!(
-            run_puntested(&make_args(false, Some("P2,PUNTESTED"))),
+            selects(pattern_flag::PUNTESTED, Some("P2,PUNTESTED")),
             "P2,PUNTESTED must enable PUNTESTED"
         );
         assert!(
-            !run_puntested(&make_args(false, Some("P1,PDEAD"))),
+            !selects(pattern_flag::PUNTESTED, Some("P1,PDEAD")),
             "P1,PDEAD must not enable PUNTESTED (token absent)"
         );
 
         // A mixed opt-in list must enable BOTH opt-in detectors at once.
         assert!(
-            run_pdead(&make_args(false, Some("PDEAD,PUNTESTED")))
-                && run_puntested(&make_args(false, Some("PDEAD,PUNTESTED"))),
+            selects(pattern_flag::PDEAD, Some("PDEAD,PUNTESTED"))
+                && selects(pattern_flag::PUNTESTED, Some("PDEAD,PUNTESTED")),
             "PDEAD,PUNTESTED must enable both opt-in detectors"
         );
     }
@@ -1562,20 +1448,20 @@ mod tests {
     }
 
     /// ε: PTODO is now part of the no-`--pattern` default all-detector sweep,
-    /// mirroring P1/P2/P5. Tests the actual `run_ptodo` dispatch predicate:
-    /// default (None) → true; explicit PTODO → true; non-PTODO pattern → false.
+    /// mirroring P1/P2/P5: default (None) → true; explicit PTODO → true;
+    /// non-PTODO pattern → false.
     #[test]
     fn ptodo_in_default_sweep() {
         assert!(
-            run_ptodo(&make_args(false, None)),
+            selects(pattern_flag::PTODO, None),
             "PTODO must run in the no-`--pattern` default sweep"
         );
         assert!(
-            run_ptodo(&make_args(false, Some("PTODO"))),
+            selects(pattern_flag::PTODO, Some("PTODO")),
             "PTODO must activate when --pattern PTODO is given"
         );
         assert!(
-            !run_ptodo(&make_args(false, Some("P2"))),
+            !selects(pattern_flag::PTODO, Some("P2")),
             "PTODO must be excluded when a named non-PTODO pattern is given"
         );
     }
@@ -1583,9 +1469,9 @@ mod tests {
     /// PTODO must be selectable as a non-leading token in a comma-separated
     /// `--pattern` list (mirrors `opt_in_detectors_selected_via_comma_list`).
     #[test]
-    fn run_ptodo_selected_via_comma_list() {
+    fn ptodo_selected_via_comma_list() {
         assert!(
-            run_ptodo(&make_args(false, Some("P2,PTODO"))),
+            selects(pattern_flag::PTODO, Some("P2,PTODO")),
             "P2,PTODO must enable PTODO"
         );
     }
@@ -1596,7 +1482,7 @@ mod tests {
     // PDSSENTINEL is the ds-sentinel reintroduction guard (task #4650).
     // Like PTODO it is *structural* — reads the working tree via ls_files + fs,
     // never contacts jcodemunch. Unlike opt-in PDEAD/PUNTESTED/PLAYER, it
-    // is part of the default all-detector sweep (is_none_or, mirrors run_ptodo).
+    // is part of the default all-detector sweep, like PTODO.
     // -------------------------------------------------------------------
 
     /// `--pattern PDSSENTINEL` must be accepted and stored.
@@ -1620,21 +1506,21 @@ mod tests {
         );
     }
 
-    /// PDSSENTINEL participates in the no-`--pattern` default sweep (is_none_or,
-    /// mirroring run_ptodo). Default (None) → true; explicit PDSSENTINEL → true;
+    /// PDSSENTINEL participates in the no-`--pattern` default sweep, like
+    /// PTODO. Default (None) → true; explicit PDSSENTINEL → true;
     /// a non-PDSSENTINEL named pattern (e.g. P2) → false.
     #[test]
     fn pdssentinel_in_default_sweep() {
         assert!(
-            run_dssentinel(&make_args(false, None)),
+            selects(pattern_flag::PDSSENTINEL, None),
             "PDSSENTINEL must run in the no-`--pattern` default sweep"
         );
         assert!(
-            run_dssentinel(&make_args(false, Some("PDSSENTINEL"))),
+            selects(pattern_flag::PDSSENTINEL, Some("PDSSENTINEL")),
             "PDSSENTINEL must activate when --pattern PDSSENTINEL is given"
         );
         assert!(
-            !run_dssentinel(&make_args(false, Some("P2"))),
+            !selects(pattern_flag::PDSSENTINEL, Some("P2")),
             "PDSSENTINEL must be excluded when a named non-PDSSENTINEL pattern is given"
         );
     }
@@ -1642,9 +1528,9 @@ mod tests {
     /// PDSSENTINEL must be selectable as a non-leading token in a comma-separated
     /// `--pattern` list.
     #[test]
-    fn run_dssentinel_selected_via_comma_list() {
+    fn pdssentinel_selected_via_comma_list() {
         assert!(
-            run_dssentinel(&make_args(false, Some("P1,PDSSENTINEL"))),
+            selects(pattern_flag::PDSSENTINEL, Some("P1,PDSSENTINEL")),
             "P1,PDSSENTINEL must enable PDSSENTINEL"
         );
     }
@@ -1665,7 +1551,7 @@ mod tests {
     // PDOCCOVER is the bidirectional registry↔chunk name-drift detector. Like
     // PTODO and PDSSENTINEL it is *structural* — working-tree reads via
     // ls_files + fs, never contacts jcodemunch. UNLIKE them it is OPT-IN
-    // (is_some_and, mirroring PDEAD/PUNTESTED/PLAYER): the chunk corpus has a
+    // (like PDEAD/PUNTESTED/PLAYER): the chunk corpus has a
     // known backlog of undocumented names, so until #5480 seeds
     // pdoccover-baseline.txt the detector would add ~80 High findings to every
     // default sweep. High severity feeds the exit code, so joining the default
@@ -1698,23 +1584,23 @@ mod tests {
     }
 
     /// PDOCCOVER is OPT-IN — the assertion inverted relative to
-    /// `run_ptodo`/`run_dssentinel`. Default (None) → FALSE; explicit
+    /// PTODO/PDSSENTINEL. Default (None) → FALSE; explicit
     /// PDOCCOVER → true; a named non-PDOCCOVER pattern → false.
     #[test]
     fn pdoccover_is_opt_in_not_in_default_sweep() {
         assert!(
-            !run_pdoccover(&make_args(false, None)),
+            !selects(pattern_flag::PDOCCOVER, None),
             "PDOCCOVER must NOT run in the no-`--pattern` default sweep: its \
              findings are High severity and the corpus has a known backlog, so \
              joining the sweep before #5480 seeds the baseline would make every \
              audit run exit non-zero"
         );
         assert!(
-            run_pdoccover(&make_args(false, Some("PDOCCOVER"))),
+            selects(pattern_flag::PDOCCOVER, Some("PDOCCOVER")),
             "PDOCCOVER must activate when --pattern PDOCCOVER is given"
         );
         assert!(
-            !run_pdoccover(&make_args(false, Some("P2"))),
+            !selects(pattern_flag::PDOCCOVER, Some("P2")),
             "PDOCCOVER must be excluded when a named non-PDOCCOVER pattern is given"
         );
     }
@@ -1723,9 +1609,9 @@ mod tests {
     /// comma-separated `--pattern` list — token-set membership, not a prefix
     /// match.
     #[test]
-    fn run_pdoccover_selected_via_comma_list() {
+    fn pdoccover_selected_via_comma_list() {
         assert!(
-            run_pdoccover(&make_args(false, Some("P1,PDOCCOVER"))),
+            selects(pattern_flag::PDOCCOVER, Some("P1,PDOCCOVER")),
             "P1,PDOCCOVER must enable PDOCCOVER"
         );
     }
@@ -1782,24 +1668,24 @@ mod tests {
         let unioned = parse_args(&["--pattern".to_string(), "P1,PDIAG".to_string()])
             .unwrap_or_else(|e| panic!("--pattern P1,PDIAG must parse successfully; got: {e}"));
         assert!(
-            run_pdiag(&unioned),
+            selects(pattern_flag::PDIAG, unioned.pattern.as_deref()),
             "PDIAG must activate as a trailing comma token in a union pattern"
         );
         assert!(
-            !run_pdiag(&make_args(false, Some("P2"))),
+            !selects(pattern_flag::PDIAG, Some("P2")),
             "PDIAG must stay off for a named non-PDIAG pattern"
         );
     }
 
     /// PDIAG is structural — it must NOT require jcodemunch.
     ///
-    /// The claim is asserted in `run_pdiag`'s docs and in `Pattern::PDiag`'s,
-    /// but both PDIAG integration tests pass `--no-jcodemunch`, so nothing
-    /// else would go red if a future edit added `PDIAG` to `needs_jcodemunch`
-    /// or `JCODEMUNCH_BACKED`. That regression is not cosmetic: via
-    /// `jcodemunch_only_run_set` a jcodemunch-backed PDIAG would hard-refuse
-    /// with exit 125 on a stale index, turning the merge gate red for a
-    /// detector that never reads the index.
+    /// The claim is asserted in `Pattern::PDiag`'s docs, but both PDIAG
+    /// integration tests pass `--no-jcodemunch`, so nothing else would go red
+    /// if a future edit set `queries_jcodemunch` on PDIAG's row. That
+    /// regression is not cosmetic: via `jcodemunch_only_run_set` a
+    /// jcodemunch-backed PDIAG would hard-refuse with exit 125 on a stale
+    /// index, turning the merge gate red for a detector that never reads the
+    /// index.
     #[test]
     fn needs_jcodemunch_pdiag_routes_false() {
         assert!(
@@ -1808,10 +1694,9 @@ mod tests {
              not open a jcodemunch connection"
         );
         assert!(
-            !JCODEMUNCH_BACKED.contains(&"PDIAG"),
-            "PDIAG must not be listed in JCODEMUNCH_BACKED — that would route \
-             a PDIAG-only run through jcodemunch_only_run_set's staleness \
-             refusal (exit 125)"
+            !jcodemunch_only_run_set(&make_args(false, Some("PDIAG"))),
+            "a PDIAG-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
         );
     }
 
@@ -1840,7 +1725,7 @@ mod tests {
         let tokens: Vec<&str> = val.split(',').map(str::trim).collect();
         assert!(tokens.contains(&"PDCHECK"), "tokens must contain PDCHECK; got: {tokens:?}");
         assert!(
-            run_pdcheck(&make_args(false, Some("P1,PDCHECK"))),
+            selects(pattern_flag::PDCHECK, Some("P1,PDCHECK")),
             "P1,PDCHECK must enable PDCHECK"
         );
     }
@@ -1877,17 +1762,17 @@ mod tests {
     #[test]
     fn pdcheck_is_opt_in_not_in_default_sweep() {
         assert!(
-            !run_pdcheck(&make_args(false, None)),
+            !selects(pattern_flag::PDCHECK, None),
             "PDCHECK must NOT run in the no-`--pattern` default sweep: its High \
              findings drive the exit code, so every bare `reify-audit` \
              invocation would start exiting non-zero"
         );
         assert!(
-            run_pdcheck(&make_args(false, Some("PDCHECK"))),
+            selects(pattern_flag::PDCHECK, Some("PDCHECK")),
             "PDCHECK must activate when --pattern PDCHECK is given"
         );
         assert!(
-            !run_pdcheck(&make_args(false, Some("P2"))),
+            !selects(pattern_flag::PDCHECK, Some("P2")),
             "PDCHECK must be excluded when a named non-PDCHECK pattern is given"
         );
     }
@@ -1902,10 +1787,9 @@ mod tests {
              it must not open a jcodemunch connection"
         );
         assert!(
-            !JCODEMUNCH_BACKED.contains(&"PDCHECK"),
-            "PDCHECK must not be listed in JCODEMUNCH_BACKED — that would route \
-             a PDCHECK-only run through jcodemunch_only_run_set's staleness \
-             refusal (exit 125)"
+            !jcodemunch_only_run_set(&make_args(false, Some("PDCHECK"))),
+            "a PDCHECK-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
         );
     }
 }
