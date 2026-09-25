@@ -1595,8 +1595,8 @@ fn cantilever_adaptive_vs_uniform_rate_gap() {
 // elasticity-singularity benchmark. This cheap, always-on section checks
 // only the two preconditions the (heavier, #[ignore]'d) step-13/14 rate-gap
 // study depends on: (1) the ZZ indicator actually LOCALIZES at the
-// re-entrant corner on a single coarse solve, and (2) a FEW
-// `run_adaptive_refinement` iterations produce a well-formed
+// re-entrant corner on a single coarse solve, and (2) one
+// `run_adaptive_refinement` refinement produces a well-formed
 // `ConvergenceStatus` and a substantially improved global indicator.
 
 /// Outer leg length of the [`l_shaped_gmsh_problem`] L-cross-section. Kept
@@ -1619,10 +1619,11 @@ const L_SHAPE_LZ: f64 = 1.0;
 /// tetrahedralization each remesh, not a smooth function of the target edge
 /// length (the same "NOISY" ZZ recovery already documented on
 /// [`cantilever_gmsh_problem`] and the step-9/10 rate study). `0.163` is the
-/// specific value from that sweep giving the best simultaneous localization
-/// ratio (comfortably above `K = 1.5`) and single-refine drop (the highest
-/// "clean" — i.e. not immediately followed by a regressing second refine —
-/// value found, ~8.94%).
+/// specific value from that task-#3002 sweep (pre-#7447 refiner) giving the
+/// best simultaneous localization ratio (comfortably above `K = 1.5`) and
+/// single-refine drop (the highest "clean" — i.e. not immediately followed by
+/// a regressing second refine — value found, ~8.94%). The test's `DROP_FACTOR`
+/// note records the #7447 background-field reading.
 const L_SHAPE_MESH_SIZE: f64 = 0.163;
 
 /// Closed-surface L-shaped prism: an L cross-section (outer legs of length
@@ -1771,8 +1772,8 @@ fn l_shaped_gmsh_problem() -> FeaAdaptiveProblem {
 
 /// L-shaped re-entrant-corner indicator localization + cheap CI-gate proxy
 /// (module doc part (a)). A single coarse solve must show the ZZ indicator
-/// concentrating at the re-entrant corner; a FEW `run_adaptive_refinement`
-/// iterations (NOT the full rate study — step-13/14's `#[ignore]`'d heavy
+/// concentrating at the re-entrant corner; one `run_adaptive_refinement`
+/// refinement (NOT the full rate study — step-13/14's `#[ignore]`'d heavy
 /// test) must show a well-formed `ConvergenceStatus` and a substantially
 /// improved global indicator.
 #[test]
@@ -1808,9 +1809,11 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
     );
 
     let mut recording = RecordingProblem::new(problem);
+    // One refinement — see the DROP_FACTOR calibration note below for the
+    // measured per-solve table that rules out more.
     let budget = RefinementBudget {
         target_accuracy: 1e-6,
-        max_refinement_iterations: 3,
+        max_refinement_iterations: 1,
         max_dofs: 1_000_000,
     };
     let status = run_adaptive_refinement(&mut recording, &budget, DORFLER_THETA)
@@ -1845,21 +1848,33 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
     );
     let first = estimate0.relative_error;
     let last = *recording.history.last().unwrap();
-    // Calibration note: measured during impl, same noise floor as
-    // cantilever_gmsh_problem/cantilever_adaptive_vs_uniform_rate_gap. A
-    // sweep over mesh_size (0.10-0.40) and leg proportions found a single
-    // clean Dörfler refine's global-indicator drop tops out around 8-9% for
-    // this fixture (best clean run: 8.94%) — comparable to
-    // cantilever_gmsh_problem's own single-refine drop (~8.9%, see that
-    // fixture's doc), and well short of a blind 10% guess. `run_adaptive_
-    // refinement`'s stall check (STALL_MIN_RELATIVE_DROP = 10%) means the
-    // FIRST refine's drop determines this test's outcome: if it doesn't
-    // clear 10% the loop stalls immediately and `last` IS that first-refine
-    // value, so this threshold cannot be worked around with more iterations.
-    // DROP_FACTOR is calibrated conservatively below the measured ceiling
-    // (0.94 ⇒ >= 6% drop required, comfortable margin under the ~9% ceiling
-    // for host/gmsh-version variation) while still requiring a real,
-    // non-vacuous improvement.
+    // Calibration note. DROP_FACTOR = 0.94 (>= 6% drop required) was set at
+    // task #3002 against the pre-#7447 refiner, whose best clean single
+    // Dörfler refine dropped the global indicator only ~8-9% on this fixture
+    // (best: 8.94%, from a sweep over mesh_size 0.10-0.40 and leg
+    // proportions). It stays fixed as a floor for a real, non-vacuous
+    // improvement.
+    //
+    // Since #7447 the refiner drives gmsh from a background size field, so a
+    // Dörfler refine really applies h/2 at every marked element and the mesh
+    // grows 5-7x per refine. Measured 2026-09-25 (libgmsh 4.15.2; tet, dof and
+    // CG counts are load-independent because gmsh is pinned to one thread):
+    //
+    // | solve | marked         | tets  | dofs  | CG iters | relative_error | drop  | wall  |
+    // |-------|----------------|-------|-------|----------|----------------|-------|-------|
+    // | 0     | —              | 2221  | 1896  | 206      | 0.3369         | —     |       |
+    // | 1     | 495 of 2221    | 11242 | 7629  | 320      | 0.2194         | 34.9% | 1.6 s |
+    // | 2     | 3068 of 11242  | 74168 | 43452 | 617      | 0.1590         | 27.5% | 60 s  |
+    //
+    // (`wall` is the whole test at a budget ending on that solve, host load
+    // ~175-187 on 32 cores.) Neither drop trips the stall check
+    // (STALL_MIN_RELATIVE_DROP = 10%). The former `max_refinement_iterations:
+    // 3` reaches a fourth solve after a third 5-7x refine; on the #7447
+    // branch before this recalibration it ran >20 min with RSS >1 GB without
+    // finishing. Two refinements already take half the 120 s slow-timeout,
+    // so the budget is one: `last` is solve 1, a 34.9% drop (0.651 x first)
+    // against DROP_FACTOR's 0.94. The pre-refine localization ratio measures
+    // 5.33 (K = 1.5).
     const DROP_FACTOR: f64 = 0.94;
     assert!(
         last <= DROP_FACTOR * first,
