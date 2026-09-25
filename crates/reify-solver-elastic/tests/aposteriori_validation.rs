@@ -1465,45 +1465,64 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
 // convention already used for step-1/step-3/step-7. GREEN (next commit)
 // defines it.
 //
-// # Calibration note: noise floor measured during impl
+// # Calibration note: before #7447 (task #3002 impl, 8-corner-anchor refiner)
 //
 // An empirical sweep (mesh_size 0.15-0.4, sequence lengths up to 7 points —
 // see the `project_3002_zz_indicator_noisy_across_iterations` memory note)
-// confirms `compute_zz_indicator`'s volume-weighted-average recovery,
-// combined with `refine_marked_elements`'s full-remesh-every-iteration from a
-// fixed 8-vertex surface, makes the per-iteration `relative_error` NOISY at
-// CI-affordable resolution: individual mesh sizes can show a flat or even
-// slightly INCREASING trend (e.g. `mesh_size=0.3` measured
-// `adaptive_slope ≈ +0.034`, `uniform_slope ≈ +0.001` — neither converging),
-// and which sequence "wins" the gap is mesh-size-sensitive. This is the same
-// noise floor already documented on [`cantilever_gmsh_problem`]'s doc comment
-// (no configuration gives a clean MONOTONE multi-iteration drop).
+// found the per-iteration `relative_error` NOISY at CI-affordable resolution
+// under the refiner of the time, whose remesh honoured only the 8 box
+// corners' size hints and so was quasi-uniform: individual mesh sizes could
+// show a flat or even slightly INCREASING trend (e.g. `mesh_size=0.3`
+// measured `adaptive_slope ≈ +0.034`, `uniform_slope ≈ +0.001`), and which
+// sequence "won" the gap was mesh-size-sensitive. At `mesh_size = 0.25`, a
+// fixed 6-refine adaptive (7 points) and 2-refine uniform (3 points) sequence
+// measured `adaptive_slope ≈ -0.0545`, `uniform_slope ≈ -0.0138`. The
+// thresholds were calibrated below those values: `CLEARLY_NEGATIVE_SLOPE =
+// -0.005` and `GAP_MARGIN = 0.02` (the assertion lets adaptive be up to
+// `GAP_MARGIN` shallower than uniform). Both constants are unchanged since.
 //
-// A least-squares `loglog_slope` fit over a LONGER sequence (7 adaptive
-// points, 3 uniform points) at `mesh_size = 0.25` — the SAME resolution
-// already calibrated in step-7/8 for a clean single-step drop — recovers the
-// theory-predicted direction despite the individual-step noise: measured
-// `adaptive_slope ≈ -0.0545`, `uniform_slope ≈ -0.0138` (both comfortably
-// negative, and the adaptive rate clearly steeper). The thresholds below are
-// calibrated conservatively BELOW these measured values, not blind-tuned:
-// `CLEARLY_NEGATIVE_SLOPE = -0.005` (both measured slopes clear it by >2x)
-// and `GAP_MARGIN = 0.02` (the measured gap is ≈0.041, so the margin leaves
-// ≈50% headroom for host/gmsh-version variation while still requiring a
-// real, non-vacuous gap).
+// # Calibration note: after #7447 (background size field, DOF-bounded)
 //
-// Iteration counts are asymmetric by design: uniform marks EVERY element
-// each step (h/2 everywhere), so its element/dof count grows much faster
-// than Dörfler-marked adaptive — 3+ uniform refines pushed the default
-// `CgSolverOptions` (max_iter=1000) to non-convergence in the calibration
-// sweep at finer starting resolutions, so this test caps the uniform
-// sequence at 2 refines (3 points) while the more-slowly-growing adaptive
-// sequence safely runs 6 refines (7 points) for a more robust least-squares
-// fit.
+// Since #7447 the refiner drives gmsh from a background size field, so a
+// refine really applies h/2 at every marked element: per refine the
+// cantilever grows 761 -> 4166 -> 32237 tets adaptively and 761 -> 8595 ->
+// 88808 uniformly. Fixed step counts became infeasible (on the #7447 branch
+// a 6-refine adaptive run did not finish in >30 min), so
+// [`run_refinement_sequence`] stops refining once a solve reaches
+// [`RATE_STUDY_MAX_DOFS`]. Measured 2026-09-25 (libgmsh 4.15.2; two runs,
+// identical pairs — tet, dof and CG counts are load-independent because gmsh
+// is pinned to one thread):
+//
+// | sequence | (dofs, relative_error) pairs                         | slope   |
+// |----------|------------------------------------------------------|---------|
+// | adaptive | (756, 0.3412) (3171, 0.1983) (19917, 0.1539)         | -0.2386 |
+// | uniform  | (756, 0.3412) (6315, 0.1892) (53760, 0.1332)         | -0.2205 |
+//
+// Both sequences drop monotonically; both slopes clear
+// `CLEARLY_NEGATIVE_SLOPE` by >40x; adaptive is 0.018 STEEPER than uniform,
+// 0.038 inside `GAP_MARGIN`. The adaptive slope moved from -0.0545 to
+// -0.2386: from 16% to 72% of the -1/3 rate P1 theory predicts for the
+// energy-norm error against dof count on a smooth solution.
+//
+// The cap is 10_000 because the last solve lands one refine past it, and the
+// CG budget is `CgSolverOptions::default()`'s 1000 iterations: the largest
+// solve here (53760 dofs, uniform) took 751. Any cap above 19917 lets the
+// adaptive sequence refine once more, to 118599 dofs; a probe at a 30_000
+// cap measured that fourth point at relative_error 0.0953 (adaptive slope
+// -0.2380, unchanged) but its CG took 886 of 1000 iterations and the study
+// took 11 min, against 49-62 s at 10_000 (three runs, host load ~64-171 on
+// 32 cores).
 
-/// Run `n_steps` refinement iterations (`n_steps + 1` solves total) over
-/// `problem`, collecting `(n_dofs, relative_error)` pairs in iteration
-/// order — the raw material [`loglog_slope`] fits a convergence-rate
-/// exponent to.
+/// A [`run_refinement_sequence`] stops refining once a solve reaches this
+/// many DOFs — the same at-or-over rule as [`RefinementBudget::max_dofs`],
+/// so a sequence's last solve is at most one refine past it. See the
+/// "after #7447" calibration note above for how the value was measured.
+const RATE_STUDY_MAX_DOFS: usize = 10_000;
+
+/// Run up to `max_steps` refinement iterations over `problem`, stopping
+/// early once a solve reaches [`RATE_STUDY_MAX_DOFS`], collecting
+/// `(n_dofs, relative_error)` pairs in iteration order — the raw material
+/// [`loglog_slope`] fits a convergence-rate exponent to.
 ///
 /// When `uniform` is `true`, every element is marked each iteration (the
 /// "refine everywhere" baseline, h/2 globally); when `false`, elements are
@@ -1513,16 +1532,16 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
 /// can reuse it unchanged.
 fn run_refinement_sequence<P: AdaptiveProblem>(
     problem: &mut P,
-    n_steps: usize,
+    max_steps: usize,
     uniform: bool,
 ) -> Vec<(f64, f64)> {
-    let mut pairs = Vec::with_capacity(n_steps + 1);
-    for i in 0..=n_steps {
+    let mut pairs = Vec::with_capacity(max_steps + 1);
+    for i in 0..=max_steps {
         let est = problem.solve_and_estimate().unwrap_or_else(|_| {
             panic!("solve_and_estimate must succeed on the Z-Z path (iteration {i})")
         });
         pairs.push((est.n_dofs as f64, est.relative_error));
-        if i == n_steps {
+        if i == max_steps || est.n_dofs >= RATE_STUDY_MAX_DOFS {
             break;
         }
         let marked = if uniform {
@@ -1551,8 +1570,8 @@ fn run_refinement_sequence<P: AdaptiveProblem>(
 /// See the section doc above for the calibration basis of
 /// `CLEARLY_NEGATIVE_SLOPE` and `GAP_MARGIN`.
 #[test]
-#[ignore = "heavy: 10 real gmsh remesh+solve iterations across two sequences; \
-            on-demand/nightly rate study (mirrors \
+#[ignore = "heavy: two DOF-bounded real gmsh remesh+solve sequences (solves up \
+            to ~5e4 DOFs); on-demand/nightly rate study (mirrors \
             analytical_validation.rs::cantilever_faithful_convergence_study)"]
 fn cantilever_adaptive_vs_uniform_rate_gap() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -1568,6 +1587,10 @@ fn cantilever_adaptive_vs_uniform_rate_gap() {
 
     let adaptive_slope = loglog_slope(&adaptive_pairs);
     let uniform_slope = loglog_slope(&uniform_pairs);
+    eprintln!(
+        "CALIBRATION adaptive_slope={adaptive_slope} uniform_slope={uniform_slope} \
+         adaptive_pairs={adaptive_pairs:?} uniform_pairs={uniform_pairs:?}"
+    );
 
     assert!(
         adaptive_slope <= CLEARLY_NEGATIVE_SLOPE,
@@ -1918,6 +1941,13 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
 // resolution — exactly the failure mode step-9/10's own doc comment warned
 // of, confirmed by measurement here too.
 //
+// Those step counts and every figure in this section predate #7447. Since
+// #7447, [`run_refinement_sequence`] also stops once a solve reaches
+// [`RATE_STUDY_MAX_DOFS`], so the step counts passed below — for the
+// L-prism and for the cantilever reference — are ceilings, not lengths, and
+// the sequences are shorter than described here. Re-measuring this study
+// under the background-field refiner is task #7891.
+//
 // # Reformulation note: part (ii) is a GAP comparison, not a direct
 // uniform-vs-uniform comparison
 //
@@ -1967,11 +1997,11 @@ fn l_shaped_reentrant_corner_indicator_localizes_and_drops() {
 /// in-test measurement is used instead of a hardcoded constant).
 fn adaptive_vs_uniform_gap<P: AdaptiveProblem>(
     mut make_problem: impl FnMut() -> P,
-    n_adaptive_steps: usize,
-    n_uniform_steps: usize,
+    max_adaptive_steps: usize,
+    max_uniform_steps: usize,
 ) -> (f64, f64, f64) {
-    let adaptive_pairs = run_refinement_sequence(&mut make_problem(), n_adaptive_steps, false);
-    let uniform_pairs = run_refinement_sequence(&mut make_problem(), n_uniform_steps, true);
+    let adaptive_pairs = run_refinement_sequence(&mut make_problem(), max_adaptive_steps, false);
+    let uniform_pairs = run_refinement_sequence(&mut make_problem(), max_uniform_steps, true);
     let adaptive_slope = loglog_slope(&adaptive_pairs);
     let uniform_slope = loglog_slope(&uniform_pairs);
     (adaptive_slope, uniform_slope, uniform_slope - adaptive_slope)
@@ -1985,9 +2015,10 @@ fn adaptive_vs_uniform_gap<P: AdaptiveProblem>(
 /// lengths and margins, and for why part (ii) is a gap-vs-gap comparison
 /// rather than a direct uniform-vs-uniform one.
 #[test]
-#[ignore = "heavy: 7 real gmsh remesh+solve iterations on the L-prism plus a \
-            fresh 10-iteration cantilever reference measurement; on-demand/nightly \
-            rate study (mirrors cantilever_adaptive_vs_uniform_rate_gap, step-9/10)"]
+#[ignore = "heavy: DOF-bounded real gmsh remesh+solve sequences on the L-prism \
+            plus a fresh DOF-bounded cantilever reference measurement; \
+            on-demand/nightly rate study (mirrors \
+            cantilever_adaptive_vs_uniform_rate_gap, step-9/10)"]
 fn l_shaped_adaptive_vs_uniform_rate_gap() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
         eprintln!("skipping: libgmsh not available in this build");
