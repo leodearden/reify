@@ -23,11 +23,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      # Corrected 2026-09-25 by #7739 (esc-5469-12/esc-6077-4/esc-6207-1/esc-6431-4): the original
-      # `dependent_cells:\s*Vec::new\(\)` → absent was a whole-file global negative that matched a
-      # `#[cfg(test)]` ResolutionProblem fixture builder, falsely re-blocking #5469/#6077/#6207/#6431.
-      # This positive form asserts the production per-component slice in `SolverRegistry::solve_inner`.
-      # Accepted gap: proves the field init, not the fold contents; behavioural cover is
+      # #7739. Accepted gap: proves the field init, not the fold contents; behavioural cover is
       # crates/reify-constraints/tests/joint_drive_per_trial_recompute.rs (`single_component_subproblem_still_receives_the_full_dependent_cells_list`).
       pattern: dependent_cells:\s*sub_dependent_cells
       paths:
