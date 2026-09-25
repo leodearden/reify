@@ -16,6 +16,7 @@ use reify_compiler::{
 };
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
+use reify_test_support::fixtures::assert_rel;
 use reify_test_support::*;
 
 // ─── zone_cylinder (step 1 RED / step 2 GREEN) ───────────────────────────────
@@ -677,9 +678,12 @@ fn compile_for_occt(source: &str) -> Option<reify_compiler::CompiledModule> {
     Some(compiled)
 }
 
-/// The realized value of `source`'s `S.v` cell, which must be a `volume()`.
-fn realized_volume(source: &str) -> Option<f64> {
-    let result = occt_engine().build(&compile_for_occt(source)?, ExportFormat::Step);
+/// The realized value of `compiled`'s `S.v` cell, which must be a `volume()`.
+fn realized_volume(
+    engine: &mut reify_eval::Engine,
+    compiled: &reify_compiler::CompiledModule,
+) -> f64 {
+    let result = engine.build(compiled, ExportFormat::Step);
     let errors = collect_errors(&result.diagnostics);
     assert!(errors.is_empty(), "unexpected build errors: {errors:#?}");
     match result.values.get(&ValueCellId::new("S", "v")) {
@@ -692,31 +696,31 @@ fn realized_volume(source: &str) -> Option<f64> {
                 DimensionVector::VOLUME,
                 "volume() cell must have VOLUME dimension"
             );
-            Some(*si_value)
+            *si_value
         }
         other => panic!("expected a Value::Scalar volume in cell S.v, got {other:?}"),
     }
 }
 
-fn assert_rel(got: f64, expected: f64, tol: f64, label: &str) {
-    let rel_err = (got - expected).abs() / expected.abs();
-    assert!(
-        rel_err <= tol,
-        "{label}: got {got:.9e} m³, expected {expected:.9e} m³ (rel_err={rel_err:.3e} > {tol:.0e})"
-    );
+/// [`realized_volume`] on a fresh engine; `None` when OCCT is unavailable.
+fn realized_volume_of(source: &str) -> Option<f64> {
+    let compiled = compile_for_occt(source)?;
+    Some(realized_volume(&mut occt_engine(), &compiled))
 }
-
-const ZONE_PROFILE_BOX_SOURCE: &str = r#"structure S {
-    let z = zone_profile(box(10mm, 10mm, 10mm), 1mm)
-    let v = volume(z)
-}"#;
 
 /// Every face of the 10mm box moves ±0.5mm, so the zone is (11mm)³ − (9mm)³.
 #[test]
 fn zone_profile_volume_matches_formula() {
-    let Some(v) = realized_volume(ZONE_PROFILE_BOX_SOURCE) else {
+    let Some(compiled) = compile_for_occt(
+        r#"structure S {
+    let z = zone_profile(box(10mm, 10mm, 10mm), 1mm)
+    let v = volume(z)
+}"#,
+    ) else {
         return;
     };
+    let mut engine = occt_engine();
+    let v = realized_volume(&mut engine, &compiled);
     let box_volume = 0.010_f64.powi(3);
     assert!(
         v < box_volume,
@@ -729,8 +733,7 @@ fn zone_profile_volume_matches_formula() {
         "zone_profile(box 10mm, 1mm)",
     );
 
-    let tess = occt_engine()
-        .tessellate_realizations(&parse_and_compile_with_stdlib(ZONE_PROFILE_BOX_SOURCE));
+    let tess = engine.tessellate_realizations(&compiled);
     let errors = collect_errors(&tess.diagnostics);
     assert!(
         errors.is_empty(),
@@ -755,7 +758,7 @@ fn zone_profile_volume_matches_formula() {
 /// numerically, hence the looser tolerance.
 #[test]
 fn zone_profile_on_a_curved_solid_matches_formula() {
-    let Some(v) = realized_volume(
+    let Some(v) = realized_volume_of(
         r#"structure S {
     let z = zone_profile(cylinder(5mm, 10mm), 1mm)
     let v = volume(z)
@@ -771,7 +774,7 @@ fn zone_profile_on_a_curved_solid_matches_formula() {
 /// the crosses of the ±0.5mm-offset boxes.
 #[test]
 fn zone_profile_on_a_concave_solid_matches_formula() {
-    let Some(v) = realized_volume(
+    let Some(v) = realized_volume_of(
         r#"structure S {
     let z = zone_profile(union(box(20mm, 10mm, 10mm), box(10mm, 10mm, 20mm)), 1mm)
     let v = volume(z)
@@ -799,8 +802,10 @@ fn zone_profile_wider_than_the_solid_reports_an_error() {
     };
     let tess = occt_engine().tessellate_realizations(&compiled);
     assert!(
-        !collect_errors(&tess.diagnostics).is_empty(),
-        "zone_profile wider than the solid should report an Error diagnostic, got: {:#?}",
+        collect_errors(&tess.diagnostics)
+            .iter()
+            .any(|error| error.message.contains("offset_solid_shape")),
+        "zone_profile wider than the solid should report the offset collapse as an Error, got: {:#?}",
         tess.diagnostics
     );
 }
