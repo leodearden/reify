@@ -161,6 +161,7 @@ test_prd_gate_corpus.sh pool
 test_prd_gate_objective_inheritance.sh pool
 test_prd_gate_struct_ctor_conformance.sh pool
 test_prd_gate_substrate_guard.sh pool
+test_pre_commit_ts_guard.sh pool
 test_proc_reaper.sh pool
 test_project_checks_typecheck.sh pool
 test_provision_warm_lane_fs.sh pool
