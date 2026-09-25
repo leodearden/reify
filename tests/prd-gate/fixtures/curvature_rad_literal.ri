@@ -3,6 +3,22 @@
 // NOTE `param kc : Curvature = 0.2rad / 1mm` FAILS `reify check` TODAY
 // (CURVATURE is m⁻¹ pre-α; rad·m⁻¹ initializer mismatches) — that check-time
 // flip is exactly leaf α's B1 signal, not a grammar question.
+//
+// POST-δ RE-MEASUREMENT (2026-09-25, main 12a9da343d; #5306 flipped
+// CTOR_FIELD_CONFORMANCE_SEVERITY to Error):
+//   `reify check` EXIT 1 / `reify eval` EXIT 1, exit codes UNCHANGED by δ, but
+//   the Error set grew from one to TWO:
+//   1. ParamDefaultTypeMismatch on `kc` (declared Scalar[m^-1], initializer
+//      Scalar[rad·m^-1]), from the param-default declared-vs-initializer check
+//      in crates/reify-compiler/src/entity.rs. It was already an Error, and it
+//      is α's own chokepoint.
+//   2. ctor-conformance ArgTypeMismatch on the param-default `kc`: a Warning
+//      before δ, an Error since δ (#5306).
+//   Both are keyed on the same Curvature-vs-rad·m^-1 mismatch. PREDICTION:
+//   α's re-dimension of CURVATURE clears both, so α's check 1 -> 0 flip
+//   survives δ as α's signal. α (#6179) must therefore assert exit 0 with BOTH
+//   codes gone, not merely the loss of ParamDefaultTypeMismatch. α's diff also
+//   deletes this file's `kc` CTOR_CONFORMANCE_CORPUS_RESIDUAL entry.
 
 module curvature_rad_literal
 
