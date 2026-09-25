@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 
 use reify_eval::persistent_cache::{
     CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_FORMAT_VERSION, ElasticResult, STALE_TEMPFILE_AGE,
-    read_entry, shard_dir, write_entry,
+    WithDiagnostics, read_entry, shard_dir, write_entry,
 };
 use tempfile::tempdir;
 
@@ -42,6 +42,25 @@ fn make_elastic_result_fixture() -> ElasticResult {
         curl: vec![0.1, 0.2, 0.3],
         aposteriori: None,
     }
+}
+
+/// Seed one cache entry in the shape `reify eval` writes and reads: `value`
+/// inside the [`WithDiagnostics`] envelope, here with no diagnostics.
+fn seed_entry(
+    cache_root: &std::path::Path,
+    engine_version_hash: &str,
+    input_hash: &str,
+    value: &ElasticResult,
+) -> std::io::Result<()> {
+    write_entry(
+        cache_root,
+        engine_version_hash,
+        input_hash,
+        &WithDiagnostics {
+            diagnostics: Vec::new(),
+            value: value.clone(),
+        },
+    )
 }
 
 #[test]
@@ -152,7 +171,7 @@ fn export_existing_entry_writes_tar_with_bin_and_meta_to_stdout() {
     let input_hash = "a".repeat(32);
     let fixture = make_elastic_result_fixture();
 
-    write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+    seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
         .expect("write_entry must seed the source cache");
 
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
@@ -333,7 +352,7 @@ fn round_trip_export_import_preserves_elastic_result() {
     let input_hash = "b".repeat(32);
     let fixture = make_elastic_result_fixture();
 
-    write_entry(src.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+    seed_entry(src.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
         .expect("write_entry must seed source cache");
 
     // (1) Export from src.
@@ -378,9 +397,12 @@ fn round_trip_export_import_preserves_elastic_result() {
     );
 
     // (3) Read the entry back from dst and verify equality.
-    let round_tripped = read_entry::<ElasticResult>(dst.path(), ENGINE_VERSION_HASH, &input_hash)
-        .expect("read_entry must not error");
-    let round_tripped = round_tripped.expect("dst cache must contain the imported entry");
+    let round_tripped =
+        read_entry::<WithDiagnostics<ElasticResult>>(dst.path(), ENGINE_VERSION_HASH, &input_hash)
+            .expect("read_entry must not error");
+    let round_tripped = round_tripped
+        .expect("dst cache must contain the imported entry")
+        .value;
     assert_eq!(
         round_tripped, fixture,
         "round-tripped ElasticResult must equal the seeded fixture"
@@ -843,7 +865,7 @@ fn cache_stats_reports_correct_entry_count_and_total_size_for_seeded_cache() {
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b', 'c'] {
         let input_hash: String = std::iter::repeat_n(c, 32).collect();
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -927,7 +949,7 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
             curl: vec![0.0; n * 3],
             aposteriori: None,
         };
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -1070,9 +1092,9 @@ fn cache_stats_aggregates_across_engine_versions() {
     let live_input = "a".repeat(32);
     let stale_input = "b".repeat(32);
     let fixture = make_elastic_result_fixture();
-    write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &live_input, &fixture)
+    seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &live_input, &fixture)
         .expect("write_entry must seed under live engine version");
-    write_entry(cache_dir.path(), &stale_engine, &stale_input, &fixture)
+    seed_entry(cache_dir.path(), &stale_engine, &stale_input, &fixture)
         .expect("write_entry must seed under synthesized stale engine version");
 
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
@@ -1127,7 +1149,7 @@ fn cache_clear_without_yes_refuses_and_exits_failure_and_preserves_entries() {
     let cache_dir = tempdir().expect("tempdir");
     let input_hash = "c".repeat(32);
     let fixture = make_elastic_result_fixture();
-    write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+    seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
         .expect("write_entry must seed the cache");
     // Sanity-check the seed.
     let pre = collect_cache_files(cache_dir.path());
@@ -1177,7 +1199,7 @@ fn cache_clear_yes_then_stats_round_trip_reports_empty() {
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b', 'c'] {
         let input_hash: String = std::iter::repeat_n(c, 32).collect();
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -1242,9 +1264,9 @@ fn cache_clear_with_engine_version_yes_clears_only_target_subdir_and_preserves_o
     let input_hash_a = "a".repeat(32);
     let input_hash_b = "b".repeat(32);
     let fixture = make_elastic_result_fixture();
-    write_entry(cache_dir.path(), &hash_a, &input_hash_a, &fixture)
+    seed_entry(cache_dir.path(), &hash_a, &input_hash_a, &fixture)
         .expect("write_entry must seed engine-version A");
-    write_entry(cache_dir.path(), &hash_b, &input_hash_b, &fixture)
+    seed_entry(cache_dir.path(), &hash_b, &input_hash_b, &fixture)
         .expect("write_entry must seed engine-version B");
 
     let subdir_a = cache_dir.path().join(&hash_a);
@@ -1347,7 +1369,7 @@ fn cache_gc_under_cap_is_no_op_and_preserves_all_entries() {
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b', 'c'] {
         let input_hash: String = std::iter::repeat_n(c, 32).collect();
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -1425,7 +1447,7 @@ fn cache_gc_evicts_when_forced_over_cap() {
             curl: vec![0.0; n * 3],
             aposteriori: None,
         };
-        write_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed the cache");
     }
 
@@ -1507,12 +1529,12 @@ fn cache_stats_honors_cache_dir_flag_overriding_env_var() {
     let fixture = make_elastic_result_fixture();
     for c in ['a', 'b'] {
         let input_hash: String = std::iter::repeat_n(c, 32).collect();
-        write_entry(flag_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(flag_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed flag_dir");
     }
     {
         let input_hash: String = "c".repeat(32);
-        write_entry(env_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
+        seed_entry(env_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
             .expect("write_entry must seed env_dir");
     }
 
@@ -1638,5 +1660,105 @@ fn cli_check_sweeps_stale_persistent_cache_tempfile_at_startup() {
     assert!(
         !stale_path.exists(),
         "stale .tmp.* file must be removed by startup sweep; path={stale_path:?}"
+    );
+}
+
+/// A stable substring of the `W_SHELL_TOO_THICK` warning text, as emitted by
+/// the elastic trampoline's `ShellForce::Auto` fallback arm.
+///
+/// The CLI renders diagnostic messages, not `DiagnosticCode` mnemonics, so the
+/// user-observable assertion has to be on the text. Kept to the invariant
+/// clause so a reworded suffix does not break it.
+const SHELL_TOO_THICK_TEXT: &str = "too thick for shell solve";
+
+/// Run `reify eval <fixture>` against a pinned cache dir and return the merged
+/// stdout+stderr, asserting the run succeeded.
+///
+/// Merged because the acceptance is "the user still sees the warning", which
+/// does not depend on which stream carries it.
+fn run_eval_with_cache_dir(fixture: &std::path::Path, cache_dir: &std::path::Path) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(["eval", fixture.to_str().expect("fixture path is UTF-8")])
+        .env("REIFY_CACHE_DIR", cache_dir)
+        // Remove the vars the cache resolver also consults, so a stale dev-shell
+        // env cannot redirect the run away from `cache_dir`.
+        .env_remove("REIFY_CACHE_MAX_BYTES")
+        .env_remove("XDG_CACHE_HOME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "reify eval must exit 0 (the too-thick body falls back to tet);\n\
+         stdout: {stdout}\nstderr: {stderr}",
+    );
+    format!("{stdout}\n{stderr}")
+}
+
+/// Every `.bin` entry under `cache_dir`, keyed by path, with its bytes.
+fn snapshot_bin_entries(
+    cache_dir: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    collect_cache_files(cache_dir)
+        .into_iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .map(|p| {
+            let bytes = std::fs::read(&p).expect("a cache .bin must be readable");
+            (p, bytes)
+        })
+        .collect()
+}
+
+/// The literal reported defect: run `reify eval` twice against one cache dir
+/// and the `W_SHELL_TOO_THICK` warning must appear on BOTH runs.
+///
+/// Run 1 solves cold and writes the persistent entry; run 2 is a separate
+/// process that is served entirely from that entry. Before the diagnostics
+/// envelope, run 2 printed nothing — the warning was first-run-only and stayed
+/// gone until the cache was cleared, which is exactly the shape a user hits
+/// (edit nothing, re-run, the warning vanishes).
+///
+/// That run 2 really is a warm serve is asserted, not assumed: a re-solve
+/// rewrites the `.bin`, and the header's millisecond `written_at` makes any
+/// rewrite byte-visible.
+#[test]
+fn shell_too_thick_warning_survives_a_second_eval_against_a_warm_cache() {
+    let cache_dir = tempdir().expect("tempdir");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/fea_shell_too_thick_auto.ri");
+
+    let first = run_eval_with_cache_dir(&fixture, cache_dir.path());
+    assert!(
+        first.contains(SHELL_TOO_THICK_TEXT),
+        "run 1 (cold) must warn that the body is too thick, or this test is \
+         vacuous; output was:\n{first}",
+    );
+    let entries_after_cold = snapshot_bin_entries(cache_dir.path());
+    assert!(
+        !entries_after_cold.is_empty(),
+        "run 1 must write a persistent entry, or run 2 cannot be a warm serve; \
+         no .bin under {}",
+        cache_dir.path().display(),
+    );
+
+    let second = run_eval_with_cache_dir(&fixture, cache_dir.path());
+    let entries_after_warm = snapshot_bin_entries(cache_dir.path());
+    assert!(
+        entries_after_warm == entries_after_cold,
+        "run 2 must be served from run 1's entry, not re-solved: a re-solve \
+         adds a .bin or rewrites one in place (same path, new bytes); \
+         entries before: {:?}, after: {:?}",
+        entries_after_cold.keys().collect::<Vec<_>>(),
+        entries_after_warm.keys().collect::<Vec<_>>(),
+    );
+    assert!(
+        second.contains(SHELL_TOO_THICK_TEXT),
+        "run 2 (warm, served from the on-disk cache) must print the SAME \
+         warning — a `W_*` warning must not be first-run-only; output was:\n{second}",
     );
 }

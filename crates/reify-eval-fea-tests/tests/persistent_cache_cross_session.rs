@@ -27,6 +27,11 @@
 //!   (`Ok(None)`, not `Err`), a fresh tempfile inside the 1-hour
 //!   `STALE_TEMPFILE_AGE` grace is preserved, an aged one is swept, and a live
 //!   sibling entry in the same shard is untouched throughout.
+//! * **case 6** (`cross_session_hit_replays_the_shell_too_thick_warning`)
+//!   — a HIT replays the diagnostics the cold solve emitted, so a `W_*` warning
+//!   is not first-run-only. Uses `examples/fea_shell_too_thick_auto.ri`, whose
+//!   cold emission is pinned elsewhere; the claim added here is that the WARM
+//!   serve says the same thing, and says it exactly once.
 //!
 //! Keep this list in step with the `#[test]` fns below; it is the file's index.
 //!
@@ -86,7 +91,9 @@
 //! only because a buckling solve is ~1000 s in debug).
 
 use reify_core::Severity;
-use reify_eval::persistent_cache::{ENGINE_VERSION_HASH, ElasticResult, read_entry};
+use reify_eval::persistent_cache::{
+    ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, read_entry,
+};
 use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
@@ -350,9 +357,11 @@ fn cross_session_hit_returns_byte_identical_entry_and_does_not_rewrite_it() {
     );
 
     let value_a = find_elastic_result(&engine_a);
-    let decoded_a: ElasticResult = read_entry(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
-        .expect("read_entry must not error on a freshly written entry")
-        .expect("the session-1 entry must decode to Some");
+    let decoded_a: ElasticResult =
+        read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
+            .expect("read_entry must not error on a freshly written entry")
+            .expect("the session-1 entry must decode to Some")
+            .value;
 
     // ── Session 2 (Engine B): warm lookup, must NOT solve and must NOT write ─
 
@@ -409,9 +418,11 @@ fn cross_session_hit_returns_byte_identical_entry_and_does_not_rewrite_it() {
     );
 
     // (2) Both sessions' entries decode to PartialEq-equal ElasticResults.
-    let decoded_b: ElasticResult = read_entry(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
-        .expect("read_entry must not error after the warm session")
-        .expect("the entry must still decode to Some after the warm session");
+    let decoded_b: ElasticResult =
+        read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
+            .expect("read_entry must not error after the warm session")
+            .expect("the entry must still decode to Some after the warm session")
+            .value;
     assert!(
         decoded_a == decoded_b,
         "the decoded ElasticResult must be unchanged across the cross-session hit",
@@ -611,7 +622,7 @@ fn engine_version_bump_misses_cold_solves_and_leaves_old_subdir_until_sweep_prun
     // relocated entry is NOT served under the version it does not belong to.
     // A stale generation can never be mistaken for a live one.
     assert!(
-        read_entry::<ElasticResult>(tmp.path(), FAKE_EVH, &old_hash)
+        read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), FAKE_EVH, &old_hash)
             .expect("a mismatched echo is a miss, never an Err")
             .is_none(),
         "an entry sitting under a version dir it was not written for must read as \
@@ -653,7 +664,7 @@ fn engine_version_bump_misses_cold_solves_and_leaves_old_subdir_until_sweep_prun
         "the live engine-version subdir must survive the orphan prune",
     );
     assert!(
-        read_entry::<ElasticResult>(tmp.path(), ENGINE_VERSION_HASH, &new_hash)
+        read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), ENGINE_VERSION_HASH, &new_hash)
             .expect("read_entry must not error on the live entry")
             .is_some(),
         "the live generation's entry must still be readable after the orphan prune",
@@ -695,7 +706,13 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     // ── (a) One GOOD entry that must survive everything below ───────────────
 
     let fixture = make_elastic_result_fixture(42);
-    write_entry(root, ENGINE_VERSION_HASH, &good_hash, &fixture)
+    // Seeded through the same `WithDiagnostics` envelope production writes, so
+    // this fixture models a real entry rather than a shape no writer produces.
+    let seed = WithDiagnostics {
+        diagnostics: Vec::new(),
+        value: fixture.clone(),
+    };
+    write_entry(root, ENGINE_VERSION_HASH, &good_hash, &seed)
         .expect("seeding the good entry must succeed");
     let good_meta = entry_meta_path(root, ENGINE_VERSION_HASH, &good_hash);
     assert!(
@@ -737,7 +754,7 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
 
     // A crashed write is a plain MISS — never an error, never a partial value.
     assert!(
-        read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &victim_hash)
+        read_entry::<WithDiagnostics<ElasticResult>>(root, ENGINE_VERSION_HASH, &victim_hash)
             .expect("a never-published entry is a miss, never an Err")
             .is_none(),
         "a tempfile that never reached persist() must read as a cache MISS",
@@ -772,7 +789,7 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     // would enshrine the defect and silently retire the documented policy.
 
     let torn_bin = entry_bin_path(root, ENGINE_VERSION_HASH, &torn_hash);
-    write_entry(root, ENGINE_VERSION_HASH, &torn_hash, &fixture)
+    write_entry(root, ENGINE_VERSION_HASH, &torn_hash, &seed)
         .expect("seeding the entry that will be torn must succeed");
     let header_len = u64::try_from(ENTRY_HEADER_ENCODED_LEN).expect("header len fits in u64");
     let intact_len = std::fs::metadata(&torn_bin)
@@ -809,7 +826,7 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     }
 
     assert!(
-        read_entry::<ElasticResult>(root, ENGINE_VERSION_HASH, &torn_hash)
+        read_entry::<WithDiagnostics<ElasticResult>>(root, ENGINE_VERSION_HASH, &torn_hash)
             .expect("a body-torn entry is a miss, never an Err")
             .is_none(),
         "a .bin torn mid-body must read as a cache MISS — the corruption-recovery \
@@ -849,9 +866,11 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
     );
 
     // THE SURVIVORSHIP CLAIM: the live entry is untouched by all of the above.
-    let survivor: ElasticResult = read_entry(root, ENGINE_VERSION_HASH, &good_hash)
-        .expect("read_entry must not error on the good entry")
-        .expect("the good entry must survive the crashed-writer sweep");
+    let survivor: ElasticResult =
+        read_entry::<WithDiagnostics<ElasticResult>>(root, ENGINE_VERSION_HASH, &good_hash)
+            .expect("read_entry must not error on the good entry")
+            .expect("the good entry must survive the crashed-writer sweep")
+            .value;
     assert!(
         survivor == fixture,
         "the surviving entry must decode PartialEq-equal to what was written",
@@ -860,4 +879,134 @@ fn crashed_writer_leftovers_read_as_miss_and_are_swept_without_harming_live_entr
         good_meta.is_file(),
         "the good entry's .meta sidecar must survive the sweep intact",
     );
+}
+
+/// The too-thick fixture source (50 × 20 × 20 mm, bare `ElasticOptions()` so
+/// `shell_force` defaults to `Auto`). Its COLD emission of the
+/// `DiagnosticCode::ShellTooThick` warning is already pinned green by
+/// `crates/reify-eval/tests/harness_topology_selector/shell_too_thick_at_auto_falls_back.rs`;
+/// case 6 below adds the claim that the WARM serve says the same thing.
+fn shell_too_thick_source() -> &'static str {
+    include_str!("../../../examples/fea_shell_too_thick_auto.ri")
+}
+
+/// Count the `W_SHELL_TOO_THICK` warnings in a diagnostics list.
+///
+/// Filtering on `(severity, code)` rather than message substrings is the house
+/// idiom — a reworded message must not break the assertion.
+fn count_shell_too_thick_warnings(diagnostics: &[reify_core::Diagnostic]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(reify_core::DiagnosticCode::ShellTooThick)
+        })
+        .count()
+}
+
+/// Case 6 — a cross-session HIT replays the solver's diagnostics, so a `W_*`
+/// warning is not first-run-only.
+///
+/// This is the acceptance for the defect: with a persistent cache dir
+/// configured, session 1 warns that the body is too thick for shell elements
+/// and session 2 — served entirely from disk — used to say nothing at all. The
+/// user-visible symptom is a warning that disappears on the second `reify eval`
+/// of the same file and never comes back until the cache is cleared.
+///
+/// Two engines on one dir, not two evals on one engine: a second eval through
+/// the same engine is served by the IN-MEMORY `NodeCache` and never reaches
+/// `run_compute_dispatch`, so it would exercise #5062's in-memory replay rather
+/// than this one.
+///
+/// The hit/miss counter assertions are load-bearing in a second way: they stop
+/// the test passing by accidentally re-solving. The fix must replay the
+/// warning, not disable caching.
+#[test]
+fn cross_session_hit_replays_the_shell_too_thick_warning() {
+    let tmp = tempfile::TempDir::new().expect("tmp dir creation must succeed");
+    let source = shell_too_thick_source();
+
+    // ── Session 1 (Engine A): cold solve, warns, writes the entry ───────────
+
+    let mut engine_a = make_simple_engine();
+    engine_a.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+    reify_eval::compute_targets::register_compute_fns(&mut engine_a);
+
+    let compiled_a = parse_and_compile_with_stdlib(source);
+    let result_a = engine_a.eval(&compiled_a);
+
+    let errors_a: Vec<_> = result_a
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_a.is_empty(),
+        "session 1 must succeed via the tet fallback, got Errors: {errors_a:?}",
+    );
+    assert!(
+        count_shell_too_thick_warnings(&result_a.diagnostics) >= 1,
+        "session 1 (cold) must emit the ShellTooThick warning, or this test is \
+         vacuous; got: {:?}",
+        result_a.diagnostics,
+    );
+    assert!(
+        has_bin_file(tmp.path()),
+        "a .bin must exist under the cache dir after the session-1 cold solve",
+    );
+
+    // ── Session 2 (Engine B): brand-new engine, same dir — warm serve ───────
+
+    let mut engine_b = make_simple_engine();
+    engine_b.set_persistent_cache_dir(Some(tmp.path().to_path_buf()));
+    reify_eval::compute_targets::register_compute_fns(&mut engine_b);
+
+    let compiled_b = parse_and_compile_with_stdlib(source);
+    let result_b = engine_b.eval(&compiled_b);
+
+    let errors_b: Vec<_> = result_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_b.is_empty(),
+        "session 2 must succeed, got Errors: {errors_b:?}",
+    );
+    assert_eq!(
+        engine_b.persistent_hit_count(),
+        1,
+        "session 2 must be served from disk — otherwise the warning below would \
+         be a fresh emission, not a replay",
+    );
+    assert_eq!(
+        engine_b.persistent_miss_count(),
+        0,
+        "session 2 must not fall through to a solve; the fix must replay the \
+         warning, not disable caching",
+    );
+
+    // THE ACCEPTANCE.
+    assert_eq!(
+        count_shell_too_thick_warnings(&result_b.diagnostics),
+        1,
+        "session 2 must replay exactly one ShellTooThick warning — a warm serve \
+         has to say what the cold serve said; got: {:?}",
+        result_b.diagnostics,
+    );
+
+    // Double-emission guard (#5062 / INV-EVAL-3): each diagnostic has exactly
+    // one owner per serve — replayed XOR freshly-pushed, never both. Structural
+    // here rather than bookkeeping: the persistent-lookup arm returns on a HIT
+    // and falls through to the trampoline only on a MISS.
+    let mut seen: std::collections::HashSet<(String, Option<reify_core::DiagnosticCode>)> =
+        std::collections::HashSet::new();
+    for d in &result_b.diagnostics {
+        assert!(
+            seen.insert((d.message.clone(), d.code)),
+            "diagnostic emitted more than once on a single serve: {d:?}; full \
+             list: {:?}",
+            result_b.diagnostics,
+        );
+    }
 }

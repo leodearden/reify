@@ -21,8 +21,7 @@
 
 // ── Production code (task #3428 step-6 / step-8) ─────────────────────────────
 
-/// Return `true` if `target` is in the persistent-cache write/lookup
-/// allowlist.
+/// The persistent-cache write/lookup allowlist.
 ///
 /// Listed targets: `"solver::elastic_static"` (task #3428),
 /// `"solver::buckling"` (task #3459), and `"shell-extract::extract"`
@@ -30,19 +29,30 @@
 /// superset of [`crate::significance_filter::is_opted_in`]'s allowlist
 /// (`{elastic_static, buckling}`); `"shell-extract::extract"` is persistable
 /// but NOT significance-opted-in.
+pub(crate) const PERSISTABLE_TARGETS: [&str; 3] = [
+    "solver::elastic_static",
+    "solver::buckling",
+    "shell-extract::extract",
+];
+
+/// Return `true` if `target` is in [`PERSISTABLE_TARGETS`].
 pub(crate) fn is_persistable_target(target: &str) -> bool {
-    matches!(
-        target,
-        "solver::elastic_static" | "solver::buckling" | "shell-extract::extract"
-    )
+    PERSISTABLE_TARGETS.contains(&target)
 }
 
-/// Look up a prior result from the on-disk cache and reconstruct the result
-/// [`reify_ir::Value`] without re-running the trampoline.
+/// Look up a prior result from the on-disk cache and reconstruct both the
+/// result [`reify_ir::Value`] and the diagnostics its original solve emitted,
+/// without re-running the trampoline.
 ///
-/// Returns `Some(value)` on a hit (the caller should complete the dispatch and
-/// return immediately, skipping `invoke_compute_trampoline`) or `None` on a
-/// miss or any read error (caller falls through to the normal invoke path).
+/// Returns `Some((value, diagnostics))` on a hit (the caller should complete
+/// the dispatch and return immediately, skipping `invoke_compute_trampoline`)
+/// or `None` on a miss or any read error (caller falls through to the normal
+/// invoke path).
+///
+/// The diagnostics come back through the same channel the trampoline's fresh
+/// diagnostics use, so a warm serve is indistinguishable from a cold one to
+/// every downstream consumer. `diagnostics` is empty for a solve that emitted
+/// none — an empty list is a hit, not a miss.
 ///
 /// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
 /// `"shell-extract::extract"` (task #4071).
@@ -63,7 +73,7 @@ pub(crate) fn persistent_lookup(
     cache_dir: &std::path::Path,
     target: &str,
     cache_key: reify_core::ContentHash,
-) -> Option<reify_ir::Value> {
+) -> Option<(reify_ir::Value, Vec<reify_core::Diagnostic>)> {
     debug_assert!(
         is_persistable_target(target),
         "persistent_lookup called for non-persistable target {:?}",
@@ -73,15 +83,18 @@ pub(crate) fn persistent_lookup(
     match target {
         "solver::elastic_static" => {
             match crate::persistent_cache::read_entry::<
-                crate::persistent_cache::ElasticResult,
+                crate::persistent_cache::WithDiagnostics<crate::persistent_cache::ElasticResult>,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(er)) => Some(
-                    crate::compute_targets::elastic_static::value_from_elastic_result(&er),
-                ),
+                Ok(Some(entry)) => Some((
+                    crate::compute_targets::elastic_static::value_from_elastic_result(
+                        &entry.value,
+                    ),
+                    entry.diagnostics,
+                )),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -97,15 +110,18 @@ pub(crate) fn persistent_lookup(
         }
         "solver::buckling" => {
             match crate::persistent_cache::read_entry::<
-                crate::persistent_cache::BucklingResultCache,
+                crate::persistent_cache::WithDiagnostics<
+                    crate::persistent_cache::BucklingResultCache,
+                >,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(brc)) => Some(
-                    crate::compute_targets::buckling::value_from_buckling_result(&brc),
-                ),
+                Ok(Some(entry)) => Some((
+                    crate::compute_targets::buckling::value_from_buckling_result(&entry.value),
+                    entry.diagnostics,
+                )),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -122,15 +138,18 @@ pub(crate) fn persistent_lookup(
         }
         "shell-extract::extract" => {
             match crate::persistent_cache::read_entry::<
-                reify_shell_extract::ShellExtractionResult,
+                crate::persistent_cache::WithDiagnostics<
+                    reify_shell_extract::ShellExtractionResult,
+                >,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
             ) {
-                Ok(Some(ser)) => Some(
-                    crate::shell_extract_compute::shell_extraction_result_to_value(&ser),
-                ),
+                Ok(Some(entry)) => Some((
+                    crate::shell_extract_compute::shell_extraction_result_to_value(&entry.value),
+                    entry.diagnostics,
+                )),
                 Ok(None) => None,
                 Err(e) => {
                     tracing::warn!(
@@ -154,8 +173,13 @@ pub(crate) fn persistent_lookup(
 /// # Behaviour
 ///
 /// Extracts a typed cache container from `result` via the target-specific
-/// bridge function, then calls [`crate::persistent_cache::write_entry`]
-/// (atomic temp+rename).
+/// bridge function, wraps it together with `diagnostics` in a
+/// [`crate::persistent_cache::WithDiagnostics`] envelope, then calls
+/// [`crate::persistent_cache::write_entry`] (atomic temp+rename).
+///
+/// `diagnostics` are the ones this dispatch's trampoline emitted. They are
+/// stored so a later warm serve can replay them; without them the on-disk
+/// cache would make every `W_*` warning first-run-only.
 ///
 /// Covered targets: `"solver::elastic_static"`, `"solver::buckling"`, and
 /// `"shell-extract::extract"` (task #4071).
@@ -177,6 +201,7 @@ pub(crate) fn persistent_write(
     target: &str,
     cache_key: reify_core::ContentHash,
     result: &reify_ir::Value,
+    diagnostics: &[reify_core::Diagnostic],
 ) {
     debug_assert!(
         is_persistable_target(target),
@@ -198,12 +223,15 @@ pub(crate) fn persistent_write(
                 return;
             };
             if let Err(e) = crate::persistent_cache::write_entry::<
-                crate::persistent_cache::ElasticResult,
+                crate::persistent_cache::WithDiagnostics<crate::persistent_cache::ElasticResult>,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &er,
+                &crate::persistent_cache::WithDiagnostics {
+                    diagnostics: diagnostics.to_vec(),
+                    value: er,
+                },
             ) {
                 tracing::warn!(
                     %e,
@@ -226,12 +254,17 @@ pub(crate) fn persistent_write(
                 return;
             };
             if let Err(e) = crate::persistent_cache::write_entry::<
-                crate::persistent_cache::BucklingResultCache,
+                crate::persistent_cache::WithDiagnostics<
+                    crate::persistent_cache::BucklingResultCache,
+                >,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &brc,
+                &crate::persistent_cache::WithDiagnostics {
+                    diagnostics: diagnostics.to_vec(),
+                    value: brc,
+                },
             ) {
                 tracing::warn!(
                     %e,
@@ -255,12 +288,17 @@ pub(crate) fn persistent_write(
                 return;
             };
             if let Err(e) = crate::persistent_cache::write_entry::<
-                reify_shell_extract::ShellExtractionResult,
+                crate::persistent_cache::WithDiagnostics<
+                    reify_shell_extract::ShellExtractionResult,
+                >,
             >(
                 cache_dir,
                 crate::persistent_cache::ENGINE_VERSION_HASH,
                 &input_hash,
-                &ser,
+                &crate::persistent_cache::WithDiagnostics {
+                    diagnostics: diagnostics.to_vec(),
+                    value: ser,
+                },
             ) {
                 tracing::warn!(
                     %e,
@@ -291,7 +329,9 @@ mod tests {
     use crate::deps::DependencyTrace;
     use crate::engine_compute::{ComputeOutcome, RealizationReadHandle};
     use crate::graph::CancellationHandle;
-    use crate::persistent_cache::{ENGINE_VERSION_HASH, ElasticResult, entry_bin_path, read_entry};
+    use crate::persistent_cache::{
+        ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, entry_bin_path, read_entry,
+    };
 
     // ── FEA input helpers (cantilever-style, tet path) ────────────────────────
 
@@ -512,8 +552,8 @@ mod tests {
     /// (1) Persistent WRITE: after a Completed `solver::elastic_static` dispatch
     /// with a non-zero `cache_key` and a configured cache dir, a `.bin` file
     /// appears at `entry_bin_path(cache_dir, ENGINE_VERSION_HASH, "{cache_key}")`
-    /// and `read_entry::<ElasticResult>` round-trips with a matching
-    /// `max_von_mises`.
+    /// and `read_entry::<WithDiagnostics<ElasticResult>>` round-trips with a
+    /// matching `max_von_mises`.
     ///
     /// Fails to compile until step-6 adds `set_persistent_cache_dir` +
     /// `cache_key` param to `run_compute_dispatch`.
@@ -593,9 +633,11 @@ mod tests {
         );
 
         // Assert read_entry round-trips with max_von_mises matching the dispatch result.
-        let entry = read_entry::<ElasticResult>(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
-            .expect("read_entry must not return Err")
-            .expect("read_entry must return Some after a successful write");
+        let entry =
+            read_entry::<WithDiagnostics<ElasticResult>>(tmp.path(), ENGINE_VERSION_HASH, &input_hash)
+                .expect("read_entry must not return Err")
+                .expect("read_entry must return Some after a successful write")
+                .value;
         let relative_err =
             (entry.max_von_mises - max_vm).abs() / max_vm.abs().max(f64::EPSILON);
         assert!(
@@ -744,11 +786,14 @@ mod tests {
         // Seed the on-disk cache entry for a known cache_key.
         let cache_key = ContentHash(0xf00d_beef_cafe_babe_f00d_beef_cafe_babe_u128);
         let input_hash = format!("{cache_key}");
-        write_entry::<crate::persistent_cache::ElasticResult>(
+        write_entry::<WithDiagnostics<ElasticResult>>(
             tmp.path(),
             crate::persistent_cache::ENGINE_VERSION_HASH,
             &input_hash,
-            &er,
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                value: er,
+            },
         )
         .expect("test seed write_entry must succeed");
 
@@ -864,11 +909,14 @@ mod tests {
         // Seed a cache entry under KEY_A.
         let key_a = ContentHash(0x1111_2222_3333_4444_1111_2222_3333_4444_u128);
         let input_hash_a = format!("{key_a}");
-        write_entry::<crate::persistent_cache::ElasticResult>(
+        write_entry::<WithDiagnostics<ElasticResult>>(
             tmp.path(),
             crate::persistent_cache::ENGINE_VERSION_HASH,
             &input_hash_a,
-            &er,
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                value: er,
+            },
         )
         .expect("test seed write_entry must succeed");
 
@@ -1050,11 +1098,14 @@ mod tests {
         // Seed the on-disk cache entry for a known cache_key.
         let cache_key = ContentHash(0xb0c5_1234_b0c5_5678_b0c5_1234_b0c5_5678_u128);
         let input_hash = format!("{cache_key}");
-        write_entry::<BucklingResultCache>(
+        write_entry::<WithDiagnostics<BucklingResultCache>>(
             tmp.path(),
             ENGINE_VERSION_HASH,
             &input_hash,
-            &brc,
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                value: brc,
+            },
         )
         .expect("test seed write_entry must succeed");
 
@@ -1173,11 +1224,14 @@ mod tests {
         // Seed under KEY_A.
         let key_a = ContentHash(0xaaaa_bcde_1234_5678_aaaa_bcde_1234_5678_u128);
         let input_hash_a = format!("{key_a}");
-        write_entry::<BucklingResultCache>(
+        write_entry::<WithDiagnostics<BucklingResultCache>>(
             tmp.path(),
             ENGINE_VERSION_HASH,
             &input_hash_a,
-            &brc,
+            &WithDiagnostics {
+                diagnostics: Vec::new(),
+                value: brc,
+            },
         )
         .expect("test seed write_entry must succeed");
 
@@ -1247,6 +1301,545 @@ mod tests {
             super::is_persistable_target("shell-extract::extract"),
             "shell-extract::extract must be in the persistable-target allowlist \
              (task #4071 step-2 adds it to is_persistable_target)",
+        );
+    }
+
+    // ── Diagnostics carried across the persist bridge (task 7245) ─────────────
+    //
+    // The bridge is the round trip that decides whether a warm serve can replay
+    // what the cold solve said. The table below pins it as TARGET-AGNOSTIC and
+    // SEVERITY-GENERIC at once: the `WithDiagnostics` envelope is generic over
+    // both, so neither a persistable target nor a severity may be special-cased.
+
+    /// A persistable solver diagnostic of `severity`, shaped the way a solver
+    /// emits one: a coded message, a machine-readable candidate list, no labels.
+    ///
+    /// Every severity carries `DiagnosticCode::ShellTooThick`, so the name-based
+    /// on-disk code encoding is exercised in each cell rather than only in the
+    /// Warning one.
+    fn solver_diagnostic(severity: reify_core::Severity) -> reify_core::Diagnostic {
+        let message = format!(
+            "shell candidate too thick for shell elements; falling back to tet mesh \
+             (severity {})",
+            severity.as_wire_str(),
+        );
+        let base = match severity {
+            reify_core::Severity::Info => reify_core::Diagnostic::info(message),
+            reify_core::Severity::Warning => reify_core::Diagnostic::warning(message),
+            reify_core::Severity::Error => reify_core::Diagnostic::error(message),
+        };
+        base.with_code(reify_core::DiagnosticCode::ShellTooThick)
+            .with_candidates(["tet", "hex"])
+    }
+
+    /// A `solver::elastic_static` result `Value` in the shape the bridge's
+    /// `elastic_result_from_value` reader expects.
+    fn elastic_static_cache_value() -> Value {
+        crate::compute_targets::elastic_static::value_from_elastic_result(&minimal_elastic_result(
+            42.0,
+        ))
+    }
+
+    /// A `solver::buckling` result `Value` in the shape the bridge's
+    /// `buckling_result_from_value` reader expects.
+    fn buckling_cache_value() -> Value {
+        crate::compute_targets::buckling::value_from_buckling_result(
+            &minimal_buckling_result_cache(),
+        )
+    }
+
+    /// A `shell-extract::extract` result `Value` in the shape the bridge's
+    /// `value_to_shell_extraction_result` reader expects: the empty mesh, which
+    /// `ShellExtractionResult::new` admits.
+    fn shell_extract_cache_value() -> Value {
+        let empty = reify_shell_extract::ShellExtractionResult::new(
+            reify_shell_extract::MidSurfaceMesh {
+                vertices: vec![],
+                triangles: vec![],
+                thickness: vec![],
+            },
+            reify_shell_extract::SegmentationResult {
+                regions: vec![],
+                vertex_labels: vec![],
+                triangle_labels: vec![],
+            },
+            reify_shell_extract::MidSurfaceAttributes::default(),
+            0,
+            vec![],
+        )
+        .expect("an empty mesh satisfies the length invariant");
+        crate::shell_extract_compute::shell_extraction_result_to_value(&empty)
+    }
+
+    /// A persistable target name paired with a builder for the result `Value`
+    /// that target's bridge reader expects.
+    type PersistableTargetFixture = (&'static str, fn() -> Value);
+
+    /// The persist bridge must replay a diagnostic of ANY severity on EVERY
+    /// persistable target, verbatim in every field a consumer can key off.
+    ///
+    /// Why a table rather than one fixture per case: "regardless of severity" is
+    /// an invariant of the bridge, not a property of whichever diagnostic a test
+    /// author happened to pick. Pinning the whole cross product makes a
+    /// severity-conditional regression — a `.filter(|d| d.severity !=
+    /// Severity::Error)` slipped into `persistent_write`, say — impossible to
+    /// land green. Each target is a row because each has its own
+    /// `persistent_lookup`/`persistent_write` arm.
+    #[test]
+    fn persist_bridge_replays_every_severity_on_every_persistable_target() {
+        use reify_core::Severity;
+
+        let targets: [PersistableTargetFixture; 3] = [
+            ("solver::elastic_static", elastic_static_cache_value),
+            ("solver::buckling", buckling_cache_value),
+            ("shell-extract::extract", shell_extract_cache_value),
+        ];
+        assert_eq!(
+            targets.map(|(target, _)| target).as_slice(),
+            super::PERSISTABLE_TARGETS.as_slice(),
+            "every persistable target needs a row in this table, in allowlist order",
+        );
+        let severities = [Severity::Info, Severity::Warning, Severity::Error];
+
+        // ONE cache dir for every cell, so each cell's KEY is what selects its
+        // own entry and an aliasing bug cannot hide behind per-cell isolation.
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        for (severity_index, severity) in severities.into_iter().enumerate() {
+            for (target_index, (target, build_value)) in targets.into_iter().enumerate() {
+                let cell = format!("{target} / {}", severity.as_wire_str());
+                let cache_key = ContentHash(
+                    0x7245_0010_7245_0010_7245_0010_0000_0000_u128
+                        | ((severity_index as u128) << 8)
+                        | target_index as u128,
+                );
+                let written = solver_diagnostic(severity);
+                let value = build_value();
+
+                super::persistent_write(
+                    tmp.path(),
+                    target,
+                    cache_key,
+                    &value,
+                    std::slice::from_ref(&written),
+                );
+
+                let (got_value, got_diags) = super::persistent_lookup(tmp.path(), target, cache_key)
+                    .unwrap_or_else(|| panic!("{cell}: the entry just written must be a hit"));
+
+                assert_eq!(
+                    got_value.content_hash(),
+                    value.content_hash(),
+                    "{cell}: carrying diagnostics must not perturb the reconstructed Value",
+                );
+                assert_eq!(
+                    got_diags.len(),
+                    1,
+                    "{cell}: exactly the one written diagnostic must be replayed, \
+                     got {got_diags:?}",
+                );
+                let got = &got_diags[0];
+                assert_eq!(
+                    got.severity, severity,
+                    "{cell}: severity must survive the warm serve — the persist path \
+                     must neither drop nor downgrade a diagnostic by severity",
+                );
+                assert_eq!(got.message, written.message, "{cell}: message must survive");
+                assert_eq!(
+                    got.code,
+                    Some(reify_core::DiagnosticCode::ShellTooThick),
+                    "{cell}: downstream consumers key off DiagnosticCode, not message \
+                     substrings",
+                );
+                assert_eq!(
+                    got.candidates, written.candidates,
+                    "{cell}: the machine-readable candidate list must survive",
+                );
+            }
+        }
+    }
+
+    // ── Cold -> warm dispatch round trip, Error severity (task 7245) ──────────
+    //
+    // Every other diagnostics assertion either stops at the persist bridge or
+    // SEEDS the on-disk entry with `write_entry` directly, so the COLD write
+    // half of the hit path is never exercised end to end at the dispatch
+    // boundary. These two tests drive `run_compute_dispatch` twice over one
+    // cache dir and close that gap at the severity that matters most.
+    //
+    // Why Error specifically: an Error-severity diagnostic returned inside
+    // `ComputeOutcome::Completed` does not by itself fail the solve, but
+    // `reify eval` and `reify build` DO gate their exit code on
+    // `Severity::Error`. So a Completed+Error solve exits nonzero cold — and if
+    // the Error is not replayed, the SECOND eval of the same scene exits ZERO.
+    // A silent exit-code flip between run 1 and run 2 is the sharpest form of
+    // this task's harm, and these tests forbid it.
+    //
+    // The Error must come from a STUB trampoline, not a `.ri` fixture: every
+    // `Diagnostic::error` in compute_targets/{elastic_static,buckling}.rs sits
+    // on a `ComputeOutcome::Failed` arm, and only the `Completed` arm reaches
+    // `persistent_write`, so no fixture on main can produce a persisted
+    // Error-severity solver diagnostic. Task #7079 is what will make this shape
+    // reachable from real input.
+
+    /// The Error-severity diagnostic the stub trampolines emit on a Completed
+    /// outcome.
+    ///
+    /// `FeaLoadKindUnsupported` is the workspace's existing Error-severity
+    /// "declared, and explicitly not honored rather than silently no-op'd"
+    /// code, which makes it the closest present-day stand-in for the
+    /// `E_PARAM_NOT_HONORED` task #7079 will mint on exactly this shape.
+    fn unhonored_param_error() -> reify_core::Diagnostic {
+        reify_core::Diagnostic::error("solver: unsupported FEA load kind 'TractionLoad'")
+            .with_code(reify_core::DiagnosticCode::FeaLoadKindUnsupported)
+    }
+
+    static DISPATCH_COUNT_ERR_ELASTIC: AtomicUsize = AtomicUsize::new(0);
+
+    /// Stub `solver::elastic_static`: Completes with a persistable result AND an
+    /// Error, counting each invocation so the warm run can prove it was skipped.
+    fn erroring_elastic_trampoline(
+        _vi: &[Value],
+        _ri: &[RealizationReadHandle],
+        _opts: &Value,
+        _prior: Option<&reify_ir::OpaqueState>,
+        _cancel: &CancellationHandle,
+    ) -> ComputeOutcome {
+        DISPATCH_COUNT_ERR_ELASTIC.fetch_add(1, Ordering::SeqCst);
+        ComputeOutcome::Completed {
+            result: elastic_static_cache_value(),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![unhonored_param_error()],
+            structured_detail: vec![],
+        }
+    }
+
+    static DISPATCH_COUNT_ERR_BUCKLING: AtomicUsize = AtomicUsize::new(0);
+
+    /// Stub `solver::buckling`, same shape as [`erroring_elastic_trampoline`].
+    fn erroring_buckling_trampoline(
+        _vi: &[Value],
+        _ri: &[RealizationReadHandle],
+        _opts: &Value,
+        _prior: Option<&reify_ir::OpaqueState>,
+        _cancel: &CancellationHandle,
+    ) -> ComputeOutcome {
+        DISPATCH_COUNT_ERR_BUCKLING.fetch_add(1, Ordering::SeqCst);
+        ComputeOutcome::Completed {
+            result: buckling_cache_value(),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: vec![unhonored_param_error()],
+            structured_detail: vec![],
+        }
+    }
+
+    /// Build a fresh `Engine` over `cache_dir` and run one dispatch of `target`.
+    ///
+    /// Returns the engine (so the caller can read its hit/miss counters) and the
+    /// diagnostics the dispatch handed back — the same channel a cold solve's
+    /// fresh diagnostics arrive on, which is the whole point of the replay.
+    fn dispatch_over_cache_dir(
+        cache_dir: &std::path::Path,
+        target: &'static str,
+        trampoline: crate::ComputeFn,
+        cell: &ValueCellId,
+        c_id: &ComputeNodeId,
+        cache_key: ContentHash,
+    ) -> (Engine, Vec<reify_core::Diagnostic>) {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.set_persistent_cache_dir(Some(cache_dir.to_path_buf()));
+        engine.register_compute_fn(target, trampoline);
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Undef, DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+        let (_value, diagnostics, _detail) = engine
+            .run_compute_dispatch(
+                c_id,
+                std::slice::from_ref(cell),
+                target,
+                &[],
+                &[],
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+                cache_key,
+            )
+            .unwrap_or_else(|e| panic!("{target}: dispatch must succeed, got {e:?}"));
+        (engine, diagnostics)
+    }
+
+    /// Assert exactly one diagnostic came back and it is the stub's Error,
+    /// intact in every field a consumer gates on.
+    fn assert_is_the_unhonored_param_error(what: &str, diags: &[reify_core::Diagnostic]) {
+        assert_eq!(
+            diags.len(),
+            1,
+            "{what}: exactly the one emitted diagnostic is expected, got {diags:?}",
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "{what}: severity must be Error — this is what `reify eval` gates its \
+             exit code on, so losing it flips a nonzero exit to zero",
+        );
+        assert_eq!(diags[0].message, unhonored_param_error().message, "{what}");
+        assert_eq!(
+            diags[0].code,
+            Some(reify_core::DiagnosticCode::FeaLoadKindUnsupported),
+            "{what}: the code must survive",
+        );
+    }
+
+    /// Dispatch `target` COLD on one engine and WARM on a fresh engine over the
+    /// SAME cache dir, and assert the warm run serves the Error off disk rather
+    /// than re-producing it.
+    fn assert_cold_then_warm_dispatch_replays_the_error(
+        target: &'static str,
+        trampoline: crate::ComputeFn,
+        invocations: &AtomicUsize,
+        cache_key: ContentHash,
+    ) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Derived from the target so the two callers cannot collide on a name.
+        let cell = ValueCellId::new("T", format!("r_cp22_{}", target.replace("::", "_")));
+        let c_id = ComputeNodeId::new("T", 220);
+
+        let before = invocations.load(Ordering::SeqCst);
+
+        // ── COLD: no entry on disk, so the trampoline runs and its Error is
+        //    persisted alongside the result.
+        let (engine_a, cold_diags) =
+            dispatch_over_cache_dir(tmp.path(), target, trampoline, &cell, &c_id, cache_key);
+        let after_cold = invocations.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after_cold - before,
+            1,
+            "{target} cold: the trampoline must run when nothing is on disk",
+        );
+        assert_eq!(
+            engine_a.persistent_miss_count(),
+            1,
+            "{target} cold: the first dispatch must be a MISS",
+        );
+        assert_eq!(
+            engine_a.persistent_hit_count(),
+            0,
+            "{target} cold: the first dispatch must not hit",
+        );
+        assert_is_the_unhonored_param_error(&format!("{target} cold"), &cold_diags);
+
+        // ── WARM: a FRESH engine over the same dir — no in-process state
+        //    survives, so anything it reports came off disk.
+        let (engine_b, warm_diags) =
+            dispatch_over_cache_dir(tmp.path(), target, trampoline, &cell, &c_id, cache_key);
+        let after_warm = invocations.load(Ordering::SeqCst);
+
+        assert_eq!(
+            after_warm - after_cold,
+            0,
+            "{target} warm: the trampoline must NOT run again — the Error has to be \
+             REPLAYED from disk, not re-produced, or this test would pass even with \
+             the cache path removed entirely",
+        );
+        assert_eq!(
+            engine_b.persistent_hit_count(),
+            1,
+            "{target} warm: the second dispatch must be a HIT",
+        );
+        assert_eq!(
+            engine_b.persistent_miss_count(),
+            0,
+            "{target} warm: the second dispatch must not miss",
+        );
+        assert_is_the_unhonored_param_error(&format!("{target} warm"), &warm_diags);
+    }
+
+    #[test]
+    fn cold_then_warm_elastic_static_dispatch_replays_an_error_diagnostic() {
+        assert_cold_then_warm_dispatch_replays_the_error(
+            "solver::elastic_static",
+            erroring_elastic_trampoline as crate::ComputeFn,
+            &DISPATCH_COUNT_ERR_ELASTIC,
+            ContentHash(0x7245_0022_7245_0022_7245_0022_7245_0022_u128),
+        );
+    }
+
+    #[test]
+    fn cold_then_warm_buckling_dispatch_replays_an_error_diagnostic() {
+        // `solver::buckling` has no engine-level diagnostics-replay coverage at
+        // any severity today; the elastic arm is not evidence for it, because
+        // each target has its own `persistent_lookup`/`persistent_write` arm.
+        assert_cold_then_warm_dispatch_replays_the_error(
+            "solver::buckling",
+            erroring_buckling_trampoline as crate::ComputeFn,
+            &DISPATCH_COUNT_ERR_BUCKLING,
+            ContentHash(0x7245_0023_7245_0023_7245_0023_7245_0023_u128),
+        );
+    }
+
+    /// The live declared-but-not-honored trampoline warning must survive a warm
+    /// buckling cache hit.
+    ///
+    /// `buckling_unsupported_option_diagnostics` (compute_targets/buckling.rs)
+    /// emits `DiagnosticCode::BucklingOptionUnsupported` as a WARNING on a solve
+    /// that reaches `ComputeOutcome::Completed` — so the entry IS persisted, and
+    /// before this task's fix the warning went silent on every run but the first.
+    /// It is the workspace's only present-day code for a parameter the solver
+    /// accepted and then ignored, which makes it the live analogue of the
+    /// trampoline param-drop class this task exists to keep audible.
+    ///
+    /// Task #7079 will add `E_PARAM_NOT_HONORED` / `W_PARAM_NOT_APPLICABLE` to
+    /// that same class, naming this code as its doc-block precedent. Its
+    /// INV-PD-1 is checked only on a COLD run; a warm run gets whatever this
+    /// replay path hands it and nothing else. The codes #7079 mints therefore
+    /// ride exactly this path, with no further change needed here.
+    ///
+    /// The diagnostic is built locally rather than by calling the emitter:
+    /// widening `buckling_unsupported_option_diagnostics`'s visibility to reach
+    /// it from a test would open a seam into the module's internals that nothing
+    /// in production needs.
+    #[test]
+    fn warm_buckling_hit_replays_the_declared_but_unhonored_option_warning() {
+        // Shaped after `unsupported_diag`'s template for the `mode: "dense"`
+        // case. This is a copy, not a reference to it — the property pinned here
+        // is that whatever the emitter says survives VERBATIM, not that this
+        // string equals today's template. The message is the actionable payload:
+        // it names the ignored param, the value that was dropped, and the
+        // default the solve silently fell back to.
+        let written = reify_core::Diagnostic::warning(
+            "BucklingOptions.mode = \"dense\" is declared but not yet honored by \
+             the solver::buckling trampoline (the buckling kernel has no \
+             mode-select input yet); solve falls back to the default \
+             \"shift_invert\"",
+        )
+        .with_code(reify_core::DiagnosticCode::BucklingOptionUnsupported);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_key = ContentHash(0x7245_0021_7245_0021_7245_0021_7245_0021_u128);
+        let value = buckling_cache_value();
+
+        super::persistent_write(
+            tmp.path(),
+            "solver::buckling",
+            cache_key,
+            &value,
+            std::slice::from_ref(&written),
+        );
+
+        let (_, got_diags) = super::persistent_lookup(tmp.path(), "solver::buckling", cache_key)
+            .expect("the entry just written must be a hit");
+
+        assert_eq!(got_diags.len(), 1, "got {got_diags:?}");
+        let got = &got_diags[0];
+        assert_eq!(
+            got.code,
+            Some(reify_core::DiagnosticCode::BucklingOptionUnsupported),
+            "the warm serve must keep the code — a consumer auditing for a \
+             declared-but-unhonored param keys off it, not off the prose",
+        );
+        assert_eq!(got.severity, reify_core::Severity::Warning);
+        assert_eq!(
+            got.message, written.message,
+            "the full message must survive: it names the ignored param, its value \
+             and the fallback default, which is everything the user needs in order \
+             to act and everything they lose when it goes silent warm",
+        );
+    }
+
+    #[test]
+    fn persistent_write_then_lookup_replays_an_empty_diagnostics_list() {
+        // The common case: a solve that said nothing must still be a HIT, with
+        // an empty list rather than a decode failure.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_key = ContentHash(0x7245_0003_7245_0003_7245_0003_7245_0003_u128);
+        let value = crate::compute_targets::elastic_static::value_from_elastic_result(
+            &minimal_elastic_result(7.0),
+        );
+
+        super::persistent_write(tmp.path(), "solver::elastic_static", cache_key, &value, &[]);
+
+        let (got_value, got_diags) =
+            super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
+                .expect("the entry just written must be a hit");
+
+        assert_eq!(got_value.content_hash(), value.content_hash());
+        assert!(
+            got_diags.is_empty(),
+            "a silent solve must replay no diagnostics, got {got_diags:?}"
+        );
+    }
+
+    #[test]
+    fn persistent_round_trip_replays_fea_under_constrained_unanchored() {
+        // The one live producer of a SPAN-CARRYING persisted diagnostic, and
+        // therefore the one that pins how a warm serve handles the span.
+        // Built from the live call site rather than a synthetic diagnostic:
+        // compute_targets/elastic_static.rs's present-but-unhonored-support arm
+        // computes `first_instance_source_span(&value_inputs[5])` and pushes
+        // exactly this diagnostic, which `fea_diagnostic_to_core` decorates with
+        // a `DiagnosticLabel` whenever the span is `Some`.
+        //
+        // Why this path is persisted at all: `UnderConstrained` is NOT an error
+        // (`FeaFailure::is_error` lists only SingularStiffness / LoadOnInterior
+        // / SelectorNoMatch), so the solve completes and the entry IS written.
+        //
+        // Why the label is not replayed: see `PersistedDiagnostic`.
+        let diag = crate::compute_targets::fea_diagnostics::fea_diagnostic_to_core(
+            &reify_solver_elastic::FeaFailure::UnderConstrained { support_count: 2 },
+            Some(reify_core::SourceSpan::new(41, 57)),
+        );
+        // Guard the premise itself: fea_diagnostics.rs attaches a label only
+        // when the span is `Some`, so this test is vacuous if that ever changes.
+        assert_eq!(
+            diag.labels.len(),
+            1,
+            "premise: the live call site produces a labelled diagnostic, got {diag:?}"
+        );
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_key = ContentHash(0x7245_0004_7245_0004_7245_0004_7245_0004_u128);
+        let value = crate::compute_targets::elastic_static::value_from_elastic_result(
+            &minimal_elastic_result(13.0),
+        );
+
+        super::persistent_write(
+            tmp.path(),
+            "solver::elastic_static",
+            cache_key,
+            &value,
+            std::slice::from_ref(&diag),
+        );
+
+        let (_, got_diags) =
+            super::persistent_lookup(tmp.path(), "solver::elastic_static", cache_key)
+                .expect("the entry just written must be a hit");
+
+        assert_eq!(got_diags.len(), 1, "got {got_diags:?}");
+        let got = &got_diags[0];
+        assert_eq!(
+            got.code,
+            Some(reify_core::DiagnosticCode::FeaUnderConstrained),
+            "code must survive the warm serve"
+        );
+        assert_eq!(got.severity, reify_core::Severity::Warning);
+        assert_eq!(
+            got.message, diag.message,
+            "the message — which is also the label's text — must survive"
+        );
+        assert!(
+            got.labels.is_empty(),
+            "the warm serve must NOT replay a source-anchored label: the key \
+             that served this entry does not identify the source it was \
+             computed from, got {got:?}"
         );
     }
 }

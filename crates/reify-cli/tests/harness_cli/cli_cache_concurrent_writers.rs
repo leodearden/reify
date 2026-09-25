@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use reify_eval::persistent_cache::{
-    CacheEntryHeader, ENGINE_VERSION_HASH, ElasticResult, read_entry,
+    CacheEntryHeader, ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, read_entry,
 };
 use tempfile::tempdir;
 
@@ -260,9 +260,11 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
     // ── (e) The survivor is not a torn interleaving of the two writers ──────
 
     let hash = bin_input_hash(bin);
-    let survivor: ElasticResult = read_entry(cache.path(), ENGINE_VERSION_HASH, &hash)
-        .expect("read_entry must not error on the surviving entry")
-        .expect("the surviving entry must decode");
+    let survivor: ElasticResult =
+        read_entry::<WithDiagnostics<ElasticResult>>(cache.path(), ENGINE_VERSION_HASH, &hash)
+            .expect("read_entry must not error on the surviving entry")
+            .expect("the surviving entry must decode")
+            .value;
     assert!(
         survivor.converged,
         "the surviving entry must be a converged solve, not a partial write",
@@ -312,10 +314,14 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
          a differing input hash would mean the race changed what was being cached",
     );
 
-    let reference_result: ElasticResult =
-        read_entry(reference_cache.path(), ENGINE_VERSION_HASH, &reference_hash)
-            .expect("read_entry must not error on the reference entry")
-            .expect("the reference entry must decode");
+    let reference_result: ElasticResult = read_entry::<WithDiagnostics<ElasticResult>>(
+        reference_cache.path(),
+        ENGINE_VERSION_HASH,
+        &reference_hash,
+    )
+    .expect("read_entry must not error on the reference entry")
+    .expect("the reference entry must decode")
+    .value;
 
     // A POSITIVE guard first, or the ratio below decides nothing: if both solves
     // degraded to `max_von_mises == 0.0`, `rel_err` is `0.0 / MIN_POSITIVE ==
