@@ -2076,10 +2076,13 @@ fn collect_underivable_in_leaf(
 ///
 /// The values are the bounds the SOLVE ACTUALLY USED, read from
 /// [`effective_bounds`] rather than from [`default_bounds_for`] directly, so a
-/// rendered message can never claim a number the solve did not work with.
+/// rendered message can never claim a number the solve did not work with. They
+/// are SI magnitudes of the param's own `dimension`, which travels with them so
+/// the rendered bound carries its unit (`10 m`, not a bare `10`).
 #[derive(Debug)]
 struct DefaultBoundedParam {
     id: ValueCellId,
+    dimension: DimensionVector,
     default_lo: Option<f64>,
     default_hi: Option<f64>,
 }
@@ -2093,6 +2096,7 @@ impl DefaultBoundedParam {
         let default_hi = interval.hi.is_none().then_some(hi);
         (default_lo.is_some() || default_hi.is_some()).then(|| Self {
             id: param.id.clone(),
+            dimension: dimension_of(&param.param_type),
             default_lo,
             default_hi,
         })
@@ -2102,14 +2106,21 @@ impl DefaultBoundedParam {
     /// bounded, and the solver-internal bound used there.
     ///
     /// ONE rendering path for one, two or both sides — the invariant above makes
-    /// `sides` non-empty, so there is no empty-list case to special-case.
+    /// `sides` non-empty, so there is no empty-list case to special-case. Each
+    /// bound renders through `Value`'s `Display`, the same `Value::Scalar` shape
+    /// [`build_solved_values`] reports a resolved value in, so the unit label is
+    /// the one the user sees on every other value.
     fn clause(&self) -> String {
+        let quantity = |si_value: f64| Value::Scalar {
+            si_value,
+            dimension: self.dimension,
+        };
         let mut sides = Vec::with_capacity(2);
         if let Some(lo) = self.default_lo {
-            sides.push(format!("below (solver default {lo})"));
+            sides.push(format!("below (solver default {})", quantity(lo)));
         }
         if let Some(hi) = self.default_hi {
-            sides.push(format!("above (solver default {hi})"));
+            sides.push(format!("above (solver default {})", quantity(hi)));
         }
         format!("no constraint bounds `{}` {}", self.id, sides.join(" or "))
     }
@@ -2117,11 +2128,9 @@ impl DefaultBoundedParam {
 
 /// [`verify_uniqueness`]' verdict, carrying the EVIDENCE it was reached on.
 ///
-/// Was a `bool`, which is why [`finalise_uniqueness`] could emit only one
-/// generic sentence for three different causes: the γ branch measures exactly
-/// which side of each strict auto's interval came from [`default_bounds_for`]
-/// and then threw it away. The verdict and its grounds are now one value, so
-/// they cannot disagree (heuristic 10).
+/// The verdict and its grounds are one value, so they cannot disagree
+/// (heuristic 10), and [`finalise_uniqueness`] can report the measured cause
+/// wherever one exists instead of one generic sentence for every cause.
 #[derive(Debug)]
 enum Determinedness {
     /// §11.6 is satisfied, or cannot be shown to be violated.
@@ -2158,8 +2167,8 @@ enum Determinedness {
 ///   by [`default_bounds_for`], a solver-internal default the user never wrote,
 ///   so the resolved value is DEFAULT-BOUNDS-determined rather than
 ///   model-determined: exactly the non-determinedness §11.6 exists to catch.
-///   Returning the bound rather than a bare `false` is what lets
-///   [`finalise_uniqueness`] name the measured cause (task #6465 item 2).
+///   Returning the bound is what lets [`finalise_uniqueness`] name the
+///   measured cause.
 /// - A side missing but the param present in `underivable` ⇒ ABSTAIN, omitting
 ///   the param (esc-5711-3). The `None` there is a derivation BLIND SPOT, not
 ///   evidence about the user's model. Everything outside [`derive_from_side`]'s
@@ -2219,14 +2228,11 @@ enum Determinedness {
 /// §11.6 policy change for γ, and belongs in a task that can re-measure the
 /// whole γ fixture set — not in a local tightening here.
 ///
-/// The gap stands on its own measured ground, with no tracker to go stale
-/// against: with a LINEAR cost the two normalised blend terms COINCIDE over part
-/// of the bracket — measured, both equal `(t − 1mm)/1.5mm` on the lower half of
+/// With a LINEAR cost the two normalised blend terms COINCIDE over part of the
+/// bracket — measured, both equal `(t − 1mm)/1.5mm` on the lower half of
 /// `1mm < t < 4mm`, so the λ=0.5 blend is identically zero on [1mm, 2.5mm] —
 /// and an argmin that is a SET admits no seed-invariant answer at all without a
 /// TIE-BREAK POLICY. Choosing one is a §11.6 policy decision, not a local fix.
-/// (Task #6465 closed WITHOUT closing this, so its citation was removed rather
-/// than left to become an orphaned cite.)
 ///
 /// Free params are exempt: they carry no §11.6 obligation at all, and
 /// [`finalise_uniqueness`] only reaches `verify_uniqueness` when at least one
@@ -2244,7 +2250,9 @@ enum Determinedness {
 /// `verify_uniqueness`'s two-phase evaluation the loud reading is the one that
 /// governs the first (empty-`underivable`) call, which is what keeps the bug
 /// reachable at all rather than masked by an abstention that has not been
-/// computed yet.
+/// computed yet. Because that user-facing reading would ask for constraints the
+/// model may already carry, the mismatch is ALSO reported to developers, as a
+/// `warn!` naming both lengths.
 /// `default_bounded_strict_autos_index_beyond_intervals_is_reported` pins the
 /// loud half and
 /// `default_bounded_strict_autos_abstention_outranks_missing_interval`
@@ -2264,6 +2272,15 @@ fn default_bounded_strict_autos(
     intervals: &[DerivedInterval],
     underivable: &HashSet<usize>,
 ) -> Vec<DefaultBoundedParam> {
+    if intervals.len() != auto_params.len() {
+        tracing::warn!(
+            "default_bounded_strict_autos: caller bug — {} auto params but {} derived \
+             intervals; a param with no interval is reported as default-bounded on \
+             both sides",
+            auto_params.len(),
+            intervals.len()
+        );
+    }
     auto_params
         .iter()
         .enumerate()
@@ -2740,13 +2757,12 @@ const UNIQUENESS_ABS_TOL: f64 = 1e-10;
 
 /// Which solve REGIME [`solve_core_with_sd_tolerance`] is running under.
 ///
-/// Replaces the `apply_robustness_floor: bool` this function took through task
-/// #5711. The flag governed TWO axes — margin synthesis and clamp-box policy —
-/// and γ's arrival made them diverge: the tradeoff blend needs the floor OFF
-/// and a constraint-derived clamp ON, a pair no boolean can express. A second
-/// flag would have left `floor && tradeoff` representable in the type and
-/// forbidden by the code; the three variants below are the three combinations
-/// that actually occur, and they are chosen WHOLE at every call site.
+/// A regime fixes TWO axes at once — margin synthesis and clamp-box policy —
+/// and they do not move together: the tradeoff blend needs the floor OFF and a
+/// constraint-derived clamp ON, a pair no single boolean can express. Two flags
+/// would leave `floor && tradeoff` representable in the type and forbidden by
+/// the code; the three variants below are the three combinations that actually
+/// occur, and they are chosen WHOLE at every call site.
 #[derive(Clone, Copy, Debug)]
 enum SolveRegime {
     /// The default path: [`solve_core`] and therefore every ordinary solve.
@@ -2939,29 +2955,27 @@ fn solve_core_with_sd_tolerance(
         // Unchanged from #5618: the FLOORED window, strict bounds excluded.
         SolveRegime::RobustnessFloor if floor_applied => derived_clamp_box(false),
 
-        // γ (task #6465): the constraint-derived box WITH strict bounds.
+        // γ: the constraint-derived box WITH strict bounds.
         //
         // SOUNDNESS — the derived box is an OUTER approximation of the feasible
         // region, so clamping into it can never exclude a feasible point.
         // `constant_operand_value` rejects any far operand whose value refs
         // `varies_with_solve`, so every derived bound is a genuine INVARIANT of
         // the problem; that function's own "One policy for all four consumers"
-        // doc already names the CLAMP box as one of the two consumers requiring
-        // exactly this property, and this is the third such consumer.
+        // doc names the CLAMP box as one of the consumers requiring exactly
+        // this property.
         //
         // CONTRACT — `include_strict = true` here is not a relaxation of the
         // general rule above it ("a clamp target must never be a value at which
         // the strict comparison is violated"), which stands for every other
         // regime. A value landing exactly on a strict `>` bound IS PRD §8.1's
         // stated λ=1 answer: pure-cost, floor-free minimisation reaches the TRUE
-        // constraint boundary. `lambda_one_reaches_true_boundary_floor_free`
-        // already asserted that for an explicit-`AutoParam.bounds` shape; this
-        // arm is what makes it hold on the production `bounds: None` shape,
-        // where `effective_bounds` degrades to `default_bounds_for(Length) =
-        // [1µm, 10m]` and the penalty minimiser's finite undershoot past the
-        // strict bound had nothing to snap it back — so `final_max_residual`
-        // exceeded `FEASIBILITY_THRESHOLD`, the `initially_feasible` fallback
-        // below fired, and the blend reported THE SEED. Pinned by
+        // constraint boundary. On the production `bounds: None` shape
+        // `effective_bounds` is only `default_bounds_for(Length) = [1µm, 10m]`,
+        // so without this box nothing snaps the penalty minimiser's finite
+        // undershoot past the strict bound back: `final_max_residual` exceeds
+        // `FEASIBILITY_THRESHOLD`, the `initially_feasible` fallback below fires,
+        // and the blend reports THE SEED. Pinned by
         // `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`.
         SolveRegime::TradeoffBlend => derived_clamp_box(true),
 
@@ -3965,23 +3979,18 @@ fn score_solution(
 /// seed "so the whole dispatch stays reproducible", which is reproducibility for
 /// a FIXED seed, never seed-invariance.
 ///
-/// NARROWED by task #6465. The mechanism this paragraph used to give — a
-/// floor-free pure-cost minimise drifting past the constraint boundary into
-/// [`solve_core_with_sd_tolerance`]'s "fall back to the initially-feasible seed"
-/// safety net, so the dispatch returned THE SEED — no longer holds: the γ regime
-/// now clamps into a constraint-derived box with strict bounds included, and
-/// that case is seed-invariant (measured: λ=1 resolves the 1mm bound from every
-/// seed on the production `bounds: None` shape,
-/// `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`).
+/// A blend whose argmin sits ON a constraint boundary is seed-invariant: the
+/// [`SolveRegime::TradeoffBlend`] clamp box includes strict bounds, so λ=1
+/// resolves the boundary from every seed on the production `bounds: None` shape
+/// (`gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`).
 ///
-/// What REMAINS, and what still grounds this branch: where the blend is FLAT
-/// over a sub-interval its argmin is a SET, not a point, so which member of that
-/// set comes back is decided by the seed and by nothing in the model. A
+/// What grounds this branch is the FLAT blend: where the blend is flat over a
+/// sub-interval its argmin is a SET, not a point, so which member of that set
+/// comes back is decided by the seed and by nothing in the model. A
 /// perturbation check then compares f(seed_A) against f(seed_B) for an f that is
 /// not a function of the model there, so the verdict is an artifact of the
-/// ANCHOR. The RULING below is unchanged and does not weaken with the mechanism:
-/// a flat blend is not a perturbation question either — re-anchoring cannot
-/// distinguish "the model determines this value" from "the seed does".
+/// ANCHOR — re-anchoring cannot distinguish "the model determines this value"
+/// from "the seed does".
 ///
 /// **The rule that replaces it.** §11.6 test (2) asks whether the value is
 /// uniquely optimal under the applicable objective; for γ that objective is the
@@ -4116,10 +4125,10 @@ fn verify_uniqueness(
     // WITHOUT a re-solve. `solve_cost_robustness_tradeoff` is not seed-invariant
     // where its blend is FLAT over a sub-interval (its argmin is a SET there), so
     // the perturbation machinery below is structurally inapplicable — see this
-    // function's doc for the measured ruling and the A/B evidence table. Positioned deliberately: AFTER the
-    // missing/non-numeric guard above, so γ keeps `solutions_agree`'s
-    // loud-not-silent contract, and BEFORE the re-solve, so the inapplicable
-    // solve never runs.
+    // function's doc for the measured ruling and the A/B evidence table.
+    // Positioned deliberately: AFTER the missing/non-numeric guard above, so γ
+    // keeps `solutions_agree`'s loud-not-silent contract, and BEFORE the
+    // re-solve, so the inapplicable solve never runs.
     //
     // The RAW `intervals` derived above are used here, NOT the composed
     // `bounds`: `seed_box_from_intervals` substitutes a solver-internal default
@@ -4166,8 +4175,7 @@ fn verify_uniqueness(
             default_bounded = default_bounded.len(),
             "uniqueness check: cost_robustness_tradeoff objective — deciding by \
              constraint-bracketing of the strict autos rather than by perturbation \
-             (the γ dispatch is seed-dependent, so a re-solve from a different anchor \
-             measures the anchor, not the model)"
+             (see verify_uniqueness' doc for why a re-solve is inapplicable here)"
         );
         return if default_bounded.is_empty() {
             Determinedness::Determined
@@ -4344,15 +4352,14 @@ fn finalise_uniqueness(
             },
             // The γ branch DID measure a cause, so report it: which param,
             // which side no constraint bounded, the bound the solve fell back
-            // to, and the fix (task #6465 item 2). The `not uniquely
-            // determined` diagnosis phrase is shared with the arm above, so the
-            // diagnosis is ONE phrase rather than two dialects.
+            // to, and the fix. The `not uniquely determined` diagnosis phrase is
+            // shared with the arm above, so the diagnosis is ONE phrase rather
+            // than two dialects.
             //
-            // `reify_core::Diagnostic` has no note/help channel (measured: no
-            // `notes`/`help`/`with_note`/`with_help` anywhere in the workspace)
-            // and its `candidates` field carries a bare-FQN-only invariant, so
-            // the cause belongs in `message`. Aggregation is not a second code
-            // path: one clause per param, joined.
+            // `reify_core::Diagnostic` has no note/help channel and its
+            // `candidates` field carries a bare-FQN-only invariant, so the cause
+            // belongs in `message`. Aggregation is not a second code path: one
+            // clause per param, joined.
             Determinedness::DefaultBoundsDetermined(evidence) => SolveResult::Infeasible {
                 diagnostics: vec![
                     reify_core::Diagnostic::error(format!(
@@ -6020,10 +6027,9 @@ mod tests {
     // the user's model and the value is well-determined; if a side is missing,
     // that side comes from `default_bounds_for` — a solver-internal default the
     // user never authored — so the resolved value is default-bounds-determined,
-    // which is genuine non-determinedness. Task #6465 turned the bool into the
-    // EVIDENCE, so each negative fixture below now asserts WHICH side was found
-    // missing and WHICH bound the solve would fall back to, not just that
-    // something was wrong.
+    // which is genuine non-determinedness. Each negative fixture below asserts
+    // WHICH side was found missing and WHICH bound the solve would fall back
+    // to, not just that something was wrong.
     //
     // `default_bounds_for(Length)` is `(1e-6, 10.0)` and every fixture here uses
     // the production `bounds: None` shape, so those are the two numbers the
@@ -6129,6 +6135,30 @@ mod tests {
             (Some(1e-6), Some(10.0)),
             "a strict auto with NEITHER side constrained is entirely \
              default-bounds-determined, so BOTH sides are reported"
+        );
+    }
+
+    /// The two-sided rendering path, pinned as the WHOLE clause: the lower side
+    /// first, the two joined by `or`, and each bound in the param's own unit —
+    /// a bare `10` would not tell a mm-scale user that the ceiling is 10 m.
+    #[test]
+    fn default_bounded_param_clause_renders_both_sides_with_units() {
+        use std::collections::HashSet;
+
+        use super::{DerivedInterval, default_bounded_strict_autos};
+
+        let params = vec![bracketed_test_param("t", false)];
+        let evidence =
+            default_bounded_strict_autos(&params, &[DerivedInterval::default()], &HashSet::new());
+        assert_eq!(
+            evidence.len(),
+            1,
+            "expected one reported param, got {evidence:?}"
+        );
+        assert_eq!(
+            evidence[0].clause(),
+            "no constraint bounds `Part.t` below (solver default 0.000001 m) \
+             or above (solver default 10 m)"
         );
     }
 

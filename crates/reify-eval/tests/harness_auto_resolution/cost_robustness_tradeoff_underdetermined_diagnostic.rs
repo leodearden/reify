@@ -14,9 +14,8 @@
 //! above, so `derive_param_intervals` reads `hi: None` and the solve's upper
 //! side comes from `default_bounds_for(Length)` = 10 m: a value pinned by a
 //! solver-internal default the model never authored, for a mm-scale part.
-//! `verify_uniqueness`' γ branch already MEASURES exactly that; before #6465
-//! item (2) it collapsed the measurement to a bool, so `finalise_uniqueness`
-//! could only emit one generic sentence for three different causes.
+//! `verify_uniqueness`' γ branch MEASURES exactly that, and the diagnostic
+//! must carry the measurement through to the user.
 //!
 //! Harness (`compile_source_with_stdlib` / `MockConstraintChecker` /
 //! `collect_errors` / a `CARGO_MANIFEST_DIR`-relative path const) mirrors
@@ -35,9 +34,12 @@ const FIXTURE_PATH: &str = concat!(
     "/../../tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri"
 );
 
-/// The param the fixture leaves unbounded above, as `ValueCellId`'s `Display`
-/// renders it (`entity.member`).
-const PARAM_FQN: &str = "CostTradeoffPart.thickness";
+/// The clause naming the param the fixture leaves unbounded (as `ValueCellId`'s
+/// `Display` renders it, `entity.member`), the side no constraint bounds, and
+/// the solver-default bound in its unit — one string, so the right bound
+/// cannot pass on the wrong side.
+const EXPECTED_CLAUSE: &str =
+    "no constraint bounds `CostTradeoffPart.thickness` above (solver default 10 m)";
 
 /// The `ConstraintNonUnique` message must name the param, the missing SIDE, and
 /// the bound the solve actually fell back to — and must still carry the
@@ -92,22 +94,13 @@ fn underdetermined_gamma_model_names_param_side_and_fallback_bound() {
          branches — four non-γ tests substring-match it. Got: {message}"
     );
     assert!(
-        message.contains(PARAM_FQN),
-        "the message must NAME the under-determined param ({PARAM_FQN}); the user \
-         cannot act on a verdict that does not say which param it is about. \
-         Got: {message}"
-    );
-    assert!(
-        message.contains("above"),
-        "the message must name the SIDE no constraint bounded — the fixture's \
-         `constraint thickness > 1mm` bounds it below, so the missing side is \
-         ABOVE, and that is the constraint the user has to add. Got: {message}"
-    );
-    assert!(
-        message.contains("10"),
-        "the message must state the bound the solve FELL BACK TO — \
-         `default_bounds_for(Length)`'s 10 m ceiling — because the result is \
-         demoted to Infeasible and `thickness` prints as `undef`, so that number \
-         appears nowhere else in the output the user sees. Got: {message}"
+        message.contains(EXPECTED_CLAUSE),
+        "the message must NAME the under-determined param, the SIDE no constraint \
+         bounded — the fixture's `constraint thickness > 1mm` bounds it below, so \
+         the missing side is ABOVE — and the bound the solve FELL BACK TO, \
+         `default_bounds_for(Length)`'s 10 m ceiling in its unit. The result is \
+         demoted to Infeasible and `thickness` prints as `undef`, so that bound \
+         appears nowhere else in the output the user sees. Expected the clause \
+         {EXPECTED_CLAUSE:?}; got: {message}"
     );
 }

@@ -412,23 +412,18 @@ fn strict_problem(t_id: &ValueCellId, lambda: f64, upper: Option<f64>) -> Resolu
 /// solves share one deterministic seed for reproducibility, never
 /// seed-invariance). A perturbation-based uniqueness check therefore compares
 /// f(seed_A) against f(seed_B) for an f that is not, there, a function of the
-/// model — structurally inapplicable on this path.
-///
-/// NARROWED by task #6465: the specific mechanism this doc used to cite — a
-/// floor-free cost-minimise drifting past the boundary into
-/// `solve_core_with_sd_tolerance`'s drift-fallback, which then returned THE SEED
-/// — is fixed; see
-/// `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`. What
-/// survives is the FLAT-blend case, where the argmin is a SET and the seed picks
-/// a member of it; that is still not a perturbation question, so the ruling this
-/// paragraph supports is unchanged.
+/// model — structurally inapplicable on this path. A blend whose argmin sits ON
+/// the boundary is seed-invariant
+/// (`gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`); the
+/// FLAT-blend case is not — its argmin is a SET and the seed picks a member —
+/// and that is still not a perturbation question.
 ///
 /// RED when written: all three λ returned `Infeasible` carrying
 /// `ConstraintNonUnique` ("strict auto parameter resolution is not uniquely
-/// determined"); on main all three returned `Solved { unique: true }` with
-/// t = 2.5mm. RE-MEASURED after #6465: λ=0 and λ=0.5 resolve 2.5mm, λ=1 resolves
-/// 1.000mm — the λ=1 point MOVED, which is exactly why the assertion below pins
-/// the Solved/unique/in-bracket CONTRACT and not a point value.
+/// determined"). MEASURED: λ=0 and λ=0.5 resolve 2.5mm, λ=1 resolves 1.000mm.
+/// The assertion below pins the Solved/unique/in-bracket CONTRACT, not a point
+/// value, so a clamp-policy change that moves a λ point inside the bracket does
+/// not red it.
 #[test]
 fn gamma_strict_auto_two_sided_bracket_is_solved() {
     let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
@@ -539,9 +534,9 @@ fn sole_non_unique_message(problem: &ResolutionProblem, what: &str) -> String {
 /// Three arms, because the three are three different obligations:
 ///
 ///  1. ONE unbounded side (`t > 1mm`, the shape of
-///     `tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`). Each fact
-///     the user needs is its own assertion with its own failure text, so a
-///     partial regression says WHICH fact went missing.
+///     `tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`). The param,
+///     the side and the unit-bearing bound are pinned as ONE clause, so the
+///     right bound cannot pass on the wrong side.
 ///  2. TWO unbounded params. Exactly ONE diagnostic naming BOTH — the verdict is
 ///     about the model, not about an arbitrary first offender.
 ///  3. CONTROL, non-γ. The evidence-free branch has no per-param measurement to
@@ -566,24 +561,24 @@ fn gamma_default_bounds_determined_diagnostic_names_the_missing_bound() {
         "the diagnosis phrase must stay ONE phrase across both branches — four \
          non-γ tests substring-match it. Got: {message}"
     );
+    // One clause pins all three facts TOGETHER — the param (`ValueCellId`'s
+    // Display is `entity.member`), the SIDE the model left open (`t > 1mm`
+    // bounds t below, so ABOVE), and the bound the solve FELL BACK TO with its
+    // unit (`default_bounds_for(Length)`'s 10 m ceiling). Separate substring
+    // checks could not tell the right bound on the wrong side from the answer.
+    // The result is demoted to Infeasible, so that bound is visible NOWHERE
+    // else: the value the user sees is `undef`.
     assert!(
-        message.contains("CostRobustnessTradeoff.t"),
-        "the message must NAME the param (`ValueCellId`'s Display is \
-         `entity.member`); a verdict that does not say which param it is about \
-         is not actionable. Got: {message}"
+        message.contains(
+            "no constraint bounds `CostRobustnessTradeoff.t` above (solver default 10 m)"
+        ),
+        "the message must name the param, the missing side, and the fallback \
+         bound in its unit, as one clause. Got: {message}"
     );
     assert!(
-        message.contains("above"),
-        "the message must name the missing SIDE — `t > 1mm` bounds t below, so \
-         the side the model left open is ABOVE, and an upper-bound constraint is \
-         the fix. Got: {message}"
-    );
-    assert!(
-        message.contains("10"),
-        "the message must state the bound the solve FELL BACK TO — \
-         `default_bounds_for(Length)`'s 10 m ceiling, in metres. The result is \
-         demoted to Infeasible, so that number is visible NOWHERE else: the \
-         value the user sees is `undef`. Got: {message}"
+        !message.contains("below"),
+        "`t > 1mm` bounds t below, so the lower side must NOT be reported as \
+         default-bounded. Got: {message}"
     );
 
     // ── arm 2: two params, both unbounded above → ONE aggregate verdict ───
@@ -912,9 +907,7 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
 ///   it, `t` lands in the abstention set, and the missing upper side stops
 ///   counting as evidence. Every λ now reports `Solved { unique: true }`.
 ///
-/// RE-MEASURED after task #6465 (the earlier figures were λ=0.5 and λ=1 both at
-/// 1.1mm, taken before γ got its strict-inclusive clamp box), and this is the
-/// safety loss: λ=0 resolves `t = 10.0 m` — literally
+/// MEASURED, and this is the safety loss: λ=0 resolves `t = 10.0 m` — literally
 /// `default_bounds_for(Length)`'s ceiling, a value pinned by a solver-internal
 /// default the user never authored, for a mm-scale part. λ=0.5 resolves
 /// `t = 1.328859 mm` and λ=1 resolves `t = 1.000 mm` exactly (cost pulls to the
@@ -928,9 +921,7 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
 /// bounded models (the three `..._is_not_non_unique` fixtures above). Narrowing
 /// it means teaching `derive_from_expr` the missing shapes — coefficient forms
 /// first, which would close this exact fixture — not tightening the abstention
-/// test. That standing ground is the whole record: task #6465 closed WITHOUT
-/// closing this, so its citation was removed rather than left to become an
-/// orphaned cite, and no successor number is invented in its place.
+/// test.
 ///
 /// A CHARACTERISATION test: it asserts today's behaviour, not desired
 /// behaviour. If a future change makes this error again, that is progress —
@@ -997,14 +988,15 @@ fn gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved() {
                 } else {
                     assert!(
                         t_si > 0.001,
-                        "λ={lambda}: cost pulls `t` to its lower bound (measured: 1.1mm); it \
-                         must still satisfy `t > 1mm`, got {t_si:.6e} m"
+                        "λ={lambda}: cost pulls `t` toward its lower bound (measured: \
+                         1.328859mm at λ=0.5, 1.000mm at λ=1); it must still satisfy \
+                         `t > 1mm`, got {t_si:.6e} m"
                     );
                 }
             }
             other => panic!(
                 "λ={lambda}: expected Solved via the abstention door (measured: \
-                 unique=true, t=10.0 m at λ=0 and t=1.1mm otherwise); got {other:?}"
+                 unique=true, t=10.0 m at λ=0 and mm-scale otherwise); got {other:?}"
             ),
         }
     }
