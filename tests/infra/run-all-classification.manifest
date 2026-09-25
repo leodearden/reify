@@ -171,16 +171,18 @@ test_reconciliation_db_gitignored.sh pool
 test_reference_transaction_gate.sh pool
 test_refresh_warm_base.sh pool
 test_reify_audit_freshness.sh pool
-# test_reify_audit_pdiag_vacuity.sh NESTS test_reify_audit_pdiag.sh, which is
-# intra-run-serial above — but it does not inherit that bucket, for the same
-# reason the four test_reify_audit_ptodo_*.sh meta-test rows below do not
-# inherit their own nested gate's. The serial bucket exists ONLY because
-# reify_audit_guard may fork `cargo build` into the lane-shared CoW target/;
-# every invocation here supplies REIFY_AUDIT_BIN (a private copy under its own
-# mktemp -d) and arms REIFY_AUDIT_NO_COLD_BUILD=1, so that path is unreachable
-# and the run touches no lane-shared state. Contrast the
-# test_verify_nextest_absent_suites.sh row above, which DOES inherit: its
-# nested script's mutations have no such neutralising seam.
+# test_reify_audit_pdiag_budget_skip.sh and test_reify_audit_pdiag_vacuity.sh
+# both NEST test_reify_audit_pdiag.sh, which is intra-run-serial above — but
+# neither inherits that bucket, for the same reason the four
+# test_reify_audit_ptodo_*.sh meta-test rows below do not inherit their own
+# nested gate's. The serial bucket exists ONLY because reify_audit_guard may
+# fork `cargo build` into the lane-shared CoW target/; every invocation here
+# supplies REIFY_AUDIT_BIN (a private copy under its own mktemp -d) and either
+# arms REIFY_AUDIT_NO_COLD_BUILD=1 or shims `cargo` on PATH so no real build
+# ever runs, so that path is unreachable and the run touches no lane-shared
+# state. Contrast the test_verify_nextest_absent_suites.sh row above, which
+# DOES inherit: its nested script's mutations have no such neutralising seam.
+test_reify_audit_pdiag_budget_skip.sh pool
 test_reify_audit_pdiag_vacuity.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
