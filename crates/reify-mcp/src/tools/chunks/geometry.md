@@ -280,8 +280,10 @@ and size the wire to size the zone.
 `+width/2` minus the same solid offset by `−width/2` — giving a shell that straddles the input
 solid's surface. Every face moves along its normal and sharp edges stay sharp, so for a box of
 side `a` the zone volume is exactly `(a+w)³ − (a−w)³`. A width whose inward half reaches past the
-solid's inradius is an error. For general shapes, query the realized solid rather than computing
-its volume by hand.
+solid's inradius is an error. So is an input that is not one single solid bounded by planes,
+cylinders, cones, spheres and tori: a disjoint union, or a freeform face such as a loft's, is
+refused rather than offset inexactly. For general shapes, query the realized solid rather than
+computing its volume by hand.
 
 Worked example of all four: `examples/tolerancing/gdt_zones.ri`.
 

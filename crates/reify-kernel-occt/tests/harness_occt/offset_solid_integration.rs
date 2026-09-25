@@ -9,6 +9,7 @@ use std::f64::consts::PI;
 
 use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
+use reify_test_support::fixtures::assert_rel;
 
 const EXACT: f64 = 1e-9;
 
@@ -49,14 +50,6 @@ fn volume(kernel: &OcctKernel, id: GeometryHandleId) -> f64 {
         .expect("Volume query should succeed")
         .as_f64()
         .expect("Volume should be numeric")
-}
-
-fn assert_rel(got: f64, expected: f64, tol: f64, label: &str) {
-    let rel_err = (got - expected).abs() / expected.abs();
-    assert!(
-        rel_err <= tol,
-        "{label}: got {got:.9e}, expected {expected:.9e} (rel_err={rel_err:.3e} > {tol:.0e})"
-    );
 }
 
 /// Minkowski sum of a cube of side `s` with a ball of radius `r`.
@@ -211,4 +204,78 @@ fn offset_of_a_face_is_rejected() {
         result.is_err(),
         "OffsetSolid of a face should be Err (offset_surface offsets faces), got {result:?}"
     );
+}
+
+#[test]
+fn offset_of_disjoint_solids_is_rejected_by_name() {
+    let mut kernel = OcctKernel::new();
+    let left = cube(&mut kernel, 0.010);
+    let far = cube(&mut kernel, 0.010);
+    let right = execute(
+        &mut kernel,
+        GeometryOp::Translate {
+            target: far,
+            dx: 0.030,
+            dy: 0.0,
+            dz: 0.0,
+        },
+    );
+    let pair = execute(&mut kernel, GeometryOp::Union { left, right });
+    let result = offset_solid(&mut kernel, pair, 0.0005);
+    assert!(
+        matches!(&result, Err(GeometryError::OperationFailed(message))
+            if message.contains("needs a single solid; got 2 solids")),
+        "OffsetSolid of two disjoint boxes should name the solid count, got {result:?}"
+    );
+}
+
+fn circle_wire(kernel: &mut OcctKernel, radius: f64, z: f64) -> GeometryHandleId {
+    execute(
+        kernel,
+        GeometryOp::Arc {
+            center: [0.0, 0.0, z],
+            radius,
+            start_angle: 0.0,
+            end_angle: 2.0 * PI,
+            axis: [0.0, 0.0, 1.0],
+        },
+    )
+}
+
+/// A cylinder lofted through three equal circles has a BSpline side, so its
+/// true offsets are known: π(r±d)²(h±2d). Join mode got the inward one right
+/// but came out 5.9% under the outward one (the BSpline side warps where it is
+/// extended), so offset_solid refuses freeform faces rather than answer wrongly.
+#[test]
+fn offset_of_a_bspline_faced_solid_is_refused_by_name() {
+    let mut kernel = OcctKernel::new();
+    let profiles = vec![
+        circle_wire(&mut kernel, 0.005, 0.0),
+        circle_wire(&mut kernel, 0.005, 0.005),
+        circle_wire(&mut kernel, 0.005, 0.010),
+    ];
+    let lofted_cylinder = execute(&mut kernel, GeometryOp::Loft { profiles });
+    let face_kinds: Vec<Value> = kernel
+        .extract_faces(lofted_cylinder)
+        .expect("extract_faces(loft)")
+        .into_iter()
+        .map(|face| {
+            kernel
+                .query(&GeometryQuery::FaceSurfaceKind(face))
+                .expect("FaceSurfaceKind query should succeed")
+        })
+        .collect();
+    assert!(
+        face_kinds.contains(&Value::String("BSplineSurface".into())),
+        "the loft must carry a BSpline face for this test to pin freeform input, got {face_kinds:?}"
+    );
+
+    for distance in [0.0005, -0.0005] {
+        let result = offset_solid(&mut kernel, lofted_cylinder, distance);
+        assert!(
+            matches!(&result, Err(GeometryError::OperationFailed(message))
+                if message.contains("got a BSplineSurface face")),
+            "OffsetSolid({distance}) of a BSpline-faced solid should name the face kind, got {result:?}"
+        );
+    }
 }

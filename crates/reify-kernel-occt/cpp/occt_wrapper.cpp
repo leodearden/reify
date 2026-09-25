@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <functional>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_set>
@@ -3240,11 +3241,63 @@ static double enclosed_volume(const TopoDS_Shape& shape) {
     return props.Mass();
 }
 
+static int solid_count(const TopoDS_Shape& shape) {
+    int count = 0;
+    for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next()) {
+        ++count;
+    }
+    return count;
+}
+
+// Canonical wire-format names documented on `GeometryQuery::FaceSurfaceKind`
+// and decoded by `FaceSurfaceKind::try_from_str`. Surfaces of revolution and
+// extrusion collapse into "Other", as do future GeomAbs variants.
+static const char* surface_kind_name(GeomAbs_SurfaceType type) {
+    switch (type) {
+        case GeomAbs_Plane:           return "Plane";
+        case GeomAbs_Cylinder:        return "Cylinder";
+        case GeomAbs_Cone:            return "Cone";
+        case GeomAbs_Sphere:          return "Sphere";
+        case GeomAbs_Torus:           return "Torus";
+        case GeomAbs_BezierSurface:   return "BezierSurface";
+        case GeomAbs_BSplineSurface:  return "BSplineSurface";
+        case GeomAbs_OffsetSurface:   return "OffsetSurface";
+        default:                      return "Other";
+    }
+}
+
+// Join mode extends each offset face to meet its neighbours. An elementary
+// surface extends exactly; a BSpline face's extension warps, and the result
+// still passes BRepCheck (a lofted cylinder's outward offset measured 5.9%
+// under π(r+d)²(h+2d)).
+static std::optional<GeomAbs_SurfaceType> first_non_elementary_surface(const TopoDS_Shape& shape) {
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+        const GeomAbs_SurfaceType type = BRepAdaptor_Surface(TopoDS::Face(ex.Current())).GetType();
+        switch (type) {
+            case GeomAbs_Plane:
+            case GeomAbs_Cylinder:
+            case GeomAbs_Cone:
+            case GeomAbs_Sphere:
+            case GeomAbs_Torus:
+                continue;
+            default:
+                return type;
+        }
+    }
+    return std::nullopt;
+}
+
 std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance) {
     return wrap_occt_call("offset_solid_shape", [&]() {
         constexpr double kDegenerateVolumeRelFloor = 1e-9;
         if (!std::isfinite(distance) || std::abs(distance) < Precision::Confusion()) {
             throw std::runtime_error("offset_solid_shape: distance must be finite and non-zero");
+        }
+        // Join on a multi-solid CompSolid yields a non-solid, so refuse it by name.
+        const int solids = solid_count(shape.shape);
+        if (solids > 1) {
+            throw std::runtime_error("offset_solid_shape: offset_solid needs a single solid; got "
+                + std::to_string(solids) + " solids");
         }
         // Join on a single-solid compound returns a shell, so offset the bare solid.
         const TopoDS_Shape input = unwrap_boolean_compound(shape.shape);
@@ -3253,6 +3306,11 @@ std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double dis
             throw std::runtime_error(
                 "offset_solid_shape: target encloses no volume — offset_solid needs a solid "
                 "(offset_surface offsets a face)");
+        }
+        if (const auto freeform = first_non_elementary_surface(input)) {
+            throw std::runtime_error(std::string("offset_solid_shape: offset_solid is exact only on "
+                "plane, cylinder, cone, sphere and torus faces; got a ")
+                + surface_kind_name(*freeform) + " face");
         }
         BRepOffsetAPI_MakeOffsetShape maker;
         maker.PerformByJoin(input, distance, offset_join_tolerance(distance), BRepOffset_Skin,
@@ -4766,26 +4824,7 @@ rust::String face_surface_kind(const OcctShape& shape) {
         if (face.IsNull()) {
             throw std::runtime_error("face_surface_kind: face is null");
         }
-        BRepAdaptor_Surface adaptor(face);
-        // Map OCCT's `GeomAbs_SurfaceType` to the canonical wire-format names
-        // documented on `GeometryQuery::FaceSurfaceKind` and decoded by
-        // `FaceSurfaceKind::try_from_str`. `GeomAbs_SurfaceOfRevolution` and
-        // `GeomAbs_SurfaceOfExtrusion` collapse into "Other" because the
-        // typed Rust enum (`FaceSurfaceKind`) intentionally omits them — the
-        // PRD line 78 vocabulary is `%Plane`/`%Cylinder`/`%Cone`/`%Sphere`/
-        // `%Torus` plus the spline/offset arms. Forward-compat for new
-        // GeomAbs variants is the same "Other" arm.
-        switch (adaptor.GetType()) {
-            case GeomAbs_Plane:           return rust::String("Plane");
-            case GeomAbs_Cylinder:        return rust::String("Cylinder");
-            case GeomAbs_Cone:            return rust::String("Cone");
-            case GeomAbs_Sphere:          return rust::String("Sphere");
-            case GeomAbs_Torus:           return rust::String("Torus");
-            case GeomAbs_BezierSurface:   return rust::String("BezierSurface");
-            case GeomAbs_BSplineSurface:  return rust::String("BSplineSurface");
-            case GeomAbs_OffsetSurface:   return rust::String("OffsetSurface");
-            default:                      return rust::String("Other");
-        }
+        return rust::String(surface_kind_name(BRepAdaptor_Surface(face).GetType()));
     });
 }
 
