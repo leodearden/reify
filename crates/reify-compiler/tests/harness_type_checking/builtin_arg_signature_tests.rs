@@ -1699,3 +1699,52 @@ fn arc_bare_angles_are_both_rejected_in_one_pass() {
         compiled.diagnostics
     );
 }
+
+/// SIGNAL — a bare `draft` angle is rejected at BOTH arity forms, naming
+/// `angle`.
+///
+/// Two separate compiles, so each form is attributed on its own: the angle is
+/// arg1 in the 3-arg form and arg2 in the 4-arg curated form, and a guard keyed
+/// to the wrong arity would pass one half and fail the other.
+#[test]
+fn draft_bare_angle_is_rejected_at_both_arity_forms() {
+    for body in [
+        "    let d = draft(b, 5, plane_xy(0mm))\n",
+        "    let sel = faces(b)\n    let d = draft(b, sel, 5, plane_xy(0mm))\n",
+    ] {
+        let compiled = compile_struct_body(body);
+        let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            vec![format!("draft: angle argument expects Angle, got Int; {ANGLE_HINT}")],
+            "body {body:?}: exactly the angle must be rejected.\nAll diagnostics: {:#?}",
+            compiled.diagnostics
+        );
+    }
+}
+
+/// BOUNDARY ok — `draft`'s curated form does NOT slot its face SELECTOR.
+///
+/// Twin of `fillet_curated_form_does_not_reject_its_edge_selector`. The angle
+/// moves from index 1 to index 2 between the two overloads, so an
+/// arity-agnostic arm fires on correct code at one form or the other. Every
+/// angle here is dimensioned, so the ONLY thing that could fire is that false
+/// positive.
+#[test]
+fn draft_curated_form_does_not_reject_its_face_selector() {
+    let compiled = compile_struct_body(
+        "    let sel = faces(b)\n\
+         \x20   let d4 = draft(b, sel, 5deg, plane_xy(0mm))\n\
+         \x20   let d3 = draft(b, 5deg, plane_xy(0mm))\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "both draft forms are correct code — neither the face selector nor the \
+         neutral plane may be slotted; got: {:#?}",
+        errors
+    );
+}

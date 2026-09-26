@@ -2308,14 +2308,36 @@ mod tests {
         }
     }
 
-    /// `draft` stays wholly slot-free — its only scalar is an ANGLE.
+    /// draft(target, angle, plane) / draft(target, faces, angle, plane) → the
+    /// ANGLE, keyed per arity because it MOVES between the two forms.
     ///
-    /// A control for the seam: `draft` sits in the same `compile_modify_op`
-    /// match as every name slotted above, so "the modify family is gated" must
-    /// not be read as "every modify argument is gated".
+    /// The same moving-magnitude shape as `fillet`/`chamfer`
+    /// (`geometry_modify.rs`' `draft` arm): angle@1 at arity 3, angle@2 at
+    /// arity 4, where index 1 is the face SELECTOR. Either arity-agnostic
+    /// spelling fires on correct code at the other form — an agnostic angle@1
+    /// would demand an Angle of the face selector at arity 4, and an agnostic
+    /// angle@2 would demand an Angle of the neutral PLANE at arity 3.
     #[test]
-    fn draft_stays_slot_free_because_its_only_scalar_is_an_angle() {
-        assert_slots_at_every_arity("draft", &[]);
+    fn draft_angle_slot_moves_with_its_arity() {
+        assert_eq!(
+            builtin_arg_slots("draft", 3),
+            vec![angle_slot(1, "angle")],
+            "draft(target, angle, plane) — the angle is arg1; the neutral plane \
+             at arg2 is not a scalar"
+        );
+        assert_eq!(
+            builtin_arg_slots("draft", 4),
+            vec![angle_slot(2, "angle")],
+            "draft(target, faces, angle, plane) — arg1 is the face SELECTOR, the \
+             angle is arg2"
+        );
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 3 && *n != 4) {
+            assert!(
+                builtin_arg_slots("draft", arity).is_empty(),
+                "draft at arity {arity} is neither accepted form, so it must \
+                 expose NO slots"
+            );
+        }
     }
 
     // ── Task 5750 (units-length η): TRANSFORM LENGTH slots ───────────────────
