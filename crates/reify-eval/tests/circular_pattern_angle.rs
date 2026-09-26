@@ -61,8 +61,34 @@ fn build_plate(source: &str) -> (reify_compiler::CompiledModule, BuildResult) {
 #[test]
 fn circular_pattern_bare_360_is_rejected() {
     let source = plate_source("360");
-    let (_compiled, result) = build_plate(&source);
+    let (compiled, result) = build_plate(&source);
 
+    // ── COMPILE layer (PRD 3 leaf ζ) ────────────────────────────────────────
+    //
+    // Observed independently of the eval assertions below: PRD decision D3
+    // says the compile slots COMPLEMENT the eval gate, never replace it, so
+    // each layer's verdict is asserted on its own module.
+    let compile_rejections: Vec<&str> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch)
+                && d.severity == Severity::Error
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        compile_rejections,
+        vec![format!(
+            "circular_pattern: angle argument expects Angle, got Int; {}",
+            reify_core::units::ANGLE_MIGRATION_HINT
+        )],
+        "the compile layer must reject exactly the bare angle, with the one \
+         shared hint; got: {:?}",
+        compiled.diagnostics
+    );
+
+    // ── EVAL layer (PRD 3 leaf ε) ───────────────────────────────────────────
     let rejection = result
         .diagnostics
         .iter()

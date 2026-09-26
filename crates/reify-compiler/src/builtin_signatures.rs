@@ -3499,36 +3499,39 @@ mod tests {
         }
     }
 
-    /// circular_pattern @ arity 9 → ox@1 / oy@2 / oz@3 (LENGTH); every other
-    /// arity → empty.
+    /// circular_pattern @ arity 9 → ox@1 / oy@2 / oz@3 (LENGTH) + angle@8
+    /// (ANGLE); @ arity 4 → angle@3 (ANGLE); every other arity → empty.
     ///
-    /// Arity 4 gets its own assertion for the same reason arity 2 does on
-    /// `mirror`: `circular_pattern(target, axis, count, angle)` holds an `Axis`
-    /// at index 1.
+    /// Neither form may share an arm with the other, because the same index
+    /// denotes a different parameter in each: index 3 is the `oz` LENGTH at
+    /// arity 9 but the `angle` at arity 4, and index 1 is `ox` at arity 9 but
+    /// the decoded `Axis` VALUE at arity 4 (the same reason arity 2 gets its own
+    /// assertion on `mirror`).
     #[test]
-    fn circular_pattern_origin_slots_are_arity_9_only() {
+    fn circular_pattern_forms_are_keyed_independently() {
         assert_eq!(
             builtin_arg_slots("circular_pattern", 9),
             vec![
                 length_slot(1, "ox"),
                 length_slot(2, "oy"),
                 length_slot(3, "oz"),
+                angle_slot(8, "angle"),
             ],
             "circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle) — \
-             args 1-3 are the rotation-axis ORIGIN and must be LENGTH"
+             args 1-3 are the rotation-axis ORIGIN (LENGTH) and arg8 is the ANGLE"
         );
-        assert!(
-            builtin_arg_slots("circular_pattern", 4).is_empty(),
-            "at arity 4 (`circular_pattern(target, axis, count, angle)`, the \
-             task-5745 decoded-value form) index 1 is `axis`, an Axis — an ox@1 \
-             LENGTH slot would emit a FALSE ArgTypeMismatch on valid code, so \
-             arity 4 must expose NO slots"
+        assert_eq!(
+            builtin_arg_slots("circular_pattern", 4),
+            vec![angle_slot(3, "angle")],
+            "circular_pattern(target, axis, count, angle) — index 1 is the decoded \
+             Axis VALUE (never an origin slot), index 2 the Int count, and only \
+             index 3 is the ANGLE"
         );
-        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 9) {
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 9 && *n != 4) {
             assert!(
                 builtin_arg_slots("circular_pattern", arity).is_empty(),
-                "circular_pattern at arity {arity} is not the 9-arg scalar form, so \
-                 it must expose NO slots — index 1 does not denote `ox` there"
+                "circular_pattern at arity {arity} is neither accepted form, so it \
+                 must expose NO slots"
             );
         }
     }
@@ -3565,37 +3568,41 @@ mod tests {
 
     /// The STRADDLE case, fifth of five, and the widest: `circular_pattern`'s
     /// 9-arg form carries a gated ORIGIN, an un-gated axis DIRECTION, an Int
-    /// `count` and an `angle` this leaf may not touch.
+    /// `count` and a gated `angle`.
     ///
-    /// Modelled on `revolve_slots_the_origin_but_never_the_axis_or_the_angle`:
+    /// Modelled on `revolve_slots_the_origin_and_the_angle_but_never_the_axis`:
     ///
     /// * `ox`/`oy`/`oz` are a point in space — bare components silently read as
-    ///   SI metres, so they are slotted;
+    ///   SI metres, so they are slotted LENGTH;
+    /// * `angle` is slotted ANGLE since PRD 3 leaf ζ (task 5782);
     /// * `ax`/`ay`/`az` are a unit vector, legitimately bare;
     /// * `count` is an Int — a wrong count is an arity/semantic error, not a
-    ///   dimension error;
-    /// * `angle` belongs to `docs/prds/v0_6/angle-units-surface-convergence.md`
-    ///   by binding seam decree. Gating it HERE would be a scope violation.
+    ///   dimension error.
     #[test]
-    fn circular_pattern_slots_the_origin_but_never_the_axis_count_or_angle() {
+    fn circular_pattern_slots_the_origin_and_the_angle_but_never_the_axis_or_count() {
         let slotted: Vec<usize> = builtin_arg_slots("circular_pattern", 9)
             .iter()
             .map(|slot| slot.index)
             .collect();
         assert_eq!(
             slotted,
-            vec![1, 2, 3],
+            vec![1, 2, 3, 8],
             "circular_pattern's slotted index set at arity 9 must be exactly the \
-             ORIGIN triple {{1,2,3}}; got {slotted:?}"
+             ORIGIN triple plus the angle {{1,2,3,8}}; got {slotted:?}"
         );
-        for excluded in [4usize, 5, 6, 7, 8] {
+        for excluded in [4usize, 5, 6] {
             assert!(
                 !slotted.contains(&excluded),
-                "circular_pattern arg{excluded} is an axis DIRECTION component, the \
-                 Int `count`, or the ANGLE — none of which this leaf may gate; got \
-                 slots at {slotted:?}"
+                "circular_pattern arg{excluded} is an axis DIRECTION component — a \
+                 dimensionless unit vector, legitimately bare; got slots at \
+                 {slotted:?}"
             );
         }
+        assert!(
+            !slotted.contains(&7),
+            "circular_pattern arg7 is the Int `count` — a wrong count is an \
+             arity/semantic error, never a dimension slot; got slots at {slotted:?}"
+        );
     }
 
     /// CORRECT: a dimensioned `Length` origin → 0 diagnostics, both builtins.
@@ -3763,8 +3770,8 @@ mod tests {
         );
         assert!(
             diags.is_empty(),
-            "a 4-arg circular_pattern exposes no slots even though index 1 EXISTS, \
-             got: {:?}",
+            "a 4-arg circular_pattern exposes no slot at index 1 even though \
+             index 1 EXISTS, got: {:?}",
             diags
         );
     }
@@ -4568,7 +4575,7 @@ mod tests {
     /// # What this pins that main's arity tests do not
     ///
     /// [`mirror_origin_slots_are_arity_7_only`] and
-    /// [`circular_pattern_origin_slots_are_arity_9_only`] already pin the slot
+    /// [`circular_pattern_forms_are_keyed_independently`] already pin the slot
     /// SHAPE against a hard-coded arity, and this test deliberately does not
     /// restate them. It pins the LEDGER-side fact they cannot see: each name
     /// carries a MEASURED [`LOWERING_ACCEPTED_ARITIES`] row, that row is
@@ -4612,18 +4619,22 @@ mod tests {
                  value form, so an arity-agnostic arm would demand a Length OF A \
                  PLANE on correct code."
             );
-            let slotted: Vec<usize> = measured
+            // Keyed on INDEX 1 — the origin — not on "any slot": the invariant
+            // is that the origin never reaches the value form's composite.
+            // `circular_pattern`'s value form legitimately slots its angle@3.
+            let origin_slotted: Vec<usize> = measured
                 .iter()
                 .copied()
-                .filter(|&k| !builtin_arg_slots(name, k).is_empty())
+                .filter(|&k| builtin_arg_slots(name, k).iter().any(|s| s.index == 1))
                 .collect();
             assert_eq!(
-                slotted.len(),
+                origin_slotted.len(),
                 1,
-                "exactly ONE of {name}'s accepted arities {measured:?} may carry \
-                 origin slots — the scalar form. The value form hands index 1 a \
-                 composite built by a stdlib producer, so slotting it would fire \
-                 on correct code. Slots found at: {slotted:?}"
+                "exactly ONE of {name}'s accepted arities {measured:?} may carry a \
+                 slot at index 1 (the origin) — the scalar form. The value form \
+                 hands index 1 a composite built by a stdlib producer, so slotting \
+                 it would fire on correct code. Index-1 slots found at arities: \
+                 {origin_slotted:?}"
             );
         }
     }

@@ -1127,9 +1127,9 @@ fn mirror_bare_origin_is_rejected_naming_the_origin_components() {
 /// `ox`/`oy`/`oz`.
 ///
 /// Three errors, not seven: the axis DIRECTION `0, 0, 1`, the Int `count` and
-/// the `60deg` angle in this same call must all stay silent. The angle belongs
-/// to `docs/prds/v0_6/angle-units-surface-convergence.md` by binding seam
-/// decree, so its silence here is a scope boundary, not an oversight.
+/// the `60deg` angle in this same call must all stay silent. The direction and
+/// count are never slotted; the angle IS slotted (PRD 3 leaf ζ), and is silent
+/// here because `60deg` SATISFIES its slot.
 #[test]
 fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
     let compiled =
@@ -1145,8 +1145,9 @@ fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
             "circular_pattern: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
             "circular_pattern: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
         ],
-        "only the axis ORIGIN is gated — the direction, the count and the angle \
-         must stay silent.\nAll diagnostics: {:#?}",
+        "only the bare axis ORIGIN may fire — the direction and count are \
+         unslotted and the dimensioned angle satisfies its slot.\n\
+         All diagnostics: {:#?}",
         compiled.diagnostics
     );
 }
@@ -1173,14 +1174,15 @@ fn dimensioned_pattern_origins_give_no_arg_type_mismatch() {
 }
 
 /// BOUNDARY ok — the task-5745 decoded-VALUE forms produce NO
-/// `ArgTypeMismatch`, because their arities expose no slots at all.
+/// `ArgTypeMismatch`, because their arities expose no ORIGIN slot.
 ///
 /// Also a no-error guard holding both before and after — but the one that
 /// matters most, because index 1 EXISTS in both of these calls, holding a
 /// `Plane` / an `Axis`. It is the arity guard on each arm, not the
 /// `compiled_args.get(index)` bounds check, that keeps them quiet; an
 /// arity-agnostic `ox@1 LENGTH` slot would demand a Length of a Plane here, on
-/// correct code.
+/// correct code. `circular_pattern`'s value form does slot its angle@3 (PRD 3
+/// leaf ζ), which `60deg` satisfies.
 #[test]
 fn pattern_value_forms_give_no_arg_type_mismatch() {
     let compiled = compile_struct_body(
@@ -1190,8 +1192,8 @@ fn pattern_value_forms_give_no_arg_type_mismatch() {
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(
         errors.is_empty(),
-        "the decoded-value forms expose no slots, so no ArgTypeMismatch may \
-         fire.\nAll diagnostics: {:#?}",
+        "the decoded-value forms expose no origin slot and the angle is \
+         dimensioned, so no ArgTypeMismatch may fire.\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
 }
@@ -1747,4 +1749,34 @@ fn draft_curated_form_does_not_reject_its_face_selector() {
          neutral plane may be slotted; got: {:#?}",
         errors
     );
+}
+
+/// SIGNAL — a bare `circular_pattern` angle is rejected at BOTH forms, naming
+/// `angle`.
+///
+/// Two separate compiles, each keyed independently (PRD row B4's third
+/// clause): the angle is arg8 of the 9-arg scalar form and arg3 of the 4-arg
+/// value form. Exactly one error each — the dimensioned origin, the axis
+/// DIRECTION, the decoded `Axis` value and the Int `count` must all stay
+/// silent.
+#[test]
+fn circular_pattern_bare_angle_is_rejected_at_both_forms() {
+    for body in [
+        "    let p = circular_pattern(b, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)\n",
+        "    let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 360)\n",
+    ] {
+        let compiled = compile_struct_body(body);
+        let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            vec![format!(
+                "circular_pattern: angle argument expects Angle, got Int; {ANGLE_HINT}"
+            )],
+            "body {body:?}: exactly the angle must be rejected.\nAll diagnostics: {:#?}",
+            compiled.diagnostics
+        );
+    }
 }
