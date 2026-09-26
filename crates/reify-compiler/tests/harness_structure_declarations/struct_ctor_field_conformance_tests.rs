@@ -3266,13 +3266,10 @@ structure def Root {
 /// returns `None`, and the task-5766/6159 quantity rule declines: SILENT by
 /// construction, not by a case in the conformance walker.
 ///
-/// Non-vacuity rests on a `Type` identity rather than on a cloned sibling:
-/// [`vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`]
-/// feeds this very `Vector3<Dimensionless>` param a `Vector{n:3,
-/// quantity:Scalar[m]}` arg and REJECTS it — and a homogeneous
-/// `vec([1m, 0m, 0m])` would compile to that same `Type`. So the param spelling
-/// demonstrably resolves and rejects, and silence HERE can come only from the
-/// element disagreement degrading the inferred quantity.
+/// Non-vacuity: its homogeneous twin
+/// [`vec_builtin_homogeneous_list_at_dimensionless_vector_param_errors_arg_type_mismatch`]
+/// directly below takes the same route to the same param and REJECTS, so
+/// silence HERE comes only from the element disagreement.
 ///
 /// `diag([…])` shares `list_shape` and is pinned at the unit level instead
 /// (`diag_result_type_heterogeneous_elements_degrade_quantity_to_dimensionless`),
@@ -3293,6 +3290,36 @@ fn vec_builtin_heterogeneous_list_at_dimensionless_vector_param_stays_clean() {
         "vec([1m, 0, 0]) at a Vector3<Dimensionless> param must stay SILENT — the \
          elements disagree on dimension, so `list_shape` infers a dimensionless \
          quantity and the rule has nothing to compare. Got: {diags:#?}"
+    );
+}
+
+const SRC_VEC_HOMOGENEOUS_LIST_AT_DIMENSIONLESS: &str = r#"module test.vec_homogeneous_at_dimensionless
+structure def Frame { param dir : Vector3<Dimensionless> }
+structure def Root {
+    let f = Frame(dir: vec([1m, 0m, 0m]))
+}
+"#;
+
+/// The homogeneous twin of
+/// [`vec_builtin_heterogeneous_list_at_dimensionless_vector_param_stays_clean`]:
+/// the same `vec([…])` → `list_shape` route and the same param, but every
+/// element is `m`, so the elements agree on `Length` and the rule REJECTS.
+#[test]
+fn vec_builtin_homogeneous_list_at_dimensionless_vector_param_errors_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SRC_VEC_HOMOGENEOUS_LIST_AT_DIMENSIONLESS);
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    assert!(
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
+    );
+    assert_single_quantity_conflict_error_in(
+        &module,
+        "dir",
+        "Real",
+        "Scalar[m]",
+        "Vector3<Dimensionless> ← vec([1m, 0m, 0m])",
     );
 }
 
@@ -3933,13 +3960,11 @@ structure def Root {
 /// silence: a heterogeneous aggregate names no dimension, so there is nothing
 /// to compare. Per-cell dimension checking is a separate, larger ruling.
 ///
-/// Non-vacuity beyond the compile guard:
-/// [`matrix_builtin_cross_dimension_at_inertia_param_errors_arg_type_mismatch`]
-/// and
-/// [`matrix_builtin_dimensioned_at_dimensionless_matrix_param_errors_arg_type_mismatch`]
-/// both reach this same arm through `matrix(…)` and REJECT, so silence here is
-/// a property of the literal's heterogeneity and not of the arm being
-/// unreachable.
+/// Non-vacuity beyond the compile guard: its homogeneous twin
+/// [`matrix_builtin_homogeneous_at_rotational_stiffness_param_errors_arg_type_mismatch`]
+/// directly below feeds the same param an all-`N/m` matrix and REJECTS, so
+/// silence here is a property of the literal's heterogeneity and not of the
+/// arm being unreachable.
 #[test]
 fn matrix_builtin_block_heterogeneous_at_rotational_stiffness_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_MATRIX_BLOCK_HETEROGENEOUS_AT_ROTATIONAL_STIFFNESS);
@@ -3960,6 +3985,36 @@ fn matrix_builtin_block_heterogeneous_at_rotational_stiffness_param_stays_clean(
          must stay SILENT — its cells disagree across row blocks, so the inferred \
          quantity names no dimension. Rejecting it on cell [0][0]'s `N/m` is the \
          false-reject task 5889 closes. Got: {diags:#?}"
+    );
+}
+
+const SRC_MATRIX_HOMOGENEOUS_AT_ROTATIONAL_STIFFNESS: &str = r#"module test.matrix_homogeneous_at_rotational_stiffness
+structure def Compliance { param k : Matrix<2, 2, RotationalStiffness> }
+structure def Root {
+    let c = Compliance(k: matrix([[1N/m, 0N/m], [0N/m, 1N/m]]))
+}
+"#;
+
+/// The homogeneous twin of
+/// [`matrix_builtin_block_heterogeneous_at_rotational_stiffness_param_stays_clean`]:
+/// the same param, with every cell carrying the translational block's `N/m`.
+/// The cells agree, and `N/m` is not `RotationalStiffness`, so the rule REJECTS.
+#[test]
+fn matrix_builtin_homogeneous_at_rotational_stiffness_param_errors_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SRC_MATRIX_HOMOGENEOUS_AT_ROTATIONAL_STIFFNESS);
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    assert!(
+        non_ctor_conformance_errors(&module).is_empty(),
+        "fixture must compile cleanly apart from the ctor-conformance fault under \
+         test, got: {:?}",
+        non_ctor_conformance_errors(&module)
+    );
+    assert_single_quantity_conflict_error_in(
+        &module,
+        "k",
+        "Scalar[m^2·kg·s^-2·rad^-2]",
+        "Scalar[kg·s^-2]",
+        "Matrix<2,2,RotationalStiffness> ← matrix([[1N/m, 0N/m], [0N/m, 1N/m]])",
     );
 }
 
