@@ -4061,7 +4061,13 @@ mod queued_requests {
         ));
         rig.executor.run_pending();
 
-        let state = settled(ticket).expect("the open should succeed");
+        let published = settled(ticket).expect("the open should succeed");
+        assert_eq!(
+            rig.observer.started_generations(),
+            [published.generation()],
+            "the reply is stamped with the generation the open ran under"
+        );
+        let state = published.state();
         assert!(!state.files.is_empty());
         for file in &state.files {
             assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
@@ -4081,7 +4087,8 @@ mod queued_requests {
             .submit(initial_file_evaluation(fresh_engine(), canonical.clone()));
         rig.executor.run_pending();
 
-        let state = settled(ticket).expect("the load should succeed");
+        let published = settled(ticket).expect("the load should succeed");
+        let state = published.state();
         assert!(!state.files.is_empty());
         for file in &state.files {
             assert_eq!(std::path::Path::new(&file.path), canonical.as_path());
@@ -4098,9 +4105,45 @@ mod queued_requests {
             .submit(initial_state_evaluation(make_test_engine_for_commands()));
         rig.executor.run_pending();
 
-        let state = settled(ticket).expect("the state should build");
-        assert!(state.values.iter().any(|v| v.cell_id == WIDTH));
+        let published = settled(ticket).expect("the state should build");
+        assert!(published.state().values.iter().any(|v| v.cell_id == WIDTH));
         assert_eq!(published_width(&rig.observer), mm("80"));
+    }
+
+    /// The frontend drops a whole-state reply older than an announced
+    /// generation, so a reply queued behind an edit must be stamped later.
+    #[test]
+    fn a_whole_state_reply_queued_behind_an_edit_is_stamped_later_than_the_edit() {
+        let engine = make_test_engine_for_commands();
+        let rig = ManualQueue::new();
+
+        let edit = rig.queue.submit(preview_parameter_edit(
+            Arc::clone(&engine),
+            WIDTH.into(),
+            "120mm".into(),
+            order(1),
+        ));
+        let whole = rig.queue.submit(initial_state_evaluation(engine));
+        rig.executor.run_pending();
+
+        assert_eq!(settled(edit), Ok(()));
+        let published = settled(whole).expect("the state should build");
+        let generations = rig.observer.started_generations();
+        let [edit_generation, reply_generation] = generations[..] else {
+            panic!("expected the edit and the reply to be announced; got {generations:?}");
+        };
+        assert_eq!(published.generation(), reply_generation);
+        assert!(
+            published.generation() > edit_generation,
+            "got {generations:?}"
+        );
+        let width = published
+            .state()
+            .values
+            .iter()
+            .find(|v| v.cell_id == WIDTH)
+            .map(|v| v.value.as_str());
+        assert_eq!(width, Some("120"));
     }
 
     #[test]
@@ -4126,7 +4169,7 @@ mod queued_requests {
         let observer = Arc::new(RecordingObserver::default());
         let queue = EvalQueue::on_engine_lane(Arc::new(Mutex::new(None)), observer.clone());
 
-        let state = queue
+        let published = queue
             .submit(open_file_evaluation(
                 fresh_engine(),
                 path.to_string_lossy().into_owned(),
@@ -4134,7 +4177,7 @@ mod queued_requests {
             .await
             .expect("the open should succeed");
 
-        assert!(!state.meshes.is_empty());
+        assert!(!published.state().meshes.is_empty());
         let delta_threads: Vec<_> = observer
             .observations()
             .into_iter()

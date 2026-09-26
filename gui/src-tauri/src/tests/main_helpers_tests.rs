@@ -161,8 +161,15 @@ fn begin_initial_file_load_is_served_before_a_later_initial_state_request() {
     rig.executor.run_pending();
 
     assert_eq!(canonical, std::fs::canonicalize(&file).unwrap());
-    assert!(settled(load).is_ok());
-    let state = settled(first_state).expect("the initial state should build");
+    let load = settled(load).expect("the argv load should succeed");
+    let first_state = settled(first_state).expect("the initial state should build");
+    assert!(
+        load.generation() < first_state.generation(),
+        "the argv load must be stamped before the later initial state: {} vs {}",
+        load.generation(),
+        first_state.generation()
+    );
+    let state = first_state.state();
     assert!(
         state
             .files
