@@ -165,5 +165,91 @@ class ExitContractTest(CheckerTestCase):
         )
 
 
+class DiscoveryScopeTest(CheckerTestCase):
+    """Default discovery: tracked `*.sh` and `hooks/*` only, relative paths."""
+
+    CENSUS_LINE = "x=$(readlink /proc/self/fd/1)"
+
+    def git(self, root, *args):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+    def test_scans_tracked_shell_corpus_only(self):
+        root = self.make_tmpdir()
+        self.git(root, "init", "-q")
+        tracked = {
+            "a.sh": [self.CENSUS_LINE],
+            "hooks/pre-demo": ["#!/usr/bin/env bash", self.CENSUS_LINE],
+            "lib/helper.py": [self.CENSUS_LINE],
+            "notes/n.md": [self.CENSUS_LINE],
+        }
+        for rel, lines in tracked.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("".join(line + "\n" for line in lines))
+        self.git(root, "add", *tracked)
+        (root / "b.sh").write_text(self.CENSUS_LINE + "\n")
+
+        proc, payload = self.run_json("--root", str(root))
+        in_scope = {"a.sh", "hooks/pre-demo"}
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(set(payload["scanned"]), in_scope)
+        self.assertEqual({f["path"] for f in payload["findings"]}, in_scope)
+
+
+class RealTreeTest(CheckerTestCase):
+    """The guard's real job: the tracked shell corpus scans clean, LIVE."""
+
+    CORPUS_FLOOR = 200
+    KNOWN_MEMBERS = {
+        "tests/infra/test_run_gui_scripts.sh",
+        "hooks/pre-commit",
+        "tests/infra/test_seed_warm_lane.sh",
+    }
+
+    def test_tracked_shell_corpus_is_clean(self):
+        proc, payload = self.run_json(cwd=self.make_tmpdir())
+        self.assertEqual(
+            proc.returncode, 0,
+            json.dumps(payload["findings"], indent=2) + proc.stderr,
+        )
+        self.assertEqual(payload["findings"], [])
+        self.assertGreaterEqual(len(payload["scanned"]), self.CORPUS_FLOOR)
+        self.assertLessEqual(self.KNOWN_MEMBERS, set(payload["scanned"]))
+
+
+class MutationControlTest(CheckerTestCase):
+    """Reverting Block V's fix at its origin site must flag exactly once."""
+
+    ORIGIN = REPO_ROOT / "tests" / "infra" / "test_seed_warm_lane.sh"
+    FIXED_SPELLING = "/proc/$_v_mypid/fd/1"
+    CENSUS_SPELLINGS = ("/proc/self/fd/1", "/proc/$BASHPID/fd/1")
+
+    def fixed_line_index(self, lines):
+        hits = [
+            i for i, line in enumerate(lines)
+            if self.FIXED_SPELLING in line and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(
+            len(hits), 1,
+            f"precondition: expected exactly one non-comment line in "
+            f"{self.ORIGIN} containing {self.FIXED_SPELLING!r} (Block V's "
+            f"fixed shim), found {len(hits)}",
+        )
+        return hits[0]
+
+    def test_reverted_fix_is_flagged_once(self):
+        lines = self.ORIGIN.read_text().split("\n")
+        index = self.fixed_line_index(lines)
+        for spelling in self.CENSUS_SPELLINGS:
+            with self.subTest(spelling=spelling):
+                mutant = list(lines)
+                mutant[index] = mutant[index].replace(self.FIXED_SPELLING, spelling)
+                path = self.make_tmpdir() / self.ORIGIN.name
+                path.write_text("\n".join(mutant))
+                _, payload = self.run_json(str(path))
+                self.assertEqual(len(payload["findings"]), 1, payload["findings"])
+                self.assertIn(spelling, payload["findings"][0]["source"])
+
+
 if __name__ == "__main__":
     unittest.main()
