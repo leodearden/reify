@@ -998,6 +998,56 @@ fn cubic_2d_and_3d_node_query_ignores_non_finite_zero_weight_stencil_entries() {
     }
 }
 
+/// Bicubic and tricubic queries on a cell edge or face leave out the
+/// zero-weight stencil entries of each axis they sit on, while the axes they
+/// cross still span their full 4-point stencil. Each poisoned sample lies in
+/// a zero-weight row, column or layer of its query's stencil.
+#[test]
+fn cubic_2d_and_3d_edge_and_face_queries_ignore_non_finite_zero_weight_stencil_entries() {
+    let g = [0.0f64, 1.0, 2.0, 3.0];
+    let cases_2d = [
+        ((2.0, 3.0), (1.5, 1.0), 16.0),
+        ((3.0, 2.0), (1.0, 1.5), 11.5),
+    ];
+    let cases_3d = [
+        ((2.0, 2.0, 3.0), (1.5, 1.5, 1.0), 166.0),
+        ((2.0, 3.0, 3.0), (1.5, 1.0, 1.0), 161.0),
+        ((3.0, 2.0, 2.0), (1.0, 1.5, 1.5), 116.5),
+    ];
+    for poison in NON_FINITE {
+        for (poisoned, query, expected) in cases_2d {
+            let values = build_2d(&g, &g, |x, y| {
+                if (x, y) == poisoned {
+                    poison
+                } else {
+                    10.0 * x + y
+                }
+            });
+            let r = interpolate_2d(InterpolationMethod::Cubic, &g, &g, &values, query);
+            assert_bit_exact(
+                r.value,
+                expected,
+                &format!("2-D {query:?} with {poison} at {poisoned:?}"),
+            );
+        }
+        for (poisoned, query, expected) in cases_3d {
+            let values = build_3d(&g, &g, &g, |x, y, z| {
+                if (x, y, z) == poisoned {
+                    poison
+                } else {
+                    100.0 * x + 10.0 * y + z
+                }
+            });
+            let r = interpolate_3d(InterpolationMethod::Cubic, &g, &g, &g, &values, query);
+            assert_bit_exact(
+                r.value,
+                expected,
+                &format!("3-D {query:?} with {poison} at {poisoned:?}"),
+            );
+        }
+    }
+}
+
 /// GUARD on the boundary of the node rule: Cubic's poison radius is its
 /// 4-wide stencil. With a non-finite sample at x = 4, the query 1.5 (stencil
 /// x = 0..3) stays finite, while the query 2.5 (stencil x = 1..4) gives it
