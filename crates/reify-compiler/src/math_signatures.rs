@@ -182,14 +182,9 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         //   point3(x,y,z) → Point {n:3, quantity}
         //   point2(x,y)   → Point {n:2, quantity}
         // `n` is fixed from the NAME; the quantity slot is the one the variadic
-        // scalar components AGREE on, via `homogeneous_quantity` — the same rule
+        // scalar components agree on, via `homogeneous_quantity` — the same rule
         // `list_shape` / `matrix_shape` apply, reached inline here because this
-        // arm routes through neither. The ACCEPT/REJECT decision at this arm
-        // therefore does not depend on component ORDER: that decision reads a
-        // DIMENSION, and components that disagree name none whichever way round
-        // they are written. The retained `Type` is still component `[0]`'s, so
-        // `vec3(1, 2.0, 3.0)` keeps `Int` where `vec3(2.0, 1, 3.0)` keeps
-        // `Real` — immaterial to the rule, since both name no dimension.
+        // arm routes through neither.
         //
         // The point twins also make the VALUE constructor agree with the
         // same-named TYPE constructor: `Type::point3(q)` is an established
@@ -528,29 +523,11 @@ fn scalar_or_real(dim: DimensionVector) -> Type {
     }
 }
 
-/// The quantity a literal's elements AGREE on, or `Type::dimensionless_scalar()`
-/// when they do not (including the empty case).
-///
-/// The comparison key is [`arg_dimension`] rather than `Type` equality because
-/// that is the exact property the consumer decides on: `arg_quantity_slot_dimension`
-/// (`conformance/mod.rs`) reads a quantity slot as a `DimensionVector` or as
-/// nothing. Comparing `Type`s instead would split `Int` from `Real` — both
-/// dimensionless, both routinely mixed in one literal — and degrade a literal
-/// the rule has no quarrel with.
-///
-/// The degrade target is `Type::dimensionless_scalar()` because it is the one
-/// value for which that arg-side predicate returns `None`: a heterogeneous
-/// aggregate then names no dimension, and the task-5766/6159 quantity rule
-/// falls silent BY CONSTRUCTION rather than through a special case in the
-/// conformance walker. Elements that agree keep their precise quantity
-/// verbatim, so the narrowing costs no precision where the inference was sound.
-///
-/// "Verbatim" means element `[0]`'s `Type`, so the retained `Type` still
-/// follows the ORDER when agreeing elements differ in `Type` without differing
-/// in dimension (`Int` beside `Real`). The DIMENSION it names does not follow
-/// the order, and the dimension is all the consumer reads — which is why the
-/// rule's accept/reject outcome is order-independent even where the inferred
-/// `Type` is not.
+/// The quantity a literal's elements agree on: element `[0]`'s `Type` when every
+/// element has the same [`arg_dimension`] (so `Int` beside `Real` agrees), else
+/// `Type::dimensionless_scalar()` — also for no elements. Why that degrade
+/// target silences the quantity rule: `reify_core::ty`'s module doc, *What the
+/// arg side infers from a literal*.
 fn homogeneous_quantity<'a>(elems: impl IntoIterator<Item = &'a Type>) -> Type {
     let mut elems = elems.into_iter();
     let Some(first) = elems.next() else {
@@ -571,10 +548,8 @@ fn homogeneous_quantity<'a>(elems: impl IntoIterator<Item = &'a Type>) -> Type {
 ///   length unknown, quantity recovered from the arg's `Type::List` where
 ///   possible, defaulting to `Type::dimensionless_scalar()`.
 ///
-/// Every element is inspected, not just `[0]`: elements that agree on a
-/// dimension keep that precise quantity, and elements that disagree degrade to
-/// `Type::dimensionless_scalar()` via [`homogeneous_quantity`], which is where
-/// the reasoning lives. `n` is the element count either way.
+/// Every element is inspected, via [`homogeneous_quantity`]; `n` is the element
+/// count either way.
 fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(elems) = &arg.kind {
         (
@@ -592,13 +567,10 @@ fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
 ///   `(cells.len(), <the quantity every cell of every row agrees on>)`.
 /// - otherwise → `(0, <innermost List element>)` — DEGRADE (D7).
 ///
-/// ALL cells of ALL rows are inspected. Cells that agree on a dimension keep
-/// that precise quantity; cells that disagree degrade to
-/// `Type::dimensionless_scalar()` via [`homogeneous_quantity`], which is where
-/// the reasoning lives. Scanning row 0 alone would miss the heterogeneity a
-/// block-structured matrix actually has — a stiffness/compliance matrix or a
-/// screw-theory spatial Jacobian is uniform WITHIN a row block and differs
-/// ACROSS blocks.
+/// ALL cells of ALL rows are inspected, via [`homogeneous_quantity`]. Scanning
+/// row 0 alone would miss the heterogeneity a block-structured matrix actually
+/// has — a stiffness/compliance matrix or a screw-theory spatial Jacobian is
+/// uniform WITHIN a row block and differs ACROSS blocks.
 ///
 /// Two shapes leave the literal un-inspectable and degrade the quantity as
 /// well — the conservative direction D7 already takes at this function: a row
@@ -614,21 +586,20 @@ fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
         && let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind)
     {
         let ncols = cells.len();
-        let every_row_inspectable = rows
+        let row_cells: Option<Vec<&Vec<CompiledExpr>>> = rows
             .iter()
-            .all(|r| matches!(&r.kind, CompiledExprKind::ListLiteral(_)));
-        if ncols == 0 || !every_row_inspectable {
-            return (ncols, Type::dimensionless_scalar());
-        }
-        let all_cells = rows
-            .iter()
-            .filter_map(|r| match &r.kind {
+            .map(|r| match &r.kind {
                 CompiledExprKind::ListLiteral(row_cells) => Some(row_cells),
                 _ => None,
             })
-            .flatten()
-            .map(|c| &c.result_type);
-        return (ncols, homogeneous_quantity(all_cells));
+            .collect();
+        let quantity = match row_cells {
+            Some(row_cells) if ncols > 0 => {
+                homogeneous_quantity(row_cells.into_iter().flatten().map(|c| &c.result_type))
+            }
+            _ => Type::dimensionless_scalar(),
+        };
+        return (ncols, quantity);
     }
     (0, innermost_list_element(&arg.result_type))
 }
@@ -1059,16 +1030,11 @@ mod tests {
 
     // ── Heterogeneous literals degrade the quantity slot (task 5889) ─────────
     //
-    // The homogeneous-keeps-precision half of this rule is already pinned by
-    // `vec_result_type_length_preserves_quantity` directly above; it is cited
-    // rather than cloned (house rule G7, no lockstep duplication).
+    // The homogeneous half: `vec_result_type_length_preserves_quantity` above.
 
     /// A `vec` literal mixing a dimensioned element with dimensionless ones
     /// infers NO dimension: the quantity degrades to `Type::dimensionless_scalar()`
     /// while `n` still counts every element.
-    ///
-    /// Asserting the whole `Type` pins both halves at once — a degrade that also
-    /// lost the element count would fail here rather than pass quietly.
     #[test]
     fn vec_result_type_heterogeneous_elements_degrade_quantity_to_dimensionless() {
         let arg = list_lit(
@@ -1126,14 +1092,8 @@ mod tests {
     }
 
     /// FENCE — `Int` and `Real` elements AGREE (both dimensionless), so nothing
-    /// degrades and element `[0]`'s `Type::Int` survives verbatim.
-    ///
-    /// This is the test that discriminates a DIMENSION-comparing predicate from
-    /// a `Type`-equality one: the two element `Type`s differ, yet their
-    /// dimensions do not. It protects the premise
-    /// `int_quantity_vector_param_accepts_dimensioned_vector_arg`
-    /// (`conformance/mod.rs`) rests on — that `Type::Int` quantity slots are
-    /// reachable on the ARG side via this inference at all.
+    /// degrades and element `[0]`'s `Type::Int` survives verbatim: agreement is
+    /// by dimension, not `Type`.
     #[test]
     fn vec_result_type_int_and_real_elements_agree_and_keep_int_quantity() {
         let arg = list_lit(
@@ -1155,17 +1115,8 @@ mod tests {
         );
     }
 
-    /// FENCE, MIRRORED — the same dimensionless pair in the other ORDER, which
-    /// keeps element `[0]`'s `Type` too and so yields `Real` rather than `Int`.
-    ///
-    /// Together with the Int-first test above, this pins the whole of the order
-    /// dependence that survives the change: the retained `Type` follows the
-    /// order, while the DIMENSION the pair names (none, either way) does not.
-    /// Only that dimension reaches `arg_quantity_slot_dimension`, which is why
-    /// the task-5766/6159 accept/reject outcome is order-independent even
-    /// though the inferred `Type` is not. Leaving this direction unpinned would
-    /// let a `Type`-equality rewrite of `homogeneous_quantity` pass on the
-    /// Int-first test alone.
+    /// FENCE, MIRRORED — the same dimensionless pair in the other ORDER keeps
+    /// element `[0]`'s `Type` too, and so yields `Real` rather than `Int`.
     #[test]
     fn vec_result_type_real_and_int_elements_agree_and_keep_real_quantity() {
         let arg = list_lit(
@@ -1230,11 +1181,8 @@ mod tests {
 
     // ── Heterogeneous components degrade the quantity slot (task 5889) ───────
     //
-    // The homogeneous-keeps-precision half is already pinned by
-    // `vec2_result_type_length_is_vector_n2_length` above and by
-    // `point3_result_type_length_is_point_n3_length` /
-    // `point3_result_type_dimensionless_is_point_n3_real` below; they are cited
-    // rather than cloned (house rule G7).
+    // The homogeneous half: `vec2_result_type_length_is_vector_n2_length` above,
+    // `point3_result_type_length_is_point_n3_length` below.
 
     /// `vec3` whose components DISAGREE on dimension infers no dimension. `n`
     /// still comes from the NAME suffix, never from the arguments — asserting
@@ -1430,16 +1378,9 @@ mod tests {
         );
     }
 
-    /// THE LOAD-BEARING CASE: every row is internally homogeneous and the rows
-    /// disagree with EACH OTHER. This is the only test here that a row-0-only
-    /// heterogeneity check would still fail, so it is what forces `matrix_shape`
-    /// to inspect rows `[1..]` at all.
-    ///
-    /// It models the shape the false-reject was reported on: a stiffness /
-    /// compliance matrix (or a screw-theory spatial Jacobian) is block
-    /// structured, its translational rows carrying `N/m` and its rotational rows
-    /// `N·m/rad²` — uniform within a block, different across blocks. Cell
-    /// `[0][0]` is representative of nothing.
+    /// Every row is internally homogeneous and the rows disagree with EACH
+    /// OTHER — the block-structured stiffness shape (`N/m` rows beside `N·m/rad²`
+    /// rows). A row-0-only check would pass this literal through.
     #[test]
     fn matrix_result_type_heterogeneous_across_rows_degrades_quantity_to_dimensionless() {
         let arg = matrix_lit(vec![
@@ -1501,11 +1442,7 @@ mod tests {
     }
 
     /// An EMPTY row 0 pins `n = 0`, which discards every later row — so the
-    /// quantity must not be read out of those rows either. Without the guard,
-    /// `matrix([[], [1m, 2m]])` types as `Tensor{n:0, quantity:Scalar<Length>}`
-    /// and is REJECTED at a `Matrix<M, N, Dimensionless>` param on the strength
-    /// of cells the `n` projection threw away — the false-reject direction this
-    /// whole change exists to remove, reintroduced at the degenerate shape.
+    /// quantity must not be read out of those rows either.
     #[test]
     fn matrix_result_type_empty_first_row_degrades_quantity_to_dimensionless() {
         let arg = matrix_lit(vec![vec![], vec![length_elem(1.0), length_elem(2.0)]]);

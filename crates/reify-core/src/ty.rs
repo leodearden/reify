@@ -259,6 +259,10 @@
 //! `"vec3" | "vec2" | "point3" | "point2"` arm of `math_fn_result_type`, all in
 //! `math_signatures.rs` — infer a quantity ONLY from elements that AGREE on a
 //! dimension, and degrade to `Type::dimensionless_scalar()` otherwise.
+//! Agreement is compared by dimension, not by `Type`: `Int` beside `Real`
+//! agrees, since both are dimensionless and the dimension is all the rule
+//! reads. Elements that agree keep element `[0]`'s `Type` verbatim, so the
+//! narrowing costs no precision where the inference was already sound.
 //! `matrix_shape` inspects every cell of every row, so the heterogeneity a
 //! block-structured matrix actually carries ACROSS row blocks — a 6x6
 //! stiffness/compliance matrix, a spatial (screw-theory) Jacobian mixing
